@@ -34,8 +34,7 @@ type Attribute struct {
 	// Settings.InactiveAccountsAllowed).
 	Options []Option
 
-	// optionsText lists the options for a problem message, scrubbed of
-	// the credential when read.
+	// optionsText lists the options for a problem message.
 	optionsText string
 }
 
@@ -64,6 +63,9 @@ const maxOptions = 50_000
 // Attributes lists the site's work attributes. The list is cached until
 // DropCache or a write Tempo refuses; the caller gets its own copy.
 func (c *Client) Attributes(ctx context.Context) ([]Attribute, error) {
+	if err := c.admit(); err != nil {
+		return nil, err
+	}
 	attrs, err := c.attributes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("tempo: %w", err)
@@ -87,12 +89,11 @@ func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 				if len(out) >= maxAttributes || options > maxOptions {
 					return fmt.Errorf("the site has more than %d work attributes or %d options, the most this client holds", maxAttributes, maxOptions)
 				}
-				// Name is shown in problem messages, so it is scrubbed.
-				attr := Attribute{Key: a.Key, Name: resp.Scrub(a.Name), Type: AttributeType(a.Type), Required: a.Required}
+				attr := Attribute{Key: resp.Scrub(a.Key), Name: resp.Scrub(a.Name), Type: AttributeType(resp.Scrub(a.Type)), Required: a.Required}
 				for _, v := range a.Values {
-					attr.Options = append(attr.Options, Option{Value: v, Name: resp.Scrub(a.Names[v])})
+					attr.Options = append(attr.Options, Option{Value: resp.Scrub(v), Name: resp.Scrub(a.Names[v])})
 				}
-				attr.optionsText = resp.Scrub(optionNames(attr.Options))
+				attr.optionsText = optionNames(attr.Options)
 				out = append(out, attr)
 			}
 			return nil
@@ -136,6 +137,9 @@ type settingsJSON struct {
 
 // Settings reads Tempo's global configuration, cached as Attributes is.
 func (c *Client) Settings(ctx context.Context) (Settings, error) {
+	if err := c.admit(); err != nil {
+		return Settings{}, err
+	}
 	v, err := c.settings(ctx)
 	if err != nil {
 		return Settings{}, fmt.Errorf("tempo: %w", err)
@@ -146,12 +150,13 @@ func (c *Client) Settings(ctx context.Context) (Settings, error) {
 func (c *Client) settings(ctx context.Context) (Settings, error) {
 	v, err := c.site.settings.get(ctx, func(ctx context.Context) (Settings, error) {
 		var raw settingsJSON
-		if _, err := c.http.JSON(ctx, trackerapi.Request{Path: "4/globalconfiguration"}, &raw); err != nil {
+		resp, err := c.http.JSON(ctx, trackerapi.Request{Path: "4/globalconfiguration"}, &raw)
+		if err != nil {
 			return Settings{}, err
 		}
 		s := Settings{
 			InactiveAccountsAllowed:   raw.AllowLoggingOnClosedAccount,
-			ApprovalPeriod:            raw.ApprovalPeriod,
+			ApprovalPeriod:            resp.Scrub(raw.ApprovalPeriod),
 			WeekStart:                 time.Monday,
 			DescriptionRequired:       raw.DescriptionOptional != nil && !*raw.DescriptionOptional,
 			RemainingEstimateRequired: raw.RemainingEstimateOptional != nil && !*raw.RemainingEstimateOptional,
@@ -225,7 +230,7 @@ func (c *cached[T]) get(ctx context.Context, load func(context.Context) (T, erro
 		}
 		if c.closed {
 			c.mu.Unlock()
-			return zero, &trackerapi.NotSentError{Err: errClosed}
+			return zero, &trackerapi.NotSentError{Err: ErrClosed}
 		}
 		l := c.inflight
 		if l == nil {

@@ -3,8 +3,63 @@ package tempo
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
+	"strings"
 )
+
+// The checks that need a read of the site. The checks from the op alone
+// are in rules.go.
+
+// attributeRules checks p's attribute values against the site's
+// attributes: known keys, values their types allow, required attributes
+// present. A value valueRules flagged is not judged again. Account values
+// are checked by checkAccounts.
+func attributeRules(p *prepared, attrs []Attribute) {
+	values := p.draft.Attributes
+	for i, v := range values {
+		if !judged(values, i) {
+			continue
+		}
+		at := slices.IndexFunc(attrs, func(a Attribute) bool { return a.Key == v.Key })
+		if at < 0 {
+			p.problem(FieldAttribute, v.Key, UnknownAttribute, "no work attribute %s", v.Key)
+			continue
+		}
+		a := attrs[at]
+		switch a.Type {
+		case AttributeList:
+			if !slices.ContainsFunc(a.Options, func(o Option) bool { return o.Value == v.Value }) {
+				p.problem(FieldAttribute, v.Key, NotAllowed, "%q is not an option of %s; options: %s", v.Value, a.Name, a.optionsText)
+			}
+		case AttributeCheckbox:
+			if v.Value != "true" && v.Value != "false" {
+				p.problem(FieldAttribute, v.Key, NotAllowed, "%s takes true or false, not %q", a.Name, v.Value)
+			}
+		case AttributeNumber:
+			if n, err := strconv.ParseFloat(v.Value, 64); err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
+				p.problem(FieldAttribute, v.Key, NotAllowed, "%s takes a number, not %q", a.Name, v.Value)
+			}
+		}
+	}
+	for _, a := range attrs {
+		if a.Required && !slices.ContainsFunc(values, func(v AttributeValue) bool { return v.Key == a.Key }) {
+			p.problem(FieldAttribute, a.Key, Missing, "work attribute %s is required", a.Name)
+		}
+	}
+}
+
+func optionNames(options []Option) string {
+	names := make([]string, len(options))
+	for i, o := range options {
+		names[i] = o.Value
+		if o.Name != "" && o.Name != o.Value {
+			names[i] = o.Name + " (" + o.Value + ")"
+		}
+	}
+	return strings.Join(names, ", ")
+}
 
 // accountValue is one account attribute value in a checked op.
 type accountValue struct {
@@ -13,22 +68,26 @@ type accountValue struct {
 	ref string // the account key it names
 }
 
-// checkAccounts checks every account attribute value of out with one
-// account search, reading the settings only when a closed or archived
-// account needs them. Without the attributes (attrsKnown false) account
-// values cannot be told apart, so every op with attribute values lists
-// the account check as not run.
-func (c *Client) checkAccounts(ctx context.Context, out []prepared, attrs []Attribute, attrsKnown bool) error {
+// checkAccounts checks the account attribute values of the writes with
+// one account search, reading the settings only when a closed or archived
+// account needs them. attrs and attrsErr are the attributes read: when
+// Tempo answered it with 403, account values cannot be told apart, so
+// every write with attribute values lists the account check as not run;
+// when it failed otherwise, those writes already carry the error.
+func (c *Client) checkAccounts(ctx context.Context, out []prepared, writes []int, attrs []Attribute, attrsErr error) {
 	var values []accountValue
 	var refs []string
-	for i := range out {
-		for _, v := range out[i].draft.Attributes {
-			if !attrsKnown {
+	for _, i := range writes {
+		list := out[i].draft.Attributes
+		if attrsErr != nil {
+			if len(list) > 0 && forbidden(attrsErr) {
 				out[i].skip(CheckAccounts)
-				break
 			}
+			continue
+		}
+		for n, v := range list {
 			at := slices.IndexFunc(attrs, func(a Attribute) bool { return a.Key == v.Key })
-			if at < 0 || attrs[at].Type != AttributeAccount || v.Value == "" {
+			if !judged(list, n) || at < 0 || attrs[at].Type != AttributeAccount {
 				continue
 			}
 			values = append(values, accountValue{op: i, key: v.Key, ref: v.Value})
@@ -38,55 +97,46 @@ func (c *Client) checkAccounts(ctx context.Context, out []prepared, attrs []Attr
 		}
 	}
 	if len(refs) == 0 {
-		return nil
+		return
 	}
 	accounts, err := c.accounts(ctx, AccountQuery{Keys: refs})
-	if forbidden(err) {
-		for _, v := range values {
-			out[v.op].skip(CheckAccounts)
-		}
-		return nil
-	}
 	if err != nil {
-		return fmt.Errorf("read accounts: %w", err)
+		for _, v := range values {
+			if forbidden(err) {
+				out[v.op].skip(CheckAccounts)
+			} else {
+				out[v.op].fail(fmt.Errorf("read accounts: %w", err))
+			}
+		}
+		return
 	}
-	var inactiveAllowed *bool // nil until read; settings not readable leaves it nil
-	settingsForbidden := false
+	var settings *Settings // read on the first closed or archived account
+	var settingsErr error
 	for _, v := range values {
+		p := &out[v.op]
 		at := slices.IndexFunc(accounts, func(a Account) bool { return a.Key == v.ref })
-		problem := Problem{Field: FieldAttribute, Attribute: v.key, Code: NotAllowed}
 		switch {
 		case at < 0:
-			problem.Code, problem.Message = NotFound, fmt.Sprintf("no account %s", v.ref)
-		case accounts[at].Status == AccountOpen:
+			p.problem(FieldAttribute, v.key, NotFound, "no account %s", v.ref)
 			continue
-		case accounts[at].Status == AccountClosed || accounts[at].Status == AccountArchived:
-			if inactiveAllowed == nil && !settingsForbidden {
-				s, err := c.settings(ctx)
-				switch {
-				case forbidden(err):
-					settingsForbidden = true
-				case err != nil:
-					return err
-				default:
-					inactiveAllowed = &s.InactiveAccountsAllowed
-				}
-			}
-			if settingsForbidden {
-				out[v.op].skip(CheckSettings)
-				continue
-			}
-			if *inactiveAllowed {
-				continue
-			}
-			problem.Message = fmt.Sprintf("account %s is %s", v.ref, inactiveName(accounts[at].Status))
-		default:
-			// A status the API reference does not list: Tempo judges it.
+		case accounts[at].Status != AccountClosed && accounts[at].Status != AccountArchived:
+			// Open, or a status the API reference does not list: Tempo
+			// judges it.
 			continue
 		}
-		out[v.op].problems = append(out[v.op].problems, problem)
+		if settings == nil && settingsErr == nil {
+			s, err := c.settings(ctx)
+			settings, settingsErr = &s, err
+		}
+		switch {
+		case forbidden(settingsErr):
+			p.skip(CheckSettings)
+		case settingsErr != nil:
+			p.fail(fmt.Errorf("read settings: %w", settingsErr))
+		case !settings.InactiveAccountsAllowed:
+			p.problem(FieldAttribute, v.key, NotAllowed, "account %s is %s", v.ref, inactiveName(accounts[at].Status))
+		}
 	}
-	return nil
 }
 
 func inactiveName(s AccountStatus) string {
@@ -96,64 +146,84 @@ func inactiveName(s AccountStatus) string {
 	return "closed"
 }
 
-// checkApprovals adds a problem to each create or update whose start date,
-// or for an update whose current start date, falls in a timesheet that
-// is approved or waiting for approval. It reads one approval per author
-// and period; an author whose approvals Tempo answers with 403 has the
-// check skipped.
-func (c *Client) checkApprovals(ctx context.Context, ops []Op, out []prepared) error {
+// authorDay is one author's timesheet on one day.
+type authorDay struct {
+	author string
+	day    Date
+}
+
+// checkedDay is a date an op is judged on; current marks an update's
+// current start date rather than the one it sets.
+type checkedDay struct {
+	day     Date
+	current bool
+}
+
+// approvalDays are the dates the approval check judges an op on: its
+// start date, and for an update a different current one.
+func approvalDays(op Op, d Draft) []checkedDay {
+	if d.Author == "" {
+		return nil
+	}
+	var out []checkedDay
+	if !d.Start.Date.IsZero() {
+		out = append(out, checkedDay{day: d.Start.Date})
+	}
+	if from := op.change.From.Start.Date; op.kind == opUpdate && !from.IsZero() && from != d.Start.Date {
+		out = append(out, checkedDay{day: from, current: true})
+	}
+	return out
+}
+
+// checkApprovals adds a problem to each write whose start date, or for an
+// update whose current start date, falls in a timesheet that is approved
+// or waiting for approval. It first reads one approval per author and
+// period, for each date no period read so far holds, then judges every
+// date against all the periods read. A date only fails when no period
+// read holds it and the read for that date itself failed: with 403 the
+// op lists the check as not run, otherwise the failure is the op's error.
+func (c *Client) checkApprovals(ctx context.Context, ops []Op, out []prepared, writes []int) {
 	known := map[string][]Approval{}
-	refused := map[string]bool{}
-	// lookup is the approval holding day, or ok false when the token may
-	// not read the author's approvals.
-	lookup := func(author string, day Date) (a Approval, ok bool, err error) {
-		if refused[author] {
-			return Approval{}, false, nil
-		}
+	failed := map[authorDay]error{}
+	period := func(author string, day Date) (Approval, bool) {
 		for _, a := range known[author] {
 			if !day.Before(a.From) && !day.After(a.To) {
-				return a, true, nil
+				return a, true
 			}
 		}
-		a, err = c.approval(ctx, author, day)
-		if forbidden(err) {
-			refused[author] = true
-			return Approval{}, false, nil
-		}
-		if err != nil {
-			return Approval{}, false, fmt.Errorf("read the timesheet approval of %s on %s: %w", author, day, err)
-		}
-		known[author] = append(known[author], a)
-		return a, true, nil
+		return Approval{}, false
 	}
-	for i, op := range ops {
-		if op.kind != opCreate && op.kind != opUpdate {
-			continue
-		}
-		d := out[i].draft
-		days := []Date{d.Start.Date}
-		if op.kind == opUpdate && op.change.From.Start.Date != d.Start.Date {
-			days = append(days, op.change.From.Start.Date)
-		}
-		for n, day := range days {
-			if d.Author == "" || day.IsZero() {
+	for _, i := range writes {
+		author := out[i].draft.Author
+		for _, d := range approvalDays(ops[i], out[i].draft) {
+			k := authorDay{author, d.day}
+			if _, ok := period(author, d.day); ok || failed[k] != nil {
 				continue
 			}
-			a, ok, err := lookup(d.Author, day)
+			a, err := c.approval(ctx, author, d.day)
 			if err != nil {
-				return err
-			}
-			if !ok {
-				out[i].skip(CheckApprovals)
+				failed[k] = err
 				continue
 			}
-			if !a.locked() {
-				continue
-			}
-			out[i].problems = append(out[i].problems, approvalProblem(a, day, n > 0))
+			known[author] = append(known[author], a)
 		}
 	}
-	return nil
+	for _, i := range writes {
+		p := &out[i]
+		for _, d := range approvalDays(ops[i], p.draft) {
+			a, ok := period(p.draft.Author, d.day)
+			err := failed[authorDay{p.draft.Author, d.day}]
+			switch {
+			case ok && a.locked():
+				p.problems = append(p.problems, approvalProblem(a, d.day, d.current))
+			case ok:
+			case forbidden(err):
+				p.skip(CheckApprovals)
+			default:
+				p.fail(fmt.Errorf("read the timesheet approval of %s on %s: %w", p.draft.Author, d.day, err))
+			}
+		}
+	}
 }
 
 // approvalProblem is a date in the locked timesheet a; current marks an

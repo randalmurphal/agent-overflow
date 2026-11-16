@@ -124,9 +124,13 @@ func newClient(topts trackerapi.Options, issues IssueIDs) (*Client, error) {
 
 // Close ends the calls in flight, including calls into IssueIDs, whose
 // context it cancels, and releases the connection and the credential.
-// Every later call fails with a *trackerapi.NotSentError. Close may be
-// called more than once.
+// Every later call fails at admission, before any work, with a
+// *trackerapi.NotSentError matching ErrClosed; Apply reports each op
+// NotAttempted with that error. Close may be called more than once.
 func (c *Client) Close() {
+	if c == nil || c.http == nil {
+		return
+	}
 	c.stop()
 	c.http.Close()
 	c.site.shut()
@@ -134,20 +138,45 @@ func (c *Client) Close() {
 
 // ForgetCredential drops the credential so the next call reads it again,
 // for a caller that knows the token changed.
-func (c *Client) ForgetCredential() { c.http.ForgetCredential() }
+func (c *Client) ForgetCredential() {
+	if c != nil && c.http != nil {
+		c.http.ForgetCredential()
+	}
+}
 
 // DropCache drops the cached work attributes and settings; the next call
 // that needs them reads them again. A write Tempo refuses drops them too.
-func (c *Client) DropCache() { c.site.drop() }
+func (c *Client) DropCache() {
+	if c != nil {
+		c.site.drop()
+	}
+}
 
-// errClosed is a call on a closed Client that the transport did not see.
-var errClosed = errors.New("tempo: client is closed")
+// ErrClosed matches, through errors.Is, the error of a call on a closed
+// Client.
+var ErrClosed = errors.New("tempo: client is closed")
+
+// errNotBuilt is a call on a Client that New did not build.
+var errNotBuilt = errors.New("tempo: the Client was not built by New")
+
+// admit is the guard every exported call that does work passes first: a
+// Client New did not build, or one Close ended, fails here before any
+// resolver call, cache read or request.
+func (c *Client) admit() error {
+	switch {
+	case c == nil || c.http == nil:
+		return &trackerapi.NotSentError{Err: errNotBuilt}
+	case c.life.Err() != nil:
+		return &trackerapi.NotSentError{Err: ErrClosed}
+	}
+	return nil
+}
 
 // bound is ctx, ended also by Close: the context of a call into the
 // caller's IssueIDs. done releases it.
 func (c *Client) bound(ctx context.Context) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(ctx)
-	stop := context.AfterFunc(c.life, func() { cancel(errClosed) })
+	stop := context.AfterFunc(c.life, func() { cancel(ErrClosed) })
 	return ctx, func() {
 		stop()
 		cancel(nil)

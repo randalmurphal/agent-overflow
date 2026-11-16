@@ -63,7 +63,8 @@ const (
 	// a 3xx, a 5xx, an answer cut short). It is not sent again; read the
 	// worklogs before offering it again.
 	Unknown
-	// NotAttempted: the context ended before the write was sent.
+	// NotAttempted: the context ended, or the Client was closed, before
+	// the write was sent.
 	NotAttempted
 	// NotMoved: Tempo applied an update that named another issue, but
 	// the stored worklog is still on its old issue. Stored is the record
@@ -143,32 +144,33 @@ func (c *Client) Delete(ctx context.Context, id int64) error {
 	return c.Apply(ctx, []Op{DeleteOp(id)})[0].Err
 }
 
-// Apply checks every create and update as Validate does (one
-// IssueIDs.IDs call, and the reads the checks need, for the whole batch),
-// then sends the ops one at a time in order and reports each one's
-// outcome, in order. An op the checks refuse, or that Tempo refuses, does
-// not stop the others. An op whose outcome is unknown is not sent again.
-// When ctx ends, the ops not yet sent are NotAttempted.
+// Apply checks every op as Validate does (one IssueIDs.IDs call, and the
+// reads the checks need, for the whole batch), then sends the ops one at
+// a time in order and reports each one's outcome, in order. An op the
+// checks refuse, or that Tempo refuses, does not stop the others. An op
+// whose checks could not all run (Report.Err) is Refused and not sent;
+// the others are sent. An op whose outcome is unknown is not sent again.
+// When ctx ends or Close is called, the ops not yet sent are NotAttempted.
 func (c *Client) Apply(ctx context.Context, ops []Op) []Outcome {
 	out := make([]Outcome, len(ops))
-	checked, checkErr := c.check(ctx, ops)
+	if err := c.admit(); err != nil {
+		for i := range out {
+			out[i] = Outcome{Status: NotAttempted, Err: err}
+		}
+		return out
+	}
+	checked := c.check(ctx, ops)
 	for i, op := range ops {
 		if err := ctx.Err(); err != nil {
 			out[i] = notAttempted(err)
 			continue
 		}
-		if op.kind != opDelete && checkErr != nil {
-			out[i] = Outcome{Status: Refused, Err: &trackerapi.NotSentError{Err: fmt.Errorf("tempo: %s: %w", op.kind, checkErr)}}
+		if err := c.admit(); err != nil {
+			out[i] = Outcome{Status: NotAttempted, Err: err}
 			continue
 		}
-		var p *prepared
-		if checked != nil {
-			p = &checked[i]
-		}
-		out[i] = c.send(ctx, op, p)
-		if p != nil {
-			out[i].Unchecked = p.unchecked
-		}
+		out[i] = c.send(ctx, op, &checked[i])
+		out[i].Unchecked = checked[i].unchecked
 	}
 	return out
 }
@@ -177,16 +179,14 @@ func notAttempted(err error) Outcome {
 	return Outcome{Status: NotAttempted, Err: &trackerapi.NotSentError{Err: fmt.Errorf("tempo: not attempted: %w", err)}}
 }
 
-// send makes one write; p is its checked form, nil for a delete when the
-// checks could not run.
+// send makes one write; p is its checked form.
 func (c *Client) send(ctx context.Context, op Op, p *prepared) Outcome {
 	what := op.kind.String()
-	problems := deleteProblems(op.id)
-	if p != nil {
-		problems = p.problems
-	}
-	if len(problems) > 0 {
-		return refusedBefore(what, problems)
+	switch {
+	case len(p.problems) > 0:
+		return refusedBefore(what, p.problems)
+	case p.err != nil:
+		return Outcome{Status: Refused, Err: &trackerapi.NotSentError{Err: fmt.Errorf("tempo: %s: check: %w", what, p.err)}}
 	}
 	var r trackerapi.Request
 	switch op.kind { // check refused any other kind
@@ -251,7 +251,7 @@ func (c *Client) failed(ctx context.Context, what string, err error) Outcome {
 	if !trackerapi.WriteNotApplied(err) {
 		return Outcome{Status: Unknown, Err: wrapped}
 	}
-	if _, notSent := errors.AsType[*trackerapi.NotSentError](err); notSent && ctx.Err() != nil {
+	if _, notSent := errors.AsType[*trackerapi.NotSentError](err); notSent && (ctx.Err() != nil || c.life.Err() != nil) {
 		return Outcome{Status: NotAttempted, Err: wrapped}
 	}
 	out := Outcome{Status: Refused, Err: wrapped}

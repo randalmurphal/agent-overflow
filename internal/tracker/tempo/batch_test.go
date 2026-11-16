@@ -124,14 +124,24 @@ func TestApplyCancelledBeforeChecks(t *testing.T) {
 	}
 }
 
+// TestApplyResolverFailure: a failed IssueIDs call refuses, unsent, only
+// the ops that name an issue by key; an op naming its issue by ID is
+// checked in full and sent.
 func TestApplyResolverFailure(t *testing.T) {
 	f := newFake(t)
 	issues := newIssues()
 	issues.err = errors.New("jira is down")
 	c := testClient(t, f, issues)
-	out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x"))})
+	openWeek(f)
+	f.on("POST", "/4/worklogs", nil, createBody(10002, "y"), 200, stored(81))
+	byID := weekDraft(t, "", "y")
+	byID.Issue = Issue{ID: 10002}
+	out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x")), CreateOp(byID)})
 	if out[0].Status != Refused || !errors.Is(out[0].Err, issues.err) || !trackerapi.WriteNotApplied(out[0].Err) {
-		t.Errorf("%+v", out[0])
+		t.Errorf("by key: %+v", out[0])
+	}
+	if out[1].Status != Applied {
+		t.Errorf("by ID: %+v", out[1])
 	}
 }
 
@@ -159,6 +169,44 @@ func TestApplyCancelledWhileWaitingToSend(t *testing.T) {
 	}
 	defer c.Close()
 	out := c.Apply(ctx, []Op{DeleteOp(9)})[0]
+	if out.Status != NotAttempted || !trackerapi.WriteNotApplied(out.Err) {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// closingSource closes the Client while the client reads the credential
+// for a write that passed admission, so the write is never sent.
+type closingSource struct {
+	c      **Client
+	closed chan struct{}
+}
+
+func (s closingSource) Credential(context.Context) (*trackerapi.Credential, error) {
+	c := *s.c
+	go func() {
+		c.Close()
+		close(s.closed)
+	}()
+	<-c.life.Done()
+	return nil, errors.New("no credential")
+}
+
+// TestApplyClosedWhileWaitingToSend: a write Close stops before it is
+// sent is NotAttempted, as the Close contract says, not Refused.
+func TestApplyClosedWhileWaitingToSend(t *testing.T) {
+	f := newFake(t)
+	var c *Client
+	src := closingSource{c: &c, closed: make(chan struct{})}
+	opts, err := transportOptions(Options{BaseURL: f.srv.URL, Version: "test", Credentials: src, Issues: newIssues()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.MaxPerSecond = 0
+	if c, err = newClient(opts, newIssues()); err != nil {
+		t.Fatal(err)
+	}
+	out := c.Apply(context.Background(), []Op{DeleteOp(9)})[0]
+	<-src.closed
 	if out.Status != NotAttempted || !trackerapi.WriteNotApplied(out.Err) {
 		t.Fatalf("%+v", out)
 	}

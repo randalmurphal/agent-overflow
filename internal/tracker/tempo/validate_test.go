@@ -90,6 +90,7 @@ func TestValidateRules(t *testing.T) {
 			SetAttributes: []AttributeValue{{"_Note_", "x"}}, ClearAttributes: []string{"_Note_"}}), []want{{FieldAttribute, "_Note_", Conflicting}}},
 		{"delete without an ID", DeleteOp(0), []want{{FieldWorklog, "", Missing}}},
 		{"delete", DeleteOp(5), nil},
+		{"no attribute key", base(with(AttributeValue{"", "x"})), []want{{FieldAttribute, "", Missing}}},
 	}
 	ops := make([]Op, len(cases))
 	for i, tc := range cases {
@@ -108,8 +109,8 @@ func TestValidateRules(t *testing.T) {
 				t.Errorf("%s: a problem without a message: %+v", tc.name, p)
 			}
 		}
-		if len(got[i].Unchecked) != 0 {
-			t.Errorf("%s: unchecked %v with every read allowed", tc.name, got[i].Unchecked)
+		if len(got[i].Unchecked) != 0 || got[i].Err != nil {
+			t.Errorf("%s: unchecked %v, error %v with every read allowed", tc.name, got[i].Unchecked, got[i].Err)
 		}
 	}
 	idCalls, _ := issues.calls()
@@ -161,11 +162,11 @@ func TestValidateReadFailure(t *testing.T) {
 	c := testClient(t, f, newIssues())
 	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
 	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-02", "2026-11-08", "OPEN"))
-	_, err := c.Validate(context.Background(), []Op{CreateOp(Draft{
+	reports, err := c.Validate(context.Background(), []Op{CreateOp(Draft{
 		Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")}, Spent: time.Hour,
 		Attributes: []AttributeValue{{"_Category_", "dev"}},
 	})})
-	if err == nil || !strings.Contains(err.Error(), "does not hold 2026-11-10") {
-		t.Fatalf("an approval for another period was accepted: %v", err)
+	if err != nil || reports[0].Err == nil || !strings.Contains(reports[0].Err.Error(), "does not hold 2026-11-10") {
+		t.Fatalf("an approval for another period was accepted: %+v %v", reports, err)
 	}
 }

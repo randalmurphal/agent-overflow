@@ -80,23 +80,23 @@ type attributeValueJSON struct {
 }
 
 // worklog reads w, refusing a record whose dates or times do not parse.
-// resp is the answer w came in, whose credential the error text is
-// scrubbed of.
+// resp is the answer w came in: every string the record keeps, and the
+// text of an error, is scrubbed of the credential the request carried.
 func (w worklogJSON) worklog(resp *trackerapi.Response) (Worklog, error) {
-	out, err := w.read()
+	out, err := w.read(resp.Scrub)
 	if err != nil {
 		return Worklog{}, unreadable(resp, err)
 	}
 	return out, nil
 }
 
-func (w worklogJSON) read() (Worklog, error) {
+func (w worklogJSON) read(scrub func(string) string) (Worklog, error) {
 	out := Worklog{
 		ID:          w.ID,
 		Issue:       Issue{ID: w.Issue.ID},
-		Author:      w.Author.AccountID,
+		Author:      scrub(w.Author.AccountID),
 		Spent:       duration(w.Spent),
-		Description: w.Description,
+		Description: scrub(w.Description),
 	}
 	if w.Billable != nil {
 		b := duration(*w.Billable)
@@ -126,7 +126,7 @@ func (w worklogJSON) read() (Worklog, error) {
 	if len(w.Attributes.Values) > 0 {
 		out.Attributes = make([]AttributeValue, len(w.Attributes.Values))
 		for i, v := range w.Attributes.Values {
-			out.Attributes[i] = AttributeValue(v)
+			out.Attributes[i] = AttributeValue{Key: scrub(v.Key), Value: scrub(v.Value)}
 		}
 	}
 	return out, nil
@@ -167,6 +167,9 @@ func (q WorklogQuery) request() (trackerapi.Request, error) {
 // is returned as is; a failure on a later page comes after fn has seen
 // the earlier ones.
 func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Worklog) error) error {
+	if err := c.admit(); err != nil {
+		return err
+	}
 	r, err := q.request()
 	if err != nil {
 		return &trackerapi.NotSentError{Err: fmt.Errorf("tempo: list worklogs: %w", err)}
@@ -195,7 +198,9 @@ func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Wor
 }
 
 // Worklogs reads all of q's worklogs. It holds the whole range in memory;
-// WorklogPages bounds memory to a page.
+// WorklogPages bounds memory to a page. A failure returns no worklogs,
+// since a part of the range would read as all of it; WorklogPages hands
+// over each page as it is read.
 func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error) {
 	var out []Worklog
 	err := c.WorklogPages(ctx, q, func(page []Worklog) error {
@@ -211,6 +216,9 @@ func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error
 // Worklog reads one worklog by its Tempo ID. A worklog that does not
 // exist fails with an error matching trackerapi.ErrNotFound.
 func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {
+	if err := c.admit(); err != nil {
+		return Worklog{}, err
+	}
 	if id <= 0 {
 		return Worklog{}, &trackerapi.NotSentError{Err: fmt.Errorf("tempo: read worklog: %d is not a worklog ID", id)}
 	}

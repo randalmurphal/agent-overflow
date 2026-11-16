@@ -3,6 +3,7 @@ package tempo
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -163,6 +164,29 @@ func TestDateRange(t *testing.T) {
 	}
 	if d, err := ParseDate("9999-12-31"); err != nil || d.String() != "9999-12-31" {
 		t.Errorf("last day: %v %v", d, err)
+	}
+	// AddDays past either end is the zero Date, never a day outside the
+	// range nor one wrapped back into it.
+	first, last := mustDate(t, "0001-01-01"), mustDate(t, "9999-12-31")
+	for _, tc := range []struct {
+		d Date
+		n int
+	}{
+		{last, 1}, {first, -1}, {first, lastDay}, {last, -lastDay},
+		{first, math.MaxInt}, {last, math.MinInt}, {Date{}, 1},
+	} {
+		if got := tc.d.AddDays(tc.n); !got.IsZero() {
+			t.Errorf("%v.AddDays(%d) = %v, want the zero Date", tc.d, tc.n, got)
+		}
+	}
+	if got := first.AddDays(lastDay - 1); got != last {
+		t.Errorf("the whole range: %v", got)
+	}
+	if got := last.AddDays(-(lastDay - 1)); got != first {
+		t.Errorf("the whole range back: %v", got)
+	}
+	if got := (Date{}).In(time.UTC); !got.IsZero() {
+		t.Errorf("the zero Date in UTC is %v", got)
 	}
 }
 

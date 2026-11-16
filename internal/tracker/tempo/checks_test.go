@@ -90,6 +90,7 @@ func TestCheckReadFailureRefuses(t *testing.T) {
 	f := newFake(t)
 	c := testClient(t, f, newIssues())
 	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 500, `{"errors":[{"message":"internal"}]}`)
+	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
 	f.on("DELETE", "/4/worklogs/3", nil, "", 204, "")
 	out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x")), DeleteOp(3)})
 	if se, ok := errors.AsType[*trackerapi.StatusError](out[0].Err); out[0].Status != Refused || !ok || se.Status != 500 || !trackerapi.WriteNotApplied(out[0].Err) {
@@ -133,7 +134,11 @@ func TestCloseEndsIssueIDs(t *testing.T) {
 				}()
 			} else {
 				go func() {
-					done <- c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x"))})[0].Err
+					out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x"))})[0]
+					if out.Status != NotAttempted {
+						t.Errorf("status %v", out.Status)
+					}
+					done <- out.Err
 				}()
 			}
 			if got := <-issues.started; got != method {
@@ -142,7 +147,13 @@ func TestCloseEndsIssueIDs(t *testing.T) {
 			c.Close()
 			select {
 			case err := <-done:
-				if !errors.Is(err, context.Canceled) {
+				// Apply stops at admission once Close ended its checks;
+				// Worklog returns the cancelled IssueIDs call's error.
+				want := context.Canceled
+				if method == "IDs" {
+					want = ErrClosed
+				}
+				if !errors.Is(err, want) {
 					t.Fatalf("err %v", err)
 				}
 			case <-time.After(10 * time.Second):

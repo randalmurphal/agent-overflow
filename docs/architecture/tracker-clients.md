@@ -18,7 +18,7 @@ sit on top of these packages and are not built yet.
 | `internal/tracker/trackerapi` | One HTTP client per tracker endpoint: credentials, retries, the rate gate, typed errors, uploads and downloads. |
 | `internal/tracker/adf` | Atlassian Document Format to Markdown and back, edits that keep what Markdown cannot show, and the check for an edit that would lose content. |
 | `internal/tracker/jira` | Jira Cloud: issues, search, fields and their metadata, values built from field names, create, edit, transition, comments, links, attachments, users, boards, sprints, ranking, changelog and native worklogs. |
-| `internal/tracker/tempo` | Tempo: worklogs, schedules, approvals, work attributes and worklog validation. |
+| `internal/tracker/tempo` | Tempo: worklogs and batches of worklog writes, the checks before a write, work attributes, accounts, settings, schedules and approvals. |
 | `internal/tracker/linear` | Linear: the GraphQL documents and typed calls for teams, workflow states, cycles, issues, comments and ordering. |
 
 Imports point one way: a tracker package imports `trackerapi`, and `jira`
@@ -245,15 +245,25 @@ to read and write each one.
 
 One `tempo.Client` per site and region. Worklogs are read by author and
 date range and written with the numeric issue ID, which the client gets
-from an `IssueIDs` its caller supplies. A change replaces the whole record,
-so it starts from the record as read. Checks run before a write: the work
-attributes the site requires are present, each value is one the attribute
-allows, and the start date is not in an approved or submitted timesheet. A
-check whose read the token may not make (Tempo answers 403) is skipped,
-the outcome lists it, and the write is sent for Tempo to judge. A batch
-reports each item as applied, refused, unknown, not attempted, or updated
-but not moved to the issue asked for. The user's required hours per day
-and the approval state of a period are reads.
+from an `IssueIDs` its caller supplies. Tempo replaces the whole record on
+an update, so a change starts from the record as read: fields it does not
+set are sent as read, except that a fully billable record's billable time
+follows a new time spent.
+
+Checks run before a write. Those decidable from the op alone (issue,
+author, start date, durations, each attribute given once with a key and a
+value) always run. The site checks need reads: issue keys `IssueIDs`
+knows, known attributes with allowed values and required ones present,
+account values that name usable accounts, and a start date not in an
+approved or submitted timesheet. A check whose read the token may not make
+(Tempo answers 403) is skipped, the outcome lists it, and the write is
+sent for Tempo to judge. A read that fails otherwise refuses, unsent, only
+the ops it would judge; the others are checked in full and sent.
+
+A batch reports each item as applied, refused, unknown, not attempted, or
+updated but not moved to the issue asked for. The user's required hours
+per day, the approval state of a period, accounts and the site's
+timesheet settings are reads.
 
 ## Linear
 

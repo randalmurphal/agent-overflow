@@ -30,7 +30,9 @@ type Draft struct {
 
 // Change is an update of one worklog. Tempo replaces the whole record on
 // an update, so a change starts from the record as read: every field
-// the change leaves nil is sent as From has it.
+// the change does not set is sent as From has it, with one exception: when
+// From is fully billable (Billable equal to Spent) and the change sets
+// Spent but not Billable, the billable time sent is the new Spent.
 type Change struct {
 	// From is the worklog as read; its ID names the worklog to change.
 	From Worklog
@@ -41,11 +43,9 @@ type Change struct {
 	Issue *Issue
 	Start *Start
 	Spent *time.Duration
-	// Billable sets the billable time. Left nil, the billable time is
-	// sent exactly as From has it, with one exception: when From is fully
-	// billable (Billable equal to Spent) and the change sets Spent, the
-	// billable time follows the new Spent. A From whose Billable is nil
-	// sends none, which leaves it to Tempo.
+	// Billable sets the billable time. Left nil, it follows the rule
+	// above; a From whose Billable is nil sends none, which leaves it to
+	// Tempo.
 	Billable          *time.Duration
 	RemainingEstimate *time.Duration
 	Description       *string

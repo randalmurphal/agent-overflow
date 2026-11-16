@@ -12,14 +12,22 @@ const dateLayout = "2006-01-02"
 
 // Date is a calendar day with no time zone, as Tempo stores a worklog's
 // start date, a schedule day and an approval period's ends. The zero Date
-// is no date.
+// is no date. Every other Date is in years 1 to 9999: NewDate, ParseDate
+// and UnmarshalText refuse a day outside them, and DateOf and AddDays
+// return the zero Date for one, so a result outside the range reads as no
+// date, never as a real one.
 type Date struct {
-	// days counts days from 0001-01-01, plus one, so zero is no date.
+	// days counts days from 0001-01-01, plus one, so zero is no date; it
+	// is 0 or in 1..lastDay.
 	days int64
 }
 
-// epochDays is the day count of 1970-01-01 from 0001-01-01.
-const epochDays = 719162
+const (
+	// epochDays is the day count of 1970-01-01 from 0001-01-01.
+	epochDays = 719162
+	// lastDay is the days value of 9999-12-31.
+	lastDay = 3652059
+)
 
 // NewDate is the day year-month-day, in years 1 to 9999. It refuses a
 // day the calendar does not have, such as February 30. Every Date other
@@ -83,16 +91,20 @@ func (d Date) Day() int {
 	return d.utc().Day()
 }
 
-// Weekday is d's day of the week.
+// Weekday is d's day of the week; meaningless for the zero Date.
 func (d Date) Weekday() time.Weekday { return d.utc().Weekday() }
 
-// AddDays is the day n days after d, or before it for a negative n.
-// The zero Date stays zero.
+// AddDays is the day n days after d, or before it for a negative n. The
+// zero Date stays zero, and a day outside years 1 to 9999 is the zero
+// Date.
 func (d Date) AddDays(n int) Date {
-	if d.IsZero() {
-		return d
+	// d.days is in 1..lastDay, so the sum can only wrap past the top,
+	// to a negative value, which the range check refuses.
+	days := d.days + int64(n)
+	if d.IsZero() || days < 1 || days > lastDay {
+		return Date{}
 	}
-	return Date{days: d.days + int64(n)}
+	return Date{days: days}
 }
 
 // Compare is -1 when d is before e, 0 when they are the same day and +1
@@ -111,8 +123,11 @@ func (d Date) Compare(e Date) int {
 func (d Date) Before(e Date) bool { return d.days < e.days }
 func (d Date) After(e Date) bool  { return d.days > e.days }
 
-// In is midnight of d in loc.
+// In is midnight of d in loc; the zero time.Time for the zero Date.
 func (d Date) In(loc *time.Location) time.Time {
+	if d.IsZero() {
+		return time.Time{}
+	}
 	return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
 }
 
