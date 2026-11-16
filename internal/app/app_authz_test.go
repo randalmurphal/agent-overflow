@@ -400,6 +400,7 @@ var threadDriveBoundaries = map[string]string{
 	appMethodKey + "recoverAssistantSessionLoss":                           "moves an assistant whose provider session is gone to a next thread in the old thread's mode and opens it with the handoff block; the start that found the loss may be a person's, whose autonomy nothing checks",
 	appMethodKey + "recoverAgentWakesAtBoot":                               "replays at boot the fires of watches and loops the thread's own agent set",
 	appMethodKey + "runThreadRequestSweeps":                                "the request sweep, started once at boot: fires the watches, loops and reminders the threads' own agents set",
+	appMethodKey + "convergeAssistants":                                    "applies the Assistants setting: stops the assistants, giving back what they owe, or resumes the watches and loops their own agents set and starts the session for messages already accepted",
 }
 
 // TestEveryThreadDrivingMethodIsListed derives the bound methods that drive a
