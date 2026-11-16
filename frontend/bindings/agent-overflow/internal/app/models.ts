@@ -8141,6 +8141,14 @@ export class ThreadAgentRows {
      */
     "worker"?: string;
 
+    /**
+     * Open is whether the listed thread is not at rest or has open work at
+     * any depth below it, answered by agent_rows whatever rows it has room
+     * for (answerThreadAgentRows). Nil from a computer that predates it,
+     * whose rows say what they can (peerListingOpen).
+     */
+    "open"?: boolean | null;
+
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
         if (!("rows" in $$source)) {
