@@ -134,18 +134,26 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
 /**
  * The request tokens a user row answers: every joined member's (whatever
  * the row's attribution, since a wake may have joined first), read from its
- * parts; else an
- * `agent-thread` row's own.
+ * parts; else an `agent-thread` row's own. A member's are every request its
+ * facts say it answers, a digest's included, and its token when it records
+ * none.
  */
 export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
-  const listed: unknown[] = Array.isArray(meta.joinedParts)
-    ? (meta.joinedParts as unknown[]).map((part) => (objectRecord(part) ? userMessageOriginThread(part as UserMessageMeta)?.token : ''))
-    : [];
-  const joined = [...new Set(listed.filter((token): token is string => typeof token === 'string' && token !== ''))];
-  if (joined.length > 0) return joined;
-  if (userMessageOrigin(meta) !== 'agent-thread') return [];
-  const token = userMessageOriginThread(meta)?.token;
-  return token ? [token] : [];
+  const own = (member: UserMessageMeta): string[] => {
+    const facts = userMessageFacts(member);
+    if (facts && facts.tokens.length > 0) return facts.tokens;
+    const token = userMessageOriginThread(member)?.token;
+    return token ? [token] : [];
+  };
+  if (Array.isArray(meta.joinedParts)) {
+    const joined = new Set<string>();
+    for (const part of meta.joinedParts as unknown[]) {
+      const record = objectRecord(part);
+      if (record && stringField(record.origin) === 'agent-thread') for (const token of own(record)) joined.add(token);
+    }
+    if (joined.size > 0) return [...joined];
+  }
+  return userMessageOrigin(meta) === 'agent-thread' ? own(meta) : [];
 }
 
 /** A range of a message's text in UTF-8 bytes, end exclusive. */

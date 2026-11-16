@@ -1,8 +1,7 @@
 // The request tokens whose answer has landed among a timeline's loaded rows:
 // the thread tools deliver an answer the call did not carry as a user row
-// attributed to the thread that answered, stamped with the request's token
-// (`meta.originThread.token`, `internal/app/app_thread_tools_wake.go`
-// threadWakeOrigin). The fallback of `requestAnswered`
+// attributed to the thread that answered, with every request it answers in
+// its facts (`meta.originThread.facts.tokens`, userMessageOriginTokens). The fallback of `requestAnswered`
 // (stores/agentRequestAnswers.svelte.ts) for a request the ledger does not
 // know, such as one from before it.
 //

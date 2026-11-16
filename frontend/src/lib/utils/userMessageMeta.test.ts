@@ -12,6 +12,7 @@ import {
   agentWakeOriginLabel,
   spanText,
   userMessageFacts,
+  userMessageOriginTokens,
 } from './userMessageMeta';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
@@ -310,5 +311,21 @@ describe('userMessageFacts and spanText', () => {
     expect(spanText('ascii only', [{ start: 6, end: 10 }])).toBe('only');
     expect(spanText('short', [{ start: 10, end: 20 }, { start: -3, end: 2 }])).toBe('sh');
     expect(spanText('anything', [])).toBe('');
+  });
+
+  it('counts every request a joined or digest answer says it answers', () => {
+    const digest = { origin: 'agent-thread', originThread: { threadId: 't-a', token: 'tok-1', kind: 'wake', facts: { outcome: 'reply', tokens: ['tok-1', 'tok-2', 'tok-3'] } } };
+    expect(userMessageOriginTokens(digest)).toEqual(['tok-1', 'tok-2', 'tok-3']);
+    // main's rows carry their token alone.
+    expect(userMessageOriginTokens({ origin: 'agent-thread', originThread: { threadId: 't-a', token: 'tok-1' } })).toEqual(['tok-1']);
+    expect(userMessageOriginTokens({
+      origin: 'agent-wake', originWake: { kind: 'loop' },
+      joinedParts: [
+        { origin: 'agent-wake', originWake: { kind: 'loop' } },
+        digest,
+        { origin: 'agent-thread', originThread: { threadId: 't-b', token: 'tok-4' } },
+      ],
+    })).toEqual(['tok-1', 'tok-2', 'tok-3', 'tok-4']);
+    expect(userMessageOriginTokens({ origin: 'agent-wake', originWake: { kind: 'loop', facts: { tokens: ['x'] } } })).toEqual([]);
   });
 });
