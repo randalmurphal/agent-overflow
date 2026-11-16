@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -325,23 +326,31 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 	if !usermessage.IsAgentMessage(meta) {
 		return "", false
 	}
-	if origin := meta.OriginThread; origin != nil {
-		facts := origin.Facts
+	// The row's first agent message, as every reader takes it
+	// (usermessage.Describe): what it says it is, not what its text reads as.
+	described := usermessage.Describe(row.Summary, meta)
+	first := slices.IndexFunc(described, usermessage.Described.IsAgent)
+	if first < 0 {
+		return "another agent", true
+	}
+	message := described[first]
+	if origin := message.Thread; message.Origin == usermessage.OriginAgentThread {
+		facts := message.Facts
 		switch {
-		case facts != nil && facts.Outcome == threadtools.WakeReminder,
-			facts == nil && origin.ThreadID == "" && strings.HasPrefix(meta.SendID, "thread-wake"):
-			// main wrote a reminder's wake with no thread and no facts.
+		case facts.Outcome == threadtools.WakeReminder:
 			return "a reminder this thread set", true
-		case facts != nil && len(facts.Threads) > 1:
+		case len(facts.Threads) > 1:
 			names := make([]string, 0, len(facts.Threads))
 			for _, thread := range facts.Threads {
 				names = append(names, threadNaming(thread.Title, thread.ThreadID, thread.ComputerName))
 			}
 			return fmt.Sprintf("%d threads: %s", len(names), strings.Join(names, ", ")), true
+		case origin == nil:
+			return "another agent", true
 		}
 		return threadNaming(origin.Title, origin.ThreadID, origin.ComputerName), true
 	}
-	if wake := meta.OriginWake; wake != nil {
+	if wake := message.Wake; wake != nil {
 		switch wake.Kind {
 		case usermessage.OriginWakeKindSend:
 			return "a script (agent-overflow thread send)", true

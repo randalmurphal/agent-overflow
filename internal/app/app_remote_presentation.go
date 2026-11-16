@@ -78,7 +78,7 @@ const remoteJobWakeHeader = "Remote job finished on "
 //
 // The message names the job and its computer on its first line, and its
 // row leads with the result; both are the report's own attribution
-// (usermessage.WakeMessage).
+// (usermessage.Report).
 func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) usermessage.AgentMessage {
 	if computerName == "" {
 		computerName = w.ComputerID
@@ -112,7 +112,7 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, output re
 	} else if output.Omitted || output.Truncated || len(head) < len(output.Head) || len(tail) < len(output.Tail) {
 		message += "\nOutput omitted. Use remote_read_log or remote_search_log with the IDs above, or remote_fetch_log for the whole log."
 	}
-	return usermessage.WakeMessage(
-		usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: computerName},
+	return usermessage.Report(
+		usermessage.ReportCompletion, usermessage.Reporter{Label: w.Label, Computer: computerName},
 		fmt.Sprintf("%s%s: %s", remoteJobWakeHeader, computerName, w.Label), message, result)
 }

@@ -1308,14 +1308,20 @@ is read by its send id (`thread-request:`, `thread-wake`).
 
 Every message the app writes for an agent also stores what it says, as
 `facts` on its `originThread` or `originWake` (`threadtools.MessageFacts`):
-where its own words are in its text, as UTF-8 byte spans; on a request,
-its footer's routing; on an answer, its outcome, every token it answers,
-its age, what stopped it, whether it was clipped, the assistant's past
-thread it was made in, and for a wake that speaks for several threads
-each thread with its computer's id; on a report, the line its row is
-headed by. One function renders the text and the facts from one value:
-`Footer.Message` and `Wake.Message` in `internal/threadtools`, and
-`usermessage.WakeMessage` for every other message, a new kind included.
+its form (a request, an answer, a plain message from a thread, or a
+report), the length of its text in UTF-8 bytes, and where its own words
+are in that text, as byte spans; on a request, its footer's routing; on
+an answer, its outcome, every token it answers, its age, what stopped
+it, whether it was clipped, the assistant's past thread it was made in,
+and for a wake that speaks for several threads each thread with its
+computer's id; on a report, the line its row is headed by. One
+constructor in `internal/usermessage` renders the text and the facts
+from one value and takes the attribution from the same source:
+`Request` (from the footer), `Answer` (from the wake), `Message` (a
+thread's plain words, such as a spawner's answer to its worker's
+questions), `StoppedWorker` and `Report` (a closed set of report
+kinds); a message read back from storage goes through `DecodeStored`,
+which refuses attribution no constructor writes.
 The facts travel wherever the attribution does: the queue payload, a
 joined row's parts, a message given back or requeued, a fork or handoff
 copy. A row rebuilt from a provider's session file has no attribution
@@ -1348,7 +1354,14 @@ The timeline renders such a row folded, in the register of a tool row
 then one header line naming the sender (with `on <computer>` when
 remote, a button opening its thread in a pane when this client reaches
 it), a standing agent's role line, and the message's first line. It
-renders from the row's facts, never from its text. Opened,
+renders from the row's facts, never from its text. Every read and push
+of the row (`itemwire.Project`, a meta patch) serves its meta as
+`usermessage.Describe` reads it, the one reading the Edits selector and
+`thread_show` also take: each message's facts checked against its text
+(`MessageFacts.Check`) and its header line set. Facts whose length or
+spans do not describe the text, as after an edit behind their back, are
+not guessed around: that message is shown whole, attributed to its
+sender. Opened,
 it shows the message and its routing as facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;
@@ -1365,8 +1378,8 @@ row from the worker. A joined row shows each member its
 attribution, never by finding separators in its text; the header names
 the first member's sender, and opened, each member is headed by its own
 kind and sender, which opens its thread when the header's would. A row
-whose parts are missing or do not describe its text is read as one
-message. The
+whose parts are missing or do not describe its text is shown whole, every
+member's words in it. The
 footer and a wake's status line never render raw; a loop, watch, outside send or worker wake shows its data
 decoded without the line written for the agent. A remote job's
 completion names the job and its computer and leads with its result; a
@@ -1377,12 +1390,15 @@ review comments they send, the workflow messages they start from a
 button and a workflow phase prompt stay theirs. The Go templates and
 the facts they return are pinned by
 `internal/threadtools/testdata/agent_messages.json`, which the
-frontend renders. A row released builds wrote before the facts is read
-from its text, for the shapes they wrote and no others: a request footer
-with no standing-agent or routing line, and an answer for one thread
+frontend renders through `internal/usermessage/testdata/served_rows.json`.
+A row released builds wrote before the facts is read from its text, in
+Go (`usermessage` legacy reader), for the shapes they wrote and no
+others: a request footer with no standing-agent or routing line, several
+of which a provider may have joined, and an answer for one thread
 (`reply`, a final message, an error, `was cancelled.`, `was
 interrupted` with or without its cause, an expiry, a settlement or a
-reminder); the fixture's `legacy` cases pin them. Those builds
+reminder); the fixture's `legacy` cases pin them, and a request keeps
+the kind its attribution records. Those builds
 attributed a wake for several threads to the app and wrote no
 `agent-wake` row; a remote job's completion or a workflow wake they
 wrote carries no origin and renders as the person's.

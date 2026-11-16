@@ -12,13 +12,15 @@ import (
 
 // The frontend renders an agent's message from the facts its writer stored
 // with it (MessageFacts): each case is a message's text, the attribution
-// and facts Footer.Message or Wake.Message wrote with it, and what the row
-// shows, which this test derives from the template's inputs on its own and
-// holds the facts to. frontend/src/lib/utils/agentMessage.test.ts renders
-// every case from its facts, and the cases marked legacy, whose text main's
-// templates also wrote, from their text alone, as a row written before the
-// facts is read. Regenerate with UPDATE_AGENT_MESSAGES=1 make go-test
-// GO_TEST_PKGS=./internal/threadtools GO_TEST_FLAGS='-run
+// and facts Footer.Message, Wake.Message or PlainMessage wrote with it, and
+// what the row shows, which this test derives from the template's inputs on
+// its own and holds the facts to. frontend/src/lib/utils/agentMessage.test.ts
+// renders every case as a client receives it (internal/usermessage's
+// TestServedRowsFixture), and internal/usermessage's
+// TestDescribeReadsMainsTextAsItsFactsSay reads the cases marked legacy,
+// whose text main's templates also wrote, from their text alone, as a row
+// written before the facts. Regenerate with UPDATE_AGENT_MESSAGES=1 make
+// go-test GO_TEST_PKGS=./internal/threadtools GO_TEST_FLAGS='-run
 // TestAgentMessageFixture'.
 
 const agentMessagesFixture = "testdata/agent_messages.json"
@@ -133,7 +135,10 @@ func requestPart(body string, footer Footer) fixtureMessage {
 			ComputerID: computerID(footer.Computer), ComputerName: footer.Computer, ThreadID: footer.ThreadID,
 			Title: footer.Title, Token: footer.Token, Kind: "send", Facts: facts,
 		},
-		// main's footer had no standing-agent or routing line.
+		// main's footer had no standing-agent or routing line: its
+		// Footer.String wrote the marker line, the answer line and the
+		// quoted user message, nothing else (git show
+		// origin/main:internal/threadtools/footer.go, Footer.String).
 		legacy: footer.Agent == nil && !footer.RoutesPrompts,
 		part: fixturePart{
 			Body: QuoteFooterMimics(body),
@@ -161,7 +166,10 @@ func fixtureAge(age time.Duration) string {
 
 // mainWakeKinds are the wakes whose text main's templates wrote as these
 // do, for a thread that is no standing agent and a request made where it
-// is answered.
+// is answered. main had no WakeStopped, and its interrupted and cancelled
+// status lines differ from these ("was interrupted: ", "was cancelled."
+// with no text): usermessage's legacy reader test reads those in main's
+// words.
 var mainWakeKinds = []string{WakeReply, WakeFinished, WakeErrored, WakeExpired, WakeReminder}
 
 func wakePart(wake Wake) fixtureMessage {
@@ -176,8 +184,11 @@ func wakePart(wake Wake) fixtureMessage {
 			ComputerID: first.ComputerID, ComputerName: first.Computer, ThreadID: first.ThreadID,
 			Title: first.Title, Token: wake.firstToken(), Kind: "wake", Facts: facts,
 		},
-		// main attributed a wake for several threads to the app, so no agent
-		// row holds main's digest.
+		// main attributed a wake for several threads to the app
+		// (threadWakeAttribution in git show
+		// origin/main:internal/app/app_thread_tools_wake_message.go), so no
+		// agent row holds main's digest; its Wake had no MadeIn and its
+		// WakeSource no Agent (origin/main:internal/threadtools/footer.go).
 		legacy: len(wake.Sources) <= 1 && wake.MadeIn == "" && !slices.ContainsFunc(wake.Sources, func(source WakeSource) bool { return source.Agent != nil }) &&
 			(slices.Contains(mainWakeKinds, wake.Kind) || wake.Kind == WakeCancelled && wake.Text == ""),
 	}
@@ -273,6 +284,15 @@ func join(name string, messages ...fixtureMessage) fixtureCase {
 	}
 	joined.Text = strings.Join(texts, "\n\n---\n\n")
 	return joined
+}
+
+// plainPart is a thread's message with no footer (PlainMessage): a
+// spawner's answer to its worker's async questions, which answers none of
+// the receiver's requests. main wrote none.
+func plainPart(body string, from fixtureOrigin) fixtureMessage {
+	text, facts := PlainMessage(body)
+	from.Facts = facts
+	return fixtureMessage{text: text, origin: from, part: fixturePart{Body: strings.TrimSpace(body)}}
 }
 
 func agentMessageFixtureCases() []fixtureCase {
@@ -377,6 +397,10 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: the same reply, made in a past thread", wake(Wake{Kind: WakeReply, Text: "Done.", Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		one("digest: interrupted by their sessions ending, made in a past thread", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedUnread, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		one("digest: stopped by the person, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
+		// The spawner's answer to a worker's async questions, in the words
+		// store.AsyncAnswerMessage writes it.
+		one("a spawner's answer to its worker's questions", plainPart("Question: Which parser?\nAnswer: The new one, naïve or not\n\nQuestion: Ship it?\nAnswer: Yes",
+			fixtureOrigin{ThreadID: "t-lead", Title: "Lead"})),
 	}
 	return append(cases,
 		join("two requests joined",
@@ -407,11 +431,15 @@ func TestMessageFactsSayWhatTheTextSays(t *testing.T) {
 			text := fixtureCase.Text[at : at+fixtureCase.Members[i]]
 			at += fixtureCase.Members[i] + len("\n\n---\n\n")
 			facts := fixtureCase.Origins[i].Facts
-			if got := SpanText(text, facts.Body); got != part.Body {
+			if err := facts.Check(text); err != nil {
+				t.Errorf("%s: %v", fixtureCase.Name, err)
+				continue
+			}
+			if got := facts.BodyOf(text); got != part.Body {
 				t.Errorf("%s: body %q, want %q", fixtureCase.Name, got, part.Body)
 			}
 			if footer := part.Footer; footer != nil {
-				want := MessageFacts{Body: facts.Body, Waiting: footer.Waiting, Reachable: footer.Reachable,
+				want := MessageFacts{Form: FormRequest, Bytes: len(text), Body: facts.Body, Waiting: footer.Waiting, Reachable: footer.Reachable,
 					UserMessage: footer.UserMessage, RoutesPrompts: footer.RoutesPrompts, Role: footer.AgentRole}
 				if !reflect.DeepEqual(facts, want) {
 					t.Errorf("%s: request facts %+v, want %+v", fixtureCase.Name, facts, want)
@@ -419,8 +447,14 @@ func TestMessageFactsSayWhatTheTextSays(t *testing.T) {
 				continue
 			}
 			wake := part.Wake
+			if wake == nil {
+				if want := (MessageFacts{Form: FormMessage, Bytes: len(text), Body: facts.Body}); !reflect.DeepEqual(facts, want) {
+					t.Errorf("%s: message facts %+v, want %+v", fixtureCase.Name, facts, want)
+				}
+				continue
+			}
 			want := MessageFacts{
-				Outcome: wake.Kind, Body: facts.Body, Tokens: wake.Tokens, StoppedBy: wake.StoppedBy,
+				Form: FormAnswer, Bytes: len(text), Outcome: wake.Kind, Body: facts.Body, Tokens: wake.Tokens, StoppedBy: wake.StoppedBy,
 				Clipped: wake.Clipped, MadeIn: wake.MadeIn, Now: wake.Now, Age: wake.Age, Role: wake.AgentRole,
 			}
 			for _, thread := range wake.Threads {

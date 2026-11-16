@@ -7,7 +7,6 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
-	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/usermessage"
@@ -286,8 +285,8 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 		t.Fatalf("queued wake attribution = agent %v origin %q wake %+v, want the workflow's", wake.AgentMessage, wake.Origin, wake.OriginWake)
 	}
 	// Its row shows the run's data, not the notice written for the agent.
-	if facts := wake.OriginWake.Facts; facts == nil ||
-		threadtools.SpanText(queued[0], facts.Body) != strings.TrimLeft(strings.TrimPrefix(queued[0], notice+"\n"), "\n") ||
+	if facts := wake.OriginWake.Facts; facts == nil || facts.Check(queued[0]) != nil ||
+		facts.BodyOf(queued[0]) != strings.TrimLeft(strings.TrimPrefix(queued[0], notice+"\n"), "\n") ||
 		!strings.HasPrefix(queued[0], notice+"\n") {
 		t.Fatalf("queued wake facts = %+v over %q, want the data after the notice as the body", wake.OriginWake.Facts, queued[0])
 	}

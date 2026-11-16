@@ -247,7 +247,7 @@ func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
 		held:              true,
 		heldWhileArchived: true,
 		origin:            message.Origin(),
-		originWake:        message.OriginWake(),
+		originWake:        message.Attribution().Wake,
 	}); err != nil && !errors.Is(err, errThreadArchived) {
 		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
 	}
@@ -256,7 +256,11 @@ func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
 // assistantMessage is an assistant's opening or handoff block, the app's
 // prose throughout, labelled with the assistant's name.
 func assistantMessage(sendID, name, body string) usermessage.AgentMessage {
-	return usermessage.WakeMessage(usermessage.OriginWake{Kind: assistantSendIDKind(sendID), Label: name}, "", body, "")
+	kind := usermessage.ReportOpening
+	if assistantSendIDKind(sendID) == usermessage.OriginWakeKindHandOff {
+		kind = usermessage.ReportHandOff
+	}
+	return usermessage.Report(kind, usermessage.Reporter{Label: name}, "", body, "")
 }
 
 // GetStandingAgent returns the assistant whose current thread this is, or

@@ -124,14 +124,26 @@ func TestThreadShowLabelsAgentMessagesWithTheirSender(t *testing.T) {
 	flow.Meta = `{"origin":"agent-wake","originWake":{"kind":"workflow","label":"release"}}`
 	mixed := textItem("mixed", "user_text", "wake then mine")
 	mixed.Meta = `{"origin":"agent-wake","originWake":{"kind":"loop"},"expandComposerCommands":true}`
-	reminder := textItem("reminder", "user_text", "Reminder you set [token k]:\nCheck.")
-	reminder.Meta = `{"origin":"agent-thread","originThread":{"threadId":"","token":"k","kind":"wake","facts":{"outcome":"reminder","tokens":["k"]}},"sendId":"thread-wake:k"}`
+	// answer is the row the wake w delivers, as its writer stores it.
+	answer := func(id string, w threadtools.Wake) store.Item {
+		message := usermessage.Answer(w)
+		attribution := message.Attribution()
+		meta, err := usermessage.MarshalMeta(usermessage.Meta{Origin: attribution.Origin, OriginThread: attribution.Thread, SendID: "thread-wake:k"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := textItem(id, "user_text", message.Text())
+		item.Meta = meta
+		return item
+	}
+	reminder := answer("reminder", threadtools.Wake{Kind: threadtools.WakeReminder, Text: "Check.", Sources: []threadtools.WakeSource{{Tokens: []string{"k"}}}})
 	// main wrote a reminder with no facts.
 	oldReminder := textItem("old-reminder", "user_text", "Reminder you set [token k]:\nCheck.")
 	oldReminder.Meta = `{"origin":"agent-thread","originThread":{"threadId":"","token":"k"},"sendId":"thread-wake:k"}`
-	digest := textItem("digest", "user_text", "2 threads sent the same reply:")
-	digest.Meta = `{"origin":"agent-thread","originThread":{"threadId":"t-a","title":"A","token":"k","kind":"wake","facts":{"outcome":"reply","tokens":["k","l"],` +
-		`"threads":[{"threadId":"t-a","title":"A","tokens":["k"]},{"threadId":"t-b","title":"B","computerId":"c-desk","computerName":"desk","tokens":["l"]}]}}}`
+	digest := answer("digest", threadtools.Wake{Kind: threadtools.WakeReply, Text: "Same.", Sources: []threadtools.WakeSource{
+		{Title: "A", ThreadID: "t-a", Tokens: []string{"k"}},
+		{Title: "B", ThreadID: "t-b", ComputerID: "c-desk", Computer: "desk", Tokens: []string{"l"}},
+	}})
 	f.turn(t, thread.ID, 0, 1_000, person, request, loop, worker, script, peer, job, flow, mixed, reminder, oldReminder, digest)
 
 	bounds, err := f.adapter.ResolveWindow(t.Context(), threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowAll})

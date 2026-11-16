@@ -1,10 +1,9 @@
 package app
 
 import (
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
@@ -25,242 +24,76 @@ func promptLabel(text string, meta usermessage.Meta) string {
 }
 
 // agentMessageLabel names an agent's message as the timeline's agent row
-// heads it: the sender, then the first line of what it says. It reads the
-// facts the message was written with (threadtools.MessageFacts), and the
-// text only of a row main wrote before them. It is the Go twin of the
-// frontend's agentMessageFromItem sender and firstLine (agentMessage.ts),
-// held to it by testdata/agent_message_labels.json.
+// heads it: the sender of its first agent message, then that message's
+// header line, as usermessage.Describe reads them. The frontend heads the
+// row from the same reading (agentMessageFromItem, agentMessage.ts), held to
+// this by testdata/agent_message_labels.json.
 func agentMessageLabel(text string, meta usermessage.Meta) string {
-	sender, head := agentMessageHead(text, meta)
-	if head == "" {
+	described := usermessage.Describe(text, meta)
+	first := slices.IndexFunc(described, usermessage.Described.IsAgent)
+	if first < 0 {
+		return text
+	}
+	message := described[first]
+	sender := agentMessageSenderName(message)
+	if message.Facts.Headline == "" {
 		return sender
 	}
-	return sender + ": " + head
+	return sender + ": " + message.Facts.Headline
 }
 
-func agentMessageHead(text string, meta usermessage.Meta) (sender, head string) {
-	// A joined row is headed by its first member, read with that member's
-	// own attribution. Without recorded parts the row is read whole.
-	if members, ok := usermessage.SplitJoinedParts(text, meta.JoinedParts); ok && len(members) > 1 {
-		first := meta.JoinedParts[0]
-		text = members[0]
-		meta = usermessage.Meta{SendID: first.SendID, Origin: first.Origin, OriginThread: first.OriginThread, OriginWake: first.OriginWake}
+// agentMessageSenderName is who a message is from as its row's header names
+// it: the thread it is attributed to, the threads a digest speaks for, this
+// thread for its own reminder, or the loop, watch, worker, job, workflow or
+// script that reported.
+func agentMessageSenderName(message usermessage.Described) string {
+	if message.Origin == usermessage.OriginAgentWake {
+		return agentReporterName(message.Wake)
 	}
-	if meta.Origin == usermessage.OriginAgentWake {
-		return agentWakeHead(text, meta.OriginWake)
-	}
-	var origin usermessage.OriginThread
-	if meta.OriginThread != nil {
-		origin = *meta.OriginThread
-	}
-	if facts := origin.Facts; facts != nil {
-		body := threadtools.SpanText(text, facts.Body)
-		switch {
-		case len(facts.Threads) > 1:
-			// A digest speaks for several threads; no one of them sends it.
-			if head = firstLineOf(body); head == "" {
-				names := make([]string, 0, len(facts.Threads))
-				for _, thread := range facts.Threads {
-					names = append(names, firstNonEmpty(thread.Title, thread.ThreadID))
-				}
-				head = strings.Join(names, ", ")
-			}
-			return strconv.Itoa(len(facts.Threads)) + " threads", head
-		case facts.Outcome == threadtools.WakeReminder:
-			return "This thread", firstLineOf(body)
-		}
-		return firstNonEmpty(origin.Title, "another thread"), firstLineOf(body)
-	}
-	return legacyThreadHead(text, origin, meta.SendID)
-}
-
-// legacyThreadHead reads a row main wrote, which carries no facts: a request
-// whose footer main's Footer wrote, or an answer one of main's Wake
-// templates wrote for one thread. main attributed a wake that listed
-// several threads to the app, so no agent row holds one.
-func legacyThreadHead(text string, origin usermessage.OriginThread, sendID string) (sender, head string) {
-	if strings.HasPrefix(sendID, "thread-wake") {
-		if title, body, reminder, ok := readLegacyWake(text); ok {
-			if reminder {
-				return "This thread", firstLineOf(body)
-			}
-			return firstNonEmpty(origin.Title, title, "another thread"), firstLineOf(body)
-		}
-	}
-	body, title := firstRequestBody(text)
-	return firstNonEmpty(origin.Title, title, "another thread"), firstLineOf(body)
-}
-
-// firstRequestBody is the body of a request row's first message and the
-// sender title its footer names: the text before the first footer, whose
-// body lines QuoteFooterMimics keeps from opening like one.
-func firstRequestBody(text string) (body, title string) {
-	const footer = "---\n" + threadtools.FooterMarker
-	at := strings.Index("\n"+text, "\n"+footer)
-	if at < 0 {
-		return text, ""
-	}
-	line, _, _ := strings.Cut(text[at+len(footer):], "\n")
-	if quoted, err := strconv.QuotedPrefix(line); err == nil {
-		title, _ = strconv.Unquote(quoted)
-	}
-	return text[:at], title
-}
-
-// readLegacyWake reads a wake main's Wake template wrote for one thread:
-// the answering thread's title and the body after the status line. ok is
-// false when text is not one.
-func readLegacyWake(text string) (title, body string, reminder, ok bool) {
-	head, after, _ := strings.Cut(text, "\n")
-	if rest, found := strings.CutPrefix(head, "Reminder you set"); found {
-		if _, rest = cutWakeToken(rest); rest != ":" {
-			return "", "", false, false
-		}
-		return "", after, true, true
-	}
-	reply := strings.HasPrefix(head, "Reply from ")
-	naming := strings.TrimPrefix(head, "Reply from ")
-	quoted, err := strconv.QuotedPrefix(naming)
-	if err != nil || !strings.HasPrefix(naming[len(quoted):], " (") {
-		return "", "", false, false
-	}
-	title, _ = strconv.Unquote(quoted)
-	close := strings.Index(naming[len(quoted):], ")")
-	if close < 0 {
-		return "", "", false, false
-	}
-	_, rest := cutWakeToken(naming[len(quoted)+close+1:])
 	switch {
-	case reply && rest == ":",
-		rest == " finished its turn without calling thread_reply. Its final message:":
-		return title, after, false, true
-	case strings.HasPrefix(rest, " errored: "), strings.HasPrefix(rest, " was interrupted: "):
-		_, inline, _ := strings.Cut(rest, ": ")
-		return title, inline + "\n" + after, false, true
-	case !reply && (rest == " errored." || rest == " was cancelled." || rest == " was interrupted." ||
-		rest == " did not answer within a day." || rest == " settled."):
-		return title, "", false, true
+	case len(message.Facts.Threads) > 1:
+		// A digest speaks for several threads; no one of them sends it.
+		return strconv.Itoa(len(message.Facts.Threads)) + " threads"
+	case message.Facts.Outcome == threadtools.WakeReminder:
+		return "This thread"
+	case message.Thread != nil && message.Thread.Title != "":
+		return message.Thread.Title
 	}
-	return "", "", false, false
+	return "another thread"
 }
 
-// cutWakeToken takes a status line's ` [token X]` or ` [tokens X, Y]` off
-// the front of rest.
-func cutWakeToken(rest string) (tokens, after string) {
-	label := " [token "
-	if !strings.HasPrefix(rest, label) {
-		if label = " [tokens "; !strings.HasPrefix(rest, label) {
-			return "", rest
-		}
+// agentReporterName names what wrote a report: an outside script, a remote
+// job and its computer, the app itself for an assistant's opening, or the
+// label of the loop, watch, worker or workflow, else its kind.
+func agentReporterName(from *usermessage.OriginWake) string {
+	if from == nil {
+		return "A wake"
 	}
-	end := strings.Index(rest, "]")
-	if end < 0 {
-		return "", rest
-	}
-	return rest[len(label):end], rest[end+1:]
-}
-
-// agentWakeHead is the sender and first line of a loop's, a watch's, a
-// script's, a worker's, a remote job's or a workflow's wake, or an
-// assistant's opening. main wrote none, so every one carries its facts; a
-// row whose facts did not decode is headed by its text's first line.
-func agentWakeHead(text string, origin *usermessage.OriginWake) (sender, head string) {
-	kind, label, computer := "send", "", ""
-	if origin != nil {
-		kind, label, computer = origin.Kind, origin.Label, origin.Computer
-	}
-	switch kind {
-	case "send":
-		sender = "A wake"
-		if origin != nil {
-			sender = "A script"
+	switch from.Kind {
+	case usermessage.OriginWakeKindSend:
+		return "A script"
+	case usermessage.OriginWakeKindCompletion:
+		if name := strings.Join(nonEmpty(from.Label, from.Computer), " on "); name != "" {
+			return name
 		}
-	case "completion":
-		sender = strings.Join(nonEmpty(label, computer), " on ")
-		if sender == "" {
-			sender = "A remote job"
-		}
+		return "A remote job"
 	case usermessage.OriginWakeKindOpening, usermessage.OriginWakeKindHandOff:
-		sender = "Agent Overflow"
-	default:
-		sender = firstNonEmpty(label, agentWakeKindTitles[kind])
+		return "Agent Overflow"
 	}
-	if origin == nil || origin.Facts == nil {
-		return sender, firstLineOf(text)
+	if title, known := agentWakeKindTitles[from.Kind]; known {
+		return firstNonEmpty(from.Label, title)
 	}
-	if origin.Facts.Headline != "" {
-		return sender, origin.Facts.Headline
-	}
-	return sender, firstLineOf(agentWakeBody(text, *origin))
+	return "A wake"
 }
 
-// agentWakeBody is what a wake's row shows of it: its data, quoted values
-// decoded for reading, or as written where it is prose (an assistant's
-// opening) or the job's own output (a remote job's).
-func agentWakeBody(text string, origin usermessage.OriginWake) string {
-	body := threadtools.SpanText(text, origin.Facts.Body)
-	switch origin.Kind {
-	case usermessage.OriginWakeKindCompletion, usermessage.OriginWakeKindOpening, usermessage.OriginWakeKindHandOff:
-		return body
-	}
-	return readableWakeText(body)
-}
-
-// agentWakeKindTitles name a wake by its kind, as the frontend's agent row
-// titles it, when it carries no label.
+// agentWakeKindTitles name a report by its kind, as the frontend's agent
+// row titles it, when it carries no label.
 var agentWakeKindTitles = map[string]string{
 	"loop":     "Loop wake",
 	"watch":    "Watch wake",
 	"question": "Worker's question",
 	"approval": "Worker's approval request",
 	"workflow": "Workflow wake",
-}
-
-// readableWakeText is a wake's text with the escapes of its quoted data
-// decoded for reading, quotes kept: the Go twin of the frontend's
-// readableWakeText (wakeText.ts). An escaped quote or backslash-letter keeps
-// its escape, and so does a control, format or line-separator character.
-func readableWakeText(text string) string {
-	return quotedWakeToken.ReplaceAllStringFunc(text, func(token string) string {
-		return wakeEscape.ReplaceAllStringFunc(token, func(escape string) string {
-			if escape == `\\` {
-				return `\`
-			}
-			var digits string
-			switch escape[1] {
-			case 'x', 'u', 'U':
-				digits = escape[2:]
-			default:
-				return escape
-			}
-			code, err := strconv.ParseUint(digits, 16, 32)
-			if err != nil || code > unicode.MaxRune {
-				return escape
-			}
-			r := rune(code)
-			if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Zl, unicode.Zp) || r >= 0xD800 && r <= 0xDFFF {
-				return escape
-			}
-			return string(r)
-		})
-	})
-}
-
-var (
-	quotedWakeToken = regexp.MustCompile(`"(?:[^"\\\n]|\\.)*"`)
-	wakeEscape      = regexp.MustCompile(`\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)`)
-)
-
-// firstLineOf is the first line of text that says something: a quote
-// marker, a bare rule and surrounding space dropped, whitespace collapsed.
-func firstLineOf(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, ">"), " "))
-		if line != "" && line != "---" {
-			return strings.Join(strings.Fields(line), " ")
-		}
-	}
-	return ""
 }
 
 func nonEmpty(values ...string) []string {

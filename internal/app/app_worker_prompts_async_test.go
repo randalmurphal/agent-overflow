@@ -207,6 +207,11 @@ func TestAWorkersAsyncQuestionGoesToItsSpawnerAndItsReplyAnswersIt(t *testing.T)
 	if payload.Origin != usermessage.OriginAgentThread || payload.OriginThread == nil || payload.OriginThread.ThreadID != f.spawner.ID {
 		t.Fatalf("the answer is attributed %q %+v, want the spawner", payload.Origin, payload.OriginThread)
 	}
+	// The worker's row reads the answer as the spawner's message, all of it.
+	if read := usermessage.Describe(answer.Message, usermessage.Meta{Origin: payload.Origin, OriginThread: payload.OriginThread}); len(read) != 1 ||
+		read[0].Facts.Form != threadtools.FormMessage || read[0].Body() != answer.Message || read[0].Facts.Headline != "Question: Which scope?" {
+		t.Fatalf("the worker's row reads the answer as %+v", read)
+	}
 
 	f.drain(t)
 	if ack, handled, err := f.app.answerWorkerPrompt(t.Context(), caller, reply); err != nil || !handled {

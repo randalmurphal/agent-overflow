@@ -142,7 +142,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 					_, err := a.sendMessageWithOptions(
 						context.Background(), threadID, message.Text(), sendMessageOptions{
 							PreserveDraft: true,
-							Origin:        message.Origin(), OriginWake: message.OriginWake(),
+							Origin:        message.Origin(), OriginWake: message.Attribution().Wake,
 						},
 					)
 					return err
@@ -341,7 +341,7 @@ func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Messa
 		threadID, message.Text(), SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
 		injectedQueueOptions{
 			preserveDraft: true, onDurable: settled,
-			origin: message.Origin(), originWake: message.OriginWake(),
+			origin: message.Origin(), originWake: message.Attribution().Wake,
 		},
 	)
 	return err
@@ -352,6 +352,5 @@ func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Messa
 // for the agent, then what the row shows, headed by its first line, the
 // run's headline.
 func workflowWakeMessage(workflowID string, composed wake.Message) usermessage.AgentMessage {
-	from := usermessage.OriginWake{Kind: usermessage.OriginWakeKindWorkflow, Label: workflowID}
-	return usermessage.WakeMessage(from, composed.Notice, composed.Data, "")
+	return usermessage.Report(usermessage.ReportWorkflow, usermessage.Reporter{Label: workflowID}, composed.Notice, composed.Data, "")
 }

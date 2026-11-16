@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 
 	"agent-overflow/internal/errorsx"
@@ -683,15 +682,17 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	if sendID == "" {
 		return
 	}
-	origin := usermessage.OriginThread{ThreadID: spawn.TargetThreadID, Token: spawn.Token, Kind: usermessage.OriginKindWake}
-	title := spawn.TargetThreadTitle
+	title, computerID, computerName := spawn.TargetThreadTitle, "", ""
 	if spawn.TargetComputerID != "" {
-		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(spawn.TargetComputerID)
+		computerName, computerID = a.threadTools().threadToolsBackendName(spawn.TargetComputerID)
 	} else if thread, err := a.store.GetThread(spawn.TargetThreadID); err == nil {
 		title = thread.Title
 	}
-	origin.Title = title
-	note := workerStoppedNote(origin, spawn.Token, result.Failures)
+	// The Stop's failures, named as its result names them: the worker is at
+	// rest when there are none.
+	note := usermessage.StoppedWorker(threadtools.WorkerStopped{
+		Title: title, ThreadID: spawn.TargetThreadID, Token: spawn.Token, Failures: result.Failures,
+	}, computerID, computerName)
 	err := a.queueAgentNotice(agentNotice{
 		threadID: spawn.CallerThreadID,
 		sendID:   sendID,
@@ -703,25 +704,6 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	if err != nil && !errors.Is(err, errThreadArchived) {
 		result.Failures = append(result.Failures, "tell its spawner: "+err.Error())
 	}
-}
-
-// workerStoppedNote is the message telling a spawner the user stopped its
-// worker, attributed to the worker (from) under its spawn's token, from the
-// Stop's failures: at rest when there are none, and otherwise each part the
-// Stop could not bring to rest, named as the Stop's result names it. The
-// whole text is its body.
-func workerStoppedNote(from usermessage.OriginThread, token string, failures []string) usermessage.AgentMessage {
-	state := "It is at rest, with nothing running or queued; nothing it did was undone."
-	if len(failures) > 0 {
-		state = "These parts of the stop failed and may still be running or queued: " +
-			strings.TrimSuffix(strings.Join(failures, "; "), ".") + "."
-	}
-	text := fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. %s A later message starts it again.",
-		from.Title, from.ThreadID, state)
-	return usermessage.ThreadMessage(from, text, threadtools.MessageFacts{
-		Outcome: threadtools.OutcomeWorkerStopped, Tokens: []string{token}, StoppedBy: "the user",
-		Body: []threadtools.Span{{Start: 0, End: len(text)}},
-	})
 }
 
 // stopRemoteAgentRequestBy is stopAgentRequestBy for a target on a paired

@@ -15,7 +15,6 @@ import (
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -457,9 +456,9 @@ func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, 
 		}
 		answers = append(answers, store.AsyncQuestionAnswer{ItemID: prompt.requestID, Index: index, Answer: strings.Join(response.Answers[q.ID], ", ")})
 	}
-	origin := &usermessage.OriginThread{ThreadID: prompt.agentID}
+	spawner := usermessage.Sender{ThreadID: prompt.agentID}
 	if agent, err := a.store.GetThread(prompt.agentID); err == nil {
-		origin.Title = agent.Title
+		spawner.Title = agent.Title
 	}
 	sendID := workerAnswerSendIDRoot + prompt.token
 	unlock, err := a.lockSendAdmission(ctx, prompt.workerID, sendID)
@@ -467,13 +466,13 @@ func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, 
 		return err
 	}
 	defer unlock()
-	written := func(text string) usermessage.AgentMessage {
-		return usermessage.ThreadMessage(*origin, text, threadtools.MessageFacts{})
-	}
+	// The answer is the spawner's own message to its worker, all of it what
+	// the spawner says: no request, and no answer to one of the worker's.
+	written := func(text string) usermessage.AgentMessage { return usermessage.Message(spawner, text) }
 	asked := map[string]int64{prompt.requestID: int64(prompt.occurrence)}
 	return a.queueAsyncAnswers(prompt.workerID, sendID, answers, asked, written, agentNotice{
 		startFailed: func(err error) string {
-			return fmt.Sprintf("Thread %q answered this thread's questions, but this thread's agent could not start: %v", origin.Title, err)
+			return fmt.Sprintf("Thread %q answered this thread's questions, but this thread's agent could not start: %v", spawner.Title, err)
 		},
 	})
 }

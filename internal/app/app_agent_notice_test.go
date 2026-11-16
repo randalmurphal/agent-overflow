@@ -25,7 +25,11 @@ import (
 
 // testAgentWake is a wake of row that says text, attributed to row.
 func testAgentWake(row store.AgentWake, text string) usermessage.AgentMessage {
-	return usermessage.WakeMessage(usermessage.OriginWake{Kind: row.Kind, Label: row.Label}, "", text, "")
+	kind := usermessage.ReportLoop
+	if row.Kind == store.AgentWakeWatch {
+		kind = usermessage.ReportWatch
+	}
+	return usermessage.Report(kind, usermessage.Reporter{Label: row.Label}, "", text, "")
 }
 
 func noticeTestThread(t *testing.T, a *App, id string) store.Thread {

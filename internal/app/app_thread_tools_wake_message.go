@@ -186,7 +186,12 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 		fail("deliver to "+thread.ID, err)
 		return true
 	}
-	note := a.threadWakeNote(carrier, a.threadWakeFor(message))
+	// The message is attributed to the thread that answered, for the same
+	// reason the request is attributed to its sender. One that lists several
+	// threads is attributed to the carrier's, which threadWakeFor lists first
+	// under its token, the one its echo confirms (ConfirmThreadWake), and
+	// names them all in its facts.
+	note := usermessage.Answer(a.threadWakeFor(message))
 	if hook := a.threadWakeRenderedForTest; hook != nil {
 		hook(carrier.Token)
 	}
@@ -271,25 +276,6 @@ func (a *App) unarchiveForThreadWake(threadID string, carrier store.ThreadReques
 		return fmt.Errorf("unarchive the caller thread: %w", err)
 	}
 	return nil
-}
-
-// threadWakeNote is a wake's message: its text and facts, from the wake,
-// attributed to the thread that answered, for the same reason the request
-// itself is attributed to its sender, so a person reading the timeline can
-// see where it came from. A message that lists several threads is
-// attributed to its carrier's (the first listed) and names them all in its
-// facts: it is still an agent's message, never the person's, and the
-// carrier's token is the one its echo confirms (ConfirmThreadWake).
-func (a *App) threadWakeNote(carrier store.ThreadRequest, wake threadtools.Wake) usermessage.AgentMessage {
-	origin := usermessage.OriginThread{ThreadID: carrier.TargetThreadID, Token: carrier.Token, Kind: usermessage.OriginKindWake}
-	if len(wake.Sources) > 0 {
-		origin.Title = wake.Sources[0].Title
-	}
-	if carrier.TargetComputerID != "" {
-		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(carrier.TargetComputerID)
-	}
-	text, facts := wake.Message()
-	return usermessage.ThreadMessage(origin, text, facts)
 }
 
 // threadWakeFor renders one message's wake from the fixed template: the thread

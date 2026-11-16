@@ -13,6 +13,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 406,
           "body": [
             {
               "start": 0,
@@ -59,6 +61,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 282,
           "body": [
             {
               "start": 0,
@@ -100,6 +104,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 327,
           "body": [
             {
               "start": 0,
@@ -142,6 +148,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 489,
           "body": [
             {
               "start": 0,
@@ -187,6 +195,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 408,
           "body": [
             {
               "start": 0,
@@ -231,6 +241,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 356,
           "body": [
             {
               "start": 0,
@@ -274,6 +286,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 712,
           "body": [
             {
               "start": 0,
@@ -318,6 +332,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 315,
           "reachable": true
         }
       }
@@ -354,6 +370,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 98,
           "outcome": "reply",
           "body": [
             {
@@ -407,6 +425,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 186,
           "outcome": "reply",
           "body": [
             {
@@ -460,6 +480,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 142,
           "outcome": "finished",
           "body": [
             {
@@ -511,6 +533,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 115,
           "outcome": "errored",
           "body": [
             {
@@ -567,6 +591,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 71,
           "outcome": "errored",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -612,6 +638,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 77,
           "outcome": "cancelled",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -657,6 +685,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 109,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -705,6 +735,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 109,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -751,6 +783,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 118,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -797,6 +831,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 122,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -843,6 +879,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 129,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -889,6 +927,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 263,
           "outcome": "interrupted",
           "body": [
             {
@@ -942,6 +982,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 24819,
           "outcome": "interrupted",
           "body": [
             {
@@ -995,6 +1037,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 103,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1041,6 +1085,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 156,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1087,6 +1133,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 120,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1133,6 +1181,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 124,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1179,6 +1229,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 232,
           "outcome": "interrupted",
           "body": [
             {
@@ -1231,6 +1283,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 108,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1277,6 +1331,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 113,
           "outcome": "interrupted",
           "body": [
             {
@@ -1328,6 +1384,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 110,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1374,6 +1432,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 108,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1420,6 +1480,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 123,
           "outcome": "interrupted",
           "body": [
             {
@@ -1471,6 +1533,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 152,
           "outcome": "interrupted",
           "body": [
             {
@@ -1525,6 +1589,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 199,
           "outcome": "interrupted",
           "role": "Runs the builds.",
           "tokens": [
@@ -1572,6 +1638,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 108,
           "outcome": "expired",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -1617,6 +1685,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 79,
           "outcome": "reminder",
           "body": [
             {
@@ -1668,6 +1738,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 24734,
           "outcome": "reply",
           "body": [
             {
@@ -1720,6 +1792,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 98,
           "outcome": "cancelled",
           "body": [
             {
@@ -1771,6 +1845,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 159,
           "outcome": "finished",
           "body": [
             {
@@ -1826,6 +1902,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 24742,
           "outcome": "reply",
           "body": [
             {
@@ -1880,6 +1958,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 270,
           "outcome": "reply",
           "body": [
             {
@@ -1980,6 +2060,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 228,
           "outcome": "finished",
           "body": [
             {
@@ -2079,6 +2161,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 218,
           "outcome": "errored",
           "body": [
             {
@@ -2178,6 +2262,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 149,
           "outcome": "errored",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -2271,6 +2357,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 156,
           "outcome": "cancelled",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -2364,6 +2452,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 209,
           "outcome": "cancelled",
           "body": [
             {
@@ -2463,6 +2553,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 199,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -2559,6 +2651,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 163,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -2650,6 +2744,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 239,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -2744,6 +2840,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 291,
           "outcome": "interrupted",
           "body": [
             {
@@ -2844,6 +2942,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 158,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -2938,6 +3038,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 234,
           "outcome": "interrupted",
           "body": [
             {
@@ -3037,6 +3139,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 192,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -3131,6 +3235,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 228,
           "outcome": "interrupted",
           "body": [
             {
@@ -3231,6 +3337,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 169,
           "outcome": "expired",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -3324,6 +3432,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 24835,
           "outcome": "errored",
           "body": [
             {
@@ -3424,6 +3534,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 208,
           "outcome": "reply",
           "body": [
             {
@@ -3523,6 +3635,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 233,
           "outcome": "reply",
           "body": [
             {
@@ -3576,6 +3690,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 147,
           "outcome": "reminder",
           "body": [
             {
@@ -3629,6 +3745,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 207,
           "outcome": "interrupted",
           "body": [
             {
@@ -3683,6 +3801,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 178,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -3731,6 +3851,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 190,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -3779,6 +3901,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 238,
           "outcome": "interrupted",
           "body": [
             {
@@ -3833,6 +3957,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 235,
           "outcome": "reply",
           "body": [
             {
@@ -3934,6 +4060,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 307,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -4030,6 +4158,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 260,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
@@ -4113,6 +4243,38 @@
     ]
   },
   {
+    "name": "a spawner's answer to its worker's questions",
+    "text": "Question: Which parser?\nAnswer: The new one, naïve or not\n\nQuestion: Ship it?\nAnswer: Yes",
+    "members": [
+      90
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-lead",
+        "title": "Lead",
+        "kind": "",
+        "facts": {
+          "form": "message",
+          "bytes": 90,
+          "body": [
+            {
+              "start": 0,
+              "end": 90
+            }
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "Question: Which parser?\nAnswer: The new one, naïve or not\n\nQuestion: Ship it?\nAnswer: Yes",
+        "footer": null,
+        "wake": null
+      }
+    ]
+  },
+  {
     "name": "two requests joined",
     "text": "First ask.\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.\n\n---\n\nSecond ask.\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is not waiting for an answer. If it should hear something back, call thread_reply with token tok-2, once: the reply reaches it as a message, and it sees only your reply text. To read the sender's thread, use thread_show with its id.",
     "members": [
@@ -4127,6 +4289,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 304,
           "body": [
             {
               "start": 0,
@@ -4143,6 +4307,8 @@
         "token": "tok-2",
         "kind": "send",
         "facts": {
+          "form": "request",
+          "bytes": 295,
           "body": [
             {
               "start": 0,
@@ -4201,6 +4367,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 86,
           "outcome": "reply",
           "body": [
             {
@@ -4219,6 +4387,8 @@
         "token": "tok-2",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 94,
           "outcome": "finished",
           "body": [
             {
@@ -4292,6 +4462,8 @@
         "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 136,
           "outcome": "reply",
           "body": [
             {
@@ -4310,6 +4482,8 @@
         "token": "tok-2",
         "kind": "wake",
         "facts": {
+          "form": "answer",
+          "bytes": 109,
           "outcome": "finished",
           "body": [
             {

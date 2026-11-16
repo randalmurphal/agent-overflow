@@ -664,17 +664,24 @@ func asRequeued(item triage.UnconfirmedFlushItem, returned []store.DiffReviewRet
 // rebuilt from the row (requeuePayloadFromMeta), or the item's own message
 // and payload when it has no row. returned are the review comments the
 // retire of its row returned.
+//
+// The person's text goes back without the white space around it. A
+// message that holds an agent's or the app's goes back as it was written:
+// the facts it carries locate its body by offsets into that text
+// (threadtools.MessageFacts), and a reader shows text they do not describe
+// whole.
 func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem, returned []store.DiffReviewReturnedComments) (triage.QueuedFlushItem, bool) {
 	queueItemID := strings.TrimSpace(item.QueueItemID)
-	message := strings.TrimSpace(item.Message)
+	message := item.Message
 	payload := append(json.RawMessage(nil), item.Payload...)
+	if !queuedPayloadAgentWritten(payload) {
+		message = strings.TrimSpace(message)
+	}
 	if item.DeferredItem != nil {
-		message = strings.TrimSpace(item.DeferredItem.Summary)
-		payload = queuePayloadFromUserItem(*item.DeferredItem, item.JoinedParts, payload)
+		message, payload = queuePayloadFromUserItem(*item.DeferredItem, item.JoinedParts, payload)
 	}
 	if item.QuietItem != nil {
-		message = strings.TrimSpace(item.QuietItem.Summary)
-		payload = queuePayloadFromUserItem(*item.QuietItem, item.JoinedParts, payload)
+		message, payload = queuePayloadFromUserItem(*item.QuietItem, item.JoinedParts, payload)
 	}
 	payload = withReturnedReviewComments(payload, returned)
 	if queueItemID == "" {
@@ -716,22 +723,51 @@ func withReturnedReviewComments(raw json.RawMessage, returned []store.DiffReview
 	return encoded
 }
 
-// queuePayloadFromUserItem is the requeue payload of a row's message
-// (requeuePayloadFromMeta), or fallback when the row's meta does not decode.
-// parts are a joined row's members (usermessage.JoinedPart), kept while
-// they describe the requeued text.
-func queuePayloadFromUserItem(item store.Item, parts []usermessage.JoinedPart, fallback json.RawMessage) json.RawMessage {
+// queuePayloadFromUserItem is the text and requeue payload of a row's
+// message (requeuePayloadFromMeta), or its text and fallback when the row's
+// meta does not decode. parts are a joined row's members
+// (usermessage.JoinedPart), kept while they describe the requeued text. The
+// text is the row's without the white space around it, unless the row holds
+// an agent's message, which goes back as written (queuedFlushItemFromUnconfirmed).
+func queuePayloadFromUserItem(item store.Item, parts []usermessage.JoinedPart, fallback json.RawMessage) (string, json.RawMessage) {
 	meta, err := usermessage.FromItem(item)
 	if err != nil {
-		return fallback
+		return strings.TrimSpace(item.Summary), fallback
 	}
 	requeued := requeuePayloadFromMeta(meta)
-	requeued.JoinedParts = usermessage.TrimJoinedParts(item.Summary, parts)
+	text := item.Summary
+	if agentWritten(meta.Origin, parts) {
+		if _, ok := usermessage.SplitJoinedParts(text, parts); ok {
+			requeued.JoinedParts = parts
+		}
+	} else {
+		text = strings.TrimSpace(text)
+		requeued.JoinedParts = usermessage.TrimJoinedParts(item.Summary, parts)
+	}
 	payload, err := json.Marshal(requeued)
 	if err != nil {
-		return fallback
+		return text, fallback
 	}
-	return payload
+	return text, payload
+}
+
+// agentWritten reports whether a message of this origin, or any of the
+// members parts records, is an agent's or the app's.
+func agentWritten(origin string, parts []usermessage.JoinedPart) bool {
+	return usermessage.IsAgentMessage(usermessage.Meta{Origin: origin}) || slices.ContainsFunc(parts, usermessage.JoinedPart.IsAgent)
+}
+
+// queuedPayloadAgentWritten is agentWritten of a queue item's payload. A
+// payload that does not decode is the person's.
+func queuedPayloadAgentWritten(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var payload flushQueuePayload
+	if json.Unmarshal(raw, &payload) != nil {
+		return false
+	}
+	return agentWritten(payload.Origin, payload.JoinedParts)
 }
 
 // draftPartFromUserItem is the composer part of a message taken back

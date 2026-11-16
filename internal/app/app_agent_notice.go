@@ -116,13 +116,14 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 	if err != nil || !proceed {
 		return err
 	}
+	attribution := message.Attribution()
 	if _, err := a.registerQueueItem(notice.threadID, message.Text(),
 		SendMessageOptions{SendID: notice.sendID},
 		injectedQueueOptions{
 			preserveDraft: true,
-			origin:        message.Origin(),
-			originThread:  message.OriginThread(),
-			originWake:    message.OriginWake(),
+			origin:        attribution.Origin,
+			originThread:  attribution.Thread,
+			originWake:    attribution.Wake,
 			persist:       notice.persist,
 			// The flag, not the check, is the notice's: the queue write
 			// decides it under the lock both archive doors take.

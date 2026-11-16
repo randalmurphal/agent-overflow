@@ -228,13 +228,14 @@ func TestASessionDeathKeepsTheTextOfAPersonWithoutASendID(t *testing.T) {
 func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	t.Parallel()
 	wake, request := "agent-wake:w:1", threadRequestSendID("tok-1")
-	wakeFacts := &threadtools.MessageFacts{Headline: "the wake's note"}
-	requestFacts := &threadtools.MessageFacts{Waiting: true}
+	wakeWritten := usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{Label: "l"}, "", "the wake", "the wake's note").Attribution()
+	requestWritten := usermessage.Message(usermessage.Sender{ThreadID: "t-lead", Title: "Lead"}, "the request").Attribution()
+	wakeFacts, requestFacts := wakeWritten.Wake.Facts, requestWritten.Thread.Facts
 	text, meta := usermessage.Join([]usermessage.JoinMember{
 		{Text: "mine, no send id"},
-		{Meta: usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: &usermessage.OriginWake{Kind: "loop", Facts: wakeFacts}}, Text: "the wake"},
+		{Meta: usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: wakeWritten.Wake}, Text: "the wake"},
 		{Meta: usermessage.Meta{SendID: "p2"}, Text: "and mine"},
-		{Meta: usermessage.Meta{SendID: request, Origin: usermessage.OriginAgentThread, OriginThread: &usermessage.OriginThread{ThreadID: "t-lead", Facts: requestFacts}}, Text: "the request"},
+		{Meta: usermessage.Meta{SendID: request, Origin: usermessage.OriginAgentThread, OriginThread: requestWritten.Thread}, Text: "the request"},
 	})
 	joined := unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}
 	app, person, ok := splitSessionEndParts(joined, text)
@@ -253,11 +254,11 @@ func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	}
 	// Each part goes back with the attribution and facts it was written
 	// with, so its row reads as it did.
-	if got := app[wake]; got.Origin() != usermessage.OriginAgentWake || got.OriginWake() == nil || got.OriginWake().Facts != wakeFacts {
-		t.Fatalf("the wake's attribution = %+v", got.OriginWake())
+	if got := app[wake].Attribution(); got.Origin != usermessage.OriginAgentWake || got.Wake == nil || !reflect.DeepEqual(got.Wake.Facts, wakeFacts) {
+		t.Fatalf("the wake's attribution = %+v", got.Wake)
 	}
-	if got := app[request]; got.Origin() != usermessage.OriginAgentThread || got.OriginThread() == nil || got.OriginThread().Facts != requestFacts {
-		t.Fatalf("the request's attribution = %+v", got.OriginThread())
+	if got := app[request].Attribution(); got.Origin != usermessage.OriginAgentThread || got.Thread == nil || !reflect.DeepEqual(got.Thread.Facts, requestFacts) {
+		t.Fatalf("the request's attribution = %+v", got.Thread)
 	}
 
 	oneID := usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake}
@@ -272,9 +273,9 @@ func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	if _, _, ok := splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text+" "); ok {
 		t.Fatal("split a joined message whose parts no longer describe it")
 	}
-	own := usermessage.JoinedPart{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: &usermessage.OriginWake{Kind: "loop", Facts: wakeFacts}}
+	own := usermessage.JoinedPart{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: wakeWritten.Wake}
 	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: []string{wake}, own: own}, "the wake")
-	if !ok || person != nil || app[wake].Text() != "the wake" || app[wake].OriginWake() == nil || app[wake].OriginWake().Facts != wakeFacts {
+	if !ok || person != nil || app[wake].Text() != "the wake" || app[wake].Attribution().Wake == nil || !reflect.DeepEqual(app[wake].Attribution().Wake.Facts, wakeFacts) {
 		t.Fatalf("a lone wake: ok %v person %v app %+v", ok, person, app)
 	}
 }
@@ -917,8 +918,11 @@ func queueRequestFromAnotherComputer(t *testing.T, f *requestFixture) (string, u
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	text, facts := threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Computer: "desk", Token: token}.Message("Fix the nil check.")
-	message := usermessage.ThreadMessage(usermessage.OriginThread{ThreadID: "t-lead", Token: token}, text, facts)
+	message, err := usermessage.Request(store.ThreadRequestSend, usermessage.Sender{ComputerID: "c-desk", ComputerName: "desk", ThreadID: "t-lead", Title: "Lead"},
+		threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Computer: "desk", Token: token}, "Fix the nil check.")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := f.app.threadTools().requeueRequest(token, f.caller.ID, message); err != nil {
 		t.Fatal(err)
 	}
@@ -951,9 +955,9 @@ func TestASessionDeathRequeuesAJoinedRequestAndGivesThePersonTheirText(t *testin
 	}
 	// It goes back with the facts it was written with, so its row reads as
 	// the same request.
-	requeued := queuedAgentMessage(rows[0]).OriginThread()
-	if requeued == nil || requeued.Facts == nil || !reflect.DeepEqual(*requeued.Facts, *message.OriginThread().Facts) {
-		t.Fatalf("requeued attribution = %+v, want the request's facts %+v", requeued, message.OriginThread().Facts)
+	requeued := queuedAgentMessage(rows[0]).Attribution().Thread
+	if requeued == nil || requeued.Facts == nil || !reflect.DeepEqual(*requeued.Facts, *message.Attribution().Thread.Facts) {
+		t.Fatalf("requeued attribution = %+v, want the request's facts %+v", requeued, message.Attribution().Thread.Facts)
 	}
 }
 

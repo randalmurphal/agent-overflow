@@ -1,25 +1,34 @@
 package usermessage
 
 import (
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/threadtools"
 )
 
-// AgentMessage is a message the app writes into a thread: its text and the
-// attribution its row is read by, with the facts of what it says. The
-// constructors are the only way to make one, and each takes the facts from
-// the value the text was rendered from, so no row carries text its facts
-// do not describe:
+// AgentMessage is a message the app writes into a thread: its text, and the
+// attribution and facts its row is read by. Each constructor takes the value
+// the text is rendered from and derives all three from it, so the sender the
+// text names is the sender the attribution names, and the facts describe the
+// text they are stored with:
 //
-//   - ThreadMessage: a thread request or its answer, rendered by
-//     threadtools (Footer.Message, Wake.Message).
-//   - WakeMessage: every other message the app writes for an agent, the
-//     one constructor a new kind of such message uses.
-//   - PersonMessage: the person's own words the app sends for them.
-//   - StoredMessage: one read back from the queue or a joined row, with
-//     the attribution it was written with.
+//   - Request: a thread's request, from its footer (threadtools.Footer).
+//   - Answer: what a request's caller is told of it (threadtools.Wake).
+//   - StoppedWorker: the notice that the user stopped a spawner's worker.
+//   - Message: a thread's message with no footer, from its sender and body.
+//   - Report: every other message the app writes for an agent, of one of
+//     the ReportKinds.
+//   - PersonMessage and AppMessage: the person's own words and the app's
+//     on their behalf, which no agent row reads.
+//   - DecodeStored: a message read back from where it was stored, checked.
+//
+// A message is a value: Attribution returns a copy, so nothing a caller
+// does to it changes the message.
 type AgentMessage struct {
 	text   string
 	origin string
@@ -27,46 +36,184 @@ type AgentMessage struct {
 	wake   *OriginWake
 }
 
+// Attribution is a message's attribution as a row's meta stores it: its
+// origin and the OriginThread or OriginWake, with the facts, of that origin.
+type Attribution struct {
+	Origin string
+	Thread *OriginThread
+	Wake   *OriginWake
+}
+
 // Text is what the message says, to the agent and in the row.
 func (m AgentMessage) Text() string { return m.text }
 
-// Origin, OriginThread and OriginWake are the message's attribution, the
-// row meta fields of the same names.
-func (m AgentMessage) Origin() string              { return m.origin }
-func (m AgentMessage) OriginThread() *OriginThread { return m.thread }
-func (m AgentMessage) OriginWake() *OriginWake     { return m.wake }
+// Origin is the message's Origin, the row meta field of the same name.
+func (m AgentMessage) Origin() string { return m.origin }
 
-// ThreadMessage is a request from another thread, or the answer a request
-// gets back, attributed to from: text and facts as one threadtools render
-// returned them.
-func ThreadMessage(from OriginThread, text string, facts threadtools.MessageFacts) AgentMessage {
-	from.Facts = &facts
+// Attribution is a copy of the message's attribution, which shares nothing
+// with the message.
+func (m AgentMessage) Attribution() Attribution {
+	return Attribution{Origin: m.origin, Thread: m.thread.clone(), Wake: m.wake.clone()}
+}
+
+func (t *OriginThread) clone() *OriginThread {
+	if t == nil {
+		return nil
+	}
+	copied := *t
+	copied.Facts = cloneFacts(t.Facts)
+	return &copied
+}
+
+func (w *OriginWake) clone() *OriginWake {
+	if w == nil {
+		return nil
+	}
+	copied := *w
+	copied.Facts = cloneFacts(w.Facts)
+	return &copied
+}
+
+func cloneFacts(facts *threadtools.MessageFacts) *threadtools.MessageFacts {
+	if facts == nil {
+		return nil
+	}
+	copied := facts.Clone()
+	return &copied
+}
+
+// requestKinds are the OriginThread kinds of a request.
+var requestKinds = []string{store.ThreadRequestSpawn, store.ThreadRequestSend, store.ThreadRequestAsk}
+
+// Request is a thread's request of kind (store.ThreadRequestSpawn, Send or
+// Ask) carrying body, rendered with footer (threadtools.Footer.Message) and
+// attributed to from under the footer's token. from is the thread the
+// footer names: a sender that is not is refused. Its computer is the
+// attribution's alone (the footer names only another computer, and in this
+// computer's words for it), so a row opens the sender where it is.
+func Request(kind string, from Sender, footer threadtools.Footer, body string) (AgentMessage, error) {
+	if !slices.Contains(requestKinds, kind) {
+		return AgentMessage{}, fmt.Errorf("a request of kind %q: the kinds are %s", kind, strings.Join(requestKinds, ", "))
+	}
+	if from.ThreadID != footer.ThreadID || from.Title != footer.Title {
+		return AgentMessage{}, fmt.Errorf("a request from thread %q (%s) under a footer naming thread %q (%s)",
+			from.Title, from.ThreadID, footer.Title, footer.ThreadID)
+	}
+	text, facts := footer.Message(body)
+	return AgentMessage{text: text, origin: OriginAgentThread, thread: &OriginThread{
+		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
+		Token: footer.Token, Kind: kind, Facts: &facts,
+	}}, nil
+}
+
+// Answer is what a request's caller is told of it (threadtools.Wake.Message),
+// attributed to the first thread it speaks for under that thread's first
+// token: the request whose send id it is queued under. A wake that speaks
+// for several threads names them all in its facts; a reminder names none.
+func Answer(wake threadtools.Wake) AgentMessage {
+	text, facts := wake.Message()
+	from := OriginThread{Kind: OriginKindWake, Facts: &facts}
+	if len(wake.Sources) > 0 {
+		first := wake.Sources[0]
+		from.ComputerID, from.ComputerName, from.ThreadID, from.Title = first.ComputerID, first.Computer, first.ThreadID, first.Title
+		if len(first.Tokens) > 0 {
+			from.Token = first.Tokens[0]
+		}
+	}
 	return AgentMessage{text: text, origin: OriginAgentThread, thread: &from}
 }
 
-// HeadlineBytes bounds the header line a WakeMessage's facts carry.
+// StoppedWorker is the notice telling a spawner the user stopped its worker
+// after the spawn had answered (threadtools.WorkerStopped), attributed to the
+// worker under the spawn's token, as the spawn's answer was. computerID and
+// computerName name the worker's computer, empty for the spawner's own.
+func StoppedWorker(notice threadtools.WorkerStopped, computerID, computerName string) AgentMessage {
+	text, facts := notice.Message()
+	return AgentMessage{text: text, origin: OriginAgentThread, thread: &OriginThread{
+		ComputerID: computerID, ComputerName: computerName, ThreadID: notice.ThreadID, Title: notice.Title,
+		Token: notice.Token, Kind: OriginKindWake, Facts: &facts,
+	}}
+}
+
+// Sender is the thread a Message is from.
+type Sender struct {
+	ComputerID   string
+	ComputerName string
+	ThreadID     string
+	Title        string
+}
+
+// Message is a thread's message that is no request and no answer to one of
+// the receiver's (threadtools.PlainMessage), such as a spawner's answer to
+// its worker's questions: body as written, attributed to from.
+func Message(from Sender, body string) AgentMessage {
+	text, facts := threadtools.PlainMessage(body)
+	return AgentMessage{text: text, origin: OriginAgentThread, thread: &OriginThread{
+		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
+		Facts: &facts,
+	}}
+}
+
+// ReportKind is the kind of a Report, the OriginWake kind its row is badged
+// with: one of the Report* values, and no other.
+type ReportKind struct{ name string }
+
+// The kinds of Report.
+var (
+	ReportLoop       = ReportKind{store.AgentWakeLoop}
+	ReportWatch      = ReportKind{store.AgentWakeWatch}
+	ReportSend       = ReportKind{OriginWakeKindSend}
+	ReportQuestion   = ReportKind{OriginWakeKindQuestion}
+	ReportApproval   = ReportKind{OriginWakeKindApproval}
+	ReportCompletion = ReportKind{OriginWakeKindCompletion}
+	ReportWorkflow   = ReportKind{OriginWakeKindWorkflow}
+	ReportOpening    = ReportKind{OriginWakeKindOpening}
+	ReportHandOff    = ReportKind{OriginWakeKindHandOff}
+)
+
+// reportKinds are every ReportKind, the OriginWake kinds a stored report
+// may carry.
+var reportKinds = []ReportKind{
+	ReportLoop, ReportWatch, ReportSend, ReportQuestion, ReportApproval, ReportCompletion, ReportWorkflow,
+	ReportOpening, ReportHandOff,
+}
+
+// Reporter is what a Report is from, as its row names it: the loop or watch
+// label, the worker's title and thread, the remote job's label and computer,
+// the workflow's id, or the assistant's name. An outside send has none.
+type Reporter struct {
+	Label    string
+	ThreadID string
+	Computer string
+}
+
+// HeadlineBytes bounds the header line a Report's facts carry.
 const HeadlineBytes = 512
 
-// WakeMessage is a message the app writes for an agent that is no thread
-// request or answer: a loop's fire, a watch's output, an outside send, a
-// worker's prompt, a remote job's report, a workflow run's wake, an
+// Report is a message the app writes for an agent that is no thread's
+// request, answer or message: a loop's fire, a watch's output, an outside
+// send, a worker's prompt, a remote job's report, a workflow run's wake, an
 // assistant's opening. Its text is notice, the line written for the agent
 // that the row does not show, then data, which the row shows; a message
 // that is prose throughout has no notice. Blank lines that open data are
 // spacing, not body. headline is what the row's header says it is about,
 // folded onto one bounded line; empty when that is the data's first line.
-func WakeMessage(from OriginWake, notice, data, headline string) AgentMessage {
+func Report(kind ReportKind, from Reporter, notice, data, headline string) AgentMessage {
 	text, start := data, 0
 	if notice != "" {
 		text, start = notice+"\n"+data, len(notice)+1
 	}
 	start += len(data) - len(strings.TrimLeft(data, "\n"))
-	facts := threadtools.MessageFacts{Headline: stringsx.ClipRunes(strings.Join(strings.Fields(headline), " "), HeadlineBytes)}
+	facts := threadtools.MessageFacts{
+		Form: threadtools.FormReport, Bytes: len(text),
+		Headline: stringsx.ClipRunes(strings.Join(strings.Fields(headline), " "), HeadlineBytes),
+	}
 	if start < len(text) {
 		facts.Body = []threadtools.Span{{Start: start, End: len(text)}}
 	}
-	from.Facts = &facts
-	return AgentMessage{text: text, origin: OriginAgentWake, wake: &from}
+	return AgentMessage{text: text, origin: OriginAgentWake, wake: &OriginWake{
+		Kind: kind.name, Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, Facts: &facts,
+	}}
 }
 
 // PersonMessage is the person's own words, which carry no attribution.
@@ -77,9 +224,72 @@ func PersonMessage(text string) AgentMessage { return AgentMessage{text: text} }
 // person's row, labelled as the app's, with nothing an agent row reads.
 func AppMessage(text string) AgentMessage { return AgentMessage{text: text, origin: OriginApp} }
 
-// StoredMessage is a message read back from where it was stored, a queue
-// row's payload or a joined row's part, with the attribution it was written
-// with, facts included.
-func StoredMessage(text, origin string, thread *OriginThread, wake *OriginWake) AgentMessage {
-	return AgentMessage{text: text, origin: origin, thread: thread, wake: wake}
+// ErrStoredMessage is what DecodeStored returns for a stored message whose
+// attribution or facts are not what any constructor writes.
+var ErrStoredMessage = errors.New("the stored message's attribution does not hold")
+
+// DecodeStored is a message read back from where it was stored, a queue
+// row's payload or a joined row's member, with the attribution it was
+// written with. It is checked as it is read: an attribution of the wrong
+// origin, or facts that do not describe text (threadtools.MessageFacts.Check),
+// are refused with an error wrapping ErrStoredMessage. The message returned
+// with that error still carries text, to be delivered as written, and its
+// sender, with facts that claim nothing of it (threadtools.Whole). An agent
+// thread's message with no facts at all is one main wrote, kept as it is
+// for Describe's legacy reader.
+func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (AgentMessage, error) {
+	message := AgentMessage{text: text, origin: origin, thread: thread.clone(), wake: wake.clone()}
+	refuse := func(format string, args ...any) (AgentMessage, error) {
+		err := fmt.Errorf("%w: %s", ErrStoredMessage, fmt.Sprintf(format, args...))
+		whole := threadtools.Whole(text)
+		switch {
+		case message.thread != nil:
+			message.thread.Facts = &whole
+		case message.wake != nil:
+			message.wake.Facts = &whole
+		}
+		return message, err
+	}
+	switch origin {
+	case "", OriginApp:
+		if thread != nil || wake != nil {
+			message.thread, message.wake = nil, nil
+			return message, fmt.Errorf("%w: a message of origin %q carries an agent's attribution", ErrStoredMessage, origin)
+		}
+		return message, nil
+	case OriginAgentThread:
+		if wake != nil {
+			message.wake = nil
+			return refuse("an agent thread's message carries a wake's attribution")
+		}
+		if thread == nil || thread.Facts == nil {
+			return message, nil
+		}
+		if err := thread.Facts.Check(text); err != nil {
+			return refuse("%v", err)
+		}
+		return message, nil
+	case OriginAgentWake:
+		if thread != nil {
+			message.thread = nil
+		}
+		if wake == nil {
+			return message, fmt.Errorf("%w: a report names no reporter", ErrStoredMessage)
+		}
+		if !slices.Contains(reportKinds, ReportKind{wake.Kind}) {
+			return refuse("a report of kind %q", wake.Kind)
+		}
+		if thread != nil {
+			return refuse("a report carries a thread's attribution")
+		}
+		if wake.Facts == nil {
+			return refuse("a report has no facts")
+		}
+		if err := wake.Facts.Check(text); err != nil {
+			return refuse("%v", err)
+		}
+		return message, nil
+	}
+	message.thread, message.wake = nil, nil
+	return message, fmt.Errorf("%w: origin %q is no message the app writes", ErrStoredMessage, origin)
 }

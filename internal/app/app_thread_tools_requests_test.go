@@ -245,9 +245,9 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 	}
 	// Its row reads the facts its footer was written from: the prompt
 	// alone as the body.
-	if facts := meta.OriginThread.Facts; facts == nil ||
-		strings.TrimSpace(threadtools.SpanText(row.Summary, facts.Body)) != strings.TrimSpace(strings.SplitN(row.Summary, "\n\n---\n", 2)[0]) ||
-		strings.Contains(threadtools.SpanText(row.Summary, facts.Body), threadtools.FooterMarker) {
+	if facts := meta.OriginThread.Facts; facts == nil || facts.Check(row.Summary) != nil ||
+		strings.TrimSpace(facts.BodyOf(row.Summary)) != strings.TrimSpace(strings.SplitN(row.Summary, "\n\n---\n", 2)[0]) ||
+		strings.Contains(facts.BodyOf(row.Summary), threadtools.FooterMarker) {
 		t.Fatalf("spawn facts = %+v over %q, want the prompt as the body", meta.OriginThread.Facts, row.Summary)
 	}
 
@@ -1077,8 +1077,8 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 		payload.OriginThread.Kind != usermessage.OriginKindWake {
 		t.Errorf("wake payload = %+v, want the agent-thread attribution of a wake", payload)
 	} else if facts := payload.OriginThread.Facts; facts == nil || facts.Outcome != threadtools.WakeFinished ||
-		!slices.Equal(facts.Tokens, []string{ack.Token}) || !strings.Contains(threadtools.SpanText(wake.Message, facts.Body), "reversible") ||
-		strings.Contains(threadtools.SpanText(wake.Message, facts.Body), ack.Token) {
+		!slices.Equal(facts.Tokens, []string{ack.Token}) || facts.Check(wake.Message) != nil || !strings.Contains(facts.BodyOf(wake.Message), "reversible") ||
+		strings.Contains(facts.BodyOf(wake.Message), ack.Token) {
 		t.Errorf("wake facts = %+v, want the final message answering %s, the answer alone as its body", payload.OriginThread.Facts, ack.Token)
 	}
 	delivered := f.request(t, ack.Token)

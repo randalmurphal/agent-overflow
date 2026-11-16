@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -47,6 +48,55 @@ func TestARequeuedMessageKeepsWhoWroteIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireAgentPayload(t, "eager", raw)
+}
+
+// A requeued agent's message goes back as it was written, so the facts it
+// carries still describe its text and its row reads the same body; the
+// person's text goes back without the white space around it.
+func TestARequeuedAgentMessageKeepsTheTextItsFactsDescribe(t *testing.T) {
+	t.Parallel()
+	spawn, err := usermessage.Request(store.ThreadRequestSpawn, usermessage.Sender{ThreadID: "t-lead", Title: "Lead"},
+		threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-1", AnswerRequested: true}, "\n\n  Build   the docs  \nand more")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attribution := spawn.Attribution()
+	meta, err := usermessage.MarshalMeta(usermessage.Meta{Origin: attribution.Origin, OriginThread: attribution.Thread, SendID: "thread-request:tok-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := flushPayloadFromUserMeta(meta, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := store.Item{ID: "u:0", ThreadID: "t", Kind: "user_text", Summary: spawn.Text(), Meta: meta}
+	for name, item := range map[string]triage.UnconfirmedFlushItem{
+		"queued":   {QueueItemID: "q1", Message: spawn.Text(), Payload: payload},
+		"deferred": {QueueItemID: "q1", Message: spawn.Text(), DeferredItem: &row},
+		"quiet":    {QueueItemID: "q1", Message: spawn.Text(), QuietItem: &row},
+	} {
+		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
+		if !ok {
+			t.Fatalf("%s: not requeued", name)
+		}
+		var requeued flushQueuePayload
+		if err := json.Unmarshal(queued.Payload, &requeued); err != nil {
+			t.Fatalf("%s: decode payload: %v", name, err)
+		}
+		read := usermessage.Describe(queued.Message, usermessage.Meta{Origin: requeued.Origin, OriginThread: requeued.OriginThread})
+		if queued.Message != spawn.Text() || len(read) != 1 || read[0].Facts.Form != threadtools.FormRequest || read[0].Body() != "Build   the docs  \nand more" {
+			t.Fatalf("%s: requeued %q reads as %+v", name, queued.Message, read)
+		}
+	}
+	mine := store.Item{ID: "u:1", ThreadID: "t", Kind: "user_text", Summary: "  my words \n", Meta: `{"sendId":"s"}`}
+	for name, item := range map[string]triage.UnconfirmedFlushItem{
+		"queued":   {QueueItemID: "q2", Message: "  my words \n"},
+		"deferred": {QueueItemID: "q2", Message: "  my words \n", DeferredItem: &mine},
+	} {
+		if queued, ok := queuedFlushItemFromUnconfirmed(item, nil); !ok || queued.Message != "my words" {
+			t.Fatalf("%s: the person's text requeued as %q", name, queued.Message)
+		}
+	}
 }
 
 // A pre-init session that dies with an agent's request handed to it and the

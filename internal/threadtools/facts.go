@@ -1,33 +1,47 @@
 package threadtools
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // MessageFacts is what a message the app writes for an agent says, as the
 // fields a person's view renders: the timeline row reads these, never the
 // text, which is written for the agent. Each message's text and facts come
 // from one value through one function (Footer.Message, Wake.Message,
-// usermessage.WakeMessage), so the two cannot disagree. The row carries
-// them on its attribution (usermessage.OriginThread.Facts,
-// usermessage.OriginWake.Facts).
+// WorkerStopped.Message and the usermessage constructors), so the two cannot
+// disagree. The row carries them on its attribution
+// (usermessage.OriginThread.Facts, usermessage.OriginWake.Facts), and a
+// reader takes them only through usermessage.Describe, which checks them
+// against the text (Check).
 type MessageFacts struct {
+	// Form is what the message is: FormRequest, FormAnswer, FormMessage,
+	// FormReport, or FormWhole for one nothing is known of but its text.
+	Form string `json:"form"`
+	// Bytes is the length in bytes of the text the facts describe. Facts
+	// whose text changed behind their back no longer describe it, and a
+	// reader shows that message whole (Check).
+	Bytes int `json:"bytes"`
 	// Outcome is what an answer says happened to the requests it answers:
 	// a WakeReply, WakeFinished, WakeErrored, WakeCancelled,
 	// WakeInterrupted (a person's Stop included, told apart by StoppedBy),
 	// WakeExpired or WakeReminder, WakeSettled for a settlement none of
 	// those names, or OutcomeWorkerStopped for the notice that the person
-	// stopped a worker after it answered. Empty on every other message.
+	// stopped a worker after it answered. Set on an answer only.
 	Outcome string `json:"outcome,omitempty"`
 	// Body is where the message's own words are in its text: what the
 	// sender wrote, the answer, or the data a wake delivers. The spans are
-	// UTF-8 byte offsets, read in order and joined as they are; most bodies
+	// UTF-8 byte offsets on character boundaries, in order, not empty and
+	// not overlapping, read in order and joined as they are; most bodies
 	// are one span. Empty when the message has none.
 	Body []Span `json:"body,omitempty"`
-	// Headline is what the row's header says the message is about, when
-	// that is not the first line of Body: a loop's note, a watch's first
-	// output line, a remote job's result.
+	// Headline is what the row's header says the message is about. A
+	// writer sets it when that is not the first line of Body (a loop's
+	// note, a watch's first output line, a remote job's result);
+	// usermessage.Describe sets it otherwise.
 	Headline string `json:"headline,omitempty"`
 
 	// Waiting, Reachable, UserMessage and RoutesPrompts are a request's
@@ -66,6 +80,26 @@ type MessageFacts struct {
 	Threads []FactsThread `json:"threads,omitempty"`
 }
 
+// The forms of message MessageFacts describe.
+const (
+	// FormRequest is a thread's request with its footer (Footer.Message).
+	FormRequest = "request"
+	// FormAnswer is what a request's caller is told of it (Wake.Message,
+	// WorkerStopped.Message).
+	FormAnswer = "answer"
+	// FormMessage is a thread's message with no footer, all of whose text
+	// is what it says (usermessage.Message).
+	FormMessage = "message"
+	// FormReport is a report the app writes for an agent: a loop's fire, a
+	// watch's output, a worker's prompt, a remote job's completion
+	// (usermessage.Report).
+	FormReport = "report"
+	// FormWhole is a message nothing is known of but its text and who sent
+	// it, all of which is its body: one whose facts are missing or do not
+	// describe its text (Whole).
+	FormWhole = "whole"
+)
+
 // FactsThread is one thread a digest answer speaks for, as its row names it
 // and opens it.
 type FactsThread struct {
@@ -95,19 +129,105 @@ const (
 	OutcomeWorkerStopped = "worker-stopped"
 )
 
-// SpanText is the text spans cover in text, joined as they are. A span
-// past the text's end is cut at it, so a message whose trailing white
-// space a requeue trimmed still reads; one that does not fit at all reads
-// as nothing.
-func SpanText(text string, spans []Span) string {
-	var out strings.Builder
-	for _, span := range spans {
-		start, end := min(max(span.Start, 0), len(text)), min(max(span.End, 0), len(text))
-		if start < end {
-			out.WriteString(text[start:end])
+// outcomes are the Outcome values an answer can have.
+var outcomes = []string{
+	WakeReply, WakeFinished, WakeErrored, WakeCancelled, WakeInterrupted, WakeExpired, WakeReminder,
+	WakeSettled, OutcomeWorkerStopped,
+}
+
+// ErrFactsMismatch is what Check returns for facts that do not describe the
+// text they are stored with.
+var ErrFactsMismatch = errors.New("the message's facts do not describe its text")
+
+// Check reports whether f describes text: written for text of its length,
+// of a known form, with an outcome on an answer and on nothing else, and
+// with body spans inside text, in order, not empty, not overlapping and on
+// character boundaries. A reader trusts the spans of facts that pass, and
+// of no others.
+func (f MessageFacts) Check(text string) error {
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrFactsMismatch, fmt.Sprintf(format, args...))
+	}
+	if f.Bytes != len(text) {
+		return fail("written for %d bytes, the text has %d", f.Bytes, len(text))
+	}
+	switch f.Form {
+	case FormRequest, FormMessage, FormReport, FormWhole:
+		if f.Outcome != "" {
+			return fail("a %s has no outcome, this one says %q", f.Form, f.Outcome)
 		}
+	case FormAnswer:
+		if !slices.Contains(outcomes, f.Outcome) {
+			return fail("an answer's outcome %q is none known", f.Outcome)
+		}
+	default:
+		return fail("form %q is none known", f.Form)
+	}
+	at := 0
+	for _, span := range f.Body {
+		if span.Start < at || span.End <= span.Start || span.End > len(text) {
+			return fail("body span [%d,%d) is out of order, empty or past the text", span.Start, span.End)
+		}
+		if !utf8.RuneStart(text[span.Start]) || span.End < len(text) && !utf8.RuneStart(text[span.End]) {
+			return fail("body span [%d,%d) cuts a character", span.Start, span.End)
+		}
+		at = span.End
+	}
+	if f.Form == FormWhole && !slices.Equal(f.Body, wholeBody(text)) {
+		return fail("a whole message's body is all of its text")
+	}
+	return nil
+}
+
+// BodyOf is the text f's body spans cover in text, joined as they are. f
+// describes text (Check).
+func (f MessageFacts) BodyOf(text string) string {
+	if len(f.Body) == 1 {
+		return text[f.Body[0].Start:f.Body[0].End]
+	}
+	var out strings.Builder
+	for _, span := range f.Body {
+		out.WriteString(text[span.Start:span.End])
 	}
 	return out.String()
+}
+
+// Whole is the facts of a message nothing is known of but its text, all
+// of which is its body (FormWhole).
+func Whole(text string) MessageFacts {
+	return MessageFacts{Form: FormWhole, Bytes: len(text), Body: wholeBody(text)}
+}
+
+func wholeBody(text string) []Span {
+	if text == "" {
+		return nil
+	}
+	return []Span{{Start: 0, End: len(text)}}
+}
+
+// Clone is a copy of f that shares nothing with it.
+func (f MessageFacts) Clone() MessageFacts {
+	f.Body = slices.Clone(f.Body)
+	f.Tokens = slices.Clone(f.Tokens)
+	f.Role = cloneRole(f.Role)
+	if f.Threads != nil {
+		threads := make([]FactsThread, len(f.Threads))
+		for i, thread := range f.Threads {
+			thread.Tokens = slices.Clone(thread.Tokens)
+			thread.Role = cloneRole(thread.Role)
+			threads[i] = thread
+		}
+		f.Threads = threads
+	}
+	return f
+}
+
+func cloneRole(role *string) *string {
+	if role == nil {
+		return nil
+	}
+	value := *role
+	return &value
 }
 
 // spanBuilder writes a message's text and records where its body is.
@@ -149,6 +269,14 @@ func (b *spanBuilder) insert(at int, text string) {
 	b.body = spans
 }
 
+// done is what was written and the facts of it: facts with the body the
+// builder recorded and the length of the text.
+func (b *spanBuilder) done(facts MessageFacts) (string, MessageFacts) {
+	text := b.text.String()
+	facts.Body, facts.Bytes = b.body, len(text)
+	return text, facts
+}
+
 // roleOf is a standing agent's role as facts carry it.
 func roleOf(agent *SenderAgent) *string {
 	if agent == nil {
@@ -158,11 +286,55 @@ func roleOf(agent *SenderAgent) *string {
 	return &role
 }
 
+// PlainMessage renders a thread's message that carries no footer and
+// answers no request of the receiver's, such as a spawner's answer to its
+// worker's questions: its text is body as written, and all its words are
+// its body.
+func PlainMessage(body string) (string, MessageFacts) {
+	words := strings.TrimSpace(body)
+	lead := strings.Index(body, words)
+	var b spanBuilder
+	b.write(body[:lead])
+	b.writeBody(words)
+	b.write(body[lead+len(words):])
+	return b.done(MessageFacts{Form: FormMessage})
+}
+
+// WorkerStopped is the notice telling a spawner the user stopped the worker
+// it spawned after the spawn had answered: the worker, the spawn's token, and
+// each part the Stop could not bring to rest, none when it is at rest.
+type WorkerStopped struct {
+	Title    string
+	ThreadID string
+	Token    string
+	Failures []string
+}
+
+// Message renders the notice and its facts, from the same value. All of its
+// text is its body.
+func (w WorkerStopped) Message() (string, MessageFacts) {
+	state := "It is at rest, with nothing running or queued; nothing it did was undone."
+	if len(w.Failures) > 0 {
+		state = "These parts of the stop failed and may still be running or queued: " +
+			strings.TrimSuffix(strings.Join(w.Failures, "; "), ".") + "."
+	}
+	var b spanBuilder
+	b.writeBody(fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. %s A later message starts it again.",
+		w.Title, w.ThreadID, state))
+	return b.done(MessageFacts{
+		Form: FormAnswer, Outcome: OutcomeWorkerStopped, Tokens: []string{w.Token}, StoppedBy: "the user",
+	})
+}
+
 // interruptStopper reads the reason an interrupted request records
 // (Interrupt*): what stopped it, in words, and where in reason the part a
 // person reads as the message starts, -1 for none. A reason that names no
 // stopper (a thread's cancel or a workflow, worded by the stop; a request
 // whose thread never existed) is the message itself.
+//
+// The reason is the request's stored answer, which thread_status returns
+// to the agent and which a paired computer reports as text, so this lookup
+// over the app's own reason sentences is the one place it is read.
 func interruptStopper(reason string) (stoppedBy string, shownFrom int) {
 	switch {
 	case reason == "" || reason == InterruptTurn:

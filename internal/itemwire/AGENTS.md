@@ -21,7 +21,9 @@ the wire budget.
   frontend metadata reader must update that inventory and
   `metaInputLeafRenderCaps.test.ts`.
 - Under-budget rows remain byte-identical. Keep the fast path free of JSON
-  decode/re-encode work.
+  decode/re-encode work. The exception is a `user_text` row holding an
+  agent's message, whose meta is served as `usermessage.ProjectRowMeta`
+  reads it (`AgentMessageMeta`); other rows pay one substring test.
 - Leaf elision skips ineligible candidates and continues scanning; one retained
   large value must not prevent other large leaves from being removed.
 

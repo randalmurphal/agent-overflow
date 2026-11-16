@@ -690,10 +690,11 @@ func TestDispatchFlush_Claude_JoinRenumbersImageMarkers(t *testing.T) {
 	// as ONE message rebuilt from the row (queuePayloadFromUserItem). The
 	// re-dispatch resolves the summary's markers against the same attachment
 	// list, so the wire must come out identical.
+	_, restored := queuePayloadFromUserItem(row, nil, nil)
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 		ID:              "queue:restored",
 		Message:         row.Summary,
-		Payload:         queuePayloadFromUserItem(row, nil, nil),
+		Payload:         restored,
 		StaleUserItemID: row.ID,
 	}})
 	envelopes = waitForCapturedUserEnvelopeParts(t, capturePath, 2)

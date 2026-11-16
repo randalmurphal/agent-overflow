@@ -338,7 +338,7 @@ func TestARestoreSettlingTwoRequestsUnreadWakesTheirSenderOnce(t *testing.T) {
 			}
 			var owed teardownRequests
 			for _, r := range requests {
-				owed.queued = append(owed.queued, returnedRequest{token: r.token, message: usermessage.StoredMessage(r.row.Summary, usermessage.OriginAgentThread, nil, nil)})
+				owed.queued = append(owed.queued, returnedRequest{token: r.token, message: storedAgentMessage(r.token, r.row.Summary, usermessage.OriginAgentThread, nil, nil)})
 			}
 			q.f.app.giveBackTeardownRequests(q.target.ID, owed)
 		}},

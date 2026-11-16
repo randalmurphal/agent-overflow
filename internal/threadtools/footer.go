@@ -135,15 +135,16 @@ func StripFooter(text string) string {
 // same footer.
 func (f Footer) Message(body string) (string, MessageFacts) {
 	quoted := QuoteFooterMimics(strings.TrimRight(body, "\n"))
-	facts := MessageFacts{
-		Waiting: f.AnswerRequested, Reachable: f.SenderReachable, UserMessage: f.quotedUserMessage(),
+	words := strings.TrimSpace(quoted)
+	lead := strings.Index(quoted, words)
+	var b spanBuilder
+	b.write(quoted[:lead])
+	b.writeBody(words)
+	b.write(quoted[lead+len(words):] + "\n\n" + f.String())
+	return b.done(MessageFacts{
+		Form: FormRequest, Waiting: f.AnswerRequested, Reachable: f.SenderReachable, UserMessage: f.quotedUserMessage(),
 		RoutesPrompts: f.RoutesPrompts, Role: roleOf(f.Agent),
-	}
-	if words := strings.TrimSpace(quoted); words != "" {
-		start := strings.Index(quoted, words)
-		facts.Body = []Span{{Start: start, End: start + len(words)}}
-	}
-	return quoted + "\n\n" + f.String(), facts
+	})
 }
 
 // quotedUserMessage is the sender's latest message as the footer quotes it.
@@ -248,15 +249,14 @@ func (w Wake) String() string {
 // line, and a request made in an assistant's past thread names it on the
 // line after that.
 func (w Wake) Message() (string, MessageFacts) {
-	facts := MessageFacts{Outcome: w.outcome(), MadeIn: w.MadeIn, Now: w.Now}
+	facts := MessageFacts{Form: FormAnswer, Outcome: w.outcome(), MadeIn: w.MadeIn, Now: w.Now}
 	for _, source := range w.Sources {
 		facts.Tokens = append(facts.Tokens, source.Tokens...)
 	}
 	var b spanBuilder
 	if len(w.Sources) > 1 {
 		w.digest(&b, &facts)
-		facts.Body = b.body
-		return b.text.String(), facts
+		return b.done(facts)
 	}
 	source := w.source()
 	var lines []string
@@ -281,8 +281,7 @@ func (w Wake) Message() (string, MessageFacts) {
 		}
 		b.insert(at, "\n"+strings.Join(lines, "\n"))
 	}
-	facts.Body = b.body
-	return b.text.String(), facts
+	return b.done(facts)
 }
 
 // outcome is the wake's kind as its facts name it: a person's Stop is an

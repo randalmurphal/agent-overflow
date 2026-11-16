@@ -738,6 +738,7 @@ func (t threadToolsApp) dispatchRequest(
 	if err != nil {
 		return err
 	}
+	attribution := message.Attribution()
 	sendID := threadRequestSendID(token)
 	// writtenTo is the session an idle thread's send wrote the message to.
 	// A repeated frame writes nothing and leaves it empty: the first frame
@@ -750,8 +751,8 @@ func (t threadToolsApp) dispatchRequest(
 		// The target's composer holds whatever the person at that thread
 		// typed and has not sent. An agent's message must never take it.
 		PreserveDraft:     true,
-		Origin:            message.Origin(),
-		OriginThread:      message.OriginThread(),
+		Origin:            attribution.Origin,
+		OriginThread:      attribution.Thread,
 		onDurable:         func(session string) { t.requestDispatched(token, targetThreadID, session) },
 		onSessionDispatch: func(session string) { writtenTo = session },
 	})
@@ -864,7 +865,7 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID string, message use
 		Token:        token,
 		Kind:         receipt.Kind,
 	}
-	if written := message.OriginThread(); written != nil {
+	if written := message.Attribution().Thread; written != nil {
 		origin.Facts = written.Facts
 	}
 	_, err = t.app.registerQueueItem(targetThreadID, message.Text(), SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
@@ -1079,15 +1080,9 @@ func (t threadToolsApp) requestMessage(
 	// The body is the sender's text and the footer is this computer's; a
 	// body line that opens like the footer is quoted so only the footer
 	// reads as one.
-	message, facts := footer.Message(text)
-	return usermessage.ThreadMessage(usermessage.OriginThread{
-		ComputerID:   caller.ComputerID,
-		ComputerName: caller.ComputerName,
-		ThreadID:     caller.ThreadID,
-		Title:        caller.Title,
-		Token:        token,
-		Kind:         kind,
-	}, message, facts), nil
+	return usermessage.Request(kind, usermessage.Sender{
+		ComputerID: caller.ComputerID, ComputerName: caller.ComputerName, ThreadID: caller.ThreadID, Title: caller.Title,
+	}, footer, text)
 }
 
 // senderComputerName is what the footer calls the sender's computer: what

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // Byte budgets for one item's projection. Every one of them is a
@@ -160,7 +161,7 @@ func Project(item store.Item, inlinePreviews bool) store.Item {
 		launch = Project(launch, inlinePreviews)
 		item.CompletionLaunch = &launch
 	}
-	item.Meta = ProjectMeta(item.Meta, item.PayloadMeta)
+	item.Meta = ProjectMeta(AgentMessageMeta(item), item.PayloadMeta)
 	projected, elidedAny, keptAny := ProjectPayloadMeta(item.PayloadMeta, inlinePreviews)
 	item.PayloadMeta = projected
 	if elidedAny && !keptAny {
@@ -172,6 +173,18 @@ func Project(item store.Item, inlinePreviews bool) store.Item {
 		item.PayloadPreviewSpans = ""
 	}
 	return item
+}
+
+// AgentMessageMeta is the meta of a user row an agent's message is in, as a
+// client reads it: every message it holds described by facts checked against
+// its text (usermessage.ProjectRowMeta). Any other row's meta is returned as
+// stored, after one substring test. A meta patch of a user row takes the same
+// projection, from the whole row the patch belongs to.
+func AgentMessageMeta(item store.Item) string {
+	if item.Kind != "user_text" {
+		return item.Meta
+	}
+	return usermessage.ProjectRowMeta(item.Summary, item.Meta)
 }
 
 // ProjectItems projects a slice in place and returns it. The slice is

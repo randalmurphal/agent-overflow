@@ -220,7 +220,7 @@ func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) usermessage.Ag
 	writeAgentWakeFireLines(&out, fire)
 	out.WriteString("note: ")
 	out.WriteString(untrustedtext.Quote(row.Note, 0))
-	return usermessage.WakeMessage(usermessage.OriginWake{Kind: store.AgentWakeLoop, Label: row.Label},
+	return usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{Label: row.Label},
 		fmt.Sprintf("Loop %s fired. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice), out.String(), row.Note)
 }
 
@@ -246,7 +246,7 @@ func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stder
 	if headline == "" {
 		headline = firstDataLine(string(stderr.data))
 	}
-	return usermessage.WakeMessage(usermessage.OriginWake{Kind: store.AgentWakeWatch, Label: row.Label},
+	return usermessage.Report(usermessage.ReportWatch, usermessage.Reporter{Label: row.Label},
 		fmt.Sprintf("Watch %s reported. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice),
 		strings.TrimRight(out.String(), "\n"), headline)
 }
@@ -257,7 +257,7 @@ func renderAgentSendWake(text string) usermessage.AgentMessage {
 	capped := newCappedText(text, agentWakeOutputCap)
 	var out strings.Builder
 	writeQuotedLines(&out, capped)
-	return usermessage.WakeMessage(usermessage.OriginWake{Kind: usermessage.OriginWakeKindSend},
+	return usermessage.Report(usermessage.ReportSend, usermessage.Reporter{},
 		agentSendWakeHeader+" "+agentWakeDataNotice, strings.TrimRight(out.String(), "\n"), firstDataLine(string(capped.data)))
 }
 
@@ -273,9 +273,11 @@ func firstDataLine(data string) string {
 }
 
 // queuedAgentMessage is the message a queue row holds, with the attribution
-// and facts its payload kept: what a wake taken back or moved is queued
-// again with. A payload that does not decode leaves the text alone, read as
-// an agent's message with no facts.
+// and facts its payload kept (usermessage.DecodeStored): what a wake taken
+// back or moved is queued again with. A payload that does not decode leaves
+// the text alone with no attribution, and one whose attribution does not
+// hold keeps the text, delivered as written, with facts that claim nothing
+// of it.
 func queuedAgentMessage(item store.FlushQueueItem) usermessage.AgentMessage {
 	var payload flushQueuePayload
 	if len(item.Payload) > 0 {
@@ -283,7 +285,17 @@ func queuedAgentMessage(item store.FlushQueueItem) usermessage.AgentMessage {
 			log.Printf("agent wakes: decode the payload of queued %s: %v", item.SendID, err)
 		}
 	}
-	return usermessage.StoredMessage(item.Message, payload.Origin, payload.OriginThread, payload.OriginWake)
+	return storedAgentMessage(item.SendID, item.Message, payload.Origin, payload.OriginThread, payload.OriginWake)
+}
+
+// storedAgentMessage is usermessage.DecodeStored of the message sendID
+// names, its refusal logged: the message it returns is delivered either way.
+func storedAgentMessage(sendID, text, origin string, thread *usermessage.OriginThread, wake *usermessage.OriginWake) usermessage.AgentMessage {
+	message, err := usermessage.DecodeStored(text, origin, thread, wake)
+	if err != nil {
+		log.Printf("agent wakes: read back %s: %v", sendID, err)
+	}
+	return message
 }
 
 // writeAgentWakeFireLines states what a fire stands for besides itself.
@@ -875,7 +887,7 @@ func splitSessionEndParts(members unconfirmedMembers, content string) (app map[s
 		}
 		own := members.own
 		return map[string]usermessage.AgentMessage{
-			members.ids[0]: usermessage.StoredMessage(content, own.Origin, own.OriginThread, own.OriginWake),
+			members.ids[0]: storedAgentMessage(members.ids[0], content, own.Origin, own.OriginThread, own.OriginWake),
 		}, nil, true
 	}
 	texts, fits := usermessage.SplitJoinedParts(content, members.parts)
@@ -886,7 +898,7 @@ func splitSessionEndParts(members unconfirmedMembers, content string) (app map[s
 	var kept []string
 	for i, part := range members.parts {
 		if appWrittenSendID(part.SendID) {
-			app[part.SendID] = usermessage.StoredMessage(texts[i], part.Origin, part.OriginThread, part.OriginWake)
+			app[part.SendID] = storedAgentMessage(part.SendID, texts[i], part.Origin, part.OriginThread, part.OriginWake)
 			continue
 		}
 		kept = append(kept, texts[i])

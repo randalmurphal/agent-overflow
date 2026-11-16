@@ -533,9 +533,9 @@ func workerPromptAnswerKey(call threadtools.ReplyCall) string {
 // what the worker asks, quoted as data, and how to answer, headed in its
 // row by the prompt's first line.
 func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) usermessage.AgentMessage {
-	kind := usermessage.OriginWakeKindQuestion
+	kind := usermessage.ReportQuestion
 	if prompt.approval != nil {
-		kind = usermessage.OriginWakeKindApproval
+		kind = usermessage.ReportApproval
 	}
 	notice := fmt.Sprintf("Thread %s (%s), which you spawned, is waiting on your answer. %s",
 		untrustedtext.Quote(workerTitle, 0), workerID, agentWakeDataNotice)
@@ -578,7 +578,7 @@ func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) use
 		fmt.Fprintf(&out, "Answer with thread_reply, token %s, once: one answer per part in answers, in order, and a summary in text.", prompt.token)
 	}
 	out.WriteString(" If it is not yours to decide, ask the user yourself, as one question with this context. The user can also answer in that thread, which settles this and refuses your reply.")
-	return usermessage.WakeMessage(usermessage.OriginWake{Kind: kind, Label: workerTitle, ThreadID: workerID},
+	return usermessage.Report(kind, usermessage.Reporter{Label: workerTitle, ThreadID: workerID},
 		notice, out.String(), firstDataLine(data.String()))
 }
 

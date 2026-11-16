@@ -15,10 +15,11 @@ import (
 	"agent-overflow/internal/workflow/wake"
 )
 
-// The frontend heads an agent's row with its sender and first line
+// The frontend heads an agent's row with its sender and headline
 // (agentMessageFromItem); agentMessageLabel names the same turn in the Edits
 // selector. Both read the fixture this test writes, from the real templates,
-// so the two cannot say different things. Regenerate with
+// the frontend from the meta a client receives, so the two cannot say
+// different things. Regenerate with
 // UPDATE_AGENT_MESSAGE_LABELS=1 make go-test GO_TEST_PKGS=./internal/app
 // GO_TEST_FLAGS='-run TestAgentMessageLabelFixture'.
 
@@ -63,26 +64,29 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	message := func(m usermessage.AgentMessage, attributed bool, sendID string) (string, string) {
 		meta := usermessage.Meta{Origin: m.Origin(), SendID: sendID}
 		if attributed {
-			meta.OriginThread, meta.OriginWake = m.OriginThread(), m.OriginWake()
+			attribution := m.Attribution()
+			meta.OriginThread, meta.OriginWake = attribution.Thread, attribution.Wake
 		}
 		return m.Text(), marshal(meta)
 	}
+	// request is a request footer's sender writes; with no origin, its row
+	// names no thread.
 	request := func(origin *usermessage.OriginThread, body string, footer threadtools.Footer) (string, string) {
-		text, facts := footer.Message(body)
-		var from usermessage.OriginThread
+		kind := store.ThreadRequestSend
 		if origin != nil {
-			from = *origin
+			kind = origin.Kind
 		}
-		return message(usermessage.ThreadMessage(from, text, facts), origin != nil, "thread-request:tok-1")
+		m, err := usermessage.Request(kind, usermessage.Sender{ThreadID: footer.ThreadID, Title: footer.Title}, footer, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return message(m, origin != nil, "thread-request:tok-1")
 	}
 	footer := threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-1", AnswerRequested: true, SenderReachable: true}
+	// answer is the wake w delivers; with no origin, its row names no
+	// thread.
 	answer := func(w threadtools.Wake, origin *usermessage.OriginThread) (string, string) {
-		text, facts := w.Message()
-		var from usermessage.OriginThread
-		if origin != nil {
-			from = *origin
-		}
-		return message(usermessage.ThreadMessage(from, text, facts), origin != nil, "thread-wake:tok-1")
+		return message(usermessage.Answer(w), origin != nil, "thread-wake:tok-1")
 	}
 	appWake := func(m usermessage.AgentMessage) (string, string) {
 		return message(m, true, "agent-wake:w1:1")
@@ -240,7 +244,7 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("an assistant's opening message", text, meta)
 	text, meta = appWake(assistantMessage(assistantSendID(usermessage.OriginWakeKindHandOff, "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1})))
 	add("an assistant's handoff block", text, meta)
-	text, meta = message(workerStoppedNote(usermessage.OriginThread{ThreadID: "t-worker", Title: worker, Kind: usermessage.OriginKindWake}, "tok-1", nil), true, "thread-worker-stopped:tok-1")
+	text, meta = message(usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: worker, Token: "tok-1"}, "", ""), true, "thread-worker-stopped:tok-1")
 	add("the notice that the user stopped a worker", text, meta)
 
 	// Rows main wrote, with no kind and no facts, read from their text
@@ -258,12 +262,22 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	text, meta = legacy("Reminder you set [token tok-1]:\nCheck the build.", &usermessage.OriginThread{Token: "tok-1"}, "thread-wake:tok-1")
 	add("main: a reminder", text, meta)
 
+	// Each case records the label of the row as stored and the meta a
+	// client receives (usermessage.ProjectRowMeta), which reads the same.
 	for i := range cases {
 		decoded, err := usermessage.FromItem(store.Item{Meta: cases[i].Meta})
 		if err != nil {
 			t.Fatalf("%s: %v", cases[i].Name, err)
 		}
 		cases[i].Label = agentMessageLabel(cases[i].Text, decoded)
+		cases[i].Meta = usermessage.ProjectRowMeta(cases[i].Text, cases[i].Meta)
+		served, err := usermessage.FromItem(store.Item{Meta: cases[i].Meta})
+		if err != nil {
+			t.Fatalf("%s: served meta: %v", cases[i].Name, err)
+		}
+		if label := agentMessageLabel(cases[i].Text, served); label != cases[i].Label {
+			t.Errorf("%s: served row labelled %q, stored row %q", cases[i].Name, label, cases[i].Label)
+		}
 	}
 	return cases
 }

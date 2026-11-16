@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/store"
 )
 
@@ -211,7 +212,10 @@ func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPar
 	} else {
 		patch := patchFromPartial(update)
 		if update.Meta != nil {
-			patch.Meta = &stored.Meta
+			// The meta a read serves for the row, which an agent's message
+			// projects with the row's text (itemwire.AgentMessageMeta).
+			meta := itemwire.AgentMessageMeta(stored)
+			patch.Meta = &meta
 		}
 		if update.Summary == nil {
 			patch.StreamEnd = item.StreamEnd

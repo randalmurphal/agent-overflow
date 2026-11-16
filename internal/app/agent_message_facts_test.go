@@ -19,13 +19,25 @@ import (
 // factsOf is the facts a message's attribution carries, nil when it has
 // none.
 func factsOf(message usermessage.AgentMessage) *threadtools.MessageFacts {
-	if thread := message.OriginThread(); thread != nil {
+	attribution := message.Attribution()
+	if thread := attribution.Thread; thread != nil {
 		return thread.Facts
 	}
-	if wake := message.OriginWake(); wake != nil {
+	if wake := attribution.Wake; wake != nil {
 		return wake.Facts
 	}
 	return nil
+}
+
+// bodyOf is the body facts describe in text, "" with a failure when they do
+// not describe it.
+func bodyOf(t *testing.T, text string, facts *threadtools.MessageFacts) string {
+	t.Helper()
+	if err := facts.Check(text); err != nil {
+		t.Errorf("facts %+v: %v", facts, err)
+		return ""
+	}
+	return facts.BodyOf(text)
 }
 
 // Every message the app writes for an agent carries the facts its row is
@@ -68,12 +80,13 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 			usermessage.OriginWakeKindHandOff, "", "t-old", ""},
 	} {
 		facts := factsOf(tc.message)
-		if tc.message.Origin() != usermessage.OriginAgentWake || tc.message.OriginWake() == nil || tc.message.OriginWake().Kind != tc.kind || facts == nil {
-			t.Errorf("%s: attribution %q %+v, want an agent wake of kind %s with facts", tc.name, tc.message.Origin(), tc.message.OriginWake(), tc.kind)
+		attribution := tc.message.Attribution()
+		if attribution.Origin != usermessage.OriginAgentWake || attribution.Wake == nil || attribution.Wake.Kind != tc.kind || facts == nil {
+			t.Errorf("%s: attribution %+v, want an agent wake of kind %s with facts", tc.name, attribution, tc.kind)
 			continue
 		}
 		text := tc.message.Text()
-		body := threadtools.SpanText(text, facts.Body)
+		body := bodyOf(t, text, facts)
 		wantBody := text
 		if tc.notice != "" {
 			wantBody = strings.TrimPrefix(text, tc.notice+"\n")
@@ -90,7 +103,7 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 // A headline is one line, bounded, whatever the writer passes it.
 func TestAWakeHeadlineIsOneBoundedLine(t *testing.T) {
 	t.Parallel()
-	message := usermessage.WakeMessage(usermessage.OriginWake{Kind: store.AgentWakeLoop}, "notice", "data", "a\n  b\t"+strings.Repeat("界", usermessage.HeadlineBytes))
+	message := usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{}, "notice", "data", "a\n  b\t"+strings.Repeat("界", usermessage.HeadlineBytes))
 	headline := factsOf(message).Headline
 	if strings.ContainsAny(headline, "\n\t") || !strings.HasPrefix(headline, "a b 界") || len(headline) > usermessage.HeadlineBytes {
 		t.Fatalf("headline %q (%d bytes), want one line within %d bytes", headline, len(headline), usermessage.HeadlineBytes)
@@ -108,12 +121,13 @@ func TestThreadWakeAndNoticeWritersStoreTheirFacts(t *testing.T) {
 		{Token: "tok-2", TargetThreadID: "t-remote", TargetComputerID: "c-desk", TargetThreadTitle: "Remote"},
 		{Token: "tok-3", TargetThreadID: "t-remote", TargetComputerID: "c-desk", TargetThreadTitle: "Remote"},
 	}
-	digest := app.threadWakeNote(rows[0], app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, text: "Same answer.", rows: rows}))
+	digest := usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, text: "Same answer.", rows: rows}))
 	facts := factsOf(digest)
-	if digest.Origin() != usermessage.OriginAgentThread || digest.OriginThread().Kind != usermessage.OriginKindWake || facts == nil {
-		t.Fatalf("digest attribution %q %+v, want an agent thread's wake with facts", digest.Origin(), digest.OriginThread())
+	if thread := digest.Attribution().Thread; digest.Origin() != usermessage.OriginAgentThread || thread.Kind != usermessage.OriginKindWake ||
+		thread.ThreadID != "t-local" || thread.Token != "tok-1" || facts == nil {
+		t.Fatalf("digest attribution %q %+v, want the carrier's wake with facts", digest.Origin(), thread)
 	}
-	if facts.Outcome != threadtools.WakeReply || threadtools.SpanText(digest.Text(), facts.Body) != "Same answer." ||
+	if facts.Outcome != threadtools.WakeReply || bodyOf(t, digest.Text(), facts) != "Same answer." ||
 		!slices.Equal(facts.Tokens, []string{"tok-1", "tok-2", "tok-3"}) || len(facts.Threads) != 2 {
 		t.Fatalf("digest facts = %+v", facts)
 	}
@@ -123,16 +137,16 @@ func TestThreadWakeAndNoticeWritersStoreTheirFacts(t *testing.T) {
 		t.Fatalf("digest threads = %+v, want the remote one with its computer id", facts.Threads)
 	}
 
-	single := app.threadWakeNote(rows[1], app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeErrored, text: "boom", rows: rows[1:2]}))
-	if facts := factsOf(single); facts == nil || facts.Outcome != threadtools.WakeErrored || len(facts.Threads) != 0 ||
-		threadtools.SpanText(single.Text(), facts.Body) != "boom" || single.OriginThread().ComputerID != "c-desk" {
-		t.Fatalf("single wake %+v, facts %+v", single.OriginThread(), facts)
+	single := usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeErrored, text: "boom", rows: rows[1:2]}))
+	if facts, thread := factsOf(single), single.Attribution().Thread; facts == nil || facts.Outcome != threadtools.WakeErrored || len(facts.Threads) != 0 ||
+		bodyOf(t, single.Text(), facts) != "boom" || thread.ComputerID != "c-desk" || thread.ThreadID != "t-remote" || thread.Token != "tok-2" {
+		t.Fatalf("single wake %+v, facts %+v", thread, facts)
 	}
 
-	stopped := workerStoppedNote(usermessage.OriginThread{ThreadID: "t-worker", Title: "Worker", Kind: usermessage.OriginKindWake}, "tok-9", []string{"its watch"})
+	stopped := usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: "Worker", Token: "tok-9", Failures: []string{"its watch"}}, "", "")
 	if facts := factsOf(stopped); facts == nil || facts.Outcome != threadtools.OutcomeWorkerStopped ||
-		!slices.Equal(facts.Tokens, []string{"tok-9"}) || threadtools.SpanText(stopped.Text(), facts.Body) != stopped.Text() ||
-		!strings.Contains(stopped.Text(), "its watch") {
+		!slices.Equal(facts.Tokens, []string{"tok-9"}) || bodyOf(t, stopped.Text(), facts) != stopped.Text() ||
+		!strings.Contains(stopped.Text(), "its watch") || stopped.Attribution().Thread.Kind != usermessage.OriginKindWake {
 		t.Fatalf("worker-stopped notice %q, facts %+v", stopped.Text(), facts)
 	}
 }
@@ -160,6 +174,6 @@ func TestADeliveredWakeIsQueuedWithItsFacts(t *testing.T) {
 	}
 	stored := queuedAgentMessage(queued[0])
 	if stored.Origin() != usermessage.OriginAgentWake || !reflect.DeepEqual(factsOf(stored), factsOf(message)) {
-		t.Fatalf("queued attribution %q %+v, want the wake's facts %+v", stored.Origin(), stored.OriginWake(), factsOf(message))
+		t.Fatalf("queued attribution %+v, want the wake's facts %+v", stored.Attribution(), factsOf(message))
 	}
 }

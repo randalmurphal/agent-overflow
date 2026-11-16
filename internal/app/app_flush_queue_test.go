@@ -3546,7 +3546,8 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fromItem := withReturnedReviewComments(queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil, nil), returned)
+	_, itemPayload := queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil, nil)
+	fromItem := withReturnedReviewComments(itemPayload, returned)
 	for _, raw := range []json.RawMessage{fromMeta, fromItem} {
 		var payload flushQueuePayload
 		if err := json.Unmarshal(raw, &payload); err != nil {
@@ -3584,7 +3585,7 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 
 func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T) {
 	t.Parallel()
-	raw := queuePayloadFromUserItem(store.Item{
+	_, raw := queuePayloadFromUserItem(store.Item{
 		Meta: `{"expandComposerCommands":true}`,
 	}, nil, nil)
 	var payload flushQueuePayload
