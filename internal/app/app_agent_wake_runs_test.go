@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
@@ -159,5 +160,60 @@ func TestKeptAgentWakeOutputStaysInsideTheCap(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Fatal("the cut split a rune")
+	}
+}
+
+// A run's last write arms its row and ends the run's registration in one
+// step, so a fire claimed the moment the row is armed again starts. Before,
+// the finishing run was still registered: the fire's claim took the row and
+// its registration failed, leaving the row `running` with nothing running it.
+func TestAFireOfARowItsRunJustArmedStarts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		end  func(a *App, run *agentWakeRun, loop store.AgentWake, at int64)
+	}{
+		{"finished", func(a *App, run *agentWakeRun, loop store.AgentWake, _ int64) {
+			a.finishAgentWakeFire(run, loop, agentWakeOutcomeDelivered, "", 0, store.AgentWakeCarried)
+		}},
+		{"held by a delete", func(a *App, run *agentWakeRun, loop store.AgentWake, at int64) {
+			a.settleAgentWakeDelivery(run, loop, agentWakeFire{at: at}, "Loop \"board\" fired.", store.ErrThreadDeleteClaimed)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _ := newAppForFlushQueueRPC(t)
+			stubNoticeStarts(a)
+			thread := noticeTestThread(t, a, "rearm-"+tc.name)
+			t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
+			now := time.Now()
+			loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 3600, NextAt: now.UnixMilli()})
+			claimed, ok, err := a.store.ClaimAgentWake(loop, now.UnixMilli(), now.Add(time.Hour).UnixMilli(), 0)
+			if err != nil || !ok {
+				t.Fatalf("claim: %v %v", ok, err)
+			}
+			// The run as fireAgentWake registers it, ending before its
+			// goroutine returns.
+			finishing := &agentWakeRun{threadID: thread.ID, cancel: func() {}, done: make(chan struct{})}
+			a.agentWakes.mu.Lock()
+			a.agentWakes.runs = map[string]*agentWakeRun{loop.ID: finishing}
+			a.agentWakes.mu.Unlock()
+
+			tc.end(a, finishing, claimed, now.UnixMilli())
+			armed, found, err := a.store.GetAgentWake(loop.ID)
+			if err != nil || !found || armed.State != store.AgentWakeArmed {
+				t.Fatalf("row after its run = %+v, %v, %v; want armed", armed, found, err)
+			}
+			if !a.fireAgentWake(armed, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+				row, _, _ := a.store.GetAgentWake(loop.ID)
+				t.Fatalf("the next fire did not start; row = %s", row.State)
+			}
+			a.agentWakes.mu.Lock()
+			next := a.agentWakes.runs[loop.ID]
+			a.agentWakes.mu.Unlock()
+			if next == nil || next == finishing {
+				t.Fatal("the next fire's run is not the one registered")
+			}
+		})
 	}
 }

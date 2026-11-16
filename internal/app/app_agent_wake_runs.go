@@ -277,7 +277,11 @@ func (a *App) settleAgentWakeDelivery(run *agentWakeRun, row store.AgentWake, fi
 		// run: due again at its own fire, which the next boot replays, or,
 		// for a thread a delete claimed, the sweep once a refused delete
 		// releases it (DueAgentWakes).
-		if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at); err != nil {
+		var err error
+		a.rearmAfterAgentWakeRun(row.ID, run, func() {
+			_, err = a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at)
+		})
+		if err != nil {
 			logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
 		} else {
 			a.emitAgentWakeChanged(row.ThreadID, row.ID)
@@ -294,7 +298,13 @@ func (a *App) finishAgentWakeFire(
 	if run.wasStopped() {
 		return
 	}
-	if finished, applied, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
+	var finished store.AgentWake
+	var applied bool
+	var err error
+	a.rearmAfterAgentWakeRun(row.ID, run, func() {
+		finished, applied, err = a.store.FinishAgentWake(row.ID, outcome, output, missed, carry)
+	})
+	if err != nil {
 		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
 	} else if applied {
 		a.emitAgentWakeRow(row.ThreadID, finished)
@@ -304,6 +314,23 @@ func (a *App) finishAgentWakeFire(
 	// The row is armed again with its next fire, which may be sooner than
 	// the sweep's sleep.
 	a.nudgeThreadRequestSweep()
+}
+
+// rearmAfterAgentWakeRun runs arm, the write that ends an interval run by
+// arming its row again, and ends the run's registration in the same step
+// under the wake lifecycle lock. A fire's claim and registration are one
+// step under that lock too (fireAgentWake), so a claim of the armed row
+// never finds this run still registered: its registration would fail and
+// leave the row claimed `running` with nothing running it.
+func (a *App) rearmAfterAgentWakeRun(wakeID string, run *agentWakeRun, arm func()) {
+	a.agentWakes.lifecycle.Lock()
+	defer a.agentWakes.lifecycle.Unlock()
+	arm()
+	a.agentWakes.mu.Lock()
+	if a.agentWakes.runs[wakeID] == run {
+		delete(a.agentWakes.runs, wakeID)
+	}
+	a.agentWakes.mu.Unlock()
 }
 
 // agentWatchResult is what one interval watch run came to.
