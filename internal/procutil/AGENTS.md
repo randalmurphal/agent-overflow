@@ -32,8 +32,9 @@ This package owns six utilities:
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
   the two together. Both take the `Reaper` that ends the group if this
   process dies, and refuse a nil one (`ErrNoReaper`): the group is watched
-  before `StartGroup` returns and released once no member is alive. Kept
-  leftovers and a group the kill could not end stay watched.
+  before `StartGroup` returns and released once no member is alive; a group
+  the kill could not end stays watched. Kept leftovers are the one exception:
+  released alive, they outlive this process.
   Which spawners use it, and what ends the others, is in
   [process lifetime](../../docs/architecture/process-lifetime.md). This is the one implementation of pipe ownership,
   cancellation, the leftover sweep and the drain: do not build another from
@@ -43,8 +44,9 @@ This package owns six utilities:
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops
   whatever is still in the group and reports those processes as `Leftovers`;
-  `KeepLeftovers` leaves them running, until this process exits, for a
-  command that may start a service on purpose. `OutputHeld` reports a pipe still open after the drain grace.
+  `KeepLeftovers` leaves them running, and releases them from the reaper, for
+  a command that may start a service on purpose. `OutputHeld` reports a pipe
+  still open after the drain grace.
   `Wait`'s error is `*exec.ExitError` for a non-zero exit or a signal death,
   or `ErrGroupSurvived` when the leader, or a leftover the sweep stopped,
   outlived SIGKILL (it runs as another user) and was abandoned. `Output` should not return an error; one is

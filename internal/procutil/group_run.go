@@ -34,8 +34,9 @@ type GroupCommand struct {
 	TerminateGrace time.Duration
 	// KeepLeftovers leaves running the processes still in the group when the
 	// command exits on its own, instead of sweeping them. Cancellation still
-	// stops the whole group. A worktree setup command or a workflow tool
-	// command may start a service that is meant to outlive it.
+	// stops the whole group. The kept processes are released from the
+	// reaper too, so they outlive this process. A worktree setup command or a
+	// workflow tool command may start a service that is meant to outlive it.
 	KeepLeftovers bool
 	// Terminal, when set, is the command's controlling terminal. Stdin and
 	// Output are unchanged. The caller closes it after Wait returns.
@@ -85,9 +86,10 @@ func (o GroupOutcome) OutputErr() error {
 // stopping them: the app's orphan reaper. A signal to the leader alone, such
 // as Linux's parent-death signal, would leave running what a shell started.
 // StartGroup has it watch every group, by the leader's pid, before StartGroup
-// returns, and Wait releases the group once no member is alive. Leftovers
-// KeepLeftovers keeps stay watched, so they end with this process, and so
-// does a group the kill could not end.
+// returns, and Wait releases the group once no member is alive; a group the
+// kill could not end stays watched. Leftovers KeepLeftovers keeps after the
+// command exits on its own are handed off: released alive, they outlive this
+// process.
 type Reaper interface {
 	Watch(pgid int)
 	Release(pgid int)
@@ -225,19 +227,12 @@ func (g *Group) supervise() (GroupOutcome, error) {
 			return GroupOutcome{ExitCode: -1, Stopped: true, PipeErr: g.settle()}, ErrGroupSurvived
 		}
 	}
-	// The leader's exit is not the group's: release only once no member is
-	// alive. A kept leftover stays watched and ends with this process.
 	leftovers := ConfiguredGroupAlive(g.cmd)
-	var stopErr error
-	if leftovers && !g.keepLeftovers {
-		if err := stopGroup(g.cmd, g.grace, g.kill); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			stopErr = errors.Join(ErrGroupSurvived, err)
-		}
+	if leftovers && g.keepLeftovers && !stopped {
+		g.handOffKeptLeftovers()
+	} else {
+		waitErr = errors.Join(waitErr, g.releaseWhenEmpty(leftovers))
 	}
-	if stopErr == nil && !(leftovers && g.keepLeftovers) {
-		g.reaper.Release(g.cmd.Process.Pid)
-	}
-	waitErr = errors.Join(waitErr, stopErr)
 	held := false
 	select {
 	case <-g.drained:
@@ -251,6 +246,29 @@ func (g *Group) supervise() (GroupOutcome, error) {
 	return GroupOutcome{
 		ExitCode: code, Leftovers: leftovers, Stopped: stopped, OutputHeld: held, PipeErr: g.settle(),
 	}, waitErr
+}
+
+// releaseWhenEmpty ends what the leader left in the group and releases the
+// group's watch once no member is alive. The leader's exit is not the
+// group's, so this is the release after Wait. A group the stop could not
+// empty stays watched and is reported as ErrGroupSurvived.
+func (g *Group) releaseWhenEmpty(leftovers bool) error {
+	if leftovers {
+		if err := stopGroup(g.cmd, g.grace, g.kill); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return errors.Join(ErrGroupSurvived, err)
+		}
+	}
+	g.reaper.Release(g.cmd.Process.Pid)
+	return nil
+}
+
+// handOffKeptLeftovers releases the watch on a group whose command exited on
+// its own leaving processes KeepLeftovers keeps. This is the intended
+// hand-off, not the release after Wait: a dev server or container a setup
+// command started must outlive the backend, through an update or restart, so
+// it is released alive and never swept.
+func (g *Group) handOffKeptLeftovers() {
+	g.reaper.Release(g.cmd.Process.Pid)
 }
 
 // settle closes the read end, which also ends a drain that a process outside

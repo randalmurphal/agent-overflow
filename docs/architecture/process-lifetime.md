@@ -51,8 +51,10 @@ stays watched and the owner reports the failure.
 `procutil.StartGroup` and `RunGroup` take a `procutil.Reaper` and refuse a nil
 one, so every supervised command group is watched for its whole run. Wait
 stops leftovers, and returns `ErrGroupSurvived` when one survives SIGKILL.
-Processes a command leaves running under `KeepLeftovers` stay watched and end
-with the backend. The headless browser's launch follows the same rule:
+Processes a command leaves running under `KeepLeftovers` when it exits on
+its own are the one deliberate exception: they are released alive and
+outlive the backend, as they outlive the command. Cancellation still stops
+them. The headless browser's launch follows the same rule:
 `startChromium` takes the reaper and refuses a nil one, the engine is not
 built without one (`HeadlessChromiumOptions.Reaper`), and the group is
 released once `stop` has seen every process exit. `provider.Spawn` takes a
@@ -69,8 +71,8 @@ lifetime starts nothing.
 | Spawner | Lifetime | Mechanism |
 |---|---|---|
 | Composer shell commands (`shellrun`) | Ends with the backend | Reaper |
-| Worktree setup commands (`worktreesetup`, from chat and workflows) | Ends with the backend, kept leftovers included | Reaper |
-| Workflow tool commands (`workflowhost`) | Ends with the backend, kept leftovers included | Reaper |
+| Worktree setup commands (`worktreesetup`, from chat and workflows) | Ends with the backend; kept leftovers outlive it | Reaper |
+| Workflow tool commands (`workflowhost`) | Ends with the backend; kept leftovers outlive it | Reaper |
 | Remote jobs (`remotejobs`) | Ends with the backend | Reaper |
 | Provider update and doctor runs (`app_provider_update.go`) | Ends with the backend | Reaper |
 | ACME DNS hooks (`acmecert`) | Ends with the backend | Reaper |

@@ -313,8 +313,8 @@ sleep 0.3; echo leader-done`, &output))
 
 // KeepLeftovers leaves a process the command started on purpose running, and
 // a leftover that does not hold the output pipe does not delay the result.
-// The kept process is still in the group, so the group stays watched and ends
-// with this process.
+// The kept process is handed off: its group is released while it runs, so it
+// outlives this process.
 func TestRunGroupKeepsLeftoversWhenAsked(t *testing.T) {
 	t.Parallel()
 	var output syncBuffer
@@ -329,7 +329,7 @@ func TestRunGroupKeepsLeftoversWhenAsked(t *testing.T) {
 	if err != nil || outcome.ExitCode != 0 || !outcome.Leftovers || outcome.OutputHeld || outcome.Stopped {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
-	requireReleased(t, reaper, false)
+	requireReleased(t, reaper, true)
 	if elapsed >= groupDrainGrace {
 		t.Fatalf("a leftover that does not hold the pipe delayed the result by %s", elapsed)
 	}
@@ -391,7 +391,8 @@ func TestRunGroupCancellationStopsAKeptGroup(t *testing.T) {
 	defer cancel()
 	command := shellCommand(t, `sleep 60 >/dev/null 2>&1 & echo $! > pid; echo started; wait`, &output)
 	command.KeepLeftovers = true
-	group, err := StartGroup(ctx, &recordingReaper{}, command)
+	reaper := &recordingReaper{}
+	group, err := StartGroup(ctx, reaper, command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,6 +405,7 @@ func TestRunGroupCancellationStopsAKeptGroup(t *testing.T) {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
 	waitForExit(t, pid)
+	requireReleased(t, reaper, true)
 }
 
 func TestGroupOutcomeOutputErr(t *testing.T) {
