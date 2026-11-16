@@ -42,9 +42,8 @@ mode. Product behavior and authority are defined in
   With multiple pages, require an explicit handle. Never infer a caller or use
   MRU selection.
 - Keep the existing resource bounds on profiles, pages, viewport size,
-  operations, snapshots, screenshots, downloads, assets, console data, CDP
-  network buffers (`networkEnableParams`), and MCP bodies. Do not start an
-  engine per tool call.
+  operations, snapshots, screenshots, downloads, assets, console data, and MCP
+  bodies. Do not start an engine per tool call.
 - Engine callbacks must not synchronously perform teardown that waits on the
   callback's own event loop or UI thread.
 

@@ -30,7 +30,6 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		{Op: OpFind, PageID: "page-1", Query: "größe \U0001F600"},
 		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", MaxFindQueryBytes)},
 		{Op: OpFindStop, PageID: "page-1"},
-		{Op: OpRelease},
 	} {
 		if err := directive.Validate(); err != nil {
 			t.Errorf("Validate(%#v) = %v, want nil", directive, err)

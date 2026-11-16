@@ -86,33 +86,6 @@ func TestNotificationClientDispatchesBrowserHostDirective(t *testing.T) {
 	}
 }
 
-// A release addresses no page or profile, so it reaches the host on a lane of
-// its own, never queued behind a page's directives.
-func TestNotificationClientDispatchesARelease(t *testing.T) {
-	dispatched := make(chan webview2host.Directive, 1)
-	client, _ := newTestBrowserHostClient(t, "ws://127.0.0.1/ws", func(got webview2host.Directive) {
-		dispatched <- got
-	})
-	if err := client.handleEvent(notificationEvent{
-		Channel: string(eventchan.BrowserHost),
-		Seq:     1,
-		Data:    json.RawMessage(`{"op":"release"}`),
-	}); err != nil {
-		t.Fatalf("handleEvent = %v, want nil", err)
-	}
-	select {
-	case got := <-dispatched:
-		if !reflect.DeepEqual(got, webview2host.Directive{Op: webview2host.OpRelease}) {
-			t.Fatalf("dispatched %#v, want a bare release", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the browser host handler")
-	}
-	if key := laneKey(webview2host.Directive{Op: webview2host.OpRelease}); key != "op:release" {
-		t.Fatalf("release lane = %q", key)
-	}
-}
-
 // The trust boundary: a directive drives real browser windows and names a
 // per-workspace profile that becomes a directory component, so anything
 // that fails Validate must never reach the handler, and none of it may
@@ -125,9 +98,6 @@ func TestNotificationClientDropsUnusableBrowserHostDirective(t *testing.T) {
 	}{
 		{"junk json", `{"op":`, "ignore malformed directive"},
 		{"unknown op", `{"op":"teleport","pageId":"page-1"}`, "ignore invalid directive"},
-		// The shape of a release reaching a launcher that predates it: an op
-		// it does not know, addressed to nothing.
-		{"unknown op addressed to nothing", `{"op":"hibernate"}`, "ignore invalid directive"},
 		{"empty op", `{"pageId":"page-1"}`, "ignore invalid directive"},
 		{"create without a page id", `{"op":"create","profileId":"ws-main"}`, "ignore invalid directive"},
 		{"create without a profile id", `{"op":"create","pageId":"page-1"}`, "ignore invalid directive"},
