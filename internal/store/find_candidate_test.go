@@ -76,6 +76,31 @@ func TestFindShownMarkdownErasesOnlyWhatRendersNoLetters(t *testing.T) {
 	}
 }
 
+// A user row whose bubble may join two parts around a dropped `!command`
+// matches every query; a `!` that cannot start such a part does not.
+func TestFindCandidateTextOfUserRowAroundACommandIsAny(t *testing.T) {
+	for _, summary := range []string{
+		"a\n\n---\n\n!ls\n\n---\n\nb",
+		"a\n\n---\n\n  !ls\n\n---\n\nb\n\n---\n\nc",
+		"a\n\n![image](attachment://att-1)\n\n---\n\n!ls\n\n---\n\nb",
+	} {
+		if got := findCandidateText("user_text", summary, "{}", "", nil); got != findAnyCandidate {
+			t.Errorf("candidate of %q = %q", summary, got)
+		}
+	}
+	for _, summary := range []string{
+		"Wow! !important",
+		"!ls",
+		"a\n\n---\n\n!ls",
+		"!ls\n\n---\n\nb",
+		"a\n\n---\n\nb !c\n\n---\n\nd",
+	} {
+		if got := findCandidateText("user_text", summary, "{}", "", nil); got == findAnyCandidate {
+			t.Errorf("candidate of %q matches every query", summary)
+		}
+	}
+}
+
 // A row the filter cannot narrow matches every query.
 func TestFindCandidateTextOfUnsureMarkdownIsAny(t *testing.T) {
 	if got := findCandidateText("assistant_text", "[a [b](c) d](e) f", "{}", "", nil); got != findAnyCandidate {

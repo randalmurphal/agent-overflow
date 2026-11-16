@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"agent-overflow/internal/stringsx"
 )
@@ -125,7 +126,11 @@ func findCandidateText(kind, summary, meta, toolName string, payload *string) st
 	case "user_text":
 		// The bubble shows its text as typed, less the image blocks
 		// (frontend utils/userMessageMeta.ts stripAttachmentImages).
-		if stripped := findUserImageBlock.ReplaceAllString(summary, ""); stripped != summary {
+		stripped := findUserImageBlock.ReplaceAllString(summary, "")
+		if findUserMayJoinAroundCommand(stripped) {
+			return findAnyCandidate
+		}
+		if stripped != summary {
 			variants = append(variants, findLoose(stripped))
 		}
 	}
@@ -191,6 +196,27 @@ func appendMetaStrings(variants []string, meta string) []string {
 	}
 	walk(value)
 	return variants
+}
+
+// findMessageJoin mirrors usermessage.JoinSeparator, which the store cannot
+// import.
+const findMessageJoin = "\n\n---\n\n"
+
+// findUserMayJoinAroundCommand reports whether the bubble may join text
+// across a removed `!command`. The bubble drops each shell invocation, a run
+// of whole parts split on findMessageJoin whose trimmed text is `!command`
+// (usermessage.ShellInvocationRuns), so the run's first part starts with `!`
+// after white space. Dropping a run at either end leaves a substring of the
+// text; only a run with a part before and after it joins two parts, and its
+// first part is then one of the inner parts, which this checks.
+func findUserMayJoinAroundCommand(text string) bool {
+	parts := strings.Split(text, findMessageJoin)
+	for _, part := range parts[1:max(1, len(parts)-1)] {
+		if strings.HasPrefix(strings.TrimLeftFunc(part, unicode.IsSpace), "!") {
+			return true
+		}
+	}
+	return false
 }
 
 var (

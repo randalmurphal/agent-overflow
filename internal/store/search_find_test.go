@@ -195,3 +195,39 @@ func TestSearchThreadItems_FindsAcrossMarkdownTheReaderMustRead(t *testing.T) {
 	check("unfilled", "literal) c d e", "[mixed unsure]")
 	check("unfilled", "zebra", "[unsure]")
 }
+
+// A user row whose bubble joins the parts around a dropped `!command` is a
+// candidate for the joined run, stored and unfilled; a `!` that is not a
+// command leaves the row matched by its own text only.
+func TestSearchThreadItems_FindsAcrossADroppedCommand(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	for i, row := range []struct{ id, summary string }{
+		{"joined", "first needle part\n\n---\n\n!ls -la\n\n---\n\nsecond needle part"},
+		{"bang", "Wow! !important: the needle stays"},
+	} {
+		if err := insertCarded(s, Item{ID: row.id, ThreadID: "t1", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", Summary: row.summary, CreatedAt: int64(100 * (i + 1))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(stage, query, want string) {
+		t.Helper()
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != want {
+			t.Fatalf("%s: %q hits = %s, want %s", stage, query, ids, want)
+		}
+	}
+	for _, stage := range []string{"stored", "unfilled"} {
+		if stage == "unfilled" {
+			if _, err := s.db.Exec(`UPDATE items SET find_text = NULL WHERE thread_id = 't1'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check(stage, "part second", "[joined]")
+		check(stage, "important: the needle", "[joined bang]")
+		check(stage, "zebra", "[joined]")
+	}
+}

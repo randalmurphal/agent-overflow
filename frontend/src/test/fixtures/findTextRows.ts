@@ -48,6 +48,18 @@ export const FIND_TEXT_ROWS: FindTextRow[] = [
     kind: 'user_text',
     summary: 'see [docs](https://example.com/x) needle\n\n![image](attachment://att-1)\n\n---\n\nsecond needle',
   }),
+  // The bubble drops the typed command its block shows, joining the parts around it.
+  row('user with a command between messages', {
+    kind: 'user_text',
+    summary: 'first needle part\n\n---\n\n!ls -la\n\n---\n\nsecond needle part',
+    meta: JSON.stringify({
+      attachments: [{
+        id: 'att-shell', threadId: FIND_TEXT_THREAD, filename: 'output.txt', mimeType: 'text/plain; charset=utf-8', size: 3, kind: 'file',
+        shell: { command: 'ls -la', exitCode: 0, durationMs: 5, preview: 'ok\n' },
+      }],
+    }),
+  }),
+  row('user with a bang that is no command', { kind: 'user_text', summary: 'Wow! !important: the needle stays\n\n---\n\n!still typed text' }),
   row('error', { kind: 'error', summary: 'Request failed: needle not found' }),
   row('command from meta', { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: bash({ command: 'grep -rn needle src/' }) }),
   row('command with a description', { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: bash({ command: 'ls -la', description: 'List the needle files' }) }),
