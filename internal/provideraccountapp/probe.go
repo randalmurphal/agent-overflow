@@ -81,7 +81,7 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 	}
 
 	m.emitUnauthenticatedIfNoLogin(r, info)
-	account, signIn, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
+	account, signIn, move, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
 	if err != nil {
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
@@ -98,6 +98,9 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 	}
 	m.emitProviderAccountIfCurrent(r.ProviderName, account, info)
 	m.emitReconciledSignIn(signIn)
+	if move.moved {
+		m.applySelection(r.ProviderName, move.generation, move.previousID, move.accountID)
+	}
 	return info, nil
 }
 
@@ -215,6 +218,16 @@ func (m *Manager) runStableAccountProbe(
 	)
 }
 
+// CanonicalLoginExpired is canonicalLoginExpired for a caller outside the
+// manager that is about to start the provider's CLI against its canonical
+// home. Unattached storage holds no login to expire.
+func (m *Manager) CanonicalLoginExpired(providerName string) (bool, error) {
+	if !m.available() {
+		return false, nil
+	}
+	return m.canonicalLoginExpired(providerName)
+}
+
 // canonicalLoginExpired reports that the canonical credential holds a login
 // whose OAuth session has ended. An absent credential is not expired — there
 // is nothing there to expire — and a read failure is reported, because
@@ -292,12 +305,12 @@ func (m *Manager) PublishAccountIfCurrent(
 	m.emitProviderAccountIfCurrent(providerName, account, info)
 }
 
-// emitProviderAccountsChanged reports that the saved-account SET moved. The
-// three callers are the three set mutations a person makes: signing in, making
-// a saved account active, and removing one.
-func (m *Manager) emitProviderAccountsChanged() {
+// emitProviderAccountsChanged reports that one provider's saved-account SET
+// moved: an account signed in, made active, removed or put in or out of the
+// auto-switch pool.
+func (m *Manager) emitProviderAccountsChanged(providerName string) {
 	if m.deps.Accounts != nil {
-		m.deps.Accounts.PublishAccountsChanged()
+		m.deps.Accounts.PublishAccountsChanged(providerName)
 	}
 }
 

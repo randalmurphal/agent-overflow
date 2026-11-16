@@ -880,8 +880,9 @@ Query kinds, versioned `v: 1`:
 | `element` | `{count, first:{rect, visible, clipped, text, aria}}` for a CSS selector. A malformed selector errors; one that matches nothing answers `count: 0`. |
 | `globals` | Whitelisted read of a diagnostic global. A name outside the whitelist errors; a whitelisted name this build did not install answers `{unavailable: true}`. `__paneGeometry` and `uiTrace.recent` are genuinely absent in a harness build, because `make harness` builds with `UI_TRACE` unset. `__aoMemoryReport` and `__aoRevealDrain` are installed in EVERY build (main.ts) precisely because the things that read them (a memory probe, a measurement window's end) run against a harness binary. |
 | `perf` | Meter control. Driven by `HarnessPerf*`, not by a test directly. |
-| `open` | Mount a thread in a pane, `newPane` for a new one beside the others. The ONLY mutating kind, and it exists for one door: the plain open already has an out-of-page spelling (`notification:activated`, the channel an OS-notification click rides) and deliberately keeps using it, but `openThreadInNewPane` is reached in-page only (ctrl-click on a sidebar row, the thread context menu, a builtin command), so a shell driver has no other way to reach it. It calls that same function; it does not mint a pane of its own. Answers `{opened, threadId, paneId, newPane}`, or an error naming THIS PAGE's thread registry when the id is not in it (a thread the backend has but the page has not listed is a real state and reads very differently from a typo). |
+| `open` | Mount a thread in a pane, `newPane` for a new one beside the others. It exists for one door: the plain open already has an out-of-page spelling (`notification:activated`, the channel an OS-notification click rides) and deliberately keeps using it, but `openThreadInNewPane` is reached in-page only (ctrl-click on a sidebar row, the thread context menu, a builtin command), so a shell driver has no other way to reach it. It calls that same function; it does not mint a pane of its own. Answers `{opened, threadId, paneId, newPane}`, or an error naming THIS PAGE's thread registry when the id is not in it (a thread the backend has but the page has not listed is a real state and reads very differently from a typo). |
 | `reload` | Navigate the page. `HarnessReset`'s contract ends with "reload the page after" (the SPA is holding rows that no longer exist), and nothing outside a browser could do that. The answer is sent BEFORE the reload (a short deferred timeout, capped at 5s), because the socket the reply rides is about to drop; a caller treats a failed reload query as inconclusive and re-probes the bridge. |
+| `review-diff-memory` | What the review diff text budget holds: `{heldBytes, pinnedBytes, evictableChunks}`. `budgetBytes` sets the budget for this page (null restores 256 MiB, or 64 MiB compact) and enforces it at once, so a spec crosses it with a diff of a few megabytes. |
 
 The snapshot reads the DOM through attributes the components declare,
 never through class names: `[data-pane-id]`, `[data-ui-surface="chat"]`,
@@ -1432,7 +1433,12 @@ with `rpc(method, ...params)`, `waitForEvent(channel, predicate?)`
 (scans history first, since a fast backend can't win the race, and
 consumes its match, so two identical waits observe two distinct
 occurrences), `reset()`, and `close()`. `e2e/tests/fixtures.ts` shares one backend per
-Playwright worker and resets between tests. The returned client also exposes
+Playwright worker and resets between tests. Every launch step (data dir,
+process identity and proofs, bootstrap line, connect, watchdog) and the cleanup
+of a failed launch run under their own bounds (`e2e/src/harness-launch-step.ts`),
+so a stall fails as `harness launch: <step> did not finish in <n> s` with the
+pid's state and stderr tail; the worker fixture's timeout sits above
+`launchBudgetMs()` so that error is the one reported. The returned client also exposes
 `stop()` (graceful, preserving the data root), `crash()` (SIGKILL, also
 preserving it), and `close()` (stop plus owned-root cleanup). Restart specs can
 therefore launch a second backend over the first one's durable state and prove

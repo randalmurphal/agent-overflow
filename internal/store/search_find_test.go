@@ -37,10 +37,10 @@ func seedFindScopes(t *testing.T, s *Store) {
 	}
 }
 
-func findHitIDs(hits []ThreadMessageHit) string {
-	ids := make([]string, len(hits))
-	for i, h := range hits {
-		ids[i] = h.ItemID
+func findHitIDs(answer ThreadFindAnswer) string {
+	ids := make([]string, len(answer.Items))
+	for i, item := range answer.Items {
+		ids[i] = item.ID
 	}
 	return fmt.Sprint(ids)
 }
@@ -51,15 +51,15 @@ func findHitIDs(hits []ThreadMessageHit) string {
 func TestSearchThreadItems_MainSelectionIsTheTopLevelTimeline(t *testing.T) {
 	s := newTestStore(t)
 	seedFindScopes(t, s)
-	got, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{}, 0)
+	got, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ids := findHitIDs(got); ids != "[main-a main-b]" {
 		t.Fatalf("main hits = %s", ids)
 	}
-	if got[1].TurnIndex != 1 || got[1].ItemIndex != 2 {
-		t.Fatalf("main-b coordinates = (%d, %d), want (1, 2)", got[1].TurnIndex, got[1].ItemIndex)
+	if got.Items[1].TurnIndex != 1 || got.Items[1].ItemIndex != 2 {
+		t.Fatalf("main-b coordinates = (%d, %d), want (1, 2)", got.Items[1].TurnIndex, got.Items[1].ItemIndex)
 	}
 }
 
@@ -69,18 +69,18 @@ func TestSearchThreadItems_AgentSelectionIsTheAgentTranscript(t *testing.T) {
 	s := newTestStore(t)
 	seedFindScopes(t, s)
 	for _, root := range []string{"root", "carrier"} {
-		got, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: root}, 0)
+		got, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: root}, 0, nil)
 		if err != nil {
 			t.Fatalf("scope %s: %v", root, err)
 		}
 		if ids := findHitIDs(got); ids != "[child-a child-b]" {
 			t.Fatalf("scope %s hits = %s", root, ids)
 		}
-		if got[1].TurnIndex != 1 || got[1].ItemIndex != 0 {
-			t.Fatalf("child-b coordinates = (%d, %d), want (1, 0)", got[1].TurnIndex, got[1].ItemIndex)
+		if got.Items[1].TurnIndex != 1 || got.Items[1].ItemIndex != 0 {
+			t.Fatalf("child-b coordinates = (%d, %d), want (1, 0)", got.Items[1].TurnIndex, got.Items[1].ItemIndex)
 		}
 	}
-	limited, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: "root"}, 1)
+	limited, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: "root"}, 1, nil)
 	if err != nil || findHitIDs(limited) != "[child-a]" {
 		t.Fatalf("limited scope hits = %s err=%v", findHitIDs(limited), err)
 	}
@@ -89,10 +89,10 @@ func TestSearchThreadItems_AgentSelectionIsTheAgentTranscript(t *testing.T) {
 func TestSearchThreadItems_GoneScopeIsAnError(t *testing.T) {
 	s := newTestStore(t)
 	seedFindScopes(t, s)
-	if _, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: "missing"}, 0); !errors.Is(err, ErrTimelineScopeGone) {
+	if _, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: "missing"}, 0, nil); !errors.Is(err, ErrTimelineScopeGone) {
 		t.Fatalf("missing scope err = %v, want ErrTimelineScopeGone", err)
 	}
-	if _, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{Tools: true}, 0); err == nil {
+	if _, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{Tools: true}, 0, nil); err == nil {
 		t.Fatal("a tools selection without a scope must be refused")
 	}
 }
@@ -105,21 +105,23 @@ func TestSearchThreadItems_CancelledContextStopsTheSearch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, selection := range []TimelineSelection{{}, {ScopeRootID: "root"}} {
-		if _, err := s.SearchThreadItems(ctx, "find", "needle", selection, 0); !errors.Is(err, context.Canceled) {
+		if _, err := s.SearchThreadItems(ctx, "find", "needle", selection, 0, nil); !errors.Is(err, context.Canceled) {
 			t.Fatalf("selection %+v: err = %v, want context.Canceled", selection, err)
 		}
 	}
 }
 
 // A find read stops at its limit: each physical arm walks its ordering
-// index and the merged compound takes the first hits, rather than reading
-// every match of the view into a sorter. The index narrows to the thread
-// first, so find_fold reads only that thread's summaries, never the table.
+// index and the merged compound takes the first candidates, rather than
+// reading every match of the view into a sorter. The index narrows to the
+// thread first, so the read tests only that thread's candidate text, never
+// the table's.
 func TestSearchThreadItems_WalksTheTimelineArms(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	for _, selection := range []TimelineSelection{{}, {ScopeRootID: "root"}} {
-		sel := threadFindSelection(timelineScope{selection: selection}, findPattern("needle"), 50)
+		filter, args := threadFindFilter(timelineScope{selection: selection}, findNeedle("needle"))
+		sel := threadFindSelection(filter, args, 50)
 		query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, sel)
 		assertLocalArmWalksAnIndex(t, s, fmt.Sprintf("thread find %+v", selection), query, args...)
 		plan := explainPlan(t, s, query, args...)
@@ -154,12 +156,78 @@ func TestSearchThreadItems_MatchesPastAnEmbeddedNUL(t *testing.T) {
 		t.Fatalf("summary types = %q, %v", kinds, err)
 	}
 	for _, query := range []string{"needle", "lead", "tail needle"} {
-		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0)
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if ids := findHitIDs(got); ids != "[text blob]" {
 			t.Fatalf("%q hits = %s", query, ids)
 		}
+	}
+}
+
+// A row is a candidate for a query its rendered Markdown spells across an
+// escaped link-like run and a real link, and a row whose Markdown the
+// candidate reader cannot read is a candidate for any query, from its
+// stored candidate text and from one computed while the backfill has not
+// reached it.
+func TestSearchThreadItems_FindsAcrossMarkdownTheReaderMustRead(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	mustInsertItemForSearch(t, s, "t1", "mixed", 0, `a \[b](literal) c [d](https://example.com) e`, 100)
+	mustInsertItemForSearch(t, s, "t1", "unsure", 1, "nested [outer [inner](https://example.com/i) rest](https://example.com/o) after", 200)
+	mustInsertItemForSearch(t, s, "t1", "plain", 2, "nothing to see", 300)
+	check := func(stage, query, want string) {
+		t.Helper()
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != want {
+			t.Fatalf("%s: %q hits = %s, want %s", stage, query, ids, want)
+		}
+	}
+	check("stored", "literal) c d e", "[mixed unsure]")
+	check("stored", "zebra", "[unsure]")
+	if _, err := s.db.Exec(`UPDATE items SET find_text = NULL WHERE thread_id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	check("unfilled", "literal) c d e", "[mixed unsure]")
+	check("unfilled", "zebra", "[unsure]")
+}
+
+// A user row whose bubble joins the parts around a dropped `!command` is a
+// candidate for the joined run, stored and unfilled; a `!` that is not a
+// command leaves the row matched by its own text only.
+func TestSearchThreadItems_FindsAcrossADroppedCommand(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	for i, row := range []struct{ id, summary string }{
+		{"joined", "first needle part\n\n---\n\n!ls -la\n\n---\n\nsecond needle part"},
+		{"bang", "Wow! !important: the needle stays"},
+	} {
+		if err := insertCarded(s, Item{ID: row.id, ThreadID: "t1", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", Summary: row.summary, CreatedAt: int64(100 * (i + 1))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(stage, query, want string) {
+		t.Helper()
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != want {
+			t.Fatalf("%s: %q hits = %s, want %s", stage, query, ids, want)
+		}
+	}
+	for _, stage := range []string{"stored", "unfilled"} {
+		if stage == "unfilled" {
+			if _, err := s.db.Exec(`UPDATE items SET find_text = NULL WHERE thread_id = 't1'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check(stage, "part second", "[joined]")
+		check(stage, "important: the needle", "[joined bang]")
+		check(stage, "zebra", "[joined]")
 	}
 }

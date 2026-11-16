@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -89,44 +90,42 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 			return errors.New("This conversation has history but no saved provider session. Restore its provider session before transferring it.")
 		}
 	}
-	if entry, ok := a.sessionManager().runtime.Get(thread.ID); ok && entry.Liveness != nil && entry.Liveness.ActiveTurns.Load() > 0 {
-		return errors.New("Let the current provider turn finish before transferring this conversation.")
-	}
 	if transferManagedMode(thread.Mode) || thread.DiscussionID != "" || thread.ParentThreadID != "" {
 		return errors.New("This conversation belongs to a discussion or workflow. Transfer an independent conversation.")
 	}
-	if a.terminals != nil && len(a.terminals.List(thread.ID)) > 0 {
-		return errors.New("Close this conversation's terminals before transferring it. Running programs stay on their current computer.")
-	}
-	if _, active, err := a.store.GetActiveTurn(thread.ID); err != nil {
+	// Moving the conversation ends whatever runs for it here, so every
+	// kind of running work refuses.
+	work, err := a.runningWorkIn(workScope{threads: []string{thread.ID}})
+	if err != nil {
 		return err
-	} else if active {
-		return errors.New("Let the current turn finish before transferring this conversation.")
+	}
+	if work.running() {
+		switch work.kind {
+		case workTurn:
+			return errors.New("Let the current turn finish before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		case workAwaitingAnswer, workQueuedMessages:
+			return errors.New("Finish or remove queued work before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		case workBackgroundTasks:
+			return errors.New("Let background agents and commands finish before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		case workShellCommand:
+			return errors.New("Let the shell command finish before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		case workTerminal:
+			return errors.New("Close this conversation's terminals before transferring it. Running programs stay on their current computer.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		case workRemoteWatch:
+			return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		default:
+			return fmt.Errorf("This conversation cannot be transferred while %s.", work.kind) //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		}
 	}
 	if a.triage != nil {
-		if a.triage.HasPendingWork(thread.ID) || a.pendingFlushWorkCount(thread.ID) > 0 {
-			return errors.New("Finish or remove queued work before transferring this conversation.")
-		}
 		if at, ok := a.triage.PendingWakeupAt(thread.ID); ok && time.Now().Before(at.Add(wakeupReapGrace)) {
 			return errors.New("Cancel the scheduled wakeup before transferring this conversation.")
 		}
-	}
-	if pending, err := a.store.HasPendingRemoteWatches(thread.ID); err != nil {
-		return err
-	} else if pending {
-		return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.")
 	}
 	if open, err := a.store.HasOpenThreadRequests(thread.ID); err != nil {
 		return err
 	} else if open {
 		return errors.New("Let this conversation's thread requests finish and their answers arrive before copying it. Moving the conversation cancels them.")
-	}
-	running, err := a.store.ListRunningBackgroundToolCalls(thread.ID)
-	if err != nil {
-		return err
-	}
-	if len(running) != 0 {
-		return errors.New("Let background agents and commands finish before transferring this conversation.")
 	}
 	return nil
 }

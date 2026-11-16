@@ -36,12 +36,13 @@
 // A stop that fails never changes what the bar shows, and is sent again on
 // this provider's own timer, at most BROWSER_FIND_STOP_ATTEMPTS times in
 // all, until the backend answers it, or a later stop through it or further
-// is answered. Its failure outlives the bar, since the page may keep its
-// highlights, so it goes to the pane (`onCleanupError`) and is withdrawn
-// once a stop through it or further is answered. A stop that never succeeds
-// leaves the page's highlights until the next start, navigation, page switch
-// or pane unmount, each of which ends the engine's search; an unmounted pane
-// shows nothing, so a dispose withdraws the failure.
+// is answered, or the pane unmounts. Its failure outlives the bar, since the
+// page may keep its highlights, so it goes to the pane (`onCleanupError`)
+// and is withdrawn once a stop through it or further is answered. A stop
+// that never succeeds leaves the page's highlights until the next start,
+// navigation, page switch or pane unmount, each of which ends the engine's
+// search; an unmounted pane shows nothing, so a dispose withdraws the
+// failure and cancels every retry.
 //
 // State: `showing`, `issued` (the highest sequence this provider made),
 // `stoppedThrough` (the highest a stop was made through), `bound` (the page
@@ -55,7 +56,7 @@
 // |                                | bind the shown page and mount, issue the next sequence,   |
 // |                                | show it, and queue start(query)                           |
 // | query emptied, bar closed      | showing = 0; drop queued starts and steps; queue stop     |
-// | (`clear`, dispose)             | through `issued` unless one was made since                |
+// | (`clear`)                      | through `issued` unless one was made since                |
 // | Enter / Shift+Enter            | queue a step of `showing`, or cancel a queued opposite one|
 // | engine find opened             | start(seed) as for a typed query                          |
 // | answer for `showing`           | shown; Foreign: the search ended, the bar closes          |
@@ -65,7 +66,8 @@
 // | answered stop                  | retries through it or below are dropped; the pane's       |
 // |                                | cleanup error goes once nothing undelivered is left       |
 // | failed stop                    | the pane shows the cleanup error; sent again after the    |
-// |                                | retry wait while attempts remain                          |
+// |                                | retry wait while attempts remain and the pane is mounted  |
+// | pane unmounted (dispose)       | as a close; the cleanup error and every retry go          |
 // | end event for `showing`        | showing = 0, drop queued starts and steps, the bar closes |
 // | escape event for the shown     | the bar closes, if it is open                             |
 // | page                           |                                                           |
@@ -224,9 +226,12 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     if (issued > stoppedThrough) enqueueStop(bound, issued);
   }
 
-  /** Sends a failed stop again after the retry wait, while attempts remain. */
+  /**
+   * Sends a failed stop again after the retry wait, while attempts remain
+   * and the pane is mounted.
+   */
   function retryStop(intent: Intent): void {
-    if (intent.attempt + 1 >= BROWSER_FIND_STOP_ATTEMPTS) return;
+    if (disposed || intent.attempt + 1 >= BROWSER_FIND_STOP_ATTEMPTS) return;
     const entry = {
       intent,
       timer: setTimeout(() => {
@@ -403,9 +408,12 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     dispose(): void {
       close();
       // The pane goes, and with its mount the backend ends its search and
-      // stops the engine's: nothing is left to show the failure on.
+      // stops the engine's: nothing is left to show the failure on, and no
+      // stop is retried. The stop close queued is sent once.
       if (undelivered.size > 0) options.onCleanupError(null);
       disposed = true;
+      for (const { timer: waiting } of retries) clearTimeout(waiting);
+      retries.length = 0;
       threadFinds?.delete(handle);
       if (threadFinds?.size === 0) live.delete(threadId);
     },

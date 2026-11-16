@@ -19,12 +19,7 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { DiscussionDefinition } from '../../../types/discussion';
-  import type { Thread } from '../../../types/models';
-  import { GetThread, StartDiscussionByID } from '../../../stores/bindings';
-  import { syncThreadReply } from '../../../stores/panes.svelte';
-  import { threadRowFrameMark } from '../../../stores/threadRowFrames';
-  import { addErrorToast, addToast } from '../../../stores/toast.svelte';
-  import { errString } from '../../../utils/errors';
+  import { startPaneDiscussion } from './startPaneDiscussion';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
   import Icon from '../../primitives/Icon.svelte';
@@ -63,29 +58,7 @@
     // model-picker UX where the menu disappears on pick and the
     // toast/state update lands a moment later.
     onSelect?.();
-    try {
-      const threadId = pane.threadId;
-      if (!threadId) {
-        addToast('info', 'Start the thread before adding a discussion.');
-        return;
-      }
-      const mark = threadRowFrameMark();
-      await StartDiscussionByID(threadId, def.id);
-      // StartDiscussion does NOT emit `thread:updated`, so we refresh the
-      // thread manually — matching DiscussionStartFlow. Without this the
-      // ChatHeader, ModeCycleButton, and DiscussionView all keep showing
-      // the prior mode until the user reloads.
-      try {
-        const refreshed = (await GetThread(threadId)) as Thread;
-        syncThreadReply(refreshed, mark);
-      } catch (refreshErr) {
-        console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
-      }
-      addToast('info', `Started discussion "${def.name}"`);
-    } catch (err) {
-      console.error('StartDiscussion failed:', err);
-      addErrorToast(`Failed to start discussion: ${errString(err)}`, err);
-    }
+    await startPaneDiscussion(pane, def.id, def.name);
   }
 </script>
 

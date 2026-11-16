@@ -35,6 +35,9 @@ write. Rate-limit persistence and emission enter through narrow
   account, or the first login when none is selected, replaces the canonical
   credential. Reconciliation of an outside login does switch, because every
   provider process follows the canonical credential.
+- Every route that changes the selected account (switch, removal, outside
+  login, a probe that adopts one) calls `applySelection` with the account it
+  left, after releasing `mu`. Auto-switch attributes refusals from it.
 - Every adoption reports its outcome as a `SignIn` (added, renewed,
   switched). A credential change that is none of these, a token rotation or a
   boot re-adoption, publishes nothing. Renewal is a later Claude refresh

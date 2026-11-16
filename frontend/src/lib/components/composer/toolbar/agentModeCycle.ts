@@ -10,6 +10,7 @@ import { addErrorToast } from '../../../stores/toast.svelte';
 import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
 import { isScratchThreadMode, renderedThreadMode } from '../../../utils/threadModes';
 import { errString } from '../../../utils/errors';
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 
 /**
  * The thread's mode as the toggle presents it; an unset mode, and a side
@@ -30,6 +31,9 @@ export async function cycleAgentMode(pane: ThreadPane): Promise<void> {
   // the fork; UpdateThreadMode refuses to move it, and the toolbar hides the
   // toggle. This is the same refusal for any other caller.
   if (isScratchThreadMode(pane.thread.mode)) return;
+  // Applied wherever the emptied draft's in-flight delete leaves the pane.
+  if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
+  if (!pane.thread) return;
   const next = cycleMode(currentAgentMode(pane));
   if (pane.hasDraftPlaceholder) {
     pane.setDraftPlaceholderMode(next);

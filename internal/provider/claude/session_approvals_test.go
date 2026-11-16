@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestRespondToApprovalAllowFormat(t *testing.T) {
@@ -122,7 +123,7 @@ func TestFullAccessToolRequestDoesNotAutoApproveInPlanMode(t *testing.T) {
 func TestFullAccessToolRequestAutoApprovesRegularTools(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
 		Env: map[string]string{
@@ -210,7 +211,7 @@ func TestSessionRespondToApproval(t *testing.T) {
 func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
 		Env: map[string]string{
@@ -754,7 +755,7 @@ func TestExitPlanModeWriteFailureClosesSession(t *testing.T) {
 	// request while keeping the subprocess alive briefly. The ordering is
 	// load-bearing: if the request is printed first, readLoop can race ahead
 	// and write the denial before the shell has actually closed fd 0.
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", `exec 0<&-; printf '{"type":"control_request","request_id":"plan-1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"# plan"}}}\n'; sleep 0.05`},
 	})
@@ -858,7 +859,7 @@ func TestExitPlanModeWritesDenyOnHappyPath(t *testing.T) {
 // it exactly as it would in any other tier.
 func TestAutoModeSurfacesFallbackApprovalRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}

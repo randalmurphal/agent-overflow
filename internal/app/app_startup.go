@@ -62,6 +62,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// fire-and-forget worker can derive from a single cancellable parent
 	// instead of context.Background.
 	a.appCtx, a.appCancel = context.WithCancel(context.Background())
+	a.activation.beginBoot()
 
 	endPhase := a.bootPhase("app.init_stores", "Opening the database")
 	dbDir, st, err := a.initStores(ctx)
@@ -84,12 +85,6 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
-	// Publish this executable as the `agent-overflow` command before any
-	// session can be started, so the very first session already has it on
-	// PATH. Best-effort by design: the helper logs its own failure and
-	// returns "", which sessionProcessEnv reads as "nothing to prepend".
-	a.cliBinDir = a.ensureCLIBinDir(dbDir)
-
 	endPhase = a.bootPhase("app.init_observability", "Starting diagnostics")
 	err = a.initObservability(ctx, dbDir)
 	endPhase()
@@ -110,15 +105,6 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	}
 	endPhase = a.bootPhase("app.start_background_work", "Starting background work")
 	defer endPhase()
-
-	// Guard against provider subprocesses outliving an ungraceful app
-	// death (macOS only — Linux has Pdeathsig, Windows a Job Object).
-	// Runs after subsystems so the data dir is ready; before the probe
-	// goroutines and any session RPC so the startup sweep can't race a
-	// fresh registry Add. See app_orphan_reaper.go.
-	if err := a.startOrphanReaper(dbDir); err != nil {
-		return fmt.Errorf("start orphan reaper: %w", err)
-	}
 
 	// Start the sidebar's host CPU/memory sampler. Emits a
 	// `system:stats` event every ~2s. See app_sysstat.go.
@@ -178,9 +164,102 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	a.applyKeepAwake(a.currentSettings())
 
 	// Everything that can act on its own waits for the activation gate. On
-	// every boot but a supervisor trial the gate is already open and this
-	// runs inline, right here, in the order it always did.
-	return a.activation.Run(a.appCtx, a.startUnattendedWork)
+	// every boot but a supervisor trial the gate is already open and both
+	// halves run inline, right here, before the transport admits a client.
+	return a.activation.Run(ctx, a.startBeforeClients(), a.startUnattendedWork(), a.bootPhaseFailed)
+}
+
+// startBeforeClients lists the boot steps that act outside the database and
+// must finish before any client is admitted, because a request could start a
+// session, open a diff or list a thread they are about to remove. It answers
+// the same question as startUnattendedWork: restoring a rolled-back trial's
+// database would undo none of these, so a trial runs them after its commit.
+//
+// A failure that stops an ordinary boot is returned after the other steps
+// have run, so a committed trial, which reports it through bootPhaseFailed,
+// still releases its workflow starts and admits its clients.
+func (a *App) startBeforeClients() []bootStep {
+	return []bootStep{
+		// Guard against the process groups the app starts outliving an
+		// ungraceful app death (every platform but Windows, whose backend
+		// runs in WSL). First, so its startup sweep of the last run's process
+		// groups cannot race a fresh registry Add. See app_orphan_reaper.go.
+		func() error {
+			if err := a.startOrphanReaper(a.configDir); err != nil {
+				return fmt.Errorf("start orphan reaper: %w", err)
+			}
+			return nil
+		},
+		// Every prompt file here belongs to a process that exited without
+		// closing its sessions.
+		a.reportedBootStep("", "", func() error { return sweepClaudePromptFiles(a.configDir) }),
+		// Prune the credential slots no saved account references and sweep
+		// the ephemeral homes a crash left, before any session or probe reads
+		// them.
+		a.reconcileProviderHome,
+		// Publish this executable as the `agent-overflow` command, so the
+		// very first session already has it on PATH. Best-effort by design:
+		// the helper logs its own failure and returns "", which
+		// sessionProcessEnv reads as "nothing to prepend".
+		func() error {
+			a.cliBinDir = a.ensureCLIBinDir(a.configDir)
+			return nil
+		},
+		a.reportedBootStep("app.sweep_review_diffs", "Removing review diff snapshots from the last run", a.sweepReviewDiffSnapshots),
+		func() error {
+			endPhase := a.bootPhase("app.clean_preparing_forks", "Removing forks the last run did not finish")
+			defer endPhase()
+			return a.cleanupPreparingForks()
+		},
+		// Every terminal thread's shells ended with the last process, so the
+		// threads end too, before any client lists them.
+		a.reportedBootStep("app.end_terminal_threads", "Closing terminals from the last run", a.endTerminalThreadsAtBoot),
+		// The workflow engine rebuilt its runs during initSubsystems with its
+		// starts held; release them to the persisted pause setting now that a
+		// phase's session finds its prompt files swept and the command on
+		// PATH.
+		a.reportedBootStep("", "", a.releaseWorkflowStartsHeldForBoot),
+	}
+}
+
+// infallibleBootStep is a boot step that cannot fail.
+func infallibleBootStep(run func()) bootStep {
+	return func() error {
+		run()
+		return nil
+	}
+}
+
+// reportedBootStep is a boot step whose failure does not stop the boot: it
+// reports through bootPhaseFailed, inside its own boot phase when phase is
+// named.
+func (a *App) reportedBootStep(phase, detail string, run func() error) bootStep {
+	return func() error {
+		if phase != "" {
+			defer a.bootPhase(phase, detail)()
+		}
+		if err := run(); err != nil {
+			a.bootPhaseFailed(err)
+		}
+		return nil
+	}
+}
+
+// reconcileProviderHome binds the provider account metadata to this
+// process's provider home, prunes the credential slots no saved account
+// references and sweeps the ephemeral homes a crash left. It deletes
+// credentials, which live outside the database.
+//
+// A metadata store paired with the WRONG provider home would delete slots
+// that were never its to manage. The stamp binds store to home on first
+// contact; on mismatch the prune is skipped outright, because orphan slots
+// are benign and destroyed logins are not.
+func (a *App) reconcileProviderHome() error {
+	userHome, err := a.providerHome()
+	if err != nil {
+		return fmt.Errorf("failed to locate provider credential home: %w", err)
+	}
+	return a.providerAccounts.ReconcileProviderHome(a.configDir, userHome)
 }
 
 // startUnattendedWork starts every subsystem that can take an action nobody
@@ -192,122 +271,118 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 // database undo it?" — and everything here answers no. The snapshot boundary
 // is the SQLite triple; provider credentials, attachment files, git objects,
 // ACME rate limits and tailnet state are all outside it.
-func (a *App) startUnattendedWork() error {
-	a.startOwnDeviceConnections()
-	a.startRemoteMCPRefresh()
-	a.startThreadSearchIndex()
-	a.startPendingThreadDeletes()
-	a.startRemoteWatches()
-	a.startThreadRequestSweeps()
-	if err := a.startThreadTransfers(); err != nil {
-		return err
+//
+// A step that leaves a goroutine running hands it to an owner Shutdown
+// joins; one with no narrower owner runs it in unattendedLoops.
+func (a *App) startUnattendedWork() []bootStep {
+	return []bootStep{
+		infallibleBootStep(a.startOwnDeviceConnections),
+		infallibleBootStep(a.startRemoteMCPRefresh),
+		infallibleBootStep(a.startThreadSearchIndex),
+		infallibleBootStep(a.startPendingThreadDeletes),
+		infallibleBootStep(a.startRemoteWatches),
+		// Deliver what the boot's request sweep settled and delete the
+		// scratch threads the last run left, before the sweep loop starts. A
+		// wake can start the caller's session. See app_thread_tools_poll.go.
+		infallibleBootStep(a.finishThreadRequestSweepAtBoot),
+		infallibleBootStep(a.startThreadRequestSweeps),
+		a.startThreadTransfers,
+		// Arm the worktree registry watcher: its sweeps move thread rows and
+		// restart sessions when a checkout was removed outside the app. See
+		// app_worktree_watch.go.
+		infallibleBootStep(a.armWorktreeWatch),
+		// Read every forge project's pull requests once into the list's
+		// stored copy, so the sidebar badge is current before the Pull
+		// requests page opens (app_pr_list_store.go).
+		infallibleBootStep(a.startPRListPrefetch),
+		// Probe provider binaries once on boot so the thread-level banner
+		// can surface "claude not found" / "codex too old" before the user
+		// opens settings. Probes on its own goroutine because DetectProvider
+		// spawns subprocesses (up to 5s per provider) and we never want that
+		// blocking app startup.
+		infallibleBootStep(a.probeStartupProviderStatuses),
+		// Probe authenticated account info (planType, subscription) for both
+		// providers. Separate goroutine because the account probe spawns a
+		// short-lived provider process and runs the wire handshake — slower
+		// than DetectProvider's version check. Results land on the frontend
+		// via the `provider:account` event.
+		//
+		// The most important member of this set: the handshake reaches the
+		// provider's own credential store, and a Claude refresh token is
+		// single-use. A trial that rotated one and was then rolled back would
+		// leave the restored version holding a credential that is already spent.
+		infallibleBootStep(a.probeStartupAccountInfo),
+		// Start the Claude rate-limit probe loop. Startup account adoption runs
+		// the first usage read; this loop refreshes every 2 mins while at least
+		// one Claude session is alive, and turn-complete is wired separately in
+		// sessionEventHandler. The probe reads the dynamic OAuth usage endpoint
+		// with legacy unified headers as a compatibility fallback.
+		infallibleBootStep(a.startClaudeRateLimitProbeLoop),
+		// Start the Codex rate-limit probe loop. Startup hydration is already
+		// covered by probeStartupAccountInfo; this loop keeps the rings fresh
+		// while Codex sessions are active.
+		infallibleBootStep(a.startCodexRateLimitProbeLoop),
+		// Start the idle-session reaper. Walks a.sessions every
+		// IdleReapInterval and closes provider subprocesses that have been
+		// idle past IdleReapThreshold so leaked subprocesses can't pile up
+		// across long-running app sessions. See app_session_reaper.go.
+		infallibleBootStep(a.startIdleSessionReaper),
+		// Start the retention TTL sweep. Reads Settings.Retention.Days
+		// every tick so toggling retention on/off (or changing the window)
+		// doesn't require a restart. See app_retention_cleanup.go.
+		//
+		// It prunes on-disk side effects — attachments, dated log files, bug
+		// report bookmarks — which no database snapshot restores. The first
+		// sweep waits for the app to settle rather than firing on a timer;
+		// the gate is in awaitRetentionSettled.
+		infallibleBootStep(a.startRetentionCleanup),
+		// Watch the provider binaries for an upgrade under a running app: a
+		// quiet tick is two stats, and a changed file re-reads the version,
+		// refreshes the model catalog, and flags live sessions still running
+		// the old build. Behind the activation gate because a changed file
+		// spawns `<binary> --version`. See app_provider_binary_watch.go.
+		infallibleBootStep(a.startProviderBinaryWatcher),
+		// Check for newer provider CLIs now and hourly. Behind the gate
+		// because a check runs `claude doctor` and reaches the release hosts.
+		// See app_provider_update.go.
+		infallibleBootStep(func() { a.providerUpdateService().Start() }),
+		// Start the background `git fetch` cadence so ahead/behind counts
+		// track the remote instead of the user's last manual fetch. Reads
+		// Settings.BackgroundGitFetch live each tick; skipped entirely in
+		// harness mode. See app_git_background_fetch.go.
+		infallibleBootStep(a.startBackgroundGitFetch),
+		// Remove a thread's worktree once its pull request merges. Its poll
+		// follows Settings.BackgroundGitFetch, started and stopped live by
+		// UpdateSettings. See app_worktree_merge_cleanup.go.
+		infallibleBootStep(a.startMergedPRCleanup),
+		// Serve the canonical domain's certificate, and keep serving it: the
+		// loop loads what is on disk, orders one when the user configured
+		// issuance and there is none (or it is inside the renewal window),
+		// and publishes each result into the listener's certificate source
+		// without a rebind. Does nothing at all when no domain is configured,
+		// which is the default. See app_domaincert.go.
+		//
+		// An order runs the operator's own DNS hook as a subprocess and counts
+		// against a certificate authority's rate limit. Neither is undoable.
+		infallibleBootStep(func() { a.startDomainCertificateLoop(a.configDir) }),
+		// Join the owner's tailnet when they asked for it, and keep the node's
+		// listeners attached to the transport that is already running. Honors
+		// the persisted preference, which is what makes off-network access
+		// survive a restart without the user touching the toggle again. Builds
+		// nothing at all while the setting is off, which is the default. See
+		// app_tailnet.go.
+		//
+		// Bringing a node up mutates the tsnet state directory, which lives
+		// outside the snapshot boundary, and announces this machine to a
+		// coordination server.
+		infallibleBootStep(func() { a.startTailnetLoop(a.configDir) }),
+		// Workflow automation: the self-resume schedules and the §11 trigger
+		// cadence, both of which START PROVIDER TURNS with no one asking. The
+		// engine itself is already running (initWorkflowEngine, during
+		// initSubsystems) because rebuilding its state from SQLite is exactly
+		// what a trial has to prove works; what waits is the part that acts.
+		a.startWorkflowAutomation,
 	}
-	// Arm the worktree registry watcher: its sweeps move thread rows and
-	// restart sessions when a checkout was removed outside the app. See
-	// app_worktree_watch.go.
-	a.armWorktreeWatch()
-	// Read every forge project's pull requests once into the list's
-	// stored copy, so the sidebar badge is current before the Pull
-	// requests page opens (app_pr_list_store.go).
-	a.startPRListPrefetch()
-	// Probe provider binaries once on boot so the thread-level banner can
-	// surface "claude not found" / "codex too old" before the user opens
-	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
-	// (up to 5s per provider) and we never want that blocking app startup.
-	go a.probeStartupProviderStatuses()
-
-	// Probe authenticated account info (planType, subscription) for both
-	// providers. Separate goroutine because the account probe spawns a
-	// short-lived provider process and runs the wire handshake — slower
-	// than DetectProvider's version check. Results land on the frontend
-	// via the `provider:account` event.
-	//
-	// The most important member of this set: the handshake reaches the
-	// provider's own credential store, and a Claude refresh token is
-	// single-use. A trial that rotated one and was then rolled back would
-	// leave the restored version holding a credential that is already spent.
-	go a.probeStartupAccountInfo()
-
-	// Start the Claude rate-limit probe loop. Startup account adoption runs
-	// the first usage read; this loop refreshes every 2 mins while at least
-	// one Claude session is alive, and turn-complete is wired separately in
-	// sessionEventHandler. The probe reads the dynamic OAuth usage endpoint
-	// with legacy unified headers as a compatibility fallback.
-	a.startClaudeRateLimitProbeLoop()
-
-	// Start the Codex rate-limit probe loop. Startup hydration is already
-	// covered by probeStartupAccountInfo; this loop keeps the rings fresh
-	// while Codex sessions are active.
-	a.startCodexRateLimitProbeLoop()
-
-	// Start the idle-session reaper. Walks a.sessions every
-	// IdleReapInterval and closes provider subprocesses that have been
-	// idle past IdleReapThreshold so leaked subprocesses can't pile up
-	// across long-running app sessions. See app_session_reaper.go.
-	a.startIdleSessionReaper()
-
-	// Start the retention TTL sweep. Reads Settings.Retention.Days
-	// every tick so toggling retention on/off (or changing the window)
-	// doesn't require a restart. See app_retention_cleanup.go.
-	//
-	// It prunes on-disk side effects — attachments, dated log files, bug
-	// report bookmarks — which no database snapshot restores. The first
-	// sweep waits for the app to settle rather than firing on a timer;
-	// the gate is in awaitRetentionSettled.
-	a.startRetentionCleanup()
-
-	// Watch the provider binaries for an upgrade under a running app: a
-	// quiet tick is two stats, and a changed file re-reads the version,
-	// refreshes the model catalog, and flags live sessions still running
-	// the old build. Behind the activation gate because a changed file
-	// spawns `<binary> --version`. See app_provider_binary_watch.go.
-	a.startProviderBinaryWatcher()
-
-	// Check for newer provider CLIs now and hourly. Behind the gate
-	// because a check runs `claude doctor` and reaches the release hosts.
-	// See app_provider_update.go.
-	a.providerUpdateService().Start()
-
-	// Start the background `git fetch` cadence so ahead/behind counts
-	// track the remote instead of the user's last manual fetch. Reads
-	// Settings.BackgroundGitFetch live each tick; skipped entirely in
-	// harness mode. See app_git_background_fetch.go.
-	a.startBackgroundGitFetch()
-
-	// Remove a thread's worktree once its pull request merges. Its poll
-	// follows Settings.BackgroundGitFetch, started and stopped live by
-	// UpdateSettings. See app_worktree_merge_cleanup.go.
-	a.startMergedPRCleanup()
-
-	// Serve the canonical domain's certificate, and keep serving it: the
-	// loop loads what is on disk, orders one when the user configured
-	// issuance and there is none (or it is inside the renewal window),
-	// and publishes each result into the listener's certificate source
-	// without a rebind. Does nothing at all when no domain is configured,
-	// which is the default. See app_domaincert.go.
-	//
-	// An order runs the operator's own DNS hook as a subprocess and counts
-	// against a certificate authority's rate limit. Neither is undoable.
-	a.startDomainCertificateLoop(a.configDir)
-
-	// Join the owner's tailnet when they asked for it, and keep the node's
-	// listeners attached to the transport that is already running. Honors
-	// the persisted preference, which is what makes off-network access
-	// survive a restart without the user touching the toggle again. Builds
-	// nothing at all while the setting is off, which is the default. See
-	// app_tailnet.go.
-	//
-	// Bringing a node up mutates the tsnet state directory, which lives
-	// outside the snapshot boundary, and announces this machine to a
-	// coordination server.
-	a.startTailnetLoop(a.configDir)
-
-	// Workflow automation: the self-resume schedules and the §11 trigger
-	// cadence, both of which START PROVIDER TURNS with no one asking. The
-	// engine itself is already running (initWorkflowEngine, during
-	// initSubsystems) because rebuilding its state from SQLite is exactly
-	// what a trial has to prove works; what waits is the part that acts.
-	return a.startWorkflowAutomation()
 }
 
 // initStores resolves the on-disk data directory, opens SQLite, wires the
@@ -340,11 +415,6 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	}
 	if err := repairStartupOwnedPaths(dbDir); err != nil {
 		return "", nil, err
-	}
-	// Before any session can start: every prompt file here belongs to a
-	// process that exited without closing its sessions.
-	if err := sweepClaudePromptFiles(dbDir); err != nil {
-		a.bootPhaseFailed(err)
 	}
 	dbPath := filepath.Join(dbDir, databaseFileName)
 	if err := prepareAppSensitiveFile(dbPath); err != nil {
@@ -485,19 +555,6 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	// list. Never fatal — an unseeded catalog is the old behavior, a shipped
 	// list until the probe lands.
 	a.seedClaudeCatalogFromAccounts()
-	// The prune deletes credential slots, and a metadata store paired with
-	// the WRONG provider home deletes slots that were never its to manage
-	// (incident 2026-07-29: a scratch data dir against the real ~/.claude
-	// pruned every saved login). The stamp binds store to home on first
-	// contact; on mismatch the prune is skipped outright — orphan slots
-	// are benign, destroyed logins are not.
-	if err := a.providerAccounts.ReconcileProviderHome(dbDir, userHome); err != nil {
-		closeErr := st.Close()
-		return "", nil, errors.Join(
-			err,
-			errorsx.WrapLifecycle("close store after provider account reconciliation failure", closeErr),
-		)
-	}
 	// Server-imposed usage holds are per-bearer and run about an hour, far
 	// longer than the interval between app restarts, so they persist.
 	a.providerLifecycleService().LoadBackoff(filepath.Join(dbDir, "usage-backoff.json"))
@@ -667,6 +724,7 @@ func chmodIfModeDiffers(path string, want os.FileMode) error {
 // disabled provider so the rest of the app still boots.
 func (a *App) initObservability(ctx context.Context, dbDir string) error {
 	settingsSnapshot := a.settings.Get()
+	a.launchTracing.record(settingsSnapshot.ObservabilityTracingEnabled)
 	telemetry, err := obsotel.NewProvider(ctx, obsotel.ConfigFromFlags(
 		settingsSnapshot.ObservabilityTracingEnabled,
 		settingsSnapshot.ObservabilityOtlpEndpoint,
@@ -766,27 +824,14 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
-	endPhase = a.bootPhase("app.sweep_review_diffs", "Removing review diff snapshots from the last run")
-	if err := a.sweepReviewDiffSnapshots(); err != nil {
-		a.bootPhaseFailed(err)
-	}
-	endPhase()
 	// The request ledger: settle what the last run left open, then watch
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush
-	// queue has been restored.
-	if err := a.cleanupPreparingForks(); err != nil {
-		return err
-	}
+	// queue has been restored. The sweep writes rows only; the wakes and
+	// deletions its settlements owe wait for the activation gate
+	// (startUnattendedWork), as do the boot's other deletions
+	// (startBeforeClients).
 	a.sweepThreadRequestsAtBoot()
-	// Every terminal thread's shells ended with the last process, so the
-	// threads end too, before any client lists them. Beside the request
-	// sweep because deleting needs the same services.
-	endPhase = a.bootPhase("app.end_terminal_threads", "Closing terminals from the last run")
-	if err := a.endTerminalThreadsAtBoot(); err != nil {
-		a.bootPhaseFailed(err)
-	}
-	endPhase()
 	a.installThreadRequestObserver()
 	a.startAccountSwitch()
 	if err := a.initWorkflowEngine(dbDir); err != nil {

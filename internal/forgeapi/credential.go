@@ -169,7 +169,12 @@ func (c *Client) readToken(ctx, life context.Context, now time.Time) error {
 			c.failErr, c.failUntil = err, now.Add(tokenFailureTTL)
 			return err
 		}
-		c.rest, c.graphQL = rest, gql
+		client, err := c.svc.hostClient(c.host, info.Network)
+		if err != nil {
+			c.failErr, c.failUntil = err, now.Add(tokenFailureTTL)
+			return err
+		}
+		c.rest, c.graphQL, c.http = rest, gql, client
 	}
 	c.failErr = nil
 	c.readAt = now

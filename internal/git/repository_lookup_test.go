@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -420,6 +421,27 @@ func TestRepositoryLookupMarksForgeUnavailabilityRetryableAndLogsWhy(t *testing.
 	}
 	if !strings.Contains(logged.String(), "lookup with the glab login on gitlab.com failed") {
 		t.Fatalf("missing CLI logged %q, want its failure", logged.String())
+	}
+}
+
+type outdatedTokenSource struct{}
+
+func (outdatedTokenSource) Token(context.Context, string, string) ([]byte, forgeapi.SourceInfo, error) {
+	return nil, forgeapi.SourceInfo{}, forgeapi.OutdatedCLIError(errors.New(`unknown command "token" for "gh auth"`))
+}
+
+// A gh too old to hand over its login stays too old until someone
+// updates it: the lookup is not retried, and its problem says to update
+// gh, not to check the network.
+func TestRepositoryLookupDoesNotRetryAnOutdatedCLI(t *testing.T) {
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: outdatedTokenSource{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	got := NewCore(WithForgeAPI(svc)).ResolveRepository(context.Background(), t.TempDir(), RepoIdentity{Repository: true, RemoteURL: "https://github.com/a/b"})
+	if got.LookupRetryable || !strings.Contains(got.LookupError, "needs gh 2.17.0 or later") {
+		t.Fatalf("outdated gh: %+v, want a non-retryable error naming the update", got)
 	}
 }
 

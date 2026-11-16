@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
   import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // The popup behind the composer-toolbar "MCP" trigger. Rows come
   // from the provider-native listing for the pane's MCP entity (live
@@ -120,6 +121,10 @@
   async function toggleServer(row: ThreadMCPServer, enable: boolean): Promise<void> {
     if (!target || row.toggleDisabledReason) return;
     try {
+      // A thread whose emptied draft is being deleted may be a placeholder,
+      // with the workspace as its target, once the delete answers.
+      if (isEmptyDraftCleanupPending(scopeThreadId)) await settleEmptyDraftCleanup(scopeThreadId);
+      if (!target) return;
       await setMcpServerEnabled(target, row.name, enable);
     } catch (err) {
       addErrorToast(`Failed to update MCP server: ${errString(err)}`, err);

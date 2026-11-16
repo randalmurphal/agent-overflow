@@ -28,6 +28,8 @@ func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return sto
 
 type testHost struct {
 	forgeCachesReset    int
+	usageReset          int
+	loginsCancelled     int
 	fetchPasses         int
 	gitFetchesForgotten int
 	store               *store.Store
@@ -176,7 +178,9 @@ func (h *testHost) ClearUIState() error {
 func (h *testHost) ResetSessionImporter() {}
 func (h *testHost) DropReviewDiffImages() { h.droppedImages++ }
 
-func (h *testHost) ResetForgeCaches() { h.forgeCachesReset++ }
+func (h *testHost) ResetForgeCaches()     { h.forgeCachesReset++ }
+func (h *testHost) ResetProviderUsage()   { h.usageReset++ }
+func (h *testHost) CancelProviderLogins() { h.loginsCancelled++ }
 
 func (h *testHost) RunBackgroundFetchPass(context.Context) { h.fetchPasses++ }
 

@@ -1,7 +1,6 @@
 // Package jstext is what a JavaScript client holds for a Go string sent as
-// JSON: its UTF-16 code units, their hash as the frontend folds it
-// (`frontend/src/lib/utils/fnv1a.ts`), and the packed form that a browser
-// stores at one byte per character (PackText).
+// JSON: its UTF-16 code units and their hash as the frontend folds it
+// (`frontend/src/lib/utils/fnv1a.ts`).
 //
 // Every function here reads a string as encoding/json delivers it: each
 // byte that does not begin a valid UTF-8 sequence (utf8.DecodeRuneInString

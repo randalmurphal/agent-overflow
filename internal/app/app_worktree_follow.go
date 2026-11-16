@@ -127,14 +127,17 @@ func (a *App) applyProviderWorkspaceChange(threadID, sessionToken string, change
 	if moved {
 		// Only the triple, so a write to another column since the read above
 		// survives.
-		if _, _, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch); err != nil {
+		write, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch)
+		if err != nil {
 			a.emitWireErrorToThread(threadID, fmt.Sprintf("Claude moved to %s, but the thread could not be updated: %v", change.Cwd, err))
 			return
 		}
 		// A setup run still going for the workspace the thread left
 		// describes a checkout it no longer occupies.
 		a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
-		a.announceThread(triage.ThreadActionFull, threadID)
+		if !a.announceListing(threadID, write.Listing) {
+			a.announceThread(triage.ThreadActionFull, threadID)
+		}
 	}
 
 	if change.RemovedWorktree {

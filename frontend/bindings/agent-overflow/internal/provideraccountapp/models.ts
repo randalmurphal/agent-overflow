@@ -106,6 +106,15 @@ export class LoginState {
     "startedAt"?: number;
     "expiresAt"?: number;
 
+    /**
+     * Seq orders the states of this process: every stored state takes the
+     * next number, across providers. Frames are published after the
+     * registry lock is released and a call answers with the state it
+     * stored, so a client keeps the highest Seq it has seen and drops the
+     * rest. Zero is a state nothing stored (an idle default or a refusal).
+     */
+    "seq"?: number;
+
     /** Creates a new LoginState instance. */
     constructor($$source: Partial<LoginState> = {}) {
         if (!("provider" in $$source)) {

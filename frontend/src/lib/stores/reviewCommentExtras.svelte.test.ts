@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import { createReviewCommentExtras, type ReviewCommentExtras } from './reviewCommentExtras.svelte';
+import { createReviewPRIdentity } from './reviewPRIdentity.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -63,7 +64,7 @@ beforeEach(() => {
     extras = createReviewCommentExtras({
       backend: HOME_BACKEND,
       ref: () => host.ref,
-      identity: () => (host.ref ? `home:${host.ref.number}` : null),
+      prIdentity: createReviewPRIdentity(() => (host.ref ? `home:${host.ref.number}` : null)),
       appliedSeq: () => host.appliedSeq,
       launch: () => host.launch,
       updateFailing: () => host.failing,
@@ -143,6 +144,17 @@ describe('a reaction chip', () => {
     older.reject(new TransportError('forge_refused', 'An older refusal.'));
     await first;
     expect(reactions.error(THREAD, COMMENT)).toBe('GitHub refused the reaction.');
+  });
+
+  it('writes nothing to a comment the forge does not let the viewer react to, and says why', async () => {
+    const call = setBindingMock('SetPRCommentReaction', async () => ({ seq: 3 }));
+    const { reactions } = extras.state;
+    const locked = { ...COMMENT, cannotReactReason: 'GitHub does not let you react to this comment.' };
+    expect(reactions.refused(locked)).toBe('GitHub does not let you react to this comment.');
+    expect(reactions.refused(COMMENT)).toBeNull();
+    await reactions.toggle(THREAD, locked, 'thumbsup', true);
+    expect(call).not.toHaveBeenCalled();
+    expect(reactions.pending(THREAD, locked, 'thumbsup')).toBe(false);
   });
 
   it('reads an unconfirmed write as not confirmed', async () => {

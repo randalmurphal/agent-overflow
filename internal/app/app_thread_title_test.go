@@ -22,12 +22,16 @@ import (
 	"agent-overflow/internal/triage"
 )
 
+// titleWait bounds each wait on the generation goroutine, which a loaded
+// runner can hold off for seconds.
+const titleWait = 30 * time.Second
+
 // waitForThreadTitle polls the stored title until it matches want. The
 // title lands from a detached goroutine, so a poll is the only honest
 // way to observe it without wiring an event channel into every test.
 func waitForThreadTitle(t *testing.T, app *App, threadID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(titleWait)
 	for {
 		stored, err := app.store.GetThread(threadID)
 		if err != nil {
@@ -123,7 +127,7 @@ func (e *threadTitleEvents) completionFor(threadID string) (ThreadTitleGeneratio
 // exactly one, so this is the end of the run for assertion purposes.
 func waitForTitleGenerationEvent(t *testing.T, events *threadTitleEvents, threadID string) ThreadTitleGenerationEvent {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(titleWait)
 	for {
 		if completion, ok := events.completionFor(threadID); ok {
 			return completion
@@ -221,7 +225,7 @@ func TestMaybeGenerateThreadTitleGuardsAgainstConcurrentRuns(t *testing.T) {
 	app.maybeGenerateThreadTitleWithAttachments(thread, "first send", nil, false)
 	// Wait for the first run to be inside the seam so the second send
 	// races the claim rather than the goroutine's scheduling.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(titleWait)
 	for calls.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("first generation never started")
@@ -276,7 +280,7 @@ func TestMaybeGenerateThreadTitleRetriesAfterAFailedRun(t *testing.T) {
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("generateThreadTitleFn called %d times, want 2 (failed run must release the claim)", got)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(titleWait)
 	for events.completionCountFor(thread.ID) < 2 {
 		if time.Now().After(deadline) {
 			t.Fatalf("completion events = %d, want 2 (one per run)", events.completionCountFor(thread.ID))
@@ -314,7 +318,7 @@ func TestRegenerateThreadTitleJoinsAnAutoGenerationRun(t *testing.T) {
 
 	events := captureThreadTitleEvents(t, app)
 	app.maybeGenerateThreadTitleWithAttachments(thread, "first send", nil, false)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(titleWait)
 	for autoCalls.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("auto generation never started")
@@ -370,7 +374,7 @@ func TestMaybeGenerateThreadTitleRunsForCodexThread(t *testing.T) {
 
 	select {
 	case <-calls:
-	case <-time.After(2 * time.Second):
+	case <-time.After(titleWait):
 		t.Fatal("generateThreadTitleFn not called for Codex thread")
 	}
 
@@ -436,7 +440,7 @@ func TestMaybeGenerateThreadTitleHealsOnLaterSend(t *testing.T) {
 		if !strings.Contains(threadContext, "the first ask") {
 			t.Fatalf("heal context = %q, want the thread's own history", threadContext)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(titleWait):
 		t.Fatal("regenerateThreadTitleFn not called on a later send of a still-default thread")
 	}
 
@@ -486,7 +490,7 @@ func TestMaybeGenerateThreadTitleHealFallsBackWithoutContext(t *testing.T) {
 		if message != "another user message" {
 			t.Fatalf("fallback message = %q, want the latest send", message)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(titleWait):
 		t.Fatal("generateThreadTitleFn not called as the heal fallback")
 	}
 	waitForTitleGenerationEvent(t, events, thread.ID)
@@ -734,6 +738,7 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider": "claude",
 	}); err != nil {

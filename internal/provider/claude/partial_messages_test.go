@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -30,7 +31,7 @@ func requireSoftRoundClose(t *testing.T, evt provider.ProviderEvent) provider.So
 //   - parent_tool_use_id on stream_event → propagated to emitted events
 
 func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
-	args := buildArgs(Config{}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", "")
 
 	for _, arg := range args {
 		if arg == "--include-partial-messages" {

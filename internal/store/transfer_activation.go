@@ -11,7 +11,6 @@ import (
 	"io"
 	"math"
 	"strings"
-	"time"
 )
 
 // CheckThreadTransferActivation admits only the secret the source releases
@@ -105,7 +104,7 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 	} else if err := s.importThreadHistoryTx(ctx, tx, target, history); err != nil {
 		return ThreadTransfer{}, err
 	}
-	row.Phase, row.Error, row.UpdatedAt = "complete", "", time.Now().UnixMilli()
+	row.Phase, row.Error, row.UpdatedAt = "complete", "", nextTransferStamp(row.UpdatedAt)
 	if _, err := tx.Exec(`UPDATE thread_transfers SET phase = 'complete', error = '', updated_at = ? WHERE id = ?`, row.UpdatedAt, id); err != nil {
 		return ThreadTransfer{}, err
 	}

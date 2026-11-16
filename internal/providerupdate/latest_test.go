@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider/claude"
 )
 
 func TestClaudeLatestFollowsTheDoctorChannel(t *testing.T) {
@@ -376,5 +378,170 @@ func TestANonBrewInstallRunsTheProvidersUpdate(t *testing.T) {
 		if r.runner.ran("upgrade") != 0 {
 			t.Errorf("%s ran brew", name)
 		}
+	}
+}
+
+// `claude doctor` and `claude update` are Claude launches against the user's
+// home: they carry the retention resolved for their work directory ahead of
+// the subcommand and clear the inherited config-home variables. Codex and
+// brew commands are not Claude launches and carry neither.
+func TestClaudeCommandsCarryTheTranscriptRetention(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.mu.Lock()
+	r.retention = claude.UserHomeRetention(90)
+	r.mu.Unlock()
+	r.hosts.text(CodexNPMLatestURL, http.StatusOK, `{"version":"0.169.0"}`)
+	r.check()
+	r.runner.on("update", func(context.Context) (Output, error) {
+		r.setInstalled(ProviderClaude, "2.1.325")
+		return Output{}, nil
+	})
+	mark := r.mark()
+	if err := r.svc.Run(ProviderClaude); err != nil {
+		t.Fatal(err)
+	}
+	if status := r.waitRunSettled(mark, ProviderClaude); status.Run.Phase != PhaseSucceeded {
+		t.Fatalf("run = %+v", status.Run)
+	}
+	r.runner.mu.Lock()
+	commands := slices.Clone(r.runner.commands)
+	r.runner.mu.Unlock()
+	var claudeCommands int
+	for _, command := range commands {
+		block := []string{"--settings", `{"cleanupPeriodDays":90}`}
+		if command.Binary != "/opt/claude" {
+			if slices.Contains(command.Args, "--settings") || len(command.UnsetEnv) != 0 {
+				t.Errorf("%s %q carries Claude's launch rules", command.Binary, command.Args)
+			}
+			continue
+		}
+		claudeCommands++
+		if !slices.Equal(command.Args, append(block, verb(command))) {
+			t.Errorf("claude %s args = %q, want the block first", verb(command), command.Args)
+		}
+		for _, name := range claude.ConfigHomeUnsetEnv() {
+			if !slices.Contains(command.UnsetEnv, name) {
+				t.Errorf("claude %s keeps an inherited %s", verb(command), name)
+			}
+		}
+		if command.Env["PROXY_FOR"] != ProviderClaude {
+			t.Errorf("claude %s lost its environment: %v", verb(command), command.Env)
+		}
+	}
+	if claudeCommands == 0 || r.runner.ran("update") != 1 {
+		t.Errorf("ran %d Claude commands, want doctor and one update: %+v", claudeCommands, commands)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, dir := range r.retentionDirs {
+		if dir != "/home/u" {
+			t.Errorf("retention resolved for %q, want the work directory", dir)
+		}
+	}
+}
+
+// A Claude command with no retention answer is refused, and the check says so.
+func TestAClaudeCommandWithNoRetentionAnswerFailsTheCheck(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.mu.Lock()
+	r.retention = claude.Retention{}
+	r.mu.Unlock()
+	status, _ := r.check()
+	if status.CheckError == "" || r.runner.ran("doctor") != 0 {
+		t.Fatalf("claude = %+v, doctor ran %d times; want a refused check", status, r.runner.ran("doctor"))
+	}
+}
+
+// Past the login's refresh deadline a Claude start renews the token and the
+// renewal blanks the saved credential, so the check runs no `claude doctor`
+// and says a sign-in is needed instead of failing. A brew install asks no
+// Claude process and is still checked.
+func TestAnExpiredClaudeLoginRunsNoDoctor(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.setInstalled(ProviderClaude, "2.1.200")
+	r.check()
+	r.mu.Lock()
+	r.loginExpired = true
+	r.mu.Unlock()
+	status, _ := r.check()
+	if r.runner.ran("doctor") != 1 {
+		t.Fatalf("doctor ran %d times, want only the check before the login expired", r.runner.ran("doctor"))
+	}
+	if !status.SignInRequired || status.CheckError != "" || status.LatestVersion != "" || status.Available {
+		t.Fatalf("claude = %+v, want a sign-in required and nothing offered", status)
+	}
+	if err := r.svc.Run(ProviderClaude); !errors.Is(err, ErrNoUpdate) {
+		t.Errorf("Run = %v, want ErrNoUpdate", err)
+	}
+
+	r.mu.Lock()
+	r.loginExpired = false
+	r.mu.Unlock()
+	if status, _ := r.check(); status.SignInRequired || !status.Available {
+		t.Errorf("claude after a sign-in = %+v, want the update offered again", status)
+	}
+
+	r.mu.Lock()
+	r.loginExpired = true
+	r.mu.Unlock()
+	r.setBinary(ProviderClaude, Binary{Path: "/opt/homebrew/bin/claude", ResolvedPath: "/opt/homebrew/Caskroom/claude-code/2.1.200/claude"})
+	r.hosts.text(BrewCaskURL("claude-code"), http.StatusOK, `{"version":"9.9.9"}`)
+	if status, _ := r.check(); status.SignInRequired || !status.Available {
+		t.Errorf("brew claude = %+v, want it checked", status)
+	}
+}
+
+// A login that cannot be read fails the check, and nothing is spawned.
+func TestAnUnreadableClaudeLoginFailsTheCheck(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.mu.Lock()
+	r.loginErr = errors.New("keychain locked")
+	r.mu.Unlock()
+	status, _ := r.check()
+	if r.runner.ran("doctor") != 0 || !strings.Contains(status.CheckError, "keychain locked") || status.SignInRequired {
+		t.Fatalf("claude = %+v, doctor ran %d times; want the read failure reported", status, r.runner.ran("doctor"))
+	}
+}
+
+// `claude doctor` is stopped once it has printed the channel, so one that
+// lingers with no terminal does not hold a process until its deadline.
+func TestDoctorIsDoneOnceItNamesTheChannel(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.check()
+	doctor := r.runner.lastOf("doctor")
+	if doctor.Done == nil {
+		t.Fatal("doctor ran with no Done")
+	}
+	for output, want := range map[string]bool{
+		"Diagnostics\n  Running: native (2.1.300)\n":   false,
+		"  Auto-update channel: lat":                   false,
+		"  Auto-update channel: latest\n  Next line\n": true,
+		"\x1b[1mAuto-update channel:\x1b[0m stable\n":  true,
+	} {
+		if got := doctor.Done(output); got != want {
+			t.Errorf("Done(%q) = %v, want %v", output, got, want)
+		}
+	}
+	if update := r.runner.lastOf("update"); update.Done != nil {
+		t.Error("an update command is stopped early")
+	}
+}
+
+// A doctor that never names its channel is stopped at its deadline, and
+// the check says that rather than a bare context error.
+func TestADoctorThatNeverAnswersSaysSo(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.runner.on("doctor", func(context.Context) (Output, error) {
+		return Output{Text: "Diagnostics\n", ExitCode: -1}, context.DeadlineExceeded
+	})
+	status, _ := r.check()
+	if want := "claude doctor did not report its auto-update channel within 30s"; !strings.Contains(status.CheckError, want) {
+		t.Fatalf("CheckError = %q, want it to contain %q", status.CheckError, want)
 	}
 }

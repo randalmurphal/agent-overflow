@@ -689,8 +689,8 @@ func TestBootLeavesATerminalThreadItCouldNotDeleteEnded(t *testing.T) {
 	}
 }
 
-// Start ends the last run's terminal threads before the phases that let a
-// client in.
+// Start ends the last run's terminal threads before it returns, which is
+// before the transport lets a client in.
 func TestStartEndsTheTerminalThreadsTheLastRunLeft(t *testing.T) {
 	a := newBootTestApp(t)
 	dbPath := filepath.Join(a.dataDirOverride, "agent-overflow", databaseFileName)
@@ -714,19 +714,14 @@ func TestStartEndsTheTerminalThreadsTheLastRunLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	progress := newRecordingBootProgress("app.start_background_work")
+	progress := newRecordingBootProgress("")
 	SetBootProgress(a, progress)
-	a.startAsync(context.Background())
-	select {
-	case <-progress.reached:
-	case <-time.After(30 * time.Second):
-		t.Fatal("Start never reached its background work")
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	_, termErr := a.store.GetThread("thread-term")
 	_, chatErr := a.store.GetThread("thread-chat")
 	failures := progress.failures()
-	close(progress.release)
-	a.stopAsyncStart()
 	if err := a.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}

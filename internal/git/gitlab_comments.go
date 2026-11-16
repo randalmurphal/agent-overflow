@@ -27,7 +27,7 @@ type gitlabDiscussionIn struct {
 // names and refuses with *HeadMovedError when its head is not headSHA:
 // the caller's line numbers are of that diff.
 func (f *gitlabForge) PostLineComment(ctx context.Context, ref PRReference, headSHA string, comment ReviewLineComment) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (f *gitlabForge) PostLineComment(ctx context.Context, ref PRReference, head
 
 // PostPRComment answers the note's id, as the read names its comment.
 func (f *gitlabForge) PostPRComment(ctx context.Context, ref PRReference, body string) (string, error) {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return "", err
 	}
@@ -85,7 +85,7 @@ func (f *gitlabForge) EditComment(ctx context.Context, ref PRReference, target C
 	if err != nil {
 		return err
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (f *gitlabForge) DeleteComment(ctx context.Context, ref PRReference, target
 	if err != nil {
 		return err
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,7 @@ import { wailsEventOn } from './wailsEvents';
 import { userFacingError } from '../utils/userFacingError';
 import { refreshSidebarProjections } from './eventsThreadRows';
 import { randomId } from '../utils/randomId';
+import { createSnapshotStream } from './snapshotStream';
 
 export type ConversationTransfer = Awaited<ReturnType<typeof GetThreadTransfers>>[number];
 type TransferIntent = Awaited<ReturnType<typeof BeginThreadTransfer>>;
@@ -45,6 +46,16 @@ const EMPTY: ComputerTransfers = Object.freeze({ rows: [], error: '' });
 const computers = createKeyedSignalRegistry<ComputerTransfers>(EMPTY);
 const revisions = new Map<BackendKey, number>();
 let pending = $state.raw<TransferRequest | null>(null);
+
+// A computer's transfer rows arrive as `thread:transfer` frames and as the
+// answers of Bind and the status read, and the transport writes frames
+// queued for this connection ahead of a reply. A call holds its computer's
+// frames and they fold over its answer, newest `updatedAt` winning and a
+// frame winning a tie, since it can only be the same write or a later one.
+const transferFrames = createSnapshotStream<ConversationTransfer>({
+  name: 'conversationTransfers',
+  applyFrame: (backend, row) => receiveTransfer(backend, row),
+});
 
 export function supportsConversationTransfer(backend: BackendKey): boolean {
   return getTransportHelloFor(backend)?.capabilities.includes('conversation.transfer.v1') ?? false;
@@ -105,8 +116,11 @@ export async function submitConversationTransfer(destination: BackendKey, projec
     // The offer exists only in this call and in host-private recovery state.
     // Never place its grant in localStorage, diagnostic logs, or UI state.
     const offer = await withBackendTarget(destination, () => CreateThreadTransferOffer(intent, projectID, '', ''));
-    const row = await withBackendTarget(request.source, () => BindThreadTransferDestination(request.thread.id, offer));
-    receiveTransfer(request.source, row);
+    await transferFrames.claim(
+      request.source,
+      () => withBackendTarget(request.source, () => BindThreadTransferDestination(request.thread.id, offer)),
+      (row) => receiveTransfer(request.source, row),
+    );
     void refreshComputerTransfers(destination);
   } catch (error) {
     // Begin returns an application refusal only before reserving this ID.
@@ -162,29 +176,23 @@ function receiveTransfer(backend: BackendKey, row: ConversationTransfer): void {
 export function terminal(row: ConversationTransfer): boolean { return row.phase === 'complete' || row.phase === 'canceled'; }
 
 /**
- * Refresh one computer without losing events delivered during the read.
- *
- * The initial row objects form the read boundary. After the snapshot returns,
- * any row whose object changed during that interval wins over the snapshot,
- * including an operation absent from the snapshot. The revision and backend
- * identity checks prevent an older read or a reattached computer from
- * replacing the current projection.
+ * Refresh one computer without losing events delivered during the read: they
+ * fold over the snapshot (`transferFrames`), including an operation absent
+ * from it. The revision and backend identity checks prevent an older read or
+ * a reattached computer from replacing the current projection.
  */
 export async function refreshComputerTransfers(backend: BackendKey): Promise<void> {
   if (!hasScope('threads:read', backend) || !supportsConversationTransfer(backend) || !backendReachable(backend)) return;
   const identity = getBackendIdentity(backend).backendId;
   const revision = (revisions.get(backend) ?? 0) + 1;
   revisions.set(backend, revision);
-  const before = new Map(computers.get(backend).rows.map((row) => [row.id, row]));
   try {
-    const rows = await withBackendTarget(backend, () => GetThreadTransfers());
-    if (revisions.get(backend) !== revision || getBackendIdentity(backend).backendId !== identity) return;
-    // Keep events delivered during this read, without discarding other rows
-    // from the snapshot. A busy transfer must not hide a recovered operation.
-    const merged = new Map(rows.map((row) => [row.id, row]));
-    for (const row of computers.get(backend).rows) if (before.get(row.id) !== row) merged.set(row.id, row);
-    computers.set(backend, { rows: [...merged.values()].sort((a, b) => Number(terminal(a)) - Number(terminal(b)) || b.updatedAt - a.updatedAt).slice(0, 100), error: '' });
-    if (rows.some((row) => row.phase === 'complete' && before.get(row.id)?.phase !== 'complete')) refreshSidebarProjections();
+    await transferFrames.claim(backend, () => withBackendTarget(backend, () => GetThreadTransfers()), (rows) => {
+      if (revisions.get(backend) !== revision || getBackendIdentity(backend).backendId !== identity) return;
+      const before = new Map(computers.get(backend).rows.map((row) => [row.id, row]));
+      computers.set(backend, { rows: [...rows].sort((a, b) => Number(terminal(a)) - Number(terminal(b)) || b.updatedAt - a.updatedAt).slice(0, 100), error: '' });
+      if (rows.some((row) => row.phase === 'complete' && before.get(row.id)?.phase !== 'complete')) refreshSidebarProjections();
+    });
   } catch (error) {
     if (revisions.get(backend) === revision && getBackendIdentity(backend).backendId === identity) computers.set(backend, { ...computers.get(backend), error: userFacingError(error) });
   }
@@ -195,7 +203,7 @@ export function initConversationTransfers(): () => void {
     if (!origin.backendId || !row?.id) return;
     const backend = backendById(origin.backendId);
     if (!backend || getBackendIdentity(backend.id).backendId !== origin.backendId) return;
-    receiveTransfer(backend.id, row);
+    transferFrames.push(backend.id, row);
   });
   const stopHello = onBackendHelloChange((key, hello) => {
     if (hello) void refreshComputerTransfers(key);
@@ -205,5 +213,5 @@ export function initConversationTransfers(): () => void {
 }
 
 export function resetConversationTransfersForTest(): void {
-  computers.reset(); revisions.clear(); pending = null;
+  computers.reset(); revisions.clear(); pending = null; transferFrames.reset();
 }

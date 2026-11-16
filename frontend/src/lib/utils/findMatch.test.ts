@@ -7,19 +7,27 @@ import {
   textsMatchNeedle,
 } from './findMatch';
 import { FIND_FOLD_RANGES, FIND_FOLD_UNICODE_VERSION } from './findFoldTable';
-import { unpackText } from './packedText';
-import { packText } from '../../test/helpers/streamedPatch';
 import { seededRandom as random } from '../../test/helpers/seededRandom';
 
-// The lines `flagFilterLines` flags in `lines` stored as one block.
-function flaggedLines(pattern: RegExp, lines: readonly string[]): Set<number> {
+// Where each of `lines` starts in them joined by newlines.
+function lineStarts(lines: readonly string[]): number[] {
   const starts: number[] = [];
-  for (let at = 0, line = 0; line < lines.length; line += 1) {
+  let at = 0;
+  for (const line of lines) {
     starts.push(at);
-    at += lines[line].length + 1;
+    at += line.length + 1;
   }
+  return starts;
+}
+
+// The lines `flagFilterLines` flags in `lines` read as one block, each
+// placed where it starts.
+function flaggedLines(pattern: RegExp, lines: readonly string[]): Set<number> {
   const out = new Int32Array(lines.length);
-  const count = flagFilterLines(pattern, lines.join('\n'), 0, lines.length, (line) => starts[line], out);
+  const starts = new Int32Array(lines.length);
+  const count = flagFilterLines(pattern, lines.join('\n'), 0, out, starts);
+  const at = lineStarts(lines);
+  for (let i = 0; i < count; i += 1) expect(starts[i], `line ${out[i]}`).toBe(at[out[i]]);
   return new Set(out.subarray(0, count));
 }
 
@@ -29,13 +37,9 @@ function ruleMatches(text: string, needle: string): boolean {
   return found;
 }
 
-// Plain text with no character in U+0080..U+00FF: no packed spelling can
-// match it, so the filter is exact there.
-const PACKED_RANGE = /[\u0080-\u00ff]/;
-
 // ASCII, capitals, letters past ASCII with and without a fold, astral
 // letters that fold (Deseret), regex syntax, the Kelvin sign, dotted and
-// dotless i, characters whose plain form is a packed spelling (Ã©), and
+// dotless i, the characters é's UTF-8 bytes read as in Latin-1 (Ã©), and
 // U+FFFD in text.
 const ALPHABET = [
   'a', 'b', 'k', 'i', 's', 'A', 'B', 'K', 'I', 'S', ' ', '+', '-', '0',
@@ -49,7 +53,8 @@ describe('find filter pattern', () => {
     expect(findFilterPattern('')).toBeNull();
     expect(findFilterPattern('a\ud800b')).toBeNull();
     expect(findFilterPattern('\udc28')).toBeNull();
-    expect(findFilterPattern('x\ufffd')).toBeNull();
+    // U+FFFD is text like any other: an invalid byte the backend sent as it.
+    expect(flaggedLines(findFilterPattern('x\ufffd')!, ['x', 'x\ufffd', 'x?'])).toEqual(new Set([1]));
     // Past the spelled prefix nothing is read, a lone surrogate included.
     expect(findFilterPattern('a'.repeat(FIND_FILTER_CODE_POINTS) + '\ud800')).not.toBeNull();
     // The largest spelling of one code point, spelled at every place: a
@@ -68,7 +73,7 @@ describe('find filter pattern', () => {
     }
     const longest = findFilterPattern(widest.repeat(1000))!;
     expect(longest.source.length).toBe(findFilterPattern(widest)!.source.length * FIND_FILTER_CODE_POINTS);
-    expect(longest.source.length).toBeLessThan(2 * 1024);
+    expect(longest.source.length).toBeLessThan(1024);
     // A line holding the spelled prefix and not the rest is flagged: the
     // rule decides.
     const prefix = [...findNeedle('Needle '.repeat(20))].slice(0, FIND_FILTER_CODE_POINTS).join('');
@@ -78,7 +83,7 @@ describe('find filter pattern', () => {
     expect(flaggedLines(findFilterPattern(needle)!, ['x', `say ${'NEEDLE '.repeat(20)}`, 'y'])).toEqual(new Set([1]));
   });
 
-  it('flags every vector the rule matches, in plain and packed text', () => {
+  it('flags exactly the vectors the rule matches', () => {
     const cases: [string, string][] = [
       ...vectors.count.map(({ text, query }) => [text, query] as [string, string]),
       ...vectors.offsets.map(({ text, query }) => [text, query] as [string, string]),
@@ -89,15 +94,12 @@ describe('find filter pattern', () => {
       if (!needle) continue;
       const pattern = findFilterPattern(needle)!;
       const matches = ruleMatches(text, needle);
-      if (matches) {
-        expect(flaggedLines(pattern, ['', text, '']), `${query} in ${text}`).toEqual(new Set([1]));
-        expect(flaggedLines(pattern, ['', packText(text), '']), `${query} in packed ${text}`).toEqual(new Set([1]));
-      }
-      if (!PACKED_RANGE.test(text + needle)) expect(flaggedLines(pattern, [text]).size, `${query} in ${text}`).toBe(matches ? 1 : 0);
+      if (matches) expect(flaggedLines(pattern, ['', text, '']), `${query} in ${text}`).toEqual(new Set([1]));
+      if ([...needle].length <= FIND_FILTER_CODE_POINTS) expect(flaggedLines(pattern, [text]).size, `${query} in ${text}`).toBe(matches ? 1 : 0);
     }
   });
 
-  it('spells every code point that folds, plain and packed', () => {
+  it('spells every code point that folds', () => {
     let spelled = 0;
     for (let code = 0; code <= 0x10ffff; code += 1) {
       if (code >= 0xd800 && code <= 0xdfff) continue;
@@ -107,13 +109,12 @@ describe('find filter pattern', () => {
       // The Kelvin sign and U+0130 fold to ASCII needles.
       const pattern = findFilterPattern(folded)!;
       if (flaggedLines(pattern, [char]).size !== 1) throw new Error(`U+${code.toString(16)} is not spelled`);
-      if (flaggedLines(pattern, [packText(char)]).size !== 1) throw new Error(`packed U+${code.toString(16)} is not spelled`);
       spelled += 1;
     }
     expect(spelled).toBeGreaterThan(1400);
   });
 
-  it('flags every line the rule matches over random text, and in plain text exactly those', () => {
+  it('flags exactly the lines the rule matches over random text', () => {
     const next = random(7);
     const word = (length: number) => Array.from({ length }, () => ALPHABET[next(ALPHABET.length)]).join('');
     for (let round = 0; round < 3000; round += 1) {
@@ -124,31 +125,11 @@ describe('find filter pattern', () => {
       const needle = findNeedle(next(2) === 0 ? query : query.toUpperCase());
       const pattern = needle === '' ? null : findFilterPattern(needle);
       if (pattern === null) {
-        expect(needle === '' || needle.includes('\ufffd')).toBe(true);
+        expect(needle).toBe('');
         continue;
       }
       const want = new Set(lines.flatMap((line, index) => ruleMatches(line, needle) ? [index] : []));
-      const plain = flaggedLines(pattern, lines);
-      for (const line of want) expect(plain.has(line), `${needle} in ${lines[line]}`).toBe(true);
-      if (!PACKED_RANGE.test(lines.join('') + needle)) expect(plain, `${needle} in ${lines.join(' | ')}`).toEqual(want);
-      const packed = flaggedLines(pattern, lines.map(packText));
-      for (const line of want) expect(packed.has(line), `${needle} in packed ${lines[line]}`).toBe(true);
-    }
-  });
-
-  it('flags every line the rule matches in packed text holding invalid bytes', () => {
-    const next = random(11);
-    for (let round = 0; round < 2000; round += 1) {
-      let packed = '';
-      for (let piece = next(8); piece >= 0; piece -= 1) {
-        packed += next(3) === 0 ? String.fromCharCode(0x80 + next(0x80)) : packText(ALPHABET[next(ALPHABET.length)]);
-      }
-      const text = unpackText(packed);
-      const chars = [...text];
-      const at = next(chars.length + 1);
-      const needle = findNeedle(chars.slice(at, at + 1 + next(3)).join(''));
-      if (needle === '' || needle.includes('\ufffd')) continue;
-      if (ruleMatches(text, needle)) expect(flaggedLines(findFilterPattern(needle)!, [packed]).size, `${needle} in ${text}`).toBe(1);
+      expect(flaggedLines(pattern, lines), `${needle} in ${lines.join(' | ')}`).toEqual(want);
     }
   });
 });
@@ -183,13 +164,14 @@ describe('find matching', () => {
     expect(findMatchChunk(pairs, 0, 'xx').folded).toBe(LONG_TEXT + 3);
   });
 
-  it('flags lines placed by the caller\'s line starts, from any line of the store', () => {
-    const lines = ['zero', 'one needle', 'two', 'needle three needle', 'four'];
-    // Lines 2..4 of a store whose positions start at 1000.
-    const starts = [1000, 1005, 1016, 1020, 1040];
-    const out = new Int32Array(3);
-    const count = flagFilterLines(findFilterPattern('needle')!, lines.slice(2).join('\n'), 2, 5, (line) => starts[line], out);
-    expect(Array.from(out.subarray(0, count))).toEqual([3]);
+  it('flags lines numbered from the block\'s first, each once, where each starts', () => {
+    const lines = ['zero', 'one needle', 'two', 'needle three needle', 'four', '', 'NEEDLE', 'é needle'];
+    const out = new Int32Array(6);
+    const starts = new Int32Array(6);
+    const count = flagFilterLines(findFilterPattern('needle')!, lines.slice(2).join('\n'), 2, out, starts);
+    expect(Array.from(out.subarray(0, count))).toEqual([3, 6, 7]);
+    const at = lineStarts(lines.slice(2));
+    expect(Array.from(starts.subarray(0, count))).toEqual([at[1], at[4], at[5]]);
   });
 
   it('keeps the UTF-16 length of every code point', () => {

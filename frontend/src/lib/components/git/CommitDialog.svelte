@@ -57,7 +57,8 @@
   let selectedCount = $derived(wholeOnly ? files.length : dialog?.selected.size ?? 0);
   let allSelected = $derived(files.length > 0 && selectedCount === files.length);
   let hasSelection = $derived(!!dialog?.selection);
-  let canCommit = $derived(hasSelection && subject.trim() !== '');
+  // A commit whose answer was lost is asked about, whatever is selected now.
+  let canCommit = $derived((hasSelection && subject.trim() !== '') || (dialog?.outcomeUnknown ?? false));
 
   // Informational only: git itself refuses a commit it cannot record
   // (unresolved conflicts) and that refusal surfaces as the commit error.

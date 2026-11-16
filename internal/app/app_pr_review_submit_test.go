@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,13 +40,20 @@ var publishRoute = map[string]string{"gitlab": "glab api publish draft notes", "
 const reviewTestDiff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n" +
 	"@@ -1,10 +1,14 @@\n o1\n o2\n+n3\n o3\n+n5\n+n6\n+n7\n+n8\n o4\n o5\n o6\n o7\n o8\n-o9\n o10\n"
 
-func newReviewSubmitCase(t *testing.T, forge string) *reviewSubmitCase {
+// reviewTestHead is the pull's head, the one every case's diff was loaded at.
+const reviewTestHead = "c0ffee0000000000000000000000000000000001"
+
+func newReviewSubmitCase(t *testing.T, forge string, setup ...func(*forgefake.Repo)) *reviewSubmitCase {
 	t.Helper()
 	app, path := newTestAppWithStorePath(t)
 	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
-	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
-		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Diff: reviewTestDiff},
-	}}}}); err != nil {
+	repo := forgefake.Repo{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
+		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff},
+	}}
+	for _, apply := range setup {
+		apply(&repo)
+	}
+	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{repo}}); err != nil {
 		t.Fatal(err)
 	}
 	gate := &forgeGate{next: engine, publish: map[string]string{"gitlab": "/draft_notes/bulk_publish", "github": "/reviews"}[forge]}
@@ -76,6 +84,8 @@ type forgeGate struct {
 	deletesGone bool
 	// userFails answers the login probe (GET user) 503.
 	userFails bool
+	// onPublish runs when a publish arrives, before it is served.
+	onPublish func()
 }
 
 // lose makes the next publish lose its answer (see losing).
@@ -108,8 +118,15 @@ func (g *forgeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		losing, g.losing = g.losing, ""
 	}
 	deletesGone := g.deletesGone && r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/draft_notes/")
+	var onPublish func()
+	if publish {
+		onPublish = g.onPublish
+	}
 	userFails := g.userFails && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/user")
 	g.mu.Unlock()
+	if onPublish != nil {
+		onPublish()
+	}
 	if held {
 		<-release
 	}
@@ -170,14 +187,14 @@ func (c *reviewSubmitCase) draft(t *testing.T, threadOwned bool, line int, body 
 
 // request is a draft submit of drafts, the thread's or the PR's.
 func (c *reviewSubmitCase) request(threadOwned bool, drafts ...store.DiffReviewComment) SubmitPRReviewRequest {
-	selection := &SubmitPRReviewDrafts{HeadSHA: "head"}
+	selection := &SubmitPRReviewDrafts{}
 	if threadOwned {
 		selection.ThreadID = c.thread.ID
 	}
 	for _, draft := range drafts {
 		selection.IDs = append(selection.IDs, draft.ID)
 	}
-	return SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Summary", Drafts: selection}
+	return SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Summary", HeadSHA: reviewTestHead, Drafts: selection}
 }
 
 func (c *reviewSubmitCase) submit(review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
@@ -247,7 +264,7 @@ func TestSubmitPRReviewWithDraftsPostsAndMarksThemInOneCall(t *testing.T) {
 			got := c.comment(t, threadOwned, draft.ID)
 			wantTurn := ""
 			if threadOwned {
-				wantTurn = "pr:head"
+				wantTurn = "pr:" + reviewTestHead
 			}
 			if got.Status != "sent" || got.SentTurnID != wantTurn {
 				t.Fatalf("%s thread=%v: draft = %+v", forge, threadOwned, got)
@@ -262,6 +279,56 @@ func TestSubmitPRReviewWithDraftsPostsAndMarksThemInOneCall(t *testing.T) {
 	}
 }
 
+// A review written against a head the PR has moved past never lands on
+// the new head: GitLab refuses it as stale_head before any draft note and
+// the drafts stay drafts; GitHub pins the review to the head the reviewer
+// loaded. A request naming no head is refused on both.
+func TestSubmitPRReviewIsPinnedToTheLoadedHead(t *testing.T) {
+	t.Parallel()
+	const older = "0ddba11000000000000000000000000000000002"
+	for _, forge := range []string{"gitlab", "github"} {
+		t.Run(forge, func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, forge)
+			draft := c.draft(t, true, 3, "Guard this.")
+			review := c.request(true, draft)
+			review.Verdict = gitops.ReviewVerdictApprove
+			review.HeadSHA = ""
+			if _, err := c.submit(review); err == nil {
+				t.Fatal("a review naming no head was sent")
+			}
+			review.HeadSHA = older
+			result, err := c.submit(review)
+			if forge == "gitlab" {
+				if reviewSubmitCode(err) != "forge_"+gitops.ForgeErrorStaleHead || result.Posted {
+					t.Fatalf("submit at a moved head = %+v, %v; want refused as stale_head", result, err)
+				}
+				if got := c.comment(t, true, draft.ID).Status; got != "draft" {
+					t.Fatalf("draft is %q, want draft", got)
+				}
+				for _, inv := range c.engine.Invocations(0).Invocations {
+					if inv.Method != http.MethodGet {
+						t.Fatalf("a refused review reached the forge: %s %s", inv.Method, inv.Path)
+					}
+				}
+				return
+			}
+			if err != nil || !result.Posted {
+				t.Fatalf("submit = %+v, %v", result, err)
+			}
+			pinned := false
+			for _, inv := range c.engine.Invocations(0).Invocations {
+				if inv.Route == publishRoute[forge] {
+					pinned = strings.Contains(string(inv.Body), `"commit_id":"`+older+`"`)
+				}
+			}
+			if !pinned {
+				t.Fatal("the GitHub review was not pinned to the loaded head")
+			}
+		})
+	}
+}
+
 // A request without drafts, an older client's, is exactly the comments it
 // carries: posted as given, nothing marked; the client marks its drafts
 // with the separate call, which still works.
@@ -270,7 +337,7 @@ func TestSubmitPRReviewWithoutDraftsPostsTheCallersComments(t *testing.T) {
 	c := newReviewSubmitCase(t, "gitlab")
 	draft := c.draft(t, false, 3, "Guard this.")
 	line := 3
-	result, err := c.submit(SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Guard this.", Line: &line, Side: "right"}}})
+	result, err := c.submit(SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: reviewTestHead, Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Guard this.", Line: &line, Side: "right"}}})
 	if err != nil || !result.PostedReview || len(result.SentDraftIDs) != 0 {
 		t.Fatalf("submit = %+v, %v", result, err)
 	}
@@ -376,6 +443,33 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 	}
 }
 
+// A review whose verdict is Approve, on a GitLab project that asks the
+// approver for their password, is refused with the Approve control's
+// sentence before any write: no draft note is created or published, no
+// approval is sent, and the stored drafts stay drafts to send again.
+func TestSubmitPRReviewGitLabApproveOnAPasswordProjectWritesNothing(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab", func(r *forgefake.Repo) {
+		r.Merge = &forgefake.RepoMerge{ApprovalPassword: true}
+	})
+	draft := c.draft(t, false, 3, "Looks right.")
+	review := c.request(false, draft)
+	review.Verdict = gitops.ReviewVerdictApprove
+	_, err := c.submit(review)
+	if refused, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || refused.Kind != gitops.ForgeErrorRefused ||
+		refused.Message != "GitLab asks for your password to approve in this project. Approve on GitLab." {
+		t.Fatalf("submit = %v, want the password refusal", err)
+	}
+	for _, inv := range c.engine.Invocations(0).Invocations {
+		if inv.Method != http.MethodGet {
+			t.Errorf("a refused review sent %s %s (route %q)", inv.Method, inv.Path, inv.Route)
+		}
+	}
+	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft status = %q, want it kept as a draft", got)
+	}
+}
+
 // The PR's lock is its identity, not its spelling: a submit naming the
 // merge request with its path cased otherwise waits for the first's
 // publish too, as GitLab resolves both to one merge request.
@@ -405,7 +499,7 @@ func TestSubmitPRReviewGitLabSpellingsOfOneMergeRequestDoNotInterleave(t *testin
 	line := 4
 	second := make(chan error, 1)
 	go func() {
-		_, err := c.app.SubmitPRReview(context.Background(), shouted, SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment,
+		_, err := c.app.SubmitPRReview(context.Background(), shouted, SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: reviewTestHead,
 			Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "Shouted.", Line: &line, Side: "right"}}})
 		second <- err
 	}()
@@ -434,7 +528,7 @@ func TestSubmitPRReviewGitLabSubmitsOfBothShapesDoNotInterleave(t *testing.T) {
 			c := newReviewSubmitCase(t, "gitlab")
 			stored := c.draft(t, false, 3, "From the page.")
 			line := 6
-			legacy := SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Older client", Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "From an older client.", Line: &line, Side: "right"}}}
+			legacy := SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Older client", HeadSHA: reviewTestHead, Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "From an older client.", Line: &line, Side: "right"}}}
 			first, second := legacy, c.request(false, stored)
 			if !legacyFirst {
 				first, second = second, first
@@ -649,58 +743,13 @@ func TestSubmitPRReviewAttemptOutcomeWaitsForARunningAttempt(t *testing.T) {
 	}
 }
 
-// The attempts a process remembers are bounded, and it never says an
-// attempt it may have received never arrived: an attempt whose outcome
-// was dropped reads forgotten, and so does every id it does not hold once
-// ids have left its window too. A repeat of a forgotten id posts nothing.
-func TestReviewAttemptsForgetTheOldestFinished(t *testing.T) {
-	t.Parallel()
-	var attempts reviewAttempts
-	finish := func(i int) {
-		attempt, _ := attempts.begin(fmt.Sprintf("a%d", i), "pr")
-		attempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
-	}
-	for i := range reviewAttemptsKept + 1 {
-		finish(i)
-	}
-	if kept, _ := attempts.find(fmt.Sprintf("a%d", reviewAttemptsKept), "pr"); kept == nil {
-		t.Fatal("forgot the newest attempt")
-	}
-	if kept, forgotten := attempts.find("a0", "pr"); kept != nil || !forgotten {
-		t.Fatalf("the evicted attempt = %v, forgotten %v; want forgotten", kept, forgotten)
-	}
-	if _, forgotten := attempts.find("never-sent", "pr"); forgotten {
-		t.Fatal("an id never received reads forgotten while every id is kept")
-	}
-	if len(attempts.byID) != reviewAttemptsKept {
-		t.Fatalf("%d outcomes kept, want %d", len(attempts.byID), reviewAttemptsKept)
-	}
-	repeat, repeated := attempts.begin("a0", "pr")
-	if !repeated {
-		t.Fatal("a forgotten id began again")
-	}
-	if _, err := repeat.wait(context.Background()); err == nil {
-		t.Fatal("a repeat of a forgotten id answered without an error")
-	}
-
-	for i := reviewAttemptsKept + 1; i <= reviewAttemptsKept+reviewAttemptIDsKept+1; i++ {
-		finish(i)
-	}
-	if len(attempts.forgotten) != reviewAttemptIDsKept {
-		t.Fatalf("%d ids kept, want %d", len(attempts.forgotten), reviewAttemptIDsKept)
-	}
-	if _, forgotten := attempts.find("never-sent", "pr"); !forgotten {
-		t.Fatal("an id not held reads never received after ids overflowed")
-	}
-}
-
 // The outcome read of an attempt whose outcome was dropped says so, and
 // one of an id the process never received says that.
 func TestGetPRReviewSubmitOutcomeForgottenAndNeverReceived(t *testing.T) {
 	t.Parallel()
 	c := newReviewSubmitCase(t, "github")
-	for i := range reviewAttemptsKept + 1 {
-		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Key())
+	for i := range writeAttemptsKept + 1 {
+		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Identity())
 		c.app.reviewAttempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
 	}
 	if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "a0"); err != nil || outcome.State != "forgotten" {
@@ -711,10 +760,10 @@ func TestGetPRReviewSubmitOutcomeForgottenAndNeverReceived(t *testing.T) {
 	}
 }
 
-// A GitHub review the forge took whose answer was lost or cut short is
-// unconfirmed: the drafts stay drafts and are not held, the outcome says
-// unconfirmed, and nothing posts again by itself.
-func TestSubmitPRReviewGitHubAnswerLostIsUnconfirmed(t *testing.T) {
+// A GitHub review whose answer was lost after GitHub applied it is settled
+// by the viewer's reviews: posted, its drafts marked, and a second Send has
+// nothing left to post.
+func TestSubmitPRReviewGitHubLostAnswerIsSettledByTheReviews(t *testing.T) {
 	t.Parallel()
 	for _, how := range []string{"drop", "truncate"} {
 		t.Run(how, func(t *testing.T) {
@@ -725,27 +774,73 @@ func TestSubmitPRReviewGitHubAnswerLostIsUnconfirmed(t *testing.T) {
 			review.AttemptID = "attempt-lost"
 			c.gate.lose(how)
 			result, err := c.submit(review)
-			if err != nil || !result.Unconfirmed || result.Posted {
-				t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
+			if err != nil || result.Unconfirmed || !result.Posted || len(result.SentDraftIDs) != 1 {
+				t.Fatalf("submit = %+v, %v; want posted", result, err)
 			}
-			if got := c.comment(t, false, draft.ID).Status; got != "draft" {
-				t.Fatalf("draft is %q, want draft", got)
-			}
-			if held := c.app.postedReviewDrafts.held(c.owner(false)); len(held) != 0 {
-				t.Fatalf("held %d batches for an unconfirmed review", len(held))
-			}
-			listed, err := c.app.ListPRDiffReviewComments(c.pr, draft.Scope, draft.SourceKey)
-			if err != nil || len(listed) != 1 || listed[0].Status != "draft" {
-				t.Fatalf("a read after = %+v, %v; want the draft unmarked", listed, err)
+			if got := c.comment(t, false, draft.ID).Status; got != "sent" {
+				t.Fatalf("draft is %q, want sent", got)
 			}
 			outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-lost")
-			if err != nil || outcome.State != "unconfirmed" {
-				t.Fatalf("outcome = %+v, %v; want unconfirmed", outcome, err)
+			if err != nil || outcome.State != "posted" {
+				t.Fatalf("outcome = %+v, %v; want posted", outcome, err)
 			}
 			if n := c.published(); n != 1 {
 				t.Fatalf("published %d reviews, want 1", n)
 			}
 		})
+	}
+	// A lost answer GitHub did not apply is not posted: the drafts stay
+	// drafts for the next Send.
+	t.Run("unsent", func(t *testing.T) {
+		t.Parallel()
+		c := newReviewSubmitCase(t, "github")
+		draft := c.draft(t, false, 3, "Guard this.")
+		review := c.request(false, draft)
+		review.AttemptID = "attempt-unsent"
+		c.gate.lose("unsent")
+		result, err := c.submit(review)
+		if err == nil || result.Unconfirmed || result.Posted {
+			t.Fatalf("submit = %+v, %v; want not posted", result, err)
+		}
+		if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+			t.Fatalf("draft is %q, want draft", got)
+		}
+		if n := c.published(); n != 0 {
+			t.Fatalf("published %d reviews, want none", n)
+		}
+	})
+}
+
+// A lost GitHub answer whose settling read fails is unconfirmed: the
+// drafts stay drafts and the outcome says so.
+func TestSubmitPRReviewGitHubUnsettledAnswerIsUnconfirmed(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	draft := c.draft(t, false, 3, "Guard this.")
+	review := c.request(false, draft)
+	review.AttemptID = "attempt-lost"
+	c.gate.lose("drop")
+	c.gate.onPublish = func() {
+		if err := c.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql ViewerReviews", Status: http.StatusOK, Times: 1, Body: []byte(`{"errors":[{"message":"Something went wrong"}]}`)}); err != nil {
+			t.Error(err)
+		}
+	}
+	result, err := c.submit(review)
+	if err != nil || !result.Unconfirmed || result.Posted {
+		t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
+	}
+	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft is %q, want draft", got)
+	}
+	if held := c.app.postedReviewDrafts.held(c.owner(false)); len(held) != 0 {
+		t.Fatalf("held %d batches for an unconfirmed review", len(held))
+	}
+	outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-lost")
+	if err != nil || outcome.State != "unconfirmed" {
+		t.Fatalf("outcome = %+v, %v; want unconfirmed", outcome, err)
+	}
+	if n := c.published(); n != 1 {
+		t.Fatalf("published %d reviews, want 1", n)
 	}
 }
 
@@ -875,8 +970,11 @@ func TestSubmitPRReviewGitLabLostPublishIsSettledByTheDraftNotes(t *testing.T) {
 			t.Parallel()
 			c := newReviewSubmitCase(t, "gitlab")
 			draft := c.draft(t, true, 3, "Guard this.")
-			if err := c.engine.SetRefusal(forgefake.Refusal{Route: "glab api list draft notes", Status: http.StatusForbidden, Times: 1}); err != nil {
-				t.Fatal(err)
+			// The settle's read fails, not the submit's own check before it.
+			c.gate.onPublish = func() {
+				if err := c.engine.SetRefusal(forgefake.Refusal{Route: "glab api list draft notes", Status: http.StatusForbidden, Times: 1}); err != nil {
+					t.Error(err)
+				}
 			}
 			c.gate.lose(how)
 			result, err := c.submit(c.request(true, draft))
@@ -930,5 +1028,34 @@ func TestSubmitPRReviewRefusedLeavesTheDraftsUnsent(t *testing.T) {
 		if bodies := c.postedBodies(t); strings.Count(strings.Join(bodies, "\n"), "Guard this.") != 1 {
 			t.Fatalf("%s: the forge holds %q, want the comment once", forge, bodies)
 		}
+	}
+}
+
+// A GitLab review the viewer started in the web UI is not published by
+// Send: the submit is refused before any write with a sentence naming the
+// pending comments, the app's drafts stay drafts and the web review stays
+// pending.
+func TestSubmitPRReviewGitLabLeavesAReviewStartedOnGitLab(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab")
+	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "acme/widgets", Pulls: []forgefake.Pull{
+		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff,
+			DraftNotes: []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "started on GitLab"}}},
+	}}}}); err != nil {
+		t.Fatal(err)
+	}
+	draft := c.draft(t, true, 3, "Guard this.")
+	result, err := c.submit(c.request(true, draft))
+	if reviewSubmitCode(err) != "forge_"+gitops.ForgeErrorRefused || result.Posted || !strings.Contains(err.Error(), "1 pending comments") {
+		t.Fatalf("submit = %+v, %v; want refused naming the pending comment", result, err)
+	}
+	if got := c.comment(t, true, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft is %q, want draft", got)
+	}
+	if n := c.published(); n != 0 {
+		t.Fatalf("published %d reviews, want 0", n)
+	}
+	if bodies := c.postedBodies(t); slices.Contains(bodies, "started on GitLab") {
+		t.Fatalf("the web review was published: %q", bodies)
 	}
 }

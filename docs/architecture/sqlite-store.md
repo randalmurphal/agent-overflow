@@ -359,8 +359,10 @@ statements through `fixShownHistoryTx`, which writes the single
 statements hit pass while the row exists. The row never commits: the fix
 runs on the single writer connection, so no other write sees it, and a
 rollback removes it with the fix. The payload guards check the row, which
-covers the transcript blank ([History repair](#history-repair)); a fix that
-rewrites rows or turn rows adds the check to their guards in its migration.
+covers the transcript blank ([History repair](#history-repair)), and since
+v152 so does `trg_items_shown_update`, which covers that migration's clear of
+stale `pendingFlush` marks; a fix that rewrites turn rows or deletes rows adds
+the check to their guards in its migration.
 
 A holder's thread row has no project, workspace, session or parent, and
 `owned_threads` leaves it out, so no listing, search, transfer or fork sees
@@ -435,8 +437,8 @@ copy and reinstalls them.
   spans write and a move to another thread (`thread_id`, a holder taking the
   row) pass. Each probes `idx_thread_fork_lineage_ancestor` by the row's
   position, so a write past every fork's cut costs one probe that finds
-  nothing. The payload guards also pass every write while
-  `shown_history_fix` holds its row, during a migration's data fix
+  nothing. The payload guards and `trg_items_shown_update` also pass every
+  write while `shown_history_fix` holds its row, during a migration's data fix
   ([Ownership](#ownership)).
 - `trg_items_fork_snapshot` and `trg_items_fork_snapshot_move` hide a row an
   ancestor inserts or moves below a fork's cut after the fork was made, such as
@@ -512,7 +514,7 @@ v129 clears `fork_source_thread_id` on every holder, since earlier builds kept
 a retired thread's source there and holder reuse reads the column. v130
 applies the turn rule in [Reads](#reads) to `timeline_turns` and the turn
 guards. v131 creates `shown_history_fix` and reinstalls the payload guards
-with its check.
+with its check. v152 reinstalls `trg_items_shown_update` with the same check.
 
 ## History repair
 

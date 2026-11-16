@@ -272,6 +272,70 @@ describe('browser companion state routing', () => {
     dispose();
   });
 
+  // State frames and call answers carry the backend's Seq; the transport can
+  // write a newer frame ahead of a reply.
+  describe('ordering answers against frames', () => {
+    const open = (seq: number) => ({
+      kind: 'state', threadId: 'thread-browser', activePageId: 'page-1', visible: true, seq,
+      pages: [page('https://example.com', 'Example')],
+    });
+    const closed = (seq: number) => ({ kind: 'state', threadId: 'thread-browser', visible: true, pages: [], seq });
+
+    it('keeps a newer frame that arrived before an action reply', async () => {
+      applyBrowserCompanionState(open(1));
+      setBindingMock('BrowserCompanionDo', async () => {
+        applyBrowserCompanionState(closed(3));
+        return open(2);
+      });
+      await browserCompanionAct('thread-browser', { kind: 'reload', pageId: 'page-1' });
+      expect(companionForSource('main', 'browser')).toBeNull();
+    });
+
+    it('applies an action reply, then a newer frame after it', async () => {
+      applyBrowserCompanionState(open(1));
+      setBindingMock('BrowserCompanionDo', async () => open(2));
+      await browserCompanionAct('thread-browser', { kind: 'reload', pageId: 'page-1' });
+      expect(companionForSource('main', 'browser')).not.toBeNull();
+      applyBrowserCompanionState(closed(3));
+      expect(companionForSource('main', 'browser')).toBeNull();
+    });
+
+    it('keeps a newer zero-page frame that arrived during the hydrate read', async () => {
+      let answer: (value: unknown) => void = () => {};
+      setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+      hydrateBrowserCompanionState('thread-browser');
+      applyBrowserCompanionState(closed(5));
+      answer(open(4));
+      await vi.waitFor(() => expect(answer).toBeTruthy());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(companionForSource('main', 'browser')).toBeNull();
+    });
+
+    it('keeps a newer frame that arrived during the pane attach', async () => {
+      setBindingMock('BrowserCompanionPaneAttach', async () => {
+        applyBrowserCompanionState(closed(7));
+        return { id: 'mount-1', state: open(6) };
+      });
+      setBindingMock('BrowserCompanionPaneDetach', async () => {});
+      const attachment = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(attachment.current).not.toBeNull());
+      expect(attachment.current?.state.pages).toEqual([]);
+      attachment.release();
+    });
+
+    it('takes the attach answer when no newer frame arrived', async () => {
+      setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: open(6) }));
+      setBindingMock('BrowserCompanionPaneDetach', async () => {});
+      const attachment = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(attachment.current).not.toBeNull());
+      expect(attachment.current?.state.pages).toHaveLength(1);
+      applyBrowserCompanionState(closed(8));
+      expect(attachment.current?.state.pages).toEqual([]);
+      attachment.release();
+    });
+  });
+
   it('does not ask the local host to hydrate another computer’s native browser', () => {
     const read = setBindingMock('BrowserCompanionThreadState', vi.fn());
     stageBackend({ id: 'remote', backendId: 'remote' });

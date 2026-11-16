@@ -2,9 +2,143 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
+
+// A restore writes the composer, deletes the queue rows and retires the
+// unconfirmed rows with the review comments they claimed in one
+// transaction: a failure in any part leaves all of them as they were.
+func TestRestoreFlushQueueToDraftRetiresRowsInTheSameTransaction(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "restore")
+	owner := ThreadReviewOwner("restore")
+	if _, err := s.CreateDiffReviewComment(DiffReviewComment{
+		ID: "c", ThreadID: "restore", Scope: string(DiffReviewScopeWorkspace), SourceKey: "diff",
+		FilePath: "a.go", NewLine: 1, Side: "new", Body: "Rename it.", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimDiffReviewCommentsSent(owner, string(DiffReviewScopeWorkspace), "diff",
+		[]DiffReviewCommentSnapshot{{ID: "c", Body: "Rename it."}},
+		DiffReviewDelivery{SentAt: 2, TurnID: "restore:1", ThreadID: "restore", ItemID: "user:1:flush:1", Queued: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID: "user:1:flush:1", ThreadID: "restore", TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "unconfirmed", Meta: `{"pendingFlush":true}`, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue", ThreadID: "restore", Message: "queued", EnqueuedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	expected, _, err := s.GetThreadDraft("restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := expected
+	merged.Content = "unconfirmed\n\nqueued"
+	restore := func() (DraftWrite, []DiffReviewReturnedComments, error) {
+		written, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{
+			Expected: expected, Merged: merged, QueueItemIDs: []string{"queue"}, RetireItemIDs: []string{"user:1:flush:1"},
+		})
+		return written.Draft, written.Returned, err
+	}
+	state := func() string {
+		t.Helper()
+		draft, _, err := s.GetThreadDraft("restore")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, row, err := s.GetThreadItem("restore", "user:1:flush:1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued, err := s.ListFlushQueueItems("restore")
+		if err != nil {
+			t.Fatal(err)
+		}
+		comment, err := s.GetDiffReviewComment(owner, "c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("draft=%q row=%v queued=%d comment=%s", draft.Content, row, len(queued), comment.Status)
+	}
+	before := state()
+
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = 'user:1:flush:1' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restore(); err == nil {
+		t.Fatal("RestoreFlushQueueToDraft succeeded with its retire refused")
+	}
+	if after := state(); after != before {
+		t.Fatalf("a failed restore wrote part of itself:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_row_delete`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The thread was listed by its unconfirmed row and stays listed by the
+	// draft, so the restore lists nothing.
+	write, returned, err := restore()
+	if err != nil || write != (DraftWrite{Changed: true}) {
+		t.Fatalf("RestoreFlushQueueToDraft = %+v, %v; want changed only", write, err)
+	}
+	if got, want := state(), `draft="unconfirmed\n\nqueued" row=false queued=0 comment=draft`; got != want {
+		t.Fatalf("after the restore %s, want %s", got, want)
+	}
+	if len(returned) != 1 || len(returned[0].Comments) != 1 || returned[0].Comments[0] != (DiffReviewCommentSnapshot{ID: "c", Body: "Rename it."}) {
+		t.Fatalf("returned = %+v, want comment c", returned)
+	}
+}
+
+// A restore or a retire never takes back a marked row that is history: one
+// a later turn follows. The whole restore is refused, so neither the row nor
+// its text moves, and the same restore of a residue row goes through.
+func TestRestoreFlushQueueToDraftKeepsAMarkedHistoryRow(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "history")
+	now := time.Now().UnixMilli()
+	for _, item := range []Item{
+		{ID: "user:9:flush:1", TurnIndex: 9, Kind: "user_text", Role: "user", Summary: "shown as sent", Meta: `{"pendingFlush":true}`},
+		{ID: "user:10", TurnIndex: 10, Kind: "user_text", Role: "user", Summary: "a later turn"},
+		{ID: "user:10:flush:1", TurnIndex: 10, Kind: "user_text", Role: "user", Summary: "residue", Meta: `{"pendingFlush":true}`},
+	} {
+		item.ThreadID, item.Status, item.CreatedAt, item.UpdatedAt = "history", "completed", now, now
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expected, _, err := s.GetThreadDraft("history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := expected
+	merged.Content = "shown as sent"
+	if _, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged, RetireItemIDs: []string{"user:9:flush:1"}}); err == nil || !strings.Contains(err.Error(), "is history") {
+		t.Fatalf("restore of a history row = %v, want refused", err)
+	}
+	if _, err := s.RetireUndeliveredUserRow("history", "user:9:flush:1"); err == nil || !strings.Contains(err.Error(), "is history") {
+		t.Fatalf("retire of a history row = %v, want refused", err)
+	}
+	if _, found, err := s.GetThreadItem("history", "user:9:flush:1"); err != nil || !found {
+		t.Fatalf("history row after a refused restore: found=%v err=%v", found, err)
+	}
+	if draft, _, err := s.GetThreadDraft("history"); err != nil || draft.Content != "" {
+		t.Fatalf("draft after a refused restore = %q (%v), want empty", draft.Content, err)
+	}
+	merged.Content = "residue"
+	if _, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged, RetireItemIDs: []string{"user:10:flush:1"}}); err != nil {
+		t.Fatalf("restore of a residue row: %v", err)
+	}
+	if _, found, err := s.GetThreadItem("history", "user:10:flush:1"); err != nil || found {
+		t.Fatalf("residue row after its restore: found=%v err=%v", found, err)
+	}
+}
 
 func TestFindQueuedSendUsesItsThreadAndSparseIndex(t *testing.T) {
 	s := newTestStore(t)
@@ -178,5 +312,101 @@ func TestFlushQueueItemInsertRefusesAnUnidentifiedRow(t *testing.T) {
 	}
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:x", Message: "x"}); err == nil {
 		t.Fatal("expected an error for a row with no thread")
+	}
+}
+
+// A requeue keeps a row that is still there and writes one that is gone.
+func TestEnsureFlushQueueItemKeepsAnExistingRow(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "thread-a")
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:1", ThreadID: "thread-a", Message: "original", EnqueuedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []FlushQueueItem{
+		{ID: "queue:1", ThreadID: "thread-a", Message: "rewritten", EnqueuedAt: 9},
+		{ID: "queue:2", ThreadID: "thread-a", Message: "requeued", EnqueuedAt: 2},
+	} {
+		if err := s.EnsureFlushQueueItem(item); err != nil {
+			t.Fatalf("EnsureFlushQueueItem(%s): %v", item.ID, err)
+		}
+	}
+	rows, err := s.ListFlushQueueItems("thread-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Message != "original" || rows[1].Message != "requeued" {
+		t.Fatalf("rows = %+v, want the original row kept and the requeued one added", rows)
+	}
+}
+
+// The boot restore reads exactly the main-timeline user rows still marked
+// pendingFlush that are residue: in their thread's last turn and written by
+// that thread. A marked row a later turn follows, or one copied in from
+// another thread, is history and is not listed. The scan goes through the
+// sparse user-row index.
+func TestListUnconfirmedUserRows(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"unconfirmed-a", "unconfirmed-b", "history-row", "history-turn", "copied"} {
+		mustCreateThread(t, s, id)
+	}
+	now := time.Now().UnixMilli()
+	for _, item := range []Item{
+		{ID: "user:2:flush:2", ThreadID: "unconfirmed-a", TurnIndex: 2, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`},
+		{ID: "user:2:flush:1", ThreadID: "unconfirmed-a", TurnIndex: 2, Kind: "user_text", Role: "user", Meta: `{"sendId":"s","pendingFlush":true}`},
+		{ID: "assistant:2", ThreadID: "unconfirmed-a", TurnIndex: 2, Kind: "assistant_text", Role: "assistant"},
+		{ID: "user:1:confirmed", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "user_text", Role: "user", Meta: `{"provider_item_id":"u"}`},
+		{ID: "user:1:false", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":false}`},
+		{ID: "assistant:1", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Meta: `{"pendingFlush":true}`},
+		{ID: "user:3:flush:1", ThreadID: "unconfirmed-b", TurnIndex: 3, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`},
+		{ID: "user:9:flush:1", ThreadID: "history-row", TurnIndex: 9, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`},
+		{ID: "user:10", ThreadID: "history-row", TurnIndex: 10, Kind: "user_text", Role: "user"},
+		{ID: "user:3:flush:1", ThreadID: "history-turn", TurnIndex: 3, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`},
+		{ID: "user:4:flush:1", ThreadID: "copied", TurnIndex: 4, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`, CreatedAt: 1},
+	} {
+		item.Status = "completed"
+		if item.CreatedAt == 0 {
+			item.CreatedAt = now
+		}
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatalf("AppendItem(%s): %v", item.ID, err)
+		}
+	}
+	// A later turn with no main-timeline row yet is a later session too.
+	if err := s.InsertTurn(Turn{TurnID: "turn-4", ThreadID: "history-turn", TurnIndex: 4, StartedAt: now}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	rows, err := s.ListUnconfirmedUserRows()
+	if err != nil {
+		t.Fatalf("ListUnconfirmedUserRows: %v", err)
+	}
+	want := []UnconfirmedUserRow{
+		{ThreadID: "unconfirmed-a", ItemID: "user:2:flush:2"},
+		{ThreadID: "unconfirmed-a", ItemID: "user:2:flush:1"},
+		{ThreadID: "unconfirmed-b", ItemID: "user:3:flush:1"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("rows = %+v, want %+v", rows, want)
+		}
+	}
+	plan, err := s.db.Query("EXPLAIN QUERY PLAN " + listUnconfirmedUserRowsSQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = plan.Close() }()
+	var steps []string
+	for plan.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := plan.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		steps = append(steps, detail)
+	}
+	if !strings.Contains(strings.Join(steps, "\n"), "idx_items_user_text") {
+		t.Fatalf("the unconfirmed-row scan does not use the user-row index:\n%s", strings.Join(steps, "\n"))
 	}
 }

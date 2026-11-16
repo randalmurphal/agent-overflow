@@ -55,6 +55,11 @@
 </script>
 
 <div class="flex flex-col gap-2.5 px-[var(--review-slab-inset)] pb-3 pt-2.5" data-testid="review-overview">
+  <!-- What the forge would not answer for this login (team reviewers,
+       check runs, workflow runs), one sentence each. -->
+  {#each detail.unavailable ?? [] as sentence (sentence)}
+    <p class="text-[0.6875rem] text-fg-subtle" data-testid="review-detail-unavailable">{sentence}</p>
+  {/each}
   <!-- A detail with no readiness (an older backend) has no section. -->
   {#if readinessPill(detail)}
     <ReviewMergeSection {review} {detail} {hasWorkspace} />

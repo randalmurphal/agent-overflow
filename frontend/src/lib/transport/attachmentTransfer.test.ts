@@ -210,7 +210,7 @@ describe('fetchTicketedBytes', () => {
     const url = '/attachments/speech/s1?ticket=t';
     for (const [status, body, message] of [
       [403, 'read aloud in OpenAI voices is off on this computer', 'read aloud in OpenAI voices is off on this computer'],
-      [404, 'this sentence was already read aloud or has expired', 'this sentence was already read aloud or has expired'],
+      [404, 'this section was already read aloud or has expired', 'this section was already read aloud or has expired'],
       [409, 'the key file is empty', 'the key file is empty'],
       [502, 'OpenAI did not read the text as written', 'OpenAI did not read the text as written'],
     ] as const) {
@@ -242,9 +242,9 @@ describe('fetchTicketedBytes', () => {
     // ticket 404 is not, and with a prefix no 404 body is.
     expect((await failure('not found', 404, 'Could not load image')).message)
       .toBe('Could not load image: this transfer is no longer available. Try again.');
-    const expired = await failure('this sentence was already read aloud or has expired', 404, null);
+    const expired = await failure('this section was already read aloud or has expired', 404, null);
     expect(expired).toBeInstanceOf(TransferUnavailableError);
-    expect(expired.message).toBe('this sentence was already read aloud or has expired');
+    expect(expired.message).toBe('this section was already read aloud or has expired');
     const spent = await failure('404 page not found', 404, null);
     expect(spent).toBeInstanceOf(TransferUnavailableError);
     expect(spent.message).toBe('this transfer is no longer available. Try again.');

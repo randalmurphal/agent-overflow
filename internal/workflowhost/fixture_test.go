@@ -14,6 +14,8 @@ import (
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/kerneltest"
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
@@ -267,6 +269,8 @@ func (h *fakeHost) ClaudeProjectsDir() (string, error) {
 	}
 	return h.claudeProjectsDir, nil
 }
+
+func (h *fakeHost) ProcessReaper() procutil.Reaper { return procutiltest.Reaper() }
 
 func (h *fakeHost) LifeCtx() context.Context {
 	if h.lifeCtx == nil {

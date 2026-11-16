@@ -9,6 +9,7 @@ import { iterPanes } from './panes.svelte';
 import { GetChannelMessages, GetChannelState } from './bindings';
 import { isBoundedString, isFiniteNumber, ITEM_EVENT_TEXT_FIELD_MAX_CHARS } from './eventsGuards';
 import type { ThreadPaneIngest } from './threadPaneRoles';
+import { createSnapshotStream } from './snapshotStream';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -82,6 +83,26 @@ function isValidChannelStatePayload(payload: ChannelStatePayload): boolean {
   return true;
 }
 
+// A channel's pushes, ordered against the reads of it. A push that lands
+// while a read of its channel is in flight describes a change the read may
+// predate, and the transport writes pushes queued for this connection ahead
+// of a reply, so the pushes fold after the read is applied: messages merge
+// by sequence, and the last state push wins over the read's state.
+type ChannelFrame =
+  | { kind: 'message'; evt: DiscussionMessageEvent }
+  | { kind: 'state'; evt: DiscussionStateEvent };
+
+const channelFrames = createSnapshotStream<ChannelFrame>({
+  name: 'discussion',
+  applyFrame: (_channelId, frame) => {
+    for (const pane of ingestPanes()) {
+      if (pane.threadId !== frame.evt.threadId) continue;
+      if (frame.kind === 'message') pane.applyChannelMessage(frame.evt.message);
+      else pane.applyChannelState(frame.evt);
+    }
+  },
+});
+
 export function applyDiscussionMessage(evt: DiscussionMessageEvent): void {
   if (!evt || !evt.threadId || !evt.message) return;
   // Boundary validation before the payload touches reactive state —
@@ -91,27 +112,27 @@ export function applyDiscussionMessage(evt: DiscussionMessageEvent): void {
   if (!isBoundedString(evt.threadId, DISCUSSION_ID_MAX_CHARS)) return;
   if (!isBoundedString(evt.channelId, DISCUSSION_ID_MAX_CHARS)) return;
   if (!isValidChannelMessage(evt.message)) return;
-  for (const pane of ingestPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.applyChannelMessage(evt.message);
-  }
+  channelFrames.push(evt.channelId, { kind: 'message', evt });
 }
 
 export function applyDiscussionState(evt: DiscussionStateEvent): void {
   if (!evt || !evt.threadId || !evt.channelId) return;
   if (!isValidChannelStatePayload(evt)) return;
-  for (const pane of ingestPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.applyChannelState(evt);
-  }
+  channelFrames.push(evt.channelId, { kind: 'state', evt });
+}
+
+export interface DiscussionChannelSnapshot {
+  state: ChannelStatePayload;
+  messages: ChannelMessage[];
 }
 
 /**
- * Fetch a channel's FSM snapshot + a message page in one round trip,
- * without touching any particular pane. `afterSeq` is the EXCLUSIVE
- * cursor: message sequences are zero-based, so `-1` (not `0`) is
- * "fetch everything" — a `0` cursor silently excludes the channel's
- * very first message from a fresh load (the bug this replaces).
+ * Read a channel's FSM snapshot + a message page in one round trip and
+ * hand it to `apply`, after which the channel's pushes that arrived during
+ * the read fold over it. `afterSeq` is the EXCLUSIVE cursor: message
+ * sequences are zero-based, so `-1` (not `0`) is "fetch everything" — a
+ * `0` cursor silently excludes the channel's very first message from a
+ * fresh load (the bug this replaces).
  *
  * Exported (rather than folded into `refreshDiscussionChannel` below)
  * so transport-gap recovery can fetch ONCE per channelId and apply the
@@ -122,18 +143,21 @@ export function applyDiscussionState(evt: DiscussionStateEvent): void {
  * pane opening the same channel later has already-loaded messages to
  * skip past).
  */
-export async function fetchDiscussionChannelSnapshot(
+export function readDiscussionChannel(
   channelId: string,
-  afterSeq = -1,
-): Promise<{ state: ChannelStatePayload; messages: ChannelMessage[] }> {
-  const [state, messages] = await Promise.all([
-    GetChannelState(channelId),
-    GetChannelMessages(channelId, afterSeq, DISCUSSION_CHANNEL_FETCH_LIMIT),
-  ]);
-  return {
-    state: state as unknown as ChannelStatePayload,
-    messages: (messages ?? []) as unknown as ChannelMessage[],
-  };
+  afterSeq: number,
+  apply: (snapshot: DiscussionChannelSnapshot) => void,
+): Promise<DiscussionChannelSnapshot> {
+  return channelFrames.claim(channelId, async () => {
+    const [state, messages] = await Promise.all([
+      GetChannelState(channelId),
+      GetChannelMessages(channelId, afterSeq, DISCUSSION_CHANNEL_FETCH_LIMIT),
+    ]);
+    return {
+      state: state as unknown as ChannelStatePayload,
+      messages: (messages ?? []) as unknown as ChannelMessage[],
+    };
+  }, apply);
 }
 
 /**
@@ -147,7 +171,7 @@ export async function fetchDiscussionChannelSnapshot(
  *
  * `afterSeq` defaults to the pane's own highest-loaded sequence when it
  * already has messages, else `-1` (fetch everything) — the same
- * zero-based-sequence cursor rule `fetchDiscussionChannelSnapshot`
+ * zero-based-sequence cursor rule `readDiscussionChannel`
  * documents.
  */
 export async function refreshDiscussionChannel(pane: ThreadPaneIngest): Promise<ChannelMessage[]> {
@@ -155,8 +179,9 @@ export async function refreshDiscussionChannel(pane: ThreadPaneIngest): Promise<
   if (!channelId) return [];
   const loaded = pane.channelMessages;
   const afterSeq = loaded.length > 0 ? loaded[loaded.length - 1].sequence : -1;
-  const { state, messages } = await fetchDiscussionChannelSnapshot(channelId, afterSeq);
-  pane.applyChannelState(state);
-  pane.applyChannelMessages(messages);
+  const { messages } = await readDiscussionChannel(channelId, afterSeq, (snapshot) => {
+    pane.applyChannelState(snapshot.state);
+    pane.applyChannelMessages(snapshot.messages);
+  });
   return messages;
 }

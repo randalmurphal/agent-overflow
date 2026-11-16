@@ -35,6 +35,7 @@ import { countNoun } from '../utils/format';
 import { userFacingError } from '../utils/userFacingError';
 import { refreshSidebarProjections } from './eventsThreadRows';
 import { addToast } from './toast.svelte';
+import { createSnapshotStream } from './snapshotStream';
 
 export type SessionImportStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -138,6 +139,21 @@ let run = $state<ImportRunState | null>(null);
 
 let inFlightScan: Promise<void> | null = null;
 let starting = false;
+
+// The backend starts a run before `ImportSessions` answers, so a fast run's
+// frames, its `done` included, arrive ahead of the handle that names it. The
+// start holds the channel (every key: the run id is the answer) and the
+// frames fold over the run once it exists. A gap is ordered the same way.
+type ImportFrame =
+  | { kind: 'progress'; evt: SessionImportProgressEvent; backend: BackendKey }
+  | { kind: 'gap'; backend: BackendKey };
+const frames = createSnapshotStream<ImportFrame>({
+  name: 'sessionImport',
+  applyFrame: (_key, frame) => {
+    if (frame.kind === 'gap') foldConnectionLost(frame.backend);
+    else foldImportProgress(frame.evt, frame.backend);
+  },
+});
 /**
  * A run has changed what is importable, so the loaded catalog no longer
  * matches the provider homes. Not reactive: nothing renders it — it only
@@ -456,22 +472,26 @@ export async function startImport(ids: readonly string[]): Promise<void> {
   const backend = computer;
   catalogError = '';
   try {
-    const handle = await withBackendTarget(backend, () => ImportSessions({ ids: unique }));
-    if (revision !== generation) return;
-    run = {
-      importId: handle.importId,
-      // The backend owns the total (a run can expand a row into branches);
-      // fall back to the request size if it reports nothing usable.
-      total: handle.total > 0 ? handle.total : unique.length,
-      completed: 0,
-      active: true,
-      terminal: false,
-      results: new Map(),
-      resultsVersion: 0,
-      counts: { imported: 0, failed: 0, skipped: 0, threads: 0 },
-      stopRequested: false,
-      connectionLost: false,
-    };
+    await frames.claim(null, () => withBackendTarget(backend, () => ImportSessions({ ids: unique })), (handle) => {
+      if (revision !== generation) return;
+      run = {
+        importId: handle.importId,
+        // The backend owns the total (a run can expand a row into branches);
+        // fall back to the request size if it reports nothing usable.
+        total: handle.total > 0 ? handle.total : unique.length,
+        completed: 0,
+        active: true,
+        terminal: false,
+        results: new Map(),
+        resultsVersion: 0,
+        counts: { imported: 0, failed: 0, skipped: 0, threads: 0 },
+        stopRequested: false,
+        connectionLost: false,
+      };
+      // The frames that overtook this answer fold next, and a `done` among
+      // them settles the run before the start returns.
+      starting = false;
+    });
   } catch (err) {
     if (revision !== generation) return;
     run = null;
@@ -518,6 +538,10 @@ export async function stopImport(): Promise<void> {
  * landing, and would discard the very frame that finishes the run.
  */
 export function applyImportProgress(evt: SessionImportProgressEvent, backend: BackendKey = HOME_BACKEND): void {
+  frames.push(evt?.importId ?? '', { kind: 'progress', evt, backend });
+}
+
+function foldImportProgress(evt: SessionImportProgressEvent, backend: BackendKey): void {
   if (backend !== computer) return;
   const current = run;
   if (!current || !evt) return;
@@ -631,6 +655,10 @@ function completionMessage(imported: number, threads: number, skipped: number): 
  * closing on that would look like success.
  */
 export function markImportConnectionLost(backend: BackendKey = HOME_BACKEND): void {
+  frames.push('', { kind: 'gap', backend });
+}
+
+function foldConnectionLost(backend: BackendKey): void {
   if (backend !== computer) return;
   const current = run;
   if (!current || !current.active) return;
@@ -650,6 +678,7 @@ export function markImportConnectionLost(backend: BackendKey = HOME_BACKEND): vo
 
 function resetSessionImport(): void {
   generation += 1;
+  frames.reset();
   computer = HOME_BACKEND;
   open = false;
   status = 'idle';

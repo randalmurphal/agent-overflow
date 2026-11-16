@@ -38,9 +38,13 @@ type GitStatus struct {
 	// "github", "gitlab", or "" when the host is unknown / no origin
 	// is configured. Drives the UI's PR/MR label adaptation and gates
 	// the "Create PR" action.
-	Forge        string `json:"forge,omitempty"`
-	OpenPRURL    string `json:"openPrUrl,omitempty"`
-	OpenPRNumber int    `json:"openPrNumber,omitempty"`
+	Forge string `json:"forge,omitempty"`
+	// ForgeUnsupported is the sentence the PR features show in their
+	// place when Forge is empty because the origin is on a forge host
+	// this release does not support (GitHub Enterprise); "" otherwise.
+	ForgeUnsupported string `json:"forgeUnsupported,omitempty"`
+	OpenPRURL        string `json:"openPrUrl,omitempty"`
+	OpenPRNumber     int    `json:"openPrNumber,omitempty"`
 	// OpenPRLookupError is set when the forge lookup failed, distinct from
 	// a successful lookup that found no open PR/MR for the branch.
 	OpenPRLookupError string `json:"openPrLookupError,omitempty"`
@@ -92,6 +96,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.HasOriginRemote == other.HasOriginRemote &&
 		s.RemoteSignInError == other.RemoteSignInError &&
 		s.Forge == other.Forge &&
+		s.ForgeUnsupported == other.ForgeUnsupported &&
 		s.OpenPRURL == other.OpenPRURL &&
 		s.OpenPRNumber == other.OpenPRNumber &&
 		s.OpenPRLookupError == other.OpenPRLookupError &&
@@ -278,6 +283,9 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 		status.RemoteSignInError = c.RemoteSignInError(cwd)
 	}
 	status.Forge = forge
+	if forge == "" && origin.known {
+		status.ForgeUnsupported = unsupportedForgeReason(origin.url, c.gitLabHostsSnapshot())
+	}
 	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
 	status.PendingOperation = pending
 	if status.HeadCommit != "" {
@@ -483,8 +491,15 @@ func (c *Core) CountWorkingTreeChanges(cwd string) (int, error) {
 // preview must show the real filename. Rename and copy entries carry a second
 // NUL-terminated field (the original path) which is consumed as part of the
 // same change rather than counted twice.
+//
+// Callers weigh what a removal or discard would lose, so the flags override
+// config that hides work from porcelain status: status.showUntrackedFiles
+// (an untracked directory still counts once, as git's default shows it) and
+// diff.ignoreSubmodules or submodule.<name>.ignore. Ignored files are not
+// counted. Files the index marks assume-unchanged or skip-worktree are not
+// either; that is index state, not config.
 func (c *Core) WorkingTreeChanges(cwd string, limit int) (paths []string, total int, err error) {
-	stdout, _, err := c.Execute(cwd, "status", "--porcelain", "-z")
+	stdout, _, err := c.Execute(cwd, "status", "--porcelain", "-z", "--untracked-files=normal", "--ignore-submodules=none")
 	if err != nil {
 		return nil, 0, err
 	}

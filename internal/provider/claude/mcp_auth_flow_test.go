@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestStartMCPAuthRequiresCredentialReaderAndBoundedRequest(t *testing.T) {
 	workDir := t.TempDir()
 	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{
-		Config:         Config{WorkDir: workDir},
+		Config:         Config{Reaper: procutiltest.Reaper(), WorkDir: workDir},
 		RequestTimeout: time.Second,
 	}, "srv")
 	if err == nil || !strings.Contains(err.Error(), "credential reader required") {
@@ -23,7 +24,7 @@ func TestStartMCPAuthRequiresCredentialReaderAndBoundedRequest(t *testing.T) {
 	}
 
 	_, _, err = StartMCPAuth(context.Background(), MCPAuthConfig{
-		Config:         Config{WorkDir: workDir},
+		Config:         Config{Reaper: procutiltest.Reaper(), WorkDir: workDir},
 		ReadCredential: func() ([]byte, error) { return nil, nil },
 	}, "srv")
 	if err == nil || !strings.Contains(err.Error(), "timeout must be positive") {
@@ -35,7 +36,7 @@ func TestNewSessionRejectsMissingEventCallbackBeforeSpawn(t *testing.T) {
 	_, err := NewSession(
 		context.Background(),
 		"thread",
-		Config{Binary: filepath.Join(t.TempDir(), "must-not-spawn")},
+		Config{Reaper: procutiltest.Reaper(), Binary: filepath.Join(t.TempDir(), "must-not-spawn")},
 		nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "onEvent callback is required") {
@@ -68,7 +69,7 @@ done
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	flow, result, err := StartMCPAuth(ctx, MCPAuthConfig{
-		Config:         Config{Binary: binary, WorkDir: dir},
+		Config:         Config{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: dir, Retention: UserHomeRetention(0)},
 		ReadCredential: func() ([]byte, error) { return nil, fs.ErrNotExist },
 		RequestTimeout: 5 * time.Second,
 	}, "srv")

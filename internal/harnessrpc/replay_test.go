@@ -257,6 +257,11 @@ func TestHarnessResetClearsHarnessState(t *testing.T) {
 	if host.forgeCachesReset != 1 {
 		t.Fatalf("forge caches reset %d times, want once", host.forgeCachesReset)
 	}
+	// One spec's usage readings, and a sign-in it left open, are not the
+	// next spec's.
+	if host.usageReset != 1 || host.loginsCancelled != 1 {
+		t.Fatalf("provider usage reset %d times, sign-ins cancelled %d times; want once each", host.usageReset, host.loginsCancelled)
+	}
 	// So does each repository's fetch freshness and failure backoff.
 	if host.gitFetchesForgotten != 1 {
 		t.Fatalf("git fetches forgotten %d times, want once", host.gitFetchesForgotten)

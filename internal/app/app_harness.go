@@ -21,7 +21,6 @@ import (
 	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/def"
 )
 
@@ -244,7 +243,7 @@ func (h *harnessHost) ArchiveThread(threadID string) error {
 }
 
 func (h *harnessHost) BroadcastThreadRow(threadID string) {
-	h.app.announceThread(triage.ThreadActionFull, threadID)
+	h.app.announceThread(h.app.listedAction(threadID), threadID)
 }
 
 func (h *harnessHost) StopSession(threadID string) error {
@@ -289,6 +288,17 @@ func (h *harnessHost) ClearUIState() error {
 }
 
 func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
+
+func (h *harnessHost) ResetProviderUsage() { h.app.providerLifecycleService().Reset() }
+
+func (h *harnessHost) CancelProviderLogins() {
+	if h.app.providerAccounts == nil {
+		return
+	}
+	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+		h.app.providerAccounts.CancelProviderLogin(name)
+	}
+}
 
 func (h *harnessHost) RunBackgroundFetchPass(ctx context.Context) {
 	h.app.runBackgroundFetchPass(ctx)
@@ -379,7 +389,7 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 }
 
 func (h *harnessHost) SendMessage(threadID, message string) error {
-	return h.app.SendMessage(threadID, message, nil)
+	return h.app.SendMessage(context.Background(), threadID, message, nil)
 }
 
 var _ harnessrpc.Host = (*harnessHost)(nil)

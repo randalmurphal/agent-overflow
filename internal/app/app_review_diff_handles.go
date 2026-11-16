@@ -42,42 +42,24 @@ var ErrTooManyReviewDiffs = errors.New("review diff: too many open diffs")
 var ErrReviewDiffNotFound = errors.New("review diff: not open")
 
 // ReviewDiffChunk is patch bytes [Offset, NextOffset) of an open review
-// diff; EOF marks the end of the patch. An open's first chunk and
-// ReadReviewDiff's answer the bytes as text; ReadReviewDiffPacked's
-// answers them packed where jstext.PackText packs them.
+// diff; EOF marks the end of the patch.
 type ReviewDiffChunk struct {
-	// Data is the chunk's text, or, when Wide is non-empty, that text
-	// packed: its UTF-8 one byte per character (U+0000..U+00FF). A packed
-	// chunk's length in characters differs from NextOffset-Offset when the
-	// chunk held invalid UTF-8.
-	Data string `json:"data"`
-	// Wide holds, for each line of packed Data that has a byte past
-	// ASCII, the index in Data of the first such byte, ascending. A line
-	// here is a run of Data between newlines, so the piece of a line that
-	// began in an earlier chunk counts as one. Packed text always has one,
-	// so a chunk is packed exactly when Wide is non-empty.
-	Wide       []uint32 `json:"wide,omitempty"`
-	Offset     int64    `json:"offset"`
-	NextOffset int64    `json:"nextOffset"`
-	EOF        bool     `json:"eof"`
-	// Key is the key of the patch text [0, NextOffset), whichever form
-	// carries it. No key is zero, so every chunk carries one; omitzero
-	// makes the generated binding leave a chunk from an older backend
-	// without a key instead of filling in a zero one.
+	// Data is the chunk's text: what a JSON client receives for its bytes
+	// (jstext).
+	Data       string `json:"data"`
+	Offset     int64  `json:"offset"`
+	NextOffset int64  `json:"nextOffset"`
+	EOF        bool   `json:"eof"`
+	// Key is the key of the patch text [0, NextOffset). No key is zero,
+	// so every chunk carries one; omitzero makes the generated binding
+	// leave a chunk from an older backend without a key instead of
+	// filling in a zero one.
 	Key jstext.Key `json:"key,omitzero"`
 }
 
 // plainReviewDiffChunk answers a chunk as text.
 func plainReviewDiffChunk(chunk gitdiff.Chunk) ReviewDiffChunk {
 	return ReviewDiffChunk{Data: chunk.Data, Offset: chunk.Offset, NextOffset: chunk.NextOffset, EOF: chunk.EOF, Key: chunk.Key}
-}
-
-// packedReviewDiffChunk answers a chunk packed where that is its cheaper
-// form for the client.
-func packedReviewDiffChunk(chunk gitdiff.Chunk) ReviewDiffChunk {
-	answer := plainReviewDiffChunk(chunk)
-	answer.Data, answer.Wide = jstext.PackText(chunk.Data)
-	return answer
 }
 
 // emptyReviewDiffOpened answers an open of a diff that has no patch.
@@ -245,24 +227,6 @@ func (a *App) ReadReviewDiff(ctx context.Context, id string, offset int64, maxBy
 		return ReviewDiffChunk{}, err
 	}
 	return plainReviewDiffChunk(chunk), nil
-}
-
-// ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
-// where that is its cheaper form for the client (jstext.PackText): the
-// same chunk, key, handle, owner and scope rules. The form depends on the
-// chunk's bytes alone, so a chunk read again has the form it had. A
-// client calls it only on a backend that advertises
-// transport.CapabilityReviewDiffPacked.
-//
-//ao:scope session
-//ao:route home
-//ao:callerbound
-func (a *App) ReadReviewDiffPacked(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
-	chunk, err := a.readReviewDiff(ctx, id, offset, maxBytes)
-	if err != nil {
-		return ReviewDiffChunk{}, err
-	}
-	return packedReviewDiffChunk(chunk), nil
 }
 
 // readReviewDiff reads a chunk of a diff the calling connection holds,

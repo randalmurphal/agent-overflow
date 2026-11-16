@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -26,7 +27,7 @@ func blockedSettingsSession(t *testing.T) (*Session, string, func()) {
     fi
 `, gate)
 	script = strings.Replace(script, marker, block+marker, 1)
-	s := newSessionWithScriptCfg(t, script, Config{Model: "gpt-5.5", WorkDir: "/tmp"})
+	s := newSessionWithScriptCfg(t, script, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"})
 	return s, capture, func() {
 		t.Helper()
 		if err := os.WriteFile(gate, nil, 0600); err != nil {
@@ -148,7 +149,7 @@ func TestSendDoesNotWaitForSettingsAckAndIgnoresItsLateTierReceipt(t *testing.T)
 	script := strings.Replace(codexTurnCaptureScript(capture), `    id=$(`,
 		`    if [[ "$line" == *'"method":"thread/settings/update"'* ]]; then continue; fi
     id=$(`, 1)
-	s := newSessionWithScriptCfg(t, script, Config{Model: "gpt-5.5", WorkDir: "/tmp"})
+	s := newSessionWithScriptCfg(t, script, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"})
 	s.ApplyLiveUpdate(LiveUpdate{Model: "first", ServiceTier: "priority"})
 	s.QueueThreadSettings(ThreadSettingsPush{Model: true, ServiceTier: true})
 	awaitSettingsRequest(t, s)
@@ -194,7 +195,7 @@ func TestCloseCancelsPendingSettingsSynchronization(t *testing.T) {
 	script := strings.Replace(codexTurnCaptureScript(capture), `    id=$(`,
 		`    if [[ "$line" == *'"method":"thread/settings/update"'* ]]; then continue; fi
     id=$(`, 1)
-	s := newSessionWithScriptCfg(t, script, Config{Model: "gpt-5.5", WorkDir: "/tmp"})
+	s := newSessionWithScriptCfg(t, script, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"})
 	s.QueueThreadSettings(ThreadSettingsPush{Model: true})
 	awaitSettingsRequest(t, s)
 	if err := s.Close(); err != nil {

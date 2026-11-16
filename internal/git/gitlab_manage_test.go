@@ -10,26 +10,28 @@ import (
 const gitlabManageEmpty = `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":false,"adminMergeRequest":false},` +
 	`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]}}}}}`
 
-// gitlabSchemaBare is a PRManageSchema answer of a server with none of
-// the management features.
-const gitlabSchemaBare = `{"data":{"rereview":null,"updateInput":{"inputFields":[]},"setReviewers":null,"setAssignees":null,"setLabels":null}}`
-
-// gitlabManageExtras answers the reads a GitLab PR read adds for the
-// management actions, for a test about something else: the detail's
-// PRManage (gitlabManageEmpty) and the events' state events (none). ok is
-// false for any other request.
 // gitlabNoReactions is a MRNoteReactions answer with no notes.
 const gitlabNoReactions = `{"data":{"project":{"mergeRequest":{"notes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}`
 
+// gitlabDeveloperRole is a ProjectAccess answer for a developer.
+const gitlabDeveloperRole = `{"data":{"project":{"maxAccessLevel":{"integerValue":30}}}}`
+
+// gitlabManageExtras answers the reads a GitLab PR read adds for the
+// management actions, for a test about something else: the detail's
+// release (19.3) and PRManageChecks (gitlabManageEmpty), the viewer's
+// role (developer), the threads' reactions (none) and the events' state
+// events (none). ok is false for any other request.
 func gitlabManageExtras(call forgeAPICall) (forgeAPIAnswer, bool) {
 	path, _, _ := strings.Cut(call.Path, "?")
 	switch {
-	case call.Op == "PRManageSchema":
-		return forgeAPIAnswer{Body: gitlabSchemaBare}, true
-	case call.Op == "PRManage":
+	case call.Op == "" && call.Method == http.MethodGet && path == "metadata":
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee","enterprise":true}`}, true
+	case call.Op == "PRManageChecks":
 		return forgeAPIAnswer{Body: gitlabManageEmpty}, true
 	case call.Op == "MRNoteReactions":
 		return forgeAPIAnswer{Body: gitlabNoReactions}, true
+	case call.Op == "ProjectAccess":
+		return forgeAPIAnswer{Body: gitlabDeveloperRole}, true
 	case call.Op == "" && call.Method == http.MethodGet && strings.HasSuffix(path, "/resource_state_events"):
 		return forgeAPIAnswer{Body: `[]`}, true
 	}

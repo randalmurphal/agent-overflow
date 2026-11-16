@@ -97,6 +97,13 @@ func (p *recordingBootProgress) snapshot() (begun, ended, details []string) {
 // t.TempDir(), and the browser engine is the fake.
 func newBootTestApp(t *testing.T) *App {
 	t.Helper()
+	return newBootTestAppWithProvider(t, bootTestProviderBinary(t))
+}
+
+// newBootTestAppWithProvider is newBootTestApp with its own mock provider
+// binary.
+func newBootTestAppWithProvider(t *testing.T, providerBinary string) *App {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -105,7 +112,7 @@ func newBootTestApp(t *testing.T) *App {
 	ConfigureIsolation(a, IsolationConfig{
 		// The background work a boot starts probes every provider; it
 		// runs this mock, never an installed CLI.
-		ProviderBinary:    bootTestProviderBinary(t),
+		ProviderBinary:    providerBinary,
 		CredentialHome:    home,
 		UseFileKeychain:   true,
 		MockBrowserEngine: true,
@@ -338,4 +345,39 @@ func TestStopAsyncStartWithoutStartIsANoop(t *testing.T) {
 	t.Parallel()
 	a := NewApp()
 	a.stopAsyncStart()
+}
+
+// A boot's version probes of the provider binaries run in the background,
+// and Shutdown joins them: none is running when it returns, and none starts
+// after.
+func TestShutdownJoinsTheBootsProviderVersionProbes(t *testing.T) {
+	a := newBootTestApp(t)
+	probes := filepath.Join(t.TempDir(), "probes")
+	a.providerBinaryOverride = mockexec.Write(t, filepath.Join(t.TempDir(), "provider"),
+		"#!/bin/sh\nif [ \"$1\" = --version ]; then\n"+
+			"  echo start >> '"+probes+"'\n  /bin/sleep 1\n  echo end >> '"+probes+"'\n"+
+			"  echo '0.0.0 (boot test mock)'\nfi\nexit 0\n")
+	read := func() string {
+		data, err := os.ReadFile(probes)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForCondition(t, "a boot version probe", func() bool { return strings.Contains(read(), "start") })
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	after := read()
+	if strings.Count(after, "start") != strings.Count(after, "end") {
+		t.Fatalf("Shutdown returned with a version probe running: %q", after)
+	}
+	// Longer than one probe, so one that starts after Shutdown is seen.
+	time.Sleep(1500 * time.Millisecond)
+	if later := read(); later != after {
+		t.Fatalf("a version probe ran after Shutdown returned: %q, then %q", after, later)
+	}
 }

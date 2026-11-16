@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
@@ -38,14 +40,13 @@ type UsageBackoff interface {
 type AccountSink interface {
 	PublishAccount(providerName string, account provideraccounts.Account, info provider.AccountInfo, generation uint64)
 	PublishCleared(providerName string, generation uint64)
-	// PublishAccountsChanged says the SET of saved accounts for a provider
+	// PublishAccountsChanged says the SET of saved accounts for providerName
 	// moved — one was added, removed, or made active. It is deliberately
 	// separate from PublishAccount, which reports one card's contents and
 	// fires on every usage probe: a receiver that re-listed on those would
 	// spend an RPC per probe, and one that never re-lists (the state before
-	// this existed) misses a removal entirely. It names no provider: the one
-	// read behind it, ListProviderAccounts, answers for every provider at once.
-	PublishAccountsChanged()
+	// this existed) misses a removal entirely.
+	PublishAccountsChanged(providerName string)
 	PublishUsageError(providerName, accountID string, err error)
 	PublishLogin(state LoginState)
 	// PublishSignIn names the account a login landed on and what it did to
@@ -56,6 +57,9 @@ type AccountSink interface {
 // Deps are the narrow process/lifecycle ports used by Manager.
 type Deps struct {
 	Context func() context.Context
+	// Reaper ends the provider processes this service starts if the
+	// backend dies first.
+	Reaper procutil.Reaper
 	// BeginWork fences credential transactions and live sign-in sessions
 	// against a host restart. Acquire before account/reconcile locks.
 	BeginWork       func(context.Context) (func(), error)
@@ -63,10 +67,10 @@ type Deps struct {
 	ShutdownError   error
 	CurrentSettings func() settings.Settings
 	ProviderBinary  func(providerName string) string
-	// ClaudeCleanupPeriodDays is the `cleanupPeriodDays` a Claude probe
-	// carries, 0 for none (claude.ProbeConfig.CleanupPeriodDays).
-	ClaudeCleanupPeriodDays func(workDir string) int
-	OpenBrowser             func(context.Context, string) error
+	// ClaudeRetention is a Claude probe's answer to the transcript sweep
+	// (claude.ProbeConfig.Retention).
+	ClaudeRetention func(workDir string) claude.Retention
+	OpenBrowser     func(context.Context, string) error
 	// LoginSpawnEnv is the boot-mode environment a sign-in spawn carries on
 	// top of the user's configured provider environment. Empty (or nil) in
 	// production. A harness boot puts the mock-control address and token
@@ -103,6 +107,8 @@ type Manager struct {
 	loginMu     sync.Mutex
 	logins      map[string]*loginRun
 	loginStates map[string]LoginState
+	// loginSeq numbers every stored sign-in state (LoginState.Seq).
+	loginSeq uint64
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores
@@ -305,7 +311,10 @@ func (m *Manager) ClaudeCatalog(accountID string) (provideraccounts.ClaudeCatalo
 	return m.store.ClaudeCatalog(accountID)
 }
 
-func (m *Manager) applySelection(providerName string, generation uint64, accountID string) {
+// applySelection reports that the selection moved from previousAccountID to
+// accountID. Every route that changes the selected account calls it once the
+// change is committed and mu is released.
+func (m *Manager) applySelection(providerName string, generation uint64, previousAccountID, accountID string) {
 	if m.deps.Sessions == nil {
 		return
 	}
@@ -315,7 +324,7 @@ func (m *Manager) applySelection(providerName string, generation uint64, account
 			selection.Account = AccountInfo(account)
 		}
 	}
-	m.deps.Sessions.ApplySelection(providerName, selection)
+	m.deps.Sessions.ApplySelection(providerName, previousAccountID, selection)
 }
 
 func (m *Manager) publishRateLimits(snapshot provider.RateLimitsSnapshot) {

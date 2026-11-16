@@ -5,14 +5,19 @@ import { patchMemory, type EvictableText } from './patchMemory.svelte';
 // whose diff is still open can give up chunk text under the budget and
 // read it again from the diff (`PatchTextSource`). The line index over
 // the chunks is `PatchStore`'s.
+//
+// A chunk's text is held as its UTF-8 bytes, so what the budget counts is
+// what the page holds on every engine: a string's width is the engine's
+// choice and can double it. The text a chunk arrives as is encoded once
+// and not kept.
 
 let nextChunksId = 1;
 
 /** Where a store's chunks came from, to read an evicted one again. */
 export interface PatchTextSource {
-  /** Reads the chunk at backend bytes [offset, nextOffset) again, asking
-   * the form it first arrived in, and says which form the answer has. */
-  read(offset: number, nextOffset: number, packed: boolean): Promise<{ data: string; nextOffset: number; packed: boolean }>;
+  /** Reads the chunk at backend bytes [offset, nextOffset) again: its
+   * text, which the store encodes and drops. */
+  read(offset: number, nextOffset: number): Promise<{ data: string; nextOffset: number }>;
   release(): void;
 }
 
@@ -46,17 +51,12 @@ const heldText = new FinalizationRegistry<Held>((held) => {
   patchMemory.pin(-held.pinned);
 });
 
-// What a plain chunk's text costs: V8 holds a string with any character
-// past Latin-1 at two bytes per character. Packed text is one byte each.
-function textBytes(text: string): number {
-  return /[\u0100-\uffff]/.test(text) ? text.length * 2 : text.length;
-}
+const encoder = new TextEncoder();
 
 /**
- * One patch's chunk strings, each plain (its text) or packed (its UTF-8
- * bytes, one character each). A chunk with a backend byte range can be
- * evicted once a source is attached, and is read again from it in the
- * form it first arrived in.
+ * One patch's chunks, each its text's UTF-8 bytes. A chunk with a backend
+ * byte range can be evicted once a source is attached, and is read again
+ * from it.
  *
  * A pinned chunk is not evicted: a reader holds it (`pin`), the line
  * still arriving is joined across it (`indexed`), or it is being read
@@ -65,10 +65,11 @@ function textBytes(text: string): number {
  */
 export class PatchChunks implements EvictableText {
   readonly id = nextChunksId++;
-  private readonly texts: (string | null)[] = [];
-  private readonly packed: boolean[] = [];
-  // Per chunk: its stored length, its backend byte range (-1 when it has
-  // none), what its text costs and how many pins hold it.
+  private readonly texts: (Uint8Array | null)[] = [];
+  // Per chunk: its length in bytes, its backend byte range (-1 when it
+  // has none), what the budget counts for its text (its length, or 0 for
+  // text it does not count, which so never raises the pinned sum) and how
+  // many pins hold it.
   private readonly lengths: number[] = [];
   private readonly offsets: number[] = [];
   private readonly nextOffsets: number[] = [];
@@ -97,19 +98,20 @@ export class PatchChunks implements EvictableText {
     return this.texts.length;
   }
 
-  /** Adds a chunk and returns its number. A chunk with a `range` can be
-   * evicted once indexed; one with none is never. `counted` false keeps
-   * text built in memory off the budget. */
-  push(data: string, packed: boolean, range: { offset: number; nextOffset: number } | undefined, counted: boolean): number {
-    this.texts.push(data);
-    this.packed.push(packed);
-    this.lengths.push(data.length);
+  /** Adds a chunk of text, held as its UTF-8 bytes, and returns its
+   * number. A chunk with a `range` can be evicted once indexed; one with
+   * none is never. `counted` false keeps text built in memory off the
+   * budget, pinned or not. */
+  push(data: string, range: { offset: number; nextOffset: number } | undefined, counted: boolean): number {
+    const bytes = encoder.encode(data);
+    this.texts.push(bytes);
+    this.lengths.push(bytes.length);
     this.offsets.push(range?.offset ?? -1);
     this.nextOffsets.push(range?.nextOffset ?? -1);
-    const size = packed ? data.length : textBytes(data);
+    const size = counted ? bytes.length : 0;
     this.sizes.push(size);
     this.pins.push(0);
-    if (counted) this.hold(size);
+    this.hold(size);
     return this.texts.length - 1;
   }
 
@@ -146,13 +148,9 @@ export class PatchChunks implements EvictableText {
     patchMemory.enforce();
   }
 
-  isPacked(chunk: number): boolean {
-    return this.packed[chunk];
-  }
-
-  /** A chunk's text, read by a reader: counts as a use of the chunk.
+  /** A chunk's bytes, read by a reader: counts as a use of the chunk.
    * Throws PatchTextNotResident (naming `line`) when it is evicted. */
-  read(chunk: number, line: number): string {
+  read(chunk: number, line: number): Uint8Array {
     const text = this.texts[chunk];
     if (text === null) throw new PatchTextNotResident(line);
     // Consecutive reads of one chunk are one use.
@@ -163,8 +161,8 @@ export class PatchChunks implements EvictableText {
     return text;
   }
 
-  /** A pinned chunk's text, read while indexing: not a use. */
-  peek(chunk: number, line: number): string {
+  /** A pinned chunk's bytes, read while indexing: not a use. */
+  peek(chunk: number, line: number): Uint8Array {
     const text = this.texts[chunk];
     if (text === null) throw new PatchTextNotResident(line);
     return text;
@@ -283,21 +281,21 @@ export class PatchChunks implements EvictableText {
     if (!source || this.disposed) return Promise.reject(new PatchTextLost('patch text: the diff was closed'));
     const offset = this.offsets[chunk];
     const next = this.nextOffsets[chunk];
-    const packed = this.packed[chunk];
     const length = this.lengths[chunk];
     const read = this.reloadChain
       .then(() => {
         if (this.disposed) throw new PatchTextLost('patch text: the diff was closed');
-        return source.read(offset, next, packed);
+        return source.read(offset, next);
       })
       .then((answer) => {
-        // The line index and wide bits stay from the first read, so the
-        // answer must be that chunk in that form.
-        if (answer.nextOffset !== next || answer.packed !== packed || answer.data.length !== length) {
+        // The line index stays from the first read, so the answer must be
+        // that chunk: the same range and length.
+        const bytes = answer.nextOffset === next ? encoder.encode(answer.data) : null;
+        if (bytes === null || bytes.length !== length) {
           throw new PatchTextLost('patch text: the diff no longer serves the same chunk');
         }
         if (this.disposed || this.texts[chunk] !== null) return;
-        this.texts[chunk] = answer.data;
+        this.texts[chunk] = bytes;
         this.hold(this.sizes[chunk]);
         if (this.pins[chunk] > 0) this.countPinned(this.sizes[chunk]);
         patchMemory.offer(this, chunk, false);

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -33,7 +34,7 @@ func TestTransferFenceRefusesSendAndProviderStartWithoutWritingHistory(t *testin
 					}
 				}
 			}
-			for name, call := range map[string]func() error{"send": func() error { return app.SendMessage(thread.ID, "must remain unsent", nil) }, "start": func() error { return app.StartSession(thread.ID) }} {
+			for name, call := range map[string]func() error{"send": func() error { return app.SendMessage(context.Background(), thread.ID, "must remain unsent", nil) }, "start": func() error { return app.StartSession(thread.ID) }} {
 				var blocked *store.ThreadTransferError
 				if err := call(); !errors.As(err, &blocked) || blocked.OperationID != operation.ID || blocked.Moved != (phase != "preparing") {
 					t.Fatalf("%s: %v", name, err)
@@ -83,7 +84,7 @@ func TestTransferFenceRejectsNativeAliasBeforeSendSideEffects(t *testing.T) {
 			if err := app.store.CreateThread(alias); err != nil {
 				t.Fatal(err)
 			}
-			for _, call := range []func() error{func() error { return app.SendMessage(alias.ID, "must not send", nil) }, func() error { return app.StartSession(alias.ID) }} {
+			for _, call := range []func() error{func() error { return app.SendMessage(context.Background(), alias.ID, "must not send", nil) }, func() error { return app.StartSession(alias.ID) }} {
 				var moved *store.ThreadTransferError
 				if err := call(); !errors.As(err, &moved) || !moved.Moved {
 					t.Fatalf("native alias executed: %v", err)

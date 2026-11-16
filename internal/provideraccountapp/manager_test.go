@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
@@ -21,7 +23,11 @@ func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *providera
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(Deps{ProviderBinary: func(string) string { return isolation.PoisonedBinary }})
+	manager := NewManager(Deps{
+		Reaper:          procutiltest.Reaper(),
+		ProviderBinary:  func(string) string { return isolation.PoisonedBinary },
+		ClaudeRetention: func(string) claude.Retention { return claude.UserHomeRetention(0) },
+	})
 	if err := manager.Attach(store, credentials, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +74,7 @@ func TestManagerSelectionLeaseOrdersActivationWrite(t *testing.T) {
 // the adoption epilogue can still decide about.
 func TestLoginSpawnEnvStacksConfigurationUnderBootModeUnderThePin(t *testing.T) {
 	manager := NewManager(Deps{
+		Reaper: procutiltest.Reaper(),
 		CurrentSettings: func() settings.Settings {
 			return settings.Settings{ClaudeCustomEnv: []settings.ProviderEnvVar{
 				{Name: "ANTHROPIC_BASE_URL", Value: "https://backend.example.test"},
@@ -96,6 +103,7 @@ func TestLoginSpawnEnvStacksConfigurationUnderBootModeUnderThePin(t *testing.T) 
 // merge rule stays one rule rather than two that agree by coincidence.
 func TestLoginSpawnEnvWithoutABootLayerIsTheProbeEnvironment(t *testing.T) {
 	manager := NewManager(Deps{
+		Reaper: procutiltest.Reaper(),
 		CurrentSettings: func() settings.Settings {
 			return settings.Settings{CodexCustomEnv: []settings.ProviderEnvVar{
 				{Name: "OPENAI_BASE_URL", Value: "https://backend.example.test"},

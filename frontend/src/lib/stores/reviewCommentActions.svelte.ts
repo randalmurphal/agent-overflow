@@ -2,6 +2,7 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { PostPRLineComment, ReplyToPRThread } from './bindings';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { commentWriteKey, createCommentWrites, threadWhere, type CommentWrites } from './reviewCommentWrites.svelte';
+import type { ReviewPRIdentity } from './reviewPRIdentity.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { threadRange } from '../utils/reviewRange';
@@ -74,6 +75,8 @@ export interface ReviewCommentActionsState {
 
 export interface ReviewCommentActionsHost {
   readonly backend: BackendKey;
+  /** The PR the pane's state is on, and when it becomes another. */
+  readonly prIdentity: ReviewPRIdentity;
   scope(): DiffReviewScope;
   selectedCommitSHA(): string | null;
   ref(): PRRef | null;
@@ -170,6 +173,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
 
   const writes = createCommentWrites({
     backend: host.backend,
+    prIdentity: host.prIdentity,
     ref: host.ref,
     entityKey: host.entityKey,
     launch: host.launch,

@@ -310,20 +310,21 @@ describe('App integration — windowed thread history', () => {
           newestTurnIndex: 5,
           hasMore: false,
         }));
-        scopedSearch = setBindingMock('SearchThreadItems', async () => [
-          {
-            threadId: 'thread-1',
-            threadTitle: 'Windowed Thread',
-            provider: 'claude',
-            itemId: 'thr-msg',
-            turnIndex: 5,
-            itemIndex: 0,
-            itemKind: 'text',
-            itemRole: 'assistant',
-            summary: 'preserve seconds after one hour',
-            matchType: 'item' as const,
-          },
-        ]);
+        scopedSearch = setBindingMock('SearchThreadItems', async () => ({
+          since: null,
+          incremental: false,
+          items: [
+            makeItem({
+              id: 'thr-msg',
+              threadId: 'thread-1',
+              turnIndex: 5,
+              itemIndex: 0,
+              summary: 'preserve seconds after one hour',
+            }),
+          ],
+          changed: [],
+          capped: false,
+        }));
       },
     );
 
@@ -343,7 +344,7 @@ describe('App integration — windowed thread history', () => {
     const input = (await findByTestId('pane-find-input')) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'seconds' } });
     await waitFor(() => expect(scopedSearch).toHaveBeenCalled());
-    expect(scopedSearch.mock.calls[0]).toEqual(['thread-1', 'seconds', 1000]);
+    expect(scopedSearch.mock.calls[0]).toEqual(['thread-1', 'seconds', 1000, null]);
     await waitFor(() => expect((queryByTestId('pane-find-count')?.textContent ?? '').trim()).toBe('1/1'));
     expect(scrollSpy).toHaveBeenCalledWith('thr-msg', { mark: true, owner: expect.any(Object) });
     // The modal never opens for find.

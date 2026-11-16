@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -54,14 +55,14 @@ while IFS= read -r line; do
 done
 `
 			mockexec.Write(t, binary, script)
-			cfg := codex.ProbeConfig{Binary: binary, WorkDir: parent, Env: map[string]string{"CODEX_HOME": selected, "AO_TEST_ACCOUNT_CWD": logPath}}
+			cfg := codex.ProbeConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: parent, Env: map[string]string{"CODEX_HOME": selected, "AO_TEST_ACCOUNT_CWD": logPath}}
 			switch operation {
 			case "usage":
 				_, err = codex.ProbeAccount(t.Context(), cfg)
 			case "identity":
 				_, err = codex.ProbeIdentity(t.Context(), cfg)
 			case "account-usage":
-				fetcher := codex.AccountUsageFetcher{Binary: binary, WorkDir: parent, Env: cfg.Env}
+				fetcher := codex.AccountUsageFetcher{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: parent, Env: cfg.Env}
 				var usage codex.AccountUsage
 				usage, err = fetcher.Fetch(t.Context())
 				if err == nil && (usage.LifetimeTokens == nil || *usage.LifetimeTokens != 123) {
@@ -75,7 +76,7 @@ done
 					cfg.Env["AO_TEST_REJECT_INITIALIZE"] = "1"
 				}
 				var session *codex.LoginSession
-				session, err = codex.StartLogin(t.Context(), codex.LoginConfig{Binary: binary, WorkDir: parent, Env: cfg.Env})
+				session, err = codex.StartLogin(t.Context(), codex.LoginConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: parent, Env: cfg.Env})
 				if err == nil {
 					t.Cleanup(func() {
 						if err := session.Close(); err != nil {

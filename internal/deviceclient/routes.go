@@ -308,7 +308,7 @@ func verifyComputerRoute(ctx context.Context, route *dialRoute, backendID string
 	if backendID == "" {
 		return errors.New("computer identity is unavailable")
 	}
-	status, _, body, err := healthProbe(ctx, &http.Client{Transport: route.transport, CheckRedirect: noRedirect}, route.Endpoint)
+	status, _, body, err := healthProbe(ctx, stepRouteProbe, &http.Client{Transport: route.transport, CheckRedirect: noRedirect}, route.Endpoint)
 	if err != nil {
 		return err
 	}
@@ -321,8 +321,10 @@ func verifyComputerRoute(ctx context.Context, route *dialRoute, backendID string
 // healthProbe is the one credential-free GET /healthz: TLS trust is verified
 // on the way and the bounded body comes back with the status and headers.
 // Route verification and the renewal-support check are both this probe, so
-// neither can send something the other would not.
-func healthProbe(ctx context.Context, client *http.Client, endpoint string) (int, http.Header, []byte, error) {
+// neither can send something the other would not. step names the caller's
+// purpose in a slow-step line.
+func healthProbe(ctx context.Context, step string, client *http.Client, endpoint string) (status int, _ http.Header, _ []byte, err error) {
+	defer func(started time.Time) { logSlowHTTPStep(step, started, status, err) }(time.Now())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/healthz", nil)
 	if err != nil {
 		return 0, nil, nil, err

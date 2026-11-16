@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/procutil"
 )
 
 // orphanReaperSweepGrace is the SIGTERM→SIGKILL window the startup sweep
@@ -16,10 +17,10 @@ import (
 // orphans are actually found.
 const orphanReaperSweepGrace = 2 * time.Second
 
-// startOrphanReaper is the macOS-only guard against provider subprocesses
-// outliving an ungraceful app death. Linux relies on Pdeathsig
-// (process_linux.go) and Windows on the launcher's Job Object, so this is
-// a no-op there.
+// startOrphanReaper guards against the process groups the app starts
+// outliving an ungraceful app death: every group procutil.StartGroup starts,
+// the headless browser and provider sessions, each through App.groupReaper.
+// Windows runs its backend in WSL, so this is a no-op there.
 //
 // Distinct from the idle-session reaper in app_session_reaper.go, which
 // closes live in-process sessions that have gone idle: that one runs
@@ -27,10 +28,8 @@ const orphanReaperSweepGrace = 2 * time.Second
 // behind (before any new session can register, so the load→kill→clear
 // can't race a fresh Add), then start the live sidecar that kills watched
 // groups the instant this process dies. A missing sidecar is a startup error.
-// The next launch's sweep cannot protect providers spawned by this launch
-// after an ungraceful death.
 func (a *App) startOrphanReaper(dbDir string) error {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS == "windows" {
 		return nil
 	}
 	reg := orphanreaper.NewRegistry(filepath.Join(dbDir, "orphan-registry.json"))
@@ -65,36 +64,56 @@ func (a *App) stopOrphanReaper() {
 	}
 }
 
-// watchSessionProcess registers a freshly-spawned provider process group
-// with the sidecar and the durable registry. pgid is the provider PID
-// (its own group leader via Setpgid). No-op when the reaper is inactive
-// (non-macOS, tests) or the process never started. The registry Add and
-// sidecar Watch are independent backstops, so a failure of one still
-// leaves the other covering the group.
-func (a *App) watchSessionProcess(pgid int, uuid string) {
+// appGroupReaper is the orphan reaper as procutil.StartGroup uses it. owner
+// names, in the registry, what starts the groups.
+type appGroupReaper struct {
+	app   *App
+	owner string
+}
+
+func (r appGroupReaper) Watch(pgid int)   { r.app.watchProcessGroup(pgid, r.owner) }
+func (r appGroupReaper) Release(pgid int) { r.app.releaseProcessGroup(pgid) }
+
+// groupReaper returns the reaper for the process groups one kind of command
+// starts.
+func (a *App) groupReaper(owner string) procutil.Reaper {
+	return appGroupReaper{app: a, owner: owner}
+}
+
+// watchProcessGroup registers a freshly started process group with the
+// sidecar and the durable registry. pgid is the leader's PID (its own group
+// leader), and this process is its parent. owner names what started it. No-op
+// when the reaper is inactive (Windows, tests) or the process never started.
+// The registry Add and sidecar Watch are independent backstops, so a failure
+// of one still leaves the other covering the group. The sidecar hears first:
+// the Add syncs a file, and until the sidecar holds the group a death of this
+// process leaves the group running until the next launch.
+func (a *App) watchProcessGroup(pgid int, owner string) {
 	if pgid <= 1 {
 		return
 	}
+	a.orphanReaper.Watch(pgid)
 	if a.orphanRegistry != nil {
 		rec := orphanreaper.Record{
-			UUID:       uuid,
+			Owner:      owner,
 			PID:        pgid,
 			PGID:       pgid,
 			CreateUnix: orphanreaper.CaptureCreateUnix(pgid),
+			ParentPID:  os.Getpid(),
 		}
 		if err := a.orphanRegistry.Add(rec); err != nil {
 			log.Printf("orphanreaper: registry add pgid=%d: %v", pgid, err)
 		}
 	}
-	a.orphanReaper.Watch(pgid)
 }
 
-// releaseSessionProcess stops tracking a process group whose session was
-// torn down cleanly. Callers must only invoke this after a *successful*
-// Close — if a Close is abandoned (e.g. shutdown timeout) the subprocess
-// may still be alive, and keeping the watch is what guarantees it's
-// reaped should the app then die. No-op when the reaper is inactive.
-func (a *App) releaseSessionProcess(pgid int) {
+// releaseProcessGroup stops tracking a process group that is gone: a session
+// torn down cleanly, a command whose group ended. Callers must only
+// invoke this once the group is known to be gone. If a Close is abandoned
+// (e.g. shutdown timeout) or a kill had no effect, the processes may still be
+// alive, and keeping the watch is what guarantees they are reaped should the
+// app then die. No-op when the reaper is inactive.
+func (a *App) releaseProcessGroup(pgid int) {
 	if pgid <= 1 {
 		return
 	}

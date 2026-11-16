@@ -1,6 +1,10 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { GetObservabilityTracing } from '../../stores/bindings';
+  import { addErrorToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting, hostTierWritable } = settingsComputer();
+  const { call, hasScope, getSettings, updateSetting, hostTierWritable } = settingsComputer();
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -12,14 +16,30 @@
   // and its replay log on disk.
   let hostWritable = $derived(hostTierWritable());
 
-  // We snapshot the tracing state on mount so we can tell the user whether
-  // flipping the toggle now requires a restart. Tracing is wired up once at
-  // startup — there is no safe way to rebuild an OTLP exporter mid-flight
-  // without losing in-flight spans.
-  const initialTracingEnabled = getSettings().observabilityTracingEnabled;
+  // Tracing is wired once at start, so a saved value that differs from the
+  // one this backend started with waits on a restart. The backend reports
+  // that start value (GetObservabilityTracing), so a page opened after a
+  // save still shows the change waiting; the saved side is the settings
+  // store, which follows every window's writes. No notice while the start
+  // value is unknown.
+  let launchedWith = $state<boolean | null>(null);
   let tracingRequiresRestart = $derived(
-    settings.observabilityTracingEnabled !== initialTracingEnabled,
+    launchedWith !== null && settings.observabilityTracingEnabled !== launchedWith,
   );
+
+  async function loadLaunchValue(): Promise<void> {
+    try {
+      launchedWith = (await call(() => GetObservabilityTracing())).launched;
+    } catch (err) {
+      addErrorToast(`Failed to read the tracing start value: ${errString(err)}`, err);
+    }
+  }
+
+  // The gate is the only tracked read; see WebviewGPUVsyncField.
+  $effect(() => {
+    if (!hasScope('settings:read')) return;
+    untrack(() => void loadLaunchValue());
+  });
 
   function handleEndpointChange(value: string) {
     void updateSetting('observabilityOtlpEndpoint', value);

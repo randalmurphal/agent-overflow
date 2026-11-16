@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
@@ -54,6 +55,10 @@ const (
 	exitDrainBytes = 256 * 1024
 )
 
+// stopLeftovers ends what the shell left in its group. A test replaces it
+// with a stop that fails.
+var stopLeftovers = procutil.StopConfiguredGroup
+
 // errOutputDrained ends the output pump once the shell has exited and the
 // pty holds nothing more.
 var errOutputDrained = errors.New("terminal: pty output drained after exit")
@@ -66,6 +71,8 @@ type ProcessConfig struct {
 	Env   []string // if nil, inherit os.Environ(); terminal capabilities are normalized
 	Rows  uint16
 	Cols  uint16
+	// Reaper is SessionOptions.Reaper. Start refuses a nil one.
+	Reaper procutil.Reaper
 }
 
 // ExitStatus captures the result of a process exit.
@@ -81,6 +88,12 @@ type ExitStatus struct {
 type Process struct {
 	cmd *exec.Cmd
 	pty *osFilePty
+	// reaper is released once the shell has exited and its group is empty:
+	// at the exit, or at Close, which ends what the shell left in it.
+	reaper procutil.Reaper
+	// released is set before done closes when the group was empty at the
+	// shell's exit, and by Close otherwise.
+	released bool
 	// raw reads the master without blocking a thread (readOutput).
 	raw syscall.RawConn
 	// readMaster is the master's read system call. Tests replace it to
@@ -106,6 +119,10 @@ type Process struct {
 	pauseNudge func(time.Duration)
 }
 
+// ErrNoReaper is Start's error for a process given no reaper: nothing would
+// end it with the backend.
+var ErrNoReaper = errors.New("terminal: start: no reaper watches the process")
+
 // Start spawns the process. On success Process.Output() returns a channel of
 // raw byte chunks from the PTY until the process exits.
 func Start(cfg ProcessConfig) (*Process, error) {
@@ -113,6 +130,9 @@ func Start(cfg ProcessConfig) (*Process, error) {
 }
 
 func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, error)) (*Process, error) {
+	if cfg.Reaper == nil {
+		return nil, ErrNoReaper
+	}
 	shell, args := resolveShell(cfg.Shell, cfg.Args)
 	rows, cols := cfg.Rows, cfg.Cols
 	if rows == 0 {
@@ -144,9 +164,12 @@ func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, 
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("terminal: pty master: %w", err)
 	}
+	// The pty child leads its own session, so its pid is its group.
+	cfg.Reaper.Watch(cmd.Process.Pid)
 
 	p := &Process{
 		cmd:        cmd,
+		reaper:     cfg.Reaper,
 		pty:        &osFilePty{File: master},
 		raw:        raw,
 		readMaster: readMaster,
@@ -273,7 +296,9 @@ func (p *Process) Kill() error {
 }
 
 // Close performs graceful shutdown: SIGTERM the group, wait killGrace,
-// then SIGKILL if still alive. Closing the PTY fd is always performed.
+// then SIGKILL if still alive. Closing the PTY fd is always performed. It
+// returns nil only once no process of the shell's group is left, including a
+// job the shell left running when it exited.
 func (p *Process) Close() error {
 	return p.shutdown(syscall.SIGTERM, killGrace)
 }
@@ -305,7 +330,7 @@ func (p *Process) shutdown(initialSig syscall.Signal, grace time.Duration) error
 			firstErr = err
 		}
 		<-p.done
-		p.closeErr = firstErr
+		p.closeErr = errors.Join(firstErr, p.settleGroup())
 	})
 	return p.closeErr
 }
@@ -411,7 +436,9 @@ func (p *Process) readOutput(buf []byte) (int, error) {
 // output pump delivers what the shell wrote and stops, and its close of the
 // master hangs up whatever still holds the pty. The kernel has already sent
 // SIGHUP to the pty's foreground job as the shell, its session leader,
-// exited.
+// exited. A job that survives this runs on while the terminal is open, as
+// one a terminal window's shell leaves does, so the group is released here
+// only when it is already empty; otherwise Close ends what is left in it.
 func (p *Process) awaitExit() {
 	defer close(p.done)
 	defer func() {
@@ -423,6 +450,10 @@ func (p *Process) awaitExit() {
 		_ = p.pty.SetReadDeadline(time.Now())
 	}()
 	err := p.cmd.Wait()
+	if !procutil.ConfiguredGroupAlive(p.cmd) {
+		p.reaper.Release(p.cmd.Process.Pid)
+		p.released = true
+	}
 	status := ExitStatus{}
 	if err == nil {
 		status.Code = 0
@@ -448,4 +479,24 @@ func (p *Process) awaitExit() {
 	p.exitMu.Lock()
 	p.exit = status
 	p.exitMu.Unlock()
+}
+
+// settleGroup runs in shutdown once the shell has exited. It ends what the
+// shell left in its group and releases the group once it is empty. A group it
+// cannot empty stays watched, so the orphan reaper still ends it with the
+// backend, and the failure is logged and returned from Close and Kill.
+func (p *Process) settleGroup() error {
+	if p.released {
+		return nil
+	}
+	if procutil.ConfiguredGroupAlive(p.cmd) {
+		if err := stopLeftovers(p.cmd, killGrace); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			err = fmt.Errorf("terminal: end processes left in group %d: %w", p.cmd.Process.Pid, err)
+			log.Printf("%v", err)
+			return err
+		}
+	}
+	p.reaper.Release(p.cmd.Process.Pid)
+	p.released = true
+	return nil
 }

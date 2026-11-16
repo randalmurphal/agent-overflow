@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -17,7 +18,7 @@ import (
 //   - buildApprovalResponse emits updatedInput / updatedPermissions when provided
 
 func TestBuildArgsIncludesPermissionPromptTool(t *testing.T) {
-	args := buildArgs(Config{}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", "")
 
 	for i, arg := range args {
 		if arg == "--permission-prompt-tool" {

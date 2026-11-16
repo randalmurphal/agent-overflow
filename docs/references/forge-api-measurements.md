@@ -348,9 +348,8 @@ the same API. No merge action was sent.
   case, stripped repeatedly (at most 20); `WIP:` is no longer a draft
   prefix.
 - `PUT .../merge` reads `auto_merge = merge_when_pipeline_succeeds ||
-  auto_merge` (both still accepted on 19.6); Grape ignores an undeclared
-  parameter, so a server before 17.11 drops `auto_merge` rather than
-  answering 400. A user who cannot merge gets 401 (`unauthorized!`), a
+  auto_merge` (both accepted from 17.11 through 19.6, the first
+  deprecated). A user who cannot merge gets 401 (`unauthorized!`), a
   merge request that is not mergeable 405, a moved head 409, a failed
   merge 422. `POST .../cancel_auto_merge` (19.5+) answers 201 with the
   merge request, 403 or 409;

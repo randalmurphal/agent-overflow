@@ -63,7 +63,7 @@ func InitWindowUpdater(service *appupdate.Service, app *application.App, version
 	// No global client timeout: the same client streams the (tens-of-MB)
 	// release binary, and http.Client.Timeout caps the WHOLE exchange
 	// including the body read — a fixed cap would abort downloads on slow
-	// links. Per-call deadlines via context (updaterCheckTimeout /
+	// links. Per-call deadlines via context (UpdaterCheckTimeout /
 	// updaterDownloadTimeout) bound each operation instead; DefaultTransport
 	// still applies sane dial / TLS-handshake timeouts. Shared with the
 	// targetable wrapper so list/by-tag API calls use the same client.

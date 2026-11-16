@@ -385,10 +385,9 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	ref := gitlabManageRef()
 	ctx := forgeapi.WithInteractive(t.Context())
 
-	// A cold host probes the schema, then reads with the checks it has;
-	// a warm one reads alone.
+	// A host that refused nothing is read with the checks, cold or warm.
 	read := mergeRead(t, r, ref)
-	if routeCount(r, 0, "glab graphql PRManageSchema") != 1 || routeCount(r, 0, "glab graphql PRManageChecks") != 1 || routeCount(r, 0, "glab graphql PRManage") != 0 {
+	if routeCount(r, 0, "glab graphql PRManageChecks") != 1 || routeCount(r, 0, "glab graphql PRManage") != 0 {
 		t.Fatalf("cold read routes = %v", r.engine.Invocations(0).Invocations)
 	}
 	m := read.Detail.Manage
@@ -409,7 +408,7 @@ func TestGitLabManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 	before := len(r.engine.Invocations(0).Invocations)
 	mergeRead(t, r, ref)
-	if routeCount(r, before, "glab graphql PRManageSchema") != 0 || routeCount(r, before, "glab graphql PRManageChecks") != 1 {
+	if routeCount(r, before, "glab graphql PRManageChecks") != 1 || routeCount(r, before, "glab graphql PRManage") != 0 {
 		t.Fatalf("warm read routes = %v", r.engine.Invocations(before).Invocations)
 	}
 
@@ -594,6 +593,33 @@ func TestGitLabManageMissesAreRefusals(t *testing.T) {
 	}
 }
 
+// On a project that takes one reviewer and one assignee (GitLab Free),
+// a second is dropped without an error; the app says why.
+func TestGitLabFreeProjectSecondPersonThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabManageFixture()
+	fixture.Repos[0].Merge = &forgefake.RepoMerge{Free: true}
+	fixture.Repos[0].Pulls[0].Reviewers, fixture.Repos[0].Pulls[0].ChangeRequests = []string{"bob"}, nil
+	r := newRig(t, fixture)
+	ref := gitlabManageRef()
+	ctx := forgeapi.WithInteractive(t.Context())
+	err := r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "carol"}}})
+	if got := explained(t, ref, gitops.ActionReviewers, err); got.Kind != gitops.ForgeErrorRefused ||
+		!strings.Contains(got.Message, "GitLab did not add carol to the reviewers: this project allows one reviewer per merge request; more need GitLab Premium.") {
+		t.Fatalf("a second reviewer = %+v", got)
+	}
+	if err := r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "bob"}}}); err != nil {
+		t.Fatalf("a first assignee: %v", err)
+	}
+	err = r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "carol"}}})
+	if got := explained(t, ref, gitops.ActionAssignees, err); got.Kind != gitops.ForgeErrorRefused || !strings.Contains(got.Message, "allows one assignee per merge request") {
+		t.Fatalf("a second assignee = %+v", got)
+	}
+	m := mergeRead(t, r, ref).Detail.Manage
+	if got := logins(peopleOf(m.Reviewers)); !slices.Equal(got, []string{"bob"}) || !slices.Equal(logins(m.Assignees), []string{"bob"}) {
+		t.Fatalf("after: reviewers %v, assignees %+v", got, m.Assignees)
+	}
+}
+
 // A batch GitLab applied in part is a partial change naming both halves;
 // an addition the answered list cannot show (it has a next page) may
 // have applied, never a refusal.
@@ -640,52 +666,88 @@ func TestGitLabManagePartialAndInconclusiveBatches(t *testing.T) {
 	}
 }
 
-// An older GitLab without the rereview mutation, the override or the set
-// mutations' operationMode offers none of them, never selects the
-// mergeability checks, and refuses the writes if sent anyway (before
-// sending the people and label ones); a reporter may change nothing.
+// A GitLab that refuses introspection shows the Details section with
+// every control: no capability is read from the schema.
+func TestGitLabManageOnAServerRefusingIntrospectionThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabManageFixture()
+	fixture.Repos[0].ServerLacks = []string{"introspection"}
+	r := newRig(t, fixture)
+	m := mergeRead(t, r, gitlabManageRef()).Detail.Manage
+	want := gitops.PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true,
+		ConvertToDraft: true, Rerequest: true, Bypass: true}
+	if m.Unavailable != "" || m.Can != want || len(m.Reviewers) != 2 || len(m.Labels) != 1 {
+		t.Fatalf("manage on a server refusing introspection = %+v", m)
+	}
+	if n := routeCount(r, 0, "glab graphql introspection refused"); n != 0 {
+		t.Fatalf("the app introspected the schema %d times", n)
+	}
+}
+
+// A GitLab older than the supported floor (18.0) is not read for its
+// Details, which say so naming both releases, and every write to its
+// merge request is refused with that sentence, sending nothing; 18.0
+// itself is supported. A reporter may change nothing.
 func TestGitLabManageOnAnOlderServerThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabManageFixture()
-	fixture.Repos[0].ServerLacks = []string{"rereview", "overrideRequestedChanges", "operationMode"}
+	fixture.Repos[0].ServerVersion = "17.11.4-ee"
+	fixture.Repos[0].ServerLacks = []string{"introspection"}
 	r := newRig(t, fixture)
 	ref := gitlabManageRef()
 	ctx := forgeapi.WithInteractive(t.Context())
-
-	for range 2 {
-		read := mergeRead(t, r, ref)
-		if c := read.Detail.Manage.Can; c.Rerequest || c.Bypass || c.Reviewers || c.Assignees || c.Labels || !c.EditTitle {
-			t.Fatalf("an older server's flags = %+v", c)
-		}
-		if b, ok := findBlocker(read.Detail.Readiness, "changes_requested"); !ok || b.Bypassable {
-			t.Fatalf("blocker = %+v (%v)", b, ok)
+	const sentence = "GitLab on gitlab.com runs 17.11; GitLab 18.0 or later is needed."
+	refused := func(action gitops.ForgeAction, err error) {
+		t.Helper()
+		if got := explained(t, ref, action, err); got.Kind != gitops.ForgeErrorRefused || got.Message != sentence {
+			t.Fatalf("%s = %+v, want %q", action, got, sentence)
 		}
 	}
-	if n := routeCount(r, 0, "glab graphql PRManageChecks"); n != 0 {
-		t.Fatalf("PRManageChecks sent %d times to a server without it", n)
+
+	read := mergeRead(t, r, ref)
+	m := read.Detail.Manage
+	if m.Can != (gitops.PRManageCan{}) || len(m.Reviewers) != 0 || m.Unavailable != "Reviewers, assignees, labels and the PR's edit controls are not shown. "+sentence {
+		t.Fatalf("17.11: %+v", m)
 	}
-	if n := routeCount(r, 0, "glab graphql PRManageSchema"); n != 1 {
-		t.Fatalf("schema probes over two reads = %d, want 1 (a negative answer is cached)", n)
+	if read.Detail.Title != "Tidy" {
+		t.Fatalf("17.11 detail = %+v", read.Detail)
 	}
-	if got := explained(t, ref, gitops.ActionRerequest, r.core.RerequestPRReview(ctx, ref, gitops.PRPerson{Login: "carol", ID: "12"})); got.Kind != gitops.ForgeErrorRefused && got.Kind != gitops.ForgeErrorForge {
-		t.Fatalf("rereview on an older server = %+v", got)
+	before := len(r.engine.Invocations(0).Invocations)
+	title := "Renamed"
+	refused(gitops.ActionEditPR, r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title}))
+	refused(gitops.ActionBypass, r.core.BypassPRRequestedChanges(ctx, ref))
+	refused(gitops.ActionRerequest, r.core.RerequestPRReview(ctx, ref, gitops.PRPerson{Login: "carol", ID: "12"}))
+	refused(gitops.ActionReviewers, r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}}}))
+	refused(gitops.ActionLabels, r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Add: []gitops.PRLabel{{ID: "gid://gitlab/ProjectLabel/1", Name: "bug"}}}))
+	_, err := r.core.SubmitReview(ctx, ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: strings.Repeat("2", 40), Body: "Looks fine"})
+	refused(gitops.ActionReview, err)
+	refused(gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("2", 40)))
+	if sent := r.engine.Invocations(before).Invocations; len(sent) != 0 {
+		t.Fatalf("a refused write sent %+v", sent)
 	}
-	if got := explained(t, ref, gitops.ActionBypass, r.core.BypassPRRequestedChanges(ctx, ref)); got.Kind != gitops.ForgeErrorRefused && got.Kind != gitops.ForgeErrorForge {
-		t.Fatalf("bypass on an older server = %+v", got)
-	}
-	if got := explained(t, ref, gitops.ActionReviewers, r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}}})); got.Kind != gitops.ForgeErrorRefused || routeCount(r, 0, "glab graphql PRSetReviewers") != 0 {
-		t.Fatalf("reviewers on an older server = %+v", got)
+	if routeCount(r, 0, "glab graphql PRManageChecks") != 0 || routeCount(r, 0, "glab graphql introspection refused") != 0 {
+		t.Fatalf("17.11 reads = %v", r.engine.Invocations(0).Invocations)
 	}
 
+	fixture.Repos[0].ServerVersion = "18.0.0"
+	if _, err := r.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+	r.core.ResetForgeCaches()
+	if m := mergeRead(t, r, ref).Detail.Manage; m.Unavailable != "" || !m.Can.Reviewers || !m.Can.Bypass {
+		t.Fatalf("18.0: %+v", m)
+	}
+
+	fixture.Repos[0].ServerVersion = ""
 	fixture.Repos[0].Merge = &forgefake.RepoMerge{Permission: "reporter"}
 	fixture.Repos[0].ServerLacks = nil
 	if _, err := r.engine.Seed(fixture); err != nil {
 		t.Fatal(err)
 	}
-	read := mergeRead(t, r, ref)
+	r.core.ResetForgeCaches()
+	read = mergeRead(t, r, ref)
 	if c := read.Detail.Manage.Can; c != (gitops.PRManageCan{}) {
 		t.Fatalf("a reporter's flags = %+v", c)
 	}
-	title := "Hijack"
+	title = "Hijack"
 	if got := explained(t, ref, gitops.ActionEditPR, r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title})); got.Kind != gitops.ForgeErrorForbidden && got.Kind != gitops.ForgeErrorRefused {
 		t.Fatalf("a reporter's edit = %+v", got)
 	}

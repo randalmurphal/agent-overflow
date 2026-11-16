@@ -9,19 +9,15 @@ import (
 	"testing"
 )
 
-// gitlabSchemaAll is a PRManageSchema answer of a server with every
-// management feature.
-const gitlabSchemaAll = `{"data":{"rereview":{"name":"x"},"updateInput":{"inputFields":[{"name":"overrideRequestedChanges"}]},` +
-	`"setReviewers":{"inputFields":[{"name":"operationMode"}]},"setAssignees":{"inputFields":[{"name":"operationMode"}]},"setLabels":{"inputFields":[{"name":"operationMode"}]}}}`
-
 // gitlabReviewersAnswer is a mergeRequestSetReviewers answer listing
-// usernames as the merge request's reviewers.
+// usernames as the merge request's reviewers, on a project that allows
+// more than one.
 func gitlabReviewersAnswer(usernames ...string) string {
 	nodes := make([]string, 0, len(usernames))
 	for _, name := range usernames {
 		nodes = append(nodes, `{"username":"`+name+`"}`)
 	}
-	return `{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"reviewers":{"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
+	return `{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"allowsMultipleReviewers":true,"reviewers":{"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
 }
 
 // A GitLab people change is a REMOVE, then an APPEND, each checked
@@ -55,13 +51,17 @@ func TestGitLabPeopleChangeWritesInOrder(t *testing.T) {
 			want:   "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: "},
 		{name: "second did not add", first: removed, second: removed, writes: 2, partial: true, refused: true,
 			want: "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: GitLab did not add bob to the reviewers: they may not be members of the project."},
+		{name: "second dropped on a project of one reviewer", first: removed, writes: 2, partial: true, refused: true,
+			second: forgeAPIAnswer{Body: `{"data":` + strings.Replace(gitlabReviewersAnswer("dave"), `"allowsMultipleReviewers":true`, `"allowsMultipleReviewers":false`, 1) + `}`},
+			want:   "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: GitLab did not add bob to the reviewers: this project allows one reviewer per merge request; more need GitLab Premium."},
+		{name: "second not added to an empty list on a project of one reviewer", first: removed, writes: 2, partial: true, refused: true,
+			second: forgeAPIAnswer{Body: `{"data":` + strings.Replace(gitlabReviewersAnswer(), `"allowsMultipleReviewers":true`, `"allowsMultipleReviewers":false`, 1) + `}`},
+			want:   "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: GitLab did not add bob to the reviewers: they may not be members of the project."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 				switch {
-				case call.Op == "PRManageSchema":
-					return forgeAPIAnswer{Body: gitlabSchemaAll}
 				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "REMOVE":
 					return tc.first
 				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "APPEND":
@@ -108,7 +108,7 @@ func TestGitLabSetBatchOutcomes(t *testing.T) {
 		for _, name := range usernames {
 			nodes = append(nodes, `{"username":"`+name+`"}`)
 		}
-		return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"reviewers":{"pageInfo":{"hasNextPage":%v},"nodes":[%s]}}}}}`, more, strings.Join(nodes, ","))}
+		return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"allowsMultipleReviewers":true,"reviewers":{"pageInfo":{"hasNextPage":%v},"nodes":[%s]}}}}}`, more, strings.Join(nodes, ","))}
 	}
 	for _, tc := range []struct {
 		name          string
@@ -133,8 +133,6 @@ func TestGitLabSetBatchOutcomes(t *testing.T) {
 			t.Parallel()
 			core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 				switch {
-				case call.Op == "PRManageSchema":
-					return forgeAPIAnswer{Body: gitlabSchemaAll}
 				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "REMOVE":
 					return tc.remove
 				case call.Op == "PRSetReviewers":
@@ -160,8 +158,6 @@ func TestGitLabLabelAdditionPastThePage(t *testing.T) {
 	for _, more := range []bool{true, false} {
 		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 			switch call.Op {
-			case "PRManageSchema":
-				return forgeAPIAnswer{Body: gitlabSchemaAll}
 			case "PRSetLabels":
 				return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetLabels":{"errors":[],"mergeRequest":{"labels":{"pageInfo":{"hasNextPage":%v},"nodes":[{"id":"gid://gitlab/ProjectLabel/9"}]}}}}}`, more)}
 			}
@@ -176,15 +172,12 @@ func TestGitLabLabelAdditionPastThePage(t *testing.T) {
 	}
 }
 
-// Labels are removed, then added, by id; a host without the set
-// mutations' operationMode refuses the change before any write.
-func TestGitLabLabelChangeAndUnsupportedHost(t *testing.T) {
+// Labels are removed, then added, by id.
+func TestGitLabLabelChange(t *testing.T) {
 	t.Parallel()
 	bug, ui := PRLabel{ID: "gid://gitlab/ProjectLabel/1", Name: "bug"}, PRLabel{ID: "gid://gitlab/ProjectLabel/2", Name: "ui,web"}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
-		case call.Op == "PRManageSchema":
-			return forgeAPIAnswer{Body: gitlabSchemaAll}
 		case call.Op == "PRSetLabels" && call.Vars["mode"] == "REMOVE":
 			return forgeAPIAnswer{Body: `{"data":{"mergeRequestSetLabels":{"errors":[],"mergeRequest":{"labels":{"nodes":[]}}}}}`}
 		case call.Op == "PRSetLabels":
@@ -203,25 +196,6 @@ func TestGitLabLabelChangeAndUnsupportedHost(t *testing.T) {
 	}
 	if want := []string{"REMOVE " + bug.ID, "APPEND " + ui.ID}; !slices.Equal(writes, want) {
 		t.Fatalf("writes = %q, want %q", writes, want)
-	}
-
-	old, oldCalls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op == "PRManageSchema" {
-			return forgeAPIAnswer{Body: gitlabSchemaBare}
-		}
-		return forgeUnexpected(t, call)
-	})
-	for _, err := range []error{
-		old.SetPRLabels(t.Context(), gitlabTestRef(7), PRLabelChange{Add: []PRLabel{ui}}),
-		old.SetPRPeople(t.Context(), gitlabTestRef(7), true, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}),
-		old.SetPRPeople(t.Context(), gitlabTestRef(7), false, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}),
-	} {
-		if explained, ok := errors.AsType[*ForgeActionError](err); !ok || explained.Kind != ForgeErrorRefused || !strings.Contains(explained.Message, "change them on GitLab") {
-			t.Fatalf("an older host = %v", err)
-		}
-	}
-	if ops := oldCalls.ops(); !slices.Equal(ops, []string{"PRManageSchema"}) {
-		t.Fatalf("requests on an older host = %q, want one probe", ops)
 	}
 }
 

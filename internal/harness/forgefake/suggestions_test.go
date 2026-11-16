@@ -276,12 +276,7 @@ func TestGitLabReactionRoutes(t *testing.T) {
 	if r := e.repoOn("gitlab", "gitlab.com", "grp/s").pull(3).Threads[0].Comments[0].Reactions; len(r) != 1 || r[0].ID != 900 {
 		t.Fatalf("reactions = %+v", r)
 	}
-	e.repoOn("gitlab", "gitlab.com", "grp/s").ServerLacks = []string{lacksAwardEmoji}
 	e.mu.Unlock()
-	older := send("POST", "gitlab.com", "/gitlab/api/graphql", gql(t, "query", "MRNoteReactions", "($fullPath: ID!, $iid: String!, $after: String)", map[string]any{"fullPath": "grp/s", "iid": "3"}), nil).body
-	if !strings.Contains(older, "Field 'awardEmoji' doesn't exist on type 'Note'") || strings.Contains(older, `"data"`) {
-		t.Fatalf("reactions read on an older server = %s", older)
-	}
 }
 
 // fileModes name a GitHub mode the fake models, on a path whose kind

@@ -30,18 +30,24 @@ func (a *App) emitProviderStatusesFromDetect(statuses []provider.ProviderStatus)
 
 // probeStartupProviderStatuses runs DetectProvider for every known
 // provider and pushes non-ready results through the event channel.
-// Called once from ServiceStartup in a goroutine so it never blocks
-// app boot. If settings aren't wired yet (tests, early failure) the
-// helper is a no-op — DetectProvider needs a binary path.
+// Called once by the boot's unattended work; it probes on a goroutine
+// startupProbeWG counts, so it never blocks app boot and Shutdown joins
+// it. If settings aren't wired yet (tests, early failure) the helper is a
+// no-op — DetectProvider needs a binary path.
 //
 // GetProviderStatuses already emits; we use it as the single entry
 // point so every code path (settings refresh, startup probe, manual
-// trigger) shares the same emit behavior.
+// trigger) shares the same emit behavior. It cannot fail: an undetected
+// provider is a status, not an error.
 func (a *App) probeStartupProviderStatuses() {
 	if a.settings == nil {
 		return
 	}
-	_, _ = a.GetProviderStatuses()
+	a.startupProbeWG.Add(1)
+	go func() {
+		defer a.startupProbeWG.Done()
+		_, _ = a.GetProviderStatuses()
+	}()
 }
 
 // emitClaudeUnauthenticatedStatus emits a `provider:status` event for

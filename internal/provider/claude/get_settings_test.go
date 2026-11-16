@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -183,7 +184,7 @@ done
 	}
 	cfg.Env["CAPTURE_FILE"] = capturePath
 
-	s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
+	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -203,6 +204,7 @@ func TestGetSettingsRoundTrip(t *testing.T) {
 	payload := `{"effective":{},"sources":[{"source":"projectSettings","settings":{"effortLevel":"low"}}],` +
 		`"applied":{"model":"claude-fable-5","effort":"high","advisor":null}}`
 	s, capturePath := getSettingsTestSession(t, Config{
+		Reaper:          procutiltest.Reaper(),
 		Model:           "claude-fable-5",
 		ReasoningEffort: "high",
 	}, payload, "")
@@ -258,6 +260,7 @@ func TestGetSettingsReadsProjectAliasThroughSessionAliases(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := getSettingsTestSession(t, Config{
+				Reaper:       procutiltest.Reaper(),
 				Model:        "claude-opus-5-5",
 				ModelAliases: tc.aliases,
 			}, payload, "")
@@ -277,7 +280,7 @@ func TestGetSettingsReadsProjectAliasThroughSessionAliases(t *testing.T) {
 // without the subtype answers with an error, and re-asking on every
 // confirmation would put a request known to fail on stdin before each one.
 func TestGetSettingsUnsupportedIsAskedOnce(t *testing.T) {
-	s, capturePath := getSettingsTestSession(t, Config{Model: "claude-fable-5"}, "",
+	s, capturePath := getSettingsTestSession(t, Config{Reaper: procutiltest.Reaper(), Model: "claude-fable-5"}, "",
 		"Unsupported control request subtype: get_settings")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -302,7 +305,7 @@ func TestGetSettingsUnsupportedIsAskedOnce(t *testing.T) {
 // mistaken for "this CLI is too old", which would permanently disable the
 // structured path for the session on one transient error.
 func TestGetSettingsRealErrorIsNotUnsupported(t *testing.T) {
-	s, _ := getSettingsTestSession(t, Config{Model: "claude-fable-5"}, "", "settings file is unreadable")
+	s, _ := getSettingsTestSession(t, Config{Reaper: procutiltest.Reaper(), Model: "claude-fable-5"}, "", "settings file is unreadable")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

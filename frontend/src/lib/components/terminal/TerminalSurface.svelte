@@ -17,7 +17,7 @@
   import { errString } from '../../utils/errors';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import { forgetTerminal } from '../../transport/entityIndex';
-  import { endTerminalTab } from '../../stores/eventsTerminal';
+  import { endTerminalTab, startTerminal } from '../../stores/eventsTerminal';
   import { isDraftPlaceholderId } from '../../stores/draftPlaceholderId';
   import {
     getThreadTerminalState,
@@ -32,7 +32,7 @@
   import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { paneFindSurface } from '../panes/paneFindRegion';
-  import { dropPaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
+  import { hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
@@ -118,11 +118,15 @@
     if (!threadId) return;
     const workspacePath = surface.workspacePath;
     try {
-      const th = (await OpenTerminal(
-        threadId,
-        new TerminalOpenOptions({ cwd: workspacePath }),
-      )) as TerminalHandle;
-      if (!canUseTerminalResult(threadId, workspacePath)) {
+      let usable = false;
+      const th = await startTerminal(
+        async () => (await OpenTerminal(threadId, new TerminalOpenOptions({ cwd: workspacePath }))) as TerminalHandle,
+        (answer) => {
+          usable = canUseTerminalResult(threadId, workspacePath);
+          if (usable && answer?.summary) handle.addTab(answer.summary);
+        },
+      );
+      if (!usable) {
         // A thread's shell keeps running, as when its pane closes after the
         // open, and the thread's next surface lists it. A draft placeholder's
         // shells end with its surface (closeDraftPlaceholderTerminals), which
@@ -132,13 +136,18 @@
         }
         return;
       }
-      if (th?.summary) {
-        handle.addTab(th.summary);
-        // The ＋ button passes focus:true so the freshly opened tab grabs the
-        // cursor. The mount auto-open leaves it unset — its focus is driven by
-        // the pane's consume-once intent (see pendingFocus above), not here.
-        if (opts.focus) pendingFocus = true;
+      const terminalID = th?.summary?.terminalID;
+      if (!terminalID) return;
+      if (!handle.tabs.some((tab) => tab.terminalID === terminalID)) {
+        // Its exit overtook the answer, so the tab never showed and the
+        // collapse that follows a last tab's removal did not run.
+        if (handle.tabs.length === 0) collapseDrawer();
+        return;
       }
+      // The ＋ button passes focus:true so the freshly opened tab grabs the
+      // cursor. The mount auto-open leaves it unset — its focus is driven by
+      // the pane's consume-once intent (see pendingFocus above), not here.
+      if (opts.focus) pendingFocus = true;
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
       // A surface that is gone asked for nothing any more: its thread may have
@@ -212,16 +221,6 @@
   const stripCovered = $derived.by(() => {
     const key = activeFindKey();
     return isCompactLayout() && key !== null && isPaneFindOpen(key);
-  });
-
-  // A closed tab's find state goes with it.
-  let listedTerminals = new Set(handle.tabs.map((t) => t.terminalID));
-  $effect(() => {
-    const now = new Set(handle.tabs.map((t) => t.terminalID));
-    for (const terminalID of listedTerminals) {
-      if (!now.has(terminalID)) dropPaneFind(terminalFindKey(surface.paneId, terminalID));
-    }
-    listedTerminals = now;
   });
 
   let previousTabCount = handle.tabs.length;

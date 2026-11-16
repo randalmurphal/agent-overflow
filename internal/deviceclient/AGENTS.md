@@ -50,6 +50,9 @@ and refresh generation after the response. A late reply/refusal cannot
 replace/delete a newer generation, rename or re-pairing. Unknown JSON fields
 survive every update. Retired clients never write again.
 
+Each credential step (redemption, renewal, ticket, health probe, profile lock
+wait) is timed through `logging.LogSlowStep`.
+
 Tests use private profile directories and local fixture servers; never use a
 real device profile or provider home. Cross-process and lost-response tests
 must exercise persisted state, not just two references to one Client.

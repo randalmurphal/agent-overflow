@@ -19,8 +19,8 @@ import {
 import { PatchParser, parseReviewFiles, reviewFileFromPatchFile, sourceHash, type PatchChunkMarks, type ReviewFile } from './patchParser';
 import { keptText } from './patchStore';
 import { MIXED_PATCH, parseInChunks, randomPatch } from '../../test/helpers/patchFixtures';
-import { fakeDiff, packText, patchChunks, textKey, unkeyed, wideMarks, type StreamedChunk } from '../../test/helpers/streamedPatch';
-import packedVectors from '../../test/fixtures/packedTextVectors.json';
+import { fakeDiff, patchChunks, textKey, unkeyed, type StreamedChunk } from '../../test/helpers/streamedPatch';
+import textVectors from '../../test/fixtures/patchTextVectors.json';
 
 // The compact store must describe every patch exactly as parsePatchFiles +
 // buildPatchDisplayRows do: same files, same lines, same rows, same row ids,
@@ -236,26 +236,25 @@ describe('conflict pseudo-files', () => {
   });
 });
 
-// A chunk after the open can arrive packed (ReadReviewDiffPacked). The
-// parser checks what each chunk arrives with before storing any of it.
-describe('packed chunks', () => {
+// What the backend answers for a chunk's bytes, and what the store holds
+// of it.
+describe('chunk text', () => {
   // What the Go side answers for a chunk's bytes (internal/jstext
-  // TestPackTextMatchesTheSharedVectors holds PackText to the same file).
-  it('reads every chunk the backend answers as the text a plain read delivers, under the key it answers', () => {
-    expect(packedVectors.some((vector) => vector.packed) && packedVectors.some((vector) => !vector.packed)).toBe(true);
-    for (const vector of packedVectors) {
+  // TestFoldUTF16MatchesTheSharedVectors holds it to the same file).
+  it('reads every chunk the backend answers as the text JSON delivers, under the key it answers', () => {
+    for (const vector of textVectors) {
       // The Go fold of the chunk's bytes (internal/jstext) keys the text.
       expect(vector.key, vector.name).toEqual({ hash: fnv1a32(vector.text), units: vector.text.length });
       const bytes = vector.rawHex.length / 2;
-      // Marks as the wire carries them: an unpacked vector's are empty.
       const parser = new PatchParser();
-      parser.append(vector.data, { offset: 0, nextOffset: bytes, wide: vector.wide, key: vector.key });
+      parser.append(vector.text, { offset: 0, nextOffset: bytes, key: vector.key });
       parser.end();
       const lines = vector.text === '' ? [] : vector.text.split('\n');
       if (vector.text.endsWith('\n')) lines.pop();
       const store = parser.store;
       expect(Array.from({ length: store.lineCount }, (_, line) => store.text(line)), vector.name).toEqual(lines);
       expect(store.textRange(0, store.lineCount), vector.name).toBe(lines.join('\n'));
+      expect(store.storedSize, vector.name).toBe(new TextEncoder().encode(vector.text).length);
       // An empty patch has no key.
       expect(parser.sourceKey(), vector.name).toBe(vector.text === '' ? '' : diffSourceKey(vector.text));
       const reference = parseReviewFiles(vector.text);
@@ -264,73 +263,41 @@ describe('packed chunks', () => {
       // The fake backend the other tests read from answers what the Go
       // backend answers.
       const raw = Uint8Array.from(vector.rawHex.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
-      const served = fakeDiff(raw).read(0, Math.max(1, bytes), true);
-      expect({ data: served.data, wide: served.wide ?? [], key: served.key }, vector.name)
-        .toEqual({ data: vector.data, wide: vector.wide, key: vector.key });
-      expect(fakeDiff(raw).read(0, Math.max(1, bytes), false).data, vector.name).toBe(vector.text);
-      if (vector.packed) expect([packText(vector.text), wideMarks(vector.data)], vector.name).toEqual([vector.data, vector.wide]);
+      const served = fakeDiff(raw).read(0, Math.max(1, bytes));
+      expect({ data: served.data, key: served.key }, vector.name).toEqual({ data: vector.text, key: vector.key });
     }
   });
 
-  it('refuses a mark that is not at a byte past ASCII, out of order, or outside the chunk', () => {
-    const data = packText('+é\n+ü\n');
-    for (const wide of [[0], [4, 1], [1, 1], [1, 99], [-1], [1.5]]) {
+  // The backend cuts between characters (gitdiff.ChunkCut); a pair cut in
+  // two would be held as two U+FFFD.
+  it('refuses a chunk cut inside a surrogate pair, and stores none of it', () => {
+    const pair = '😀';
+    for (const [name, data] of [['starts inside', `${pair.slice(1)}+a\n`], ['ends inside', `+a ${pair.slice(0, 1)}`]] as const) {
       const parser = new PatchParser();
-      expect(() => parser.append(data, { offset: 0, nextOffset: data.length, wide, key: textKey('+é\n+ü\n') }), JSON.stringify(wide)).toThrow('wide mark');
-      expect(parser.store.lineCount).toBe(0);
+      parser.append('+b\n');
+      expect(() => parser.append(data), name).toThrow('inside a character');
+      expect(parser.store.lineCount, name).toBe(1);
     }
-  });
-
-  it('stores a chunk with empty marks as plain text', () => {
-    const data = packText('+é\n');
     const parser = new PatchParser();
-    parser.append(data, { offset: 0, nextOffset: data.length, wide: [], key: textKey(data) });
+    parser.append(`+a ${pair}`);
+    parser.append(`${pair}\n`);
     parser.end();
-    expect(parser.store.text(0)).toBe(data.slice(0, -1));
-    // Its key counts its units, as a plain chunk's does; a packed chunk's
-    // may count fewer.
-    const short = new PatchParser();
-    expect(() => short.append(data, { offset: 0, nextOffset: data.length, wide: [], key: textKey('+é\n') })).toThrow('key that cannot be');
-    expect(short.store.lineCount).toBe(0);
+    expect(parser.store.text(0)).toBe(`+a ${pair}${pair}`);
   });
 
-  it('refuses wide marks that are not a list, and stores none of the chunk', () => {
-    const data = packText('+é\n');
-    for (const wide of [1, {}, '1']) {
+  // A header line longer than the bytes its classification reads is read
+  // from a prefix cut between characters, never inside one.
+  it('reads a header line that spans chunks from a prefix of whole characters', () => {
+    const path = `x${'é'.repeat(9000)}`;
+    const patch = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1 @@\n+a\n`;
+    for (const size of [700, 4096]) {
       const parser = new PatchParser();
-      const chunk = { offset: 0, nextOffset: data.length, wide, key: textKey('+é\n') } as unknown as PatchChunkMarks;
-      expect(() => parser.append(data, chunk), JSON.stringify(wide)).toThrow('not a list');
-      expect(parser.store.lineCount).toBe(0);
-    }
-  });
-
-  it('refuses a packed chunk without its key, and stores none of it', () => {
-    const data = packText('+é\n');
-    const parser = new PatchParser();
-    expect(() => parser.append(data, { offset: 0, nextOffset: data.length, wide: [1] })).toThrow('without its key');
-    expect(parser.store.lineCount).toBe(0);
-  });
-
-  // The backend cuts between characters, so a packed chunk decodes alone;
-  // one that does not would show U+FFFD where the character was cut.
-  it('refuses a packed chunk cut inside a character, and stores none of it', () => {
-    const whole = packText('+✓ é\n+😀');
-    const cases: [string, string][] = [
-      ['starts inside', whole.slice(2)],
-      ['ends inside a three-byte character', whole.slice(0, 3)],
-      ['ends inside a four-byte character', whole.slice(0, -1)],
-      ['ends inside a two-byte character', packText('+é').slice(0, 2)],
-    ];
-    for (const [name, data] of cases) {
-      const parser = new PatchParser();
-      const wide = wideMarks(data);
-      expect(() => parser.append(data, { offset: 0, nextOffset: data.length, wide, key: { hash: 1, units: data.length } }), name).toThrow('inside a character');
-      expect(parser.store.lineCount, name).toBe(0);
-    }
-    for (const data of [whole, packText('😀'), packText('é\n')]) {
-      const parser = new PatchParser();
-      parser.append(data, { offset: 0, nextOffset: data.length, wide: wideMarks(data), key: { hash: 1, units: data.length } });
-      expect(parser.store.lineCount).toBeGreaterThan(0);
+      for (const chunk of patchChunks(patch, size)) parser.append(chunk.data, chunk);
+      parser.end();
+      // The prefix is 16 KiB of `+++ b/x` and two-byte characters: an odd
+      // count of bytes, so a cut at 16 KiB lands inside one.
+      expect(parser.files.map((file) => file.path), `${size}`).toEqual([path.slice(0, 1 + (16 * 1024 - 7 - 1) / 2)]);
+      parser.store.dispose();
     }
   });
 });
@@ -373,25 +340,21 @@ describe('source keys', () => {
   });
 
   it('continues from unkeyed chunks with keyed ones, and from keyed with unkeyed', () => {
-    for (const form of ['plain', 'packed'] as const) {
-      const chunks = patchChunks(patch, 41, form);
-      expect(chunks.length).toBeGreaterThan(3);
-      // A packed chunk always has its key, so only plain chunks drop theirs.
-      const mixedKeys = chunks.map((chunk, index) => (chunk.wide === undefined && index % 2 === 0 ? unkeyed(chunk) : chunk));
-      const { parser, hashed } = keyed(mixedKeys);
-      expect(parser.sourceKey(), form).toBe(diffSourceKey(patch));
-      expect(hashed, form).toBe(mixedKeys.filter((chunk) => chunk.key === undefined).length);
-      // The last chunk without a key: hashed from the key before it.
-      const tail = chunks.map((chunk, index) => (index === chunks.length - 1 && chunk.wide === undefined ? unkeyed(chunk) : chunk));
-      expect(keyed(tail).parser.sourceKey(), form).toBe(diffSourceKey(patch));
-    }
+    const chunks = patchChunks(patch, 41);
+    expect(chunks.length).toBeGreaterThan(3);
+    const mixedKeys = chunks.map((chunk, index) => (index % 2 === 0 ? unkeyed(chunk) : chunk));
+    const { parser, hashed } = keyed(mixedKeys);
+    expect(parser.sourceKey()).toBe(diffSourceKey(patch));
+    expect(hashed).toBe(mixedKeys.filter((chunk) => chunk.key === undefined).length);
+    // The last chunk without a key: hashed from the key before it.
+    const tail = chunks.map((chunk, index) => (index === chunks.length - 1 ? unkeyed(chunk) : chunk));
+    expect(keyed(tail).parser.sourceKey()).toBe(diffSourceKey(patch));
   });
 
   it('refuses a key that cannot be its text\'s, and stores none of the chunk', () => {
     const first = '+a\n';
     const plain = '+bc\n';
-    const packed = packText('+é\n');
-    const cases: { name: string; data: string; key: unknown; wide?: number[] }[] = [
+    const cases: { name: string; data: string; key: unknown }[] = [
       { name: 'null', data: plain, key: null },
       { name: 'not an object', data: plain, key: 7 },
       { name: 'hash missing', data: plain, key: { units: 7 } },
@@ -404,30 +367,23 @@ describe('source keys', () => {
       { name: 'units a string', data: plain, key: { hash: 1, units: '7' } },
       { name: 'plain units short of its text', data: plain, key: { hash: 1, units: 6 } },
       { name: 'plain units past its text', data: plain, key: { hash: 1, units: 8 } },
-      { name: 'packed units behind the count', data: packed, key: { hash: 1, units: 2 }, wide: [1] },
-      { name: 'packed units past its bytes', data: packed, key: { hash: 1, units: 8 }, wide: [1] },
-      { name: 'packed units fractional', data: packed, key: { hash: 1, units: 3.5 }, wide: [1] },
-      { name: 'packed units unsafe', data: packed, key: { hash: 1, units: 2 ** 53 }, wide: [1] },
-      { name: 'packed units infinite', data: packed, key: { hash: 1, units: Infinity }, wide: [1] },
-      { name: 'packed units a string', data: packed, key: { hash: 1, units: '9' }, wide: [1] },
+      { name: 'units infinite', data: plain, key: { hash: 1, units: Infinity } },
     ];
-    for (const { name, data, key, wide } of cases) {
+    for (const { name, data, key } of cases) {
       const parser = new PatchParser();
       parser.append(first, { offset: 0, nextOffset: 3, key: textKey(first) });
-      const chunk = { offset: 3, nextOffset: 3 + data.length, key, ...(wide ? { wide } : {}) } as PatchChunkMarks;
+      const chunk = { offset: 3, nextOffset: 3 + data.length, key } as PatchChunkMarks;
       expect(() => parser.append(data, chunk), name).toThrow('key that cannot be');
       expect(parser.store.lineCount, name).toBe(1);
     }
     // The bounds themselves are keys.
-    for (const { data, key, wide } of [
+    for (const { data, key } of [
       { data: plain, key: { hash: 0, units: 7 } },
       { data: plain, key: { hash: 0xffff_ffff, units: 7 } },
-      { data: packed, key: { hash: 1, units: 3 }, wide: [1] },
-      { data: packed, key: { hash: 1, units: 7 }, wide: [1] },
     ]) {
       const parser = new PatchParser();
       parser.append(first, { offset: 0, nextOffset: 3, key: textKey(first) });
-      parser.append(data, { offset: 3, nextOffset: 3 + data.length, key, wide });
+      parser.append(data, { offset: 3, nextOffset: 3 + data.length, key });
       parser.end();
       expect(parser.sourceKey()).toBe(`fnv1a:${key.hash.toString(16).padStart(8, '0')}:${key.units}`);
     }

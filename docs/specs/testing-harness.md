@@ -184,7 +184,7 @@ The public E2E gate runs through the fixed-purpose `ao-harness-e2e` launcher.
 It starts `pnpm exec playwright test` inside one boundary, so the test runner,
 browser processes, harness backends, mock providers, and their descendants
 share the same limit. `pnpm test` invokes this launcher through `go run` when
-the standalone binary is not present. The two-worker gate reserves 6 GiB by
+the standalone binary is not present. The gate reserves 8 GiB by
 default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
 The suite runs in a process group of its own, so an interrupt (and on Unix
@@ -356,6 +356,8 @@ Query kinds (the spec is a tagged union, versioned `v:1`):
   `__stickState`, ui-trace `recent(n)`). The whitelist lives in the
   bridge; unknown names error.
 - `perf`: meter control (§5).
+- `review-diff-memory`: lowers the review diff text budget for the page
+  (`budgetBytes`) and reads what it holds, so a spec can evict diff text.
 
 The bridge is also the place future inspection kinds land (a11y tree
 walk, computed-style probes); one union, one version field.

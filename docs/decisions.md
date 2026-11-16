@@ -143,6 +143,17 @@ Mechanism in
   computer clears the source-plan acceptance link; the prompt remains intact
   and the original plan stays unaccepted.
 
+- The sidebar lists a never-sent thread only while it is real: it has draft
+  content, a bound worktree or an item (an app notice or error counts), or
+  is a terminal or a fork being prepared (owner ruling 2026-11-15). A screen
+  opened later and a screen already open list the same threads. A staged
+  workspace choice is that screen's own state and lists nothing until the
+  worktree is bound. The screen typing into a new thread lists it as soon as
+  it holds text. A never-sent thread that loses what made it real leaves
+  every sidebar and stays in the panes showing it, and empty-draft cleanup
+  never deletes a thread the sidebar lists. The rule is `threadRealClause`
+  in `internal/store/threads.go`.
+
 - Multi-computer ownership and UI follow [Connected computers](specs/connected-computers.md): frontend-local preferences, selectable host configuration, portable conversations, optional peer tools, and machine names in the existing metadata row. No additional sidebar attention feed or artifact dashboard.
 
 - Message nav rail: one position claim at all times (one current tick, the
@@ -204,18 +215,27 @@ Mechanism in
   nothing until a lookup sees it open again. It acts once per PR, and only
   when the thread runs in a linked worktree (never the project root), no
   user message in it is newer than the merge, the branch has no open PR
-  now, and every thread in the worktree is idle (it waits while one is
-  busy); the branch, the user's messages and the threads in the worktree
+  now, and nothing runs in the worktree: every thread in it is idle, and
+  no composer shell command, open terminal or setup recipe runs there (it
+  waits while one does); the branch, the user's messages and the threads in the worktree
   are checked again with the threads locked, immediately before the
   removal. Unpushed commits do not block, since the local branch keeps
   them; uncommitted changes, untracked files included, keep the worktree
-  with one warning notice and are never forced. Moved threads get "PR #90
+  with one warning notice and are never forced. Files git ignores are not
+  counted and are deleted with the worktree (user ruling 2026-11-15). A
+  `git worktree lock` with no reason (Claude Code's `EnterWorktree`) or
+  with one Agent Overflow wrote is lifted; a lock with any other reason is
+  a person's, and keeps the worktree with one warning notice ("Kept
+  worktree fix-pr-diff-fetch: it is locked.") (user ruling 2026-11-15). A
+  removal the user asks for lifts any lock. Moved threads get "PR #90
   merged. Removed worktree fix-pr-diff-fetch; this thread now runs in
   Base." (GitLab "MR !12"); a kept worktree gets "PR #90 merged. Kept
   worktree fix-pr-diff-fetch: 3 uncommitted files." once. A removal git
   refuses is told once ("Kept worktree fix-pr-diff-fetch: removing it
   failed.") and retried with a growing wait; the removal notice follows if
-  a retry succeeds. No card, banner, toast or button. A worktree already
+  a retry succeeds, and after five tries the worktree is kept. A worktree
+  with initialized submodules, which git removes only by force, is kept at
+  once ("Kept worktree fix-pr-diff-fetch: it has submodules."). No card, banner, toast or button. A worktree already
   gone counts as done; the worktree registry watch reconciles it. A
   failure to read a thread or the forge is retried later, never taken as
   a reason to skip. The periodic state read follows "Fetch remotes in the
@@ -709,7 +729,13 @@ and anti-changes that live only here:
   closes after the commit that leaves nothing. Generate describes the
   selection. Neither touches what the user staged outside the selection.
   A selected file that changed after it was listed fails the commit, so
-  nothing is recorded that the dialog did not show. During a merge,
+  nothing is recorded that the dialog did not show. A commit, hooks and
+  signing included, gets 10 minutes, long enough for a project's checks in
+  a pre-commit hook; one stopped there ends its hooks and leaves the index
+  unlocked. Every other git command that runs a user's hook (push and the
+  forge CLIs' create, which pushes, pull, checkout, branch creation,
+  worktree add, merge) gets the same 10 minutes and the same stop. A fetch
+  runs no hook and keeps the 45 second bound. During a merge,
   cherry-pick or revert a commit takes every change, so every file is
   selected and locked. Not built: hunk staging, discard, amend, push
   after commit.

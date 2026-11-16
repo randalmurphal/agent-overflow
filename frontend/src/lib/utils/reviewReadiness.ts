@@ -58,6 +58,17 @@ export function mergeMethodLabel(method: string): string {
   }
 }
 
+/** The forge's name for a merge queue: GitLab's merge train. */
+export function mergeQueueNoun(forge: string | undefined): string {
+  return forge === 'gitlab' ? 'merge train' : 'merge queue';
+}
+
+/** A queued PR's place: "2 of 3", "position 2", or empty when unknown. */
+export function mergeQueuePlace(position: number | undefined, size: number | undefined): string {
+  if (!position) return '';
+  return size ? `${position} of ${size}` : `position ${position}`;
+}
+
 // What a forge event row says after the actor's name.
 const EVENT_LABEL: Record<string, string> = {
   approved: 'approved',

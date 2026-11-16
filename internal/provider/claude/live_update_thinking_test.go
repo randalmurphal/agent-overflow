@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -189,7 +190,7 @@ func TestApplyLiveUpdateThinkingWireShape(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s, capturePath := liveUpdateSessionAtVersion(t, Config{BasePermissionMode: "default"}, "2.1.237")
+			s, capturePath := liveUpdateSessionAtVersion(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"}, "2.1.237")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
@@ -225,7 +226,7 @@ func TestApplyLiveUpdateThinkingWireShape(t *testing.T) {
 // write, so a restart-bound update never half-applies.
 func TestApplyLiveUpdateThinkingRequiresVersionFloor(t *testing.T) {
 	for _, version := range []string{"", "2.1.213"} {
-		s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+		s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 		if version != "" {
 			s.noteCLIVersion(version)
 		}
@@ -262,7 +263,7 @@ func TestApplyLiveUpdateThinkingRejectsMalformedAxis(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s, capturePath := liveUpdateSessionAtVersion(t, Config{BasePermissionMode: "default"}, "2.1.237")
+			s, capturePath := liveUpdateSessionAtVersion(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"}, "2.1.237")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
@@ -330,6 +331,7 @@ func TestConfigFromOptionsRefusesZeroBudget(t *testing.T) {
 	opts := liveUpdateBaseOptions()
 	opts.ClaudeThinking = provider.ClaudeThinking{Mode: "budget"}
 	cfg := ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.Thinking.Mode != ThinkingDefault || cfg.Thinking.BudgetTokens != 0 {
 		t.Fatalf("Thinking = %+v, want the default mode", cfg.Thinking)
 	}

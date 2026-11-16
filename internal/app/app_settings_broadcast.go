@@ -77,6 +77,11 @@ func (a *App) registerSettingsBroadcast() {
 		if revision, ok := switchRevision(changes, "dictationAPIEnabled"); ok {
 			a.liveDictations().RevokeBefore(revision)
 		}
+		// The same for recorded dictation: a transcription admitted before
+		// this write ends, its sign-in retry included.
+		if revision, ok := switchRevision(changes, "dictationSubscriptionEnabled"); ok {
+			a.dictationRecordings().RevokeBefore(revision)
+		}
 		// The same for read aloud in OpenAI voices: sentences admitted
 		// before this write are dropped and their syntheses ended.
 		if revision, ok := switchRevision(changes, "readAloudAPIEnabled"); ok {

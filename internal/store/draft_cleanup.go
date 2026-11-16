@@ -5,29 +5,23 @@ import (
 )
 
 // emptyDraftThreadSQL is true for a materialized chat/plan draft that has
-// not gained durable conversation state. A worktree counts as durable
-// state: deleting the thread row would orphan a checkout the user
-// deliberately created.
+// not gained durable conversation state: nothing makes it real by the
+// sidebar's rule (threadRealClause, so the cleanup never deletes a thread
+// the sidebar lists or would list once unarchived), no child thread, no turn
+// and no queued message, an accepted send whose row would cascade with the
+// thread.
 const emptyDraftThreadSQL = `SELECT EXISTS (SELECT 1
 		   FROM threads
 		  WHERE id = ?
 		    AND mode IN ('chat', 'plan')
-		    AND COALESCE(worktree_path, '') = ''
+		    AND NOT ` + threadRealClause + `
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM threads child WHERE child.parent_thread_id = threads.id
 		    )
 		    AND NOT EXISTS (
-		      SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id
-		    )
-		    AND NOT EXISTS (
 		    	SELECT 1 FROM turns WHERE turns.thread_id = threads.id
 		    )
-		    AND NOT EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
-		    AND NOT EXISTS (
-		    	SELECT 1 FROM thread_drafts
-		    	 WHERE thread_drafts.thread_id = threads.id
-		    	   AND thread_drafts.has_content = 1
-		    ))`
+		    AND NOT EXISTS (SELECT 1 FROM flush_queue_items WHERE flush_queue_items.thread_id = threads.id))`
 
 // IsEmptyDraftThread reports whether threadID is still a materialized chat/plan
 // draft that has not gained durable conversation state (emptyDraftThreadSQL).

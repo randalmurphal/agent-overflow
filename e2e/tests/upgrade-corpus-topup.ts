@@ -12,6 +12,7 @@ import { expect } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
+import { writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
 import { timed } from './upgrade-corpus-tools.js';
 import {
   doneResult,
@@ -166,6 +167,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   });
   ms.sidebar = sidebar.ms;
 
+  const reviews = await timed(() => writeReviewDrafts(harness, scenarioThreads['codex-revert-paginated'], version, nonce));
+  ms.reviews = reviews.ms;
 
   const workflow = await timed(async () => {
     const done = [{ steps: [{ emit: { lines: [doneResult({ complete: true })] } }] }];
@@ -219,10 +222,15 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   });
   ms.projects = projects.ms;
 
+  const requests = await timed(() => writeThreadRequests(harness, version, nonce));
+  ms.threadRequests = requests.ms;
+  threadIds.push(...requests.value);
+
   // Workflow runs add a thread per phase beside the threads listed here,
-  // so the thread counts are floors.
+  // so the thread counts are floors. The thread-request project is new on
+  // every run.
   const growth: CensusGrowth = {
-    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0), archivedProjects: 1, pinned: 2, groups: 1 },
+    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0) + 1, archivedProjects: 1, pinned: 2, groups: 1 },
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId: workflow.value, ms };

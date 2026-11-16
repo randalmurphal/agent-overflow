@@ -36,10 +36,17 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		// The door takes the settle lock for the settlement and releases it
 		// before the queue and provider work below: both take thread locks,
 		// and neither settles anything.
+		//
+		// The sender's report says what happened, so a request of this
+		// computer's own settles with its wake disarmed, in the settlement's
+		// own write: a cancel that fails leaves the wake armed for the work
+		// still running. A paired computer's request disarms on its side
+		// once this cancel answers it.
 		if err := a.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptCancelled,
 			Answer:     []byte("The sender cancelled this request."),
 			AnswerKind: store.ThreadAnswerError,
+			DisarmWake: true,
 		}); err != nil {
 			return "", err
 		}

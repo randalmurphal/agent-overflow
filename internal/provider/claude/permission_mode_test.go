@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -95,6 +96,7 @@ func newPermissionModeSessionReporting(t *testing.T, base, echoOrder, unsolicite
 	mockexec.Write(t, scriptPath, permissionModeCLIScript)
 	events := make(chan provider.ProviderEvent, 64)
 	cfg := Config{
+		Reaper:             procutiltest.Reaper(),
 		Binary:             scriptPath,
 		BasePermissionMode: base,
 		Env: map[string]string{
@@ -104,7 +106,7 @@ func newPermissionModeSessionReporting(t *testing.T, base, echoOrder, unsolicite
 			"UNSOLICITED":  unsolicited,
 		},
 	}
-	s, err := NewSession(context.Background(), testThread, cfg, func(evt provider.ProviderEvent) {
+	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventPermissionModeChanged {
 			events <- evt
 		}
@@ -335,7 +337,7 @@ func TestPermissionModeAutoRefusalWithoutAnAutoBaseIsAnError(t *testing.T) {
 // "plan" is AO's per-turn interaction mode, and an unknown name is not a
 // mode the session can run; neither is adopted or forwarded.
 func TestPermissionModeReportsThatAreNotAdopted(t *testing.T) {
-	s, _ := liveUpdateTestSession(t, Config{BasePermissionMode: "auto"})
+	s, _ := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "auto"})
 	for _, reported := range []string{"", "plan", "yolo", "auto", "acceptEdits", "bypassPermissions"} {
 		if s.adoptReportedPermissionMode(reported) {
 			t.Fatalf("adoptReportedPermissionMode(%q) = true, want false", reported)
@@ -354,7 +356,7 @@ func TestPermissionModeInitReportsOnlyTheAutoDrop(t *testing.T) {
 	initLine := func(mode string) provider.ProviderEvent {
 		return provider.ProviderEvent{Kind: provider.EventInit, Raw: []byte(`{"type":"system","subtype":"init","permissionMode":"` + mode + `"}`)}
 	}
-	s, _ := liveUpdateTestSession(t, Config{BasePermissionMode: "auto"})
+	s, _ := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "auto"})
 	for _, mode := range []string{"auto", "plan", "acceptEdits", ""} {
 		if drop := s.initPermissionModeDrop(initLine(mode)); drop != nil {
 			t.Fatalf("init %q on an auto session produced %s", mode, drop.Meta)
@@ -380,7 +382,7 @@ func TestPermissionModeInitReportsOnlyTheAutoDrop(t *testing.T) {
 		t.Fatalf("a second init default produced %s", again.Meta)
 	}
 
-	supervised, _ := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	supervised, _ := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 	if drop := supervised.initPermissionModeDrop(initLine("acceptEdits")); drop != nil {
 		t.Fatalf("init acceptEdits on a supervised session produced %s", drop.Meta)
 	}

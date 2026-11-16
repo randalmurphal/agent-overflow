@@ -6,6 +6,7 @@ import { toastLostWrite, writeFailure, type LostWriteText } from './lostWrite';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
+import type { ReviewPRIdentity } from './reviewPRIdentity.svelte';
 import type { ReviewComment, ReviewThread } from '../types/models';
 
 // The review pane's writes that post to the forge now: a comment on a
@@ -25,9 +26,17 @@ import type { ReviewComment, ReviewThread } from '../types/models';
 // Also the state of the sent-comment actions: the text of an open edit
 // (the row is virtualized, so it lives here like every other editor) and
 // the delete waiting for its in-place confirm.
+//
+// All of it is the PR's the pane was on when it started (`prIdentity`):
+// the PR on screen reads only its own, and a PR the pane left keeps its
+// text and failures until the pane is back on it. Leaving a PR releases
+// its waits: the forge took those writes, and their answer will not be
+// on this pane's screen, so their editors close as answered.
 
 export interface CommentWritesHost {
   readonly backend: BackendKey;
+  /** The PR the pane's state is on, and when it becomes another. */
+  readonly prIdentity: ReviewPRIdentity;
   /** The PR the pane shows, or null outside pr scope. */
   ref(): PRRef | null;
   /** The PR's entity key on its computer, whose applied seq settles a write. */
@@ -133,7 +142,11 @@ function sentKey(thread: ReviewThread, comment: ReviewComment): string {
   return `${thread.id}\u0000${comment.id}`;
 }
 
+// Between a PR's key and a write's key in every map below.
+const PR_SEP = '\u0001';
+
 export function createCommentWrites(host: CommentWritesHost): CommentWrites {
+  // Each map is keyed by the PR and the write's key (`slot`).
   const inFlight = new SvelteSet<string>();
   const awaiting = new SvelteMap<string, Awaited>();
   // A write's failure lives exactly as long as the surface that shows
@@ -145,13 +158,24 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
   const errors = new SvelteMap<string, string>();
   const editBodies = new SvelteMap<string, string>();
   const confirming = new SvelteSet<string>();
-  let prCommentBody = $state('');
-  let prCommentOpen = $state(false);
+  const prComment = host.prIdentity.keyed({ body: '', open: false });
   let disposed = false;
+
+  function slot(key: string, on: string | null = host.prIdentity.key): string {
+    return `${on ?? ''}${PR_SEP}${key}`;
+  }
+  // The keys of the PR on screen, without their PR.
+  function own(keys: Iterable<string>): string[] {
+    const prefix = slot('');
+    const out: string[] = [];
+    for (const key of keys) if (key.startsWith(prefix)) out.push(key.slice(prefix.length));
+    return out;
+  }
 
   // A wait ends when the frame at its seq is applied, the backend that
   // numbered it is gone, or the pump is failing (its next answer is
-  // unknown, and the pane says so).
+  // unknown, and the pane says so). Every wait is the PR on screen's: the
+  // pane leaving a PR releases its waits.
   const disposeSettle = $effect.root(() => {
     $effect(() => {
       const launch = host.launch();
@@ -169,21 +193,31 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       });
     });
   });
+  const stopRelease = host.prIdentity.onChange((from) => {
+    if (from === null) return;
+    const prefix = slot('', from);
+    for (const [key, wait] of Array.from(awaiting)) {
+      if (!key.startsWith(prefix)) continue;
+      awaiting.delete(key);
+      wait.onSettled(Promise.resolve());
+    }
+  });
 
   const activeThreads = $derived.by<ReadonlySet<string>>(() => {
     const out = new Set<string>();
     for (const keys of [inFlight, awaiting.keys()]) {
-      for (const key of keys) {
+      for (const key of own(keys)) {
         const thread = threadOfWriteKey(key);
         if (thread !== null) out.add(thread);
       }
     }
-    for (const keys of [editBodies.keys(), confirming]) for (const key of keys) out.add(key.split('\u0000')[0]);
+    for (const keys of [editBodies.keys(), confirming]) for (const key of own(keys)) out.add(key.split('\u0000')[0]);
     return out;
   });
 
   function isPending(key: string): boolean {
-    return inFlight.has(key) || awaiting.has(key);
+    const at = slot(key);
+    return inFlight.has(at) || awaiting.has(at);
   }
 
   async function run(
@@ -194,28 +228,36 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
     text?: CommentWriteText,
   ): Promise<boolean> {
     if (isPending(key)) return false;
+    const on = host.prIdentity.key;
+    const at = slot(key, on);
     const ref = host.ref();
     const entity = host.entityKey();
     const withheld = gate;
     if (!ref || !entity || withheld !== null) {
-      errors.set(key, withheld ?? 'This review is not on a pull request.');
+      errors.set(at, withheld ?? 'This review is not on a pull request.');
       return false;
     }
     const launch = host.launch();
-    inFlight.add(key);
-    errors.delete(key);
+    inFlight.add(at);
+    errors.delete(at);
     let seq: number;
     try {
       // An older backend's reply answers nothing: read as no pump.
       seq = (await withBackendTarget(host.backend, () => call(ref)))?.seq ?? 0;
     } catch (err) {
-      if (!disposed) errors.set(key, writeFailure(err).sentence);
+      // Kept with its PR's text, shown when the pane is on that PR.
+      if (!disposed) errors.set(at, writeFailure(err).sentence);
       else if (text) toastLostWrite(text, err);
       return false;
     } finally {
-      inFlight.delete(key);
+      inFlight.delete(at);
     }
     if (disposed) return true;
+    // The pane left the PR meanwhile: released, as its waits were.
+    if (host.prIdentity.key !== on) {
+      onSettled(Promise.resolve());
+      return true;
+    }
     if (seq <= 0) {
       // Nothing to wait for (no pump, or its refresh was not observed):
       // the editor closes now, and a read of the threads brings the answer.
@@ -226,31 +268,31 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       onSettled(Promise.resolve());
       return true;
     }
-    awaiting.set(key, { entity, seq, launch, onSettled });
+    awaiting.set(at, { entity, seq, launch, onSettled });
     return true;
   }
 
   return {
     run,
     pending: isPending,
-    error: (key) => errors.get(key) ?? null,
-    clearError: (key) => { errors.delete(key); },
+    error: (key) => errors.get(slot(key)) ?? null,
+    clearError: (key) => { errors.delete(slot(key)); },
 
-    editBodyFor: (thread, comment) => editBodies.get(sentKey(thread, comment)) ?? null,
+    editBodyFor: (thread, comment) => editBodies.get(slot(sentKey(thread, comment))) ?? null,
     setEditBody(thread, comment, body) {
-      const key = sentKey(thread, comment);
+      const key = slot(sentKey(thread, comment));
       if (body === null) {
         if (isPending(commentWriteKey.edit(thread.id, comment.id))) return;
         editBodies.delete(key);
-        errors.delete(commentWriteKey.edit(thread.id, comment.id));
+        errors.delete(slot(commentWriteKey.edit(thread.id, comment.id)));
       } else {
         editBodies.set(key, body);
       }
     },
-    get editing() { return new Set(editBodies.keys()); },
+    get editing() { return new Set(own(editBodies.keys())); },
     get activeThreads() { return activeThreads; },
     async saveEdit(thread, comment) {
-      const key = sentKey(thread, comment);
+      const key = slot(sentKey(thread, comment));
       const body = (editBodies.get(key) ?? '').trim();
       if (!body) return;
       await run(
@@ -261,19 +303,19 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
         { body, subject: `Your edit to the comment on ${threadWhere(thread)}` },
       );
     },
-    confirmingDelete: (thread, comment) => confirming.has(sentKey(thread, comment)),
+    confirmingDelete: (thread, comment) => confirming.has(slot(sentKey(thread, comment))),
     setConfirmDelete(thread, comment, on) {
-      const key = sentKey(thread, comment);
+      const key = slot(sentKey(thread, comment));
       if (on) confirming.add(key);
       else {
         // A delete that is out keeps its confirm: its answer shows there.
         if (isPending(commentWriteKey.delete(thread.id, comment.id))) return;
         confirming.delete(key);
-        errors.delete(commentWriteKey.delete(thread.id, comment.id));
+        errors.delete(slot(commentWriteKey.delete(thread.id, comment.id)));
       }
     },
     async deleteComment(thread, comment) {
-      const key = sentKey(thread, comment);
+      const key = slot(sentKey(thread, comment));
       await run(
         commentWriteKey.delete(thread.id, comment.id),
         (ref) => DeletePRComment(prReferenceWire(ref), { threadId: thread.id, commentId: comment.id }),
@@ -284,16 +326,17 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
       );
     },
 
-    get prCommentBody() { return prCommentBody; },
-    setPRCommentBody(body) { prCommentBody = body; },
-    get prCommentOpen() { return prCommentOpen; },
+    get prCommentBody() { return prComment.current.body; },
+    setPRCommentBody(body) { prComment.set(host.prIdentity.key, { body }); },
+    get prCommentOpen() { return prComment.current.open; },
     setPRCommentOpen(open) {
       // A comment being posted stays open, so a failure shows in it.
       if (!open && isPending(commentWriteKey.prComment)) return;
-      prCommentOpen = open;
+      prComment.set(host.prIdentity.key, { open });
     },
     async postPRComment() {
-      const body = prCommentBody.trim();
+      const on = host.prIdentity.key;
+      const body = prComment.of(on).body.trim();
       if (!body) return;
       // The answer names the created comment; one it does not name (an
       // older backend) joins the feed as any arrival does.
@@ -303,15 +346,16 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
         created = answer?.commentId ?? '';
         return answer;
       }, (shown) => {
-        if (prCommentBody.trim() === body) prCommentBody = '';
-        prCommentOpen = false;
-        void shown.then(() => { if (!disposed) host.showPostedComment(created); });
+        const field = prComment.of(on);
+        prComment.set(on, { body: field.body.trim() === body ? '' : field.body, open: false });
+        void shown.then(() => { if (!disposed && host.prIdentity.key === on) host.showPostedComment(created); });
       }, undefined, { body, subject: 'Your comment on the pull request' });
     },
 
     dispose() {
       disposed = true;
       disposeSettle();
+      stopRelease();
     },
   };
 }

@@ -553,7 +553,8 @@ func appendSeedPad(out []byte, side string, bytes int) []byte {
 // checkpoints, drafts, attachments, and per-thread in-memory state),
 // generated seed workspaces are removed so the same names re-seed
 // cleanly, the app-wide "last used" chat profile that seeds a fresh
-// draft's provider is cleared, and harness-owned control state (scenario
+// draft's provider is cleared, provider usage readings and sign-ins are
+// dropped, and harness-owned control state (scenario
 // rules, an active replay, an in-flight recording, mock registrations)
 // is dropped — the per-test isolation
 // contract covers everything a previous test could have set, not just
@@ -707,6 +708,11 @@ func (h *Harness) HarnessReset() (err error) {
 	// cleanup is paused and the projects whose lists and pumps read the
 	// forge are gone.
 	h.config.Host.ResetForgeCaches()
+	// Usage readings are process-wide, not project-scoped: one spec's 5h
+	// meter would otherwise draw in the next spec's composer. A sign-in a
+	// spec left open would be rejoined by the next page that loads.
+	h.config.Host.ResetProviderUsage()
+	h.config.Host.CancelProviderLogins()
 	// A repository's fetch freshness and failure backoff are keyed by its
 	// path, which the next fixture can reuse for another repository.
 	h.config.Host.ForgetGitFetches()

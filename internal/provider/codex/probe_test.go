@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -74,6 +75,7 @@ func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
 	mockexec.Write(t, path, script)
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  path})
 	if err != nil {
@@ -96,6 +98,7 @@ func TestProbeAccountCarriesWorkspaceName(t *testing.T) {
 	mockexec.Write(t, path, script)
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  path})
 	if err != nil {
@@ -123,7 +126,7 @@ func TestProbeAccountWithoutAccountReadDoesNotReportWorkspaceName(t *testing.T) 
 				accountFrame +
 				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"team"}}}'` + "\n"
 			mockexec.Write(t, path, script)
-			info, err := ProbeAccount(context.Background(), ProbeConfig{WorkDir: probeWorkDir, Binary: path})
+			info, err := ProbeAccount(context.Background(), ProbeConfig{Reaper: procutiltest.Reaper(), WorkDir: probeWorkDir, Binary: path})
 			if err != nil {
 				t.Fatalf("ProbeAccount: %v", err)
 			}
@@ -144,6 +147,7 @@ func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
 	mockexec.Write(t, path, script)
 
 	info, err := ProbeIdentity(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  path})
 	if err != nil {
@@ -171,6 +175,7 @@ func TestProbeAccountExtractsPlanType(t *testing.T) {
 		"")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  binary})
 	if err != nil {
@@ -193,6 +198,7 @@ func TestProbeAccountSkipsNonMatchingFrames(t *testing.T) {
 		`{"rateLimits":{"planType":"plus"}}`, "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  binary})
 	if err != nil {
@@ -214,6 +220,7 @@ func TestProbeAccountMissingPlanTypeReturnsZero(t *testing.T) {
 		`{"rateLimits":{"limitId":"codex"}}`, "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  binary})
 	if err != nil {
@@ -234,6 +241,7 @@ func TestProbeAccountEmptyResultReturnsZero(t *testing.T) {
 	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  binary})
 	if err != nil {
@@ -254,6 +262,7 @@ func TestProbeAccountSurfacesError(t *testing.T) {
 	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "auth required")
 
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  binary})
 	if err == nil {
@@ -292,6 +301,7 @@ func TestProbeAccountInvokesOnSnapshotCallback(t *testing.T) {
 
 	var got []provider.RateLimitsSnapshot
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 
 		Binary: binary,
@@ -337,6 +347,7 @@ func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
 
 	var got []provider.RateLimitsSnapshot
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 
 		Binary: binary,
@@ -380,6 +391,7 @@ func TestProbeAccountSkipsOnSnapshotCallbackForEmptyResponse(t *testing.T) {
 
 	var fired bool
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 
 		Binary: binary,
@@ -404,6 +416,7 @@ func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
 
 	var got provider.RateLimitsSnapshot
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 
 		Binary: binary,
@@ -426,6 +439,7 @@ func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
 func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
 	t.Parallel()
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 		Binary:  "/nonexistent/path/to/codex-12345"})
 	if err == nil {
@@ -448,6 +462,7 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	const probeTimeout = 3 * time.Second
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 
 		Binary:  path,
@@ -478,6 +493,7 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		WorkDir: probeWorkDir,
 
 		Binary:  path,
@@ -613,7 +629,7 @@ func TestProbeRequiresWorkDir(t *testing.T) {
 	}
 	for name, probe := range probes {
 		for _, workDir := range []string{"", "relative/dir"} {
-			info, err := probe(ProbeConfig{Binary: binary, WorkDir: workDir})
+			info, err := probe(ProbeConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: workDir})
 			if err == nil {
 				t.Fatalf("%s WorkDir %q: expected refusal, got %+v", name, workDir, info)
 			}

@@ -541,14 +541,12 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
 }
 
 // The reads of one PR: its detail tick (GitHub), and GitLab's merge
-// request, approvals, discussions, management read (with the
-// mergeability checks on a host that has the override) and state events.
+// request, approvals, discussions, management read and state events.
 const PER_PR_ROUTES = [
   'gh graphql PRTick',
   'glab api merge request',
   'glab api approvals',
   'glab api discussions',
-  'glab graphql PRManage',
   'glab graphql PRManageChecks',
   'glab api state events',
 ];

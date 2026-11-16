@@ -32,7 +32,9 @@
 // <details> that is not open.
 // Neither searched nor painted (`data-find-skip` on their hosts): Mermaid
 // diagrams, math, and forge attachment chips, whose text is drawn or
-// fetched after the render.
+// fetched after the render, and a blocked link's tag, the link policy's
+// verdict rather than the message's text. Each ends the run it sits in, as
+// an image does, so a match never spans one (findHighlights.ts).
 
 import {
   alignmentAfter,
@@ -92,7 +94,9 @@ type Shows = 'nothing' | 'inline' | 'block' | 'own';
 /** Every kind the lexer can produce, as ChatMarkdown renders it. */
 export const SHOWS: Record<StreamdownToken['type'], Shows> = {
   // Drawn or fetched after the render, or not text at all.
-  image: 'nothing', br: 'nothing', space: 'nothing', def: 'nothing', footnote: 'nothing', math: 'nothing', hr: 'block',
+  br: 'nothing', space: 'nothing', def: 'nothing', footnote: 'nothing', hr: 'block',
+  // Skipped, and the end of the run around them.
+  image: 'own', math: 'own',
   align: 'nothing', paragraph: 'block', heading: 'block', blockquote: 'block', list: 'block', list_item: 'block',
   table: 'block', thead: 'inline', tbody: 'inline', tfoot: 'inline', tr: 'block',
   descriptionList: 'block', description: 'inline', descriptionTerm: 'block', descriptionDetail: 'block',
@@ -165,6 +169,10 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
   };
   const own = (token: TokenLike) => {
     switch (token.type) {
+      case 'image':
+      case 'math':
+        flush();
+        return;
       case 'code':
         flush();
         if (token.lang !== 'mermaid' && !options.claimsCode?.(token.lang ?? '')) push(token.text ?? '');
@@ -198,7 +206,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
       }
       case 'link':
         walk(token.tokens);
-        add(linkTagText(token.href, [...CHAT_LINK_PREFIXES]));
+        if (linkTagText(token.href, [...CHAT_LINK_PREFIXES])) flush();
         return;
       case 'td':
       case 'th':

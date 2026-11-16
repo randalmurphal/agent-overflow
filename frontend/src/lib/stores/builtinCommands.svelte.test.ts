@@ -41,7 +41,7 @@ import {
   isMessageSearchOpen,
   openMessageSearch,
 } from './messageSearch.svelte';
-import { getToasts } from './toast.svelte';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 import {
   PANE_FIND_DETAIL_REGION,
   PANE_FIND_LIST_REGION,
@@ -76,6 +76,8 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
+import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
   getPendingThreadActionConfirmation,
   resetThreadActionConfirmationsForTest,
@@ -101,6 +103,7 @@ import {
 } from './paneTitleRename';
 import type { Project, Thread } from '../types/models';
 import type { TerminalSessionSummary } from '../types/terminal';
+import { applyTerminalExit } from './eventsTerminal';
 
 // builtinCommands imports openTerminalThread directly (like runTerminalToggle);
 // stub it so terminal.newPane's wiring can be asserted without standing up the
@@ -559,6 +562,63 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
   registerBuiltinCommands(makeBuiltinHooks());
 }
 
+describe('git push and pull commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+  });
+
+  for (const [id, binding, noun, done] of [
+    ['git.push', 'GitPush', 'push', 'Pushed.'],
+    ['git.pull', 'GitPull', 'pull', 'Pulled.'],
+  ] as const) {
+    it(`${id} reports a write whose answer was lost from the computer's record of it`, async () => {
+      const pane = readyPane({ projectId: 'project-1' });
+      registerFixtureCommands(pane);
+      const write = setBindingMock(binding, async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+        state: 'succeeded',
+        result: { action: noun },
+      }));
+      const command = getCommand(id);
+      if (!command) throw new Error(`${id} was not registered`);
+      await command.run(makeCommandContext(pane, { hasActiveThread: true }));
+      await vi.waitFor(() => expect(getToasts().at(-1)?.message).toBe(done));
+      expect(write).toHaveBeenCalledTimes(1);
+      const [workspace, attemptId] = write.mock.calls[0]!;
+      expect(outcome).toHaveBeenCalledWith(workspace, noun, attemptId);
+    });
+
+    it(`${id} says the same thing for a failure answered at once and one answered from the record`, async () => {
+      const pane = readyPane({ projectId: 'project-1' });
+      registerFixtureCommands(pane);
+      const message = `${noun} exited with code 1: pre-push: lint found 3 problems in main.go`;
+      const chain = [`${noun} exited with code 1`, 'pre-push: lint found 3 problems in main.go'];
+      const command = getCommand(id);
+      if (!command) throw new Error(`${id} was not registered`);
+
+      resetToastsForTest();
+      setBindingMock(binding, async () => {
+        throw new TransportError('method_error', message, { detail: { ref: 'r1', method: binding, at: 1, chain } });
+      });
+      await command.run(makeCommandContext(pane, { hasActiveThread: true }));
+      await vi.waitFor(() => expect(getToasts()).toHaveLength(1));
+      const direct = getToasts()[0]!.message;
+
+      resetToastsForTest();
+      setBindingMock(binding, async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      setBindingMock('GetGitActionOutcome', async () => ({ state: 'failed', code: 'method_error', message, chain }));
+      await command.run(makeCommandContext(readyPane({ projectId: 'project-1' }), { hasActiveThread: true }));
+      await vi.waitFor(() => expect(getToasts()).toHaveLength(1));
+      expect(getToasts()[0]!.message).toBe(direct);
+      expect(direct).toContain('lint found 3 problems');
+    });
+  }
+});
+
 describe('thread rename command', () => {
   beforeEach(() => {
     clearCommandRegistry();
@@ -814,6 +874,36 @@ describe('terminal tab management commands', () => {
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']);
     // The new tab is now active → focus is requested so the cursor lands in it.
     expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('terminal.newTab adds no tab for a shell whose exit overtook the OpenTerminal reply', async () => {
+    const pane = readyPane({ workspacePath: '/ws/9' });
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-existing'));
+    setBindingMock('OpenTerminal', async () => {
+      applyTerminalExit({ terminalID: 'term-new', threadID: pane.threadId!, code: 1 } as never);
+      return { terminalID: 'term-new', summary: termSummary('term-new') };
+    });
+
+    runCommand('terminal.newTab', makeCommandContext(pane, { terminalFocus: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
+    expect(handle.activeTerminalID).toBe('term-existing');
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('terminal.newTab removes the tab when the exit follows the reply', async () => {
+    const pane = readyPane({ workspacePath: '/ws/9' });
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-existing'));
+    setBindingMock('OpenTerminal', async () => ({ terminalID: 'term-new', summary: termSummary('term-new') }));
+
+    runCommand('terminal.newTab', makeCommandContext(pane, { terminalFocus: true }));
+    await vi.waitFor(() => expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']));
+    applyTerminalExit({ terminalID: 'term-new', threadID: pane.threadId!, code: 0 } as never);
+    expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
   });
 
   it('terminal.closeTab closes the active tab and removes it from the surface', () => {
@@ -1832,6 +1922,30 @@ describe('mode.cycle command', () => {
     // reach it and collect a backend error for a chord the user pressed.
     expect(calls.length).toBe(0);
   });
+
+  it('waits for an empty-draft delete, then sets the mode on the placeholder it leaves', async () => {
+    const pane = createThreadPane();
+    pane.replaceThread({
+      id: 'emptied', title: 'New Thread', provider: 'claude', workspacePath: '/tmp', projectPath: '/tmp',
+      projectId: 'project-1', mode: 'chat', model: 'claude-sonnet-4-6', createdAt: 0, updatedAt: 0, archived: false, isDraft: true,
+    });
+    const update = setBindingMock('UpdateThreadMode', async () => { throw new Error('the deleted thread was written'); });
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    const cleanup = withEmptyDraftCleanup('emptied', async () => { await answered; return true; }, async () => {
+      pane.dematerializeEmptyDraftThread();
+    });
+    registerFixtureCommands(pane);
+    runCommand('mode.cycle', makeCommandContext(pane, {}) as CommandContext);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(update).not.toHaveBeenCalled();
+    answer();
+    await cleanup;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(update).not.toHaveBeenCalled();
+    expect(pane.hasDraftPlaceholder).toBe(true);
+    expect(pane.thread?.mode).toBe('plan');
+  });
 });
 
 describe('git commit/PR command safety', () => {
@@ -2211,6 +2325,8 @@ describe('thread-bound commands on placeholders', () => {
 
   it('terminal.toggle on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-toggle-draft');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.toggle on a placeholder');
     });
@@ -2231,6 +2347,8 @@ describe('thread-bound commands on placeholders', () => {
 
   it('terminal.new on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-new-draft');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.new on a placeholder');
     });

@@ -255,7 +255,8 @@ func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req 
 	if commit.CreateCommitOnBranch == nil || commit.CreateCommitOnBranch.Commit == nil || commit.CreateCommitOnBranch.Commit.OID == "" {
 		return &UnconfirmedWriteError{Err: errors.New("GitHub answered the suggestion's commit with no commit")}
 	}
-	if err := f.SetThreadResolved(ctx, ref, thread.ID, true); err != nil {
+	// SuggestionTarget read the thread as the pull's.
+	if err := setGitHubThreadResolved(ctx, client, thread.ID, true); err != nil {
 		return &PartialWriteError{Done: "committed the suggestion to the head branch", Next: "resolving its thread", Err: err}
 	}
 	return nil

@@ -70,7 +70,7 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 		}
 	case string(provider.Claude):
 		cfg.Binary = claudeBin
-		cfg.ClaudeCleanupPeriodDays = a.claudeCleanupPeriodDays
+		cfg.ClaudeRetention = a.claudeRetention
 		if chosen == preferred {
 			cfg.Model = strings.TrimSpace(s.TextGenerationModel)
 		}
@@ -117,7 +117,7 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 			return textgen.Config{}, false
 		}
 		cfg.Model = a.defaultClaudeTextGenerationModel()
-		cfg.ClaudeCleanupPeriodDays = a.claudeCleanupPeriodDays
+		cfg.ClaudeRetention = a.claudeRetention
 	default:
 		return textgen.Config{}, false
 	}

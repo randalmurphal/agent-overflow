@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestRecoverChildOwnershipUsesOriginalSpawnAndKeepsNestedScope(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "sh", Args: []string{"-c", `
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "sh", Args: []string{"-c", `
  while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in

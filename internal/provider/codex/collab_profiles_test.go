@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
 	t.Parallel()
 	capturePath := t.TempDir() + "/request.json"
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			IFS= read -r line || exit 1
@@ -73,7 +74,7 @@ func TestReadChildThreadProfileUsesMetadataOnlyResume(t *testing.T) {
 func TestScheduledChildProfileReplacesUnknownSpawnProfile(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "cat > /dev/null"},
 	})

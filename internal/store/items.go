@@ -66,9 +66,9 @@ func servedItemMetaFor(revExpr string) string {
 
 const itemInsertPrefix = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-		created_at, updated_at)`
+		created_at, updated_at, find_text)`
 
-const itemInsertValues = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const itemInsertValues = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 const itemInsertSQL = itemInsertPrefix + ` VALUES ` + itemInsertValues
 
 type sqlExecutor interface {
@@ -183,8 +183,18 @@ func itemInsertArgs(item Item) []any {
 		item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
 		boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
-		item.CreatedAt, item.UpdatedAt,
+		item.CreatedAt, item.UpdatedAt, insertFindText(item),
 	}
+}
+
+// insertFindText is the candidate text a row is inserted with
+// (find_candidate.go), or NULL for a row whose candidate text reads its
+// payload, which the insert trigger reads (trg_items_find_text_insert).
+func insertFindText(item Item) any {
+	if findPayloadKind(item.Kind) && item.PayloadID != "" {
+		return nil
+	}
+	return findCandidateText(item.Kind, item.Summary, item.Meta, item.ToolName, nil)
 }
 
 // itemInsertAdoptingSQL is itemInsertSQL that reports whether the new row

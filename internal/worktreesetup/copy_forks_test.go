@@ -21,6 +21,14 @@ import (
 //
 // Callers are not parallel: no other test may take the lock meanwhile.
 func copyWhileAForkHoldsTheLock(t *testing.T, mode os.FileMode) (waited bool, worktree string) {
+	waited, _, worktree = copyWhileAForkHoldsTheLockWritten(t, mode)
+	return waited, worktree
+}
+
+// copyWhileAForkHoldsTheLockWritten is copyWhileAForkHoldsTheLock that also
+// reports whether, when the copy was found waiting, the copied file was
+// already in place: the copy wrote it before it waited.
+func copyWhileAForkHoldsTheLockWritten(t *testing.T, mode os.FileMode) (waited, writtenFirst bool, worktree string) {
 	t.Helper()
 	project := t.TempDir()
 	worktree = t.TempDir()
@@ -38,16 +46,18 @@ func copyWhileAForkHoldsTheLock(t *testing.T, mode os.FileMode) (waited bool, wo
 			if err != nil {
 				t.Fatalf("copy: %v", err)
 			}
-			return waited, worktree
+			return waited, writtenFirst, worktree
 		default:
 		}
 		if !waited && copyParkedOnForkLock(buf[:runtime.Stack(buf, true)]) {
 			waited = true
+			copied, readErr := os.ReadFile(filepath.Join(worktree, "tool"))
+			writtenFirst = readErr == nil && string(copied) == "#!/bin/sh\nexit 0\n"
 			syscall.ForkLock.Unlock()
 			if err := <-done; err != nil {
 				t.Fatalf("copy: %v", err)
 			}
-			return waited, worktree
+			return waited, writtenFirst, worktree
 		}
 		runtime.Gosched()
 	}

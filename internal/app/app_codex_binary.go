@@ -11,13 +11,17 @@ import (
 )
 
 // codexBinary is the binary every Codex spawn runs: the harness mock, an
-// explicit path setting as given, or the default setting's resolution.
+// explicit path setting as given, or the default setting's resolution
+// (defaultProviderBinaryOverride under a test fixture).
 func (a *App) codexBinary() codex.NativeBinary {
 	if a.providerBinaryOverride != "" {
 		return codex.NativeBinary{Path: a.providerBinaryOverride}
 	}
 	if path := strings.TrimSpace(a.currentSettings().CodexBinaryPath); path != "" && path != settings.DefaultSettings.CodexBinaryPath {
 		return codex.NativeBinary{Path: path}
+	}
+	if a.defaultProviderBinaryOverride != "" {
+		return codex.NativeBinary{Path: a.defaultProviderBinaryOverride}
 	}
 	return a.defaultCodexBinary()
 }

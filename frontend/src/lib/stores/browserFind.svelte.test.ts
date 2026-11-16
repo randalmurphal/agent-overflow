@@ -625,16 +625,15 @@ describe('browser find provider', () => {
   }
 
   // Row: failed stop. Sent again on the provider's own timer while attempts
-  // remain, through the pane's unmount too; no timer is left once the
-  // attempts are spent. An unmounted pane shows no cleanup error.
+  // remain; no timer is left once the attempts are spent.
   for (const [why, error] of [...unknowns, ['a refusal', () => refused('fake engine: find stop failed')] as [string, () => Error]]) {
     it(`retries a stop that failed with ${why}, a bounded number of times`, async () => {
-      const { onCleanupError, unmount } = await setupSearching();
+      const { find, onCleanupError } = await setupSearching();
       answer = async (call) => {
         if (call.kind === 'stop') throw error();
         return state({ seq: call.seq, session: 9, active: false });
       };
-      unmount();
+      find.search('');
       await settle(0);
       expect(kinds()).toEqual(['start', 'stop']);
       for (let attempt = 2; attempt <= BROWSER_FIND_STOP_ATTEMPTS; attempt++) {
@@ -647,9 +646,32 @@ describe('browser find provider', () => {
       await settle(BROWSER_FIND_STOP_RETRY_MS * 4);
       expect(kinds()).toEqual(['start', ...Array(BROWSER_FIND_STOP_ATTEMPTS).fill('stop')]);
       expect(new Set(calls.slice(1).map((call) => call.seq))).toEqual(new Set([calls[0].seq]));
-      expect(onCleanupError).not.toHaveBeenCalled();
+      expect(onCleanupError).toHaveBeenLastCalledWith(errString(error()));
     });
   }
+
+  // The pane's mount goes with it, and the backend ends the mount's search
+  // and stops the engine's: no retry of a stop outlives the pane, neither
+  // one already waiting nor one for the stop the unmount sends.
+  it('leaves no stop retry behind when the pane unmounts', async () => {
+    const { find, onCleanupError, unmount } = await setupSearching();
+    answer = async (call) => {
+      if (call.kind === 'stop') throw new DisconnectedError();
+      return state({ seq: call.seq, session: 9, active: false });
+    };
+    find.search('');
+    await settle(0);
+    expect(vi.getTimerCount(), 'the failed stop waits on its retry').toBe(1);
+    find.search('beta');
+    await settle();
+    unmount();
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'stop', 'start', 'stop']);
+    expect(vi.getTimerCount()).toBe(0);
+    await settle(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
+    expect(kinds()).toEqual(['start', 'stop', 'start', 'stop']);
+    expect(onCleanupError.mock.calls.at(-1), 'an unmounted pane shows nothing').toEqual([null]);
+  });
 
   it('clears a stop\'s retry and the pane\'s cleanup error once a retry answers', async () => {
     const { find, onCleanupError } = await setupSearching();

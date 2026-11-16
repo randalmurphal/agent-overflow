@@ -34,9 +34,10 @@ type movedTurn struct {
 }
 
 // SelectionMoved tells the coordinator the provider's selected account
-// changed from one account to another, by any switch. When running sessions
-// follow a switch, each turn then in flight is remembered as having used
-// from, for TurnRefused. It may be called from inside Deps.Switch.
+// changed from one account to another, by any route: a switch, a removal or
+// an outside login. When running sessions follow the selection, each turn
+// then in flight is remembered as having used from, for TurnRefused. It may
+// be called from inside Deps.Switch.
 func (c *Coordinator) SelectionMoved(prov, fromAccountID, toAccountID string) {
 	if fromAccountID == "" || fromAccountID == toAccountID || !c.deps.ReachesRunningTurns(prov) {
 		return

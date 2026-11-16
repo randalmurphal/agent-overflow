@@ -128,8 +128,8 @@ export function parsePRReference(
 
 /**
  * The reference for a PR the forge reported by URL (a workspace's open PR).
- * The host is the URL's, so a GitHub Enterprise or self-hosted GitLab PR
- * keeps the host it lives on.
+ * The host is the URL's, so a self-hosted GitLab MR keeps the host it
+ * lives on.
  */
 export function prRefFromUrl(forge: string, url: string, number: number): PRRef | null {
   if (forge !== 'github' && forge !== 'gitlab') return null;

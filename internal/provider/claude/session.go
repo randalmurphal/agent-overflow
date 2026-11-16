@@ -241,16 +241,21 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		RemoveSystemPromptFile(systemPromptPath)
 		return nil, fmt.Errorf("claude: %w", err)
 	}
-	args := buildArgs(cfg, systemPromptPath, appendSystemPromptPath)
+	line, err := sessionCommandLine(cfg, systemPromptPath, appendSystemPromptPath)
+	if err != nil {
+		RemoveSystemPromptFile(systemPromptPath)
+		RemoveSystemPromptFile(appendSystemPromptPath)
+		return nil, err
+	}
 
 	childCtx, cancel := context.WithCancel(ctx)
 
-	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
+	proc, err := provider.Spawn(childCtx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
 		Binary:      binary,
-		Args:        args,
+		Args:        line.Args(),
 		Dir:         cfg.WorkDir,
-		Env:         claudeSpawnEnv(cfg),
-		UnsetEnv:    claudeSpawnUnsetEnv(),
+		Env:         line.Env(claudeSpawnEnv(cfg)),
+		UnsetEnv:    line.UnsetEnv(),
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),

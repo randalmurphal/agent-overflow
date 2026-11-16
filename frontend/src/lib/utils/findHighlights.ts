@@ -10,8 +10,13 @@
 // mounts its visible rows) and reruns when that DOM changes or a
 // <details> under it opens or closes, coalesced through the refresh
 // scheduler. Text is matched by the find rule (`findMatch.ts`) within a
-// block, across inline markup; with `rowsOnly`, only text inside a row is
-// matched, and a row boundary ends a block. Where the API is missing the matches are
+// run: the text of one block, across inline markup. Content find skips
+// (`data-find-skip`, images, scripts) is in no run and ends the run it
+// interrupts, so a match never spans text the reader sees apart. With
+// `rowsOnly`, only text inside a row is matched, and a row boundary ends a
+// run; with `textSelector`, only text inside the elements it selects (a
+// row's `data-find-text` elements, what its count reads), and the edge of
+// one ends a run. Where the API is missing the matches are
 // still computed, for providers that count or step through them, and
 // nothing paints. An empty query or `dispose` releases every range, the
 // observer and the names.
@@ -50,6 +55,8 @@ export interface FindHighlighterOptions {
   rowKeyAttribute?: string;
   /** Match only text inside a `rowSelector` element. */
   rowsOnly?: boolean;
+  /** Match only text inside an element this selects. */
+  textSelector?: string;
   /** Called after every recompute with the new matches. */
   onMatches?(matches: readonly FindMatch[]): void;
 }
@@ -69,6 +76,8 @@ const MAX_MATCHES = 5000;
 const RECOMPUTE_DELAY_MS = 40;
 const RECOMPUTE_MAX_WAIT_MS = 200;
 const SKIP_SELECTOR = 'script,style,noscript,textarea,[data-find-skip]';
+// What ends a run: skipped content, and an image, which has no text.
+const BOUNDARY_SELECTOR = `${SKIP_SELECTOR},img`;
 const BLOCK_SELECTOR = [
   'address', 'article', 'aside', 'blockquote', 'dd', 'details', 'div', 'dl', 'dt',
   'figcaption', 'figure', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header',
@@ -137,6 +146,7 @@ interface Segment {
   text: string;
   block: Element | null;
   row: Element | null;
+  region: Element | null;
   /** In a closed <details>: kept only when asked for (`keepHidden`). */
   hidden: boolean;
 }
@@ -151,7 +161,7 @@ function hiddenByDetails(element: Element): boolean {
   return false;
 }
 
-function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false): Segment[] {
+function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false, textSelector?: string): Segment[] {
   const visible = new Map<Element, boolean>();
   // checkVisibility fails a `display: contents` element, which has no box,
   // though its loose text renders in its parent's.
@@ -170,10 +180,20 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
     }
     return answer;
   };
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  // Text nodes, and the elements that end a run.
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+    acceptNode: (node) => node.nodeType === Node.TEXT_NODE || (node as Element).matches(BOUNDARY_SELECTOR)
+      ? NodeFilter.FILTER_ACCEPT
+      : NodeFilter.FILTER_SKIP,
+  });
   const segments: Segment[] = [];
   let current: Segment | null = null;
-  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+  for (let next = walker.nextNode(); next; next = walker.nextNode()) {
+    if (next.nodeType !== Node.TEXT_NODE) {
+      current = null;
+      continue;
+    }
+    const node = next as Text;
     const parent = node.parentElement;
     if (!parent || node.data.length === 0) continue;
     if (parent.closest(SKIP_SELECTOR)) continue;
@@ -181,9 +201,11 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
     if (hidden && !keepHidden) continue;
     const row = rowsOnly && rowSelector ? parent.closest(rowSelector) : null;
     if (rowsOnly && (!row || !root.contains(row))) continue;
+    const region = textSelector ? parent.closest(textSelector) : null;
+    if (textSelector && (!region || !root.contains(region))) continue;
     const block = parent.closest(BLOCK_SELECTOR);
-    if (!current || current.block !== block || current.row !== row || current.hidden !== hidden) {
-      current = { nodes: [], starts: [], text: '', block, row, hidden };
+    if (!current || current.block !== block || current.row !== row || current.region !== region || current.hidden !== hidden) {
+      current = { nodes: [], starts: [], text: '', block, row, region, hidden };
       segments.push(current);
     }
     current.starts.push(current.text.length);
@@ -196,10 +218,11 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
 /**
  * The folded text of each run the highlighter matches within, in document
  * order. `laidOut: false` reads a tree with no layout (a parsed fragment):
- * every element is visible but the body of a closed <details>.
+ * every element is visible but the body of a closed <details>. With
+ * `textSelector`, only the runs inside the elements it selects.
  */
-export function findTextSegments(root: Element, laidOut = true): string[] {
-  return collectSegments(root, undefined, false, laidOut).map((segment) => segment.text);
+export function findTextSegments(root: Element, laidOut = true, textSelector?: string): string[] {
+  return collectSegments(root, undefined, false, laidOut, false, textSelector).map((segment) => segment.text);
 }
 
 /**
@@ -218,9 +241,9 @@ function pointAt(segment: Segment, offset: number, end: boolean): [Text, number]
   return [segment.nodes[index], offset - segment.starts[index]];
 }
 
-function collectMatches(root: HTMLElement, needle: string, rowSelector: string | undefined, rowKeyAttribute: string | undefined, rowsOnly: boolean): FindMatch[] {
+function collectMatches(root: HTMLElement, needle: string, rowSelector: string | undefined, rowKeyAttribute: string | undefined, rowsOnly: boolean, textSelector: string | undefined): FindMatch[] {
   const matches: FindMatch[] = [];
-  for (const segment of collectSegments(root, rowSelector, rowsOnly)) {
+  for (const segment of collectSegments(root, rowSelector, rowsOnly, true, false, textSelector)) {
     let at = segment.text.indexOf(needle);
     if (at < 0) continue;
     const row = segment.row ?? (rowSelector ? segment.nodes[0].parentElement?.closest(rowSelector) : null);
@@ -242,7 +265,7 @@ function collectMatches(root: HTMLElement, needle: string, rowSelector: string |
 // ---- Highlighter ------------------------------------------------------------
 
 export function createFindHighlighter(options: FindHighlighterOptions): FindHighlighter {
-  const { root, name, rowSelector, rowKeyAttribute } = options;
+  const { root, name, rowSelector, rowKeyAttribute, textSelector } = options;
   const rowsOnly = options.rowsOnly === true;
   const currentName = `${name}-current`;
   const paints = findHighlightsSupported();
@@ -290,7 +313,7 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
 
   function recompute(): void {
     if (disposed) return;
-    matches = needle ? collectMatches(root, needle, rowSelector, rowKeyAttribute, rowsOnly) : [];
+    matches = needle ? collectMatches(root, needle, rowSelector, rowKeyAttribute, rowsOnly, textSelector) : [];
     paint();
     options.onMatches?.(matches);
   }

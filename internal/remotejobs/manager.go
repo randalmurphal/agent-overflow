@@ -233,6 +233,65 @@ func (m *Manager) Start(ownerID, projectID, workspace string, request Request) (
 	return receipt, nil
 }
 
+// survivorMessage says that a process of the command's group outlived the
+// stop (procutil.ErrGroupSurvived).
+const survivorMessage = "The command, or a process it left running, could not be stopped and is still running on the destination. It runs as another user, so end it there."
+
+// jobEnding is a finished job's state, error and warning, built from two
+// facts: why the run ended, and whether its group outlived the stop. Every
+// ending is described here, so none can drop the survivor fact; a process
+// that may still run is never offered for a fresh start.
+func jobEnding(ctxErr error, hostStopped, abandoned bool, outcome Outcome, err error) (state, message, warning string) {
+	code := outcome.ExitCode
+	survived := errors.Is(err, procutil.ErrGroupSurvived)
+	if outcome.Leftovers {
+		warning = "The command left background processes running in its process group; they were stopped when it exited. Start a long-lived process as its own remote_run instead of detaching it."
+		if survived {
+			warning = "The command left background processes running in its process group, and they could not all be stopped. Start a long-lived process as its own remote_run instead of detaching it."
+		}
+	}
+	if err == nil && code == 0 {
+		return "succeeded", "", warning
+	}
+	// A cancellation or deadline that lands after a clean exit changed
+	// nothing: the process already reported success, and that remains the
+	// truth. Otherwise the ending is why the run stopped.
+	if ctxErr != nil {
+		state, message = "canceled", "The command was canceled."
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			state, message = "failed", "The command exceeded its time limit."
+		}
+		if abandoned {
+			message = "The calling computer stopped checking on this command, so the destination stopped it. Start it again from a connected conversation if it is still needed."
+			if survived {
+				message = "The calling computer stopped checking on this command."
+			}
+		}
+		if hostStopped {
+			state, message = "interrupted", "The computer stopped before this command finished."
+		}
+		if survived {
+			message += " " + survivorMessage
+		}
+		return state, message, warning
+	}
+	switch {
+	case survived:
+		message = survivorMessage
+	case errors.Is(err, exec.ErrNotFound):
+		message = "The executable was not found on the destination's PATH. Install it there or use its absolute path."
+	case errors.Is(err, os.ErrNotExist):
+		message = "The executable or workspace no longer exists on the destination. Check its path and registered project before retrying."
+	case errors.Is(err, os.ErrPermission):
+		message = "The destination denied permission to start the command. Check executable and workspace permissions."
+	case code >= 0:
+		message = fmt.Sprintf("The command exited with code %d. Inspect its output for the failure details.", code)
+	default:
+		message = "The command could not start or was terminated by the destination. Check the executable, workspace availability, and destination logs."
+	}
+	return "failed", message, warning
+}
+
 func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 	defer m.wg.Done()
 	defer job.cancel()
@@ -249,41 +308,8 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 	}
 	m.mu.Lock()
 	receipt := job.receipt
-	receipt.State, receipt.ExitCode, receipt.FinishedAt = "succeeded", code, time.Now().UnixMilli()
-	if err != nil || code != 0 {
-		receipt.State = "failed"
-	}
-	if receipt.State == "failed" {
-		switch {
-		case errors.Is(err, exec.ErrNotFound):
-			receipt.Error = "The executable was not found on the destination's PATH. Install it there or use its absolute path."
-		case errors.Is(err, os.ErrNotExist):
-			receipt.Error = "The executable or workspace no longer exists on the destination. Check its path and registered project before retrying."
-		case errors.Is(err, os.ErrPermission):
-			receipt.Error = "The destination denied permission to start the command. Check executable and workspace permissions."
-		case code >= 0:
-			receipt.Error = fmt.Sprintf("The command exited with code %d. Inspect its output for the failure details.", code)
-		default:
-			receipt.Error = "The command could not start or was terminated by the destination. Check the executable, workspace availability, and destination logs."
-		}
-	}
-	// A cancellation or deadline that lands after a clean exit changed nothing:
-	// the process already reported success, and that remains the truth.
-	if ctx.Err() != nil && (err != nil || code != 0) {
-		receipt.State, receipt.Error = "canceled", "The command was canceled."
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			receipt.State, receipt.Error = "failed", "The command exceeded its time limit."
-		}
-		if job.abandoned {
-			receipt.Error = "The calling computer stopped checking on this command, so the destination stopped it. Start it again from a connected conversation if it is still needed."
-		}
-		if m.ctx.Err() != nil {
-			receipt.State, receipt.Error = "interrupted", "The computer stopped before this command finished."
-		}
-	}
-	if outcome.Leftovers {
-		receipt.Warning = "The command left background processes running in its process group; they were stopped when it exited. Start a long-lived process as its own remote_run instead of detaching it."
-	}
+	receipt.ExitCode, receipt.FinishedAt = code, time.Now().UnixMilli()
+	receipt.State, receipt.Error, receipt.Warning = jobEnding(ctx.Err(), m.ctx.Err() != nil, job.abandoned, outcome, err)
 	receipt.Output = job.tail.String()
 	job.output.mu.Lock()
 	receipt.Truncated = job.output.info(receipt.ID).Truncated

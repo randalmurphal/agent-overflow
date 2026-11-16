@@ -18,6 +18,7 @@ import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtim
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { resetShellRunsForTest, runShellCommand } from './shellCommands.svelte';
 
 const WORKSPACE = '/repo';
 const OTHER_WORKSPACE = '/repo/.worktrees/feature';
@@ -90,6 +91,7 @@ describe('createWorkspaceChangeLockState', () => {
     resetBindingMocks();
     resetWailsMocks();
     __resetEntityIndexForTest();
+    resetShellRunsForTest();
     vi.useRealTimers();
   });
 
@@ -226,6 +228,30 @@ describe('createWorkspaceChangeLockState', () => {
 
     expect(state).toHaveAttribute('data-thread-locked', 'true');
     expect(state.getAttribute('data-thread-reason') ?? '').toMatch(/agent is responding/);
+  });
+
+  it('locks the THREAD view while this thread runs a shell command, and only it', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    let finish: (() => void) | undefined;
+    setBindingMock('RunThreadShellCommand', () => new Promise((resolve) => {
+      finish = () => resolve({ threadId: 'thread-a', runId: 'r', command: 'sleep 5', state: 'sent' });
+    }));
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+    await waitFor(() => expect(state).toHaveAttribute('data-thread-locked', 'false'));
+
+    const run = runShellCommand('thread-a', 'sleep 5');
+    await waitFor(() => {
+      expect(state).toHaveAttribute('data-thread-locked', 'true');
+      expect(state.getAttribute('data-thread-reason') ?? '').toMatch(/shell command is running/);
+    });
+    // Removing the checkout stops the command, so the directory stays open.
+    expect(state).toHaveAttribute('data-locked', 'false');
+
+    finish!();
+    await run;
+    await waitFor(() => expect(state).toHaveAttribute('data-thread-locked', 'false'));
   });
 
   it('keeps the THREAD view locked while unverified, for the same fail-safe reason', async () => {

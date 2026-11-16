@@ -17,7 +17,7 @@ import (
 // contract after relocating the package, then run against the shared migrated
 // store template so the suite does not replay every migration per fixture.
 func TestMain(m *testing.M) {
-	// On macOS a Start that reaches its background work re-execs this binary
+	// On macOS and Linux a Start that reaches its background work re-execs this binary
 	// as the orphan-reaper sidecar, as main() handles in the shipped binary.
 	// Without this dispatch the sidecar would run the whole suite again.
 	if len(os.Args) > 1 && os.Args[1] == orphanreaper.Subcommand() {
@@ -41,6 +41,7 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
+	goBuildCache = resolveGoBuildCache()
 	removeHome, err := detachTestProcessHome()
 	if err != nil {
 		panic(err)

@@ -272,9 +272,16 @@ polling.
   forge refused it in full with a 4xx (`forgeapi.WriteNotApplied`).
   Anything else is unconfirmed: the drafts stay drafts and the pane says
   the review may already be on the PR. A GitLab publish whose answer was
-  lost is settled by reading the pending draft notes. A review that was
+  lost is settled by reading the pending draft notes. A submit runs to
+  its outcome whatever the client does, inside its method budget: near
+  the budget it starts no further forge request, and a part it never
+  started is reported as not posted. A review that was
   not posted, or is unconfirmed, keeps its summary and verdict in the
-  send strip, which stays while either is set.
+  send strip, which stays while either is set. The pane is keyed by
+  thread and workspace while its PR follows git status, so whether the
+  PR changed has one owner, `stores/reviewPRIdentity.svelte.ts`: per-PR
+  state is kept per PR through it or keyed by it and dropped on its
+  change ([Pull requests](../specs/pull-requests.md#edge-cases)).
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise

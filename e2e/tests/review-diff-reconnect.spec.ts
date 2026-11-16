@@ -30,8 +30,8 @@ import { openReview, reach, seed } from './review-diff-reading-flow.js';
 // Generated bindings send method ids (internal/transport/methods_gen.go).
 const OPEN_PR_DIFF = 4075510992;
 const OPEN_WORKSPACE_DIFF = 3558532873;
-// The page reads the chunks after an open's first with the packed method.
-const READ_REVIEW_DIFF_PACKED = 4058838878;
+// The page reads the chunks after an open's first with ReadReviewDiff.
+const READ_REVIEW_DIFF = 2473150982;
 const GET_REVIEW_DIFF_IMAGE = 3506270873;
 const GET_REVIEW_DIFF_FILE_SIZES = 2795814304;
 
@@ -57,7 +57,7 @@ function parse(message: string | Buffer): RPCFrame | null {
 /** The page's socket, proxied: every diff open's handle and every file
  * read's handle and refusal code, in order, and the current connection.
  * `holdImageMs` delays each image read's answer; `holdReads` holds every
- * ReadReviewDiffPacked answer until `releaseReads` runs. */
+ * ReadReviewDiff answer until `releaseReads` runs. */
 async function watchSocket(page: Page, opts: { holdImageMs?: number; holdReads?: boolean } = {}) {
   let releaseReads!: () => void;
   const readsHeld = new Promise<void>((resolve) => { releaseReads = resolve; });
@@ -79,7 +79,7 @@ async function watchSocket(page: Page, opts: { holdImageMs?: number; holdReads?:
       const frame = parse(message);
       if (frame?.type === 'rpc') {
         if (frame.methodId === OPEN_PR_DIFF || frame.methodId === OPEN_WORKSPACE_DIFF) opens.add(frame.id);
-        if (frame.methodId === READ_REVIEW_DIFF_PACKED) {
+        if (frame.methodId === READ_REVIEW_DIFF) {
           patches.add(frame.id);
           seen.patchReads += 1;
         }

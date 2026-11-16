@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -71,6 +72,8 @@ func TestProbeAccountWaitsForAnExpectedRotationToLand(t *testing.T) {
 	binary := writeRotatingClaudeScript(t, dir, credentialPath, 400*time.Millisecond)
 
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:         procutiltest.Reaper(),
+		Retention:      UserHomeRetention(0),
 		WorkDir:        probeWorkDir,
 		Binary:         binary,
 		ReadCredential: func() ([]byte, error) { return os.ReadFile(credentialPath) },
@@ -103,6 +106,8 @@ func TestProbeAccountDoesNotWaitWhenNoRotationIsExpected(t *testing.T) {
 
 	started := time.Now()
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:         procutiltest.Reaper(),
+		Retention:      UserHomeRetention(0),
 		WorkDir:        probeWorkDir,
 		Binary:         binary,
 		ReadCredential: func() ([]byte, error) { return os.ReadFile(credentialPath) },
@@ -146,6 +151,8 @@ func TestProbeAccountWaitsForRotationEvenWhenTheProbeFails(t *testing.T) {
 	mockexec.Write(t, path, script)
 
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:         procutiltest.Reaper(),
+		Retention:      UserHomeRetention(0),
 		WorkDir:        probeWorkDir,
 		Binary:         path,
 		ReadCredential: func() ([]byte, error) { return os.ReadFile(credentialPath) },
@@ -189,6 +196,8 @@ func TestProbeAccountLetsARotationLandAfterCallerCancellation(t *testing.T) {
 		cancel()
 	}()
 	if _, err := ProbeAccount(ctx, ProbeConfig{
+		Reaper:         procutiltest.Reaper(),
+		Retention:      UserHomeRetention(0),
 		WorkDir:        probeWorkDir,
 		Binary:         path,
 		ReadCredential: func() ([]byte, error) { return os.ReadFile(credentialPath) },

@@ -635,3 +635,104 @@ func TestAutoSwitchAccountsChangedForgetsRemovedAccounts(t *testing.T) {
 		t.Fatalf("selected = %q, want a: its refusal mark went with the account", got)
 	}
 }
+
+// Removing the selected account moves running turns to the replacement. A
+// refusal of a turn that was running on the removed account can belong to
+// it, so it does not mark the replacement exhausted.
+func TestAutoSwitchRefusalAfterRemovingTheSelectedAccountKeepsTheReplacement(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	rig := newAutoSwitchRig(t, app, string(provider.Claude), "c", "b", "a")
+	thread := autoSwitchThread("running", string(provider.Claude), "claude-opus-5")
+	putAccountSession(t, app, thread, "a")
+	openClaudeTurn(t, app, thread.ID)
+
+	if err := app.RemoveProviderAccount(string(provider.Claude), "a"); err != nil {
+		t.Fatal(err)
+	}
+	replacement := rig.selected()
+	if replacement == "" || replacement == "a" {
+		t.Fatalf("selected = %q after removing a, want a replacement", replacement)
+	}
+	if sess, _ := app.sessionManager().get(thread.ID); sess.CredentialAccountID != replacement {
+		t.Fatalf("running session account = %q, want %s", sess.CredentialAccountID, replacement)
+	}
+	rig.reading("b", usageLimit("session", 5, time.Hour))
+	rig.reading("c", usageLimit("session", 5, time.Hour))
+	rig.start(t)
+
+	app.dispatchTurnObservers(thread.ID, usageLimitRefusal(thread.ID))
+	holdsFor(t, "the refusal moved the selection off the replacement", func() bool {
+		return len(rig.reported()) == 0 && rig.selected() == replacement
+	})
+	idle := autoSwitchThread("idle", string(provider.Claude), "claude-opus-5")
+	putAccountSession(t, app, idle, replacement)
+	if err := app.ensureProviderAccountReadyForSendLocked(idle); err != nil {
+		t.Fatal(err)
+	}
+	if got := rig.selected(); got != replacement {
+		t.Fatalf("selected = %q after a send, want %s: the refusal was charged to it", got, replacement)
+	}
+}
+
+// A change to Codex's saved accounts says nothing about Claude's logins, so
+// a Claude account found to need a sign-in is not tried again after it.
+func TestAutoSwitchCodexListingChangeKeepsClaudeNeedsLogin(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	rig := newAutoSwitchRig(t, app, string(provider.Claude), "a", "b", "c")
+	rig.settings(t, map[string]any{"accountAutoSwitchStrategy": "account-order"})
+	var attemptsMu sync.Mutex
+	attempts := map[string]int{}
+	app.accountSwitcherOnce.Do(func() {
+		deps := app.accountSwitchDeps()
+		inner := deps.Switch
+		deps.Switch = func(providerName, accountID string) (bool, error) {
+			attemptsMu.Lock()
+			attempts[accountID]++
+			attemptsMu.Unlock()
+			return inner(providerName, accountID)
+		}
+		app.accountSwitcher = accountswitch.New(deps)
+	})
+	slot, err := providerCredentialsForTest(t, app).AccountCredentialPath(string(provider.Claude), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(slot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.providerAccounts.MetadataStoreForTest().Add(provideraccounts.Account{
+		ID: "x", Provider: string(provider.Codex), Email: "x@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rig.reading("a", usageLimit("session", 5, time.Hour))
+	rig.reading("b", usageLimit("session", 5, time.Hour))
+	rig.reading("c", usageLimit("session", 100, time.Hour))
+	first := autoSwitchThread("first", string(provider.Claude), "claude-opus-5")
+	putAccountSession(t, app, first, "c")
+	if err := app.ensureProviderAccountReadyForSendLocked(first); err != nil {
+		t.Fatal(err)
+	}
+	if got := rig.selected(); got != "b" {
+		t.Fatalf("selected = %q, want b after a needed a sign-in", got)
+	}
+
+	if err := app.SetProviderAccountAutoSwitch(string(provider.Codex), "x", false); err != nil {
+		t.Fatal(err)
+	}
+	rig.reading("b", usageLimit("session", 100, time.Hour))
+	second := autoSwitchThread("second", string(provider.Claude), "claude-opus-5")
+	putAccountSession(t, app, second, "b")
+	if err := app.ensureProviderAccountReadyForSendLocked(second); err != nil {
+		t.Fatal(err)
+	}
+	attemptsMu.Lock()
+	defer attemptsMu.Unlock()
+	if attempts["a"] != 1 {
+		t.Fatalf("switch attempts on a = %d, want 1: its sign-in result outlives a Codex change", attempts["a"])
+	}
+}

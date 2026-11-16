@@ -40,48 +40,66 @@ func consumeTransferredDraft(tx *sql.Tx, transfer ThreadTransfer) error {
 	return err
 }
 
+// DraftMove is what MoveThreadDraft wrote on each thread.
+type DraftMove struct {
+	Destination DraftWrite
+	Source      DraftWrite
+}
+
 // MoveThreadDraft publishes the destination and consumes the exact source in
-// one transaction. Both threads must still be unsent chat/plan drafts.
-func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) error {
+// one transaction. Both threads must still be unsent chat/plan drafts. It
+// reports the write on each: the destination gains the draft, the source
+// loses it.
+func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftMove, error) {
 	if expected.ThreadID == "" || destination.ThreadID == "" || expected.ThreadID == destination.ThreadID {
-		return errors.New("draft move requires two different threads")
+		return DraftMove{}, errors.New("draft move requires two different threads")
 	}
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
-		return err
+		return DraftMove{}, err
 	}
 	defer release()
 	defer tx.Rollback()
 	for _, id := range []string{expected.ThreadID, destination.ThreadID} {
 		if err := checkThreadTransferAccess(tx, id); err != nil {
-			return err
+			return DraftMove{}, err
 		}
 		if err := checkUnsentDraft(tx, id); err != nil {
-			return err
+			return DraftMove{}, err
 		}
 	}
 	current, _, err := getThreadDraft(tx, expected.ThreadID)
 	if err != nil {
-		return err
+		return DraftMove{}, err
 	}
 	current.UpdatedAt, expected.UpdatedAt = 0, 0
 	if current != expected {
-		return errors.New("The draft changed while switching projects. Try again.")
+		return DraftMove{}, errors.New("The draft changed while switching projects. Try again.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	target, _, err := getThreadDraft(tx, destination.ThreadID)
 	if err != nil {
-		return err
+		return DraftMove{}, err
 	}
 	if target.Content != "" || target.Attachments != "[]" || target.TerminalChips != "[]" || target.PendingPlanImplementation != "" {
-		return errors.New("The destination already contains a draft.")
+		return DraftMove{}, errors.New("The destination already contains a draft.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
-	if _, err = upsertThreadDraft(tx, destination); err != nil {
-		return err
+	sourceListed, err := threadListed(tx, expected.ThreadID)
+	if err != nil {
+		return DraftMove{}, err
+	}
+	var move DraftMove
+	if move.Destination, err = upsertThreadDraft(tx, destination); err != nil {
+		return DraftMove{}, err
 	}
 	if _, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, expected.ThreadID); err != nil {
-		return err
+		return DraftMove{}, err
 	}
-	return tx.Commit()
+	sourceStillListed, err := threadListed(tx, expected.ThreadID)
+	if err != nil {
+		return DraftMove{}, err
+	}
+	move.Source = DraftWrite{Changed: true, Listing: listingChange(sourceListed, sourceStillListed)}
+	return move, tx.Commit()
 }
 
 // CheckUnsentDraft rejects history, accepted sends, and provider sessions, even

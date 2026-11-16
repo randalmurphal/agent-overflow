@@ -17,7 +17,8 @@ import {
   type GitActionCtx,
   type RemoveWorktreeCtx,
 } from './gitActions';
-import type { GitStatus, WorkspaceRef } from '../../types/git';
+import type { GitActionOutcome, GitStatus, WorkspaceRef } from '../../types/git';
+import { DisconnectedError } from '../../transport/wsClient';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -141,6 +142,33 @@ describe('runPushAction', () => {
     expect(c.reportError).toHaveBeenCalledWith('Push failed: network down', failure);
   });
 
+  it('reports a push whose answer was lost as pushed once the computer says it landed', async () => {
+    const push = setBindingMock('GitPush', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+      state: 'succeeded',
+      result: { action: 'push' },
+    } as GitActionOutcome));
+    const c = ctx();
+    await runPushAction(c);
+    expect(c.reportError).not.toHaveBeenCalled();
+    expect(c.refreshStatus).toHaveBeenCalledTimes(1);
+    expect(outcome).toHaveBeenCalledWith(c.workspace, 'push', push.mock.calls[0]![1]);
+  });
+
+  it('says a lost push may have landed while the computer cannot be asked', async () => {
+    setBindingMock('GitPush', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    setBindingMock('GetGitActionOutcome', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    const c = ctx();
+    await runPushAction(c);
+    expect(c.reportError).toHaveBeenCalledWith(expect.stringContaining('may have landed'), expect.any(DisconnectedError));
+  });
+
   it('refreshes status on success', async () => {
     setBindingMock('GitPush', async () => ({}));
     const c = ctx();
@@ -159,6 +187,20 @@ describe('runPullAction', () => {
     await runPullAction(c);
     expect(c.reportError).toHaveBeenCalledWith('Pull failed: conflict');
     expect(c.refreshStatus).not.toHaveBeenCalled();
+  });
+
+  it('reports a pull whose answer was lost as pulled once the computer says it landed', async () => {
+    const pull = setBindingMock('GitPull', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+      state: 'succeeded',
+      result: { action: 'pull' },
+    } as GitActionOutcome));
+    const c = ctx();
+    await runPullAction(c);
+    expect(c.reportError).not.toHaveBeenCalled();
+    expect(outcome).toHaveBeenCalledWith(c.workspace, 'pull', pull.mock.calls[0]![1]);
   });
 
   it('surfaces a thrown error via errString', async () => {

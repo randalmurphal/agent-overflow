@@ -114,7 +114,7 @@ func TestProductionGraphQLOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PRTick", "ReactionTarget", "AddReaction", "RemoveReaction", "MRNoteReactions", "PipelineJobs", "SuggestionFile", "PRManage"} {
+	for _, want := range []string{"PRTick", "ReactionTarget", "AddReaction", "RemoveReaction", "MRNoteReactions", "PipelineJobs", "SuggestionFile", "PRManageChecks"} {
 		if !slices.Contains(ops, want) {
 			t.Errorf("the source scan missed %s: %v", want, ops)
 		}

@@ -1,21 +1,27 @@
 package mcpapp
 
-import "testing"
+import (
+	"testing"
+
+	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider/claude"
+)
 
 // A Claude MCP sign-in is a session process against the user's home, so it
 // carries the transcript retention a thread's session does.
 func TestClaudeWorkspaceAuthCarriesCleanupPeriodDays(t *testing.T) {
 	// The period is resolved for the sign-in's own workspace.
-	service := New(Deps{ClaudeCleanupPeriodDays: func(workDir string) int {
+	service := New(Deps{Reaper: procutiltest.Reaper(), ClaudeRetention: func(workDir string) claude.Retention {
 		if workDir != "/repo" {
-			return 0
+			return claude.UserHomeRetention(0)
 		}
-		return 90
+		return claude.UserHomeRetention(90)
 	}})
-	if got := service.claudeWorkspaceAuthConfig("/repo").CleanupPeriodDays; got != 90 {
-		t.Fatalf("CleanupPeriodDays = %d, want 90", got)
+	if got := service.claudeWorkspaceAuthConfig("/repo").Retention; got != claude.UserHomeRetention(90) {
+		t.Fatalf("Retention = %+v, want 90 days", got)
 	}
-	if got := New(Deps{}).claudeWorkspaceAuthConfig("/repo").CleanupPeriodDays; got != 0 {
-		t.Fatalf("CleanupPeriodDays with no dependency = %d, want 0", got)
+	// With no dependency the sign-in gives no answer, which refuses it.
+	if got := New(Deps{Reaper: procutiltest.Reaper()}).claudeWorkspaceAuthConfig("/repo").Retention; got != (claude.Retention{}) {
+		t.Fatalf("Retention with no dependency = %+v, want none", got)
 	}
 }

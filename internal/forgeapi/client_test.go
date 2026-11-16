@@ -274,6 +274,35 @@ func TestPages(t *testing.T) {
 	}
 }
 
+// GitLab builds its Link header from the instance's configured host and
+// port and the scheme Rails saw, which can differ from the API base glab
+// names (a TLS proxy, an api_host): its X-Next-Page ("The index of the
+// next page") is followed on the client's own base instead.
+func TestPagesFollowXNextPageBeforeALinkOffTheBase(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page == 0 {
+			page = 1
+		}
+		if page < 3 {
+			w.Header().Set("Link", fmt.Sprintf(`<http://gitlab.internal:8080/api/v4/projects/1/items?page=%d&per_page=1>; rel="next"`, page+1))
+			w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		}
+		_, _ = fmt.Fprintf(w, "[%d]", page)
+	}))
+	defer srv.Close()
+	s, _ := liveService(t, &testSource{tokens: []string{testSecret}}, srv)
+	var bodies []string
+	err := s.GitLab("gitlab.com").Pages(t.Context(), Request{Path: "projects/1/items", Query: url.Values{"per_page": {"1"}}}, func(r *Response) (bool, error) {
+		bodies = append(bodies, string(r.Body))
+		return true, nil
+	})
+	if err != nil || strings.Join(bodies, "") != "[1][2][3]" {
+		t.Fatalf("pages = %v, %v", bodies, err)
+	}
+}
+
 func TestUnreachableForgeIsTransientAndRedacted(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.NotFoundHandler())

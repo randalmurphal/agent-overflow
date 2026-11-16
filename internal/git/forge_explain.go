@@ -159,19 +159,28 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var kept *BranchKeptError
 	var refused *forgeapi.RefusalError
 	var moved *HeadMovedError
+	var pending *PendingDraftNotesError
 	var gone *ReplyThreadGoneError
 	var elsewhere *CommentNotOnPRError
+	var threadElsewhere *ThreadNotOnPRError
 	var notApplied *SuggestionNotAppliedError
 	var changed *SuggestionChangedError
+	var cannot *ViewerCannotError
 	switch {
+	case errors.As(err, &cannot):
+		return wrap(ForgeErrorForbidden, cannot.Reason)
 	case errors.As(err, &changed):
 		return wrap(ForgeErrorSuggestionChanged, "The suggestion changed since it was loaded. Reload the pull request.")
 	case errors.As(err, &notApplied):
 		return wrap(ForgeErrorRefused, fmt.Sprintf("The suggestion was not applied: %s.", notApplied.Reason))
 	case errors.As(err, &elsewhere):
 		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
+	case errors.As(err, &threadElsewhere):
+		return wrap(ForgeErrorNotFound, fmt.Sprintf("That thread is not on %s, so it was not changed.", name))
 	case errors.As(err, &moved):
 		return wrap(ForgeErrorStaleHead, "The branch moved after you loaded this. Reload and try again.")
+	case errors.As(err, &pending):
+		return wrap(ForgeErrorRefused, fmt.Sprintf("You have %d pending comments on %s that this app did not write, and sending would publish them with this review. Submit or discard them on %s, then send again.", pending.Count, name, labels.name))
 	case errors.As(err, &gone):
 		return wrap(ForgeErrorNotFound, fmt.Sprintf("The thread this reply answers is no longer on %s, so the reply was not posted.", name))
 	case errors.As(err, &kept):
@@ -188,6 +197,11 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 		return wrap(refusalSentence(refused, labels, ref, action, name))
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
 		return wrap(ForgeErrorTransient, fmt.Sprintf("%s could not be reached. Check the connection and try again.", labels.host(ref.Host)))
+	}
+	if sentence, ok := tokenRefusalSentence(err, labels, ref, action, name); ok {
+		return wrap(ForgeErrorForbidden, sentence)
+	}
+	switch {
 	case errors.As(err, &forbidden):
 		if forbidden.Scope != "" {
 			return wrap(ForgeErrorForbidden, fmt.Sprintf("Your %s token lacks the `%s` scope, so the app cannot %s %s. Create a token with that scope and log %s in with it.", labels.host(ref.Host), forbidden.Scope, action, name, labels.binary))
@@ -209,6 +223,63 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 		return wrap(statusKind(status), statusSentence(status, labels, ref, action, name))
 	}
 	return wrap(ForgeErrorForge, fmt.Sprintf("%s did not %s %s: %s", labels.name, action, name, trimSentence(err.Error())))
+}
+
+// tokenRefusalSentence words a refusal of the login's token itself, which
+// the user fixes outside the app, on a read or a write alike: GitHub's
+// single sign-on refusal (X-GitHub-SSO, or the SAML enforcement message),
+// a fine-grained token's ("Resource not accessible by personal access
+// token": a permission it lacks, or a repository where the user is an
+// outside collaborator or not a member, which such a token cannot write
+// to), an organization's token policy ("forbids access via"), and a
+// GraphQL INSUFFICIENT_SCOPES or, on a read, FORBIDDEN answer. ok is
+// false for any other error.
+func tokenRefusalSentence(err error, labels forgeLabelSet, ref RepoReference, action ForgeAction, name string) (string, bool) {
+	var forbidden *forgeapi.ForbiddenError
+	var graphQL *forgeapi.GraphQLError
+	var sso, fineGrained bool
+	var ssoURL, permissions, policy, message string
+	switch {
+	case errors.As(err, &forbidden):
+		sso, ssoURL, fineGrained, permissions, message = forbidden.SSO, forbidden.SSOURL, forbidden.FineGrained(), forbidden.Permissions, forbidden.Message
+		if forbidden.Policy() {
+			policy = forbidden.Message
+		}
+	case errors.As(err, &graphQL):
+		sso, ssoURL, fineGrained = graphQL.SSO, graphQL.SSOURL, graphQL.FineGrained()
+		if len(graphQL.Problems) > 0 {
+			message = graphQL.Problems[0].Message
+		}
+	default:
+		return "", false
+	}
+	host := labels.host(ref.Host)
+	switch {
+	case sso || strings.Contains(message, "SAML enforcement"):
+		fix := "Authorize the token for that organization in your " + labels.name + " settings, then try again."
+		if ssoURL != "" {
+			fix = "Authorize it at " + ssoURL + " (the link expires after an hour), then try again."
+		}
+		return fmt.Sprintf("Your %s token is not authorized for the single sign-on of the organization that owns %s, so the app cannot %s %s. %s", host, ref.Project(), action, name, fix), true
+	case fineGrained:
+		needs := ""
+		if permissions != "" {
+			needs = " (it needs " + permissions + ")"
+		}
+		return fmt.Sprintf("Your %s token is a fine-grained token that cannot %s %s%s. Such a token acts only with the permissions it was given and cannot write where you are an outside collaborator or not a member; log %s in with a token that can.", host, action, name, needs, labels.binary), true
+	case policy != "":
+		return fmt.Sprintf("The organization that owns %s does not accept this token: %s. Log %s in with a token it allows.", ref.Project(), trimSentence(policy), labels.binary), true
+	}
+	if graphQL == nil || !graphQL.Forbidden() {
+		return "", false
+	}
+	if scope := graphQL.MissingScope(); scope != "" {
+		return fmt.Sprintf("Your %s token lacks the `%s` scope, so the app cannot %s %s. Create a token with that scope and log %s in with it.", host, scope, action, name, labels.binary), true
+	}
+	if action != ActionRead {
+		return "", false
+	}
+	return fmt.Sprintf("No access to %s on %s with this login.", ref.Project(), host), true
 }
 
 type forgeLabelSet struct {

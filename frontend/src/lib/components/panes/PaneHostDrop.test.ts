@@ -36,9 +36,11 @@ import {
   beginThreadRowDrag,
   endThreadRowDrag,
   encodeThreadDragPayload,
+  encodeToolDragPayload,
   PANE_REORDER_DRAG_MIME,
   THREAD_ROW_DRAG_MIME,
   threadDragPayloadForEvent,
+  TOOL_PANE_DRAG_MIME,
 } from '../../utils/threadDragPayload';
 
 class QuietResizeObserver {
@@ -69,13 +71,13 @@ describe('PaneHost drag and drop', () => {
     vi.unstubAllGlobals();
   });
 
-  function threadDataTransfer(threadId: string, title = 'Dragged'): DataTransfer {
+  function threadDataTransfer(threadId: string): DataTransfer {
     return {
       types: [THREAD_ROW_DRAG_MIME],
       dropEffect: 'none',
       effectAllowed: 'copy',
       getData: (type: string) => type === THREAD_ROW_DRAG_MIME
-        ? encodeThreadDragPayload({ threadId, title, projectId: 'project-1' })
+        ? encodeThreadDragPayload({ threadId, projectId: 'project-1' })
         : '',
       setData: () => {},
       setDragImage: () => {},
@@ -242,7 +244,7 @@ describe('PaneHost drag and drop', () => {
     // The sidebar's in-flight record, as the source row leaves it. A pane
     // drop must clear it like every other drop target: the row may have
     // unmounted mid-drag, in which case no dragend ever will.
-    beginThreadRowDrag({ threadId: dragged.id, title: dragged.title, projectId: dragged.projectId ?? '' });
+    beginThreadRowDrag({ threadId: dragged.id, projectId: dragged.projectId ?? '' });
     await dispatchDrag(pane('right'), 'dragover', dataTransfer, 550);
     await dispatchDrag(pane('right'), 'drop', dataTransfer, 550);
 
@@ -536,6 +538,81 @@ describe('PaneHost drag and drop', () => {
     expect(shield()).toBeNull();
   });
 
+  // A native browser view paints above the page, so a drag that goes
+  // straight from the sidebar onto one crosses no element of the strip and
+  // delivers it no dragover. The shield is up from the drag's start.
+  for (const [what, type, data] of [
+    ['a thread row', THREAD_ROW_DRAG_MIME, 'dragged-thread'],
+    ['a tool', TOOL_PANE_DRAG_MIME, encodeToolDragPayload({ kind: 'pulls' })],
+  ] as const) {
+    it(`covers the panes from the moment ${what} starts dragging outside the strip, until the drag ends`, async () => {
+      const { rendered, pane } = renderTwoPanes();
+      const shield = () => rendered.queryByTestId('pane-drag-shield');
+      const sidebar = document.createElement('div');
+      document.body.append(sidebar);
+      const dataTransfer = paneDataTransfer();
+      sidebar.addEventListener('dragstart', (event) => (event as DragEvent).dataTransfer?.setData(type, data));
+      const start = new Event('dragstart', { bubbles: true, cancelable: true }) as DragEvent;
+      Object.defineProperty(start, 'dataTransfer', { value: dataTransfer });
+      sidebar.dispatchEvent(start);
+      await tick();
+      const raised = shield();
+      expect(raised).not.toBeNull();
+      expect(airspaceSurfaces()).toEqual([raised]);
+
+      // Over the strip and out again: the drag is still in flight, so the
+      // shield stays while the preview goes.
+      await dispatchDrag(pane('right'), 'dragover', dataTransfer, 900);
+      expect(rendered.getByTestId('pane-drop-seam')).toBeTruthy();
+      await fireEvent.dragLeave(raised!);
+      await tick();
+      expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
+      expect(shield()).toBe(raised);
+
+      sidebar.dispatchEvent(new Event('dragend', { bubbles: true }));
+      await tick();
+      expect(shield()).toBeNull();
+      expect(airspaceSurfaces()).toEqual([]);
+      sidebar.remove();
+    });
+  }
+
+  it('ends a started drag that ended unheard on a pointer event once its session ran, or the next drag that places nothing', async () => {
+    const { rendered, pane } = renderTwoPanes();
+    const shield = () => rendered.queryByTestId('pane-drag-shield');
+    const sidebar = document.createElement('div');
+    document.body.append(sidebar);
+    const start = (): void => {
+      const event = new Event('dragstart', { bubbles: true, cancelable: true }) as DragEvent;
+      Object.defineProperty(event, 'dataTransfer', { value: threadDataTransfer('t') });
+      sidebar.dispatchEvent(event);
+    };
+    for (const type of ['pointermove', 'pointerdown']) {
+      start();
+      await tick();
+      expect(shield(), type).not.toBeNull();
+      // The engine may start the OS drag after the dragstart: a pointer
+      // event before the session's first event is not the drag's end.
+      sidebar.dispatchEvent(new PointerEvent(type, { bubbles: true }));
+      await tick();
+      expect(shield(), `${type} before the session`).not.toBeNull();
+      sidebar.dispatchEvent(new Event('drag', { bubbles: true }));
+      sidebar.dispatchEvent(new PointerEvent(type, { bubbles: true }));
+      await tick();
+      expect(shield(), type).toBeNull();
+    }
+    start();
+    await tick();
+    const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
+    await dispatchDrag(sidebar, 'dragover', text, 10);
+    await tick();
+    expect(shield()).toBeNull();
+    await dispatchDrag(pane('right'), 'dragover', text, 900);
+    await tick();
+    expect(shield()).toBeNull();
+    sidebar.remove();
+  });
+
   it('raises no shield for a drag that places no pane', async () => {
     const { rendered, pane } = renderTwoPanes();
     const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
@@ -683,24 +760,22 @@ describe('PaneHost drag and drop', () => {
     expect(layoutOrder()).toEqual(['a', 'b', 'c']);
   });
 
-  it('ends the pane drag on a pointer event over the shield, not when the drag leaves it', async () => {
+  it('ends the pane drag on a pointer event, not when the drag leaves the strip', async () => {
     const { rendered, pane, dataTransfer } = await startReorder('a');
     const shield = () => rendered.queryByTestId('pane-drag-shield');
-    const hover = async (): Promise<void> => {
-      await dispatchDrag(pane('b'), 'dragover', dataTransfer, 900);
-      await tick();
-      expect(shield()).not.toBeNull();
-    };
-    await hover();
+    await tick();
+    expect(shield(), 'up from the drag\'s start').not.toBeNull();
+    await dispatchDrag(pane('b'), 'dragover', dataTransfer, 900);
+    await tick();
     expect(pane('a').className).toContain('opacity-55');
 
-    // The drag left the strip and is still in flight: its pane stays dimmed.
+    // The drag left the strip and is still in flight: its pane stays dimmed
+    // and the shield stays up.
     await fireEvent.dragLeave(shield()!);
     await tick();
-    expect(shield()).toBeNull();
+    expect(shield()).not.toBeNull();
     expect(pane('a').className).toContain('opacity-55');
 
-    await hover();
     await fireEvent.pointerMove(shield()!);
     await tick();
     expect(shield()).toBeNull();
@@ -759,7 +834,7 @@ describe('PaneHost drag and drop', () => {
       effectAllowed: 'copyMove',
       getData: () => '',
     } as unknown as DataTransfer;
-    beginThreadRowDrag({ threadId: dragged.id, title: dragged.title, projectId: dragged.projectId ?? '' });
+    beginThreadRowDrag({ threadId: dragged.id, projectId: dragged.projectId ?? '' });
     try {
       await dispatchDrag(rendered.getByTestId('pane-end-handle'), 'dragover', silent, 950);
       expect(rendered.getByTestId('pane-drop-seam')).toHaveAttribute('data-drop-kind', 'end');

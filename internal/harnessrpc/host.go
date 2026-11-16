@@ -53,8 +53,10 @@ type Host interface {
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error
 	// BroadcastThreadRow re-reads one thread and emits it to connected
-	// clients as a full row. The seeder writes history behind the store,
-	// which changes derived row columns (IsDraft) no store write announces.
+	// clients, as `listed` when the row now belongs in the sidebar. The
+	// seeder writes history behind the store, which changes derived row
+	// columns (IsDraft) and lists the thread, and no store write announces
+	// either.
 	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
 	DeleteProject(projectID string) error
@@ -65,6 +67,12 @@ type Host interface {
 	// ResetForgeCaches forgets what the forge adapters remember of each
 	// host and project, which the next fixture can contradict.
 	ResetForgeCaches()
+	// ResetProviderUsage forgets the cached usage readings, the turn
+	// activity that paces their polling and the server holds.
+	ResetProviderUsage()
+	// CancelProviderLogins ends every provider sign-in and leaves each
+	// provider idle.
+	CancelProviderLogins()
 	// RunBackgroundFetchPass runs one pass of the unattended fetch cadence,
 	// which an isolated boot never starts.
 	RunBackgroundFetchPass(context.Context)

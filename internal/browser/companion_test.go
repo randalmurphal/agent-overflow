@@ -57,6 +57,40 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 	}
 }
 
+// A client orders snapshots by Seq, because they are published after the
+// lock and calls answer with them: every snapshot, of any thread, takes the
+// next number, including ones read concurrently.
+func TestCompanionStateSnapshotsAreNumberedInReadOrder(t *testing.T) {
+	m := &Manager{
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{}}},
+		sessions: map[string]SessionInfo{"a": {}, "b": {}},
+	}
+	first := m.threadState("a")
+	second := m.threadState("b")
+	third := m.threadState("a")
+	if first.Seq == 0 || first.Seq >= second.Seq || second.Seq >= third.Seq {
+		t.Fatalf("Seq order %d, %d, %d", first.Seq, second.Seq, third.Seq)
+	}
+	var wg sync.WaitGroup
+	seen := make(chan uint64, 64)
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seen <- m.threadState("a").Seq
+		}()
+	}
+	wg.Wait()
+	close(seen)
+	unique := make(map[uint64]bool, 64)
+	for seq := range seen {
+		if seq <= third.Seq || unique[seq] {
+			t.Fatalf("concurrent snapshot Seq %d repeats or precedes %d", seq, third.Seq)
+		}
+		unique[seq] = true
+	}
+}
+
 func TestCompanionStateKeepsTabOrderAndUsesExplicitActivePage(t *testing.T) {
 	first := &managedPage{id: "first", owner: "thread", createdAt: 1}
 	first.info = PageInfo{ID: first.id, URL: "https://first.test", Title: "First"}

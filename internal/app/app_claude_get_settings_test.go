@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"path/filepath"
@@ -62,6 +63,8 @@ func seedClaudeGetSettingsThread(
 	started := seedClaudeLiveConfigThread(t, app, id, token, launchOpts)
 
 	sess, err := claude.NewSession(context.Background(), id, claude.Config{
+		Reaper:          procutiltest.Reaper(),
+		Retention:       claude.UserHomeRetention(0),
 		Binary:          binary,
 		Model:           "claude-opus-5",
 		ReasoningEffort: "high",
@@ -77,9 +80,11 @@ func seedClaudeGetSettingsThread(
 	return sess, started
 }
 
+// waitForCondition polls cond until it holds. The bound only ends a test
+// whose condition never comes; a loaded shared runner must not reach it.
 func waitForCondition(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

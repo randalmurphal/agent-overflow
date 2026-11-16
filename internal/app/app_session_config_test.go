@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"fmt"
@@ -267,6 +268,7 @@ done
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
 	cfg := codex.ConfigFromOptions(launchOpts)
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.Binary = scriptPath
 	sess, err := codex.NewSession(context.Background(), thread.ID, cfg, func(provider.ProviderEvent) {})
 	if err != nil {

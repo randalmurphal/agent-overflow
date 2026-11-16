@@ -951,7 +951,7 @@ waves:
   device label/platform, deriving the device ID from its session. It cannot
   rename another device or change keys/grants. Renaming the host itself
   uses `SetDeviceName` and requires `access:admin`.
-  `ReadReviewDiff`, `ReadReviewDiffPacked` and `ReleaseReviewDiff` act only on a review-diff handle
+  `ReadReviewDiff` and `ReleaseReviewDiff` act only on a review-diff handle
   the calling connection opened. The handle records the scope its `Open*`
   method required (`files:read`, `git:operate` or `threads:read`), and every
   read requires that scope again, so a session narrowed after the open

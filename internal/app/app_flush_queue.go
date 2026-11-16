@@ -256,21 +256,17 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 	}
 }
 
-func (a *App) clearFlushDispatchForRollback(threadID string) {
-	// The rollback is deleting the history these messages were queued
-	// against, so they are being thrown away rather than deferred: their
-	// durable rows go with them, or the next boot restores messages the
-	// user's revert already discarded.
+// dropFlushQueue throws away the thread's queued messages that have left
+// triage for the dispatch worker, durable rows included: a rollback deleting
+// the history they were queued against, and a teardown dropping the queue.
+// A surviving row would make the next boot restore a message the user's
+// revert or Stop discarded, and a surviving batch would be dispatched to the
+// next session. The caller clears triage's own queue. It returns the
+// batches it took from the worker, for a caller that must also retire the
+// rows a requeued message still has (QueuedFlushItem.StaleUserItemID).
+func (a *App) dropFlushQueue(threadID string) []triage.QueuedFlushItem {
 	a.dropDurableFlushQueue(threadID)
-	a.flushDispatch.mu.Lock()
-	a.ensureFlushDispatchMapsLocked()
-	a.flushDispatch.generation[threadID]++
-	delete(a.flushDispatch.queues, threadID)
-	delete(a.flushDispatch.current, threadID)
-	delete(a.flushDispatch.dispatching, threadID)
-	delete(a.flushDispatch.inflightItems, threadID)
-	a.markSendsPendingDirty(threadID)
-	a.flushDispatch.mu.Unlock()
+	return a.drainFlushDispatchForSessionEnd(threadID)
 }
 
 func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFlushItem {
@@ -511,6 +507,9 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 	if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 		return
 	}
+	if !a.ensureSessionForFlushLocked(threadID, items) {
+		return
+	}
 
 	groups := a.groupFlushDispatch(threadID, items)
 	for i, group := range groups {
@@ -522,7 +521,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			// Older clients admitted empty rows. They have no input to retry
 			// or restore, and must not block the meaningful tail of the queue.
 			a.noteFlushDispatchGroupSettled(threadID, group)
-			settleFlushGroup(group)
+			a.settleFlushGroup(threadID, group)
 			continue
 		}
 		if err != nil {
@@ -564,9 +563,69 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		// other. The shared settlement is exactly-once if those paths race, and
 		// every member of a joined group settles on the one write that carried
 		// it.
-		settleFlushGroup(group)
+		a.settleFlushGroup(threadID, group)
 	}
 	a.emitQueueStateChanged(threadID)
+}
+
+// ensureSessionForFlushLocked starts the thread's session for a batch queued
+// while it had none: a message accepted while the thread was stopped (its
+// session died, its worktree was removed, it was reconnecting) is sent the way
+// a direct send is, by starting the session. When the session cannot start,
+// the batch goes back to the composer with the reason on the thread, so the
+// message is never left queued with nothing to send it. It reports whether a
+// session is running, or the batch has nothing to send (dispatchFlushGroup
+// settles empty items without a session). Caller holds the thread action lock.
+func (a *App) ensureSessionForFlushLocked(threadID string, items []triage.QueuedFlushItem) bool {
+	if _, live := a.sessionManager().get(threadID); live || !flushBatchCarriesInput(items) {
+		return true
+	}
+	err := a.startSession(a.lifeCtx(), threadID)
+	if err == nil {
+		if _, live := a.sessionManager().get(threadID); live {
+			return true
+		}
+		err = fmt.Errorf("no session is running")
+	}
+	if errors.Is(err, ErrShuttingDown) || a.lifeCtx().Err() != nil {
+		// The durable rows stay for the next boot's restore.
+		return false
+	}
+	log.Printf("flush dispatch: thread=%s items=[%s]: start session: %v", threadID, flushGroupIDs(items), err)
+	restored := make([]triage.UnconfirmedFlushItem, 0, len(items))
+	for _, item := range items {
+		restored = append(restored, triage.UnconfirmedFlushItem{
+			QueueItemID:     item.ID,
+			Message:         item.Message,
+			Payload:         append(json.RawMessage(nil), item.Payload...),
+			EnqueuedAt:      item.EnqueuedAt,
+			StaleUserItemID: item.StaleUserItemID,
+			Settlement:      item.Settlement,
+		})
+	}
+	// The batch leaves the worker before the composer gets it, as a session
+	// death drains the worker before its restore, so no read finds the
+	// message queued and in the composer at once.
+	a.noteFlushDispatchGroupSettled(threadID, items)
+	a.restoreFlushItemsToDraftLocked(threadID, restored, queueRestoredReasonSessionStartFailed)
+	a.emitErrorToThread(threadID, "Queued messages could not be sent and are back in the composer: "+err.Error())
+	a.emitQueueStateChanged(threadID)
+	return false
+}
+
+// flushBatchCarriesInput reports whether any item has input to send. An item
+// whose payload does not decode counts, so its dispatch reports the error.
+func flushBatchCarriesInput(items []triage.QueuedFlushItem) bool {
+	for _, item := range items {
+		var payload flushQueuePayload
+		if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) != nil {
+			return true
+		}
+		if validateUserMessageInput(item.Message, payload.AttachmentIDs, payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Publish the handoff in the same critical section as queue snapshots.
@@ -587,7 +646,19 @@ func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushIt
 	a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{ThreadID: threadID, Items: items})
 }
 
-func settleFlushGroup(group []triage.QueuedFlushItem) {
+// settleFlushGroup ends a group the provider write carried, or that had
+// nothing to send: every member's durable queue row goes in one statement
+// (store.DeleteDispatchedFlushQueueItems), so a joined message never keeps
+// some members' rows and loses the others', then each member's injector
+// bookkeeping runs.
+func (a *App) settleFlushGroup(threadID string, group []triage.QueuedFlushItem) {
+	ids := make([]string, 0, len(group))
+	for _, item := range group {
+		ids = append(ids, item.ID)
+	}
+	if err := a.store.DeleteDispatchedFlushQueueItems(ids); err != nil {
+		log.Printf("flush queue: delete durable rows [%s] of %s: %v", strings.Join(ids, " "), threadID, err)
+	}
 	for _, item := range group {
 		item.Settlement.Settle()
 	}
@@ -948,7 +1019,9 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
-			a.triage.RegisterPendingFlushSendWithExpectation(
+			// The message is now the fresh turn's input, which a Stop does
+			// not discard, so the Stop does not send it again.
+			a.triage.RegisterPendingFlushTurnStartWithExpectation(
 				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
 			sess.Liveness.BumpActivity(time.Now())
 			if sendErr := sess.Codex.Send(context.Background(), joined.providerContent, sendOpts); sendErr != nil {
@@ -1153,21 +1226,6 @@ type injectedQueueOptions struct {
 	originThread *usermessage.OriginThread
 }
 
-// flushQueueSettlement runs injector bookkeeping once after dispatch or draft
-// restoration. Async answers retain their durable queue row until the provider
-// echoes consumption; restoration retires it atomically with the draft write.
-// A failed dispatch cleanup keeps its recovery record and is logged.
-func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triage.FlushSettlement {
-	return triage.NewFlushSettlement(func() {
-		if err := a.store.DeleteDispatchedFlushQueueItem(id); err != nil {
-			log.Printf("flush queue: delete durable row %s/%s: %v", threadID, id, err)
-		}
-		if onDurable != nil {
-			onDurable()
-		}
-	})
-}
-
 // dropDurableFlushQueue deletes every durable queue row of a thread. Its
 // callers are the WHOLESALE DROPS — a teardown whose triage cleanup discards
 // the in-memory queue without restoring it, and the Codex rollback purge —
@@ -1341,7 +1399,11 @@ func (a *App) registerQueueItem(
 		Message:    message,
 		Payload:    payloadBytes,
 		EnqueuedAt: enqueuedAt,
-		Settlement: a.flushQueueSettlement(threadID, id, injected.onDurable),
+		// The durable row leaves with the dispatch that carries the message
+		// (settleFlushGroup) or the restore that takes it back
+		// (store.RestoreFlushQueueToDraft); the settlement is the injector's
+		// bookkeeping, once after either.
+		Settlement: triage.NewFlushSettlement(injected.onDurable),
 	})
 
 	wireItem := QueuedItem{
@@ -1363,9 +1425,9 @@ func (a *App) registerQueueItem(
 		}
 	}
 	a.emitQueueStateChanged(threadID)
-	if _, ok := a.sessionManager().get(threadID); ok {
-		a.triage.FlushQueuedItems(threadID)
-	}
+	// With no session the dispatch starts one (ensureSessionForFlushLocked),
+	// as a direct send does, so the message never waits for a later send.
+	a.triage.FlushQueuedItems(threadID)
 	return wireItem, nil
 }
 

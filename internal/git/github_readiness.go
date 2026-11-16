@@ -15,14 +15,28 @@ import (
 
 // githubPullMergeRaw is the merge half of a PR's detail selection.
 type githubPullMergeRaw struct {
-	Merged                    bool            `json:"merged"`
-	MergedAt                  string          `json:"mergedAt"`
-	MergedBy                  *githubActorRaw `json:"mergedBy"`
-	ClosedAt                  string          `json:"closedAt"`
-	ViewerDidAuthor           bool            `json:"viewerDidAuthor"`
-	IsCrossRepository         bool            `json:"isCrossRepository"`
-	ViewerCanEnableAutoMerge  bool            `json:"viewerCanEnableAutoMerge"`
-	ViewerCanDisableAutoMerge bool            `json:"viewerCanDisableAutoMerge"`
+	Merged                bool            `json:"merged"`
+	MergedAt              string          `json:"mergedAt"`
+	MergedBy              *githubActorRaw `json:"mergedBy"`
+	ClosedAt              string          `json:"closedAt"`
+	ViewerDidAuthor       bool            `json:"viewerDidAuthor"`
+	IsCrossRepository     bool            `json:"isCrossRepository"`
+	ViewerCanUpdateBranch bool            `json:"viewerCanUpdateBranch"`
+	IsMergeQueueEnabled   bool            `json:"isMergeQueueEnabled"`
+	IsInMergeQueue        bool            `json:"isInMergeQueue"`
+	MergeQueueEntry       *struct {
+		Position   int             `json:"position"`
+		EnqueuedAt string          `json:"enqueuedAt"`
+		Enqueuer   *githubActorRaw `json:"enqueuer"`
+	} `json:"mergeQueueEntry"`
+	MergeQueue *struct {
+		Entries struct {
+			TotalCount int `json:"totalCount"`
+		} `json:"entries"`
+	} `json:"mergeQueue"`
+	MaintainerCanModify       bool `json:"maintainerCanModify"`
+	ViewerCanEnableAutoMerge  bool `json:"viewerCanEnableAutoMerge"`
+	ViewerCanDisableAutoMerge bool `json:"viewerCanDisableAutoMerge"`
 	AutoMergeRequest          *struct {
 		EnabledAt   string          `json:"enabledAt"`
 		MergeMethod string          `json:"mergeMethod"`
@@ -139,6 +153,12 @@ type githubMergeInputs struct {
 	pull     *githubPullRaw
 	repo     githubRepositoryMergeRaw
 	contexts []githubContextRaw
+	// checksUnknown is set when the read left check runs out
+	// (githubPartCheckRuns): the contexts are the status contexts alone.
+	checksUnknown bool
+	// manageUnknown is set when the read left the management fields out
+	// (githubPartManage), viewerCanUpdate with them.
+	manageUnknown bool
 }
 
 // githubBaseRules is the base branch's merge requirements, protection and
@@ -354,7 +374,9 @@ func (in githubMergeInputs) conditions(status string) (blockers, settled []Merge
 // checksCondition is the required checks' row: a blocker naming the
 // required contexts that failed or have not passed yet (an expected one
 // that has not reported counts as pending), else a settled row. present is
-// false when the head has no checks and none are required.
+// false when the head has no checks and none are required. Without check
+// runs only a failed or pending status context is known, so the row says
+// nothing else.
 func (in githubMergeInputs) checksCondition(rules githubBaseRules) (row MergeBlocker, ok, present bool) {
 	var failed, pending []string
 	var url string
@@ -384,7 +406,7 @@ func (in githubMergeInputs) checksCondition(rules githubBaseRules) (row MergeBlo
 		}
 	}
 	for _, name := range rules.requiredChecks {
-		if !reported[name] && !slices.Contains(pending, name) {
+		if !in.checksUnknown && !reported[name] && !slices.Contains(pending, name) {
 			pending = append(pending, name)
 		}
 	}
@@ -400,7 +422,7 @@ func (in githubMergeInputs) checksCondition(rules githubBaseRules) (row MergeBlo
 		}
 		return MergeBlocker{Kind: BlockerChecks, Text: text, Detail: nameList(append(failed, pending...)), URL: url}, false, true
 	}
-	if len(in.contexts) == 0 {
+	if len(in.contexts) == 0 || in.checksUnknown {
 		return MergeBlocker{}, false, false
 	}
 	row = MergeBlocker{Kind: BlockerChecks, Text: "Checks passed"}
@@ -461,7 +483,79 @@ func (in githubMergeInputs) options(readiness MergeReadiness) MergeOptions {
 			out.ViewerApproved = true
 		}
 	}
+	if !open {
+		return out
+	}
+	if pull.IsMergeQueueEnabled {
+		in.queue(&out)
+	}
+	// GitHub answers whether the viewer may update the branch (false too
+	// while it is up to date, when no control shows): a fork's PR whose
+	// author turned maintainer edits off is the author's alone.
+	out.ViewerCanUpdateBranch = pull.ViewerCanUpdateBranch
+	switch {
+	case pull.ViewerCanUpdateBranch:
+	case pull.IsCrossRepository && !pull.MaintainerCanModify && !pull.ViewerDidAuthor:
+		out.CannotUpdateBranchReason = "The author's fork does not allow edits from maintainers, so only the author can update this branch."
+	default:
+		out.CannotUpdateBranchReason = "GitHub does not let you update this branch."
+	}
+	// Withdrawing an approval dismisses it, which GitHub allows with write
+	// access (a protected base may narrow it further, which a non-admin
+	// cannot read); a null permission is unknown and does not hide it.
+	if out.ViewerApproved {
+		out.ViewerCanUnapprove = repo.ViewerPermission == "" || githubRoleAtLeast(repo.ViewerPermission, "WRITE")
+		if !out.ViewerCanUnapprove {
+			out.CannotUnapproveReason = "Withdrawing an approval dismisses it, which needs write access to this repository."
+		}
+	}
+	// Marking a draft ready updates the pull request: GitHub's
+	// viewerCanUpdate, read with the management fields; without them, the
+	// author and those who may merge.
+	if pull.IsDraft {
+		out.ViewerCanMarkReady = pull.ViewerCanUpdate
+		if in.manageUnknown {
+			out.ViewerCanMarkReady = out.ViewerCanMerge || pull.ViewerDidAuthor
+		}
+		if !out.ViewerCanMarkReady {
+			out.CannotMarkReadyReason = "Only the author and people with write access can mark this pull request ready for review."
+		}
+	}
 	return out
+}
+
+// queue fills the options of a base that merges only through its merge
+// queue: the queue's method applies, so no method is offered; the queue
+// handles the head branch, so no delete is offered; auto-merge (join when
+// ready) is GitHub's own answer, viewerCanEnableAutoMerge, whatever the
+// repository's Allow auto-merge. A queued PR reads its entry's position
+// (GitHub's "position of this entry in the queue") and the queue's
+// length; a PR queued at once has no autoMergeRequest, so its entry's
+// enqueuer and time stand as the armed request, which Cancel auto-merge
+// takes out (dequeuePullRequest). Removal is offered to those who may
+// merge, since GitHub's schema has no viewer field for it.
+func (in githubMergeInputs) queue(out *MergeOptions) {
+	pull := in.pull
+	out.Methods = []string{}
+	out.DeleteBranchOffered = false
+	out.AutoMergeAvailable = pull.ViewerCanEnableAutoMerge || out.AutoMerge != nil
+	out.Queue = &MergeQueue{Required: true}
+	entry := pull.MergeQueueEntry
+	if !pull.IsInMergeQueue || entry == nil {
+		return
+	}
+	out.Queue.Queued, out.Queue.Position, out.Queue.CanRemove = true, entry.Position, out.ViewerCanMerge
+	if q := pull.MergeQueue; q != nil {
+		out.Queue.Size = q.Entries.TotalCount
+	}
+	if out.AutoMerge == nil {
+		armed := &AutoMergeRequest{At: entry.EnqueuedAt}
+		if by := entry.Enqueuer; by != nil {
+			armed.ByLogin, armed.ByName = by.Login, by.Name
+		}
+		out.AutoMerge = armed
+	}
+	out.AutoMerge.CanCancel = out.ViewerCanMerge
 }
 
 func (in githubMergeInputs) methods() []string {

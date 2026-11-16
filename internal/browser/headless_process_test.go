@@ -7,12 +7,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -29,6 +32,101 @@ func writeChromiumScript(t *testing.T, body string) string {
 	return mockexec.WriteIn(t, t.TempDir(), "chromium", "#!/bin/sh\n"+body)
 }
 
+// readPIDFile reads a pid a script recorded before printing its endpoint.
+func readPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatalf("%s holds %q: %v", path, body, err)
+	}
+	return pid
+}
+
+// recordingReaper records the groups a launch watched and released.
+type recordingReaper struct {
+	mu       sync.Mutex
+	watched  []int
+	released []int
+}
+
+func (r *recordingReaper) Watch(pgid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.watched = append(r.watched, pgid)
+}
+
+func (r *recordingReaper) Release(pgid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.released = append(r.released, pgid)
+}
+
+func (r *recordingReaper) calls() (watched, released []int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.watched...), append([]int(nil), r.released...)
+}
+
+// The browser's group is watched from its start until stop has ended it.
+func TestAChromiumGroupIsWatchedUntilStopEndsIt(t *testing.T) {
+	reaper := &recordingReaper{}
+	binary := writeChromiumScript(t, "echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\nexec sleep 300\n")
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), reaper, binary, nil, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	pid := process.cmd.Process.Pid
+	if watched, released := reaper.calls(); len(watched) != 1 || watched[0] != pid || len(released) != 0 {
+		t.Fatalf("running: watched %v released %v, want the browser's group %d watched", watched, released, pid)
+	}
+	if err := process.stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if _, released := reaper.calls(); len(released) != 1 || released[0] != pid {
+		t.Fatalf("after stop: released %v, want %d", released, pid)
+	}
+}
+
+// A group stop could not kill may still run, so the reaper keeps it.
+func TestAChromiumGroupStopCouldNotKillStaysWatched(t *testing.T) {
+	reaper := &recordingReaper{}
+	binary := writeChromiumScript(t, "echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\nexec sleep 300\n")
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), reaper, binary, nil, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	pid := process.cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = process.cmd.Wait()
+	})
+	// The group kill refuses a command that does not lead a group.
+	process.cmd.SysProcAttr = nil
+	if err := process.stop(); err == nil {
+		t.Fatal("stop reported a kill it could not make")
+	}
+	if _, released := reaper.calls(); len(released) != 0 {
+		t.Fatalf("released %v, want the group still watched", released)
+	}
+}
+
+// No browser starts without a reaper to end it with the backend.
+func TestStartChromiumRefusesALaunchNoReaperWatches(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	binary := writeChromiumScript(t, "touch "+shellQuote(marker)+"\n")
+	if _, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), nil, binary, nil, nil); !errors.Is(err, procutil.ErrNoReaper) {
+		t.Fatalf("start without a reaper: %v, want ErrNoReaper", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the browser ran without a reaper: %v", err)
+	}
+}
+
 func testLaunchContext(t *testing.T, timeout time.Duration) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -41,7 +139,7 @@ func testLaunchContext(t *testing.T, timeout time.Duration) context.Context {
 func startListeningChromium(t *testing.T) *chromiumProcess {
 	t.Helper()
 	binary := writeChromiumScript(t, "echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\nexec sleep 300\n")
-	process, wsURL, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	process, wsURL, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start the fake Chromium: %v", err)
 	}
@@ -68,7 +166,7 @@ func TestStartChromiumKeepsReadingAfterTheEndpoint(t *testing.T) {
 			"head -c 1048576 /dev/zero >&2\n"+
 			"echo done > "+shellQuote(marker)+"\n"+
 			"exec sleep 300\n")
-	process, wsURL, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	process, wsURL, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -100,7 +198,7 @@ func TestStartChromiumInheritsTheEnvironment(t *testing.T) {
 		"printf '%s' \"$AO_HEADLESS_TEST_MARKER\" > "+shellQuote(seen)+"\n"+
 			"echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\n"+
 			"exec sleep 300\n")
-	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -124,7 +222,7 @@ func TestStartChromiumFailsWhenTheOutputEndsWithoutAnEndpoint(t *testing.T) {
 			"exec >&- 2>&-\n"+
 			"exec sleep 300\n")
 	started := time.Now()
-	_, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	_, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err == nil {
 		t.Fatal("a browser with no endpoint reported one")
 	}
@@ -180,7 +278,7 @@ func TestStartChromiumTimesOutAndReapsASilentBrowser(t *testing.T) {
 	bound := newLaunchBound(t)
 	launched := make(chan error, 1)
 	go func() {
-		_, _, err := startChromium(bound, binary, nil, nil)
+		_, _, err := startChromium(bound, procutiltest.Reaper(), binary, nil, nil)
 		launched <- err
 	}()
 	pid := waitForPID(t, pidFile)
@@ -219,6 +317,7 @@ func TestStopKeepsOutputTheReaderHasNotTakenYet(t *testing.T) {
 	}
 	c := &chromiumProcess{
 		cmd:      cmd,
+		reaper:   procutiltest.Reaper(),
 		output:   output,
 		said:     procutil.NewTailBuffer(headlessOutputTail),
 		endpoint: make(chan string, 1),
@@ -253,7 +352,7 @@ func TestStartChromiumKeepsOnlyTheTailOfALongFailure(t *testing.T) {
 			"echo\n"+
 			"echo 'FATAL: libnss3.so: cannot open shared object file' >&2\n"+
 			"exit 1\n")
-	_, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	_, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err == nil {
 		t.Fatal("a browser that exited 1 reported an endpoint")
 	}

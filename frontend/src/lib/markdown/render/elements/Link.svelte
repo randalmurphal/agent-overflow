@@ -38,6 +38,9 @@
 		classifyLinkHref(token.href, streamdown.allowedLinkPrefixes ?? [])
 	);
 	const transformedUrl = $derived(linkClass.kind === 'anchor' ? linkClass.href : null);
+	// A blocked link's tag is the policy's verdict, not the message's text:
+	// find neither counts nor paints it (staticHtml.ts marks it the same).
+	const tag = $derived(linkTagText(token.href, streamdown.allowedLinkPrefixes ?? []));
 
 	// A `localhost:<port>` link the parse rewrote because the port is on
 	// another machine (markdown/render/previewLink.ts). It renders as an
@@ -90,6 +93,6 @@
 		class={streamdown.theme.link.blocked}
 		title={linkClass.kind === 'anchor' ? undefined : linkClass.title}
 	>
-		{@render children()}{linkTagText(token.href, streamdown.allowedLinkPrefixes ?? [])}
+		{@render children()}{#if tag}<span data-find-skip>{tag}</span>{/if}
 	</span>
 {/if}

@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -57,6 +57,8 @@ var errLoginSuperseded = errors.New("claude: sign-in was restarted")
 // LoginConfig configures one sign-in process.
 type LoginConfig struct {
 	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper procutil.Reaper
 	// ConfigDir is the isolated CLAUDE_CONFIG_DIR the sign-in writes its
 	// credential into. Required: this flow must never land in the canonical
 	// home, because the adoption epilogue decides which slot it belongs in.
@@ -136,14 +138,15 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	// directory, so a kill mid-exchange abandons a brand-new grant. It cannot
 	// brick a saved account the way killing an account PROBE can, which is
 	// what GracefulCancel exists for.
-	env := make(map[string]string, len(cfg.Env)+1)
-	maps.Copy(env, cfg.Env)
-	env["CLAUDE_CONFIG_DIR"] = cfg.ConfigDir
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	line, err := NewCommandLine(IsolatedHomeRetention(cfg.ConfigDir), "", loginArgs()...)
+	if err != nil {
+		return nil, err
+	}
+	proc, err := provider.Spawn(ctx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
 		Binary:   binary,
-		Args:     loginArgs(),
-		Env:      env,
-		UnsetEnv: []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR"},
+		Args:     line.Args(),
+		Env:      line.Env(cfg.Env),
+		UnsetEnv: line.UnsetEnv(),
 		Provider: "claude",
 	})
 	if err != nil {

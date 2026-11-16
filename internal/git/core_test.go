@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -560,7 +561,8 @@ func TestRemoveWorktreeLiftsLock(t *testing.T) {
 				t.Fatalf("CreateWorktree: %v", err)
 			}
 			testutil.RunGit(t, repo, "worktree", "lock", "--", worktreePath)
-			locked, err := core.worktreeLocked(repo, worktreePath)
+			entry, _, err := core.worktreeEntry(repo, worktreePath)
+			locked := entry.locked
 			if err != nil || !locked {
 				t.Fatalf("worktreeLocked = %v, %v; want locked", locked, err)
 			}
@@ -581,6 +583,73 @@ func TestRemoveWorktreeLiftsLock(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The unattended removal lifts a lock with no reason (Claude Code's
+// EnterWorktree) or one Agent Overflow wrote, and keeps a worktree a person
+// locked with a reason of their own.
+func TestRemoveWorktreeUnattendedKeepsAPersonsLock(t *testing.T) {
+	t.Parallel()
+	for name, reason := range map[string]string{
+		"no reason": "",
+		"checkout":  checkoutLockReason + "00000000-0000-0000-0000-000000000000",
+		"transfer":  transferWorktreeReason("00000000-0000-0000-0000-000000000000"),
+		"a person":  "on a removable drive",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := initGitRepo(t)
+			core := NewCore()
+			path := filepath.Join(t.TempDir(), "locked")
+			if err := core.CreateWorktree(repo, path, "feature/locked"); err != nil {
+				t.Fatalf("CreateWorktree: %v", err)
+			}
+			args := []string{"worktree", "lock"}
+			if reason != "" {
+				args = append(args, "--reason", reason)
+			}
+			testutil.RunGit(t, repo, append(args, "--", path)...)
+
+			err := core.RemoveWorktreeUnattended(repo, path)
+			_, statErr := os.Stat(path)
+			if reason == "on a removable drive" {
+				var locked *WorktreeLockedError
+				if !errors.As(err, &locked) || locked.Reason != reason {
+					t.Fatalf("RemoveWorktreeUnattended = %v, want a WorktreeLockedError naming %q", err, reason)
+				}
+				if entry, _, err := core.worktreeEntry(repo, path); err != nil || !entry.locked || statErr != nil {
+					t.Fatalf("a person's lock was lifted or the worktree went: locked=%v stat=%v err=%v", entry.locked, statErr, err)
+				}
+				return
+			}
+			if err != nil || !os.IsNotExist(statErr) {
+				t.Fatalf("RemoveWorktreeUnattended = %v, stat %v; want the worktree removed", err, statErr)
+			}
+		})
+	}
+}
+
+// git refuses to remove a worktree with an initialized submodule without
+// --force whatever the wait, and says so in a way the caller can tell apart.
+func TestRemoveWorktreeNamesASubmoduleRefusal(t *testing.T) {
+	t.Parallel()
+	sub := initGitRepo(t)
+	repo := initGitRepo(t)
+	core := NewCore()
+	path := filepath.Join(t.TempDir(), "with-submodule")
+	if err := core.CreateWorktree(repo, path, "feature/submodule"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	testutil.RunGit(t, path, "-c", "protocol.file.allow=always", "submodule", "add", "--", sub, "sub")
+	testutil.RunGit(t, path, "commit", "-m", "add submodule")
+
+	err := core.RemoveWorktree(repo, path)
+	if !errors.Is(err, ErrWorktreeHasSubmodules) {
+		t.Fatalf("RemoveWorktree = %v, want ErrWorktreeHasSubmodules", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("the refused worktree is gone: %v", statErr)
 	}
 }
 

@@ -539,6 +539,9 @@ export interface PRDetail {
   /** The Details section and the management controls (git.PRManage);
    *  absent from an older backend, which offers none of them. */
   manage?: PRManage;
+  /** A sentence for each optional part the forge would not answer (team
+   *  reviewers, check runs, workflow runs). */
+  unavailable?: string[];
 }
 
 /** Mirrors git.PRManage. */
@@ -666,6 +669,30 @@ export interface MergeOptions {
   viewerApproved: boolean;
   cannotApproveReason?: string;
   cannotMergeReason?: string;
+  /** What the forge lets the viewer do beside merging, each with why not
+   * where its control would show. Go always sends the flags; absent reads
+   * as not allowed. */
+  viewerCanUpdateBranch?: boolean;
+  cannotUpdateBranchReason?: string;
+  viewerCanUnapprove?: boolean;
+  cannotUnapproveReason?: string;
+  viewerCanMarkReady?: boolean;
+  cannotMarkReadyReason?: string;
+  /** The merge queue the target branch merges through (a GitLab merge train or a GitHub merge queue). */
+  queue?: MergeQueue | null;
+}
+
+/** Mirrors git.MergeQueue: a target branch's merge queue as this PR sees it. */
+export interface MergeQueue {
+  /** Every merge goes through it: Merge now adds the PR, auto-merge adds it once ready. */
+  required: boolean;
+  /** In the queue now; an armed auto-merge that is not queued waits to join. */
+  queued: boolean;
+  /** 1-based place and the queue's length; absent when unknown. */
+  position?: number;
+  size?: number;
+  /** The viewer may take it out (CancelPRAutoMerge). */
+  canRemove: boolean;
 }
 
 export interface AutoMergeRequest {
@@ -870,6 +897,10 @@ export interface ReviewThread {
   isResolved: boolean;
   isOutdated: boolean;
   comments: ReviewComment[];
+  /** Why the viewer may not resolve (or reopen) this thread, or reply to
+   * it; absent when they may or the forge does not say. */
+  cannotResolveReason?: string;
+  cannotReplyReason?: string;
 }
 
 export interface ReviewComment {
@@ -892,6 +923,9 @@ export interface ReviewComment {
   suggestions?: CommentSuggestion[];
   /** One entry per reaction present, by GitLab award name. */
   reactions?: CommentReaction[];
+  /** Why the forge does not let the viewer react here (GitHub's
+   * viewerCanReact), absent when it does or does not say. */
+  cannotReactReason?: string;
 }
 
 /** One suggestion block of a comment (gitops.CommentSuggestion). `from`

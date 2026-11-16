@@ -513,7 +513,6 @@
   ondragover={drag.onHostDragOver}
   ondrop={drag.onHostDrop}
   ondragleave={drag.onHostDragLeave}
-  ondragend={drag.onPaneDragEnd}
 >
 <div
   bind:this={hostEl}
@@ -721,10 +720,10 @@
     {/if}
   {/if}
 </div>
-<!-- Takes a pane-placing drag off the panes while it is over the strip
+<!-- Takes a pane-placing drag off the panes from its start to its end
      (usePaneThreadDrag `shielding`). Outside the scroller, so the drag is
      over nothing the browser can scroll. An airspace surface, so a native
-     browser view, which paints above the page, yields to it. -->
+     browser view, which paints above the page, is hidden under it. -->
 {#if drag.shielding}
   <div
     class="absolute inset-0 z-50"
@@ -732,8 +731,6 @@
     data-testid="pane-drag-shield"
     use:airspaceSurface
     ondragleave={drag.onShieldDragLeave}
-    onpointermove={drag.onShieldPointer}
-    onpointerdown={drag.onShieldPointer}
   ></div>
 {/if}
 </div>

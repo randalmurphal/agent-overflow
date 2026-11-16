@@ -1,6 +1,10 @@
 package acmecert
 
-import "time"
+import (
+	"time"
+
+	"agent-overflow/internal/procutil"
+)
 
 // Config is what an issuance needs. Every field is required.
 type Config struct {
@@ -20,4 +24,8 @@ type Config struct {
 	// HookTimeout bounds ONE hook invocation. Zero means
 	// DefaultHookTimeout.
 	HookTimeout time.Duration
+
+	// Reaper ends a hook's process group when the app dies without stopping
+	// it. Required.
+	Reaper procutil.Reaper
 }

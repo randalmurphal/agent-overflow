@@ -1673,20 +1673,55 @@ func listThreadsByIDTx(tx *sql.Tx, ids []string) ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// CheckoutWrite is what UpdateThreadCheckout moved.
+type CheckoutWrite struct {
+	// Row is the thread after the write.
+	Row Thread
+	// Changed reports that the workspace, worktree or branch moved.
+	Changed bool
+	// Listing reports whether binding or unbinding a worktree moved the
+	// thread across the sidebar listing rule.
+	Listing ListingChange
+}
+
 // UpdateThreadCheckout moves a thread to another checkout: it writes the
 // workspace, worktree and branch and no other column, so a write to any other
-// column that lands between the caller's read and this one survives. Returns
-// the row and whether the triple moved.
-func (s *Store) UpdateThreadCheckout(threadID, workspacePath, worktreePath, branch string) (Thread, bool, error) {
+// column that lands between the caller's read and this one survives.
+func (s *Store) UpdateThreadCheckout(threadID, workspacePath, worktreePath, branch string) (CheckoutWrite, error) {
+	action := fmt.Sprintf("store: update checkout for %s", threadID)
 	args := []any{workspacePath, nilIfEmpty(worktreePath), nilIfEmpty(branch)}
-	return s.applyThreadRowWrite(rowWrite{
-		Action:     fmt.Sprintf("store: update checkout for %s", threadID),
+	tx, err := s.beginListingWrite()
+	if err != nil {
+		return CheckoutWrite{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	before, err := threadListed(tx, threadID)
+	if err != nil {
+		return CheckoutWrite{}, err
+	}
+	row, changed, err := applyThreadRowWriteTx(tx, rowWrite{
+		Action:     action,
 		ID:         threadID,
 		Set:        "workspace_path = ?, worktree_path = ?, branch = ?",
 		SetArgs:    args,
 		Change:     "(workspace_path IS NOT ? OR worktree_path IS NOT ? OR branch IS NOT ?)",
 		ChangeArgs: args,
 	})
+	if err != nil {
+		return CheckoutWrite{}, err
+	}
+	write := CheckoutWrite{Row: row, Changed: changed}
+	if changed {
+		after, err := threadListed(tx, threadID)
+		if err != nil {
+			return CheckoutWrite{}, err
+		}
+		write.Listing = listingChange(before, after)
+	}
+	if err := tx.Commit(); err != nil {
+		return CheckoutWrite{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return write, nil
 }
 
 // RenameThreadBranch sets the thread's branch to `to` while it is still
@@ -1802,12 +1837,26 @@ var listThreadsQuery = `SELECT ` + threadColumns + ` FROM owned_threads AS threa
 // ALL, the one shape where SQLite can decline to push the term into the
 // arms and scan `items` once per sidebar row (see importedItemRevExpr).
 func listThreadsWithItemsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	listed, args := sidebarListedClause()
 	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
-		 WHERE archived = 0 AND ` + hiddenClause + `
-		   AND (
+		 WHERE ` + listed + `
+		 ORDER BY updated_at DESC`, args
+}
+
+// The sidebar lists a thread that is real and visible (sidebarListedClause;
+// product rule in docs/decisions.md, "Sidebar, threads, drafts"). A thread is
+// real once it holds something a person would lose with it: an item, a draft
+// with content, a draft recovery, a bound worktree (the thread is how the
+// person reaches the checkout), a fork being prepared, or a terminal. A
+// never-sent thread with none of them is not listed, and the empty-draft
+// cleanup may delete it (emptyDraftThreadSQL). Draft and checkout writes
+// report a move across the rule as a ListingChange from inside their
+// transaction; the app announces it, and checks the rows it posts itself
+// (App.writeAppRow).
+const threadRealClause = `(
 		       threads.fork_preparing = 1
 		    OR threads.mode = 'terminal'
+		    OR COALESCE(threads.worktree_path, '') <> ''
 		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
 		    OR EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
 		    OR EXISTS (
@@ -1815,6 +1864,71 @@ func listThreadsWithItemsQuery() (string, []any) {
 		          WHERE thread_drafts.thread_id = threads.id
 		            AND thread_drafts.has_content = 1
 		       )
-		   )
-		 ORDER BY updated_at DESC`, hiddenArgs
+		   )`
+
+// sidebarListedClause is the condition, on a row of owned_threads aliased
+// `threads`, for the thread to be listed in the sidebar
+// (ListThreadsWithItems): visible (not archived, not a hidden mode) and real.
+func sidebarListedClause() (string, []any) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("threads.mode")
+	return `threads.archived = 0 AND ` + hiddenClause + `
+		   AND ` + threadRealClause, hiddenArgs
+}
+
+// ListingChange is how a write moved its thread across the sidebar listing
+// rule (sidebarListedClause).
+type ListingChange int
+
+const (
+	// ListingUnchanged: listed before and after, or neither.
+	ListingUnchanged ListingChange = iota
+	// ListingListed: the write put the thread on the list.
+	ListingListed
+	// ListingUnlisted: the write took it off the list; the row remains.
+	ListingUnlisted
+)
+
+// beginListingWrite begins a transaction whose first statement is a write,
+// for a writer that reads the listing before it writes. The write lock is
+// then taken, waiting out busy_timeout, before any read: a read first would
+// pin a snapshot, and a writer that committed meanwhile would fail the later
+// write with SQLITE_BUSY instead of waiting for it.
+func (s *Store) beginListingWrite() (*sql.Tx, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE threads SET id = id WHERE 0`); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
+}
+
+func listingChange(before, after bool) ListingChange {
+	switch {
+	case !before && after:
+		return ListingListed
+	case before && !after:
+		return ListingUnlisted
+	default:
+		return ListingUnchanged
+	}
+}
+
+// ThreadListed reports whether ListThreadsWithItems lists the thread.
+func (s *Store) ThreadListed(threadID string) (bool, error) {
+	return threadListed(s.reader(), threadID)
+}
+
+// threadListed reports whether ListThreadsWithItems lists the thread.
+func threadListed(q sqlQueryer, threadID string) (bool, error) {
+	listed, args := sidebarListedClause()
+	var yes bool
+	err := q.QueryRow(`SELECT EXISTS (SELECT 1 FROM owned_threads AS threads WHERE threads.id = ? AND `+listed+`)`,
+		append([]any{threadID}, args...)...).Scan(&yes)
+	if err != nil {
+		return false, fmt.Errorf("store: thread %s listed: %w", threadID, err)
+	}
+	return yes, nil
 }

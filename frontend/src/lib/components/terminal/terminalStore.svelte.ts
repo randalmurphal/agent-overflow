@@ -1,4 +1,11 @@
 import type { TerminalSessionSummary } from '../../types/terminal';
+import { dropPaneFindRegion } from '../../stores/paneFind.svelte';
+
+/** The find region of a terminal's tab, under every pane that shows it
+ * (`terminalFindKey`). */
+export function terminalFindRegion(terminalID: string): string {
+  return `terminal:${terminalID}`;
+}
 
 export interface TerminalTabState {
   /** Wails-issued ID for the underlying PTY session. */
@@ -157,8 +164,11 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     if (activate || activeTerminalID === null) activeTerminalID = summary.terminalID;
   }
 
+  // A tab goes only when its terminal ended, so its find state goes with
+  // it, whether or not a surface shows the tab.
   function removeTab(terminalID: string): void {
     noteTabChange(terminalID);
+    dropPaneFindRegion(terminalFindRegion(terminalID));
     const nextTabs = tabs.filter((t) => t.terminalID !== terminalID);
     tabs = nextTabs;
     pendingSequencesByTerminal.delete(terminalID);
@@ -392,9 +402,11 @@ export function getThreadTerminalStateForTerminalEvent(
   return getThreadTerminalState(threadID);
 }
 
+/** Forgets a thread's terminals, which ended with it, and their find state. */
 export function clearThreadTerminalState(threadID: string): void {
   const key = terminalStateKey(threadID);
   const handle = terminalStatesByThread.get(key);
+  for (const tab of handle?.tabs ?? []) dropPaneFindRegion(terminalFindRegion(tab.terminalID));
   handle?.clear();
   terminalStatesByThread.delete(key);
 }

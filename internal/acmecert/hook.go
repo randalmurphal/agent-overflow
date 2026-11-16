@@ -49,15 +49,16 @@ var runGroup = procutil.RunGroup
 // runHook invokes the user's DNS hook once.
 //
 // It runs through procutil.RunGroup, in its own process group: the timeout
-// stops the whole group with SIGTERM, then SIGKILL, and a process the hook
-// left running is stopped when the hook returns. This runs unattended on the
-// host with nobody watching, so nothing the hook started outlives it.
+// stops the whole group with SIGTERM, then SIGKILL, a process the hook left
+// running is stopped when the hook returns, and reaper ends the group should
+// the app die. This runs unattended on the host with nobody watching, so
+// nothing the hook started outlives it.
 //
 // A failure carries the exit condition AND the output, because the two
 // answer different questions: "the command was not found" is a settings
 // problem and "NXDOMAIN for zone example.com" is a DNS one, and only the
 // second is in the output.
-func runHook(ctx context.Context, argv []string, timeout time.Duration, action, fqdn, value string) error {
+func runHook(ctx context.Context, reaper procutil.Reaper, argv []string, timeout time.Duration, action, fqdn, value string) error {
 	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 		return errors.New("the DNS hook has no command to run")
 	}
@@ -68,7 +69,7 @@ func runHook(ctx context.Context, argv []string, timeout time.Duration, action, 
 	defer cancel()
 
 	tail := procutil.NewTailBuffer(hookOutputTailBytes)
-	outcome, err := runGroup(runCtx, procutil.GroupCommand{
+	outcome, err := runGroup(runCtx, reaper, procutil.GroupCommand{
 		// The user's own tooling, PATH-resolving and long-lived, so the
 		// inherited environment is scrubbed of AppImage launch artifacts like
 		// every other child this app spawns (internal/appimage).

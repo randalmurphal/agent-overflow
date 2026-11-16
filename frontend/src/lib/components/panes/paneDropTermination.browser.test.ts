@@ -149,7 +149,7 @@ it('takes the shield down on a pointer event, which no drag in flight delivers',
 });
 
 it('clears its state and both sidebar records when the drag ends anywhere', async () => {
-  beginThreadRowDrag({ threadId: 't', title: 'T', projectId: 'p' });
+  beginThreadRowDrag({ threadId: 't', projectId: 'p' });
   await hoverChild('a');
   // The source's dragend, outside the strip (Escape, or a drop elsewhere).
   fire(outside, 'dragend', { dataTransfer: toolTransfer() });

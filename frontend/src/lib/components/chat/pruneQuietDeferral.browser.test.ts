@@ -89,7 +89,6 @@ describe('recent-window prune quiet deferral', () => {
     await waitFor(
       () => !pane.hasDeferredRecentWindowPrune && pane.items.length < max + 2,
       'quiet scheduler to land the deferred prune',
-      600,
     );
     expect(pane.items.length).toBeLessThanOrEqual(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS + 1);
     expect(pane.hasMoreHistory).toBe(true);

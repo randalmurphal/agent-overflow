@@ -81,7 +81,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 
 	// Step 1: commit.
 	installMockGh(t, app, "https://example.com/pr/1", "", 0)
-	result, err := app.GitCommit(ref, "ship: add feature", "body", CommitSelection{All: true})
+	result, err := app.GitCommit(ref, "ship: add feature", "body", CommitSelection{All: true}, "")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	}
 
 	// Step 2: push to the bare remote.
-	pushResult, err := app.GitPush(ref)
+	pushResult, err := app.GitPush(ref, "")
 	if err != nil {
 		t.Fatalf("GitPush() error = %v", err)
 	}
@@ -106,7 +106,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	}
 
 	// Step 3: create PR via mock gh.
-	prResult, err := app.GitCreatePR(t.Context(), ref, "Ship feature", "details", false)
+	prResult, err := app.GitCreatePR(t.Context(), ref, "Ship feature", "details", false, "")
 	if err != nil {
 		t.Fatalf("GitCreatePR() error = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestGitActions_CommitOnly(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	result, err := app.GitCommit(ref, "update readme", "body", CommitSelection{All: true})
+	result, err := app.GitCommit(ref, "update readme", "body", CommitSelection{All: true}, "")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -159,12 +159,12 @@ func TestGitActions_CommitAndPushNoPR(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	commitResult, err := app.GitCommit(ref, "ship: extra", "body", CommitSelection{All: true})
+	commitResult, err := app.GitCommit(ref, "ship: extra", "body", CommitSelection{All: true}, "")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
 
-	pushResult, err := app.GitPush(ref)
+	pushResult, err := app.GitPush(ref, "")
 	if err != nil {
 		t.Fatalf("GitPush() error = %v", err)
 	}
@@ -186,7 +186,7 @@ func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
 	t.Parallel()
 	app, ref, _, _ := gitActionTestSetup(t)
 
-	_, err := app.GitCommit(ref, "nothing", "", CommitSelection{All: true})
+	_, err := app.GitCommit(ref, "nothing", "", CommitSelection{All: true}, "")
 	if err == nil {
 		t.Fatal("GitCommit() on clean tree error = nil, want failure (nothing to commit)")
 	}
@@ -205,7 +205,7 @@ func TestGitActions_PushFailsOnNoRemote(t *testing.T) {
 
 	// No remote added to the repo. Push should fail with the remote-missing
 	// error from internal/git/actions.go.
-	_, err := app.GitPush(ref)
+	_, err := app.GitPush(ref, "")
 	if err == nil {
 		t.Fatal("GitPush() without remote error = nil, want failure")
 	}
@@ -223,7 +223,7 @@ func TestGitActions_CreatePRFailsWhenNotPushed(t *testing.T) {
 
 	installMockGh(t, app, "", "must push first", 1)
 
-	_, err := app.GitCreatePR(t.Context(), ref, "PR title", "body", false)
+	_, err := app.GitCreatePR(t.Context(), ref, "PR title", "body", false, "")
 	if err == nil {
 		t.Fatal("GitCreatePR() with failing gh error = nil, want failure")
 	}
@@ -255,7 +255,7 @@ func TestGitActions_NewBranchFromCurrent(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	commitResult, err := app.GitCommit(ref, "ship: feature", "", CommitSelection{All: true})
+	commitResult, err := app.GitCommit(ref, "ship: feature", "", CommitSelection{All: true}, "")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -289,7 +289,7 @@ func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
 	if err := os.WriteFile(feature, []byte("shipped\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	first, err := app.GitCommit(ref, "ship: first", "", CommitSelection{All: true})
+	first, err := app.GitCommit(ref, "ship: first", "", CommitSelection{All: true}, "")
 	if err != nil {
 		t.Fatalf("first GitCommit() error = %v", err)
 	}
@@ -299,7 +299,7 @@ func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
 
 	// Second call: tree is now clean because we committed everything. Must
 	// error out, not silently produce a duplicate commit.
-	_, err = app.GitCommit(ref, "ship: second", "", CommitSelection{All: true})
+	_, err = app.GitCommit(ref, "ship: second", "", CommitSelection{All: true}, "")
 	if err == nil {
 		t.Fatal("second GitCommit() on clean tree error = nil, want failure")
 	}
@@ -337,7 +337,7 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	app.forgeCLIs.fake = ghPath
 
 	// draft=false: gh is invoked without --draft.
-	result, err := app.GitCreatePR(t.Context(), ref, "PR title", "body", false)
+	result, err := app.GitCreatePR(t.Context(), ref, "PR title", "body", false, "")
 	if err != nil {
 		t.Fatalf("GitCreatePR(draft=false) error = %v", err)
 	}
@@ -346,7 +346,7 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	}
 
 	// draft=true: gh is invoked with --draft.
-	result, err = app.GitCreatePR(t.Context(), ref, "PR title", "body", true)
+	result, err = app.GitCreatePR(t.Context(), ref, "PR title", "body", true, "")
 	if err != nil {
 		t.Fatalf("GitCreatePR(draft=true) error = %v", err)
 	}

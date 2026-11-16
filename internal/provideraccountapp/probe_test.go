@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
@@ -11,13 +12,18 @@ import (
 type recordingAccountSink struct {
 	events  []string
 	signIns []SignIn
+	// changed is the provider of each PublishAccountsChanged.
+	changed []string
 }
 
 func (s *recordingAccountSink) PublishAccount(string, provideraccounts.Account, provider.AccountInfo, uint64) {
 	s.events = append(s.events, "account")
 }
 func (s *recordingAccountSink) PublishCleared(string, uint64) { s.events = append(s.events, "cleared") }
-func (s *recordingAccountSink) PublishAccountsChanged()       { s.events = append(s.events, "changed") }
+func (s *recordingAccountSink) PublishAccountsChanged(providerName string) {
+	s.events = append(s.events, "changed")
+	s.changed = append(s.changed, providerName)
+}
 func (s *recordingAccountSink) PublishUsageError(string, string, error) {
 	s.events = append(s.events, "usage-error")
 }
@@ -31,7 +37,7 @@ func (s *recordingAccountSink) PublishSignIn(signIn SignIn) {
 // where Claude commits that catalog, so it must land before the emit.
 func TestRunAccountProbeRunsAfterAdoptBeforeTheAccountEmit(t *testing.T) {
 	sink := &recordingAccountSink{}
-	manager := NewManager(Deps{Accounts: sink})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper(), Accounts: sink})
 
 	_, err := manager.RunAccountProbe(ProbeRequest{
 		ProviderName: string(provider.Claude),

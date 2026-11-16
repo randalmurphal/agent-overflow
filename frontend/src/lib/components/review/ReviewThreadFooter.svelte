@@ -116,7 +116,8 @@
     <button
       type="button"
       class="inline-flex h-6 items-center gap-1 rounded-[var(--radius-control)] border border-border-subtle px-2 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
-      disabled={resolving}
+      disabled={resolving || !!thread.cannotResolveReason}
+      title={thread.cannotResolveReason || undefined}
       data-testid="review-thread-resolve"
       onclick={() => resolve(!thread.isResolved)}
     >
@@ -145,6 +146,10 @@
     />
   {:else}
     <div class="flex items-center gap-1.5">
+      {#if thread.cannotReplyReason}
+        <!-- The field's place says why there is no reply. -->
+        <span class="min-w-0 flex-1 truncate text-[0.6875rem] text-fg-subtle" title={thread.cannotReplyReason} data-testid="review-thread-cannot-reply">{thread.cannotReplyReason}</span>
+      {:else}
       <button
         type="button"
         class="h-7 min-w-0 flex-1 truncate rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 text-left text-xs text-fg-subtle hover:border-border-strong hover:text-fg-muted"
@@ -154,6 +159,7 @@
       >
         Reply…
       </button>
+      {/if}
       {@render actions()}
     </div>
   {/if}
