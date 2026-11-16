@@ -15,6 +15,34 @@ import (
 	"github.com/google/uuid"
 )
 
+// The boot routes the async questions a restart left open: an app started
+// on the database the previous one wrote, with nothing in memory, puts the
+// worker's question to its spawner once its sweeps start.
+func TestTheBootRoutesAnAsyncQuestionTheRestartLeftOpen(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.holdCallerSession()
+	worker := f.settledSpawn(t, "boot-async-spawn", f.caller.ID)
+	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+		ID: "question:ask", ThreadID: worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
+		Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := f.restart(t)
+	if tokens := workerPromptTokens(t, after.app, f.caller.ID); len(tokens) != 0 {
+		t.Fatalf("before the boot the spawner holds %q", tokens)
+	}
+	// The sweep runs for the app's life, so the request work group never
+	// empties: poll the queue instead of waiting on it.
+	after.app.startThreadRequestSweeps()
+	waitUntil(t, 10*time.Second, func() bool { return len(workerPromptTokens(t, after.app, f.caller.ID)) == 1 })
+	if detail, routedTo, asking := after.app.asyncQuestionBlocked(worker.ID); !asking || detail != "Which scope?" || routedTo != f.caller.Title {
+		t.Fatalf("after the boot the worker asks %q of %q (%v), want its spawner", detail, routedTo, asking)
+	}
+}
+
 // An idle worker with an open async question waits on it, and every reader
 // of what a thread waits on says so alike (threadWaitingOn): its spawner's
 // Agents row reads blocked, thread_status here and from a paired computer
