@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Shared pane title: the renameable, draggable title that sits at the
   // start of a pane header. Extracted from ChatHeader so the terminal pane
   // header (and any future pane surface) gets the exact same behavior —
@@ -138,7 +139,7 @@
     // Enter confirms the IME candidate while composing a CJK title; committing
     // the rename here would save the pre-composition text and exit edit mode.
     if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e)) {
       e.preventDefault();
       void commitRename();
     } else if (e.key === 'Escape') {

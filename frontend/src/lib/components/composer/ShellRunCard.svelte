@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // The composer shell command running for this thread, above the composer:
   // the command, how long it has run, the end of its output and Stop. When
   // the command exits the card goes away and the message it became arrives
@@ -100,7 +101,7 @@
   }
 
   function onAnswerKeydown(e: KeyboardEvent): void {
-    if (e.key !== 'Enter' || e.isComposing) return;
+    if (!isLocalEnter(e) || e.isComposing) return;
     e.preventDefault();
     void answer();
   }

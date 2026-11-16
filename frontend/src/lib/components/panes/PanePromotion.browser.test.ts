@@ -393,3 +393,106 @@ it('a resize while promoted keeps the pane over the strip and demote finds the n
   await waitFor(settledDemoted, 'the demote landed');
   expect(rectOf(section('c'))).toEqual(slot);
 });
+
+it('focus moving into a pane under the promoted one demotes and reveals it', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  const before = strip.scrollLeft;
+  togglePanePromotion('a');
+  await waitFor(() => settledPromoted('a'), 'the promote landed');
+  // What Tab does: focus lands on b's first control, scrolling as it goes.
+  const title = section('b').querySelector<HTMLElement>('[data-testid="chat-header-title"]');
+  if (!title) throw new Error('no title');
+  title.focus();
+  await waitFor(settledDemoted, 'the demote landed');
+  const b = section('b');
+  await waitFor(
+    () => Math.abs(strip.scrollLeft - (b.offsetLeft + b.offsetWidth - strip.clientWidth)) < 1,
+    'the focused pane revealed',
+  );
+  expect(strip.scrollLeft).not.toBe(before);
+  expect(document.activeElement).toBe(title);
+});
+
+it('a reveal superseded by a new promotion does not run on a later restore', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  const before = strip.scrollLeft;
+  togglePanePromotion('a');
+  await waitFor(() => settledPromoted('a'), 'the promote landed');
+  revealPane('c');
+  await raf();
+  await raf();
+  expect(section('a').style.clipPath).not.toBe('');
+  togglePanePromotion('a');
+  await waitFor(() => settledPromoted('a'), 'the re-promote landed');
+  togglePanePromotion('a');
+  await waitFor(settledDemoted, 'the restore landed');
+  for (let i = 0; i < 20; i += 1) await raf();
+  expect(strip.scrollLeft).toBe(before);
+});
+
+// The clip edges published each frame until `settled` holds.
+async function recordClips(id: string, settled: () => boolean): Promise<{ left: number; right: number }[]> {
+  const clips: { left: number; right: number }[] = [];
+  await waitFor(() => {
+    const clip = promotedLayerClip(body(id));
+    if (clip) clips.push({ left: clip.left, right: clip.right });
+    return settled();
+  }, 'the transition landed');
+  return clips;
+}
+
+function largestStep(clips: { left: number; right: number }[]): number {
+  let largest = 0;
+  for (let i = 1; i < clips.length; i += 1) {
+    largest = Math.max(largest, Math.abs(clips[i].left - clips[i - 1].left), Math.abs(clips[i].right - clips[i - 1].right));
+  }
+  return largest;
+}
+
+it('a resize during a demote retargets the clip to the new slot and lands without a jump', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'c');
+  togglePanePromotion('c');
+  await waitFor(() => settledPromoted('c'), 'the promote landed');
+  togglePanePromotion('c');
+  await raf();
+  await raf();
+  host.style.width = '1200px';
+  const clips = await recordClips('c', settledDemoted);
+  const landed = section('c').getBoundingClientRect();
+  expect(strip.clientWidth).toBe(1200);
+  const last = clips.at(-1);
+  if (!last) throw new Error('no clip recorded');
+  expect(Math.abs(last.left - landed.left)).toBeLessThan(40);
+  expect(Math.abs(last.right - landed.right)).toBeLessThan(40);
+  expect(largestStep(clips)).toBeLessThan(250);
+});
+
+it('a resize during a promote retargets the clip to the new box and slot', async () => {
+  host.style.width = '1200px';
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  togglePanePromotion('b');
+  await raf();
+  await raf();
+  host.style.width = '700px';
+  const clips: { left: number; right: number; slotRight: number; boxRight: number }[] = [];
+  // Only clips the controller published after it could see the new width.
+  let resizedAt = -1;
+  await waitFor(() => {
+    const clip = promotedLayerClip(body('b'));
+    const slot = slots()[0]?.getBoundingClientRect();
+    const box = paddingBox(strip);
+    if (resizedAt < 0 && strip.clientWidth === 700) resizedAt = promotedLayerFrame();
+    if (clip && slot && resizedAt >= 0 && promotedLayerFrame() > resizedAt) {
+      const boxRight = box.left + box.width;
+      clips.push({ left: clip.left, right: clip.right, slotRight: Math.min(slot.right, boxRight), boxRight });
+    }
+    return settledPromoted('b');
+  }, 'the promote landed');
+  expect(clips.length).toBeGreaterThan(2);
+  for (const clip of clips) {
+    expect(clip.right).toBeLessThanOrEqual(clip.boxRight + 0.5);
+    expect(clip.right).toBeGreaterThanOrEqual(clip.slotRight - 2);
+  }
+  expect(largestStep(clips)).toBeLessThan(250);
+  expect(rectOf(section('b'))).toEqual(paddingBox(strip));
+});

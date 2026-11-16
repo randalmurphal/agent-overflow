@@ -11,6 +11,7 @@
 // preventing the default event, moving focus, firing insert functions,
 // etc.
 
+import { isLocalEnter } from '../../utils/localEnter';
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
 import type { ComposerSlashHandle } from './composerSlash.svelte';
 import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -70,6 +71,8 @@ function popoverYieldsKey(e: KeyboardEvent): boolean {
   // the candidate and Tab walks the candidate list. Inserting the highlighted
   // completion here would replace the still-composing text.
   if ((e.key === 'Enter' || e.key === 'Tab') && isImeComposingEvent(e)) return true;
+  // Enter with Alt, Ctrl or Meta is an app chord, not an insert.
+  if (e.key === 'Enter' && !isLocalEnter(e)) return true;
   return false;
 }
 

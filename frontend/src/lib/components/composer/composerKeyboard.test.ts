@@ -199,6 +199,17 @@ describe('handleMentionPopoverKeydown', () => {
     },
   );
 
+  it.each([{ altKey: true, shiftKey: true }, { ctrlKey: true }, { metaKey: true }])(
+    'mention popover: Enter with a modifier (%o) is an app chord and bubbles untouched',
+    (init) => {
+      const mentions = openMentionPopover();
+      const ev = kdown('Enter', init);
+      expect(handleMentionPopoverKeydown(ev, mentions)).toBe(false);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(mentions.insertMention).not.toHaveBeenCalled();
+    },
+  );
+
   it('mention popover: the legacy 229 sentinel counts as composing', () => {
     const mentions = openMentionPopover();
     const ev = kdown('Enter', { keyCode: 229 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { scale } from 'svelte/transition';
   import type { UserInputQuestion, UserInputRequest } from '../../types/events';
@@ -199,7 +200,7 @@
       moveOptionFocus(-1);
       return;
     }
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (isLocalEnter(event) || event.key === ' ') {
       event.preventDefault();
       event.stopPropagation();
       selectOption(activeQuestion, label, 'keyboard');

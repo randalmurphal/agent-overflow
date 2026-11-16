@@ -18,6 +18,13 @@
 // JS-driven so its rect is known each frame and published to native
 // browser views (utils/panePromotion.svelte.ts).
 //
+// Both ends are measured live every frame: the host's box and the slot
+// (the placeholder, or before it renders the section's rect in flow). When
+// either moves mid-transition (a window resize), the clip retargets
+// without a jump: the difference between the clip last shown and the new
+// path is carried as a correction that shrinks to nothing as the
+// transition ends, so it lands exactly on the new slot or box.
+//
 // Transitions settle deterministically: a demote during a promote, or a
 // promote of the same pane during its demote, reverses from the current
 // clip; a different pane waits for the demote to land and then promotes;
@@ -33,14 +40,7 @@ export const PANE_PROMOTE_DURATION_MS = 180;
 // finish the reveal in one jump it never showed.
 const MAX_FRAME_MS = 40;
 
-interface Inset {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-}
-
-const NO_INSET: Inset = { top: 0, right: 0, bottom: 0, left: 0 };
+const NO_OFFSET: AirspaceRect = { left: 0, top: 0, right: 0, bottom: 0 };
 
 export interface PanePromotionOptions {
   getHostEl(): HTMLElement | undefined;
@@ -75,19 +75,25 @@ function hostBox(host: HTMLElement): AirspaceRect {
   return { left, top, right: left + host.clientWidth, bottom: top + host.clientHeight };
 }
 
-// The inset that clips the full box down to the slot's visible part. A
-// slot partly scrolled out of view clips to what of it shows.
-function slotInset(slot: DOMRect, box: AirspaceRect): Inset {
-  const width = box.right - box.left;
-  const height = box.bottom - box.top;
-  const left = clamp(slot.left - box.left, 0, width);
-  const top = clamp(slot.top - box.top, 0, height);
+// A rect's visible part inside the box: a slot partly scrolled out of view
+// clips to what of it shows.
+function within(rect: AirspaceRect, box: AirspaceRect): AirspaceRect {
+  const left = clamp(rect.left, box.left, box.right);
+  const top = clamp(rect.top, box.top, box.bottom);
   return {
     left,
     top,
-    right: clamp(box.right - slot.right, 0, width - left),
-    bottom: clamp(box.bottom - slot.bottom, 0, height - top),
+    right: clamp(rect.right, left, box.right),
+    bottom: clamp(rect.bottom, top, box.bottom),
   };
+}
+
+function plainRect(rect: DOMRect): AirspaceRect {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+function rectKey(rect: AirspaceRect): string {
+  return `${rect.left},${rect.top},${rect.right},${rect.bottom}`;
 }
 
 export function createPanePromotion(options: PanePromotionOptions) {
@@ -102,7 +108,16 @@ export function createPanePromotion(options: PanePromotionOptions) {
   // 0: clipped to the slot; 1: fully revealed.
   let progress = 0;
   let direction: -1 | 0 | 1 = 0;
-  let inset: Inset = NO_INSET;
+  // The slot as measured in flow when the promote started, until the
+  // placeholder renders.
+  let startSlot: AirspaceRect | null = null;
+  // Retargeting: the geometry the path was last computed for, the clip last
+  // shown, and the correction carried from a retarget with the progress left
+  // when it was taken.
+  let geometryKey = '';
+  let lastClip: AirspaceRect | null = null;
+  let correction: AirspaceRect = NO_OFFSET;
+  let correctionBase = 0;
   let frame = 0;
   let lastTs: number | null = null;
 
@@ -110,6 +125,40 @@ export function createPanePromotion(options: PanePromotionOptions) {
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     lastTs = null;
+  }
+
+  // Eased distance left before the current direction lands: the correction
+  // shrinks with it, so it is gone as smoothly as the path arrives.
+  function remaining(): number {
+    const e = easeInOutCubic(progress);
+    if (direction === 1) return 1 - e;
+    if (direction === -1) return e;
+    return 0;
+  }
+
+  function correctionWeight(): number {
+    return correctionBase > 0 ? clamp(remaining() / correctionBase, 0, 1) : 0;
+  }
+
+  function resetPath(): void {
+    geometryKey = '';
+    lastClip = null;
+    correction = NO_OFFSET;
+    correctionBase = 0;
+  }
+
+  // Turns the transition around: the correction keeps its current size and
+  // shrinks over what is left in the new direction.
+  function turn(next: -1 | 1): void {
+    const w = correctionWeight();
+    correction = {
+      left: correction.left * w,
+      top: correction.top * w,
+      right: correction.right * w,
+      bottom: correction.bottom * w,
+    };
+    direction = next;
+    correctionBase = remaining();
   }
 
   // Writes the current clip to the section and publishes it.
@@ -120,28 +169,54 @@ export function createPanePromotion(options: PanePromotionOptions) {
     if (!section || !host) return;
     if (direction === 0 && progress === 1) {
       clipPath = null;
+      resetPath();
       setPromotedLayer(section, null);
       return;
     }
-    const k = 1 - easeInOutCubic(progress);
-    const top = inset.top * k;
-    const right = inset.right * k;
-    const bottom = inset.bottom * k;
-    const left = inset.left * k;
-    clipPath = `inset(${top}px ${right}px ${bottom}px ${left}px)`;
     const box = hostBox(host);
-    setPromotedLayer(section, {
-      left: box.left + left,
-      top: box.top + top,
-      right: box.right - right,
-      bottom: box.bottom - bottom,
-    });
+    const slotEl = options.slotOf(id as string);
+    const measured = slotEl ? plainRect(slotEl.getBoundingClientRect()) : startSlot;
+    const slot = within(measured ?? box, box);
+    const e = easeInOutCubic(progress);
+    const path: AirspaceRect = {
+      left: slot.left + (box.left - slot.left) * e,
+      top: slot.top + (box.top - slot.top) * e,
+      right: slot.right + (box.right - slot.right) * e,
+      bottom: slot.bottom + (box.bottom - slot.bottom) * e,
+    };
+    const key = `${rectKey(box)}|${rectKey(slot)}`;
+    if (key !== geometryKey) {
+      // Retarget from the clip on screen, as far as it fits the new box.
+      if (lastClip !== null) {
+        const shown = within(lastClip, box);
+        correction = {
+          left: shown.left - path.left,
+          top: shown.top - path.top,
+          right: shown.right - path.right,
+          bottom: shown.bottom - path.bottom,
+        };
+        correctionBase = remaining();
+      }
+      geometryKey = key;
+    }
+    const w = correctionWeight();
+    const clip = within({
+      left: path.left + correction.left * w,
+      top: path.top + correction.top * w,
+      right: path.right + correction.right * w,
+      bottom: path.bottom + correction.bottom * w,
+    }, box);
+    lastClip = clip;
+    clipPath = `inset(${clip.top - box.top}px ${box.right - clip.right}px ${box.bottom - clip.bottom}px ${clip.left - box.left}px)`;
+    setPromotedLayer(section, clip);
   }
 
   function release(): void {
     cancelFrame();
     direction = 0;
     progress = 0;
+    startSlot = null;
+    resetPath();
     shownId = null;
     clipPath = null;
     setPromotedLayer(null, null);
@@ -198,7 +273,8 @@ export function createPanePromotion(options: PanePromotionOptions) {
     const section = options.sectionOf(id);
     if (!host || !section) return;
     // Measured in flow, before the layout changes: this is the slot.
-    inset = slotInset(section.getBoundingClientRect(), hostBox(host));
+    startSlot = plainRect(section.getBoundingClientRect());
+    resetPath();
     lockedLeft = host.scrollLeft;
     options.onCapture();
     shownId = id;
@@ -210,12 +286,8 @@ export function createPanePromotion(options: PanePromotionOptions) {
 
   function startDemote(): void {
     if (direction !== -1) {
-      const host = options.getHostEl();
-      const slot = shownId === null ? null : options.slotOf(shownId);
-      // The slot can have changed while shown (a window resize). Before the
-      // placeholder first renders, the promote's measurement still holds.
-      if (host && slot) inset = slotInset(slot.getBoundingClientRect(), hostBox(host));
-      direction = -1;
+      if (direction === 0) resetPath();
+      turn(-1);
     }
     run();
   }
@@ -261,7 +333,7 @@ export function createPanePromotion(options: PanePromotionOptions) {
     }
     if (next === shownId) {
       if (direction === -1) {
-        direction = 1;
+        turn(1);
         run();
       }
       return;
