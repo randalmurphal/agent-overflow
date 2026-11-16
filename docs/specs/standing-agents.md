@@ -753,10 +753,10 @@ Ruling 36, as built:
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
-  has no turn, no queued message, no open prompt
-  (`triage.LiveStateSnapshotForThread`, and a Codex async question not
-  yet answered or dismissed, which reads `blocked` while nothing else
-  runs or is queued: `asyncQuestionBlocked`), no running background work
+  has no turn, no queued message, no open prompt (`threadWaitingOn`:
+  the session's prompts, and a Codex async question not yet answered or
+  dismissed, which reads `blocked` while nothing else runs or is queued,
+  as `thread_status` reads it awaiting input), no running background work
   (`runningBackgroundWorkForThread`: Claude tasks and background agents,
   Codex subagents and terminals, remote commands), no armed loop or watch
   (`agent_wakes`), no reminder that has not fired, and no provider timer

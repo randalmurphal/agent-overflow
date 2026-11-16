@@ -206,13 +206,44 @@ func threadLastActivity(thread store.Thread) int64 {
 	return thread.UpdatedAt
 }
 
-// LiveState projects the triage live snapshot onto the four facts the
-// state derivation reads. A thread with no session yields the zero value.
+// LiveState projects what the thread waits on (threadWaitingOn) onto the
+// four facts the state derivation reads. A thread with no session and no
+// open async question yields the zero value.
 func (t threadToolsApp) LiveState(_ context.Context, threadID string) (threadtools.LiveState, error) {
-	if t.app.triage == nil {
-		return threadtools.LiveState{}, nil
+	return t.app.threadWaitingOn(threadID).live, nil
+}
+
+// threadWaiting is what a thread waits on now, from what the app holds in
+// memory, no store read: the triage snapshot, its live state, and what
+// blocks it on someone, "approval" or "question", with its first line and
+// the thread it is routed to, empty when that is the person.
+type threadWaiting struct {
+	snapshot             triage.LiveStateSnapshot
+	live                 threadtools.LiveState
+	on, detail, routedTo string
+}
+
+// threadWaitingOn is the one answer to what a thread waits on, which its
+// Agents row, its worker liveness, thread_status and thread_search, and a
+// paired computer's status answer all read. A session's prompts come first;
+// a Codex async question, which outlives its session, counts as one
+// question to its recipient only while no turn runs and nothing is queued:
+// a turn or a queued message outranks a question asked in the background.
+func (a *App) threadWaitingOn(threadID string) threadWaiting {
+	var waiting threadWaiting
+	if a.triage != nil {
+		waiting.snapshot = a.triage.LiveStateSnapshotForThread(threadID)
 	}
-	return threadToolsLiveState(t.app.triage.LiveStateSnapshotForThread(threadID)), nil
+	waiting.live = threadToolsLiveState(waiting.snapshot)
+	waiting.on, waiting.detail, waiting.routedTo = threadAgentBlockedOn(waiting.snapshot)
+	if waiting.on != "" || waiting.live.ActiveTurn || waiting.live.PendingSends {
+		return waiting
+	}
+	if detail, routedTo, asking := a.asyncQuestionBlocked(threadID); asking {
+		waiting.live.PendingUserInputs = 1
+		waiting.on, waiting.detail, waiting.routedTo = "question", clipLine(detail), routedTo
+	}
+	return waiting
 }
 
 // threadToolsLiveState projects one live snapshot, for a reader that also

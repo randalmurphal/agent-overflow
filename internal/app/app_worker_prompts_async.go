@@ -48,7 +48,8 @@ import (
 // however many changes one reconcile reads. The spawner's answer is claimed
 // against the revision it was written for (store.QueueAsyncAnswers). While
 // no turn runs and nothing is queued, an open question is what its thread
-// waits on: its Agents row reads blocked (workerHeldUnrest).
+// waits on (threadWaitingOn): its Agents row reads blocked and
+// thread_status awaiting input.
 //
 // A question that goes to the person and not to an agent notifies them when
 // the thread is owned, since its turn's end did not (notify.MapTurnRest).
@@ -310,7 +311,7 @@ func (a *App) rerouteAsyncQuestions(from string, refs []triage.PromptRef, reject
 }
 
 // asyncQuestionBlocked says what threadID's open async questions ask, for
-// its Agents row: the first question of its earliest prompt and the thread
+// threadWaitingOn: the first question of its earliest prompt and the thread
 // it is routed to, empty when it is the person's. Found is false when it
 // has none open.
 func (a *App) asyncQuestionBlocked(threadID string) (detail, routedTo string, found bool) {

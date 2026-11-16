@@ -144,7 +144,10 @@ while the latest turn has no message. One statement reads it for the
 whole page, pinned to each thread's latest turn row. State is the UI's
 enum (idle / running / awaiting-input / pending-approval / plan-ready /
 error / interrupted), reachable because the handler runs inside the
-app that owns the thread.
+app that owns the thread. A Codex thread with an async question not yet
+answered or dismissed reads awaiting-input while no turn runs and
+nothing is queued, as its Agents row reads it blocked
+(`threadWaitingOn`).
 
 `query` is FTS5 match syntax: words are ANDed, `"quoted phrases"`
 match exactly, `OR`, `NOT` and a trailing `*` prefix work. A word FTS5

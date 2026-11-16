@@ -599,11 +599,10 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 			state.Title = thread.Title
 			state.Provider = thread.Provider
 		}
-		if (receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning) && a.triage != nil {
+		if receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning {
 			// The same reading this computer's own Agents row makes.
-			snapshot := a.triage.LiveStateSnapshotForThread(receipt.TargetThreadID)
-			state.Blocked = threadToolsLiveState(snapshot).Blocked()
-			_, _, state.BlockedRoutedTo = threadAgentBlockedOn(snapshot)
+			waiting := a.threadWaitingOn(receipt.TargetThreadID)
+			state.Blocked, state.BlockedRoutedTo = waiting.live.Blocked(), waiting.routedTo
 		}
 	}
 	return state, nil
