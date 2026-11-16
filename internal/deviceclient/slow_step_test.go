@@ -5,6 +5,7 @@ package deviceclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -102,9 +103,11 @@ func TestSlowStep_RenewalSupportProbeIsItsOwnStep(t *testing.T) {
 	if len(steps) != 2 || steps[0].Step != "renewal_support" || steps[1].Step != "renew" {
 		t.Fatalf("slow steps = %+v, want renewal_support then renew", steps)
 	}
-	for _, step := range steps {
-		if step.Outcome != "ok" || step.Duration < 60*time.Millisecond {
-			t.Fatalf("slow step = %+v, want outcome=ok duration>=60ms", step)
+	// The fixture is a legacy host: its health answers 404, which the probe
+	// reports as refused and the renewal reads as no recovery support.
+	for i, outcome := range []string{"refused", "ok"} {
+		if step := steps[i]; step.Outcome != outcome || step.Duration < 60*time.Millisecond {
+			t.Fatalf("slow step = %+v, want outcome=%s duration>=60ms", step, outcome)
 		}
 	}
 }
@@ -169,6 +172,51 @@ func TestSlowStep_PairingRouteProbePastThresholdLogsItsDuration(t *testing.T) {
 	}
 	steps := slowSteps(t, logs.String(), server.Listener.Addr().String(), "target")
 	expectOneSlowStep(t, steps, "route_probe", "ok", 60*time.Millisecond)
+}
+
+// A slow health probe logs the answer's status as its outcome. The probe
+// returns a fully read 4xx or 5xx with a nil error for its caller to judge,
+// and the route check and renewal-support check both refuse a non-200.
+func TestSlowStep_HealthProbeLogsTheAnswersStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		outcome string
+	}{
+		{http.StatusOK, "ok"},
+		{http.StatusNotFound, "refused"},
+		{http.StatusServiceUnavailable, "error"},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			lowerSlowStepThreshold(t, 20*time.Millisecond)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				time.Sleep(60 * time.Millisecond)
+				w.WriteHeader(tc.status)
+			}))
+			t.Cleanup(server.Close)
+			logs := testutil.CaptureLogOutput(t)
+
+			status, _, _, err := healthProbe(context.Background(), stepRouteProbe, server.Client(), server.URL)
+			if err != nil || status != tc.status {
+				t.Fatalf("healthProbe = %d, %v; want %d", status, err, tc.status)
+			}
+			expectOneSlowStep(t, slowSteps(t, logs.String(), server.Listener.Addr().String()), "route_probe", tc.outcome, 60*time.Millisecond)
+		})
+	}
+}
+
+// A health probe its caller cancelled mid-wait logs the cancellation.
+func TestSlowStep_CancelledHealthProbeLogsTheCancellation(t *testing.T) {
+	lowerSlowStepThreshold(t, 20*time.Millisecond)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(server.Close)
+	logs := testutil.CaptureLogOutput(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(60*time.Millisecond, cancel)
+	if _, _, _, err := healthProbe(ctx, stepRenewalSupport, server.Client(), server.URL); !errors.Is(err, context.Canceled) {
+		t.Fatalf("healthProbe err = %v, want context.Canceled", err)
+	}
+	expectOneSlowStep(t, slowSteps(t, logs.String()), "renewal_support", "canceled", 60*time.Millisecond)
 }
 
 // Steps inside the threshold write nothing: the line is for the step that

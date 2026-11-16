@@ -323,8 +323,8 @@ func verifyComputerRoute(ctx context.Context, route *dialRoute, backendID string
 // Route verification and the renewal-support check are both this probe, so
 // neither can send something the other would not. step names the caller's
 // purpose in a slow-step line.
-func healthProbe(ctx context.Context, step string, client *http.Client, endpoint string) (_ int, _ http.Header, _ []byte, err error) {
-	defer func(started time.Time) { logSlowStep(step, started, err) }(time.Now())
+func healthProbe(ctx context.Context, step string, client *http.Client, endpoint string) (status int, _ http.Header, _ []byte, err error) {
+	defer func(started time.Time) { logSlowHTTPStep(step, started, status, err) }(time.Now())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/healthz", nil)
 	if err != nil {
 		return 0, nil, nil, err

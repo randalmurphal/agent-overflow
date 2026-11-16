@@ -2,6 +2,7 @@ package backendproxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,23 +63,57 @@ func proxySteps(t *testing.T, logs *testutil.SyncLogBuffer) []testutil.SlowStep 
 	return testutil.CheckedSlowSteps(t, logs.String(), slowStepComponent, "upstream-launch-token", "store-uuid", "127.0.0.1")
 }
 
+// A slow manifest fetch logs the upstream's answer as its outcome: the
+// fetch returns a 4xx or 5xx with a nil error, and that is not ok.
 func TestSlowStep_ManifestFetchPastThresholdLogsItsDuration(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		outcome string
+	}{
+		{http.StatusOK, "ok"},
+		{http.StatusUnauthorized, "refused"},
+		{http.StatusServiceUnavailable, "error"},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
+			carrier := manifestUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+				time.Sleep(upstreamStall)
+				http.Error(w, "answer", tc.status)
+			})
+			logs := testutil.CaptureLogOutput(t)
+
+			if status, _, err := carrier.FetchBootstrap(t.Context()); err != nil || status != tc.status {
+				t.Fatalf("FetchBootstrap = %d, %v; want the upstream's %d", status, err, tc.status)
+			}
+			testutil.ExpectOneSlowStep(t, proxySteps(t, logs), stepManifest, tc.outcome, upstreamStall)
+		})
+	}
+}
+
+// A manifest fetch its caller cancelled mid-wait logs the cancellation.
+func TestSlowStep_CancelledManifestFetchLogsTheCancellation(t *testing.T) {
 	testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(upstreamStall)
-		http.Error(w, "gone", http.StatusUnauthorized)
-	}))
+	carrier := manifestUpstream(t, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	logs := testutil.CaptureLogOutput(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(upstreamStall, cancel)
+	if _, _, err := carrier.FetchBootstrap(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FetchBootstrap err = %v, want context.Canceled", err)
+	}
+	testutil.ExpectOneSlowStep(t, proxySteps(t, logs), stepManifest, "canceled", upstreamStall)
+}
+
+// manifestUpstream is a carrier whose upstream answers every request with serve.
+func manifestUpstream(t *testing.T, serve http.HandlerFunc) *Carrier {
+	t.Helper()
+	upstream := httptest.NewServer(serve)
 	t.Cleanup(upstream.Close)
 	carrier, err := New(Config{WSURL: "ws://" + strings.TrimPrefix(upstream.URL, "http://") + "/ws", Token: "upstream-launch-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	logs := testutil.CaptureLogOutput(t)
-
-	if status, _, err := carrier.FetchBootstrap(t.Context()); err != nil || status != http.StatusUnauthorized {
-		t.Fatalf("FetchBootstrap = %d, %v; want the upstream's 401", status, err)
-	}
-	testutil.ExpectOneSlowStep(t, proxySteps(t, logs), stepManifest, "refused", upstreamStall)
+	return carrier
 }
 
 // The carried upgrade is timed to the upstream's answer, not to the end of
