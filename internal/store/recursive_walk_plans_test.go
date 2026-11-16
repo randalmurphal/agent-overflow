@@ -122,6 +122,24 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		}
 	})
 
+	t.Run("owned workers", func(t *testing.T) {
+		s := newTestStore(t)
+		for _, id := range []string{"lead", "child", "grand"} {
+			mustCreateThread(t, s, id)
+		}
+		spawnLocal(t, s, "l-c", "lead", "child", true)
+		spawnLocal(t, s, "c-g", "child", "grand", true)
+		assertWalkProbesTheQueuedKey(t, s, "workersUnderSQL", walkPlan{
+			step: []string{
+				"SEARCH link USING INDEX idx_thread_requests_caller_settled (caller_thread_id=?)",
+				"SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)",
+			},
+			// owned_threads reads a thread's transfer, and a worker's helper
+			// row, by the thread's own key.
+			prefixed: []string{"idx_thread_transfers_owner", "sqlite_autoindex_agent_helpers_1"},
+		}, workersUnderSQL, "lead")
+	})
+
 	t.Run("agent requests", func(t *testing.T) {
 		s := newTestStore(t)
 		for _, id := range []string{"lead", "child", "grand"} {

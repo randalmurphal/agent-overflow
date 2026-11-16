@@ -56,6 +56,18 @@ type DeletePorts struct {
 	// while any remain (store.AssistantDependentsError), so one made
 	// meanwhile sends the delete back here; once marked, none can be made.
 	AssistantDependents func(threadID string) error
+	// DeleteWorkers deletes the workers the thread owns, each by its own
+	// delete (DeleteWorker) and in turn the workers it owns
+	// (docs/specs/standing-agents.md, "Owned workers"). It runs once the
+	// delete has passed its refusals and stopped the thread's session, so
+	// the thread spawns no worker after it, and before the mark, while the
+	// spawn links its workers' deletes are fenced by still stand. A worker
+	// whose delete fails is the port's to report: the thread's own delete
+	// goes on, and its drop leaves that worker standalone
+	// (trg_thread_placement_spawn_gone). An error is a failed read of the
+	// workers, which stops the delete before anything is deleted. A thread
+	// moved to another computer deletes none: its workers stayed here.
+	DeleteWorkers func(threadID string) error
 	// Deleted fires once the row's delete mark committed
 	// (store.BeginThreadDelete), as DeleteThread returns. From the mark on
 	// the row is gone to every read, so a delete that fails after it still
@@ -63,9 +75,10 @@ type DeletePorts struct {
 	// (store.ListPendingThreadDeletes). Root broadcasts it on
 	// `thread:updated` so every attached client drops the row without a
 	// refresh. spawned lists the live threads the thread spawned on this
-	// computer, read before the drop took their spawn rows: an owned one
-	// is standalone now (trg_thread_placement_spawn_gone) and joins the
-	// sidebar, and each row lost its spawner, so they go out again.
+	// computer that its workers' deletes left, read before the drop took
+	// their spawn rows: an owned one is standalone now
+	// (trg_thread_placement_spawn_gone) and joins the sidebar, and each row
+	// lost its spawner, so they go out again.
 	Deleted func(thread store.Thread, spawned []string)
 	Logf    func(format string, args ...any)
 	// ChunkPause, when set, runs between the bounded item-delete chunks
@@ -85,8 +98,10 @@ const maxDependentPasses = 3
 // when there is no row. An assistant's current thread is marked only once
 // nothing lives under the assistant: its dependents are deleted first,
 // with the lock released, and again when one made meanwhile refuses the
-// mark. On success the caller releases the returned lock.
-func (s *Service) markDeleting(database *store.Store, threadID string, found, assistant bool, ports DeletePorts) (unlock func(), marked bool, err error) {
+// mark. A worker's delete for its owner's marks it only while the owner
+// still owns it (store.BeginWorkerDelete). On success the caller releases
+// the returned lock.
+func (s *Service) markDeleting(database *store.Store, threadID, ownerID string, found, assistant bool, ports DeletePorts) (unlock func(), marked bool, err error) {
 	for pass := 1; ; pass++ {
 		if assistant && ports.AssistantDependents != nil {
 			if err := ports.AssistantDependents(threadID); err != nil {
@@ -115,13 +130,21 @@ func (s *Service) markDeleting(database *store.Store, threadID string, found, as
 		// The mark refuses new forks before the attachments go, so the
 		// ones the thread's forks show are known and kept
 		// (store.ReleasableAttachments).
-		err := database.BeginThreadDelete(threadID)
+		var err error
+		if ownerID == "" {
+			err = database.BeginThreadDelete(threadID)
+		} else {
+			err = database.BeginWorkerDelete(threadID, ownerID)
+		}
 		var dependents *store.AssistantDependentsError
 		switch {
 		case err == nil:
 			return unlock, true, nil
 		case errors.Is(err, sql.ErrNoRows):
 			return unlock, false, nil
+		case errors.Is(err, store.ErrWorkerNotOwned):
+			unlock()
+			return nil, false, err
 		case errors.As(err, &dependents) && assistant && pass < maxDependentPasses:
 			unlock()
 		default:
@@ -131,9 +154,26 @@ func (s *Service) markDeleting(database *store.Store, threadID string, found, as
 	}
 }
 
-// DeleteThread stops everything the thread owns and drops its row. Call it
-// under the thread's action lock.
+// DeleteThread stops everything the thread owns and drops its row, with
+// the workers it owns (DeletePorts.DeleteWorkers). Call it under the
+// thread's action lock.
 func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
+	return s.deleteThread(threadID, "", ports)
+}
+
+// DeleteWorker is DeleteThread for a worker its owner's delete deletes
+// (DeletePorts.DeleteWorkers). A thread that is no longer ownerID's worker,
+// given a sidebar row or another owner since the owner's delete read it, is
+// left as it is: before anything of it stops, and again at its mark, with
+// store.ErrWorkerNotOwned. Call it under the worker's action lock.
+func (s *Service) DeleteWorker(workerID, ownerID string, ports DeletePorts) error {
+	if ownerID == "" {
+		return fmt.Errorf("delete worker %s: no owner named", workerID)
+	}
+	return s.deleteThread(workerID, ownerID, ports)
+}
+
+func (s *Service) deleteThread(threadID, ownerID string, ports DeletePorts) error {
 	retired, err := s.CheckCleanup(threadID)
 	if err != nil {
 		return err
@@ -150,19 +190,18 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 		return fmt.Errorf("delete thread %s: lookup: %w", threadID, threadErr)
 	}
 	threadFound := threadErr == nil
+	if ownerID != "" && (!threadFound || thread.Placement != store.PlacementOwned || thread.SpawnedByThreadID != ownerID) {
+		if !threadFound {
+			return threadErr
+		}
+		return store.ErrWorkerNotOwned
+	}
 	var removeHome func() error
 	if ports.AssistantHome != nil {
 		if removeHome, err = ports.AssistantHome(threadID); err != nil {
 			return err
 		}
 	}
-	var spawned []string
-	if threadFound {
-		if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
-			return fmt.Errorf("delete thread %s: %w", threadID, err)
-		}
-	}
-
 	if ports.StopRemoteWork != nil {
 		if err := ports.StopRemoteWork(threadID); err != nil {
 			return err
@@ -198,7 +237,18 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 	if ports.ClearAutoReconnect != nil {
 		ports.ClearAutoReconnect(threadID)
 	}
-	unlockMutation, marked, err := s.markDeleting(database, threadID, threadFound, threadFound && thread.AgentID != "", ports)
+	if threadFound && !retired && ports.DeleteWorkers != nil {
+		if err := ports.DeleteWorkers(threadID); err != nil {
+			return fmt.Errorf("delete thread %s: %w", threadID, err)
+		}
+	}
+	var spawned []string
+	if threadFound {
+		if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
+			return fmt.Errorf("delete thread %s: %w", threadID, err)
+		}
+	}
+	unlockMutation, marked, err := s.markDeleting(database, threadID, ownerID, threadFound, threadFound && thread.AgentID != "", ports)
 	if err != nil {
 		return err
 	}

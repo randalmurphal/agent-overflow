@@ -44,7 +44,7 @@ func TestDeletingAScratchThreadSettlesItsOwnRequest(t *testing.T) {
 	})
 
 	done := make(chan error, 1)
-	go func() { done <- f.app.DeleteThread(ack.ThreadID) }()
+	go func() { done <- f.app.deleteThread(ack.ThreadID) }()
 	select {
 	case err := <-done:
 		if err != nil {

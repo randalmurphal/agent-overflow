@@ -724,7 +724,7 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 		t.Fatal("an ask ran in the target thread instead of its own scratch fork")
 	}
 
-	if err := pair.source.DeleteThread(pair.caller.ID); err != nil {
+	if err := pair.source.deleteThread(pair.caller.ID); err != nil {
 		t.Fatalf("delete the caller: %v", err)
 	}
 	waitUntilE2E(t, 30*time.Second, "the destination drops the fork", func() bool {

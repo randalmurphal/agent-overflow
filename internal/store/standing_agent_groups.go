@@ -31,8 +31,8 @@ func refuseAgentGroupingTx(tx *sql.Tx, threadID string) error {
 // ListSpawnedThreadIDs lists the live threads a thread spawned on this
 // computer. Their rows change with the spawn rows that name them: a
 // handoff moves those to the assistant's next thread (SpawnedByThreadID),
-// and a delete of the spawner leaves an owned one standalone, so the app
-// re-emits them after either.
+// and a delete of the spawner takes the links of those it did not delete,
+// leaving an owned one standalone, so the app re-emits them after either.
 func (s *Store) ListSpawnedThreadIDs(spawnerID string) ([]string, error) {
 	ids, err := queryIDs(s.reader(), `SELECT id FROM owned_threads WHERE archived = 0 AND id IN (
 		SELECT r.target_thread_id FROM thread_requests r
@@ -91,6 +91,78 @@ func (s *Store) ListOwnedWorkersToArchive(ownerID string) (workers []OwnedWorker
 	}
 	return workers, nil
 }
+
+// ListOwnedWorkers lists the threads ownerID owns, archived or not: the
+// owned threads whose spawn link it made. Deleting the owner deletes each
+// of them, and each of those deletes the threads it owns in turn
+// (docs/specs/standing-agents.md, "Owned workers"). A thread whose delete
+// has begun is not listed.
+func (s *Store) ListOwnedWorkers(ownerID string) ([]string, error) {
+	ids, err := queryIDs(s.reader(), `SELECT threads.id FROM thread_requests AS link
+		JOIN owned_threads AS threads ON threads.id = link.target_thread_id
+		WHERE link.caller_thread_id = ? AND `+agentSpawnLinkSQL("link")+` AND threads.placement = 'owned'
+		ORDER BY threads.id`, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the workers %s owns: %w", ownerID, err)
+	}
+	return ids, nil
+}
+
+// WorkerUnder is one thread a delete of the thread above it deletes with
+// it (ListWorkersUnder).
+type WorkerUnder struct {
+	ThreadID     string
+	ProjectID    string
+	WorktreePath string
+	// Helper is an assistant's helper, which its assistant's delete counts
+	// apart.
+	Helper bool
+}
+
+// ListWorkersUnder lists the threads ownerID owns at any depth, archived or
+// not, which its delete deletes with it (ListOwnedWorkers at each level), in
+// thread id order. One recursive read.
+func (s *Store) ListWorkersUnder(ownerID string) (workers []WorkerUnder, err error) {
+	action := fmt.Sprintf("store: list the workers under %s", ownerID)
+	rows, err := s.reader().Query(workersUnderSQL, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	defer closeAgentWakeRows(rows, action, &err)
+	for rows.Next() {
+		var worker WorkerUnder
+		if err := rows.Scan(&worker.ThreadID, &worker.ProjectID, &worker.WorktreePath, &worker.Helper); err != nil {
+			return nil, fmt.Errorf("%s: scan: %w", action, err)
+		}
+		workers = append(workers, worker)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return workers, nil
+}
+
+// workersUnderSQL is ListWorkersUnder's walk: each step searches the
+// queued thread's requests by caller and its spawned thread by id.
+var workersUnderSQL = `WITH RECURSIVE under(id) AS (
+		  SELECT ?1
+		  UNION
+		  SELECT threads.id FROM under
+		    CROSS JOIN thread_requests AS link ON link.caller_thread_id = under.id AND ` + agentSpawnLinkSQL("link") + `
+		    CROSS JOIN owned_threads AS threads ON threads.id = link.target_thread_id
+		   WHERE threads.placement = 'owned'
+		)
+		SELECT threads.id, COALESCE(threads.project_id, ''), COALESCE(threads.worktree_path, ''),
+		       EXISTS (SELECT 1 FROM agent_helpers WHERE agent_helpers.thread_id = threads.id)
+		  FROM under CROSS JOIN owned_threads AS threads ON threads.id = under.id
+		 WHERE under.id <> ?1
+		 ORDER BY threads.id`
+
+// ErrWorkerNotOwned is a worker's delete, made for its owner's
+// (BeginWorkerDelete), finding the thread no longer that owner's worker:
+// it was given a sidebar row or another owner since the owner's delete
+// read it. The thread is left as it is.
+var ErrWorkerNotOwned = errors.New("store: the thread is no longer a worker of the thread being deleted")
 
 // ownedBySQL holds for the threads row that owner, an SQL expression, owns:
 // owned, with owner its spawner (spawnerOfSQL).

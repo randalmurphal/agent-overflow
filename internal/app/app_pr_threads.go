@@ -262,7 +262,7 @@ func validateOpenPRThread(req OpenPRThreadRequest) error {
 // together.
 func (a *App) rollBackPRThread(project store.Project, thread store.Thread, createdBranch bool) error {
 	var errs []error
-	if err := a.DeleteThread(thread.ID); err != nil {
+	if err := a.deleteThread(thread.ID); err != nil {
 		errs = append(errs, fmt.Errorf("delete thread %s: %w", thread.ID, err))
 	}
 	if thread.WorktreePath != "" {

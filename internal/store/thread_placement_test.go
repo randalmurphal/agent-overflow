@@ -589,3 +589,120 @@ func TestArchiveOwnedWorkerIsFencedByItsOwnersArchive(t *testing.T) {
 		t.Errorf("a missing worker = %v, want sql.ErrNoRows", err)
 	}
 }
+
+// ListOwnedWorkers names every owned thread whose spawn link the owner
+// made, archived or not: not a placed one, not one a later spawn row
+// supersedes, not a worker's own worker, and not one whose delete began.
+// ListWorkersUnder goes on down the lineage, through archived workers,
+// and marks a helper.
+func TestListOwnedWorkersAndWorkersUnder(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"owner", "other", "owned", "deep", "deeper", "placed", "archived", "moved", "marked"} {
+		mustCreateThread(t, s, id)
+	}
+	spawnLocal(t, s, "tok-owned", "owner", "owned", true)
+	spawnLocal(t, s, "tok-deep", "owned", "deep", true)
+	spawnLocal(t, s, "tok-deeper", "deep", "deeper", true)
+	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
+	spawnLocal(t, s, "tok-archived", "owner", "archived", true)
+	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
+	spawnLocal(t, s, "tok-marked", "owner", "marked", true)
+	if _, err := s.db.Exec(`UPDATE thread_requests SET caller_thread_id = 'other' WHERE token = 'tok-moved'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread("archived"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread("deep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BeginThreadDelete("marked"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/deeper' WHERE id = 'deeper'`); err != nil {
+		t.Fatal(err)
+	}
+	owned := func(owner string) []string {
+		t.Helper()
+		got, err := s.ListOwnedWorkers(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := owned("owner"); !slices.Equal(got, []string{"archived", "owned"}) {
+		t.Errorf("owner's workers = %v, want [archived owned]", got)
+	}
+	if got := owned("owned"); !slices.Equal(got, []string{"deep"}) {
+		t.Errorf("a worker's workers = %v, want [deep]", got)
+	}
+	under, err := s.ListWorkersUnder("owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, worker := range under {
+		ids = append(ids, worker.ThreadID)
+		if worker.Helper {
+			t.Errorf("%s read as a helper", worker.ThreadID)
+		}
+		if worker.ThreadID == "deeper" && worker.WorktreePath != "/wt/deeper" {
+			t.Errorf("deeper's worktree = %q", worker.WorktreePath)
+		}
+	}
+	if !slices.Equal(ids, []string{"archived", "deep", "deeper", "owned"}) {
+		t.Errorf("workers under the owner = %v, want archived, deep, deeper and owned", ids)
+	}
+	if _, err := s.db.Exec(`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('agent', 'owner', '/home/agent', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO agent_helpers (thread_id, agent_id) VALUES ('owned', 'agent')`); err != nil {
+		t.Fatal(err)
+	}
+	under, err = s.ListWorkersUnder("owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, worker := range under {
+		if worker.Helper != (worker.ThreadID == "owned") {
+			t.Errorf("%s helper = %v", worker.ThreadID, worker.Helper)
+		}
+	}
+}
+
+// BeginWorkerDelete marks a worker only while its owner still owns it,
+// and says so apart from a missing thread.
+func TestBeginWorkerDeleteIsFencedByOwnership(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"owner", "other", "owned", "placed", "moved"} {
+		mustCreateThread(t, s, id)
+	}
+	spawnLocal(t, s, "tok-owned", "owner", "owned", true)
+	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
+	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
+	if _, err := s.db.Exec(`UPDATE thread_requests SET caller_thread_id = 'other' WHERE token = 'tok-moved'`); err != nil {
+		t.Fatal(err)
+	}
+	marked := func(id string) bool {
+		t.Helper()
+		var deleting bool
+		if err := s.db.QueryRow(`SELECT deleting FROM threads WHERE id = ?`, id).Scan(&deleting); err != nil {
+			t.Fatal(err)
+		}
+		return deleting
+	}
+	for _, id := range []string{"placed", "moved"} {
+		if err := s.BeginWorkerDelete(id, "owner"); !errors.Is(err, ErrWorkerNotOwned) || marked(id) {
+			t.Errorf("%s, not the owner's = %v, marked %v; want ErrWorkerNotOwned and unmarked", id, err, marked(id))
+		}
+	}
+	if err := s.BeginWorkerDelete("owned", "owner"); err != nil || !marked("owned") {
+		t.Fatalf("the owner's worker = %v, marked %v", err, marked("owned"))
+	}
+	if err := s.BeginWorkerDelete("owned", "owner"); err != nil {
+		t.Errorf("a repeated mark = %v, want it to resume", err)
+	}
+	if err := s.BeginWorkerDelete("missing", "owner"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("a missing worker = %v, want sql.ErrNoRows", err)
+	}
+}

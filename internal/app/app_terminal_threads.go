@@ -208,7 +208,7 @@ func (a *App) endTerminalThreadsAtBoot() error {
 	var errs []error
 	for _, id := range ids {
 		a.terminalThreads.noteStarted(id)
-		if err := a.DeleteThread(id); err != nil {
+		if err := a.deleteThread(id); err != nil {
 			errs = append(errs, fmt.Errorf("end terminal thread %s: %w", id, err))
 		}
 	}

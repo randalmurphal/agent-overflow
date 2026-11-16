@@ -259,8 +259,10 @@ Ruling of 2026-11-14 (owned workers, amending spawn placement of
     thread out of a group leaves it standalone. A placement change
     unpins the thread, as a group move does. Archiving a thread
     archives its owned workers down the lineage, each as an ordinary
-    archive; unarchiving it leaves them archived. Deleting it leaves its
-    workers as standalone rows ([Owned workers](#owned-workers)).
+    archive; unarchiving it leaves them archived. Deleting it deletes
+    its owned workers down the lineage, each as an ordinary delete, and
+    its confirmation counts them; a worker whose delete fails is named
+    and left standalone ([Owned workers](#owned-workers)).
 
 Rulings of 2026-10-21 (assistants above projects):
 
@@ -280,8 +282,9 @@ Rulings of 2026-10-21 (assistants above projects):
     cannot be placed. A spawn into a project the assistant does not
     serve is refused.
 39. **Deleting an assistant deletes what lives under it:** its current
-    and past threads, its helpers and its home. Its project work stays
-    in the projects, as plain threads there.
+    and past threads, its helpers, the project work it owns (ruling 36)
+    and its home. Project work given a sidebar row stays in the
+    projects, as plain threads there.
 40. **Removing a project unassigns it.** An assistant is never deleted
     with a project; its work in that project goes with the project.
 
@@ -521,9 +524,11 @@ source, which is the thread that computer's receipt recorded.
 **Deletion, archive and transfer.** Deleting an assistant's current
 thread deletes the assistant and everything that lives under it
 (ruling 39): its loops and watches, its past threads, its helpers and
-its home. Threads it spawned into projects stay there as plain threads.
+its home, and the threads it owns in projects with them, as any
+thread's delete deletes its workers ("Owned workers"). Threads it
+spawned into projects with a sidebar row stay there as plain threads.
 The one confirm, always shown, names the home folder, counts the past
-threads and helpers (`GetAssistantDependents`), and says they are
+threads, helpers and workers (`GetDeleteDependents`), and says they are
 removed with the assistant. The thread delete owns the removal, so
 every path that deletes the thread (the sidebar, a delete the boot
 finishes) removes them: only `<configDir>/agents/<agent-id>` is
@@ -684,9 +689,11 @@ Ruling 36, as built:
   (`ErrThreadNotSpawned`), and both are refused for an assistant's own
   thread (`ErrStandingAgentPlaced`) and a thread outside every project
   (`ErrPlacementOutsideProjects`). When an owned project thread's link
-  is deleted (its spawner's delete) the trigger
-  `trg_thread_placement_spawn_gone` makes it standalone, whatever
-  `superseded` rows still name it; a helper stays owned.
+  is deleted by its spawner's delete, which deleted it first unless its
+  own delete failed, or by the cleanup of a spawner moved to another
+  computer, the trigger `trg_thread_placement_spawn_gone` makes it
+  standalone, whatever `superseded` rows still name it; a helper stays
+  owned.
 - `catalogThreadClause` is the one predicate for what the sidebar
   lists: the thread catalog, the project thread counts and the archived
   threads list leave hidden-mode and owned threads out. Search,
@@ -715,6 +722,34 @@ Ruling 36, as built:
   owner again retries it, however deep, without repeating any archived
   thread's own cleanup.
   The sidebar's archive says so in a toast that archives them again.
+- Deleting a thread deletes each owned thread whose spawn link names it
+  as caller, archived or not (`ListOwnedWorkers`), each through the
+  same delete under its own lock, so the cascade runs down the lineage
+  and each worker's session, loops and watches, requests, remote
+  commands, routed prompts, browser pages and files go as a single
+  delete's do (`threadapp.DeletePorts.DeleteWorkers`). Every door that
+  deletes takes this path: the sidebar's delete and bulk delete, the
+  archived threads list, a project removal, a delete the boot finishes,
+  the retention sweep, an assistant's delete and the cleanup of an
+  ask's copy. No agent tool deletes a thread. The workers are read
+  under the owner's action lock once its session stopped, before its
+  row is marked, and each worker is deleted only while the owner still
+  owns it: checked before anything of it stops, and again in its mark
+  (`BeginWorkerDelete`, `ErrWorkerNotOwned`), so a worker given a
+  sidebar row or another owner since is left alone. A worker moved in
+  the moment between the two checks keeps its row with its work
+  stopped. The owner's delete goes on when a worker's fails: the worker
+  is named beside it (`DeleteThreadResult.WorkersNotDeleted`,
+  `ProjectDeletionResult.WorkersNotDeleted`), the others are still
+  deleted, and the failed one is standalone once the owner's row is
+  gone; a door with no one waiting logs it. A project removal also
+  refuses while a worker of one of its threads in another project is
+  running, and its cascade leaves the project's own threads, whose
+  locks it holds, to its own deletes. The cleanup of a thread moved to
+  another computer deletes none of the workers it left here. The delete
+  confirmation counts the workers (`GetDeleteDependents`), and a delete
+  from the sidebar or the archived threads list removes the worktrees
+  they are on, as it removes the thread's own.
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it

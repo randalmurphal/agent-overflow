@@ -62,29 +62,17 @@ type ArchiveThreadResult struct {
 	// WorkersNotArchived names each worker under the thread, at any depth,
 	// whose archive was refused. It stays open; archiving it again retries
 	// it, and so does archiving again the thread that owns it.
-	WorkersNotArchived []ArchiveWorkerFailure `json:"workersNotArchived,omitempty"`
+	WorkersNotArchived []WorkerFailure `json:"workersNotArchived,omitempty"`
 	// CleanupError says what could not be stopped or withdrawn of the work
 	// the archived threads were waiting on. Their archives stand.
 	CleanupError string `json:"cleanupError,omitempty"`
-}
-
-// ArchiveWorkerFailure is one worker an archive could not archive.
-type ArchiveWorkerFailure struct {
-	ThreadID string `json:"threadId"`
-	Title    string `json:"title"`
-	Error    string `json:"error"`
 }
 
 // archiveOutcome is what finishArchive could not do, for each door to
 // report in its own terms.
 type archiveOutcome struct {
 	cleanup error
-	workers []workerArchiveFailure
-}
-
-type workerArchiveFailure struct {
-	threadID string
-	err      error
+	workers []workerFailure
 }
 
 func (o *archiveOutcome) add(other archiveOutcome) {
@@ -100,13 +88,7 @@ func (o archiveOutcome) result(a *App) ArchiveThreadResult {
 		log.Printf("app: archive: %v", o.cleanup)
 		result.CleanupError = o.cleanup.Error()
 	}
-	for _, worker := range o.workers {
-		failure := ArchiveWorkerFailure{ThreadID: worker.threadID, Error: worker.err.Error()}
-		if row, err := a.store.GetThread(worker.threadID); err == nil {
-			failure.Title = row.Title
-		}
-		result.WorkersNotArchived = append(result.WorkersNotArchived, failure)
-	}
+	result.WorkersNotArchived = a.workerFailures(o.workers)
 	return result
 }
 
@@ -127,7 +109,7 @@ func (a *App) finishArchive(work restingThreadWork) archiveOutcome {
 		case errors.Is(err, sql.ErrNoRows), errors.Is(err, store.ErrThreadGone):
 			// Deleted since: there is nothing left to archive.
 		case err != nil:
-			outcome.workers = append(outcome.workers, workerArchiveFailure{threadID: worker.ThreadID, err: err})
+			outcome.workers = append(outcome.workers, workerFailure{threadID: worker.ThreadID, err: err})
 		case child.captured:
 			outcome.add(a.finishArchive(child))
 		}

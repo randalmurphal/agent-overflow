@@ -218,7 +218,7 @@ func TestDeletingAThreadForgetsItsMemoryRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedMemoryRecords(t, app, thread.ID)
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	requireMemoryRecordsForgotten(t, app, thread.ID, "the delete")

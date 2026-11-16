@@ -53,7 +53,7 @@ func (t threadToolsApp) createSpawnedThread(
 	// The thread exists and nothing owns it yet: no receipt names it and its
 	// prompt has not been sent. Take it back, as the scratch fork does,
 	// rather than leave a thread behind a refusal the caller will retry.
-	if deleteErr := t.app.DeleteThread(thread.ID); deleteErr != nil {
+	if deleteErr := t.app.deleteThread(thread.ID); deleteErr != nil {
 		log.Printf("thread tools: delete spawned thread %s after its group patch failed: %v", thread.ID, deleteErr)
 		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
 			"Thread %s was created but could not %s (%v), and removing it failed too. It is on this computer.",

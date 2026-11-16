@@ -376,7 +376,7 @@ func TestDeletedFrameIsNotFollowedByARowReadEarlier(t *testing.T) {
 	}
 	<-read
 	deleted := make(chan error, 1)
-	go func() { deleted <- f.app.DeleteThread(f.thread.ID) }()
+	go func() { deleted <- f.app.deleteThread(f.thread.ID) }()
 	finished, err := awaitAnnounceWaiterOr(f.app, f.thread.ID, deleted)
 	release()
 	if !finished {

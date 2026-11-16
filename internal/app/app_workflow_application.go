@@ -91,7 +91,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				_, err := a.sendMessageWithOptions(context.Background(), threadID, message, sendMessageOptions{})
 				return err
 			},
-			DeleteThread: a.DeleteThread,
+			DeleteThread: a.deleteThread,
 			Digest: func(item store.WorkItem, phaseID string, output json.RawMessage, check string) workflowapp.Digest {
 				value := workflowTemplateDigest(item, phaseID, output, check)
 				return workflowapp.Digest{WhatHappened: value.WhatHappened, WhatItNeeds: value.WhatItNeeds}

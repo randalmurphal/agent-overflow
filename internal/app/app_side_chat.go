@@ -110,7 +110,7 @@ func (a *App) forkScratchThread(
 		// The fork exists and nothing owns it yet: no pane has opened on it
 		// and no sweep knows about it. Take it back rather than leave a
 		// hidden thread nothing can reach.
-		if deleteErr := a.DeleteThread(fork.ID); deleteErr != nil {
+		if deleteErr := a.deleteThread(fork.ID); deleteErr != nil {
 			log.Printf("side chat: delete orphaned scratch fork %s: %v", fork.ID, deleteErr)
 		}
 		return store.Thread{}, err

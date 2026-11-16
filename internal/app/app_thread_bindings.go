@@ -665,27 +665,6 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 	return rows, nil
 }
 
-// DeleteThread tears down the thread and any child threads. The recursive
-// cascade logic lives in app_thread_delete.go.
-//
-// Every dropped row — the named thread and each of its children — is
-// broadcast as `deleted` so a second attached client drops the same rows and
-// their caches without a refresh. The fan-out rides the delete port's
-// per-row Deleted callback, which is the only place the child ids are known.
-//
-//ao:scope threads:operate
-//ao:route thread
-func (a *App) DeleteThread(id string) error {
-	unlock := a.threadLocks().Lock(id)
-	defer unlock()
-	// A stale thread action must discover its new owner. Only host-local
-	// project/retention cleanup may discard a confirmed move's old cache.
-	if err := a.threadApplication().CheckMutable(id); err != nil {
-		return err
-	}
-	return a.deleteThreadLocked(id)
-}
-
 // UpdateThreadContextWindow persists the context window size and
 // reconciles a live session (context window is spawn-time config on both
 // providers, so this restarts — deferred until the thread is quiet).

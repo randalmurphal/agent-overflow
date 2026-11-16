@@ -511,7 +511,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	}
 	handOff, interrupted, carried, err := a.handOffAssistantLocked(threadID, successor.ID)
 	if err != nil {
-		if deleteErr := a.DeleteThread(successor.ID); deleteErr != nil {
+		if deleteErr := a.deleteThread(successor.ID); deleteErr != nil {
 			log.Printf("assistants: delete the next thread %s of a handoff that failed: %v", successor.ID, deleteErr)
 		}
 		return store.Thread{}, err

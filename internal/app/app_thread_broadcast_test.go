@@ -378,7 +378,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		if err := app.DeleteThread(thread.ID); err != nil {
+		if err := app.deleteThread(thread.ID); err != nil {
 			t.Fatalf("DeleteThread: %v", err)
 		}
 		announced := map[string]bool{}
@@ -396,7 +396,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		}
 
 		broadcasts.reset()
-		if err := app.DeleteThread(thread.ID); err != nil {
+		if err := app.deleteThread(thread.ID); err != nil {
 			t.Fatalf("DeleteThread(repeat): %v", err)
 		}
 		broadcasts.expectSilence("deleting a thread that is already gone")

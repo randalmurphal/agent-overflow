@@ -933,7 +933,7 @@ func (a *App) dropScratchThreadForRequest(token, threadID string) {
 		log.Printf("thread tools: detach receipts from scratch thread %s: %v", threadID, err)
 		return
 	}
-	if err := a.DeleteThread(threadID); err != nil {
+	if err := a.deleteThread(threadID); err != nil {
 		log.Printf("thread tools: delete scratch thread %s for request %s: %v", threadID, token, err)
 		return
 	}

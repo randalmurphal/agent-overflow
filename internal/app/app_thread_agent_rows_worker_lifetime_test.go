@@ -564,7 +564,7 @@ func TestLiveWorkersAcrossArchiveDeleteAndPlacement(t *testing.T) {
 	deleted := f.settledSpawn(t, "deleted-spawn", f.caller.ID)
 	block(deleted, "deleted-approval")
 	f.awaitWorker(t, f.caller.ID, "deleted-spawn", workerBlocked)
-	if err := f.app.DeleteThread(deleted.ID); err != nil {
+	if err := f.app.deleteThread(deleted.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	f.awaitWorker(t, f.caller.ID, "deleted-spawn", "")
@@ -585,7 +585,7 @@ func TestLiveWorkersAcrossArchiveDeleteAndPlacement(t *testing.T) {
 	orphan := f.settledSpawn(t, "orphan-spawn", other.ID)
 	block(orphan, "orphan-approval")
 	f.awaitWorker(t, other.ID, "orphan-spawn", workerBlocked)
-	if err := f.app.DeleteThread(other.ID); err != nil {
+	if err := f.app.deleteThread(other.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return !slices.Contains(f.app.liveWorkerThreads(), orphan.ID) })

@@ -122,7 +122,7 @@ func TestDeletingAnAssistantRemovesItsHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.app.DeleteThread(thread.ID); err != nil {
+	if err := f.app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("delete the past thread: %v", err)
 	}
 	if _, found, _ := f.app.store.GetStandingAgent(successor.ID); !found {
@@ -132,7 +132,7 @@ func TestDeletingAnAssistantRemovesItsHome(t *testing.T) {
 		t.Fatalf("deleting a past thread touched the home: %v", err)
 	}
 
-	if err := f.app.DeleteThread(successor.ID); err != nil {
+	if err := f.app.deleteThread(successor.ID); err != nil {
 		t.Fatalf("delete the current thread: %v", err)
 	}
 	if _, found, _ := f.app.store.GetAgent(row.ID); found {
@@ -194,7 +194,7 @@ func TestDeletingAnAssistantRefusesAnyOtherHomePath(t *testing.T) {
 			if err := f.app.store.CreateStandingAgent(storeAgent(thread.ID, home)); err != nil {
 				t.Fatalf("seed the record: %v", err)
 			}
-			err := f.app.DeleteThread(thread.ID)
+			err := f.app.deleteThread(thread.ID)
 			if err == nil || !strings.Contains(err.Error(), "this assistant was not deleted") || !strings.Contains(err.Error(), "(expected "+filepath.Join(agents, thread.ID)+")") {
 				t.Fatalf("err = %v, want a refusal naming the expected folder", err)
 			}
@@ -244,7 +244,7 @@ func TestDeletingAnAssistantWhoseHomeCannotBeRemovedFinishesLater(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
 
-	err := f.app.DeleteThread(thread.ID)
+	err := f.app.deleteThread(thread.ID)
 	chain := errorsx.Chain(err)
 	if len(chain) < 2 {
 		t.Fatalf("err = %v, chain = %q", err, chain)
@@ -302,7 +302,7 @@ func TestAnAssistantRecordDeletedForgetsItsCachedRole(t *testing.T) {
 	if role, err := f.app.assistantRoles().Role(row.Home); err != nil || role != "Reviewer" {
 		t.Fatalf("role = %q, %v", role, err)
 	}
-	if err := f.app.DeleteThread(thread.ID); err != nil {
+	if err := f.app.deleteThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	write("Releaser\n")

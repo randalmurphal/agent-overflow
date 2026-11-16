@@ -2781,7 +2781,7 @@ func TestDeletingTheCallerTakesItsRequests(t *testing.T) {
 		t.Fatalf("Ask: %v", err)
 	}
 
-	if err := f.app.DeleteThread(f.caller.ID); err != nil {
+	if err := f.app.deleteThread(f.caller.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	for _, token := range []string{spawn.Token, ask.Token} {
@@ -2808,7 +2808,7 @@ func TestDeletingTheTargetErrorsTheRequest(t *testing.T) {
 	f.mockClaudeHoldingTheTurn(t, "starting")
 	ack := f.runningRequest(t, "what does the log say?")
 
-	if err := f.app.DeleteThread(ack.ThreadID); err != nil {
+	if err := f.app.deleteThread(ack.ThreadID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestErrored)

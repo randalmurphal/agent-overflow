@@ -242,7 +242,7 @@ func TestAWaitingWorkerArchivedOrDeletedRests(t *testing.T) {
 	deleted := f.settledSpawn(t, "deleted-loop", f.caller.ID)
 	arm(deleted, "hourly")
 	f.awaitWorker(t, f.caller.ID, "deleted-loop", workerWaiting)
-	if err := f.app.DeleteThread(deleted.ID); err != nil {
+	if err := f.app.deleteThread(deleted.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	f.awaitWorker(t, f.caller.ID, "deleted-loop", "")

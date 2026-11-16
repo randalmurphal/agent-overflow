@@ -540,7 +540,7 @@ func TestPointerForkTransferReadsThroughItsDeletedSource(t *testing.T) {
 	if len(before) != 601 {
 		t.Fatalf("the fork reads %d rows, want the origin's 600 and its own", len(before))
 	}
-	if err := source.DeleteThread(origin.ID); err != nil {
+	if err := source.deleteThread(origin.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := forkIDs(); !slices.Equal(got, before) {

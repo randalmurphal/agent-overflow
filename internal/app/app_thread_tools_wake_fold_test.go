@@ -415,7 +415,7 @@ func TestDeletingATargetTellsASenderOnceAboutBothRequests(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	if err := f.app.DeleteThread(running.ThreadID); err != nil {
+	if err := f.app.deleteThread(running.ThreadID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 

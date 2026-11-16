@@ -316,7 +316,7 @@ func TestDeleteThreadReleasesItsBrowserPagesAndToolToggles(t *testing.T) {
 		name   string
 		delete func(*App, string) error
 	}{
-		{"delete thread", (*App).DeleteThread},
+		{"delete thread", (*App).deleteThread},
 		{"delete empty draft", func(app *App, threadID string) error {
 			deleted, err := app.DeleteEmptyDraftThread(threadID)
 			if err == nil && !deleted {
@@ -402,7 +402,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 	}()
 	<-held.entered
 	deleted := make(chan error, 1)
-	go func() { deleted <- app.DeleteThread(thread.ID) }()
+	go func() { deleted <- app.deleteThread(thread.ID) }()
 	select {
 	case err := <-deleted:
 		t.Fatalf("delete returned (%v) while a browser tools call it must outlast was running", err)
@@ -425,7 +425,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 	t.Parallel()
 	deletes := map[string]func(app *App, threadID string) error{
-		"thread": func(app *App, threadID string) error { return app.DeleteThread(threadID) },
+		"thread": func(app *App, threadID string) error { return app.deleteThread(threadID) },
 		"draft": func(app *App, threadID string) error {
 			deleted, err := app.DeleteEmptyDraftThread(threadID)
 			if err == nil && !deleted {
@@ -543,7 +543,7 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := &deleteOnFirstErr{Context: context.Background(), onErr: func() {
-				if err := app.DeleteThread(thread.ID); err != nil {
+				if err := app.deleteThread(thread.ID); err != nil {
 					t.Errorf("delete: %v", err)
 				}
 			}}
@@ -577,7 +577,7 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			} else {
 				thread := makeWorkspaceThread(t, app, "thread-companion-late")
 				threadID = thread.ID
-				if err := app.DeleteThread(threadID); err != nil {
+				if err := app.deleteThread(threadID); err != nil {
 					t.Fatal(err)
 				}
 			}

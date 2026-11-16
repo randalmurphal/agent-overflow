@@ -33,7 +33,7 @@ func TestDeleteThreadSimpleThreadRemovesRowAndSession(t *testing.T) {
 		return nil
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread() error = %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestDeleteThreadStopsActiveSessionAndRemovesFromMap(t *testing.T) {
 		Token:    "delete-active-token",
 	})
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread() error = %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact(t *testin
 		return wantErr
 	}
 
-	err := app.DeleteThread(thread.ID)
+	err := app.deleteThread(thread.ID)
 	if err == nil {
 		t.Fatal("DeleteThread() error = nil, want stop failure")
 	}
@@ -125,7 +125,7 @@ func TestDeleteThreadAlreadyRemovedIsIdempotent(t *testing.T) {
 
 	app.stopSessionFn = func(string) error { return nil }
 
-	if err := app.DeleteThread("nonexistent-thread"); err != nil {
+	if err := app.deleteThread("nonexistent-thread"); err != nil {
 		t.Fatalf("DeleteThread(missing) error = %v, want nil (idempotent)", err)
 	}
 }
@@ -149,7 +149,7 @@ func TestDeleteThreadPropagatesStoreErrors(t *testing.T) {
 		t.Fatalf("store.Close() error = %v", err)
 	}
 
-	err := app.DeleteThread(thread.ID)
+	err := app.deleteThread(thread.ID)
 	if err == nil {
 		t.Fatal("DeleteThread() error = nil, want store-level failure")
 	}
@@ -172,8 +172,8 @@ func TestDeleteThreadConcurrentCallsAreSafe(t *testing.T) {
 	app.stopSessionFn = func(string) error { return nil }
 
 	results := make(chan error, 2)
-	go func() { results <- app.DeleteThread(thread.ID) }()
-	go func() { results <- app.DeleteThread(thread.ID) }()
+	go func() { results <- app.deleteThread(thread.ID) }()
+	go func() { results <- app.deleteThread(thread.ID) }()
 
 	for i := 0; i < 2; i++ {
 		if err := <-results; err != nil {
@@ -224,7 +224,7 @@ func TestDeleteThreadAttachmentCleanupFailureSurfacesError(t *testing.T) {
 
 	app.stopSessionFn = func(string) error { return nil }
 
-	err = app.DeleteThread(thread.ID)
+	err = app.deleteThread(thread.ID)
 	if err == nil {
 		t.Fatal("expected error when attachment cleanup fails (permission denied)")
 	}
@@ -254,7 +254,7 @@ func TestDeleteThreadStopSessionAndTerminalFailuresCombined(t *testing.T) {
 	// terminals is a real *terminal.Manager — closing a thread with no
 	// open terminals is a no-op success. We verify just the session
 	// branch here; the combined-error code path is exercised above.
-	err := app.DeleteThread(thread.ID)
+	err := app.deleteThread(thread.ID)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -312,7 +312,7 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 		t.Fatalf("replay file did not appear within deadline: %v", err)
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 
@@ -351,7 +351,7 @@ func TestDeleteThreadRemovesReplayLogWithRotations(t *testing.T) {
 		}
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	for _, p := range []string{base, base + ".1", base + ".2", base + ".3"} {
@@ -385,7 +385,7 @@ func TestDeleteThreadReplayLogMissingIsNotError(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Errorf("DeleteThread with no replay log returned %v, want nil", err)
 	}
 }
@@ -429,7 +429,7 @@ func TestDeleteThread_CleansCodexBackgroundTerminals(t *testing.T) {
 		return nil
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 
@@ -478,7 +478,7 @@ func TestDeleteThread_ClaudeNoCleanCodexCall(t *testing.T) {
 	})
 	app.stopSessionFn = func(string) error { return nil }
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 
@@ -507,7 +507,7 @@ func TestDeleteThread_CodexNoActiveSessionSkipsClean(t *testing.T) {
 	// this app-run.
 	app.stopSessionFn = func(string) error { return nil }
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	if _, err := app.store.GetThread(thread.ID); err == nil {
@@ -542,7 +542,7 @@ func TestDeleteThread_CodexCleanFailureDoesNotBlockDelete(t *testing.T) {
 		return nil
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v; delete must survive clean RPC failure", err)
 	}
 	if _, err := app.store.GetThread(thread.ID); err == nil {

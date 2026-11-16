@@ -447,7 +447,7 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if err := a.store.ObserveRemoteWatch(deletedWatch.ComputerID, deletedWatch.RequestID, store.RemoteJob{ID: deletedWatch.RequestID, SourceThreadID: deleted.ID, State: "running"}, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.DeleteThread(deleted.ID); err != nil {
+	if err := a.deleteThread(deleted.ID); err != nil {
 		t.Fatalf("deletion refused remote job: %v", err)
 	}
 	if _, err := a.store.GetThread(deleted.ID); err == nil {

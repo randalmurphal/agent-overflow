@@ -381,7 +381,7 @@ func TestATakenInWorkerPromptGoesBackWhenItsSpawnerLeaves(t *testing.T) {
 					t.Fatalf("archive the spawner left work behind: %+v", archived)
 				}
 			} else {
-				err = f.app.DeleteThread(f.assistant.ID)
+				err = f.app.deleteThread(f.assistant.ID)
 			}
 			if err != nil {
 				t.Fatalf("%s the spawner: %v", leave, err)

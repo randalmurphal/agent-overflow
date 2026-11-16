@@ -972,7 +972,7 @@ func (a *App) sweepThreadRequestsAtBoot() {
 		return
 	}
 	for _, row := range rows {
-		if err := a.DeleteThread(row.ThreadID); err != nil {
+		if err := a.deleteThread(row.ThreadID); err != nil {
 			logThreadRequestSweep("delete scratch thread "+row.ThreadID, err)
 			continue
 		}

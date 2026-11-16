@@ -218,7 +218,7 @@ func TestARemoteSpawnsLineageGoesOnceItsThreadThereIsGone(t *testing.T) {
 	if row := readRemoteSpawnRow(t, pair, spawn.Token); !row.lineage {
 		t.Fatalf("the spawn here past the floor = %+v; want its lineage", row)
 	}
-	if err := pair.dest.DeleteThread(child); err != nil {
+	if err := pair.dest.deleteThread(child); err != nil {
 		t.Fatalf("delete the thread there: %v", err)
 	}
 	// Nothing of the spawn's last answer is remembered, as after a restart:

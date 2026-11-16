@@ -299,8 +299,9 @@ Mechanism in
   thread spawns is owned by its spawner, with no sidebar row and no
   completion notification of its own, unless placed standalone or in a
   group; the spawner or the user moves it either way later. Archiving a
-  thread archives its owned workers; deleting it leaves them as
-  standalone rows. Placement is organization only: the spawn record, the
+  thread archives its owned workers, and deleting it deletes them, down
+  the lineage (ruling 2026-11-16); a worker with a sidebar row is the
+  person's and stays. Placement is organization only: the spawn record, the
   reply path and the read mark on an answer do not change. An assistant
   row never joins a group.
 - Thread content search matches title and workspace path only. Searching

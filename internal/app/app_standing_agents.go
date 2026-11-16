@@ -167,7 +167,7 @@ func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Th
 			home:            home,
 		}, false)
 	}, func(thread store.Thread) {
-		if err := a.DeleteThread(thread.ID); err != nil {
+		if err := a.deleteThread(thread.ID); err != nil {
 			log.Printf("assistants: delete the thread %s of an assistant that was not created: %v", thread.ID, err)
 		}
 	}, projects, spec.creatorAgentID)
@@ -267,33 +267,59 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 	return &row, nil
 }
 
-// AssistantDependents counts the threads that live under an assistant
-// besides its current thread, which deleting it deletes too (ruling 39).
-type AssistantDependents struct {
+// DeleteDependents is what deleting a thread deletes with it: the past
+// threads and helpers of the assistant whose current thread it is (ruling
+// 39), and the workers it owns at any depth, helpers apart
+// (docs/specs/standing-agents.md, "Owned workers").
+type DeleteDependents struct {
 	PastThreads int `json:"pastThreads"`
 	Helpers     int `json:"helpers"`
+	Workers     int `json:"workers"`
+	// WorkerWorktrees are the worktrees those workers and helpers are on,
+	// each once, which a delete from the sidebar removes as it removes the
+	// thread's own.
+	WorkerWorktrees []WorkerWorktree `json:"workerWorktrees"`
 }
 
-// GetAssistantDependents counts the past threads and helpers of the
-// assistant whose current thread this is, for its delete confirmation;
-// zero for any other thread.
+// WorkerWorktree is one worktree a worker of a deleted thread is on.
+type WorkerWorktree struct {
+	ProjectID    string `json:"projectId"`
+	WorktreePath string `json:"worktreePath"`
+}
+
+// GetDeleteDependents reads what deleting threadID deletes with it, for its
+// delete confirmation and the worktrees the delete removes first.
 //
 //ao:scope threads:read
-func (a *App) GetAssistantDependents(threadID string) (AssistantDependents, error) {
+func (a *App) GetDeleteDependents(threadID string) (DeleteDependents, error) {
 	past, helpers, err := a.store.AssistantDependentsOf(threadID)
 	if err != nil {
-		return AssistantDependents{}, err
+		return DeleteDependents{}, err
 	}
-	return AssistantDependents{PastThreads: past, Helpers: helpers}, nil
+	workers, err := a.store.ListWorkersUnder(threadID)
+	if err != nil {
+		return DeleteDependents{}, err
+	}
+	dependents := DeleteDependents{PastThreads: past, Helpers: helpers, WorkerWorktrees: []WorkerWorktree{}}
+	for _, worker := range workers {
+		if !worker.Helper {
+			dependents.Workers++
+		}
+		worktree := WorkerWorktree{ProjectID: worker.ProjectID, WorktreePath: worker.WorktreePath}
+		if worktree.WorktreePath != "" && worktree.ProjectID != "" && !slices.Contains(dependents.WorkerWorktrees, worktree) {
+			dependents.WorkerWorktrees = append(dependents.WorkerWorktrees, worktree)
+		}
+	}
+	return dependents, nil
 }
 
 // deleteAssistantDependents is the thread delete's AssistantDependents: it
 // deletes what lives under the assistant whose current thread threadID is,
 // besides that thread, its past threads and its helpers (ruling 39), each
-// through DeleteThread under its own lock. One a delete would refuse (a
-// thread being moved) refuses them all before any is deleted. Nothing for
-// any other thread.
-func (a *App) deleteAssistantDependents(threadID string) error {
+// as DeleteThread does under its own lock, with the workers each owns on
+// the same walk. One a delete would refuse (a thread being moved) refuses
+// them all before any is deleted. Nothing for any other thread.
+func (a *App) deleteAssistantDependents(threadID string, cascade *workerCascade) error {
 	agent, found, err := a.store.GetStandingAgent(threadID)
 	if err != nil || !found {
 		return err
@@ -308,11 +334,24 @@ func (a *App) deleteAssistantDependents(threadID string) error {
 		}
 	}
 	for _, id := range dependents {
-		if err := a.DeleteThread(id); err != nil {
+		if err := a.deleteAssistantDependent(id, cascade); err != nil {
 			return assistantDependentError(id, err)
 		}
 	}
 	return nil
+}
+
+// deleteAssistantDependent deletes one thread under an assistant, as
+// DeleteThread does, on the assistant's delete's walk.
+func (a *App) deleteAssistantDependent(id string, cascade *workerCascade) error {
+	unlock := a.threadLocks().Lock(id)
+	defer unlock()
+	cascade.held[id] = true
+	defer delete(cascade.held, id)
+	if err := a.threadApplication().CheckMutable(id); err != nil {
+		return err
+	}
+	return a.deleteThreadCascading(id, cascade)
 }
 
 // assistantDependentError says which thread under an assistant stopped its

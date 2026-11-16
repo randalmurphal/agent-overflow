@@ -302,9 +302,14 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 }
 
 // deleteThreadPacedLocked is deleteThreadLocked with the store's
-// item-chunk pause wired to the sweep's yield.
+// item-chunk pause wired to the sweep's yield. The workers it deletes with
+// the thread are deleted at full speed: they are few, and owned by a thread
+// the sweep is deleting.
 func (a *App) deleteThreadPacedLocked(threadID string, pause store.ChunkPause) error {
-	ports := a.threadDeletePorts()
+	cascade := newWorkerCascade(threadID)
+	ports := a.threadDeletePorts(cascade)
 	ports.ChunkPause = pause
-	return a.threadApplication().DeleteThread(threadID, ports)
+	err := a.threadApplication().DeleteThread(threadID, ports)
+	cascade.logFailures(threadID)
+	return err
 }

@@ -37,7 +37,7 @@ func TestThreadTransferFencesUserMutationsUntilCopySeals(t *testing.T) {
 	operations := map[string]func() error{
 		"draft save":         func() error { return a.SaveDraft(ctx, thread.ID, "overwrite", nil, nil, nil) },
 		"draft clear":        func() error { return a.ClearDraft(ctx, thread.ID) },
-		"delete":             func() error { return a.DeleteThread(thread.ID) },
+		"delete":             func() error { return a.deleteThread(thread.ID) },
 		"empty draft delete": func() error { return mustErr(a.DeleteEmptyDraftThread(thread.ID)) },
 		"archive":            func() error { return archiveThread(a, thread.ID) },
 		"unarchive":          func() error { return mustErr(a.UnarchiveThread(thread.ID)) },
@@ -77,7 +77,7 @@ func TestThreadTransferFencesUserMutationsUntilCopySeals(t *testing.T) {
 	if err := a.RenameThread(thread.ID, "original still usable"); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.DeleteThread(thread.ID); err != nil {
+	if err := a.deleteThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 }

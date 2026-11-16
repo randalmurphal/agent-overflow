@@ -278,7 +278,7 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 					t.Fatalf("stop computer 2: %v", err)
 				}
 			case "refused":
-				if err := c.apps[2].DeleteThread(c.threads[1]); err != nil {
+				if err := c.apps[2].deleteThread(c.threads[1]); err != nil {
 					t.Fatalf("delete the worker there: %v", err)
 				}
 			}

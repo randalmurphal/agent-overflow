@@ -96,7 +96,19 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 // The check and the mark are one transaction, and a helper is recorded only
 // for an assistant whose current thread is not marked (recordAgentHelperTx),
 // so a helper made meanwhile either refuses the mark or is refused itself.
-func (s *Store) BeginThreadDelete(id string) (err error) {
+func (s *Store) BeginThreadDelete(id string) error {
+	return s.beginThreadDelete(id, "")
+}
+
+// BeginWorkerDelete is BeginThreadDelete for a worker its owner's delete
+// deletes: the mark holds only while ownerID still owns the thread, in the
+// same transaction. A thread given a sidebar row or another owner since is
+// left unmarked (ErrWorkerNotOwned).
+func (s *Store) BeginWorkerDelete(id, ownerID string) error {
+	return s.beginThreadDelete(id, ownerID)
+}
+
+func (s *Store) beginThreadDelete(id, ownerID string) (err error) {
 	action := fmt.Sprintf("store: mark thread %s deleting", id)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -106,11 +118,26 @@ func (s *Store) BeginThreadDelete(id string) (err error) {
 	if err := requireNoAssistantDependents(tx, id); err != nil {
 		return err
 	}
-	result, err := tx.Exec(`UPDATE threads SET deleting = 1 WHERE id = ?`, id)
+	query, args := `UPDATE threads SET deleting = 1 WHERE id = ?`, []any{id}
+	if ownerID != "" {
+		query += ` AND ` + ownedBySQL("?")
+		args = append(args, ownerID)
+	}
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id)); err != nil {
+		if ownerID == "" || !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var found bool
+		if probeErr := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM threads WHERE id = ?)`, id).Scan(&found); probeErr != nil {
+			return fmt.Errorf("%s: probe: %w", action, probeErr)
+		}
+		if found {
+			return ErrWorkerNotOwned
+		}
 		return err
 	}
 	if err := tx.Commit(); err != nil {

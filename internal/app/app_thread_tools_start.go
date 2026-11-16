@@ -575,7 +575,7 @@ func (t threadToolsApp) acceptRequest(
 // owner, and its message was never sent, so it would be work the caller
 // cannot reach and will make again.
 func (t threadToolsApp) discardUnnamedThread(threadID string, cause error) error {
-	if err := t.app.DeleteThread(threadID); err != nil {
+	if err := t.app.deleteThread(threadID); err != nil {
 		log.Printf("thread tools: delete thread %s after its request could not name it: %v", threadID, err)
 		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
 			"Thread %s was created but its request could not record it (%v), and removing it failed too. It is on this computer.",

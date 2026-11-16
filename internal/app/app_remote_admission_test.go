@@ -343,7 +343,7 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 			threadID := started.SourceThreadID
 			switch action {
 			case "delete":
-				err = source.DeleteThread(threadID)
+				err = source.deleteThread(threadID)
 			case "archive":
 				err = archiveThread(source, threadID)
 			case "move":

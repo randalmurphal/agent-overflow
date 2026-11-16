@@ -283,8 +283,8 @@ func TestAnAssistantSpawnsHelpersAndProjectWork(t *testing.T) {
 }
 
 // New Thread, Same Assistant keeps the successor in the home; deleting the
-// assistant's current thread deletes its past threads, its helpers and its
-// home, and its project work stays.
+// assistant's current thread deletes its past threads, its helpers, the
+// project work it owns and its home; project work with a sidebar row stays.
 func TestDeletingAnAssistantDeletesWhatLivesUnderIt(t *testing.T) {
 	t.Parallel()
 	f := newAssistantFixture(t)
@@ -299,30 +299,36 @@ func TestDeletingAnAssistantDeletesWhatLivesUnderIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	placed, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "ship", ProjectID: projectID, Placement: threadtools.PlacementStandalone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	successor, err := f.app.StartNextAssistantThread(t.Context(), agent.ThreadID)
 	if err != nil {
 		t.Fatalf("StartNextAssistantThread: %v", err)
 	}
-	if got, err := f.app.GetAssistantDependents(successor.ID); err != nil || got != (AssistantDependents{PastThreads: 1, Helpers: 1}) {
+	if got, err := f.app.GetDeleteDependents(successor.ID); err != nil || got.PastThreads != 1 || got.Helpers != 1 || got.Workers != 1 {
 		t.Fatalf("dependents = %+v, %v", got, err)
 	}
-	if got, err := f.app.GetAssistantDependents(work.ThreadID); err != nil || got != (AssistantDependents{}) {
+	if got, err := f.app.GetDeleteDependents(work.ThreadID); err != nil || got.PastThreads != 0 || got.Helpers != 0 || got.Workers != 0 {
 		t.Fatalf("an ordinary thread's dependents = %+v, %v", got, err)
 	}
 	if successor.ProjectID != "" || successor.WorkspacePath != agent.Home || successor.AgentID != agent.ID {
 		t.Fatalf("successor = project %q workspace %q agent %q", successor.ProjectID, successor.WorkspacePath, successor.AgentID)
 	}
 
-	if err := f.app.DeleteThread(successor.ID); err != nil {
+	if err := f.app.deleteThread(successor.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
-	for _, id := range []string{successor.ID, agent.ThreadID, helper.ThreadID} {
+	for _, id := range []string{successor.ID, agent.ThreadID, helper.ThreadID, work.ThreadID} {
 		if _, err := f.app.store.GetThread(id); err == nil {
 			t.Errorf("thread %s outlived its assistant", id)
 		}
 	}
-	if _, err := f.app.store.GetThread(work.ThreadID); err != nil {
-		t.Fatalf("the project work went with the assistant: %v", err)
+	if _, err := f.app.store.GetThread(placed.ThreadID); err != nil {
+		t.Fatalf("the project work with a sidebar row went with the assistant: %v", err)
 	}
 	if _, err := os.Stat(agent.Home); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("home after the delete: %v", err)
@@ -381,7 +387,7 @@ func TestARefusedAssistantDeleteKeepsWhatLivesUnderIt(t *testing.T) {
 			t.Fatal(err)
 		}
 		var transfer *store.ThreadTransferError
-		if err := f.app.DeleteThread(current); !errors.As(err, &transfer) {
+		if err := f.app.deleteThread(current); !errors.As(err, &transfer) {
 			t.Fatalf("DeleteThread = %v, want the transfer's refusal", err)
 		}
 		underIt(t, f, ids, true)
@@ -397,7 +403,7 @@ func TestARefusedAssistantDeleteKeepsWhatLivesUnderIt(t *testing.T) {
 			t.Fatal(err)
 		}
 		var transfer *store.ThreadTransferError
-		err := f.app.DeleteThread(current)
+		err := f.app.deleteThread(current)
 		if err == nil || errors.As(err, &transfer) || !strings.Contains(err.Error(), "thread "+helper+", which lives under this assistant, is being transferred") {
 			t.Fatalf("DeleteThread = %v, want the helper named and no transfer of the assistant's own", err)
 		}
@@ -406,7 +412,7 @@ func TestARefusedAssistantDeleteKeepsWhatLivesUnderIt(t *testing.T) {
 	t.Run("a home that is not its own folder", func(t *testing.T) {
 		t.Parallel()
 		f, current, ids := assistant(t, func(configDir string) string { return own(configDir) + "-x" })
-		if err := f.app.DeleteThread(current); err == nil || !strings.Contains(err.Error(), "this assistant was not deleted") {
+		if err := f.app.deleteThread(current); err == nil || !strings.Contains(err.Error(), "this assistant was not deleted") {
 			t.Fatalf("DeleteThread = %v, want the home refused", err)
 		}
 		underIt(t, f, ids, true)

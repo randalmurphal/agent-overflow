@@ -96,7 +96,7 @@ func TestRemoveWorktreeOfArchivedThreadInArchivedProject(t *testing.T) {
 	if _, err := os.Stat(attached.WorktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree %s survived: %v", attached.WorktreePath, err)
 	}
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("delete thread: %v", err)
 	}
 }

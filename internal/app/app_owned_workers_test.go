@@ -20,8 +20,9 @@ import (
 // Owned workers (docs/specs/standing-agents.md, "Owned workers"): a thread
 // a local thread spawned is owned by it unless placed, has no sidebar row,
 // moves in and out of the sidebar by placement with a frame that keeps its
-// panes open, follows its owner's archive, and joins the sidebar when its
-// owner is deleted. An assistant's own thread joins no group.
+// panes open, and follows its owner's archive and delete
+// (app_owned_workers_delete_test.go). An assistant's own thread joins no
+// group.
 
 // recordSpawn is what a finished thread_spawn with the default placement
 // leaves: a local spawn request from spawner naming child, owned by it.
@@ -500,30 +501,6 @@ func TestAWorkerThatCannotBeArchivedIsReported(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-// Deleting a thread leaves the workers it owned standalone, announced as
-// rows the sidebar now lists, and in the catalog. Nothing is deleted with
-// it.
-func TestADeletedThreadsWorkersSurfaceStandalone(t *testing.T) {
-	t.Parallel()
-	f := newOrganizeFixture(t)
-	spawner := f.thread(t, "spawner")
-	worker := f.thread(t, "worker")
-	withMessage(t, f.app, worker.ID)
-	recordSpawn(t, f.app, "tok-worker", spawner.ID, worker.ID)
-	f.events.reset()
-	if err := f.app.DeleteThread(spawner.ID); err != nil {
-		t.Fatal(err)
-	}
-	got := f.reload(t, worker.ID)
-	if got.Placement != store.PlacementStandalone || got.SpawnedByThreadID != "" {
-		t.Errorf("worker after its owner's delete = placement %s spawnedBy %q, want standalone and nobody's", got.Placement, got.SpawnedByThreadID)
-	}
-	placementFrames(t, "delete", f.threadFrames(t), worker.ID, store.PlacementStandalone)
-	if ids := catalogIDs(t, f.app); !slices.Contains(ids, worker.ID) {
-		t.Errorf("catalog after the delete = %v, want the worker", ids)
 	}
 }
 

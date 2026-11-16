@@ -795,7 +795,7 @@ func TestE2E_ThreadDelete_CleansCodexBackground(t *testing.T) {
 		return nil
 	}
 
-	if err := app.DeleteThread(thread.ID); err != nil {
+	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 

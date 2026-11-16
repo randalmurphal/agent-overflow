@@ -601,7 +601,7 @@ func TestDeletingABoundThreadClearsTheBinding(t *testing.T) {
 	if _, err := h.app.WorkflowBindThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.app.DeleteThread(thread.ID); err != nil {
+	if err := h.app.deleteThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := h.app.store.GetWorkItem(item.ID)

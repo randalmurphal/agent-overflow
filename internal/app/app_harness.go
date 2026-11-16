@@ -323,8 +323,17 @@ func (h *harnessHost) DeleteProject(projectID string) error {
 	return err
 }
 
+// DeleteThread deletes a seeded thread; a seed whose delete left a worker
+// standing fails.
 func (h *harnessHost) DeleteThread(threadID string) error {
-	return h.app.DeleteThread(threadID)
+	result, err := h.app.DeleteThread(threadID)
+	if err != nil {
+		return err
+	}
+	if len(result.WorkersNotDeleted) > 0 {
+		return fmt.Errorf("delete %s left workers standing: %+v", threadID, result.WorkersNotDeleted)
+	}
+	return nil
 }
 
 func (h *harnessHost) RecoverCrashedTurns() error {

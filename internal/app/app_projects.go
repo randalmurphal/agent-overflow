@@ -267,6 +267,32 @@ type ProjectDeletionResult struct {
 	// git declined to remove — see RetainedWorktree — so the user can finish the
 	// job with their own tools.
 	RetainedWorktrees []RetainedWorktree `json:"retainedWorktrees"`
+	// WorkersNotDeleted names each worker of a deleted thread, outside the
+	// project, whose delete failed (DeleteThreadResult).
+	WorkersNotDeleted []WorkerFailure `json:"workersNotDeleted,omitempty"`
+}
+
+// refuseRunningWorkersOutside refuses a project delete while a worker of
+// threadID, at any depth, outside the project is running: the thread's
+// delete deletes it, and deleting a project never interrupts work.
+func (a *App) refuseRunningWorkersOutside(projectID, threadID string) error {
+	workers, err := a.store.ListWorkersUnder(threadID)
+	if err != nil {
+		return fmt.Errorf("delete project: %w", err)
+	}
+	for _, worker := range workers {
+		if worker.ProjectID == projectID {
+			continue
+		}
+		reason, err := a.threadActivityBlockReason(worker.ThreadID)
+		if err != nil {
+			return fmt.Errorf("delete project: check worker %s activity: %w", worker.ThreadID, err)
+		}
+		if reason != "" {
+			return fmt.Errorf("cannot delete project while worker %s of thread %s is running: %s", worker.ThreadID, threadID, reason)
+		}
+	}
+	return nil
 }
 
 // DeleteProject removes a project from Agent Overflow: every contained thread,
@@ -385,13 +411,22 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 		if reason != "" {
 			return ProjectDeletionResult{}, fmt.Errorf("cannot delete project while thread %s is running: %s", threadID, reason)
 		}
+		// Its workers in other projects are deleted with it, and are held
+		// to the same rule.
+		if err := a.refuseRunningWorkersOutside(id, threadID); err != nil {
+			return ProjectDeletionResult{}, err
+		}
 	}
 
+	// The cascade of each thread's delete leaves the project's other
+	// threads, whose locks this holds, to their own deletes here.
+	cascade := newWorkerCascade(ids...)
 	for _, threadID := range ids {
-		if err := a.deleteThreadLocked(threadID); err != nil {
+		if err := a.deleteThreadCascading(threadID, cascade); err != nil {
 			return ProjectDeletionResult{}, fmt.Errorf("delete project: delete thread %s: %w", threadID, err)
 		}
 	}
+	result.WorkersNotDeleted = a.workerFailures(cascade.failed)
 	// The cleanup above frees disk and stops processes; it never touches a row,
 	// because a run record is not litter — it is the history the app is being
 	// asked to forget. It is dropped here, with the project. `work_items` has no
