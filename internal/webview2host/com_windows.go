@@ -39,6 +39,7 @@ package webview2host
 import (
 	"errors"
 	"strconv"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -770,10 +771,27 @@ func (v *iCoreWebView2) callDevToolsProtocolMethod(method, paramsJSON string, ha
 
 // Handler objects are Go structs whose first field is a vtable pointer,
 // which is what makes &handler a valid COM interface pointer. Their
-// IUnknown is a no-op: each handler is kept alive by a Go reference for
-// exactly as long as WebView2 can call it (the host's handler map, or the
-// pending-create slot), so refcounting would add bookkeeping that decides
-// nothing. AddRef/Release therefore return 1 rather than a real count.
+// IUnknown is a no-op: AddRef/Release return 1 rather than a real count, so
+// Go cannot learn when WebView2 lets go of one. WebView2 can call or release
+// a handler after the page or clear that made it is gone (a close racing a
+// create, a clear racing an environment create), so every constructor below
+// roots its handler for the life of the process (keepForWebView2).
+
+// webView2Roots holds every Go object handed to WebView2 as a COM pointer.
+// It grows by a few small objects per page and per environment create.
+var webView2Roots struct {
+	mu      sync.Mutex
+	objects []any
+}
+
+// keepForWebView2 keeps obj reachable for the rest of the process and
+// returns it.
+func keepForWebView2[T any](obj T) T {
+	webView2Roots.mu.Lock()
+	webView2Roots.objects = append(webView2Roots.objects, obj)
+	webView2Roots.mu.Unlock()
+	return obj
+}
 
 type handlerVtbl struct {
 	iUnknownVtbl
@@ -808,7 +826,7 @@ var environmentCompletedVtbl = handlerVtbl{
 }
 
 func newEnvironmentCompletedHandler(done func(uintptr, *iCoreWebView2Environment)) *iEnvironmentCompletedHandler {
-	return &iEnvironmentCompletedHandler{vtbl: &environmentCompletedVtbl, done: done}
+	return keepForWebView2(&iEnvironmentCompletedHandler{vtbl: &environmentCompletedVtbl, done: done})
 }
 
 // --- controller created ---
@@ -831,7 +849,7 @@ var controllerCompletedVtbl = handlerVtbl{
 }
 
 func newControllerCompletedHandler(done func(uintptr, *iCoreWebView2Controller)) *iControllerCompletedHandler {
-	return &iControllerCompletedHandler{vtbl: &controllerCompletedVtbl, done: done}
+	return keepForWebView2(&iControllerCompletedHandler{vtbl: &controllerCompletedVtbl, done: done})
 }
 
 // --- CallDevToolsProtocolMethod completed ---
@@ -854,7 +872,7 @@ var devToolsCompletedVtbl = handlerVtbl{
 }
 
 func newDevToolsCompletedHandler(done func(uintptr, string)) *iDevToolsCompletedHandler {
-	return &iDevToolsCompletedHandler{vtbl: &devToolsCompletedVtbl, done: done}
+	return keepForWebView2(&iDevToolsCompletedHandler{vtbl: &devToolsCompletedVtbl, done: done})
 }
 
 // --- Find Start completed ---
@@ -880,7 +898,7 @@ var findStartCompletedVtbl = handlerVtbl{
 }
 
 func newFindStartCompletedHandler(done func(uintptr)) *iFindStartCompletedHandler {
-	return &iFindStartCompletedHandler{vtbl: &findStartCompletedVtbl, done: done}
+	return keepForWebView2(&iFindStartCompletedHandler{vtbl: &findStartCompletedVtbl, done: done})
 }
 
 // --- AcceleratorKeyPressed ---
@@ -949,7 +967,7 @@ var acceleratorKeyPressedVtbl = handlerVtbl{
 }
 
 func newAcceleratorKeyPressedHandler(pressed func(*iAcceleratorKeyPressedEventArgs)) *iAcceleratorKeyPressedHandler {
-	return &iAcceleratorKeyPressedHandler{vtbl: &acceleratorKeyPressedVtbl, pressed: pressed}
+	return keepForWebView2(&iAcceleratorKeyPressedHandler{vtbl: &acceleratorKeyPressedVtbl, pressed: pressed})
 }
 
 // --- ProcessFailed ---
@@ -994,7 +1012,7 @@ var processFailedVtbl = handlerVtbl{
 }
 
 func newProcessFailedHandler(done func(uint32)) *iProcessFailedHandler {
-	return &iProcessFailedHandler{vtbl: &processFailedVtbl, done: done}
+	return keepForWebView2(&iProcessFailedHandler{vtbl: &processFailedVtbl, done: done})
 }
 
 // processFailedKindName renders COREWEBVIEW2_PROCESS_FAILED_KIND for the

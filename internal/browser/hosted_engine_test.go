@@ -632,58 +632,6 @@ func TestManagerRoutesClearReportsToTheHostedEngine(t *testing.T) {
 	}
 }
 
-// Stopping the engine asks the launcher to release its pane environment, so
-// the WebView2 browser process tree goes with the engine. An engine that
-// never started sends nothing: the launcher builds its host on the first
-// directive, and a release must not be what builds it.
-func TestHostedEngineStopReleasesThePaneEnvironmentOnce(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.Stop()
-	sink.expectOps(t)
-
-	if err := engine.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	engine.Stop()
-	engine.Stop()
-	sink.expectOps(t, webview2host.OpAccelerators, webview2host.OpRelease)
-
-	if err := engine.Start(context.Background()); err != nil {
-		t.Fatalf("restart: %v", err)
-	}
-	engine.Stop()
-	sink.expectOps(t, webview2host.OpAccelerators, webview2host.OpRelease, webview2host.OpAccelerators, webview2host.OpRelease)
-}
-
-// The Manager's idle close, a grace period after the last profile closes, is
-// the one rule that releases the environment. With a profile open it leaves
-// the engine, and so the launcher's environment, alone.
-func TestManagerIdleCloseReleasesThePaneEnvironment(t *testing.T) {
-	sink := newDirectiveSink()
-	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{PaneHost: &PaneHostOptions{
-		Directive: sink.send,
-		Relay:     stubRelay{},
-	}})
-	manager.startMu.Lock()
-	err := manager.startLocked(context.Background())
-	manager.startMu.Unlock()
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	manager.mu.Lock()
-	manager.scopes["/home/dev/repo"] = &workspaceScope{workspace: "/home/dev/repo", pages: map[string]*managedPage{}}
-	manager.mu.Unlock()
-	manager.closeIdleBrowser()
-	sink.expectOps(t, webview2host.OpAccelerators)
-
-	manager.mu.Lock()
-	delete(manager.scopes, "/home/dev/repo")
-	manager.mu.Unlock()
-	manager.closeIdleBrowser()
-	sink.expectOps(t, webview2host.OpAccelerators, webview2host.OpRelease)
-}
-
 // The pane presentation path the companion drives is an engine
 // capability, not a Manager branch: only the hosted engine answers it.
 var _ paneHost = (*hostedEngine)(nil)

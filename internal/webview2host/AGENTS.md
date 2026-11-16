@@ -16,16 +16,11 @@ environment, removes the entire owned profile tree, recreates it, and reports
 only after completion. Validate every path component against symlinks and
 Windows reparse points before deletion.
 
-The pane environment's lifecycle is `paneEnvironment` (`environment.go`,
-cross-platform and unit-tested); `host_windows.go` supplies only its COM
-start and free. A release advances the generation, wakes old waiters, and
-forces a late completion to release its own COM references instead of
-adopting an environment rooted in a deleted profile. `clear-data` releases
-unconditionally. `release` (`releaseIdle`) is the backend's engine stop and
-releases only while no page is registered and no create holds the generation
-from `acquire` until its page is registered; it never builds the host. The
-backend's idle stop is the only timer for this rule. Keep each in-flight
-environment create's handler alive until WebView2 calls it (`envStarts`).
+`clear-data` may race an asynchronous environment create. Preserve the
+generation contract documented on `ensureEnvironment`, `environmentCompleted`,
+and `releaseEnvironment`: clearing advances `envGen`, wakes old waiters, and
+forces a late completion to release its own COM references instead of adopting
+an environment rooted in the deleted profile.
 
 The launcher is the sole CDP dialer. Bind the relay to loopback, pair the target
 identifier with its page, and close the relay with the controller. Never expose
@@ -55,10 +50,13 @@ reports to preserve created before later states such as closed.
 Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
 reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
 host before its parent HWND and release controllers, handlers, relay,
-environment, and COM references in dependency order.
+environment, and COM references in dependency order. A Go object handed to
+WebView2 as a COM pointer counts no references, so its constructor roots it
+for the process (`keepForWebView2`); never make its lifetime depend on a page
+or a clear.
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
-Windows tests (`find_smoke_windows_test.go`, `release_smoke_windows_test.go`),
+Windows tests (`find_smoke_windows_test.go`, `process_smoke_windows_test.go`),
 which need an installed runtime and open a window. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`.
