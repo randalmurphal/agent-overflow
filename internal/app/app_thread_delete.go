@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
@@ -76,6 +77,8 @@ func (a *App) DeleteThread(id string) (DeleteThreadResult, error) {
 // thread outside the delete is on. A worktree with unsaved work refuses the
 // whole delete, with nothing stopped or deleted. A caller without
 // git:operate is refused, with nothing deleted, when there is a worktree to
+// remove. One that another delete under way also takes a thread of refuses
+// it when that delete is the older, and is otherwise kept and named.
 //
 //ao:scope threads:operate
 //ao:route home
@@ -96,7 +99,8 @@ type DeleteThreadResult struct {
 	WorkersNotDeleted []WorkerFailure `json:"workersNotDeleted,omitempty"`
 	// RetainedWorktrees are the worktrees the delete would have removed and
 	// left on disk, and why: a thread outside the delete reached one after
-	// the delete checked it, or its removal failed when it ran (unsaved work that appeared since,
+	// the delete checked it, another delete takes the other thread on it,
+	// or its removal failed when it ran (unsaved work that appeared since,
 	// or a git refusal). Their threads are deleted.
 	RetainedWorktrees []RetainedWorktree `json:"retainedWorktrees,omitempty"`
 }
@@ -299,7 +303,7 @@ func (a *App) newFamilyDelete(req deleteRequest) *familyDelete {
 	return &familyDelete{
 		app:     a,
 		req:     req,
-		id:      entityid.New(),
+		id:      newDeleteOperationID(),
 		retired: make(map[string]bool),
 		closed:  make(map[string]bool),
 	}
@@ -450,7 +454,9 @@ func (op *familyDelete) verify() error {
 // threads are on that no thread outside it is on (familyWorktrees). The
 // caller's permission and each one's loss-of-work gate are asked for
 // exactly those, and none is asked when there are none. A worktree that a
-// thread outside the delete is on stays.
+// thread outside the delete is on stays; when every such thread is another
+// delete's, that delete's claim and this one's are compared, so that one of
+// the two removes it (sharedWithADelete).
 func (op *familyDelete) verifyWorktrees() error {
 	sites, err := op.app.familyWorktrees(op.members, op.removes)
 	if err != nil {
@@ -461,6 +467,13 @@ func (op *familyDelete) verifyWorktrees() error {
 		if len(site.outside) == 0 {
 			emptied = append(emptied, site)
 			continue
+		}
+		kept, err := op.sharedWithADelete(site)
+		if err != nil {
+			return err
+		}
+		if kept != nil {
+			op.kept = append(op.kept, *kept)
 		}
 	}
 	if len(emptied) == 0 {
@@ -482,6 +495,36 @@ func (op *familyDelete) verifyWorktrees() error {
 	}
 	op.sites = emptied
 	return nil
+}
+
+// sharedWithADelete settles a worktree of the delete that threads outside
+// it are on. One of them that no delete takes keeps it, and nothing is
+// said. When every one is another delete's, each would leave the worktree
+// to the other: the delete whose claim is older (newDeleteOperationID)
+// keeps it and names it, and the younger is refused, so its retry, once the
+// older ends, finds the worktree its own. A thread a delete committed
+// without a claim (store.BeginThreadDelete) counts as older.
+func (op *familyDelete) sharedWithADelete(site deleteSite) (*RetainedWorktree, error) {
+	claims := make([]string, len(site.outside))
+	for i, id := range site.outside {
+		claim, committed, err := op.app.store.ThreadDeleteClaim(id)
+		if err != nil {
+			return nil, err
+		}
+		if claim == "" && !committed {
+			return nil, nil
+		}
+		claims[i] = claim
+	}
+	for i, id := range site.outside {
+		if claims[i] < op.id {
+			return nil, errorsx.Public("delete_worktree_being_deleted", fmt.Sprintf(
+				"Nothing was deleted: thread %s, which is also on the worktree %s, is being deleted. Delete again when that ends.",
+				op.app.threadName(id), site.path), store.ErrThreadDeleting)
+		}
+	}
+	return &RetainedWorktree{Path: site.path, Reason: fmt.Sprintf(
+		"thread %s, which is also on it, is being deleted by another delete", op.app.threadName(site.outside[0]))}, nil
 }
 
 // threadName names a thread to a person: its title, quoted, or its id when
@@ -858,6 +901,13 @@ func (a *App) familyWorktrees(family []store.DeleteMember, take func(store.Delet
 		}
 	}
 	return sites, nil
+}
+
+// newDeleteOperationID mints a delete's id, the claim it writes
+// (threads.delete_claim). Ids sort in the order their deletes began, so two
+// deletes compare their claims the same way (sharedWithADelete).
+func newDeleteOperationID() string {
+	return fmt.Sprintf("%020d-%s", time.Now().UnixNano(), entityid.New())
 }
 
 // checkWorktreeRemovable is the loss-of-work gate of a worktree the delete

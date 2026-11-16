@@ -35,7 +35,7 @@ func (a *App) checkForkSource(op, sourceThreadID string) error {
 	err := a.threadApplication().CheckMutable(sourceThreadID)
 	deleted := errors.Is(err, store.ErrThreadGone)
 	if !deleted && errors.Is(err, store.ErrThreadDeleting) {
-		committed, readErr := a.store.ThreadDeleteCommitted(sourceThreadID)
+		_, committed, readErr := a.store.ThreadDeleteClaim(sourceThreadID)
 		if readErr != nil {
 			return fmt.Errorf("%s %s: %w", op, sourceThreadID, readErr)
 		}

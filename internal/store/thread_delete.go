@@ -170,15 +170,17 @@ func checkThreadNotDeleting(q transferQuerier, threadID string) error {
 	return nil
 }
 
-// ThreadDeleteCommitted reports whether a delete committed threadID
-// (threads.deleting). A missing thread is not.
-func (s *Store) ThreadDeleteCommitted(threadID string) (bool, error) {
-	var committed bool
-	err := s.reader().QueryRow(`SELECT deleting FROM threads WHERE id = ?`, threadID).Scan(&committed)
+// ThreadDeleteClaim reads how far a delete has gone with threadID: the
+// delete that claimed it (threads.delete_claim), empty for none, and
+// whether a delete committed it (threads.deleting), which a delete that
+// never claimed it may have (BeginThreadDelete). A missing thread is
+// neither.
+func (s *Store) ThreadDeleteClaim(threadID string) (claim string, committed bool, err error) {
+	err = s.reader().QueryRow(`SELECT delete_claim, deleting FROM threads WHERE id = ?`, threadID).Scan(&claim, &committed)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("store: read the delete of thread %s: %w", threadID, err)
+		return "", false, fmt.Errorf("store: read the delete of thread %s: %w", threadID, err)
 	}
-	return committed, nil
+	return claim, committed, nil
 }
 
 // ClaimDeleteFamily claims for the delete op, in one transaction, the

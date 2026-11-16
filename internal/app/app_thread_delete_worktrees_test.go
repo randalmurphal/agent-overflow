@@ -2,12 +2,16 @@ package app
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -16,7 +20,8 @@ import (
 )
 
 // A delete removes exactly the worktrees it verified and was allowed to
-// remove (familyDelete.verifyWorktrees).
+// remove (familyDelete.verifyWorktrees), and of two deletes that share a
+// worktree, one removes it or names it as kept.
 
 // sharedTree is a git project with one clean linked worktree that the
 // threads a and b are on, in a store a test can reopen.
@@ -78,6 +83,22 @@ func (f sharedTree) reopen(t *testing.T, ids ...string) {
 	if pending, err := boot.store.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
 		t.Errorf("commits left after the reopen = %v, %v", pending, err)
 	}
+}
+
+// hold stops a delete at a hook until the test lets it go.
+type hold struct {
+	reached, release chan struct{}
+	once             sync.Once
+}
+
+func newHold() *hold { return &hold{reached: make(chan struct{}), release: make(chan struct{})} }
+
+// stop is the hook's body: it signals, once, and waits.
+func (h *hold) stop() {
+	h.once.Do(func() {
+		close(h.reached)
+		<-h.release
+	})
 }
 
 // A delete removes only a worktree it found emptied at its verify and was
@@ -200,6 +221,159 @@ func TestAWorktreeAThreadReachesAfterTheVerifyIsKeptAndNamed(t *testing.T) {
 				t.Errorf("a gone %v, worktree kept %v; want both", gone(t, f.app, "a"), exists(t, f.tree))
 			}
 			untouched(t, f.app, "c")
+		})
+	}
+}
+
+// crossingDelete is one of two deletes of the threads on one worktree: the
+// thread it names, whether it removes worktrees, and where it stops for the
+// other: once its thread is verified ("verify") and once it committed
+// ("commit"), in that order.
+type crossingDelete struct {
+	thread string
+	remove bool
+	holds  []string
+}
+
+// Two deletes of the threads on one worktree, each named alone, crossing
+// while both hold their claims. A remover that finds the other thread
+// another delete's is refused, naming it, when that delete's claim is the
+// older, and its retry, once that delete ended, removes the worktree; when
+// its own claim is the older it goes ahead and keeps the worktree, naming
+// it. A plain delete is never refused. Whatever the order, after a reopen
+// no thread, claim or commit is left, and the worktree is removed or was
+// named as kept.
+func TestTwoDeletesSharingAWorktreeLeaveItRemovedOrNamed(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		first, second crossingDelete
+		// refused is whether the second is refused.
+		refused bool
+	}{
+		"both remove, the second runs whole while the first verifies": {
+			first: crossingDelete{"a", true, []string{"verify"}}, second: crossingDelete{"b", true, nil}, refused: true,
+		},
+		"both remove, each verified before the other commits": {
+			first:   crossingDelete{"a", true, []string{"verify", "commit"}},
+			second:  crossingDelete{"b", true, []string{"verify"}},
+			refused: true,
+		},
+		"both remove, the first's checks with the second claimed": {
+			first: crossingDelete{"a", true, []string{"verify"}}, second: crossingDelete{"b", true, []string{"verify"}},
+		},
+		"the remover first, a plain delete committed beside it": {
+			first: crossingDelete{"a", true, []string{"verify"}}, second: crossingDelete{"b", false, []string{"commit"}},
+		},
+		"the remover first, a plain delete runs whole while it verifies": {
+			first: crossingDelete{"a", true, []string{"verify"}}, second: crossingDelete{"b", false, nil},
+		},
+		"a plain delete first, the remover while it verifies": {
+			first: crossingDelete{"a", false, []string{"verify"}}, second: crossingDelete{"b", true, nil}, refused: true,
+		},
+		"a plain delete first, the remover after it committed": {
+			first: crossingDelete{"a", false, []string{"commit"}}, second: crossingDelete{"b", true, nil}, refused: true,
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newSharedTree(t)
+			holds := map[string]*hold{}
+			for _, d := range []crossingDelete{c.first, c.second} {
+				for _, at := range d.holds {
+					holds[d.thread+"@"+at] = newHold()
+				}
+			}
+			stop := func(key string) {
+				if h := holds[key]; h != nil {
+					h.stop()
+				}
+			}
+			f.app.deleteVerifiedForTest = func(id string) { stop(id + "@verify") }
+			f.app.deleteCommittedForTest = func(ids []string) {
+				if len(ids) == 1 {
+					stop(ids[0] + "@commit")
+				}
+			}
+			type answer struct {
+				result DeleteThreadResult
+				err    error
+			}
+			start := func(d crossingDelete) chan answer {
+				done := make(chan answer, 1)
+				go func() {
+					var a answer
+					if d.remove {
+						a.result, a.err = f.app.DeleteThreadsAndWorktrees(context.Background(), []string{d.thread})
+					} else {
+						a.result, a.err = f.app.DeleteThread(d.thread)
+					}
+					done <- a
+				}()
+				return done
+			}
+			at := func(d crossingDelete, i int) *hold { return holds[d.thread+"@"+d.holds[i]] }
+
+			firstDone := start(c.first)
+			within(t, "the first delete's hold", at(c.first, 0).reached)
+			secondDone := start(c.second)
+			var second answer
+			if len(c.second.holds) > 0 {
+				within(t, "the second delete's hold", at(c.second, 0).reached)
+			} else {
+				second = within(t, "the second delete", secondDone)
+			}
+			close(at(c.first, 0).release)
+			if len(c.first.holds) > 1 {
+				within(t, "the first delete's commit", at(c.first, 1).reached)
+			}
+			if len(c.second.holds) > 0 && len(c.first.holds) > 1 {
+				close(at(c.second, 0).release)
+				second = within(t, "the second delete", secondDone)
+			}
+			if len(c.first.holds) > 1 {
+				close(at(c.first, 1).release)
+			}
+			first := within(t, "the first delete", firstDone)
+			if len(c.second.holds) > 0 && len(c.first.holds) == 1 {
+				close(at(c.second, 0).release)
+				second = within(t, "the second delete", secondDone)
+			}
+
+			if first.err != nil || len(first.result.WorkersNotDeleted) > 0 {
+				t.Fatalf("the first delete = %+v, %v", first.result, first.err)
+			}
+			if !c.refused {
+				if second.err != nil || len(second.result.WorkersNotDeleted) > 0 {
+					t.Fatalf("the second delete = %+v, %v", second.result, second.err)
+				}
+			} else {
+				err := second.err
+				if code, _, ok := errorsx.PublicDetails(err); !ok || code != "delete_worktree_being_deleted" || !errors.Is(err, store.ErrThreadDeleting) ||
+					!strings.Contains(err.Error(), `Nothing was deleted: thread "`+c.first.thread+`", which is also on the worktree `+f.tree+`, is being deleted. Delete again when that ends.`) {
+					t.Fatalf("the second delete = %v, want it refused naming %s", err, c.first.thread)
+				}
+				// Its retry, once the older ended, finds the worktree its own.
+				retry, err := f.app.DeleteThreadsAndWorktrees(context.Background(), []string{c.second.thread})
+				if err != nil || len(retry.RetainedWorktrees) > 0 {
+					t.Fatalf("the retry = %+v, %v", retry, err)
+				}
+				if exists(t, f.tree) {
+					t.Error("the retry left the worktree")
+				}
+			}
+			named := false
+			for _, result := range []DeleteThreadResult{first.result, second.result} {
+				for _, kept := range result.RetainedWorktrees {
+					if kept.Path == f.tree && strings.Contains(kept.Reason, "is being deleted by another delete") {
+						named = true
+					}
+				}
+			}
+			if exists(t, f.tree) && !named {
+				t.Errorf("the worktree is on disk and no delete named it: first %+v, second %+v", first.result, second.result)
+			}
+			f.reopen(t, "a", "b")
 		})
 	}
 }

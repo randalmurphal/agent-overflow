@@ -71,7 +71,7 @@ func (s *Service) checkCleanup(threadID string, cleanup, fenced bool) (retired b
 		return false, err
 	}
 	if err == nil && cleanup && fenced {
-		committed, err := database.ThreadDeleteCommitted(threadID)
+		_, committed, err := database.ThreadDeleteClaim(threadID)
 		if err != nil {
 			return false, err
 		}

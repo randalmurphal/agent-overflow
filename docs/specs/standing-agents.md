@@ -792,9 +792,17 @@ Ruling 36, as built:
   its row drops. Threads selected together are one such delete per
   computer, so a worktree only they are on counts and goes once. A
   worktree with unsaved work refuses the whole delete at its verify,
-  with nothing stopped. A worktree a thread outside the delete reached
-  after its verify, and one that cannot be removed when the destroy
-  reaches it, unsaved work that appeared since, is left on disk and named
+  with nothing stopped. A worktree a thread outside the delete is on
+  stays; when every such thread is one another delete has claimed or
+  committed, the two deletes would each leave it to the other, so their
+  claims are compared (delete ids sort in the order the deletes began):
+  the younger is refused, naming that thread ("is being deleted. Delete
+  again when that ends"), and its retry, once the older ended, finds the
+  worktree its own; the older goes ahead and keeps the worktree, named.
+  A delete that removes no worktrees is never refused for this. A
+  worktree kept this way, one a thread outside the delete reached after
+  its verify, and one that cannot be removed when the destroy reaches
+  it, unsaved work that appeared since, is left on disk and named
   (`DeleteThreadResult.RetainedWorktrees`); its threads are still
   deleted. The window stops no session and removes no worktree for a
   delete. The cleanup of a thread moved to another computer deletes
