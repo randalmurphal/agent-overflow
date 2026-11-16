@@ -103,6 +103,17 @@ type DeleteThreadResult struct {
 	// or its removal failed when it ran (unsaved work that appeared since,
 	// or a git refusal). Their threads are deleted.
 	RetainedWorktrees []RetainedWorktree `json:"retainedWorktrees,omitempty"`
+	// WorktreeCleanupFailures are the worktrees the delete removed whose
+	// cleanup after the removal failed, such as a terminal opened in one
+	// that would not close. The worktrees and their threads are gone.
+	WorktreeCleanupFailures []WorktreeCleanupFailure `json:"worktreeCleanupFailures,omitempty"`
+}
+
+// WorktreeCleanupFailure is one worktree a delete removed and what failed
+// after it was removed.
+type WorktreeCleanupFailure struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 // WorkerFailure is one worker an archive or a delete of the thread above
@@ -237,10 +248,11 @@ type deleteOutcome struct {
 	deleted  []string
 	failed   []workerFailure
 	retained []RetainedWorktree
+	cleanup  []WorktreeCleanupFailure
 }
 
 func (o deleteOutcome) result(a *App) DeleteThreadResult {
-	return DeleteThreadResult{WorkersNotDeleted: a.workerFailures(o.failed), RetainedWorktrees: o.retained}
+	return DeleteThreadResult{WorkersNotDeleted: a.workerFailures(o.failed), RetainedWorktrees: o.retained, WorktreeCleanupFailures: o.cleanup}
 }
 
 // logFailures is the report of a delete no person is waiting on, named by
@@ -251,6 +263,9 @@ func (o deleteOutcome) logFailures(what string) {
 	}
 	for _, kept := range o.retained {
 		log.Printf("app: %s: worktree %s was left on disk: %s", what, kept.Path, kept.Reason)
+	}
+	for _, failure := range o.cleanup {
+		log.Printf("app: %s: worktree %s was removed, but cleaning up after it failed: %s", what, failure.Path, failure.Error)
 	}
 }
 
@@ -768,9 +783,7 @@ func (op *familyDelete) destroyMember(member store.DeleteMember, outcome *delete
 		return err
 	}
 	if member.RemoveWorktrees && !member.Holder && !op.retired[member.ThreadID] {
-		if kept := op.removeEmptiedWorktree(member); kept != nil {
-			outcome.retained = append(outcome.retained, *kept)
-		}
+		op.removeEmptiedWorktree(member, outcome)
 	}
 	unlock = op.app.threadLocks().Lock(member.ThreadID)
 	defer unlock()
@@ -794,11 +807,12 @@ func (e *errWorktreeKept) Error() string { return e.reason }
 // loss-of-work gate runs again and which reads who is on the worktree
 // again with every one of them locked: a worktree that cannot be removed
 // now is left on disk and named the same way; its threads are still
-// deleted.
-func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember) *RetainedWorktree {
+// deleted. A removal whose cleanup after git removed the worktree failed
+// is named in outcome as such.
+func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember, outcome *deleteOutcome) {
 	path := member.WorktreePath
 	if path == "" || member.ProjectID == "" {
-		return nil
+		return
 	}
 	others := func(occupants []string) error {
 		waiting := false
@@ -832,7 +846,7 @@ func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember) *Retain
 		var found bool
 		if _, found, err = op.app.findWorktree(project.Path, path); err == nil && !found {
 			// Removed already: by this delete before a restart, or by hand.
-			return nil
+			return
 		}
 	}
 	if err == nil {
@@ -842,15 +856,17 @@ func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember) *Retain
 	var followUp *errWorktreeRemovedFollowUp
 	switch {
 	case err == nil, errors.Is(err, errWorktreeWaiting):
-		return nil
+		return
 	case errors.As(err, &kept):
-		return &RetainedWorktree{Path: path, Reason: kept.reason}
+		outcome.retained = append(outcome.retained, RetainedWorktree{Path: path, Reason: kept.reason})
+		return
 	case errors.As(err, &followUp):
 		log.Printf("app: delete: worktree %s: %v", path, err)
-		return nil
+		outcome.cleanup = append(outcome.cleanup, WorktreeCleanupFailure{Path: path, Error: followUp.err.Error()})
+		return
 	}
 	log.Printf("app: delete thread %s: worktree %s left on disk: %v", member.ThreadID, path, err)
-	return &RetainedWorktree{Path: path, Reason: err.Error()}
+	outcome.retained = append(outcome.retained, RetainedWorktree{Path: path, Reason: err.Error()})
 }
 
 // deleteSite is one worktree a delete empties.

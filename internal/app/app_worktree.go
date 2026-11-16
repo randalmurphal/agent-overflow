@@ -700,9 +700,13 @@ func (a *App) finishWorktreeRemoval(removal *worktreeRemoval, reattached []store
 	if a.terminals != nil {
 		// Each close reaches the exit callback, which drops the tab on every
 		// client and ends a terminal thread whose last shell this was.
-		if _, err := a.terminals.CloseMatching(func(summary terminal.SessionSummary) bool {
+		_, err := a.terminals.CloseMatching(func(summary terminal.SessionSummary) bool {
 			return pathWithin(summary.Cwd, removal.path)
-		}); err != nil {
+		})
+		if hook := a.worktreeTerminalsClosedForTest; hook != nil {
+			err = hook(removal.path, err)
+		}
+		if err != nil {
 			closeErr = fmt.Errorf("terminals opened in it could not all be closed: %w", err)
 		}
 	}

@@ -773,6 +773,10 @@ type App struct {
 	// threadID (familyDelete.destroy), so a test can stop it between two
 	// threads.
 	deleteDestroyedForTest func(threadID string)
+	// worktreeTerminalsClosedForTest, when set, is handed what closing the
+	// terminals in a removed worktree returned (finishWorktreeRemoval) and
+	// returns the error the removal reports, so a test can fail a close.
+	worktreeTerminalsClosedForTest func(path string, err error) error
 	// deletePortsForTest, when set, edits the ports a delete destroys each
 	// thread through, so a test can fail one.
 	deletePortsForTest func(ports *threadapp.DeletePorts)

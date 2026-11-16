@@ -804,7 +804,10 @@ Ruling 36, as built:
   its verify, and one that cannot be removed when the destroy reaches
   it, unsaved work that appeared since, is left on disk and named
   (`DeleteThreadResult.RetainedWorktrees`); its threads are still
-  deleted. The window stops no session and removes no worktree for a
+  deleted. A worktree removed whose cleanup after the removal failed, a
+  terminal opened in it that would not close, is named with that error
+  (`DeleteThreadResult.WorktreeCleanupFailures`), and the window says so
+  in a toast. The window stops no session and removes no worktree for a
   delete. The cleanup of a thread moved to another computer deletes
   none of the workers it left here.
 - A spawn's Agents row follows its worker's lifetime, not only its

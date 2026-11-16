@@ -306,12 +306,13 @@ export async function deleteThreadWithWorktrees(
  * ones whose delete failed keeps itself and the threads above it hidden
  * and unfinished; the toast deletes `seeds`, what the delete named, again,
  * which finishes them. A worktree that could not be removed is left on
- * disk and named.
+ * disk and named. A worktree removed whose cleanup after the removal
+ * failed is named with what failed.
  */
 export function reportDeleteLeftovers(
   backend: BackendKey,
   title: string,
-  result: Pick<DeleteThreadResult, 'workersNotDeleted' | 'retainedWorktrees'>,
+  result: Pick<DeleteThreadResult, 'workersNotDeleted' | 'retainedWorktrees' | 'worktreeCleanupFailures'>,
   seeds: readonly string[],
 ): void {
   const workers = result.workersNotDeleted ?? [];
@@ -325,6 +326,9 @@ export function reportDeleteLeftovers(
   }
   const notice = retainedNotice(result.retainedWorktrees ?? []);
   if (notice) addToast('warning', `Deleted "${title}". ${notice}`, 12000);
+  for (const failure of result.worktreeCleanupFailures ?? []) {
+    addToast('warning', `Deleted "${title}". The worktree ${failure.path} was removed, but cleaning up after it failed: ${failure.error}`, 12000);
+  }
 }
 
 async function deleteAgain(backend: BackendKey, title: string, seeds: readonly string[]): Promise<void> {

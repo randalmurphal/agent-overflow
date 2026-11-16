@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 )
@@ -375,5 +376,41 @@ func TestTwoDeletesSharingAWorktreeLeaveItRemovedOrNamed(t *testing.T) {
 			}
 			f.reopen(t, "a", "b")
 		})
+	}
+}
+
+// A worktree the delete removed whose cleanup after it then failed (a
+// terminal opened in it that would not close) is named in the result with
+// the error, as its own kind: the worktree is gone, and so are its threads.
+func TestAWorktreeCleanupFailureAfterTheRemovalIsInTheResult(t *testing.T) {
+	t.Parallel()
+	f := newSharedTree(t)
+	if _, err := f.app.DeleteThread("b"); err != nil {
+		t.Fatal(err)
+	}
+	f.app.terminals = terminal.NewManager(nil, nil)
+	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
+	// A terminal a draft opened in the worktree, which the removal closes.
+	if _, err := f.app.terminals.Open("draft", terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.tree}); err != nil {
+		t.Fatal(err)
+	}
+	stuck := errors.New("the shell would not close")
+	f.app.worktreeTerminalsClosedForTest = func(path string, err error) error {
+		if path == f.tree {
+			return errors.Join(err, stuck)
+		}
+		return err
+	}
+	result, err := f.app.DeleteThreadsAndWorktrees(context.Background(), []string{"a"})
+	if err != nil || len(result.WorkersNotDeleted) > 0 || len(result.RetainedWorktrees) > 0 {
+		t.Fatalf("DeleteThreadsAndWorktrees = %+v, %v", result, err)
+	}
+	if len(result.WorktreeCleanupFailures) != 1 || result.WorktreeCleanupFailures[0].Path != f.tree ||
+		!strings.Contains(result.WorktreeCleanupFailures[0].Error, "terminals opened in it could not all be closed") ||
+		!strings.Contains(result.WorktreeCleanupFailures[0].Error, stuck.Error()) {
+		t.Fatalf("cleanup failures = %+v, want the worktree with its error", result.WorktreeCleanupFailures)
+	}
+	if !gone(t, f.app, "a") || exists(t, f.tree) {
+		t.Errorf("a gone %v, worktree removed %v; want both", gone(t, f.app, "a"), !exists(t, f.tree))
 	}
 }

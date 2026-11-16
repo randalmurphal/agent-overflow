@@ -268,6 +268,24 @@ describe('deleteThreadAction', () => {
     expect(toast.message).toBe('Deleted "Source thread". 1 checkout left in place: /tmp/wt/parser (worktree /tmp/wt/parser has unsaved work)');
   });
 
+  // The worktree is gone; what failed after its removal is said, apart
+  // from a worktree left on disk.
+  it('says when cleaning up after a removed worktree failed', async () => {
+    setBindingMock('DeleteThreadsAndWorktrees', async () => ({
+      worktreeCleanupFailures: [{ path: '/tmp/wt/parser', error: 'terminals opened in it could not all be closed: the shell would not close' }],
+    }));
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+
+    await deleteThreadAction(ctx);
+
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getThreadById('thread-1')).toBeUndefined();
+    const [toast] = getToasts();
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toBe('Deleted "Source thread". The worktree /tmp/wt/parser was removed, but cleaning up after it failed: terminals opened in it could not all be closed: the shell would not close');
+  });
+
   // Threads selected together are one delete per computer they are on.
   it('deletes a selection as one call per computer', async () => {
     stageBackend();
