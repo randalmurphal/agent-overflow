@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -198,5 +200,130 @@ func TestAFailingBootStepFailsTheBootAfterTheOtherSteps(t *testing.T) {
 	}
 	if state, err := a.WorkflowGetEngineState(); err != nil || state.Paused {
 		t.Errorf("workflow engine after the failed boot = %+v, %v; want its starts released", state, err)
+	}
+}
+
+// deferredBootPhases are the phases a trial's deferred steps open: three
+// before clients and the first of the unattended work.
+var deferredBootPhases = []string{
+	"app.sweep_review_diffs", "app.clean_preparing_forks", "app.end_terminal_threads",
+	"app.finish_thread_request_sweep",
+}
+
+// A quit while a committed trial's boot step runs waits for that step, so it
+// never meets a closed store or engine, and begins no other: no later step
+// before clients and none of the unattended work.
+func TestShutdownDuringACommittedTrialsBootStepWaitsForItAndStartsNoOther(t *testing.T) {
+	a := newBootTestApp(t)
+	run := seedLastRun(t, a)
+	progress := newRecordingBootProgress("app.clean_preparing_forks")
+	// Registered before release, so it runs after it on an early failure.
+	t.Cleanup(func() {
+		if err := a.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(progress.release) }) }
+	t.Cleanup(release)
+	SetBootProgress(a, progress)
+	ParkUnattendedWork(a)
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ActivateUnattendedWork(a, ServiceUpdateOutcome{})
+	select {
+	case <-progress.reached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the committed trial never reached the fork cleanup")
+	}
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- a.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdown:
+		t.Fatalf("Shutdown returned (%v) while a boot step was still running", err)
+	case <-time.After(bootStepsHeldFor):
+	}
+	release()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Shutdown did not return after the boot step finished")
+	}
+
+	begun, _, _ := progress.snapshot()
+	for _, phase := range deferredBootPhases[2:] {
+		if slices.Contains(begun, phase) {
+			t.Errorf("%s began after Shutdown stopped the boot (begun %v)", phase, begun)
+		}
+	}
+	if failures := progress.failures(); len(failures) != 0 {
+		t.Errorf("boot failures = %v, want none", failures)
+	}
+	// The step that was running finished; the one after it never began.
+	if _, err := os.Stat(run.forkFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("fork attachment after the stopped boot: %v, want the running step to have removed it", err)
+	}
+	if _, err := os.Stat(run.terminalFile); err != nil {
+		t.Errorf("terminal attachment after the stopped boot: %v, want it kept", err)
+	}
+
+	second := make(chan error, 1)
+	go func() { second <- a.Shutdown(context.Background()) }()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("second Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second Shutdown did not return")
+	}
+}
+
+// A trial stopped before its commit runs none of its deferred steps, and its
+// Shutdown does not wait for a commit that will never come. A commit that
+// arrives after the stop starts nothing either.
+func TestShutdownWhileATrialIsParkedReturnsWithoutRunningItsBootSteps(t *testing.T) {
+	a := newBootTestApp(t)
+	run := seedLastRun(t, a)
+	progress := newRecordingBootProgress("")
+	SetBootProgress(a, progress)
+	ParkUnattendedWork(a)
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- a.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Shutdown of a parked trial did not return")
+	}
+	ActivateUnattendedWork(a, ServiceUpdateOutcome{})
+	time.Sleep(bootStepsHeldFor)
+
+	begun, _, _ := progress.snapshot()
+	for _, phase := range deferredBootPhases {
+		if slices.Contains(begun, phase) {
+			t.Errorf("%s began on a trial stopped before its commit", phase)
+		}
+	}
+	for _, path := range run.removed() {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s after the stopped trial: %v, want it kept", path, err)
+		}
+	}
+	for _, path := range run.written() {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after the stopped trial: %v, want it unwritten", path, err)
+		}
 	}
 }

@@ -73,6 +73,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.workAdmission.stopWaiting()
 	a.stopRestartUpdate()
 	a.closeComputerPairing()
+	// A trial's deferred boot steps run on the activation gate's goroutine
+	// and use everything below, the transport included. Stop them first: no
+	// further step begins, and the one running finishes before anything it
+	// uses is torn down.
+	a.activation.stop()
 	// Step 0 (pre-shutdown): drain the transport server while every
 	// subsystem is still alive. Without this, a webview WS client that
 	// fires an RPC during the window between the App's subsystem-close
