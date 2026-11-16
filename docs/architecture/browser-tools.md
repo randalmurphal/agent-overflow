@@ -187,6 +187,9 @@ behave as a desktop browser's:
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
   beside close tab `mod+w`. A bare `f5` is never claimed from the page.
+  Next and previous tab send a relative `step` that the Manager applies to
+  its own order and selection (`StepCompanionPage`), so presses faster than
+  the state push each move one tab.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
   before the SPA sees the key. The SPA reports its browser pane focus over
   the webview's raw message channel, and while it is focused the window

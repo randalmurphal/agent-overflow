@@ -17,14 +17,14 @@ export function isBrowserPaneFocused(): boolean {
   return focusedBrowser() !== null;
 }
 
-/** Shows the tab `step` places from the active one, wrapping. */
-function stepTab(step: number): void {
+/**
+ * Shows the tab `step` places from the active one, wrapping. The backend
+ * steps from its own order and selection, so presses sent before the
+ * previous one's state arrives each move one tab.
+ */
+function stepTab(step: 1 | -1): void {
   const focused = focusedBrowser();
-  const pages = focused?.state?.pages ?? [];
-  if (!focused || pages.length < 2) return;
-  const at = Math.max(0, pages.findIndex((page) => page.id === focused.state?.activePageId));
-  const next = pages[(at + step + pages.length) % pages.length];
-  void browserCompanionAct(focused.threadId, { kind: 'activate', pageId: next.id });
+  if (focused) void browserCompanionAct(focused.threadId, { kind: 'step', index: step });
 }
 
 const WHEN = 'browserPaneFocused && !overlayOpen';

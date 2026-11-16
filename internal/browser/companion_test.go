@@ -241,3 +241,56 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 		}
 	}
 }
+
+// Each step moves one tab from the Manager's own selection, wrapping, so
+// steps sent back to back with no state read between them all count.
+func TestStepCompanionPageMovesOneTabPerStepAndWraps(t *testing.T) {
+	m, access, first, _ := newNavigateFixture(t, false)
+	second, err := m.NewCompanionPage(t.Context(), access, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := m.NewCompanionPage(t.Context(), access, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ActivateCompanionPage(t.Context(), access, first); err != nil {
+		t.Fatal(err)
+	}
+	active := func() string { return m.CompanionState(access).ActivePageID }
+
+	for _, want := range []string{second.ID, third.ID, first} {
+		if err := m.StepCompanionPage(t.Context(), access, 1); err != nil {
+			t.Fatalf("step = %v", err)
+		}
+		if got := active(); got != want {
+			t.Fatalf("after a forward step the active tab is %s, want %s", got, want)
+		}
+	}
+	if err := m.StepCompanionPage(t.Context(), access, -1); err != nil || active() != third.ID {
+		t.Fatalf("a backward step from the first tab = %v, active %s, want %s", err, active(), third.ID)
+	}
+
+	// Two steps at once both apply.
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := m.StepCompanionPage(context.Background(), access, 1); err != nil {
+				t.Errorf("step = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := active(); got != second.ID {
+		t.Fatalf("after two concurrent steps from the third tab the active tab is %s, want %s", got, second.ID)
+	}
+
+	if err := m.StepCompanionPage(t.Context(), access, 0); err == nil {
+		t.Fatal("a step of 0 was accepted")
+	}
+	if err := m.StepCompanionPage(t.Context(), Access{ThreadID: "other", Workspace: access.Workspace}, 1); err == nil {
+		t.Fatal("a thread with no tabs stepped")
+	}
+}
