@@ -76,7 +76,7 @@ func (a *App) restSettlement(receipt store.ThreadRequestReceipt, settlement stor
 	thread := receipt.TargetThreadID
 	// Held before its rest is read, so a pass that runs once the thread
 	// rests after this read finds it.
-	a.holdReceiptGate(thread, receipt.Token, turn)
+	a.holdReceiptGate(thread, receipt.Token, turn, turn)
 	atRest, err := a.heldThreadAtRest(thread)
 	if err != nil || !atRest {
 		// The rest this read missed may already have been reported, before
@@ -129,14 +129,15 @@ func (a *App) restAnswer(threadID string, turn int) (store.ThreadRequestSettleme
 	}, nil
 }
 
-// holdReceiptGate marks token's gate held from the end of its turn turn.
-func (a *App) holdReceiptGate(threadID, token string, turn int) {
+// holdReceiptGate marks token's gate held: its answer from its own turn
+// turn on, the ends of its thread's turns read through through.
+func (a *App) holdReceiptGate(threadID, token string, turn, through int) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
 	tokens := a.receiptGatesLocked(threadID)
 	gate := tokens[token]
 	if !gate.held {
-		gate.held, gate.turn, gate.through = true, turn, turn
+		gate.held, gate.turn, gate.through = true, turn, through
 	}
 	tokens[token] = gate
 }
@@ -203,24 +204,28 @@ func (a *App) settleHeldReceiptLocked(receipt store.ThreadRequestReceipt, gate r
 	return work, err
 }
 
-// heldTurnsSettlement reads the ends of thread's turns past the last one a
+// heldTurnsSettlement reads the ends of thread's turns from the last one a
 // held request read, oldest first: the first that did not end `finished`
 // decides its settlement, as its own turn's end would (turnSettlement). A
 // turn a session's end cut is InterruptSessionEndedWorking, with what the
 // thread wrote since the request's turn. through is the last turn read
-// that ended `finished`; pending says a turn after it is still to be read
-// at its own end: one still open, or, for a pass, one interrupted with no
+// that ended `finished`; pending says a turn from it on is still to be
+// read at its own end: one open, or, for a pass, one interrupted with no
 // stop recorded, which its session's end reads.
+//
+// The last turn read, the request's own at first, is read again: a turn's
+// first close is not its outcome. A soft close a trailing error result
+// amends, and a turn the model continues after it, read as they are now.
 func (a *App) heldTurnsSettlement(thread string, gate receiptGate, end heldEnd) (settlement store.ThreadRequestSettlement, decided bool, through int, pending bool, err error) {
 	through = gate.through
-	turns, err := a.store.TurnsAfter(thread, gate.through)
+	turns, err := a.store.TurnsAfter(thread, gate.through-1)
 	if err != nil {
 		return settlement, false, through, false, err
 	}
 	for _, turn := range turns {
 		cut := false
 		switch {
-		case turn.CompletedAt == nil:
+		case turn.CompletedAt == nil || (a.triage != nil && a.triage.OpenTurnIndex(thread) == turn.TurnIndex):
 			if !end.sessionEnded || a.turnOfLiveSession(thread, turn, end.session) {
 				return settlement, false, through, true, nil
 			}
@@ -450,6 +455,8 @@ func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.Threa
 	if err != nil {
 		return restart, false, err
 	}
+	// The request answers from its own turn; the boot read the later ones.
+	own := index
 	for _, turn := range later {
 		switch {
 		case turn.CompletedAt == nil || turn.StopReason == "interrupted":
@@ -464,7 +471,7 @@ func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.Threa
 		}
 		index = turn.TurnIndex
 	}
-	a.holdReceiptGate(receipt.TargetThreadID, receipt.Token, index)
+	a.holdReceiptGate(receipt.TargetThreadID, receipt.Token, own, index)
 	return store.ThreadRequestSettlement{}, true, nil
 }
 
