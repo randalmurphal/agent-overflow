@@ -149,8 +149,10 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 	t.Parallel()
 	n := threadAgentRowDepth + 2
 	c := newAgentChain(t, n)
-	for i := range n - 1 {
-		installMockClaudeReplies(t, c.apps[i], "done", "noted", "noted", "noted")
+	installMockClaudeReplies(t, c.apps[0], "done", "noted", "noted", "noted")
+	release := make([]func(), n-1)
+	for i := 1; i < n-1; i++ {
+		release[i] = installChainLink(t, c.apps[i])
 	}
 	installMockClaudeTurns(t, c.apps[n-1], [][]string{{
 		mockClaudeInitLine,
@@ -158,6 +160,9 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 	}})
 	for i := range n - 1 {
 		c.spawnAlong(t, i, fmt.Sprintf("link %d", i))
+		if i > 0 {
+			release[i]()
+		}
 	}
 	for i := range n - 2 {
 		c.held(t, i)
