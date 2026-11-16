@@ -36,6 +36,14 @@ import (
 // notification, so the first start that succeeds withdraws it even after a
 // restart. Each cascades from its thread.
 //
+// threads gains the phases of a family delete (thread_delete.go): a
+// thread's `delete_claim` is the id of the delete that claimed it, empty
+// for none, and its `delete_worktrees` whether the delete that committed it
+// (`deleting`) removes the worktrees it empties. A claimed thread stays
+// listed and refuses execution and every move; idx_threads_delete_claim
+// holds the claimed ones, for the boot that releases the claims no delete
+// committed.
+//
 // thread_requests and thread_request_receipts gain:
 //
 //   - `lineage_only`: a spawn row the retention sweep kept past the floor
@@ -200,6 +208,10 @@ CREATE TABLE session_start_failures (
     thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
     failed_at        INTEGER NOT NULL
 );
+
+ALTER TABLE threads ADD COLUMN delete_claim TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN delete_worktrees INTEGER NOT NULL DEFAULT 0 CHECK(delete_worktrees IN (0,1));
+CREATE INDEX idx_threads_delete_claim ON threads(delete_claim) WHERE delete_claim <> '';
 
 ALTER TABLE thread_requests ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
 ALTER TABLE thread_requests ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0 CHECK(superseded IN (0,1));

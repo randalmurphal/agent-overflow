@@ -79,25 +79,26 @@ func (a *App) collectReleasedHolders() {
 	}()
 }
 
-// completeThreadDeletes deletes each thread list names with what lives under
-// it, as its delete would have: a delete that stopped between the owner's
-// claim and its last worker resumes from the owner, whose spawn links still
-// name the workers not yet claimed (deleteThreadPaced). A thread that fails
-// keeps its mark and is logged; the next boot retries it.
+// completeThreadDeletes finishes the deletes of the committed threads list
+// names, as one delete that joins them (familyDelete): each is destroyed
+// with the worktree policy its commit recorded, once every thread under it
+// is gone, so an assistant's current thread goes after its past threads and
+// helpers whatever order list returns them in. A thread that fails keeps
+// its commit, with the threads above it, and is logged; the next boot
+// retries it.
 func (a *App) completeThreadDeletes(ctx context.Context, walk string, list func() ([]string, error)) {
 	ids, err := list()
 	if err != nil {
 		log.Printf("app: %s: %v", walk, err)
 		return
 	}
-	pause := a.maintenancePause(ctx)
-	for _, id := range ids {
-		if ctx.Err() != nil {
-			return
-		}
-		if err := a.deleteThreadPaced(id, pause); err != nil {
-			log.Printf("app: %s: delete thread %s: %v", walk, id, err)
-		}
+	if len(ids) == 0 || ctx.Err() != nil {
+		return
+	}
+	outcome, err := a.deleteThreads(deleteRequest{seeds: ids, cleanup: true, pause: a.maintenancePause(ctx), ctx: ctx})
+	outcome.logFailures(walk)
+	if err != nil {
+		log.Printf("app: %s: %v", walk, err)
 	}
 }
 

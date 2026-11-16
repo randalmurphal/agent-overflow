@@ -7,7 +7,6 @@ import (
 	"log"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 )
 
 // DeletePorts is the explicit boundary from store-owned deletion ordering to
@@ -24,12 +23,12 @@ type DeletePorts struct {
 	// CancelShellCommand stops a composer shell command still running in the
 	// thread's workspace; its result is discarded.
 	CancelShellCommand func(threadID string)
-	// CloseTerminals runs before the row drops and again after, for a
+	// CloseTerminals runs in the teardown and again after the drop, for a
 	// terminal a client opened meanwhile: OpenTerminal needs the row, so
 	// none can open after the drop.
 	CloseTerminals func(threadID string) error
-	// CloseBrowserPages runs before the row drops, so a failure keeps the
-	// row for the next boot to finish, and again after, for a page a
+	// CloseBrowserPages runs in the teardown, so a failure keeps the row
+	// for the next attempt, and again after the drop, for a page a
 	// companion action opened meanwhile (the action leaves it to the delete
 	// while the row is present).
 	CloseBrowserPages  func(threadID string) error
@@ -44,22 +43,15 @@ type DeletePorts struct {
 	Forget func(threadID string)
 	// AssistantHome runs first, for a thread that is an assistant's current
 	// thread: deleting it deletes the assistant and its home. It refuses a
-	// home it may not remove, before the claim, so nothing is deleted, and
-	// otherwise returns the removal, which runs before the row drops. nil
-	// remove for any other thread.
+	// home it may not remove, and otherwise returns the removal, which runs
+	// in the teardown. nil remove for any other thread.
 	AssistantHome func(threadID string) (remove func() error, err error)
-	// Deleted fires once the delete's claim has committed
-	// (store.BeginThreadDelete), as DeleteThread returns. From the claim on
-	// the row is gone to every read, so a delete that fails after it still
-	// reports the row, and the next boot finishes it
-	// (store.ListPendingThreadDeletes). Root broadcasts it on
-	// `thread:updated` so every attached client drops the row without a
-	// refresh. spawned lists the live threads the thread spawned on this
-	// computer that outlive it, read before the drop took their spawn rows:
-	// an owned one is standalone now (trg_thread_placement_spawn_gone) and
-	// joins the sidebar, and each row lost its spawner, so they go out
-	// again.
-	Deleted func(thread store.Thread, spawned []string)
+	// Dropped fires once the row is dropped. spawned lists the live
+	// threads the thread spawned on this computer that outlive it, read
+	// before the drop took their spawn rows: each lost its spawner, and an
+	// owned one is standalone now (trg_thread_placement_spawn_gone) and
+	// joins the sidebar, so they go out again.
+	Dropped func(thread store.Thread, spawned []string)
 	Logf    func(format string, args ...any)
 	// ChunkPause, when set, runs between the bounded item-delete chunks
 	// of the store delete so a background sweep yields the write lock
@@ -68,37 +60,21 @@ type DeletePorts struct {
 	ChunkPause store.ChunkPause
 }
 
-// ClaimDelete is a delete's claim on threadID (store.ClaimThreadDelete):
-// its first write, before anything of the thread stops. ownerID, for a
-// worker its owner's delete takes, fences the claim by ownership
-// (store.ErrWorkerNotOwned). fresh reports a mark this claim set, which a
-// delete refused later takes back (ReleaseDelete). Call it under the
-// thread's action lock.
-func (s *Service) ClaimDelete(threadID, ownerID string) (fresh bool, err error) {
-	database, err := s.database("claim a thread delete")
-	if err != nil {
-		return false, err
-	}
-	return database.ClaimThreadDelete(threadID, ownerID)
-}
+// A thread a family delete committed (store.CommitDeleteClaim) is destroyed
+// in two halves, so the worktree it was the last thread on is removed while
+// its row still names it: TearDown stops everything it runs and removes what
+// it owns outside its row, and Drop drops the row
+// (docs/specs/standing-agents.md, "Owned workers"). The threads under it are
+// the caller's, destroyed first.
 
-// ReleaseDelete takes back a claim that deleted nothing
-// (store.ReleaseThreadDelete). Call it under the thread's action lock.
-func (s *Service) ReleaseDelete(threadID string) error {
-	database, err := s.database("release a thread delete")
-	if err != nil {
-		return err
-	}
-	return database.ReleaseThreadDelete(threadID)
-}
-
-// DeleteThread claims the thread (store.BeginThreadDelete; a claimed one is
-// claimed again), stops everything it runs and drops its row. The threads
-// under it are the caller's: an app delete claims each of them before this
-// runs and deletes the deepest first (docs/specs/standing-agents.md, "Owned
-// workers"). Call it under the thread's action lock.
-func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
-	retired, err := s.CheckCleanup(threadID)
+// TearDown stops everything the committed thread runs and removes what it
+// owns outside its row; the row stays for Drop. An assistant's current
+// thread is refused, with nothing touched, while a past thread or helper
+// still lives under it (store.AssistantDependentsError): its home and
+// history go only once they are gone. Call it under the thread's action
+// lock.
+func (s *Service) TearDown(threadID string, ports DeletePorts) error {
+	retired, err := s.CheckDelete(threadID, true)
 	if err != nil {
 		return err
 	}
@@ -114,26 +90,15 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 		return fmt.Errorf("delete thread %s: lookup: %w", threadID, threadErr)
 	}
 	threadFound := threadErr == nil
+	if threadFound {
+		if err := database.CheckNoAssistantDependents(threadID); err != nil {
+			return fmt.Errorf("delete thread %s: %w", threadID, err)
+		}
+	}
 	var removeHome func() error
 	if ports.AssistantHome != nil {
 		if removeHome, err = ports.AssistantHome(threadID); err != nil {
 			return err
-		}
-	}
-	// The claim is the first write: from it the thread is gone to every
-	// read, its placement holds and no fork of it is made, so what follows
-	// stops a thread nothing reaches any more.
-	var spawned []string
-	if threadFound {
-		switch err := database.BeginThreadDelete(threadID); {
-		case errors.Is(err, sql.ErrNoRows):
-			threadFound = false
-		case err != nil:
-			return fmt.Errorf("delete thread %s: mark deleting: %w", threadID, err)
-		case ports.Deleted != nil && thread.Mode != threadmode.ModeHolder:
-			// No client lists a holder: its source's delete reported the
-			// thread gone, and a revert's holder was never shown.
-			defer func() { ports.Deleted(thread, spawned) }()
 		}
 	}
 	if ports.StopRemoteWork != nil {
@@ -215,17 +180,43 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("delete thread %s: %w", threadID, errors.Join(errs...))
 	}
-	if !threadFound {
+	return nil
+}
+
+// Drop drops the row of a thread TearDown finished, with its history
+// (store.DeleteThreadPaced), and closes what a client opened for it since.
+// A row already gone is nothing to do. Call it under the thread's action
+// lock.
+func (s *Service) Drop(threadID string, ports DeletePorts) error {
+	database, err := s.database("delete thread")
+	if err != nil {
+		return err
+	}
+	thread, err := database.GetThread(threadID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
-	if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
+	if err != nil {
+		return fmt.Errorf("delete thread %s: lookup: %w", threadID, err)
+	}
+	spawned, err := database.ListSpawnedThreadIDs(threadID)
+	if err != nil {
 		return fmt.Errorf("delete thread %s: %w", threadID, err)
 	}
-	if err := database.DeleteThreadPaced(threadID, ports.ChunkPause); err != nil {
+	err = func() error {
+		// Deferred, so a pause that never returns, as a crash, still
+		// releases it.
+		defer s.mutations.Lock(threadID)()
+		return database.DeleteThreadPaced(threadID, ports.ChunkPause)
+	}()
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
+	}
+	if ports.Dropped != nil {
+		ports.Dropped(thread, spawned)
 	}
 	var closeErrs []error
 	if ports.CloseTerminals != nil {

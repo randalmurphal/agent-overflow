@@ -134,11 +134,7 @@ func (a *App) endTerminalThread(ctx context.Context, threadID string) (string, e
 	}
 	var title string
 	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{threadID}, admit: func(string) error {
-		ended, err := a.terminalThreadEnded(ctx, threadID)
-		if err != nil {
-			return err
-		}
-		if !ended {
+		if !a.terminalThreadEnded(threadID) {
 			return errTerminalRunning
 		}
 		thread, err := a.threadApplication().Get(threadID)
@@ -148,7 +144,7 @@ func (a *App) endTerminalThread(ctx context.Context, threadID string) (string, e
 		title = thread.Title
 		return nil
 	}})
-	outcome.logFailures(threadID)
+	outcome.logFailures("delete thread " + threadID)
 	if errors.Is(err, errTerminalRunning) {
 		return "", nil
 	}
@@ -188,14 +184,13 @@ func (a *App) reportTerminalEndFailed(threadID, title string, err error) {
 // terminalThreadEnded is terminalThreadEndedLocked under the thread's
 // mutation lock. Only a terminal thread is recorded as opened, a thread
 // never leaves terminal mode, and a deleted one is forgotten, so the record
-// answers for the row.
-func (a *App) terminalThreadEnded(ctx context.Context, threadID string) (bool, error) {
-	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
-	if err != nil {
-		return false, err
-	}
+// answers for the row. The delete that asks has claimed the thread and
+// checked it (familyDelete.check), so the lock is taken without
+// CheckMutable, which refuses a claimed thread.
+func (a *App) terminalThreadEnded(threadID string) bool {
+	unlock := a.threadApplication().LockMutations(threadID)
 	defer unlock()
-	return a.terminalThreadEndedLocked(threadID), nil
+	return a.terminalThreadEndedLocked(threadID)
 }
 
 // stopTerminalThreadEnds refuses new ends and joins the running ones.

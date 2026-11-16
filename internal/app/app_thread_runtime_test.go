@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/store"
 )
 
 // TestDeleteThreadSimpleThreadRemovesRowAndSession covers the runtime happy
@@ -156,11 +157,10 @@ func TestDeleteThreadPropagatesStoreErrors(t *testing.T) {
 }
 
 // TestDeleteThreadConcurrentCallsAreSafe verifies that two racing
-// DeleteThread calls for the same thread tree don't crash and the end
-// state is coherent: row is gone, resources are cleaned up, and only
-// one call returns success (the other sees a clean idempotent success
-// via the ErrNoRows branch or returns success after finding nothing
-// left to do).
+// DeleteThread calls for the same thread don't crash and the end state is
+// coherent: the row is gone and at least one call succeeds. The other
+// either finds nothing left to do or is refused while the first holds the
+// thread (store.DeleteClaimedError).
 func TestDeleteThreadConcurrentCallsAreSafe(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -175,10 +175,19 @@ func TestDeleteThreadConcurrentCallsAreSafe(t *testing.T) {
 	go func() { results <- app.deleteThread(thread.ID) }()
 	go func() { results <- app.deleteThread(thread.ID) }()
 
+	succeeded := 0
 	for i := 0; i < 2; i++ {
-		if err := <-results; err != nil {
+		err := <-results
+		var claimed *store.DeleteClaimedError
+		switch {
+		case err == nil:
+			succeeded++
+		case !errors.As(err, &claimed):
 			t.Errorf("goroutine %d: %v", i, err)
 		}
+	}
+	if succeeded == 0 {
+		t.Error("neither concurrent delete succeeded")
 	}
 
 	if _, err := app.store.GetThread(thread.ID); err == nil {

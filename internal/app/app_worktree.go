@@ -414,27 +414,8 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	} else if !ok {
 		return nil, fmt.Errorf("%s is not a worktree of project %s", worktreePath, project)
 	}
-	if !force {
-		// The gate refuses concrete loss-of-work signals: uncommitted
-		// changes in the tree, or commits the user made that haven't
-		// been pushed to the configured upstream. "No upstream" alone
-		// isn't a refusal — a freshly-created worktree off main
-		// rarely has one, and gating on it would make the legacy
-		// GitRemoveWorktree path unusable. The UI surfaces no-upstream
-		// as a visual warning and routes through force=true so this
-		// gate never sees it.
-		status, err := a.worktreeApplication().Status(project, worktreePath)
-		if err != nil {
-			return nil, fmt.Errorf("worktree status: %w", err)
-		}
-		if policy.keepsBranch && status.Dirty {
-			return nil, &errWorktreeDirty{path: worktreePath, count: status.UncommittedCount}
-		}
-		// Commits on no branch are lost with the worktree whatever happens
-		// to any branch, so keepsBranch does not waive them.
-		if status.Dirty || (!policy.keepsBranch && status.UnpushedCommits > 0) || status.OrphanCommits > 0 {
-			return nil, fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d orphan=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits, status.OrphanCommits)
-		}
+	if err := a.worktreeLossOfWork(project, worktreePath, policy); err != nil {
+		return nil, err
 	}
 
 	// Identify and lock every thread that points at the worktree. Each of
@@ -511,6 +492,34 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 		return nil, &errWorktreeRemovedFollowUp{err: err}
 	}
 	return reattached, nil
+}
+
+// worktreeLossOfWork is the removal's loss-of-work gate, which changes
+// nothing: a delete runs it before it stops anything, and the removal runs
+// it again. Without force it refuses concrete loss-of-work signals:
+// uncommitted changes in the tree, or commits the user made that haven't
+// been pushed to the configured upstream. "No upstream" alone isn't a
+// refusal — a freshly-created worktree off main rarely has one, and gating
+// on it would make the legacy GitRemoveWorktree path unusable. The UI
+// surfaces no-upstream as a visual warning and routes through force=true
+// so this gate never sees it.
+func (a *App) worktreeLossOfWork(project, worktreePath string, policy worktreeRemovalPolicy) error {
+	if policy.force {
+		return nil
+	}
+	status, err := a.worktreeApplication().Status(project, worktreePath)
+	if err != nil {
+		return fmt.Errorf("worktree status: %w", err)
+	}
+	if policy.keepsBranch && status.Dirty {
+		return &errWorktreeDirty{path: worktreePath, count: status.UncommittedCount}
+	}
+	// Commits on no branch are lost with the worktree whatever happens to
+	// any branch, so keepsBranch does not waive them.
+	if status.Dirty || (!policy.keepsBranch && status.UnpushedCommits > 0) || status.OrphanCommits > 0 {
+		return fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d orphan=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits, status.OrphanCommits)
+	}
+	return nil
 }
 
 // errWorktreeRemovedFollowUp is a removal git completed whose reaction

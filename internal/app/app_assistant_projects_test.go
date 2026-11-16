@@ -309,10 +309,10 @@ func TestDeletingAnAssistantDeletesWhatLivesUnderIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartNextAssistantThread: %v", err)
 	}
-	if got, err := f.app.GetDeleteDependents(successor.ID); err != nil || got.PastThreads != 1 || got.Helpers != 1 || got.Workers != 1 {
+	if got, err := f.app.GetDeleteDependents([]string{successor.ID}); err != nil || got.PastThreads != 1 || got.Helpers != 1 || got.Workers != 1 {
 		t.Fatalf("dependents = %+v, %v", got, err)
 	}
-	if got, err := f.app.GetDeleteDependents(work.ThreadID); err != nil || got.PastThreads != 0 || got.Helpers != 0 || got.Workers != 0 {
+	if got, err := f.app.GetDeleteDependents([]string{work.ThreadID}); err != nil || got.PastThreads != 0 || got.Helpers != 0 || got.Workers != 0 {
 		t.Fatalf("an ordinary thread's dependents = %+v, %v", got, err)
 	}
 	if successor.ProjectID != "" || successor.WorkspacePath != agent.Home || successor.AgentID != agent.ID {

@@ -754,14 +754,24 @@ type App struct {
 	// callerThreadID's once its thread is made and before the spawn names
 	// it (acceptRequest), so a test can hold an admitted spawn there.
 	spawnNamingForTest func(callerThreadID string)
-	// deleteClaimedForTest, when set, runs once a delete has claimed
-	// threadID and released its action lock (familyDelete.claim), so a test
-	// can act between two claims.
-	deleteClaimedForTest func(threadID string)
-	// projectLockedForTest, when set, runs in a project removal once it
-	// holds the action lock of threadID, one of its threads, and before it
-	// takes the next (DeleteProject).
-	projectLockedForTest func(threadID string)
+	// deleteClaimedForTest, when set, runs once a delete's claim committed
+	// and before it verifies anything (familyDelete.claim), with the
+	// threads it claimed.
+	deleteClaimedForTest func(threadIDs []string)
+	// deleteVerifiedForTest, when set, runs once a delete verified
+	// threadID and released its action lock (familyDelete.verify), so a
+	// test can act between two threads' checks.
+	deleteVerifiedForTest func(threadID string)
+	// deleteCommittedForTest, when set, runs once a delete committed and
+	// before it destroys anything (familyDelete.commit).
+	deleteCommittedForTest func(threadIDs []string)
+	// deleteDestroyedForTest, when set, runs once a delete destroyed
+	// threadID (familyDelete.destroy), so a test can stop it between two
+	// threads.
+	deleteDestroyedForTest func(threadID string)
+	// deletePortsForTest, when set, edits the ports a delete destroys each
+	// thread through, so a test can fail one.
+	deletePortsForTest func(ports *threadapp.DeletePorts)
 	// restRunsListedForTest, when set, runs once a rest has listed the
 	// workflow runs that report to the thread and before it acts on any
 	// (pauseRunsOfRestingThread), so a test can move a run at that moment.

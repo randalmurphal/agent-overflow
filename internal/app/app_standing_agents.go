@@ -352,7 +352,7 @@ func (a *App) ListAssistantPastThreads(agentID string, after store.PastThreadsCu
 // broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned,
 // after a handoff moved their spawn rows to it: their rows' spawnedByThreadId
 // follows the newest spawn row. A delete reads the ids before its drop
-// takes the spawn rows (threadapp.DeletePorts.Deleted) and announces them
+// takes the spawn rows (threadapp.DeletePorts.Dropped) and announces them
 // itself. Log-and-continue, as announceThread.
 func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
 	ids, err := a.store.ListSpawnedThreadIDs(spawnerID)

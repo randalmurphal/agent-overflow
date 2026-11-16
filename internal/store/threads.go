@@ -66,7 +66,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     title, provider, model,
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
-    pending_fork_resume_at, fork_preparing,
+    pending_fork_resume_at, fork_preparing, (deleting = 1 OR delete_claim <> ''),
     mode, reasoning_effort, fast_mode, context_window,
     auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
     COALESCE(forked_from_thread_id, ''), last_token_usage,
@@ -242,7 +242,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
 		&t.SessionRef, &t.PendingForkRef,
-		&t.PendingForkResumeAt, &t.ForkPreparing,
+		&t.PendingForkResumeAt, &t.ForkPreparing, &t.Deleting,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.ForkedFromThreadID, &t.LastTokenUsage,
@@ -393,15 +393,16 @@ const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
 var ErrHelperInProject = errors.New("store: a helper lives outside every project")
 
 // ErrHelperOfNoAssistant refuses a helper of an assistant that is gone or
-// whose delete has begun (BeginThreadDelete).
+// whose delete committed (CommitDeleteClaim).
 var ErrHelperOfNoAssistant = errors.New("store: the assistant is gone or being deleted")
 
 // recordAgentHelperTx records a new thread as a helper of the assistant
 // t.HelperOfAgentID names, if any. A created thread and a fork take it; a
 // thread another computer sent arrives as no assistant's. The thread must
-// be outside every project, and the assistant here with no delete begun on
-// its current thread, so none is recorded after its dependents were
-// counted for that delete.
+// be outside every project, and the assistant here with no delete committed
+// on its current thread. A spawn admitted before a delete claimed the
+// assistant records its helper, which the delete claims when it reads the
+// family again after draining that admission.
 func recordAgentHelperTx(tx *sql.Tx, t Thread) error {
 	if t.HelperOfAgentID == "" {
 		return nil

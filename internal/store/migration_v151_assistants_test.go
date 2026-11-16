@@ -32,7 +32,8 @@ func applyAssistantsMigration(t *testing.T, db *sql.DB) {
 }
 
 // v151 over a populated database: every existing row and every schema
-// object but the two ledger tables is unchanged; the new tables have exactly
+// object but the threads table and the ledger tables is unchanged, the
+// threads gaining their delete columns at the end; the new tables have exactly
 // their columns, constraints and indexes and cascade as the spec says; the
 // ledger gains its columns at the end, its indexes and its triggers; and the
 // placement trigger ends ownership with the last link, except for a thread
@@ -52,7 +53,7 @@ func TestMigrationV151Schema(t *testing.T) {
 	mustExec(t, db, `INSERT INTO async_questions (thread_id, item_id, question_index, title, options, created_at) VALUES
 		('worker', 'ask', 0, 'Which scope?', '[]', 7), ('worker', 'ask', 1, 'When?', '[]', 7), ('worker', 'other', 0, 'Why?', '[]', 8)`)
 	threadsBefore := migrationThreadRows(t, db)
-	ledger := []string{"thread_requests", "thread_request_receipts", "async_questions"}
+	ledger := []string{"threads", "thread_requests", "thread_request_receipts", "async_questions"}
 	columnsBefore := map[string][]string{}
 	for _, table := range ledger {
 		columns, err := queryIDs(db, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
@@ -65,7 +66,7 @@ func TestMigrationV151Schema(t *testing.T) {
 
 	applyAssistantsMigration(t, db)
 
-	if got := migrationThreadRows(t, db); !slices.Equal(got, threadsBefore) {
+	if got := migrationThreadRowsOf(t, db, columnsBefore["threads"]); !slices.Equal(got, threadsBefore) {
 		t.Errorf("thread rows changed:\n got %q\nwant %q", got, threadsBefore)
 	}
 	schemaAfter := migrationSchema(t, db)
@@ -89,7 +90,7 @@ func TestMigrationV151Schema(t *testing.T) {
 		"idx_agent_helpers_agent", "idx_agent_past_threads_agent", "idx_agent_projects_project", "idx_agent_wakes_due", "idx_agent_wakes_thread",
 		"idx_thread_request_receipts_age", "idx_thread_request_receipts_lineage", "idx_thread_requests_age", "idx_thread_requests_caller_settled", "idx_thread_requests_lineage",
 		"idx_thread_requests_nested_caller", "idx_thread_requests_nested_open", "idx_thread_requests_open_below", "idx_thread_requests_open_created", "idx_thread_requests_open_deep", "idx_thread_requests_remote_rest",
-		"idx_thread_requests_spawn_link", "idx_thread_requests_spawn_target",
+		"idx_thread_requests_spawn_link", "idx_thread_requests_spawn_target", "idx_threads_delete_claim",
 		"session_start_failures",
 		"sqlite_autoindex_agent_helpers_1", "sqlite_autoindex_agent_past_threads_1",
 		"sqlite_autoindex_agent_wakes_1", "sqlite_autoindex_agents_1", "sqlite_autoindex_agents_2", "sqlite_autoindex_session_start_failures_1",
@@ -144,6 +145,7 @@ func TestMigrationV151Schema(t *testing.T) {
 			"late_reply_agent_role|TEXT|1|''|0", "own_turn|INTEGER|1|0|0", "lineage_only|INTEGER|1|0|0",
 		},
 		"async_questions": {"revision|INTEGER|1|1|0"},
+		"threads":         {"delete_claim|TEXT|1|''|0", "delete_worktrees|INTEGER|1|0|0"},
 	}
 	for _, table := range ledger {
 		got := columns(table)
@@ -192,6 +194,8 @@ func TestMigrationV151Schema(t *testing.T) {
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('x', 'lead', 'loop', 'l', 'paused', 1)`,
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, long_running, state, created_at) VALUES ('x', 'lead', 'watch', 'l', 2, 'armed', 1)`,
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('x', 'missing', 'loop', 'l', 'armed', 1)`,
+		`UPDATE threads SET delete_worktrees = 2 WHERE id = 'lead'`,
+		`UPDATE threads SET delete_claim = NULL WHERE id = 'lead'`,
 		`UPDATE thread_requests SET lineage_only = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET superseded = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET answer_agent = NULL WHERE token = 'spawn'`,

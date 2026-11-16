@@ -298,13 +298,14 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	return deleted, failed
 }
 
-// deleteThreadPaced is the delete of a thread no person asked for, a stale
-// one the sweep removes or one whose delete the boot finishes, with what
-// lives under it, the store's item-chunk pause wired to the caller's yield.
-// It cleans up a moved thread's cache as well (deleteRequest.cleanup). A
-// worker that could not be deleted is logged.
+// deleteThreadPaced is the retention sweep's delete of a stale thread, with
+// what lives under it, the store's item-chunk pause wired to the caller's
+// yield. It removes no worktree, and cleans up a moved thread's cache as
+// well (deleteRequest.cleanup). A thread whose delete committed already,
+// a person's interrupted delete, is finished with that delete's own
+// worktree policy. A worker that could not be deleted is logged.
 func (a *App) deleteThreadPaced(threadID string, pause store.ChunkPause) error {
 	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{threadID}, cleanup: true, pause: pause})
-	outcome.logFailures(threadID)
+	outcome.logFailures("delete thread " + threadID)
 	return err
 }

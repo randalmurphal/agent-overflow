@@ -610,11 +610,10 @@ func TestCreateInAHome(t *testing.T) {
 	}
 }
 
-// An assistant's delete claims its current thread first: from the claim no
-// helper is recorded for it, and its row drops only once nothing lives
-// under it, so a delete that reaches the drop with a helper left keeps the
-// assistant claimed for the next attempt, which finishes it once the helper
-// is gone.
+// An assistant's current thread is torn down only once nothing lives under
+// it: a teardown that finds a helper left refuses before touching anything,
+// keeping the assistant and its commit for the next attempt, which finishes
+// it once the helper is gone. From the commit no helper is recorded for it.
 func TestAnAssistantsDeleteDropsItOnlyOnceNothingLivesUnderIt(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	next := 0
@@ -631,27 +630,41 @@ func TestAnAssistantsDeleteDropsItOnlyOnceNothingLivesUnderIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := database.BeginThreadDelete(ops.ID); err != nil {
+		t.Fatal(err)
+	}
 
-	err = service.DeleteThread(ops.ID, DeletePorts{})
+	homeChecked := false
+	err = service.TearDown(ops.ID, DeletePorts{
+		AssistantHome: func(string) (func() error, error) { homeChecked = true; return nil, nil },
+	})
 	var left *store.AssistantDependentsError
 	if !errors.As(err, &left) || left.Helpers != 1 {
-		t.Fatalf("a delete with a helper left = %v, want the drop refused", err)
+		t.Fatalf("a teardown with a helper left = %v, want it refused", err)
+	}
+	if homeChecked {
+		t.Fatal("the refused teardown reached the assistant's home")
 	}
 	if _, found, err := database.GetStandingAgent(ops.ID); err != nil || !found {
-		t.Fatalf("the assistant after the refused drop = %v %v", found, err)
+		t.Fatalf("the assistant after the refused teardown = %v %v", found, err)
 	}
 	if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{ops.ID}) {
-		t.Fatalf("pending deletes = %q %v, want the assistant claimed", pending, err)
+		t.Fatalf("pending deletes = %q %v, want the assistant committed", pending, err)
 	}
 	if _, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: "ops"}); !errors.Is(err, store.ErrHelperOfNoAssistant) {
-		t.Fatalf("a helper of a claimed assistant = %v, want it refused", err)
+		t.Fatalf("a helper of a committed assistant = %v, want it refused", err)
 	}
 
-	if err := service.DeleteThread(helper.ID, DeletePorts{}); err != nil {
-		t.Fatalf("delete the helper: %v", err)
+	if err := database.BeginThreadDelete(helper.ID); err != nil {
+		t.Fatal(err)
 	}
-	if err := service.DeleteThread(ops.ID, DeletePorts{}); err != nil {
-		t.Fatalf("finish the assistant's delete: %v", err)
+	for _, id := range []string{helper.ID, ops.ID} {
+		if err := service.TearDown(id, DeletePorts{}); err != nil {
+			t.Fatalf("tear down %s: %v", id, err)
+		}
+		if err := service.Drop(id, DeletePorts{}); err != nil {
+			t.Fatalf("drop %s: %v", id, err)
+		}
 	}
 	if _, found, err := database.GetAgent("ops"); err != nil || found {
 		t.Fatalf("the record after the delete = %v %v", found, err)

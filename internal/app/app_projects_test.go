@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -143,9 +144,10 @@ func TestAppDeleteProjectTeardownFailureKeepsProject(t *testing.T) {
 	}
 }
 
-// A deletion that waits on a thread's lock while that thread's own deleter (the
-// retention sweep, another client) removes it finishes the project; a thread
-// added in that window escapes its locks, so it asks for a retry.
+// A deletion that waits on a thread's lock holds its claim: another delete of
+// that thread (the retention sweep, another client) is refused and the
+// removal deletes it. A thread added in that window is not among the threads
+// it claimed, so it asks for a retry with nothing deleted.
 func TestAppDeleteProjectAcrossConcurrentThreadChanges(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -156,8 +158,8 @@ func TestAppDeleteProjectAcrossConcurrentThreadChanges(t *testing.T) {
 		{
 			name: "thread deleted",
 			change: func(t *testing.T, app *App, _, heldID string) {
-				if err := app.threadApplication().DeleteThread(heldID, app.threadDeletePorts()); err != nil {
-					t.Fatalf("delete held thread: %v", err)
+				if _, err := app.DeleteThread(heldID); !errors.Is(err, store.ErrThreadDeleting) {
+					t.Fatalf("delete held thread = %v, want it refused while the removal holds it", err)
 				}
 			},
 		},
@@ -210,13 +212,24 @@ func TestAppDeleteProjectAcrossConcurrentThreadChanges(t *testing.T) {
 				if _, err := app.store.GetProject(p.ID); err != nil {
 					t.Fatalf("project removed by a refused delete: %v", err)
 				}
+				for _, id := range ids {
+					if _, err := app.store.GetThread(id); err != nil {
+						t.Fatalf("thread %s after the refused removal: %v", id, err)
+					}
+					if err := app.store.CheckThreadNotDeleting(id); err != nil {
+						t.Fatalf("thread %s still claimed after the refused removal: %v", id, err)
+					}
+				}
 				return
 			}
 			if got.err != nil {
 				t.Fatalf("DeleteProject() error = %v", got.err)
 			}
-			if len(got.result.ThreadIDs) != 1 || got.result.ThreadIDs[0] != kept {
-				t.Fatalf("DeleteProject thread ids = %v, want [%s]", got.result.ThreadIDs, kept)
+			want := []string{held, kept}
+			slices.Sort(want)
+			gotIDs := slices.Sorted(slices.Values(got.result.ThreadIDs))
+			if !slices.Equal(gotIDs, want) {
+				t.Fatalf("DeleteProject thread ids = %v, want %v", got.result.ThreadIDs, want)
 			}
 			if _, err := app.store.GetProject(p.ID); err == nil {
 				t.Fatal("project survived DeleteProject")

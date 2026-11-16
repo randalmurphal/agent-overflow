@@ -302,21 +302,20 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			a.terminalThreads.forget(threadID)
 			a.forgetUnsavedThreadRows(threadID)
 		},
-		Deleted: func(thread store.Thread, spawned []string) {
-			a.broadcastThreadDeleted(thread.ID)
-			// Its workers' prompts go where they route now, the user
-			// unless another local thread spawned them too.
-			a.reroutePromptsFrom(thread.ID)
-			// It is no worker now, and a worker it made that is not at
-			// rest lost its spawn link with it.
-			if err := a.forgetLiveWorker(thread.ID); err != nil {
-				log.Printf("agent rows: look up the spawns of live workers after deleting %s: %v", thread.ID, err)
-			}
-			// A worker its delete left (one restored when its worktree
-			// could not be removed, or one whose delete failed) is
-			// standalone now and joins the sidebar.
+		Dropped: func(thread store.Thread, spawned []string) {
+			// The delete announced the row gone when it committed
+			// (familyDelete.commit). A thread it spawned with a sidebar
+			// row lost its spawner, and an owned one the delete did not
+			// take, a moved thread's worker left here, is standalone now
+			// and joins the sidebar.
 			for _, id := range spawned {
 				a.announcePlaced(id)
+			}
+			// A live worker it made lost its spawn link with the row: its
+			// prompts go where they route now.
+			a.reroutePromptsFrom(thread.ID)
+			if err := a.forgetLiveWorker(thread.ID); err != nil {
+				log.Printf("agent rows: look up the spawns of live workers after deleting %s: %v", thread.ID, err)
 			}
 		},
 	}

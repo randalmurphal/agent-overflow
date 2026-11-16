@@ -275,6 +275,12 @@ func (a *App) admitWork(threadID, session string) (func(), error) {
 	if hook := a.admitWorkForTest; hook != nil {
 		hook(threadID)
 	}
+	// A thread a delete claimed starts nothing; one admitted before the
+	// claim is drained by the delete's close (familyDelete.verify).
+	if err := a.store.CheckThreadNotDeleting(threadID); err != nil {
+		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
+			"This thread is being deleted and cannot start new work.", err)
+	}
 	var current func() bool
 	if session != "" {
 		current = func() bool {

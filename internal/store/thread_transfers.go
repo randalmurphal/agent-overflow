@@ -134,6 +134,11 @@ func (s *Store) CreateThreadTransfer(request ThreadTransfer) (ThreadTransfer, er
 		if gone {
 			return ThreadTransfer{}, fmt.Errorf("transfer: conversation %s: %w", request.ThreadID, sql.ErrNoRows)
 		}
+		// A delete's claim fences it as well: the delete verifies no
+		// transfer is under way before it commits.
+		if err := checkThreadNotDeleting(tx, request.ThreadID); err != nil {
+			return ThreadTransfer{}, fmt.Errorf("transfer: conversation %s: %w", request.ThreadID, err)
+		}
 	}
 	if request.Direction == "incoming" && accessErr == nil {
 		var exists bool

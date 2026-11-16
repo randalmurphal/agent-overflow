@@ -130,8 +130,8 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		spawnLocal(t, s, "l-c", "lead", "child", true)
 		spawnLocal(t, s, "c-g", "child", "grand", true)
 		// Both walks down the owned lineage take the same step
-		// (ownedStepSQL); owned_threads reads a thread's transfer by the
-		// thread's own key.
+		// (ownedStepSQL); owned_threads and the delete's walk read a
+		// thread's transfer by the thread's own key.
 		step := []string{
 			"SEARCH link USING INDEX idx_thread_requests_caller_settled (caller_thread_id=?)",
 			"SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)",
@@ -142,8 +142,11 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 				"SEARCH past USING COVERING INDEX idx_agent_past_threads_agent (agent_id=?)",
 				"SEARCH helper USING INDEX idx_agent_helpers_agent (agent_id=?)",
 			},
-			// An assistant's record is one row a thread names (UNIQUE).
-			prefixed: []string{"idx_thread_transfers_owner", "sqlite_autoindex_agents_2"},
+			// An assistant's record is one row a thread names (UNIQUE), and
+			// a thread is one assistant's past thread or helper at most
+			// (their primary keys).
+			prefixed: []string{"idx_thread_transfers_owner", "sqlite_autoindex_agents_2",
+				"sqlite_autoindex_agent_past_threads_1", "sqlite_autoindex_agent_helpers_1"},
 		}, deleteFamilySQL, `["lead"]`)
 		assertWalkProbesTheQueuedKey(t, s, "ownedWorkersToArchiveSQL", walkPlan{
 			step:     step,

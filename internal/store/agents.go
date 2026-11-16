@@ -387,6 +387,13 @@ func assistantDependentsOf(q transferQuerier, threadID string) (AssistantDepende
 	return dependents, nil
 }
 
+// CheckNoAssistantDependents is requireNoAssistantDependents on its own,
+// for a delete to run before it removes anything of an assistant's current
+// thread: its home and history go only once nothing lives under it.
+func (s *Store) CheckNoAssistantDependents(threadID string) error {
+	return requireNoAssistantDependents(s.reader(), threadID)
+}
+
 // requireNoAssistantDependents refuses, with *AssistantDependentsError, a
 // write that would drop the record of the assistant whose current thread is
 // threadID while threads still live under it.
@@ -525,8 +532,9 @@ var ErrAssistantArchived = errors.New("this assistant is archived; unarchive it 
 // HandOffAssistant makes newThreadID the current thread of the assistant
 // whose current thread is oldThreadID, in one transaction, so the old
 // thread's state is read as it stands at the commit: an archived assistant
-// is refused (ErrAssistantArchived), and one whose delete has begun
-// (ErrThreadGone); the successor must pass the checks
+// is refused (ErrAssistantArchived), one whose delete committed
+// (ErrThreadGone) and one a delete claimed (ErrThreadDeleting); the
+// successor must pass the checks
 // creation makes (requireAssistantThreadTx) under the old thread's title,
 // which is the name, and takes that title and the old thread's model
 // settings (handOffSettingsSQL); the record moves; the old thread is
@@ -553,13 +561,17 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 		return AssistantHandOff{}, fmt.Errorf("%s: read the assistant: %w", action, err)
 	}
 	var name string
-	var archived, deleting bool
-	if err := tx.QueryRow(`SELECT title, archived, deleting FROM threads WHERE id = ?`, oldThreadID).Scan(&name, &archived, &deleting); err != nil {
+	var archived, deleting, claimed bool
+	if err := tx.QueryRow(`SELECT title, archived, deleting, delete_claim <> '' FROM threads WHERE id = ?`, oldThreadID).Scan(&name, &archived, &deleting, &claimed); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: read the old thread: %w", action, err)
 	}
+	// Its delete takes the assistant with everything under it: a successor
+	// would be left outside the family that delete read.
 	if deleting {
-		// Its delete takes the assistant with everything under it.
 		return AssistantHandOff{}, fmt.Errorf("%s: %w", action, ErrThreadGone)
+	}
+	if claimed {
+		return AssistantHandOff{}, fmt.Errorf("%s: %w", action, ErrThreadDeleting)
 	}
 	if archived {
 		return AssistantHandOff{}, ErrAssistantArchived
