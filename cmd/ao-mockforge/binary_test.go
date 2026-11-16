@@ -580,6 +580,31 @@ func TestRateLimitsReadThroughTheAppsTransport(t *testing.T) {
 	}
 }
 
+// GitHub answers a GraphQL secondary rate limit with HTTP 200, a message
+// saying so and Retry-After: the read is rate limited until then, and the
+// gate holds the next background read without sending it.
+func TestGitHubSecondaryRateLimitAnsweredWith200(t *testing.T) {
+	r := newRig(t, githubFixture())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PRTick", Status: 200, Times: 1, Header: map[string]string{"Retry-After": "120"},
+		Body: []byte(`{"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	_, err := r.core.GetPRDetail(t.Context(), ref)
+	var limited *forgeapi.RateLimitedError
+	if !errors.As(err, &limited) || limited.Until.Before(before.Add(119*time.Second)) || limited.Until.After(time.Now().Add(121*time.Second)) {
+		t.Fatalf("read answered 200 with a secondary limit = %v, want rate limited for Retry-After", err)
+	}
+	sent := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.GetPRDetail(t.Context(), ref); !errors.As(err, &limited) {
+		t.Fatalf("background read while the gate is closed = %v", err)
+	}
+	if got := len(r.engine.Invocations(0).Invocations); got != sent {
+		t.Fatalf("the closed gate sent %d more requests", got-sent)
+	}
+}
+
 func TestPRReadsAddressTheReferencesHost(t *testing.T) {
 	github, gitlab := githubFixture(), gitlabFixture()
 	github.Repos[0].Host = "ghe.example:8443"
@@ -662,6 +687,51 @@ func TestPullListsResolveTheCheckoutsOrigin(t *testing.T) {
 	mergedMR, err := r.core.ListMergedPRHeads(t.Context(), gl, 10)
 	if err != nil || len(mergedMR) != 1 || mergedMR[0].HeadOid != strings.Repeat("e", 40) {
 		t.Fatalf("glab ListMergedPRHeads = %+v, %v", mergedMR, err)
+	}
+}
+
+// A checkout of a fork finds the pull request it opened in the fork's
+// parent, through the app's forge code on both forges: the one whose head
+// is the fork, not another fork's branch of the same name. Its merged
+// heads add the parent's merges from the fork.
+func TestForkCheckoutsFindTheirUpstreamPulls(t *testing.T) {
+	sha := strings.Repeat("f", 40)
+	pulls := func(fork string) []forgefake.Pull {
+		return []forgefake.Pull{
+			{Number: 1, Title: "Other fork", HeadRef: "feature", HeadRepo: "zed/" + fork, HeadSHA: strings.Repeat("1", 40)},
+			{Number: 2, Title: "Mine", HeadRef: "feature", HeadRepo: "alice/" + fork, HeadSHA: strings.Repeat("2", 40)},
+			{Number: 3, Title: "Merged", State: "merged", HeadRef: "done", HeadRepo: "alice/" + fork, HeadSHA: sha},
+		}
+	}
+	r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/forked", Pulls: pulls("forked")},
+		{Forge: "github", Project: "alice/forked", Parent: "acme/forked"},
+		{Forge: "gitlab", Project: "grp/forked", Pulls: pulls("forked")},
+		{Forge: "gitlab", Project: "alice/forked", Parent: "grp/forked"},
+	}})
+	for _, tc := range []struct{ origin, url string }{
+		{"git@github.com:alice/forked.git", "https://github.com/acme/forked/pull/2"},
+		{"https://gitlab.com/alice/forked.git", "https://gitlab.com/grp/forked/-/merge_requests/2"},
+	} {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", tc.origin}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		open, err := r.core.ListOpenPRs(t.Context(), dir, "feature")
+		if err != nil || len(open) != 1 || open[0].URL != tc.url || open[0].State != "open" {
+			t.Fatalf("%s ListOpenPRs = %+v, %v; want %s", tc.origin, open, err, tc.url)
+		}
+		merged, err := r.core.ListMergedPRHeads(t.Context(), dir, 10)
+		if err != nil || len(merged) != 1 || merged[0].HeadRefName != "done" || merged[0].HeadOid != sha {
+			t.Fatalf("%s ListMergedPRHeads = %+v, %v", tc.origin, merged, err)
+		}
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
 	}
 }
 
@@ -1569,6 +1639,49 @@ func TestRefusalsReachTheAppsExplanations(t *testing.T) {
 			if inv.Unhandled {
 				t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
 			}
+		}
+	}
+}
+
+// GitHub's refusals of the token itself reach the app's sentences as
+// kind forbidden, naming the cause: a PR read refused for single sign-on
+// with the authorize URL, an approval answered 404 beside X-GitHub-SSO
+// (not "not found"), and a fine-grained token's 403 on a write naming the
+// permission it needs.
+func TestGitHubTokenRefusalsReachTheAppsExplanations(t *testing.T) {
+	ctx := forgeapi.WithInteractive(t.Context())
+	r := newRig(t, githubMergeFixture("running"))
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	const authorize = "https://github.com/orgs/acme/sso?authorization_request=A1B2"
+	saml := `"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."`
+	sso := map[string]string{"X-GitHub-SSO": "required; url=" + authorize}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PRTick", Status: 200, Times: 1, Header: sso,
+		Body: []byte(`{"data":{"repository":null},"errors":[{"type":"FORBIDDEN","path":["repository"],"message":` + saml + `}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.core.ReadPR(ctx, ref, gitops.PRReadParts{Detail: true}, nil, nil)
+	if got := explained(t, ref, gitops.ActionRead, err); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "Authorize it at "+authorize) {
+		t.Fatalf("a read refused for single sign-on = %+v", got)
+	}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 404, Times: 1, Header: sso, Body: []byte(`{"message":"Not Found"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "single sign-on") {
+		t.Fatalf("an approval answered 404 for single sign-on = %+v", got)
+	}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 403, Times: 1, Header: map[string]string{"X-Accepted-GitHub-Permissions": "pull_requests=write"},
+		Body: []byte(`{"message":"Resource not accessible by personal access token"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "fine-grained token that cannot approve acme/merge#9 (it needs pull_requests=write)") {
+		t.Fatalf("a fine-grained token's refused approval = %+v", got)
+	}
+	if mergeRead(t, r, ref).Detail.Merge.ViewerApproved {
+		t.Fatal("a refused approval approved")
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
 		}
 	}
 }

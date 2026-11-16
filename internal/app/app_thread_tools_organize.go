@@ -163,7 +163,7 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	if result.CreatedGroup != nil {
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
-	a.announceThreadIfChanged(organizeThreadAction(result), result.Thread.ID, result.Changed)
+	a.announceThreadIfChanged(a.organizeThreadAction(result), result.Thread.ID, result.Changed)
 	// The discussion children a group move carried, as SetThreadGroup's own
 	// binding announces them.
 	for _, carried := range result.Carried {
@@ -174,16 +174,16 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 
 // organizeThreadAction picks the sidebar frame this patch produced. An
 // archive flip is what adds or removes the row from the active sidebar, so
-// it is announced as such; anything else is a whole-row update of a row
-// that is already there.
-func organizeThreadAction(result threadapp.OrganizeResult) string {
+// it is announced as such (an unarchive as listedAction); anything else is
+// a whole-row update of a row that is already there.
+func (a *App) organizeThreadAction(result threadapp.OrganizeResult) string {
 	if !result.ArchivedChanged {
 		return triage.ThreadActionFull
 	}
 	if result.Thread.Archived {
 		return triage.ThreadActionUnlisted
 	}
-	return triage.ThreadActionListed
+	return a.listedAction(result.Thread.ID)
 }
 
 // UpdateGroup renames or deletes one group of this computer.

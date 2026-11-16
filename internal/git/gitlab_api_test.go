@@ -547,6 +547,10 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 	t.Parallel()
 	list := gitlabTestProject + "/merge_requests"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			// The origin is no fork.
+			return forgeAPIAnswer{Body: `{"id":10}`}
+		}
 		u, err := url.Parse(call.Path)
 		if err != nil || u.EscapedPath() != list {
 			return forgeUnexpected(t, call)
@@ -599,6 +603,9 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 	want := []string{
 		"GET " + list + "?per_page=100&source_branch=feature%2Fx+y&state=opened",
 		"GET " + list + "?per_page=100&source_branch=none&state=opened",
+		// A branch with no merge request of its own asks whether the
+		// origin is a fork, once per login per gitlabCacheTTL.
+		"GET " + gitlabTestProject,
 		"GET " + list + "?order_by=updated_at&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&page=2&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&per_page=30&sort=desc&state=merged",
@@ -626,6 +633,9 @@ func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
 		return "[" + strings.Join(rows, ",") + "]"
 	}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			return forgeAPIAnswer{Body: `{"id":10}`}
+		}
 		u, err := url.Parse(call.Path)
 		if err != nil {
 			return forgeUnexpected(t, call)
@@ -651,8 +661,55 @@ func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
 	if err != nil || len(pulls) != 0 {
 		t.Fatalf("ListOpenPRs(forks-only) = %d pulls, %v", len(pulls), err)
 	}
-	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages {
-		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages)
+	// The pages, then whether the origin is a fork (it is not).
+	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages+1 {
+		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages+1)
+	}
+}
+
+// A checkout of a fork whose branch has no merge request in the fork
+// finds the one it opened in the project it was forked from: its source
+// is the fork, not another fork's or the source project's own branch of
+// the same name. Its merged heads add the source project's merges from
+// the fork.
+func TestGitLabForkCheckoutFindsItsUpstreamMR(t *testing.T) {
+	t.Parallel()
+	fork, upstream := gitlabTestProject+"/merge_requests", "projects/10/merge_requests"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			return forgeAPIAnswer{Body: `{"id":20,"forked_from_project":{"id":10,"path_with_namespace":"grp/upstream"}}`}
+		}
+		u, err := url.Parse(call.Path)
+		if err != nil {
+			return forgeUnexpected(t, call)
+		}
+		switch q := u.Query(); {
+		case u.EscapedPath() == fork && q.Get("state") == "opened":
+			return forgeAPIAnswer{Body: `[]`}
+		case u.EscapedPath() == fork:
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/1","iid":1,"title":"Fork's own","state":"merged","project_id":20,"source_project_id":20,"source_branch":"local","sha":"aaa"}]`}
+		case u.EscapedPath() == upstream && q.Get("state") == "opened":
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/upstream/-/merge_requests/5","iid":5,"title":"Other fork","state":"opened","project_id":10,"source_project_id":30},` +
+				`{"web_url":"https://gitlab.com/grp/upstream/-/merge_requests/6","iid":6,"title":"Mine","state":"opened","project_id":10,"source_project_id":20,"target_branch":"main"}]`}
+		case u.EscapedPath() == upstream:
+			return forgeAPIAnswer{Body: `[{"source_branch":"feature","sha":"bbb","web_url":"https://gitlab.com/grp/upstream/-/merge_requests/6","source_project_id":20},` +
+				`{"source_branch":"feature","sha":"ccc","web_url":"https://gitlab.com/grp/upstream/-/merge_requests/5","source_project_id":30}]`}
+		}
+		return forgeUnexpected(t, call)
+	})
+	cwd := t.TempDir()
+	core.recordOrigin(cwd, originIdentity{url: "git@gitlab.com:grp/sub/app.git", known: true}, core.nowFn())
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature")
+	if err != nil || len(pulls) != 1 || pulls[0] != (GitPR{URL: "https://gitlab.com/grp/upstream/-/merge_requests/6", Number: 6, Title: "Mine", State: "open", BaseBranch: "main"}) {
+		t.Fatalf("ListOpenPRs = %+v, %v; want the fork's merge request in its source project", pulls, err)
+	}
+	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 50)
+	want := []MergedPRHead{{HeadRefName: "local", HeadOid: "aaa", URL: "https://gitlab.com/grp/sub/app/-/merge_requests/1"}, {HeadRefName: "feature", HeadOid: "bbb", URL: "https://gitlab.com/grp/upstream/-/merge_requests/6"}}
+	if err != nil || !slices.Equal(heads, want) {
+		t.Fatalf("ListMergedPRHeads = %+v, %v; want %+v", heads, err, want)
+	}
+	if got := gitlabPaths(calls); !slices.Contains(got, "GET "+upstream+"?per_page=100&source_branch=feature&state=opened") {
+		t.Fatalf("requests = %v", got)
 	}
 }
 

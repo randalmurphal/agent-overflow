@@ -81,8 +81,10 @@ the second `wailsEventOn` argument; an empty `backendId` means unknown origin.
 Treat persisted row events as distributed convergence:
 
 - `thread:updated` and `project:updated` apply the complete row for `full` and
-  `listed`; `unlisted` and `deleted` remove it. A thread `full` frame never adds
-  unknown sidebar membership. A `patch` changes only its named fields.
+  `listed`; `unlisted` and `deleted` remove it. A thread `emptied` frame removes
+  only its sidebar row: panes showing it and its per-thread state stay. A thread
+  `full` frame never adds unknown sidebar membership. A `patch` changes only its
+  named fields.
 - A thread row an RPC returns is applied with `syncThreadReply` (or
   `threadReplyRow`) and a `threadRowFrameMark` taken before the call, so a
   frame that arrived during the call is not undone by the older reply.

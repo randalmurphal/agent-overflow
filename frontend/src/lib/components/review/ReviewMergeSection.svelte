@@ -62,15 +62,22 @@
   const method = $derived(review.manage.mergeMessage.method);
   const deleteBranch = $derived(merge?.deleteBranchOffered ? (pickedDelete ?? merge.deleteBranchDefault) : false);
 
-  const showApprove = $derived(!settledPR && !!merge && (merge.viewerCanApprove || merge.viewerApproved));
+  // Unapprove shows while the forge would withdraw the standing approval.
+  const showApprove = $derived(!settledPR && !!merge && (merge.viewerApproved ? merge.viewerCanUnapprove : merge.viewerCanApprove));
+  const cannotUnapprove = $derived(!settledPR && merge?.viewerApproved && !merge.viewerCanUnapprove ? (merge.cannotUnapproveReason ?? null) : null);
   const showMerge = $derived(!settledPR && !!merge && merge.viewerCanMerge);
   const canMergeNow = $derived(mergeState === 'ready' && armed === null);
   const canAutoMerge = $derived(!!merge?.autoMergeAvailable && armed === null && mergeState !== 'ready' && mergeState !== 'draft');
-  // A target branch that merges through a queue (a GitLab merge train):
+  // A target branch that merges through a queue (a GitLab merge train, a
+  // GitHub merge queue):
   // Merge now adds the PR to it and auto-merge adds it once ready, so the
   // labels say so; armed and queued, the PR's place shows.
   const queue = $derived(merge?.queue?.required ? merge.queue : null);
   const queueNoun = $derived(mergeQueueNoun(review.prRef?.forge));
+  // A queue that offers no method (GitHub's: its configuration sets it)
+  // shows none and is sent none.
+  const queueSetsMethod = $derived(!!queue && !merge?.methods?.length);
+  const sentMethod = $derived(queueSetsMethod ? '' : method);
   const queued = $derived(!!armed && !!queue?.queued);
   const queuePlace = $derived(queued ? mergeQueuePlace(queue?.position, queue?.size) : '');
   const nowLabel = $derived(queue ? `Add to ${queueNoun}` : 'Merge now');
@@ -227,14 +234,26 @@
         if (hasWorkspace) return { label: 'View conflicts', testid: 'review-merge-row-conflicts', run: () => { void review.openConflictView(); } };
         return blocker.url ? { label: 'Open', testid: 'review-merge-row-conflicts', run: () => { void openURL(blocker.url); } } : null;
       case 'rebase':
-        if (merge?.viewerCanMerge) return { label: 'Update branch', testid: 'review-merge-row-rebase', run: () => { void review.updatePRBranch(); }, merge: true };
+        if (merge?.viewerCanUpdateBranch) return { label: 'Update branch', testid: 'review-merge-row-rebase', run: () => { void review.updatePRBranch(); }, merge: true };
         return null;
       case 'draft':
-        if (merge?.viewerCanMerge || detail.viewerIsAuthor) return { label: 'Mark ready', testid: 'review-merge-row-ready', run: () => { void review.markPRReady(); }, merge: true };
+        if (merge?.viewerCanMarkReady) return { label: 'Mark ready', testid: 'review-merge-row-ready', run: () => { void review.markPRReady(); }, merge: true };
         return null;
       default:
         return blocker.url ? { label: 'Open', testid: 'review-merge-row-open', run: () => { void openURL(blocker.url); } } : null;
     }
+  }
+
+  // Why a row the forge would let someone fix has no fix for this viewer.
+  function blockerReason(blocker: MergeBlocker): { text: string; testid: string } | null {
+    if (!merge) return null;
+    if (blocker.kind === 'rebase' && !merge.viewerCanUpdateBranch && merge.cannotUpdateBranchReason) {
+      return { text: merge.cannotUpdateBranchReason, testid: 'review-merge-cannot-update' };
+    }
+    if (blocker.kind === 'draft' && !merge.viewerCanMarkReady && merge.cannotMarkReadyReason) {
+      return { text: merge.cannotMarkReadyReason, testid: 'review-merge-cannot-ready' };
+    }
+    return null;
   }
 
   function blockerDot(blocker: MergeBlocker): string {
@@ -259,7 +278,8 @@
   // The armed row's who, how and when, and a queued PR's place.
   const armedLine = $derived.by(() => {
     if (!armed) return '';
-    const parts = [authorDisplayName({ authorLogin: armed.byLogin, authorName: armed.byName }), mergeMethodLabel(armed.method)];
+    const parts = [authorDisplayName({ authorLogin: armed.byLogin, authorName: armed.byName })];
+    if (armed.method) parts.push(mergeMethodLabel(armed.method));
     const when = time(armed.at);
     if (when) parts.push(when);
     return parts.join(' · ');
@@ -372,6 +392,7 @@
       {/if}
       {#each blockers as blocker, index (`${blocker.kind}:${index}`)}
         {@const action = blockerAction(blocker)}
+        {@const reason = action ? null : blockerReason(blocker)}
         <div class={rowClass} data-testid="review-merge-blocker" data-kind={blocker.kind}>
           <span class="size-2 shrink-0 rounded-full {blockerDot(blocker)}"></span>
           <div class="min-w-0 flex-1">
@@ -390,6 +411,9 @@
           {:else if blocker.kind === 'approvals' && merge && !merge.viewerCanApprove && merge.cannotApproveReason}
             <!-- The row says why there is no Approve beside it. -->
             <span class="min-w-0 text-[0.6875rem] text-fg-subtle" data-testid="review-merge-cannot-approve">{merge.cannotApproveReason}</span>
+          {:else if reason}
+            <!-- The row says why there is no fix beside it. -->
+            <span class="min-w-0 text-[0.6875rem] text-fg-subtle" data-testid={reason.testid}>{reason.text}</span>
           {/if}
           {#if action}
             <Button variant="ghost" size="xs" class={actionClass} testId={action.testid} disabled={action.merge ? busy : false} onclick={action.run}>{action.label}</Button>
@@ -449,6 +473,12 @@
           <span class="min-w-0 flex-1 truncate text-fg-muted">{merge.cannotApproveReason}</span>
         </div>
       {/if}
+      {#if cannotUnapprove}
+        <div class={rowClass} data-testid="review-merge-cannot-unapprove">
+          <span class="size-2 shrink-0 rounded-full bg-fg-subtle"></span>
+          <span class="min-w-0 flex-1 truncate text-fg-muted compact:whitespace-normal compact:break-words" title={cannotUnapprove}>{cannotUnapprove}</span>
+        </div>
+      {/if}
       {#if mergeState === 'checking' && blockers.length === 0 && settled.length === 0}
         <div class={rowClass} data-testid="review-merge-checking">
           <span class="size-2 shrink-0 animate-pulse rounded-full bg-accent"></span>
@@ -488,17 +518,21 @@
   <Popover anchor={triggerEl} open={menuOpen} onClose={closeMenu} placement="bottom-end" role="none">
     <Menu ariaLabel="Merge options" onClose={closeMenu} minWidthClass="min-w-[240px]">
       <div data-testid="review-merge-menu">
-        {#each methods as candidate, index (candidate)}
-          <MenuItem
-            label={mergeMethodLabel(candidate)}
-            description={index === 0 ? 'project default' : undefined}
-            checked={candidate === method}
-            testId="review-merge-method-{candidate}"
-            onSelect={() => message.pick(candidate)}
-          />
-        {/each}
+        {#if !queueSetsMethod}
+          {#each methods as candidate, index (candidate)}
+            <MenuItem
+              label={mergeMethodLabel(candidate)}
+              description={index === 0 ? 'project default' : undefined}
+              checked={candidate === method}
+              testId="review-merge-method-{candidate}"
+              onSelect={() => message.pick(candidate)}
+            />
+          {/each}
+        {/if}
         {#if merge?.deleteBranchOffered}
-          <MenuDivider />
+          {#if !queueSetsMethod}
+            <MenuDivider />
+          {/if}
           <MenuItem
             label="Delete source branch"
             checkbox
@@ -507,13 +541,15 @@
             onSelect={() => { pickedDelete = !deleteBranch; }}
           />
         {/if}
-        <MenuDivider />
+        {#if !queueSetsMethod || merge?.deleteBranchOffered}
+          <MenuDivider />
+        {/if}
         <MenuItem
           label={nowLabel}
           description={canMergeNow ? undefined : queued ? `in the ${queueNoun}` : armed ? 'auto-merge is set' : blockedSummary || undefined}
           disabled={!canMergeNow}
           testId="review-merge-now"
-          onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: false, commitMessage: commitMessage() }); })}
+          onSelect={() => pickAndClose(() => { void review.mergePR({ method: sentMethod, deleteBranch, autoMerge: false, commitMessage: commitMessage() }); })}
         />
         {#if armed}
           <MenuItem
@@ -528,7 +564,7 @@
             description={mergeState === 'ready' ? 'already ready' : !merge?.autoMergeAvailable ? 'not available here' : deleteBranch && review.prRef?.forge === 'github' ? 'GitHub keeps the branch' : undefined}
             disabled={!canAutoMerge}
             testId="review-merge-auto"
-            onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: true, commitMessage: commitMessage() }); })}
+            onSelect={() => pickAndClose(() => { void review.mergePR({ method: sentMethod, deleteBranch, autoMerge: true, commitMessage: commitMessage() }); })}
           />
         {/if}
         {#if offerMessage && !armed}

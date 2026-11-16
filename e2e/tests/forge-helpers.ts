@@ -74,6 +74,8 @@ export interface ForgePull {
   headRef?: string;
   /** The fork the head branch lives in ("owner/repo", a GitLab path); unset is the repository itself. */
   headRepo?: string;
+  /** A fork's pull letting people with write access push to its head (GitHub maintainerCanModify). */
+  maintainerCanModify?: boolean;
   /** Logins a review is requested from (GitHub reviewRequests, GitLab reviewers). */
   reviewers?: string[];
   /** RFC 3339; default 2026-01-01T00:00:00Z, updatedAt and committedAt (the head commit's time) to createdAt. */
@@ -121,13 +123,15 @@ export interface ForgePull {
   /** Names of the repository's `labels`. */
   labels?: string[];
   /** What the viewer may do here, each derived from the role and authorship when omitted. */
-  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean };
+  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean; updateBranch?: boolean; resolve?: boolean; reply?: boolean; react?: boolean };
   /** The head's files by path, which a suggestion's apply rewrites. */
   files?: Record<string, string>;
   /** GitLab: close, reopen and merge events (resource state events). */
   stateEvents?: { id?: number; state: 'closed' | 'reopened' | 'merged'; actor?: string; at?: string }[];
   /** GitLab: the requested changes were bypassed. */
   changesOverridden?: boolean;
+  /** GitHub: the pull's place in its base's merge queue (merge.mergeQueue). */
+  queued?: { position?: number; state?: 'QUEUED' | 'AWAITING_CHECKS' | 'MERGEABLE' | 'UNMERGEABLE' | 'LOCKED'; by?: string; at?: string };
 }
 
 /** A pull's merge box (forgefake Readiness). */
@@ -170,6 +174,8 @@ export interface ForgeRepoMerge {
   defaultMethod?: 'merge' | 'squash' | 'rebase';
   autoMergeAllowed?: boolean;
   deleteBranchOnMerge?: boolean;
+  /** GitHub: the base merges only through its merge queue. */
+  mergeQueue?: boolean;
   /** GitLab: merge_method, squash_option, and the merge checks the project requires. */
   mergeMethod?: 'merge' | 'rebase_merge' | 'ff';
   squashOption?: 'default_off' | 'default_on' | 'always' | 'never';
@@ -307,7 +313,7 @@ export interface ForgeRepo {
   eventsHidden?: boolean;
   /** Who can be asked to review and be assigned; `id` is GitLab's user id, generated when omitted. */
   members?: { login: string; name?: string; id?: number }[];
-  /** GitHub: an organization's teams (`organization`), and a token whose teams search is refused. */
+  /** GitHub: an organization's teams (`organization`), and a token without read:org, whose teams search and team reviewers are refused. */
   teams?: { slug: string; name?: string }[];
   organization?: boolean;
   teamsRefused?: boolean;
@@ -316,6 +322,10 @@ export interface ForgeRepo {
   /** GitLab: the host's release, and what its server lacks. */
   serverVersion?: string;
   serverLacks?: 'introspection'[];
+  /** The project this one is a fork of, seeded on the same host: a checkout of the fork opens its pull requests there. */
+  parent?: string;
+  /** GitHub: what the viewer's fine-grained token cannot read in a PR read. */
+  tokenCannotRead?: ('checks' | 'actions')[];
   /** GitLab: a tier without Request changes; a requested state reads reviewed. */
   noChangeRequests?: boolean;
 }

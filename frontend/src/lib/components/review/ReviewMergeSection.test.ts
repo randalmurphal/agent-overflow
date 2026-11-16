@@ -328,6 +328,32 @@ describe('<ReviewMergeSection>', () => {
     });
   });
 
+  it('says why the rebase, draft and approval fixes the forge refuses this viewer are missing', async () => {
+    const view = await mountReviewPanePR(blocked({
+      readiness: { state: 'draft', blockers: [{ kind: 'draft', text: 'Still a draft' }, { kind: 'rebase', text: 'Behind main' }], settled: [{ kind: 'approvals', text: 'Approved by you' }] },
+      merge: {
+        ...blocked().merge,
+        viewerApproved: true,
+        viewerCanUpdateBranch: false,
+        cannotUpdateBranchReason: "The author's fork does not allow edits from maintainers, so only the author can update this branch.",
+        viewerCanMarkReady: false,
+        cannotMarkReadyReason: 'Only the author and people with write access can mark this pull request ready for review.',
+        viewerCanUnapprove: false,
+        cannotUnapproveReason: 'Withdrawing an approval dismisses it, which needs write access to this repository.',
+      },
+    }));
+    // Merging is still offered: the controls are each their own.
+    expect(view.getByTestId('review-merge-trigger')).toBeInTheDocument();
+    expect(view.queryByTestId('review-merge-approve')).toBeNull();
+    await openMergeSection(view);
+    const [draft, rebase] = view.getAllByTestId('review-merge-blocker');
+    expect(within(draft).queryByTestId('review-merge-row-ready')).toBeNull();
+    expect(within(draft).getByTestId('review-merge-cannot-ready')).toHaveTextContent('Only the author and people with write access');
+    expect(within(rebase).queryByTestId('review-merge-row-rebase')).toBeNull();
+    expect(within(rebase).getByTestId('review-merge-cannot-update')).toHaveTextContent("The author's fork does not allow edits from maintainers");
+    expect(view.getByTestId('review-merge-cannot-unapprove')).toHaveTextContent('Withdrawing an approval dismisses it');
+  });
+
   it('lists forge events in the conversation and counts them, without repeating a verdict', async () => {
     const detail = prDetailFixture({
       latestReviews: [{ authorLogin: 'alice', authorName: 'Alice', state: 'APPROVED', submittedAt: '2026-10-20T09:00:00Z', body: '', commitSHA: 'sha-a' }],
@@ -522,5 +548,57 @@ describe('<ReviewMergeSection> guards', () => {
     expect(empty.getByTestId('review-overview')).toBeInTheDocument();
     expect(empty.getByTestId('review-pr-merge')).toBeInTheDocument();
     expect(empty.queryByTestId('review-tree-ext-trigger')).toBeNull();
+  });
+
+  describe('on a GitHub base with a merge queue', () => {
+    // GitHub's queue sets the method itself: the options carry none.
+    function queueBase(base: PRDetail, queue: NonNullable<PRDetail['merge']['queue']> = { required: true, queued: false, canRemove: false }): PRDetail {
+      return { ...base, merge: { ...base.merge, methods: [], deleteBranchOffered: false, queue } };
+    }
+
+    it('adds the PR to the queue with no method, then shows its place and removes it', async () => {
+      const merge = setBindingMock('MergePR', async () => ({ seq: 2, outcome: { merged: false, autoMerge: true } }));
+      const view = await mountReviewPanePR(queueBase(prDetailFixture()));
+      await openMergeSection(view);
+      expect(view.getByTestId('review-merge-trigger')).toHaveTextContent('Add to merge queue');
+      let menu = await openMergeMenu(view);
+      expect(within(menu).queryByTestId('review-merge-method-merge')).toBeNull();
+      expect(within(menu).queryByTestId('review-merge-delete-branch')).toBeNull();
+      expect(within(menu).getByTestId('review-merge-auto')).toHaveTextContent('Add to merge queue when ready');
+      await fireEvent.click(within(menu).getByTestId('review-merge-now'));
+      expect(merge).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), { method: '', headSHA: 'sha-a', deleteBranch: false, autoMerge: false });
+      await waitFor(() => {
+        expect(view.getByTestId('review-merge-trigger')).toBeDisabled();
+      });
+      expect(getToasts().some((toast) => toast.message === 'Merging…')).toBe(false);
+      // Queued at once: GitHub's entry stands as the armed request, no method.
+      frame(queueBase({ ...prDetailFixture(), merge: { ...prDetailFixture().merge, autoMerge: { method: '', byLogin: 'octocat', byName: 'Octo Cat', at: '2026-10-20T10:00:00Z', waitsFor: '', canCancel: true } } },
+        { required: true, queued: true, position: 2, size: 3, canRemove: true }), 2);
+      await waitFor(() => {
+        expect(view.getByTestId('review-merge-trigger')).toHaveTextContent('In merge queue');
+      });
+      const armed = view.getByTestId('review-merge-armed');
+      expect(armed.getAttribute('data-queued')).toBe('true');
+      expect(armed).toHaveTextContent('In the merge queue · 2 of 3');
+      expect(armed).toHaveTextContent('Added by Octo Cat');
+      expect(armed).not.toHaveTextContent('Added by Octo Cat · Merge');
+      menu = await openMergeMenu(view);
+      expect(within(menu).getByTestId('review-merge-cancel-auto')).toHaveTextContent('Remove from merge queue');
+      const cancel = setBindingMock('CancelPRAutoMerge', async () => ({ seq: 3 }));
+      await fireEvent.click(within(menu).getByTestId('review-merge-cancel-auto'));
+      await waitFor(() => {
+        expect(cancel).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }));
+      });
+    });
+
+    it('adds a blocked PR when ready, with no method', async () => {
+      const merge = setBindingMock('MergePR', async () => ({ seq: 2, outcome: { merged: false, autoMerge: true } }));
+      const view = await mountReviewPanePR(queueBase(blocked()));
+      await openMergeSection(view);
+      expect(view.getByTestId('review-merge-trigger')).toHaveTextContent('Add to merge queue when ready');
+      const menu = await openMergeMenu(view);
+      await fireEvent.click(within(menu).getByTestId('review-merge-auto'));
+      expect(merge).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), { method: '', headSHA: 'sha-a', deleteBranch: false, autoMerge: true });
+    });
   });
 });

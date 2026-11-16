@@ -243,3 +243,20 @@ func TestHandoffOutputNeverReachesAnError(t *testing.T) {
 		t.Fatalf("err = %v leaked the auth status output", err)
 	}
 }
+
+// A gh older than 2.17.0 has no `gh auth token`: it prints its usage
+// beside "unknown command", which can name the login command, and exits
+// 1. That is a CLI to update, not a login to fix or a network to retry.
+func TestCLITokenSourceReportsAGhWithoutAuthToken(t *testing.T) {
+	t.Parallel()
+	stderr := "unknown command \"token\" for \"gh auth\"\n\nUsage:  gh auth <command> [flags]\n\nAvailable commands:\n  login\n  logout\n  refresh\n  status\n\nRun 'gh auth login' to authenticate.\n"
+	runner := &fakeRunner{answers: map[string]fakeAnswer{"gh auth token --hostname github.com": exit(1, stderr)}}
+	_, _, err := CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitHub, "github.com")
+	setup, ok := errors.AsType[*SetupError](err)
+	if !ok || setup.Kind != SetupOutdated || setup.Binary != "gh" || !strings.Contains(setup.Message, "2.17.0") {
+		t.Fatalf("Token error = %#v, want a SetupError of kind %q naming gh 2.17.0", err, SetupOutdated)
+	}
+	if !WriteNotApplied(err) {
+		t.Fatal("a token that was never read sent nothing, so a write it stopped was not applied")
+	}
+}

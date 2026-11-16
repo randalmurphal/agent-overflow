@@ -234,6 +234,11 @@ func (s CLITokenSource) run(ctx context.Context, forge string, secret bool, name
 	command := name + " " + strings.Join(args, " ")
 	stderr := string(bytes.TrimSpace(out.Stderr))
 	failure := fmt.Errorf("%s exited with status %d: %s", command, out.ExitCode, boundText(stderr))
+	// Checked first: the usage an old gh prints beside it can name the
+	// login command.
+	if name == "gh" && ghLacksAuthToken.MatchString(stderr) {
+		return ProcessResult{}, OutdatedCLIError(failure)
+	}
 	if namesMissingLogin(stderr) {
 		return ProcessResult{}, UnauthenticatedError(forge, failure)
 	}
@@ -263,6 +268,10 @@ func classifyRunError(ctx context.Context, forge, command string, err error) err
 var missingLogin = regexp.MustCompile(`(?i)auth login|not logged in|not been authenticated|no (oauth )?token|unauthorized`)
 
 func namesMissingLogin(stderr string) bool { return missingLogin.MatchString(stderr) }
+
+// ghLacksAuthToken matches the stderr of a gh older than 2.17.0 asked
+// for `gh auth token`: cobra's `unknown command "token" for "gh auth"`.
+var ghLacksAuthToken = regexp.MustCompile(`unknown command "token" for "gh auth"`)
 
 // handoffToken validates a printed token: one line of printable ASCII
 // with no spaces, so it can never split a header. An empty one is no

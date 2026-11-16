@@ -42,19 +42,16 @@ func (a *App) attemptGitAction(
 }
 
 // GitActionOutcome is what a git attempt did: "succeeded" (Result),
-// "failed" (Code and Message, the public ones: it wrote nothing it
-// reports), "unknown" (this process never received it), or "forgotten" (it
+// "failed" (Code, Message and Chain, what its first caller was told: it
+// wrote nothing it reports), "unknown" (this process never received it), or "forgotten" (it
 // may have received it and no longer keeps the outcome).
 type GitActionOutcome struct {
 	State   string                  `json:"state"`
 	Result  *gitops.GitActionResult `json:"result,omitempty"`
 	Code    string                  `json:"code,omitempty"`
 	Message string                  `json:"message,omitempty"`
+	Chain   []string                `json:"chain,omitempty"`
 }
-
-// gitActionFailedCode is the code of a failed git attempt whose error has
-// no public code of its own.
-const gitActionFailedCode = "git_action_failed"
 
 // GetGitActionOutcome answers what attempt attemptID of action ("commit",
 // "push", "pull" or "pr") in ws did, waiting for one still running; its
@@ -69,9 +66,7 @@ func (a *App) GetGitActionOutcome(ctx context.Context, ws WorkspaceRef, action, 
 	default:
 		return GitActionOutcome{}, fmt.Errorf("git action outcome: unknown action %q", action)
 	}
-	outcome, err := a.gitActionAttempts.outcome(ctx, attemptID, gitAttemptKey(action, ws), attemptFailure{
-		code: gitActionFailedCode, message: gitActionFailedMessages[action],
-	})
+	outcome, err := a.gitActionAttempts.outcome(ctx, attemptID, gitAttemptKey(action, ws))
 	if err != nil {
 		return GitActionOutcome{}, err
 	}
@@ -79,17 +74,7 @@ func (a *App) GetGitActionOutcome(ctx context.Context, ws WorkspaceRef, action, 
 	case attemptDone:
 		return GitActionOutcome{State: "succeeded", Result: &outcome.result}, nil
 	case attemptFailed:
-		return GitActionOutcome{State: "failed", Code: outcome.code, Message: outcome.message}, nil
+		return GitActionOutcome{State: "failed", Code: outcome.code, Message: outcome.message, Chain: outcome.chain}, nil
 	}
 	return GitActionOutcome{State: outcome.state}, nil
-}
-
-// gitActionFailedMessages are the outcome sentences of a failed git attempt
-// whose error has no public message: git's or the forge CLI's own output is
-// in the computer's log.
-var gitActionFailedMessages = map[string]string{
-	gitActionCommit: "The commit failed. The computer's log has git's output.",
-	gitActionPush:   "The push failed. The computer's log has git's output.",
-	gitActionPull:   "The pull failed. The computer's log has git's output.",
-	gitActionPR:     "Creating the pull request failed. The computer's log has the forge's output.",
 }

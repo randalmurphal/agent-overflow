@@ -150,6 +150,8 @@
   let openPRURL = $derived(safeExternalURL(status?.openPrUrl));
   let prMenuLabel = $derived(hasOpenPR ? labels.openAction : labels.createAction);
   let prLookupError = $derived(status?.openPrLookupError?.trim() ?? '');
+  // The origin is on a forge host this release does not support.
+  let forgeUnsupported = $derived(status?.forge ? '' : (status?.forgeUnsupported?.trim() ?? ''));
   let canCreatePR = $derived(
     status !== null &&
       status.hasUpstream &&
@@ -305,7 +307,7 @@
         />
         <MenuItem
           label={prMenuLabel}
-          description={prLookupError && !hasOpenPR ? `Could not check existing ${labels.noun}: ${prLookupError}` : undefined}
+          description={forgeUnsupported || (prLookupError && !hasOpenPR ? `Could not check existing ${labels.noun}: ${prLookupError}` : undefined)}
           title={
             hasOpenPR && !openPRURL
               ? `Invalid ${labels.longSingular} URL`

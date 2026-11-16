@@ -24,8 +24,8 @@ type Member struct {
 }
 
 // Team is a GitHub organization team (Repo.Organization), a reviewer as
-// "<owner>/<slug>". TeamsRefused answers the teams search as a token
-// without read:org does.
+// "<owner>/<slug>". TeamsRefused answers the teams search, and a PR read
+// selecting team reviewers, as a token without read:org does.
 type Team struct {
 	Slug string `json:"slug"`
 	Name string `json:"name,omitempty"`
@@ -49,17 +49,27 @@ type Label struct {
 // reviewers, assignees and labels: developer), push (pushing to the head
 // branch, which a suggestion's commit needs: GitHub
 // viewerCanApplySuggestion, WRITE on a head in the repository itself,
-// none on a fork's; GitLab developer). Each write refuses as its forge
-// does when its flag is false.
+// none on a fork's; GitLab developer), updateBranch (GitHub
+// viewerCanUpdateBranch while the head is behind: the author, or WRITE
+// on a head in the repository itself or on a fork's that allows
+// maintainer edits), resolve (GitHub viewerCanResolve and
+// viewerCanUnresolve: WRITE or the author), reply (GitHub
+// viewerCanReply: anyone), react (GitHub viewerCanReact on every comment:
+// anyone). Each write refuses as its forge does when its
+// flag is false.
 type ViewerCan struct {
-	Update *bool `json:"update,omitempty"`
-	Close  *bool `json:"close,omitempty"`
-	Reopen *bool `json:"reopen,omitempty"`
-	Label  *bool `json:"label,omitempty"`
-	Assign *bool `json:"assign,omitempty"`
-	Triage *bool `json:"triage,omitempty"`
-	Admin  *bool `json:"admin,omitempty"`
-	Push   *bool `json:"push,omitempty"`
+	UpdateBranch *bool `json:"updateBranch,omitempty"`
+	Resolve      *bool `json:"resolve,omitempty"`
+	Reply        *bool `json:"reply,omitempty"`
+	React        *bool `json:"react,omitempty"`
+	Update       *bool `json:"update,omitempty"`
+	Close        *bool `json:"close,omitempty"`
+	Reopen       *bool `json:"reopen,omitempty"`
+	Label        *bool `json:"label,omitempty"`
+	Assign       *bool `json:"assign,omitempty"`
+	Triage       *bool `json:"triage,omitempty"`
+	Admin        *bool `json:"admin,omitempty"`
+	Push         *bool `json:"push,omitempty"`
 }
 
 // StateEvent is a GitLab resource state event: a close, a reopen
@@ -143,6 +153,9 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 		if _, err := parseGitLabRelease(r.ServerVersion); err != nil {
 			return err
 		}
+	}
+	if err := r.normalizeTokenCannotRead(); err != nil {
+		return err
 	}
 	for _, lack := range r.ServerLacks {
 		if !slices.Contains(gitlabLacks, lack) {
@@ -327,6 +340,28 @@ func (e *Engine) mayUpdate(r *Repo, p *Pull) bool {
 		role = role || gitlabRoles[r.Merge.Permission] >= gitlabRoles["developer"]
 	}
 	return viewerMay(p.viewer().Update, role)
+}
+
+// mayUpdateBranch is GitHub's viewerCanUpdateBranch but for the head
+// being behind: the author, or WRITE where the head accepts it.
+func (e *Engine) mayUpdateBranch(r *Repo, p *Pull) bool {
+	write := githubRoles[r.Merge.Permission] >= githubRoles["WRITE"] && (p.HeadRepo == "" || p.MaintainerCanModify)
+	return viewerMay(p.viewer().UpdateBranch, strings.EqualFold(p.Author, e.viewer) || write)
+}
+
+// mayResolve is GitHub's viewerCanResolve and viewerCanUnresolve.
+func (e *Engine) mayResolve(r *Repo, p *Pull) bool {
+	return viewerMay(p.viewer().Resolve, e.githubWriter(r, p))
+}
+
+// mayReact is GitHub's viewerCanReact on the pull's comments.
+func (p *Pull) mayReact() bool {
+	return viewerMay(p.viewer().React, true)
+}
+
+// mayReply is GitHub's viewerCanReply.
+func (p *Pull) mayReply() bool {
+	return viewerMay(p.viewer().Reply, true)
 }
 
 // githubWriter is GitHub WRITE access or the pull's author.

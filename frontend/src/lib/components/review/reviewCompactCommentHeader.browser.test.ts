@@ -52,7 +52,7 @@ function review(): ReviewPaneState {
     canHoldReply: false,
     replyDraftsFor: () => [],
     holdPRThreadReply: vi.fn(),
-    reactions: { available: true, canAdd: true, withheld: null, reactionsOf: () => [], pending: () => false, error: () => null, toggle: vi.fn(), pickerOpen: () => false, setPickerOpen: vi.fn() },
+    reactions: { available: true, canAdd: true, withheld: null, reactionsOf: () => [], refused: () => null, pending: () => false, error: () => null, toggle: vi.fn(), pickerOpen: () => false, setPickerOpen: vi.fn() },
     suggestions: { available: true, withheld: null, pending: () => false, error: () => null, apply: vi.fn(), currentFile: () => null, threadSource: () => null, lineSource: () => null },
     editorPreviews: previews,
     reactionsUnavailable: null,

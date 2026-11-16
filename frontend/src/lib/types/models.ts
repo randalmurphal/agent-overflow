@@ -539,6 +539,9 @@ export interface PRDetail {
   /** The Details section and the management controls (git.PRManage);
    *  absent from an older backend, which offers none of them. */
   manage?: PRManage;
+  /** A sentence for each optional part the forge would not answer (team
+   *  reviewers, check runs, workflow runs). */
+  unavailable?: string[];
 }
 
 /** Mirrors git.PRManage. */
@@ -666,7 +669,16 @@ export interface MergeOptions {
   viewerApproved: boolean;
   cannotApproveReason?: string;
   cannotMergeReason?: string;
-  /** The merge queue the target branch merges through (a GitLab merge train). */
+  /** What the forge lets the viewer do beside merging, each with why not
+   * where its control would show. Go always sends the flags; absent reads
+   * as not allowed. */
+  viewerCanUpdateBranch?: boolean;
+  cannotUpdateBranchReason?: string;
+  viewerCanUnapprove?: boolean;
+  cannotUnapproveReason?: string;
+  viewerCanMarkReady?: boolean;
+  cannotMarkReadyReason?: string;
+  /** The merge queue the target branch merges through (a GitLab merge train or a GitHub merge queue). */
   queue?: MergeQueue | null;
 }
 
@@ -885,6 +897,10 @@ export interface ReviewThread {
   isResolved: boolean;
   isOutdated: boolean;
   comments: ReviewComment[];
+  /** Why the viewer may not resolve (or reopen) this thread, or reply to
+   * it; absent when they may or the forge does not say. */
+  cannotResolveReason?: string;
+  cannotReplyReason?: string;
 }
 
 export interface ReviewComment {
@@ -907,6 +923,9 @@ export interface ReviewComment {
   suggestions?: CommentSuggestion[];
   /** One entry per reaction present, by GitLab award name. */
   reactions?: CommentReaction[];
+  /** Why the forge does not let the viewer react here (GitHub's
+   * viewerCanReact), absent when it does or does not say. */
+  cannotReactReason?: string;
 }
 
 /** One suggestion block of a comment (gitops.CommentSuggestion). `from`

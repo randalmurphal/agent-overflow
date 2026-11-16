@@ -3572,11 +3572,9 @@ export function ListThreadSliceAround(threadID: string, anchorItemID: string, ta
 }
 
 /**
- * ListThreads backs the frontend sidebar. It deliberately excludes
- * "draft" threads (newly created but never sent) so the sidebar stays
- * clean: a thread becomes visible once its draft has content or its first
- * item lands (store.ListThreadsWithItems), and the write that does it
- * announces the row as listed.
+ * ListThreads backs the frontend sidebar. It lists a never-sent thread only
+ * once it is real (store.sidebarListedClause), and the write that makes it
+ * real announces the row as listed.
  * Internal callers that need every thread (tests, fork inspection,
  * discussion runtime) go through a.store.ListThreads directly: an answer
  * here is a client's catalog read, which releases heavy post-boot work.

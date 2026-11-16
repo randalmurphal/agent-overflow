@@ -85,10 +85,7 @@ func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	if p.CI != nil {
 		pipeline = gitlabPipelineJSON(r, p.CI)
 	}
-	source := r.ID
-	if p.HeadRepo != "" {
-		source = p.headRepoID
-	}
+	source := e.headRepoID(r, p)
 	var mergedAt, closedAt, mergeCommit, squashCommit any
 	mergedBy, closedBy, mergeUser := "", "", ""
 	switch p.State {
@@ -305,8 +302,13 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 	if !settings.SharedAccess {
 		direct = map[string]any{"access_level": gitlabRoles[settings.Permission], "notification_level": 3}
 	}
+	var forkedFrom any
+	if parent := e.repoOn("gitlab", r.Host, r.Parent); r.Parent != "" && parent != nil {
+		forkedFrom = map[string]any{"id": parent.ID, "path_with_namespace": parent.Project}
+	}
 	return glabOK(jsonResponse(map[string]any{
 		"id":                                    r.ID,
+		"forked_from_project":                   forkedFrom,
 		"full_name":                             r.Project,
 		"path_with_namespace":                   r.Project,
 		"merge_method":                          settings.MergeMethod,
@@ -509,7 +511,7 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 // project the path names: the open MRs from a source branch name (a
 // fork's included, as source_branch matches them), recently merged MRs,
 // and named MRs in any state (iids[] with state=all). Items are the full
-// view.
+// view; a state list answers its X-Total.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
@@ -547,7 +549,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if items == nil {
 		items = []map[string]any{}
 	}
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Total: "+strconv.Itoa(len(matches)))
 }
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest
@@ -591,10 +593,7 @@ func (e *Engine) gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
 	}
-	source := r.ID
-	if p.HeadRepo != "" {
-		source = p.headRepoID
-	}
+	source := e.headRepoID(r, p)
 	return map[string]any{
 		"iid":               p.Number,
 		"project_id":        r.ID,

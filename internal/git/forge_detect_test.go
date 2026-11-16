@@ -97,6 +97,43 @@ func TestClassifyOriginURLWithSelfHostedGitLab(t *testing.T) {
 	}
 }
 
+// GitHub Enterprise origins are no forge and say so in one sentence; every
+// other origin, github.com through gh's login alone, a listed GitLab host
+// and an unknown host among them, says nothing.
+func TestUnsupportedForgeReasonNamesGitHubEnterprise(t *testing.T) {
+	t.Parallel()
+	gitlabHosts := []string{"github.gitlab-mirror.corp"}
+	for _, tc := range []struct{ url, host string }{
+		{"https://github.acme.corp/acme/widgets.git", "github.acme.corp"},
+		{"git@github.acme.corp:acme/widgets.git", "github.acme.corp"},
+		{"ssh://git@ghe.example.com:2222/acme/widgets.git", "ghe.example.com"},
+		{"https://acme.ghe.com/acme/widgets", "acme.ghe.com"},
+	} {
+		if got := classifyOriginURL(tc.url, gitlabHosts); got != "" {
+			t.Errorf("classifyOriginURL(%q) = %q, want no forge", tc.url, got)
+		}
+		if got, want := unsupportedForgeReason(tc.url, gitlabHosts), "Pull requests on GitHub Enterprise ("+tc.host+") are not supported yet."; got != want {
+			t.Errorf("unsupportedForgeReason(%q) = %q, want %q", tc.url, got, want)
+		}
+	}
+	for _, url := range []string{
+		"https://github.com/acme/widgets.git",
+		"git@ssh.github.com:acme/widgets.git",
+		"https://gitlab.com/grp/widgets.git",
+		"https://github.gitlab-mirror.corp/grp/widgets.git",
+		"https://git.example.com/acme/widgets.git",
+		"https://api.github.com/acme/widgets",
+		"https://ghe.com/acme/widgets",
+		"https://github.local/acme/widgets",
+		"/var/lib/git/widgets.git",
+		"",
+	} {
+		if got := unsupportedForgeReason(url, gitlabHosts); got != "" {
+			t.Errorf("unsupportedForgeReason(%q) = %q, want none", url, got)
+		}
+	}
+}
+
 func TestSetGitLabHostsClassificationRoundTrip(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)

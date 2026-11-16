@@ -13,8 +13,10 @@ import (
 // changes, state changes, searches and default merge message.
 
 // githubManageDetail is the Details selection of a pull: the viewerCan*
-// flags, the review requests, assignees and labels. Callers hold mu.
-func (e *Engine) githubManageDetail(r *Repo, p *Pull) map[string]any {
+// flags, the review requests, assignees and labels; without teams
+// selected a team reviewer answers its __typename alone. Callers hold
+// mu.
+func (e *Engine) githubManageDetail(r *Repo, p *Pull, teams bool) map[string]any {
 	requests := []map[string]any{}
 	for _, login := range p.Reviewers {
 		reviewer := githubActor(login, "")
@@ -25,8 +27,11 @@ func (e *Engine) githubManageDetail(r *Repo, p *Pull) map[string]any {
 		requests = append(requests, map[string]any{"requestedReviewer": reviewer})
 	}
 	for _, combined := range p.TeamReviewers {
-		team := r.team(combined)
-		requests = append(requests, map[string]any{"requestedReviewer": map[string]any{"__typename": "Team", "combinedSlug": combined, "name": team.Name}})
+		reviewer := map[string]any{"__typename": "Team"}
+		if teams {
+			reviewer["combinedSlug"], reviewer["name"] = combined, r.team(combined).Name
+		}
+		requests = append(requests, map[string]any{"requestedReviewer": reviewer})
 	}
 	assignees := []map[string]any{}
 	for _, login := range p.Assignees {

@@ -188,11 +188,11 @@ func TestReconcileProjectWorktreesReattachesThreadsOfExternallyRemovedWorktree(t
 
 	// Every client learned about both rows.
 	for _, id := range []string{attached.ID, archived.ID} {
-		if len(f.rows.fullRowsFor(id)) == 0 {
+		if len(f.rows.rowFramesFor(id)) == 0 {
 			t.Errorf("no thread:updated broadcast for %s", id)
 		}
 	}
-	if n := len(f.rows.fullRowsFor(atRoot.ID)); n != 0 {
+	if n := len(f.rows.rowFramesFor(atRoot.ID)); n != 0 {
 		t.Errorf("root thread broadcast %d times, want none", n)
 	}
 }
@@ -227,7 +227,7 @@ func TestReconcileProjectWorktreesLeavesLiveWorktreesAlone(t *testing.T) {
 	if row := f.row(t, onKept.ID); !samePath(row.WorkspacePath, kept) || !samePath(row.WorktreePath, kept) {
 		t.Errorf("thread on the surviving worktree moved: %+v", row)
 	}
-	if n := len(f.rows.fullRowsFor(onKept.ID)); n != 0 {
+	if n := len(f.rows.rowFramesFor(onKept.ID)); n != 0 {
 		t.Errorf("surviving worktree's thread broadcast %d times, want none", n)
 	}
 	f.assertAtRoot(t, onRemoved.ID)
@@ -237,7 +237,7 @@ func TestReconcileProjectWorktreesLeavesLiveWorktreesAlone(t *testing.T) {
 	f.rows.events = nil
 	f.rows.mu.Unlock()
 	f.app.reconcileProjectWorktrees(f.repo, nil)
-	if n := len(f.rows.fullRowsFor(onRemoved.ID)); n != 0 {
+	if n := len(f.rows.rowFramesFor(onRemoved.ID)); n != 0 {
 		t.Errorf("idempotent sweep broadcast %d rows", n)
 	}
 }

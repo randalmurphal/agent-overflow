@@ -32,9 +32,13 @@ type GitStatus struct {
 	// "github", "gitlab", or "" when the host is unknown / no origin
 	// is configured. Drives the UI's PR/MR label adaptation and gates
 	// the "Create PR" action.
-	Forge        string `json:"forge,omitempty"`
-	OpenPRURL    string `json:"openPrUrl,omitempty"`
-	OpenPRNumber int    `json:"openPrNumber,omitempty"`
+	Forge string `json:"forge,omitempty"`
+	// ForgeUnsupported is the sentence the PR features show in their
+	// place when Forge is empty because the origin is on a forge host
+	// this release does not support (GitHub Enterprise); "" otherwise.
+	ForgeUnsupported string `json:"forgeUnsupported,omitempty"`
+	OpenPRURL        string `json:"openPrUrl,omitempty"`
+	OpenPRNumber     int    `json:"openPrNumber,omitempty"`
 	// OpenPRLookupError is set when the forge lookup failed, distinct from
 	// a successful lookup that found no open PR/MR for the branch.
 	OpenPRLookupError string `json:"openPrLookupError,omitempty"`
@@ -85,6 +89,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.BehindCount == other.BehindCount &&
 		s.HasOriginRemote == other.HasOriginRemote &&
 		s.Forge == other.Forge &&
+		s.ForgeUnsupported == other.ForgeUnsupported &&
 		s.OpenPRURL == other.OpenPRURL &&
 		s.OpenPRNumber == other.OpenPRNumber &&
 		s.OpenPRLookupError == other.OpenPRLookupError &&
@@ -268,6 +273,9 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	status.IsRepo = true
 	status.HasOriginRemote = origin.known
 	status.Forge = forge
+	if forge == "" && origin.known {
+		status.ForgeUnsupported = unsupportedForgeReason(origin.url, c.gitLabHostsSnapshot())
+	}
 	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
 	status.PendingOperation = pending
 	if status.HeadCommit != "" {

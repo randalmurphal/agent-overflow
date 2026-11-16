@@ -41,7 +41,7 @@ import {
   isMessageSearchOpen,
   openMessageSearch,
 } from './messageSearch.svelte';
-import { getToasts } from './toast.svelte';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 import {
   PANE_FIND_DETAIL_REGION,
   PANE_FIND_LIST_REGION,
@@ -76,7 +76,7 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { DisconnectedError } from '../transport/wsClient';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
   getPendingThreadActionConfirmation,
@@ -588,6 +588,33 @@ describe('git push and pull commands', () => {
       expect(write).toHaveBeenCalledTimes(1);
       const [workspace, attemptId] = write.mock.calls[0]!;
       expect(outcome).toHaveBeenCalledWith(workspace, noun, attemptId);
+    });
+
+    it(`${id} says the same thing for a failure answered at once and one answered from the record`, async () => {
+      const pane = readyPane({ projectId: 'project-1' });
+      registerFixtureCommands(pane);
+      const message = `${noun} exited with code 1: pre-push: lint found 3 problems in main.go`;
+      const chain = [`${noun} exited with code 1`, 'pre-push: lint found 3 problems in main.go'];
+      const command = getCommand(id);
+      if (!command) throw new Error(`${id} was not registered`);
+
+      resetToastsForTest();
+      setBindingMock(binding, async () => {
+        throw new TransportError('method_error', message, { detail: { ref: 'r1', method: binding, at: 1, chain } });
+      });
+      await command.run(makeCommandContext(pane, { hasActiveThread: true }));
+      await vi.waitFor(() => expect(getToasts()).toHaveLength(1));
+      const direct = getToasts()[0]!.message;
+
+      resetToastsForTest();
+      setBindingMock(binding, async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      setBindingMock('GetGitActionOutcome', async () => ({ state: 'failed', code: 'method_error', message, chain }));
+      await command.run(makeCommandContext(readyPane({ projectId: 'project-1' }), { hasActiveThread: true }));
+      await vi.waitFor(() => expect(getToasts()).toHaveLength(1));
+      expect(getToasts()[0]!.message).toBe(direct);
+      expect(direct).toContain('lint found 3 problems');
     });
   }
 });

@@ -267,7 +267,9 @@ export class CIPipeline {
      * ActionsUnavailable is the sentence saying why some actions are not
      * offered: a read behind their flags (GitHub's repository permission,
      * a run's artifacts) failed, and the flags it would have set are
-     * absent. Empty when every flag was read.
+     * absent. A GitHub PR read that left out check runs or workflow runs
+     * (githubReadParts) leads with their sentences. Empty when every flag
+     * was read.
      */
     "actionsUnavailable"?: string;
 
@@ -797,6 +799,13 @@ export class GitStatus {
      * the "Create PR" action.
      */
     "forge"?: string;
+
+    /**
+     * ForgeUnsupported is the sentence the PR features show in their
+     * place when Forge is empty because the origin is on a forge host
+     * this release does not support (GitHub Enterprise); "" otherwise.
+     */
+    "forgeUnsupported"?: string;
     "openPrUrl"?: string;
     "openPrNumber"?: number;
 
@@ -1062,8 +1071,24 @@ export class MergeOptions {
     "cannotMergeReason"?: string;
 
     /**
+     * ViewerCanUpdateBranch is whether the forge would update the head
+     * branch from the base for this login (GitHub viewerCanUpdateBranch,
+     * GitLab can_merge); ViewerCanUnapprove whether it would withdraw the
+     * login's standing approval (GitHub dismisses it, which needs write
+     * access); ViewerCanMarkReady whether it would mark the draft ready
+     * (GitHub viewerCanUpdate). Each Cannot*Reason says why not, where
+     * the control would show.
+     */
+    "viewerCanUpdateBranch": boolean;
+    "cannotUpdateBranchReason"?: string;
+    "viewerCanUnapprove": boolean;
+    "cannotUnapproveReason"?: string;
+    "viewerCanMarkReady": boolean;
+    "cannotMarkReadyReason"?: string;
+
+    /**
      * Queue is the merge queue the target branch merges through (a
-     * GitLab merge train), nil when it has none.
+     * GitLab merge train or a GitHub merge queue), nil when it has none.
      */
     "queue"?: MergeQueue | null;
 
@@ -1090,6 +1115,15 @@ export class MergeOptions {
         if (!("viewerApproved" in $$source)) {
             this["viewerApproved"] = false;
         }
+        if (!("viewerCanUpdateBranch" in $$source)) {
+            this["viewerCanUpdateBranch"] = false;
+        }
+        if (!("viewerCanUnapprove" in $$source)) {
+            this["viewerCanUnapprove"] = false;
+        }
+        if (!("viewerCanMarkReady" in $$source)) {
+            this["viewerCanMarkReady"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1100,7 +1134,7 @@ export class MergeOptions {
     static createFrom($$source: any = {}): MergeOptions {
         const $$createField0_0 = $$createType0;
         const $$createField4_0 = $$createType14;
-        const $$createField10_0 = $$createType16;
+        const $$createField16_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("methods" in $$parsedSource) {
             $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
@@ -1109,7 +1143,7 @@ export class MergeOptions {
             $$parsedSource["autoMerge"] = $$createField4_0($$parsedSource["autoMerge"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField10_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField16_0($$parsedSource["queue"]);
         }
         return new MergeOptions($$parsedSource as Partial<MergeOptions>);
     }
@@ -1252,7 +1286,8 @@ export class MergeReadiness {
 
 /**
  * MergeRequest is one merge action. Method must be one of the PR's
- * MergeOptions.Methods; HeadSHA is the head the caller saw and the forge
+ * MergeOptions.Methods, or empty when a required Queue offers none (its
+ * own method applies); HeadSHA is the head the caller saw and the forge
  * refuses the merge when the branch moved past it. AutoMerge arms the
  * merge for when the checks pass instead of merging now.
  */
@@ -1398,6 +1433,14 @@ export class PRDetail {
      */
     "manage": PRManage;
 
+    /**
+     * Unavailable is a sentence for each optional part of the read the
+     * forge would not answer (team reviewers, check runs, workflow runs),
+     * saying what is not shown and why. The management part's sentence is
+     * Manage.Unavailable.
+     */
+    "unavailable"?: string[];
+
     /** Creates a new PRDetail instance. */
     constructor($$source: Partial<PRDetail> = {}) {
         if (!("number" in $$source)) {
@@ -1480,6 +1523,7 @@ export class PRDetail {
         const $$createField21_0 = $$createType31;
         const $$createField22_0 = $$createType32;
         const $$createField26_0 = $$createType33;
+        const $$createField27_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -1498,6 +1542,9 @@ export class PRDetail {
         }
         if ("manage" in $$parsedSource) {
             $$parsedSource["manage"] = $$createField26_0($$parsedSource["manage"]);
+        }
+        if ("unavailable" in $$parsedSource) {
+            $$parsedSource["unavailable"] = $$createField27_0($$parsedSource["unavailable"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -2213,6 +2260,13 @@ export class ReviewComment {
     "suggestions"?: CommentSuggestion[];
     "reactions"?: CommentReaction[];
 
+    /**
+     * CannotReactReason is why the viewer may not add or remove a
+     * reaction here (GitHub's viewerCanReact); empty is allowed or
+     * unknown (GitLab's notes carry no permission).
+     */
+    "cannotReactReason"?: string;
+
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
         if (!("id" in $$source)) {
@@ -2458,6 +2512,16 @@ export class ReviewThread {
     "isResolved": boolean;
     "isOutdated": boolean;
     "comments": ReviewComment[];
+
+    /**
+     * CannotResolveReason, set on a resolvable thread, is why the viewer
+     * may not resolve it (or reopen it, once resolved): GitHub's
+     * viewerCanResolve and viewerCanUnresolve, GitLab's role and
+     * authorship. CannotReplyReason is why the viewer may not reply
+     * (GitHub's viewerCanReply). Empty is allowed or unknown.
+     */
+    "cannotResolveReason"?: string;
+    "cannotReplyReason"?: string;
 
     /** Creates a new ReviewThread instance. */
     constructor($$source: Partial<ReviewThread> = {}) {

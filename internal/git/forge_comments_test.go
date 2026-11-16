@@ -263,8 +263,8 @@ func TestGitHubReadCarriesCommentPermissions(t *testing.T) {
 		}
 		return githubData(`{"repository":{"pullRequest":{"number":5,
 			"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"diffSide":"RIGHT","subjectType":"LINE",
-				"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRC_2","databaseId":2,"author":{"login":"me"},"body":"b","createdAt":"t","lastEditedAt":"t2","url":"https://github.com/o/r/pull/5#discussion_r2","viewerCanUpdate":true,"viewerCanDelete":true,"replyTo":null}]}}]},
-			"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_3","databaseId":3,"author":{"login":"other"},"body":"c","createdAt":"t","lastEditedAt":null,"url":"https://github.com/o/r/pull/5#issuecomment-3","viewerCanUpdate":false,"viewerCanDelete":true,"isMinimized":false}]}}}}`)
+				"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRC_2","fullDatabaseId":"2","author":{"login":"me"},"body":"b","createdAt":"t","lastEditedAt":"t2","url":"https://github.com/o/r/pull/5#discussion_r2","viewerCanUpdate":true,"viewerCanDelete":true,"replyTo":null}]}}]},
+			"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_3","fullDatabaseId":"3","author":{"login":"other"},"body":"c","createdAt":"t","lastEditedAt":null,"url":"https://github.com/o/r/pull/5#issuecomment-3","viewerCanUpdate":false,"viewerCanDelete":true,"isMinimized":false}]}}}}`)
 	})
 	threads, err := core.ListReviewThreads(t.Context(), githubTestRef(5))
 	if err != nil || len(threads) != 2 {

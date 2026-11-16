@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,7 +21,7 @@ import (
 type SetupError struct {
 	Forge   string // "github" | "gitlab"
 	Binary  string // "gh" | "glab"
-	Kind    string // SetupMissing | SetupUnauthenticated
+	Kind    string // SetupMissing | SetupUnauthenticated | SetupOutdated
 	Message string
 	Err     error
 	// Host is the forge host the login is for, when the error is about one.
@@ -32,10 +34,12 @@ type SetupError struct {
 	ExpiredAt time.Time
 }
 
-// The two SetupError kinds.
+// The SetupError kinds. SetupOutdated is a CLI too old for the handoff
+// command the transport runs.
 const (
 	SetupMissing         = "missing"
 	SetupUnauthenticated = "unauthenticated"
+	SetupOutdated        = "outdated"
 )
 
 func (e *SetupError) Error() string {
@@ -78,6 +82,16 @@ func UnauthenticatedError(forge string, err error) *SetupError {
 	}
 }
 
+// ghAuthTokenVersion is the gh release that added `gh auth token`, the
+// GitHub token handoff.
+const ghAuthTokenVersion = "2.17.0"
+
+// OutdatedCLIError is the SetupError for a gh without `gh auth token`.
+func OutdatedCLIError(err error) *SetupError {
+	return &SetupError{Forge: ForgeGitHub, Binary: "gh", Kind: SetupOutdated, Err: err,
+		Message: "GitHub CLI (`gh`) is too old: the app reads its login with `gh auth token`, which needs gh " + ghAuthTokenVersion + " or later. Update gh from https://cli.github.com and try again"}
+}
+
 // ForbiddenError is a 403 that is not a rate limit: the token can reach
 // the host but the forge refused this request. Scope is a token scope the
 // forge shows the token lacks (GitLab's insufficient_scope answer names
@@ -85,10 +99,58 @@ func UnauthenticatedError(forge string, err error) *SetupError {
 // grants none of them); empty when the refusal is about access to the
 // resource or a fine-grained token's permissions rather than a classic
 // scope. Message is the forge's own text when the body carried one.
+//
+// SSO is GitHub's refusal of a token not authorized for an organization's
+// SAML single sign-on (X-GitHub-SSO: required, on a 403 or a 404), and
+// SSOURL the URL that authorizes it when GitHub gave one. Permissions is
+// GitHub's X-Accepted-GitHub-Permissions: what a fine-grained token needs
+// for the endpoint.
 type ForbiddenError struct {
-	Status  *StatusError
-	Scope   string
-	Message string
+	Status      *StatusError
+	Scope       string
+	Message     string
+	SSO         bool
+	SSOURL      string
+	Permissions string
+}
+
+// FineGrained reports GitHub's refusal of a fine-grained token for a
+// permission it lacks or a repository it may not write to ("Resource not
+// accessible by personal access token").
+func (e *ForbiddenError) FineGrained() bool { return githubFineGrainedRefusal(e.Message) }
+
+// Policy reports an organization's refusal of the kind of token used
+// (classic tokens blocked, a fine-grained token's lifetime over its
+// limit): GitHub words it "<org> forbids access via ...".
+func (e *ForbiddenError) Policy() bool {
+	return strings.Contains(strings.ToLower(e.Message), "forbids access via")
+}
+
+// githubFineGrainedRefusal is GitHub's message refusing a fine-grained
+// token.
+func githubFineGrainedRefusal(message string) bool {
+	return strings.Contains(message, "not accessible by personal access token")
+}
+
+// githubSSO reads X-GitHub-SSO. GitHub sends `required; url=URL` with a
+// refusal for single sign-on and `partial-results; organizations=...` on
+// a list it filtered; only the first is a refusal. url is kept only as an
+// https URL.
+func githubSSO(header http.Header) (required bool, authorize string) {
+	parts := strings.Split(header.Get("X-GitHub-SSO"), ";")
+	if strings.TrimSpace(parts[0]) != "required" {
+		return false, ""
+	}
+	for _, part := range parts[1:] {
+		value, ok := strings.CutPrefix(strings.TrimSpace(part), "url=")
+		if !ok {
+			continue
+		}
+		if parsed, err := url.Parse(value); err == nil && parsed.Scheme == "https" && parsed.Host != "" {
+			return true, value
+		}
+	}
+	return true, ""
 }
 
 func (e *ForbiddenError) Error() string {
@@ -110,7 +172,8 @@ func (e *ForbiddenError) Unwrap() error { return e.Status }
 // access). A fine-grained token answers "Resource not accessible by
 // personal access token": a permission it lacks, kept as Message.
 func forbiddenError(status *StatusError, header http.Header) *ForbiddenError {
-	out := &ForbiddenError{Status: status}
+	out := &ForbiddenError{Status: status, Permissions: strings.TrimSpace(header.Get("X-Accepted-GitHub-Permissions"))}
+	out.SSO, out.SSOURL = githubSSO(header)
 	var body struct {
 		Error       string `json:"error"`
 		Description string `json:"error_description"`
@@ -192,6 +255,9 @@ type StatusError struct {
 	Body       string
 	Rate       *RateLimit
 	RetryAfter time.Duration
+	// sso marks GitHub's single sign-on refusal (X-GitHub-SSO: required),
+	// whose 404 is not a missing resource.
+	sso bool
 }
 
 func (e *StatusError) Error() string {
@@ -205,9 +271,10 @@ func (e *StatusError) Error() string {
 	return msg
 }
 
-// Is makes errors.Is(err, ErrNotFound) true for a 404.
+// Is makes errors.Is(err, ErrNotFound) true for a 404 that is not a
+// single sign-on refusal.
 func (e *StatusError) Is(target error) bool {
-	return target == ErrNotFound && e.Status == http.StatusNotFound
+	return target == ErrNotFound && e.Status == http.StatusNotFound && !e.sso
 }
 
 // GraphQLProblem is one entry of a GraphQL envelope's errors.
@@ -222,10 +289,54 @@ type GraphQLProblem struct {
 // when the envelope had no data entry; the caller decides what partial
 // data it accepts. Undecoded is a Data that did not decode into the
 // caller's value (Client.GraphQL joins the decode error beside it).
+//
+// SSO and SSOURL are the answer's X-GitHub-SSO refusal, as on
+// ForbiddenError.
 type GraphQLError struct {
 	Problems  []GraphQLProblem
 	Data      json.RawMessage
 	Undecoded bool
+	SSO       bool
+	SSOURL    string
+}
+
+// Forbidden reports an answer GitHub refused for the login: a FORBIDDEN
+// or INSUFFICIENT_SCOPES problem, or a single sign-on refusal.
+func (e *GraphQLError) Forbidden() bool {
+	if e.SSO {
+		return true
+	}
+	for _, p := range e.Problems {
+		if p.Type == "FORBIDDEN" || p.Type == "INSUFFICIENT_SCOPES" {
+			return true
+		}
+	}
+	return false
+}
+
+// FineGrained reports a problem refusing a fine-grained token, as
+// ForbiddenError.FineGrained.
+func (e *GraphQLError) FineGrained() bool {
+	return slices.ContainsFunc(e.Problems, func(p GraphQLProblem) bool { return githubFineGrainedRefusal(p.Message) })
+}
+
+// githubScopesMessage finds the scope GitHub's INSUFFICIENT_SCOPES message
+// requires: "The 'x' field requires one of the following scopes:
+// ['read:org'], but your token has only been granted ...".
+var githubScopesMessage = regexp.MustCompile(`requires one of the following scopes: \['([^']+)'`)
+
+// MissingScope is the first scope an INSUFFICIENT_SCOPES problem names,
+// empty without one.
+func (e *GraphQLError) MissingScope() string {
+	for _, p := range e.Problems {
+		if p.Type != "INSUFFICIENT_SCOPES" {
+			continue
+		}
+		if m := githubScopesMessage.FindStringSubmatch(p.Message); m != nil {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // gitlabNoPermission is GitLab's answer to a mutation the viewer may not
@@ -394,9 +505,16 @@ func classify(a answer) classified {
 		retryAfter, _ := parseRetryAfter(a.header.Get("Retry-After"), a.now)
 		return &StatusError{Method: a.method, URL: a.url, Status: a.status, Body: string(body), Rate: rate, RetryAfter: retryAfter}
 	}
+	sso, ssoURL := githubSSO(a.header)
 	switch {
 	case a.status == http.StatusUnauthorized:
 		return classified{outcome: outcomeUnauthorized, err: statusErr()}
+	case sso && (a.status == http.StatusForbidden || a.status == http.StatusNotFound):
+		// GitHub answers a token not authorized for single sign-on with
+		// either status; neither is a missing resource.
+		status := statusErr()
+		status.sso = true
+		return classified{outcome: outcomeStatus, err: forbiddenError(status, a.header)}
 	case a.status == http.StatusNotFound:
 		return classified{outcome: outcomeNotFound, err: statusErr()}
 	case a.status == http.StatusNotModified:
@@ -408,7 +526,7 @@ func classify(a answer) classified {
 	}
 	if a.graphQL {
 		if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
-			return classified{outcome: outcomeGraphQL, err: &GraphQLError{Problems: env.Errors, Data: env.Data}}
+			return classified{outcome: outcomeGraphQL, err: &GraphQLError{Problems: env.Errors, Data: env.Data, SSO: sso, SSOURL: ssoURL}}
 		}
 	}
 	return classified{outcome: outcomeOK}
@@ -426,10 +544,14 @@ func rateLimitedUntil(a answer, rate *RateLimit) (time.Time, bool) {
 		limited = remainingZero(a.header) || a.header.Get("Retry-After") != "" ||
 			bytes.Contains(bytes.ToLower(a.body), []byte("rate limit"))
 	case a.graphQL && a.status >= 200 && a.status <= 299:
+		// GitHub answers a GraphQL secondary rate limit with "200 or 403"
+		// and a message saying so (its GraphQL rate limit documentation);
+		// the error's type is not documented, so the message and a
+		// Retry-After count as well as RATE_LIMITED.
 		if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
-			limited = remainingZero(a.header)
+			limited = remainingZero(a.header) || a.header.Get("Retry-After") != ""
 			for _, p := range env.Errors {
-				if p.Type == githubRateLimited {
+				if p.Type == githubRateLimited || strings.Contains(strings.ToLower(p.Message), "rate limit") {
 					limited = true
 				}
 			}

@@ -903,6 +903,15 @@ func TestCreateThreadInGroupPublishesGroupedDraft(t *testing.T) {
 	if thread.GroupID != group.ID || !thread.IsDraft {
 		t.Fatalf("unexpected thread: %+v", thread)
 	}
+	// An empty draft is not listed yet; its first text lists it, in the group.
+	for _, call := range rec.snapshot() {
+		if evt, ok := call.Data.(triage.ThreadUpdateEvent); ok && evt.Thread != nil && evt.Thread.ID == thread.ID {
+			t.Fatalf("empty draft announced before it was real: %+v", evt)
+		}
+	}
+	if err := app.SaveDraft(t.Context(), thread.ID, "typed", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	listed := 0
 	for _, call := range rec.snapshot() {
 		if evt, ok := call.Data.(triage.ThreadUpdateEvent); ok && evt.Thread != nil && evt.Thread.ID == thread.ID {
