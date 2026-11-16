@@ -318,7 +318,7 @@ func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Cal
 			if err != nil {
 				return "", false, err
 			}
-			if threadtools.Resting(state.State) || state.State == threadtools.StatePendingApproval || state.State == threadtools.StateAwaitingInput {
+			if state.Resting || state.State == threadtools.StatePendingApproval || state.State == threadtools.StateAwaitingInput {
 				return threadID, true, nil
 			}
 		}
@@ -349,13 +349,22 @@ func (t threadToolsApp) threadStateNow(ctx context.Context, threadID string) (th
 		return threadtools.ThreadState{}, err
 	}
 	projected := t.projectThread(thread)
-	state := threadtools.State(projected, live)
-	return threadtools.ThreadState{
-		ThreadID: thread.ID,
-		Title:    thread.Title,
-		State:    state,
-		Resting:  threadtools.Resting(state),
-	}, nil
+	out := threadtools.ThreadState{ThreadID: thread.ID, Title: thread.Title, State: threadtools.State(projected, live)}
+	if threadtools.Resting(out.State) {
+		// Its turn is over; it rests once nothing it started is left
+		// (threadRest), the rest a spawn's request settles on.
+		rest, err := t.app.threadRest(threadID)
+		if err != nil {
+			return threadtools.ThreadState{}, err
+		}
+		if rest.unrest == workerBlocked {
+			// An async question nothing else shows.
+			out.State = threadtools.StateAwaitingInput
+		}
+		out.WaitingOn = rest.waitingLine()
+	}
+	out.Resting = threadtools.Resting(out.State) && out.WaitingOn == ""
+	return out, nil
 }
 
 // threadRequestStateWords and threadAnswerKindWords map the store's rows onto
@@ -448,7 +457,9 @@ func (t threadToolsApp) requestStateView(row store.ThreadRequest) threadtools.Re
 	if late {
 		answer = row.LateReply
 	}
-	return requestStateFrom(row, answer, late, t.requestTitle(row), t.app.threadRequestBlocked(row))
+	state := requestStateFrom(row, answer, late, t.requestTitle(row), t.app.threadRequestBlocked(row))
+	state.WaitingOn = t.app.requestWaitingOn(row)
+	return state
 }
 
 // requestStateFrom is requestStateView's derivation from what it reads:

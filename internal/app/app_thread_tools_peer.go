@@ -125,6 +125,12 @@ type ThreadPeerRequest struct {
 	// spawner), as the Agents row there names it. Empty when the person
 	// owns the prompt, and from a computer that does not send it.
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
+	// WaitingOn is what the target still waits on while its request waits
+	// for its rest: a spawn, or a send from the thread that spawned it,
+	// whose turn ended with work of its own left (restSettlement). Live,
+	// never stored. A computer that does not send it settles such a
+	// request when its turn ends.
+	WaitingOn string `json:"waitingOn,omitempty"`
 	// AnswerAgent is set on a settled request whose thread was a standing
 	// agent when the answer was written, with the role line its wake quotes.
 	// A computer that does not send it is read as having answered from an
@@ -612,6 +618,13 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 			// The same reading this computer's own Agents row makes.
 			waiting := a.threadWaitingOn(receipt.TargetThreadID)
 			state.Blocked, state.BlockedRoutedTo = waiting.live.Blocked(), waiting.routedTo
+			if a.restHeld(receipt.TargetThreadID, token) {
+				rest, err := a.threadRest(receipt.TargetThreadID)
+				if err != nil {
+					return ThreadPeerRequest{}, err
+				}
+				state.WaitingOn = rest.waitingLine()
+			}
 		}
 	}
 	return state, nil

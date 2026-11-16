@@ -285,6 +285,11 @@ type RequestState struct {
 	// to the caller thread, set while the retry runs and kept once it gives
 	// up.
 	WakeIssue string `json:"wake_issue,omitempty"`
+	// WaitingOn is what the thread a spawn made, or a send to a thread
+	// the caller spawned, still waits on after its turn ended: background
+	// work, a loop, watch or reminder, threads it started, or messages
+	// queued for it. The request settles once the thread is at rest.
+	WaitingOn string `json:"waiting_on,omitempty"`
 }
 
 // ThreadState is one watched thread's live state.
@@ -294,9 +299,13 @@ type ThreadState struct {
 	Computer   string `json:"computer,omitempty"`
 	Title      string `json:"title,omitempty"`
 	State      string `json:"state"`
-	// Resting is true when the thread is not running and not blocked on a
-	// person.
+	// Resting is true when the thread is at rest: no turn, nothing queued,
+	// not blocked on a person, and nothing it started still running.
 	Resting bool `json:"resting"`
+	// WaitingOn is what a thread whose turn ended still waits on: background
+	// work, a loop, watch or reminder, threads it started, or messages
+	// queued for it.
+	WaitingOn string `json:"waiting_on,omitempty"`
 }
 
 // RequestListing is what thread_status returns without tokens or ids.

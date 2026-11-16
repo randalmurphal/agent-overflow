@@ -112,6 +112,9 @@ type threadRequestState struct {
 type remoteBlocked struct {
 	blocked  bool
 	routedTo string
+	// waitingOn is what the target waits on while its request waits for
+	// its rest (ThreadPeerRequest.WaitingOn).
+	waitingOn string
 }
 
 // threadRequestWait is one parked tool call.

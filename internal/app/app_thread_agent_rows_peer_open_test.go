@@ -141,9 +141,10 @@ func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 
 // A chain of remote workers longer than the listing's depth, each at rest
 // with only the last one running: every spawn the listing shows is open,
-// waiting on the work below it, counted and out of Past, and the last one
-// shown says more nests below it. Its computer is asked for its state
-// alone, and the computer past it is asked nothing.
+// its request held running while the work below it runs, waiting on it,
+// counted and out of Past, and the last one shown says more nests below
+// it. Its computer is asked for its state alone, and the computer past it
+// is asked nothing.
 func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T) {
 	t.Parallel()
 	n := threadAgentRowDepth + 2
@@ -159,7 +160,7 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		c.spawnAlong(t, i, fmt.Sprintf("link %d", i))
 	}
 	for i := range n - 2 {
-		c.settle(t, i)
+		c.held(t, i)
 	}
 	c.atRest(t, 0, n-2)
 	leaf := c.threads[n-2]

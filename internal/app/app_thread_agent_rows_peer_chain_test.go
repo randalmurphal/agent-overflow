@@ -182,6 +182,21 @@ func (c *agentChain) settle(t *testing.T, i int) {
 	})
 }
 
+// held waits until the thread spawn i made ended its turn with a thread
+// it started still working, so its computer holds the spawn's request for
+// the thread's rest, and the spawner's computer has polled the request and
+// reads it running, waiting on that thread.
+func (c *agentChain) held(t *testing.T, i int) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool { return c.apps[i+1].restHeld(c.threads[i], c.spawns[i]) })
+	waitUntil(t, 10*time.Second, func() bool {
+		c.apps[i].pollRemoteThreadRequests(time.Now().Add(time.Hour))
+		c.apps[i].threadRequestsWG.Wait()
+		row, found, err := c.apps[i].store.GetThreadRequest(c.spawns[i])
+		return err == nil && found && row.State == store.ThreadRequestRunning && c.apps[i].requestWaitingOn(row) == "threads it started"
+	})
+}
+
 // atRest waits until the threads of links from to to, end excluded, are
 // at rest, as the wakes the answers sent them end, and every computer's
 // background asking is done.
@@ -247,8 +262,10 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 			}})
 			c.spawnAlong(t, 0, "watch the release")
 			c.spawnAlong(t, 1, "stage the release")
-			c.settle(t, 0)
+			// Its worker's own spawn settles first: B's thread rests once
+			// the thread it started on C does.
 			c.settle(t, 1)
+			c.settle(t, 0)
 			c.atRest(t, 0, 2)
 			// The worker on C is continued there, and asks for an approval.
 			if err := c.apps[2].SendMessage(context.Background(), c.threads[1], "now run it", nil); err != nil {

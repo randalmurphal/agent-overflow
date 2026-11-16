@@ -90,6 +90,9 @@ func (a *App) startThreadRequestSweeps() {
 		// The workers that wait on what survived the restart, read once the
 		// loops and watches are recovered.
 		a.seedLiveWorkers()
+		// The requests held for their threads' rest across the restart:
+		// those at rest now settle.
+		a.noteRestWaitsMayChange()
 		// The async questions a restart left open go to their threads'
 		// spawners again, and their threads read as waiting on them.
 		a.seedAsyncQuestionPrompts()
@@ -651,7 +654,7 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 		wakes, err := a.settleUnknownRemoteRequest(row)
 		return 0, wakes, err
 	}
-	a.noteRemoteRequestBlocked(token, remoteBlocked{blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo})
+	a.noteRemoteRequestBlocked(token, remoteBlocked{blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo, waitingOn: answer.WaitingOn})
 	if target := threadPeerTarget(row, answer); target != "" {
 		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title, answer.Provider); err != nil {
 			return 0, nil, err
@@ -948,6 +951,13 @@ func (a *App) sweepThreadRequestsAtBoot() {
 	}
 	works := make([]threadSettlementWork, 0, len(receipts))
 	for _, receipt := range receipts {
+		// A request the last run held for its thread's rest is held again:
+		// its turn ended, and the restart does not end what it waits on.
+		if held, err := a.heldReceiptAtBoot(receipt); err != nil {
+			errs = append(errs, fmt.Errorf("read whether receipt %s waits for rest: %w", receipt.Token, err))
+		} else if held {
+			continue
+		}
 		work, _, err := a.settleReceiptUnderLock(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
 			Answer:     []byte(threadtools.InterruptRestart),

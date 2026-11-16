@@ -1241,7 +1241,7 @@ func (a *App) threadAgentFollows(threadID string) bool {
 	if _, running := a.runningReceiptTokens(threadID); running {
 		return true
 	}
-	return a.liveWorker(threadID)
+	return a.liveWorker(threadID) || a.restHeldThread(threadID)
 }
 
 func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
@@ -1287,6 +1287,10 @@ func (a *App) drainThreadAgentEmits() {
 			if worker || a.threadAgentFollows(threadID) {
 				targets[threadID] = struct{}{}
 			}
+		}
+		if len(liveness)+len(tokens)+len(callers) > 0 {
+			// A thread's rest, or the work below one, may have changed.
+			a.noteRestWaitsMayChange()
 		}
 		if len(tokens)+len(callers)+len(targets) == 0 {
 			continue

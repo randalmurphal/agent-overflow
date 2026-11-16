@@ -245,8 +245,17 @@ func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held ma
 		default:
 			return threadSettlementWork{}, nil
 		}
-	} else if settlement, err = a.sessionEndSettlement(threadID, receipt.TurnID); err != nil {
-		return threadSettlementWork{}, err
+	} else {
+		if settlement, err = a.sessionEndSettlement(threadID, receipt.TurnID); err != nil {
+			return threadSettlementWork{}, err
+		}
+		// A turn that ended on its own before its session did answers as
+		// any turn end does, rest included.
+		index, _ := threadRequestTurnIndex(threadID, receipt.TurnID)
+		held := false
+		if settlement, held, err = a.restSettlement(receipt, settlement, index); err != nil || held {
+			return threadSettlementWork{}, err
+		}
 	}
 	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
 	return work, err
@@ -452,6 +461,10 @@ func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (threadSettlem
 	}
 	settlement, err := a.turnSettlement(threadID, turn)
 	if err != nil {
+		return threadSettlementWork{}, "", noHold, err
+	}
+	settlement, held, err := a.restSettlement(receipt, settlement, index)
+	if err != nil || held {
 		return threadSettlementWork{}, "", noHold, err
 	}
 	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
@@ -767,6 +780,7 @@ func (a *App) settleReadReceiptLocked(
 		return threadSettlementWork{}, false, nil
 	}
 	a.forgetReceiptRunning(receipt.TargetThreadID, token)
+	a.releaseRestHold(receipt.TargetThreadID, token)
 	if result.Outbound {
 		// The row names a request THIS computer sent elsewhere. A receipt
 		// carrying the same token was minted by a paired computer, and

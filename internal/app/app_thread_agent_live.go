@@ -69,10 +69,68 @@ type liveWorker struct {
 }
 
 // workerRest is why a thread is not at rest, and for a waiting one what it
-// waits on, in the words of the row's activity line.
+// waits on, in the words of the row's activity line; below marks a thread
+// waiting only on open work below it (threadRest).
 type workerRest struct {
 	unrest string
 	detail string
+	below  bool
+}
+
+// threadRest says why threadID is not at rest, the zero value when it is:
+// its own state (workerUnrest) or, with nothing of its own, open work at
+// any depth below it (store.ThreadAgentState.OpenBelow), which reads
+// waiting with no detail. It is the one reading of rest, made fresh: a
+// spawn's request settles on it (restSettlement), thread_status with
+// thread_ids waits for it (threadStateNow), and a paired computer answers
+// with it, for its agent_rows (answerThreadAgentRows) and for a request's
+// poll (threadPeerRequestState). The Agents rows read the same two halves
+// from what was recorded: liveWorkers for the thread's own state, the
+// listing's TargetOpen for the work below it.
+func (a *App) threadRest(threadID string) (workerRest, error) {
+	rest, err := a.workerUnrest(threadID)
+	if err != nil || rest.unrest != "" {
+		return rest, err
+	}
+	state, err := a.threadAgentState(threadID)
+	if err != nil {
+		return workerRest{}, err
+	}
+	if state.OpenBelow {
+		return workerRest{unrest: workerWaiting, below: true}, nil
+	}
+	return workerRest{}, nil
+}
+
+// threadAgentState reads what threadID's Agents listing says of it, with
+// the parked waits and the live workers as a listing reads them.
+func (a *App) threadAgentState(threadID string) (store.ThreadAgentState, error) {
+	view := newThreadAgentView(a)
+	state, err := a.store.ReadThreadAgentState(store.ThreadAgentStateRead{
+		Thread: threadID, Waiting: view.waiting, Live: view.live, SettledSince: view.since,
+	})
+	if err != nil {
+		return store.ThreadAgentState{}, fmt.Errorf("read whether thread %s has open work: %w", threadID, err)
+	}
+	return state, nil
+}
+
+// waitingLine says what a thread not at rest waits on, for an agent reading
+// thread_status: the row's activity line, or what a waiting thread with no
+// line waits on. Empty while it runs or is blocked, which its state says.
+func (rest workerRest) waitingLine() string {
+	switch {
+	case rest.unrest == workerQueued:
+		return "messages queued for it"
+	case rest.unrest != workerWaiting:
+		return ""
+	case rest.detail != "":
+		return rest.detail
+	case rest.below:
+		return "threads it started"
+	default:
+		return "a scheduled wakeup of its own"
+	}
 }
 
 // workerUnrest says why threadID is not at rest, the zero value when it
