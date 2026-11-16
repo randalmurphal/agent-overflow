@@ -258,7 +258,9 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 	t.Parallel()
 	o := logOptions(t, 1024)
-	o.OwnerGrace = 300 * time.Millisecond
+	// The polled job's lease is the gap between two polls below. A grace
+	// forty polls long keeps a stalled runner from letting it lapse.
+	o.OwnerGrace = time.Second
 	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		<-ctx.Done()
 		return Outcome{ExitCode: -1}, ctx.Err()
@@ -279,7 +281,7 @@ func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 		if _, err := m.Get("other-owner", abandoned.ID); err == nil {
 			t.Fatal("another device's read counted as owner contact")
 		}
-		time.Sleep(o.OwnerGrace / 4)
+		time.Sleep(o.OwnerGrace / 40)
 	}
 	got, err := m.Get("owner", abandoned.ID)
 	if err != nil {

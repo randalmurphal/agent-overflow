@@ -50,7 +50,7 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
-import type { SweepContext } from './upgrade-corpus-config.js';
+import type { MigrationException, SweepContext } from './upgrade-corpus-config.js';
 import { fingerprint, migrateAlone, storeAt, type Fingerprint } from './upgrade-corpus-fingerprint.js';
 import {
   census,
@@ -583,21 +583,26 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     expect(Object.entries(migrationCheck.migrationChangedRows!).filter(([, n]) => n > 0)).toEqual([['items', 1], ['threads', 1]]);
     expect(migrationCheck.bootUnexplained).toEqual([]);
 
-    // An exception narrows only the migrations' side: v152's mark removal,
-    // which the store's triggers restamp, is reported under its exception,
-    // while the same columns changed by the boot alone still fail as the boot's.
+    // An exception narrows only the migrations' side: a mark removal, which
+    // the store's triggers restamp, is reported under its exception, while
+    // the same columns changed by the boot alone still fail as the boot's.
     const clearMark = `UPDATE items SET meta = json_remove(meta, '$.pendingFlush') WHERE thread_id = '${threadId}' AND id = '${settledUser}'`;
     const migratedCleared = await copyDatabase(migrated, path.join(root, 'migrated-cleared'));
     write(migratedCleared, clearMark);
     const bootCleared = await copyDatabase(rig.dbPath, path.join(root, 'boot-cleared'));
     write(bootCleared, clearMark);
-    const v152 = (booted: string, alone: string) => fingerprint(booted, snapshotDB, schema - 1, schema, async () => alone);
-    const excepted = await v152(bootCleared, migratedCleared);
+    const markRemoval: MigrationException[] = [
+      { version: schema, table: 'items', columns: ['meta', 'rev'], reason: 'the spec clears pendingFlush; the item revision trigger restamps the row' },
+      { version: schema, table: 'threads', columns: ['history_rev'], reason: 'the thread of the cleared row moves to a new history revision' },
+    ];
+    const withException = (booted: string, alone: string) =>
+      fingerprint(booted, snapshotDB, schema - 1, schema, async () => alone, markRemoval);
+    const excepted = await withException(bootCleared, migratedCleared);
     expect(excepted.failures).toEqual([]);
     expect(excepted.bootUnexplained).toEqual([]);
     expect(excepted.migrationExcepted).toEqual({ items: 1, threads: 1 });
     write(bootCleared, `UPDATE items SET meta = json_set(meta, '$.edited', 1) WHERE thread_id = '${quietId}' AND kind = 'assistant_text'`);
-    const bootMeta = await v152(bootCleared, migratedCleared);
+    const bootMeta = await withException(bootCleared, migratedCleared);
     expect(bootMeta.failures).toHaveLength(1);
     expect(bootMeta.failures[0]).toContain("the candidate's boot");
     expect(bootMeta.bootUnexplained).toEqual([
