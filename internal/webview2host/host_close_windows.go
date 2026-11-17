@@ -84,8 +84,9 @@ func (h *Host) take(match func(*hostPage) bool) []*hostPage {
 // answers those to report closed: a page the backend created, and a popup
 // as departPopup says. A popup not announced is announced as it goes when
 // it or a popup of it going with it has a download to report, so the
-// backend hears of every opener of a popup it hears of. Runs on the UI
-// thread.
+// backend hears of its opener first. If that opener still lives and is
+// unannounced, its departing subtree leaves its download snapshots with it.
+// Runs on the UI thread.
 func (h *Host) departTaken(taken []*hostPage) []*hostPage {
 	byID := make(map[string]*hostPage, len(taken))
 	for _, page := range taken {
@@ -102,8 +103,25 @@ func (h *Host) departTaken(taken []*hostPage) []*hostPage {
 			announce[opener] = true
 		}
 	}
+	recipients := make(map[string]*hostPage)
 	var reported []*hostPage
 	for _, page := range taken {
+		if page.unannounced() {
+			openerID := page.popup.openerID
+			recipient := recipients[openerID]
+			if opener := h.pages[openerID]; opener != nil && opener.unannounced() {
+				recipient = opener
+			}
+			if recipient != nil {
+				recipients[page.id] = recipient
+				h.answerNoWindow(page)
+				h.finishHeldDownloads(page)
+				for _, download := range page.popup.held.downloads {
+					h.holdDownload(recipient, download)
+				}
+				continue
+			}
+		}
 		if page.popup == nil || h.departPopup(page, announce[page]) {
 			reported = append(reported, page)
 		}

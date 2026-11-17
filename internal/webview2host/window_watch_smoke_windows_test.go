@@ -3,7 +3,6 @@
 package webview2host
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -62,10 +61,12 @@ func (w smokeWindowSeen) statusBubble(own uintptr) bool {
 }
 
 // smokeWindowWatch polls the desktop's visible top-level windows every
-// millisecond and keeps every one that appeared after its baseline, which
-// must include the smoke's own window.
+// millisecond and keeps observations through cleanup. The baseline must
+// include the smoke's own window.
 type smokeWindowWatch struct {
 	own     uintptr
+	stop    chan struct{}
+	done    chan struct{}
 	mu      sync.Mutex
 	current map[uintptr]*smokeWindowSeen
 	seen    []*smokeWindowSeen
@@ -89,12 +90,13 @@ var (
 // the smoke's window own has succeeded, and fails the test otherwise.
 func watchSmokeWindows(t *testing.T, own uintptr) *smokeWindowWatch {
 	t.Helper()
-	w := &smokeWindowWatch{own: own, current: map[uintptr]*smokeWindowSeen{}}
-	stop := make(chan struct{})
-	done := make(chan struct{})
+	w := &smokeWindowWatch{
+		own: own, current: map[uintptr]*smokeWindowSeen{},
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
 	baseline := make(chan error, 1)
 	go func() {
-		defer close(done)
+		defer close(w.done)
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		desktop, _, callErr := procGetThreadDesktop.Call(uintptr(windows.GetCurrentThreadId()))
@@ -106,33 +108,38 @@ func watchSmokeWindows(t *testing.T, own uintptr) *smokeWindowWatch {
 		if err == nil && !containsWindow(found, own) {
 			err = fmt.Errorf("the baseline of %d windows does not include the smoke's window %#x", len(found), own)
 		}
+		if err == nil {
+			err = w.observe(found)
+		}
+		baseline <- err
 		if err != nil {
-			baseline <- err
 			return
 		}
-		for _, hwnd := range found {
-			w.current[hwnd] = &smokeWindowSeen{hwnd: hwnd}
-		}
-		baseline <- nil
-		for {
+		ticks := time.NewTicker(time.Millisecond)
+		defer ticks.Stop()
+		for stopping := false; !stopping; {
 			select {
-			case <-stop:
-				return
-			case <-time.After(time.Millisecond):
+			case <-w.stop:
+				stopping = true
+			case <-ticks.C:
 			}
 			if err := w.poll(desktop); err != nil {
 				w.mu.Lock()
-				w.err = errors.Join(w.err, err)
+				w.err = err
 				w.mu.Unlock()
 				return
 			}
 		}
 	}()
 	if err := <-baseline; err != nil {
-		<-done
+		<-w.done
 		t.Fatalf("the window watch has no baseline: %v", err)
 	}
-	t.Cleanup(func() { close(stop); <-done })
+	t.Cleanup(func() {
+		if err := w.finish(t); err != nil {
+			t.Errorf("window watch after cleanup: %v", err)
+		}
+	})
 	return w
 }
 
@@ -162,11 +169,18 @@ func (w *smokeWindowWatch) poll(desktop uintptr) error {
 	if err != nil {
 		return err
 	}
+	return w.observe(found)
+}
+
+func (w *smokeWindowWatch) observe(found []uintptr) error {
 	now := time.Now()
 	present := map[uintptr]bool{}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, hwnd := range found {
+		if hwnd == w.own {
+			continue
+		}
 		present[hwnd] = true
 		if _, ok := w.current[hwnd]; ok {
 			continue
@@ -243,4 +257,41 @@ func TestSmokeWindowsAreAllowedByClassAndOwner(t *testing.T) {
 	if dialog.statusBubble(own) || !dialog.webView2Window(own) {
 		t.Error("a dialog-sized window of WebView2's was taken for the status bubble, or not for WebView2's")
 	}
+}
+
+func (w *smokeWindowWatch) runStep(t *testing.T, run func(), allow func([]smokeWindowSeen) error) error {
+	t.Helper()
+	if err := w.check(t, nil); err != nil {
+		return err
+	}
+	run()
+	time.Sleep(300 * time.Millisecond)
+	return w.check(t, allow)
+}
+
+func (w *smokeWindowWatch) finish(t *testing.T) error {
+	t.Helper()
+	close(w.stop)
+	<-w.done
+	return w.check(t, nil)
+}
+
+func (w *smokeWindowWatch) check(t *testing.T, allow func([]smokeWindowSeen) error) error {
+	t.Helper()
+	seen, err := w.take()
+	if err != nil {
+		return err
+	}
+	for _, window := range seen {
+		t.Logf("a window appeared: %s", window)
+	}
+	if allow != nil {
+		return allow(seen)
+	}
+	for _, window := range seen {
+		if !window.statusBubble(w.own) {
+			return fmt.Errorf("unexpected window: %s", window)
+		}
+	}
+	return nil
 }

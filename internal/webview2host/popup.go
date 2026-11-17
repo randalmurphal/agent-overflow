@@ -20,9 +20,8 @@ import (
 // whether it becomes a tab: it attaches to the target and adopts it, or
 // closes it with OpClose like any page.
 
-// MaxPendingPopups bounds the new windows whose controller is being created,
-// each holding its request's deferral, and so its opener's script, open. A
-// request past it is refused: the opener's window.open answers null.
+// MaxPendingPopups bounds outstanding native popup controller creates.
+// A request past it is refused: the opener's window.open answers null.
 const MaxPendingPopups = 4
 
 // MaxHostPages bounds the controllers the launcher keeps, created and
@@ -44,9 +43,9 @@ const MaxPopupURLBytes = 2048
 // PopupReport is the detail of a ReportPopup: the page id of the page that
 // opened the window, the popup's CDP target, and the address it was asked
 // to open. A popup is reported after its opener. One that goes before the
-// backend heard of it is reported only if it made a download, then its
-// held reports, then closed (departPopup); its Target is empty when it went
-// before its target was read, and the backend never attaches it.
+// backend heard of it may report held downloads as it closes. If its
+// opener is still waiting to be reported, those downloads go to the
+// opener instead. An empty Target means the backend never attaches it.
 type PopupReport struct {
 	Opener string `json:"opener"`
 	Target string `json:"target"`

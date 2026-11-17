@@ -178,12 +178,15 @@ func TestAnOpenerThatGoesAnswersItsPopupsRequests(t *testing.T) {
 	r.host.Apply(Directive{Op: OpClose, PageID: openerPage.id})
 	settled(t, first, nil)
 	settled(t, second, nil)
-	if r.host.pendingPopups != 0 {
-		t.Fatalf("%d window requests pending after their opener went", r.host.pendingPopups)
+	if r.host.pendingPopups != 2 {
+		t.Fatalf("%d native creates pending after their opener went, want 2", r.host.pendingPopups)
 	}
 	late := []*fakeController{newFakeController(), newFakeController()}
 	for _, controller := range late {
 		r.env.complete(t, 0, controller)
+	}
+	if r.host.pendingPopups != 0 {
+		t.Errorf("%d native creates pending after their completion", r.host.pendingPopups)
 	}
 	sameReports(t, "an opener closing with two popups being created", kinds(t, r.takeReports()), "opener:closed")
 	settled(t, first, nil)
@@ -273,8 +276,8 @@ func TestHostCloseSettlesPopupsInEveryState(t *testing.T) {
 			}
 		}
 		settled(t, requested, nil)
-		if r.host.pendingPopups != 0 {
-			t.Errorf("%d window requests pending", r.host.pendingPopups)
+		if r.host.pendingPopups != 1 {
+			t.Errorf("%d native creates still pending, want 1", r.host.pendingPopups)
 		}
 		r.done()
 		for _, controller := range []*fakeController{opener, announcedController, grandchildController, createdController, waitingController, downloadingController} {
@@ -352,10 +355,8 @@ func TestAPopupKeepsABoundedAddressUntilItsAnnouncement(t *testing.T) {
 	r.done()
 }
 
-// A popup whose controller is not up within popupCreateBound has its
-// request answered with no window, which frees its place, and goes
-// unheard; its late completion closes what it created. A bound that passes
-// once the popup is up does nothing.
+// Expiry answers an open request without a window. An outstanding create
+// keeps its slot until completion, which closes any late controller.
 func TestAPendingPopupHasADeadline(t *testing.T) {
 	r := newPopupRig(t)
 	var timers []func()
@@ -375,8 +376,8 @@ func TestAPendingPopupHasADeadline(t *testing.T) {
 	r.awaitQueued()
 	r.pump()
 	settled(t, args, nil)
-	if r.host.pendingPopups != 0 || len(r.host.pages) != 1 {
-		t.Fatalf("%d requests pending and %d pages after the bound passed", r.host.pendingPopups, len(r.host.pages))
+	if r.host.pendingPopups != 1 || len(r.host.pages) != 1 {
+		t.Fatalf("%d native creates pending and %d pages after expiry", r.host.pendingPopups, len(r.host.pages))
 	}
 	late := newFakeController()
 	r.env.complete(t, 0, late)
@@ -385,9 +386,10 @@ func TestAPendingPopupHasADeadline(t *testing.T) {
 		t.Fatalf("a popup past its bound reported %v", kinds(t, got))
 	}
 
-	// One that came up in time is left alone.
+	// One that obtained its target in time is left alone.
 	args = newFakeWindowArgs(popupURL)
 	popup, controller := r.openPopup(opener, args)
+	answerTarget(t, controller, "target-popup")
 	go timers[1]()
 	r.awaitQueued()
 	r.pump()
@@ -395,6 +397,19 @@ func TestAPendingPopupHasADeadline(t *testing.T) {
 	if r.page(popup.id) != popup || controller.closed != 0 {
 		t.Fatal("a bound closed a popup that came up in time")
 	}
+	// A child with its target can still be waiting for its opener.
+	_, waitingController := r.openPopup(opener, newFakeWindowArgs(popupURL))
+	child, childController := r.openPopup(waitingController, newFakeWindowArgs(popupURL))
+	answerTarget(t, childController, "target-child")
+	if child.popup.stage != popupTargeted {
+		t.Fatal("child with a target did not wait for its opener")
+	}
+	timers[3]()
+	r.pump()
+	if r.page(child.id) != child {
+		t.Fatal("expiry closed a child that had its target and was waiting for its opener")
+	}
+
 	r.done()
 	closed(t, controller)
 	closed(t, opener)

@@ -4,6 +4,7 @@ package webview2host
 
 import (
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -419,7 +420,7 @@ func newPopupRig(t *testing.T) *popupRig {
 			},
 		},
 	}
-	r.host.env = newPaneEnvironment(r.host.config.OnMain, func(gen uint64) {
+	r.host.env = newPaneEnvironment(func(gen uint64) {
 		r.host.env.completed(gen, paneEnv{env10: r.env.com()}, nil)
 	}, func(paneEnv) {}, t.Logf, time.Second)
 	return r
@@ -500,12 +501,19 @@ func (r *popupRig) awaitReport(page string, kind ReportKind) []rigReport {
 	var got []rigReport
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 		r.pump()
-		for _, report := range r.takeReports() {
-			got = append(got, report)
-			if report.page == page && report.kind == kind {
-				return got
-			}
+		r.mu.Lock()
+		match := slices.IndexFunc(r.reports, func(report rigReport) bool {
+			return report.page == page && report.kind == kind
+		})
+		if match >= 0 {
+			got = append(got, r.reports[:match+1]...)
+			r.reports = r.reports[match+1:]
+			r.mu.Unlock()
+			return got
 		}
+		got = append(got, r.reports...)
+		r.reports = nil
+		r.mu.Unlock()
 	}
 	r.t.Fatalf("no %s report of %s in %+v", kind, page, got)
 	return nil
@@ -580,6 +588,9 @@ func (r *popupRig) done() {
 	r.pump()
 	for len(r.env.pending) > 0 {
 		r.env.complete(r.t, 0x80004004, nil) // E_ABORT
+	}
+	if r.host.pendingPopups != 0 {
+		r.t.Errorf("%d native popup creates still counted after all completions", r.host.pendingPopups)
 	}
 	if n := comRootCount(); n != r.base {
 		r.t.Errorf("%d COM objects rooted after the host closed, want %d", n, r.base)

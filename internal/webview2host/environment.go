@@ -14,7 +14,7 @@ import (
 // drops an environment's COM references.
 //
 // The environment is created lazily, once per generation, by the first
-// create that needs it (acquire). Clear-data's release ends a generation: it
+// create that needs it (request). Clear-data's release ends a generation: it
 // frees the adopted environment, wakes every waiter with a retry error, and
 // makes a late completion of the old generation free its own environment
 // instead of adopting it. A start queued for a generation that a release
@@ -22,9 +22,8 @@ import (
 // outcome is that create's.
 //
 // Threading: begin, start, completed, settle and release run on the UI
-// thread, which orders them; acquire runs on a directive goroutine.
+// thread, which orders them. A directive goroutine waits in await.
 type paneEnvironment[E any] struct {
-	onMain  func(func())
 	start   func(gen uint64)
 	free    func(E)
 	logf    func(string, ...any)
@@ -41,45 +40,45 @@ type paneEnvironment[E any] struct {
 	err      error
 }
 
-func newPaneEnvironment[E any](onMain func(func()), start func(gen uint64), free func(E), logf func(string, ...any), timeout time.Duration) *paneEnvironment[E] {
+func newPaneEnvironment[E any](start func(gen uint64), free func(E), logf func(string, ...any), timeout time.Duration) *paneEnvironment[E] {
 	return &paneEnvironment[E]{
-		onMain: onMain, start: start, free: free, logf: logf, timeout: timeout,
+		start: start, free: free, logf: logf, timeout: timeout,
 		ready: make(chan struct{}),
 	}
 }
 
 // errEnvironmentReleased is what a create parked on a generation that a
-// clear-data released is told. Its directive is answered create-failed.
+// clear-data released receives.
 var errEnvironmentReleased = errors.New("browser host environment was cleared; retry the directive")
 
-// acquire returns the current generation's environment, starting it if this
-// is the first create since the last release and waiting for it to settle.
-// Every caller of one generation gets the same answer.
-func (p *paneEnvironment[E]) acquire() (E, error) {
-	var zero E
+type environmentRequest struct {
+	ready <-chan struct{}
+	gen   uint64
+}
+
+// request reserves a generation and identifies the caller that starts it.
+func (p *paneEnvironment[E]) request() (environmentRequest, bool) {
 	p.mu.Lock()
-	ready, gen := p.ready, p.gen
+	defer p.mu.Unlock()
+	req := environmentRequest{ready: p.ready, gen: p.gen}
 	arm := !p.starting
 	p.starting = true
-	p.mu.Unlock()
-	if arm {
-		// The start carries the generation it was armed for: a release that
-		// runs before it is dispatched must not let it create under the next
-		// generation, which arms its own start.
-		p.onMain(func() { p.begin(gen) })
-	}
+	return req, arm
+}
 
+func (p *paneEnvironment[E]) await(req environmentRequest) (E, error) {
+	var zero E
 	timer := time.NewTimer(p.timeout)
 	defer timer.Stop()
 	select {
-	case <-ready:
+	case <-req.ready:
 	case <-timer.C:
 		return zero, fmt.Errorf("browser host environment did not start within %s", p.timeout)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
-	case p.gen != gen:
+	case p.gen != req.gen:
 		return zero, errEnvironmentReleased
 	case p.err != nil:
 		return zero, p.err

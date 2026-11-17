@@ -129,21 +129,7 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 		return !strings.HasPrefix(url, "file:") || strings.HasPrefix(strings.ToLower(url), strings.ToLower(fileURL(workspace, "")))
 	}
 	b := newPolicyBackend(t, smokeDialCDP(t, host.CDPPort()), target, allow)
-	go func() {
-		for report := range reports {
-			if report.kind != ReportPopup {
-				continue
-			}
-			popup, err := ParsePopupReport(report.detail)
-			if err != nil {
-				t.Errorf("popup report %q: %v", report.detail, err)
-				continue
-			}
-			if popup.Opener == "page-1" {
-				b.reported(popup.Target)
-			}
-		}
-	}()
+	readPolicyReports(t, reports, b.reported)
 	b.call("Target.setDiscoverTargets", map[string]any{"discover": true}, "")
 	b.call("Fetch.enable", map[string]any{"patterns": []map[string]any{
 		{"resourceType": "Document", "requestStage": "Request"},
@@ -180,20 +166,8 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 	step := func(name string, run func()) {
 		t.Helper()
 		t.Logf("---- %s", name)
-		if _, err := watch.take(); err != nil {
+		if err := watch.runStep(t, run, nil); err != nil {
 			t.Fatalf("%s: %v", name, err)
-		}
-		run()
-		time.Sleep(300 * time.Millisecond)
-		seen, err := watch.take()
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		for _, w := range seen {
-			t.Logf("%s: a window appeared: %s", name, w)
-			if !w.statusBubble(ui.hwnd) {
-				t.Fatalf("%s: a window of WebView2's own appeared: %s", name, w)
-			}
 		}
 	}
 	navigate := func(url string) {
@@ -291,6 +265,42 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 	if unattributed := b.unattributed(); len(unattributed) > 0 {
 		t.Fatalf("pauses the backend could not attribute: %v", unattributed)
 	}
+}
+
+func readPolicyReports(t *testing.T, reports <-chan smokeReport, reported func(string)) <-chan struct{} {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			var report smokeReport
+			select {
+			case <-stop:
+				return
+			case next, ok := <-reports:
+				if !ok {
+					return
+				}
+				report = next
+			}
+			if report.kind != ReportPopup {
+				continue
+			}
+			popup, err := ParsePopupReport(report.detail)
+			if err != nil {
+				t.Errorf("popup report %q: %v", report.detail, err)
+				continue
+			}
+			if popup.Opener == "page-1" {
+				reported(popup.Target)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+	return done
 }
 
 func smokeTempDir(t *testing.T, prefix string) string {
