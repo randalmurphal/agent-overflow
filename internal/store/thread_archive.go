@@ -118,13 +118,15 @@ func threadArchivedWrite(id string, archived bool) rowWrite {
 
 // supersedeOwedArchivesTx withdraws, in tx and as of now, the archives
 // owed for the remote spawns threadID made, its own reopen having undone
-// them: one not yet sent is dropped, and one sent becomes a supersede
-// under the spawn's next sequence, so the archive in flight arrives as
-// already applied. An owed delete or release stays. The archives owed for
-// the spawns of the archived workers beneath it stay owed: their own
-// owners are still archived.
+// them: one for a spawn no archive was sent for that may still land
+// (unanswered_archive_seq) is dropped, and the others become a supersede
+// under the spawn's next sequence, so the archive in flight, this one or
+// one an earlier reopen superseded, arrives as already applied. An owed
+// delete or release stays. The archives owed for the spawns of the
+// archived workers beneath it stay owed: their own owners are still
+// archived.
 func supersedeOwedArchivesTx(tx *sql.Tx, threadID string, now int64) error {
-	if _, err := tx.Exec(`DELETE FROM thread_owner_ops WHERE op = 'archive' AND sent = 0 AND token IN (
+	if _, err := tx.Exec(`DELETE FROM thread_owner_ops WHERE op = 'archive' AND unanswered_archive_seq = 0 AND token IN (
 		SELECT token FROM thread_requests WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id <> '')`,
 		threadID); err != nil {
 		return fmt.Errorf("drop the unsent archives of %s: %w", threadID, err)

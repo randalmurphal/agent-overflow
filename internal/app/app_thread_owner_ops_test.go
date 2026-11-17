@@ -397,6 +397,106 @@ func TestASupersedeOvertakesAnArchiveHeldOnTheWay(t *testing.T) {
 	}
 }
 
+// An archive sent and not answered stays withdrawn through every reopen
+// after it, however the archives between were owed: archive 1 is sent and
+// held on its way, the reopen supersedes it, an archive owed again without
+// an attempt (as the boot's resume owes one) is reopened again, and archive
+// 1 then lands. The worker stays open; a spawn not yet accepted there is
+// cancelled by the fence, as any archive before its acceptance cancels it.
+func TestAnArchiveStillOnItsWayIsSupersededByEveryLaterReopen(t *testing.T) {
+	t.Parallel()
+	for name, accepted := range map[string]bool{"accepted": true, "not yet accepted": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			p := newOwnerOpPair(t, false)
+			token, worker := p.token, p.worker
+			var spawn ThreadPeerCall
+			if !accepted {
+				spawn = p.spawnHeldOnItsWay(t)
+				token = spawn.Token
+			}
+			p.peer.asleep.Store(true)
+			if _, err := p.source.ArchiveThread(p.caller.ID); err != nil {
+				t.Fatal(err)
+			}
+			p.peer.asleep.Store(false)
+			var first store.OwnerOp
+			for _, op := range p.owed(t) {
+				if op.Token == token {
+					first = op
+				}
+			}
+			if first.Op != store.OwnerOpArchive || first.Seq != 1 {
+				t.Fatalf("owed = %+v, want archive 1 for %s", p.owed(t), token)
+			}
+			held, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var freed sync.Once
+			free := func() { freed.Do(func() { close(release) }) }
+			t.Cleanup(free)
+			hold := func(op string) func() {
+				if op != store.OwnerOpArchive {
+					return func() {}
+				}
+				close(held)
+				<-release
+				return func() { close(returned) }
+			}
+			p.peer.hold.Store(&hold)
+			ctx, cancel := context.WithCancel(t.Context())
+			sent := make(chan struct{})
+			go func() {
+				defer close(sent)
+				p.source.deliverOwnerOp(ctx, first)
+			}()
+			within(t, "archive 1 reaching the other computer", held)
+			cancel()
+			within(t, "the source giving up on archive 1", sent)
+
+			if _, err := p.source.UnarchiveThread(p.caller.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Archived again, its archive owed and not attempted.
+			work, err := p.source.archiveThreadLocked(p.caller.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.source.finishArchive(work, reachLater)
+			if _, err := p.source.UnarchiveThread(p.caller.ID); err != nil {
+				t.Fatal(err)
+			}
+			var owed store.OwnerOp
+			for _, op := range p.owed(t) {
+				if op.Token == token {
+					owed = op
+				}
+			}
+			p.drain(t)
+			free()
+			within(t, "archive 1 landing", returned)
+			if archivedThere(t, p, p.worker) {
+				t.Fatal("archive 1 archived the worker after its spawner was reopened")
+			}
+			if owed.Op != store.OwnerOpSupersede || owed.Seq != 4 {
+				t.Fatalf("owed after the second reopen = %+v, want archive 1 superseded at 4", owed)
+			}
+			if owed := p.owed(t); len(owed) != 0 {
+				t.Fatalf("still owed %+v", owed)
+			}
+			if accepted {
+				return
+			}
+			var reply ThreadPeerReply
+			refusal := p.source.backends.CallThreadPeer(t.Context(), p.computer, "ThreadToolCall", &reply, spawn)
+			if refusal == nil || !strings.Contains(refusal.Error(), "cancelled before its thread was created") {
+				t.Fatalf("the spawn = %v, want it refused with the fence's answer", refusal)
+			}
+			if rows, err := p.dest.store.ListThreads(); err != nil || len(rows) != 1 || rows[0].ID != worker {
+				t.Fatalf("the threads there = %+v, %v; want only the first worker", rows, err)
+			}
+		})
+	}
+}
+
 // An owner whose own local worker is archived reaches, through that worker,
 // the worker it spawned on another computer, even one reopened there since
 // the worker's own archive.

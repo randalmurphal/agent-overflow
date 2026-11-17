@@ -158,6 +158,38 @@ func TestAnOwnerOpBeforeItsSpawnArrivesFencesTheSpawn(t *testing.T) {
 	}
 }
 
+// spawnHeldOnItsWay starts a spawn there whose call is held on its way
+// into the other computer, until the test ends, and has this computer give
+// up on it: the spawn's row stands here, with no receipt there. It returns
+// the call, for the test to deliver as the held one would.
+func (p *ownerOpPair) spawnHeldOnItsWay(t *testing.T) ThreadPeerCall {
+	t.Helper()
+	arrived, release := make(chan ThreadPeerCall, 1), make(chan struct{})
+	var freed sync.Once
+	t.Cleanup(func() { freed.Do(func() { close(release) }) })
+	var first atomic.Bool
+	hold := func(call ThreadPeerCall) {
+		if first.CompareAndSwap(false, true) {
+			arrived <- call
+			<-release
+		}
+	}
+	p.peer.spawning.Store(&hold)
+	ctx, cancel := context.WithCancel(t.Context())
+	spawned := make(chan error, 1)
+	go func() {
+		_, err := p.adapter().Spawn(ctx, p.callerIdentity(),
+			threadtools.SpawnCall{Prompt: "more work", ComputerID: p.computer, ProjectID: p.project})
+		spawned <- err
+	}()
+	call := within(t, "the spawn on its way", arrived)
+	cancel()
+	// An uncertain ack or the cancellation's error: either way the source
+	// stopped waiting, and the call is still on its way.
+	_ = within(t, "the source giving up on the spawn", spawned)
+	return call
+}
+
 // A spawn the other computer had not accepted when its spawner was
 // archived is cancelled there, whatever order the archive, the reopen's
 // supersede and the spawn itself arrive in: a supersede with no receipt
@@ -173,32 +205,7 @@ func TestASpawnNotYetAcceptedWhenItsSpawnerWasArchivedIsCancelledInAnyOrder(t *t
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			p := newOwnerOpPair(t, false)
-			// The spawn's first call is held on its way into the other
-			// computer; the source gives up on it.
-			arrived, release := make(chan ThreadPeerCall, 1), make(chan struct{})
-			var freed sync.Once
-			free := func() { freed.Do(func() { close(release) }) }
-			t.Cleanup(free)
-			var first atomic.Bool
-			hold := func(call ThreadPeerCall) {
-				if first.CompareAndSwap(false, true) {
-					arrived <- call
-					<-release
-				}
-			}
-			p.peer.spawning.Store(&hold)
-			ctx, cancel := context.WithCancel(t.Context())
-			spawned := make(chan error, 1)
-			go func() {
-				_, err := p.adapter().Spawn(ctx, p.callerIdentity(),
-					threadtools.SpawnCall{Prompt: "more work", ComputerID: p.computer, ProjectID: p.project})
-				spawned <- err
-			}()
-			call := within(t, "the spawn on its way", arrived)
-			cancel()
-			// An uncertain ack or the cancellation's error: either way the
-			// source stopped waiting, and the call is still on its way.
-			_ = within(t, "the source giving up on the spawn", spawned)
+			call := p.spawnHeldOnItsWay(t)
 
 			// The archive is sent and not answered; the reopen supersedes it.
 			p.peer.asleep.Store(true)

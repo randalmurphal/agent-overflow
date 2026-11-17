@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"slices"
 	"strings"
@@ -246,6 +247,95 @@ func TestUnarchivingSupersedesTheArchivesOwedForItsLinks(t *testing.T) {
 	}
 	if got := ownerOps(t, s)["r-other"]; got != owedDelete {
 		t.Errorf("the reopen changed an owed delete to %+v", got)
+	}
+}
+
+// unansweredArchiveSeq reads the newest archive sent for token that may
+// still land, 0 when none, and whether token owes anything.
+func unansweredArchiveSeq(t *testing.T, s *Store, token string) (int64, bool) {
+	t.Helper()
+	var seq int64
+	err := s.db.QueryRow(`SELECT unanswered_archive_seq FROM thread_owner_ops WHERE token = ?`, token).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seq, true
+}
+
+// An archive sent and not answered is withdrawn by every reopen after it,
+// whatever replaced its row since: a supersede, an archive owed again and
+// never attempted, a delete. The mark goes once the computer answers the
+// operation owed above it.
+func TestASentArchiveIsSupersededByEveryLaterReopen(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "owner")
+	seedRemoteSpawn(t, s, "r", "owner", "pc", "w")
+	archive := func() {
+		t.Helper()
+		if _, _, err := s.ArchiveThread("owner"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.OweRemoteArchives("owner", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopen := func() OwnerOp {
+		t.Helper()
+		if _, _, err := s.UnarchiveThread("owner"); err != nil {
+			t.Fatal(err)
+		}
+		return ownerOps(t, s)["r"]
+	}
+	archive()
+	if marked, err := s.MarkOwnerOpSent("r", 1); err != nil || !marked {
+		t.Fatalf("mark sent: %v, %v", marked, err)
+	}
+	if op := reopen(); op.Op != OwnerOpSupersede || op.Seq != 2 {
+		t.Fatalf("the first reopen owes %+v, want a supersede at 2", op)
+	}
+	archive()
+	if op := ownerOps(t, s)["r"]; op.Op != OwnerOpArchive || op.Seq != 3 || op.Sent {
+		t.Fatalf("archived again: %+v, want archive 3 not attempted", op)
+	}
+	if seq, _ := unansweredArchiveSeq(t, s, "r"); seq != 1 {
+		t.Fatalf("archive 1 may still land, but the row says %d", seq)
+	}
+	if op := reopen(); op.Op != OwnerOpSupersede || op.Seq != 4 {
+		t.Fatalf("the second reopen owes %+v, want a supersede at 4", op)
+	}
+	// A supersede's own attempt leaves the archive's mark.
+	if marked, err := s.MarkOwnerOpSent("r", 4); err != nil || !marked {
+		t.Fatal(err)
+	}
+	if seq, _ := unansweredArchiveSeq(t, s, "r"); seq != 1 {
+		t.Fatalf("a supersede's attempt moved the mark to %d", seq)
+	}
+	// An answer to archive 1 itself, replaced since, changes nothing.
+	if settled, err := s.SettleOwnerOp("r", 1); err != nil || settled {
+		t.Fatalf("settle archive 1: %v, %v", settled, err)
+	}
+	if seq, owed := unansweredArchiveSeq(t, s, "r"); !owed || seq != 1 {
+		t.Fatalf("the mark after archive 1's answer = %d (owed %v)", seq, owed)
+	}
+	// A delete replacing the row keeps the mark.
+	archive()
+	commitDelete(t, s, "op", "owner")
+	if op := ownerOps(t, s)["r"]; op.Op != OwnerOpDelete {
+		t.Fatalf("the delete owes %+v", op)
+	}
+	if seq, _ := unansweredArchiveSeq(t, s, "r"); seq != 1 {
+		t.Fatalf("the delete dropped the mark: %d", seq)
+	}
+	// The computer's answer to the owed operation ends it.
+	op := ownerOps(t, s)["r"]
+	if settled, err := s.SettleOwnerOp("r", op.Seq); err != nil || !settled {
+		t.Fatalf("settle the delete: %v, %v", settled, err)
+	}
+	if _, owed := unansweredArchiveSeq(t, s, "r"); owed {
+		t.Fatal("the answered delete is still owed")
 	}
 }
 

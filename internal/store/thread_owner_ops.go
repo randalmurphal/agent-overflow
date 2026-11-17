@@ -16,7 +16,13 @@ import (
 // has no foreign key: a delete's owed rows outlive the spawn rows that go
 // with their caller. Each owed operation takes the spawn row's next
 // owner_op_seq, and every delivery write names the sequence it acts on, so
-// an answer to an operation a newer one replaced changes nothing.
+// an answer to an operation a newer one replaced changes nothing. A row's
+// unanswered_archive_seq is the newest archive attempted for the spawn
+// that may still land there: written by the attempt (MarkOwnerOpSent),
+// carried by every operation that replaces the row, and gone with the row
+// once the computer answers the owed operation, whose sequence is above
+// it, for good (SettleOwnerOp). While it is set, a reopen owes a
+// supersede (supersedeOwedArchivesTx).
 
 // Owner operations.
 const (
@@ -244,10 +250,13 @@ func (s *Store) ownerOpWrite(action, statement string, args ...any) (bool, error
 }
 
 // MarkOwnerOpSent records an attempt at the operation owed for token at
-// seq, before its call.
+// seq, before its call; an archive's attempt is one that may still land
+// there (unanswered_archive_seq).
 func (s *Store) MarkOwnerOpSent(token string, seq int64) (bool, error) {
 	return s.ownerOpWrite("store: mark owner operation "+token+" sent",
-		`UPDATE thread_owner_ops SET sent = 1, attempts = attempts + 1 WHERE token = ? AND seq = ?`, token, seq)
+		`UPDATE thread_owner_ops SET sent = 1, attempts = attempts + 1,
+		     unanswered_archive_seq = CASE WHEN op = 'archive' THEN seq ELSE unanswered_archive_seq END
+		 WHERE token = ? AND seq = ?`, token, seq)
 }
 
 // RescheduleOwnerOp sets when the operation owed for token at seq is tried
