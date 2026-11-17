@@ -277,8 +277,8 @@ func TestAStoppedWatchHasNotFailedAndItsNoticeIsWithdrawn(t *testing.T) {
 			if err != nil {
 				t.Fatalf("archiveThreadLocked: %v", err)
 			}
-			if err := a.stopRestingThreadWork(work); err != nil {
-				t.Fatalf("stopRestingThreadWork: %v", err)
+			if cleanup := a.stopRestingThreadWork(work); cleanup.Unwrap() != nil {
+				t.Fatalf("stopRestingThreadWork: %v", cleanup.Unwrap())
 			}
 		}},
 		{"assistants off", func(t *testing.T, a *App, row store.AgentWake) {
