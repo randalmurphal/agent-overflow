@@ -265,6 +265,44 @@ func TestReleasingLinks(t *testing.T) {
 	}
 }
 
+// A revocation or a removal that cannot release its device's links changes
+// nothing: the release is part of its transaction.
+func TestAnAccessLossThatCannotReleaseItsLinksChangesNothing(t *testing.T) {
+	s, link := approvedOwnPair(t)
+	if e := s.AdmitOwnPairing(link); e != nil {
+		t.Fatal(e)
+	}
+	session, err := s.GetSession(link.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCreateThread(t, s, "worker")
+	acceptLink(t, s, "tok", session.DeviceID, "worker", 1000)
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_release BEFORE UPDATE OF spawn_link ON thread_request_receipts BEGIN SELECT RAISE(ABORT, 'disk failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	member, err := s.OwnDeviceForSession(link.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member.Removed = true
+	if _, _, _, err := s.MergeOwnDevices([]owndevices.Member{member}, 2200, ""); err == nil {
+		t.Fatal("a removal went ahead without releasing its links")
+	}
+	if held, err := s.OwnDeviceForSession(link.SessionID); err != nil || held.Removed {
+		t.Fatalf("the member was removed without releasing its links: %+v, %v", held, err)
+	}
+	if _, err := s.RevokeDevice(session.DeviceID, 2300); err == nil {
+		t.Fatal("a revocation went ahead without releasing its links")
+	}
+	if got, err := s.GetSession(link.SessionID); err != nil || got.RevokedAt != 0 {
+		t.Fatalf("the session was revoked without releasing its links: %+v, %v", got, err)
+	}
+	if got, _ := placementOf(t, s, "worker"); got != PlacementOwned {
+		t.Fatalf("worker = %s, want still owned", got)
+	}
+}
+
 // A link no newer than its creation is not past the floor however silent
 // its owner: the floor reads both.
 func TestTheSweepKeepsAYoungLink(t *testing.T) {
