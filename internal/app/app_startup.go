@@ -280,6 +280,7 @@ func (a *App) startUnattendedWork() []bootStep {
 		infallibleBootStep(a.startRemoteMCPRefresh),
 		infallibleBootStep(a.startThreadSearchIndex),
 		infallibleBootStep(a.startPendingThreadDeletes),
+		infallibleBootStep(a.startPendingArchives),
 		infallibleBootStep(a.startRemoteWatches),
 		// Deliver what the boot's request sweep settled and delete the
 		// scratch threads the last run left, before the sweep loop starts. A

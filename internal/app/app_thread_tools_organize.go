@@ -185,6 +185,7 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	// queue write after the flip refuses the archived thread. The workers
 	// to archive are read after it, under the action lock.
 	if work != nil {
+		a.beginArchiveWalk(threadID)
 		if work.captured {
 			a.stopArchivedThreadSession(threadID, requestedAt)
 		}

@@ -100,7 +100,8 @@ func (o archiveOutcome) result(a *App) ArchiveThreadResult {
 // worker's flip is fenced by its owner's archive (ArchiveOwnedWorker), so
 // a cleanup that runs late leaves alone a worker moved since, and every
 // worker of an owner reopened since. A worker whose archive is refused is
-// reported, and the others are still archived.
+// reported, and the others are still archived. Then the archive ends
+// (endArchiveWalk): until it does, the next boot finishes it.
 func (a *App) finishArchive(work restingThreadWork) archiveOutcome {
 	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
 	for _, worker := range work.workers {
@@ -117,6 +118,7 @@ func (a *App) finishArchive(work restingThreadWork) archiveOutcome {
 	// A prompt of a worker the archive left running goes back to the user,
 	// delivered or not; the archived workers' prompts ended with them.
 	a.reroutePromptsFrom(work.threadID)
+	outcome.cleanup = errors.Join(outcome.cleanup, a.endArchiveWalk(work.threadID))
 	return outcome
 }
 
@@ -147,6 +149,7 @@ func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error)
 	if !changed && ownerID != "" {
 		return work, nil
 	}
+	a.beginArchiveWalk(id)
 	a.stopArchivedThreadSession(id, requestedAt)
 	a.readArchivedWorkers(&work)
 	return work, nil

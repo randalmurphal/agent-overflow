@@ -189,6 +189,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// "stop pending thread deletes" joins the boot-time completion
 		// of interrupted deletes, which takes the sweep's delete path.
 		"stop pending thread deletes",
+		// "stop pending archives" joins the boot-time completion of
+		// interrupted archives, whose workers' archives stop sessions.
+		"stop pending archives",
 		// "stop terminal thread ends" MUST appear before "close terminal
 		// sessions": the PTYs that step closes must end no terminal thread
 		// (the next boot does), and an end deletes through the same path.
