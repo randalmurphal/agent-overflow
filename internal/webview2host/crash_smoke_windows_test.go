@@ -48,6 +48,7 @@ func TestCrashSmokeReportsTheRendererAndKeepsTheHost(t *testing.T) {
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,12 +78,13 @@ func TestCrashSmokeReportsTheRendererAndKeepsTheHost(t *testing.T) {
 		}
 	}
 	viewOf := func(pageID string) *iCoreWebView2 {
-		host.mu.Lock()
-		defer host.mu.Unlock()
-		if page := host.pages[pageID]; page != nil {
-			return page.view
-		}
-		return nil
+		var view *iCoreWebView2
+		ui.do(func() {
+			if page := host.pages[pageID]; page != nil {
+				view = page.view
+			}
+		})
+		return view
 	}
 	load := func(pageID, title string) {
 		t.Helper()

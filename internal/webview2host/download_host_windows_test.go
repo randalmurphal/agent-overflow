@@ -177,7 +177,9 @@ type downloadRig struct {
 
 func newDownloadRig(t *testing.T) *downloadRig {
 	r := &downloadRig{base: comRootCount()}
-	r.host = &Host{downloadToken: "t", config: Config{Logf: t.Logf, OnMain: func(fn func()) { fn() }}}
+	r.host = &Host{downloadToken: "t", config: Config{Logf: t.Logf, OnMain: func(fn func()) { fn() }, Post: func(func()) {
+		t.Error("a page with no close request posted its close")
+	}}}
 	r.host.config.Report = func(pageID string, kind ReportKind, detail string) {
 		if kind != ReportDownload || pageID != "p" {
 			t.Fatalf("report %s for %s", kind, pageID)
@@ -191,7 +193,7 @@ func newDownloadRig(t *testing.T) *downloadRig {
 	r.page = &hostPage{id: "p"}
 	r.page.downloadStarting = newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { r.host.downloadStarting(r.page, args) })
 	r.host.pages = map[string]*hostPage{"p": r.page}
-	r.host.cancelTimer = func(wait time.Duration, fn func()) {
+	r.host.afterFunc = func(wait time.Duration, fn func()) {
 		if wait != downloadCancelBound {
 			t.Errorf("a cancel bound of %v, want %v", wait, downloadCancelBound)
 		}
@@ -648,7 +650,8 @@ func TestACanceledDownloadSettlesByWebView2sReport(t *testing.T) {
 	r.done(t, op)
 }
 
-// A bound that passes after the page went does nothing.
+// A bound that passes after the page went does nothing, decided on the UI
+// thread.
 func TestACancelBoundAfterThePageWentDoesNothing(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
@@ -660,8 +663,8 @@ func TestACancelBoundAfterThePageWentDoesNothing(t *testing.T) {
 	hops := 0
 	r.host.config.OnMain = func(fn func()) { hops++; fn() }
 	r.timers[0]()
-	if got := r.take(); len(got) != 0 || hops != 0 {
-		t.Fatalf("a bound after the page went reported %+v and asked the UI thread %d times", got, hops)
+	if got := r.take(); len(got) != 0 || hops != 1 {
+		t.Fatalf("a bound after the page went reported %+v and asked the UI thread %d times, want once", got, hops)
 	}
 }
 

@@ -103,7 +103,7 @@ type fakeProfile struct {
 	// was created with.
 	jar         string
 	ephemeral   bool
-	allow       func(owners []string, rawURL string) bool
+	allow       func(owners []string, rawURL string) (allowed, resolved bool)
 	downloadDir string
 	stage       func(id string) (string, error)
 

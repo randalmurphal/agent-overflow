@@ -10,9 +10,9 @@ import (
 )
 
 // Downloads on the hosted engine are the launcher's: it takes every download
-// a pane page starts, so WebView2's own dialog never opens, lets WebView2
-// save it to the Windows user's Downloads folder, and reports each one as
-// whole snapshots (ReportDownload, internal/webview2host/download.go),
+// a pane page starts, so WebView2's dialog does not open for it, lets
+// WebView2 save it to the Windows user's Downloads folder, and reports each
+// one as whole snapshots (ReportDownload, internal/webview2host/download.go),
 // each numbered in the order the launcher took it. Reports arrive on RPC
 // goroutines of their own, so they can overtake each other; this engine
 // applies one download's snapshots one at a time (hostedDownload.apply,
@@ -26,9 +26,10 @@ import (
 // answered with a snapshot marked as an answer, which settles or advances a
 // row and never creates one; DownloadUnknown, the answer for an id the
 // launcher has no record of, ends only a row still running. Nothing about
-// downloads crosses CDP. A download started in a window the launcher does
-// not own (a popup WebView2 opened itself) is never reported and keeps
-// WebView2's own handling.
+// downloads crosses CDP. A popup is a pane page too: a download it starts
+// before the Manager lists its tab names it and its openers, for the
+// Manager to list (popup_adoption.go), and one still running when such a
+// popup goes ends here (joinDownloadReports).
 
 const (
 	// hostedPathTimeout bounds the `wslpath -u` of a finished download's
@@ -125,7 +126,8 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			e.mu.Unlock()
 			return
 		}
-		if _, live := e.targetByPage[pageID]; !live {
+		_, live := e.targetByPage[pageID]
+		if _, pending := e.popups[pageID]; !live && !pending {
 			// No page of the Manager's started it, or that page is leaving;
 			// the launcher cancels a closed page's downloads itself.
 			e.mu.Unlock()
@@ -149,10 +151,10 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 	}
 	if report.State == webview2host.DownloadUnknown {
 		// Created by no answer, so the download is admitted.
+		e.events.DownloadProgress(downloadProgress{ID: report.ID, State: downloadCanceled, Error: report.Reason})
 		e.mu.Lock()
 		e.downloads.noteEnded(pageID, report.ID)
 		e.mu.Unlock()
-		e.events.DownloadProgress(downloadProgress{ID: report.ID, State: downloadCanceled, Error: report.Reason})
 		return
 	}
 	if report.Seq <= known.applied {
@@ -163,7 +165,11 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		if name == "" {
 			name = windowsBase(report.Path)
 		}
-		if !e.events.DownloadStarted(downloadStart{Frame: pageID, ID: report.ID, URL: report.URI, SuggestedName: name}) {
+		e.mu.Lock()
+		popup := e.popupOwnersLocked(pageID)
+		e.mu.Unlock()
+		popup.Frame, popup.ID, popup.URL, popup.SuggestedName = pageID, report.ID, report.URI, name
+		if !e.events.DownloadStarted(popup) {
 			// The Manager refused it: nothing later reaches a row.
 			e.mu.Lock()
 			e.downloads.noteEnded(pageID, report.ID)
@@ -178,11 +184,6 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		e.mu.Unlock()
 	}
 	known.applied = report.Seq
-	if report.Terminal() {
-		e.mu.Lock()
-		e.downloads.noteEnded(pageID, report.ID)
-		e.mu.Unlock()
-	}
 	progress := downloadProgress{ID: report.ID, Received: float64(report.Received), Total: float64(report.Total), State: downloadInProgress}
 	switch report.State {
 	case webview2host.DownloadRunning:
@@ -206,8 +207,17 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		}
 	case webview2host.DownloadInterrupted:
 		progress.State, progress.Error = downloadCanceled, report.Reason
+		progress.PageGone = report.Reason == webview2host.PopupGoneReason
 	}
 	e.events.DownloadProgress(progress)
+	if report.Terminal() {
+		// After the Manager has its end, so a page that goes meanwhile
+		// still finds the download running and waits for this snapshot
+		// (joinDownloadReports).
+		e.mu.Lock()
+		e.downloads.noteEnded(pageID, report.ID)
+		e.mu.Unlock()
+	}
 }
 
 // cancelDownload asks the launcher to cancel a running download; its answer
@@ -297,6 +307,37 @@ func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
 		}
 	}
 	delete(e.downloads.ended, pageID)
+}
+
+// joinDownloadReports returns once every snapshot being applied for a
+// download of pageID, a page that goes, has reached the Manager, so the
+// page's close reaches it after them. With why set, pageID is a popup the
+// Manager never listed, and its downloads still running then end as
+// canceled for why: the launcher cancels a going page's downloads and
+// reports nothing, and only a listed page's leaving settles them in the
+// Manager. Each ends in its apply section.
+func (e *hostedEngine) joinDownloadReports(pageID, why string) {
+	e.mu.Lock()
+	running := make(map[string]*hostedDownload)
+	for id, d := range e.downloads.running {
+		if d.page == pageID {
+			running[id] = d
+		}
+	}
+	e.mu.Unlock()
+	for id, d := range running {
+		d.apply.Lock()
+		e.mu.Lock()
+		end := why != "" && d.admitted && !d.gone
+		if end {
+			e.downloads.noteEnded(pageID, id)
+		}
+		e.mu.Unlock()
+		if end {
+			e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCanceled, Error: why, PageGone: true})
+		}
+		d.apply.Unlock()
+	}
 }
 
 // stopDownloadsLocked forgets every download and ends the status loop

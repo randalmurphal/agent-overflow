@@ -72,11 +72,15 @@ per-platform no-op.
 - A jar shares site data and nothing else. Navigation and file permissions,
   the record of finished downloads, and headless Chromium's download
   directory and quota stay per canonical workspace, whichever jar a page
-  is in. A request the jar's own policy
-  sees (headless Chromium's browser-wide interception) has the authority of
-  the page its frame belongs to, or for a popup not yet adopted, of its
-  opener chain; one whose owner is not resolved may open no workspace's
-  files.
+  is in. The CDP engines pause each document request and file read once,
+  browser-wide, and answer it with the jar's policy: the authority of the
+  page its frame belongs to, or for a popup not yet adopted, of its opener
+  chain. One whose owner is not resolved yet is allowed at once what a
+  page with no workspace's authority may open (a web address); one that
+  needs an owner's authority (a workspace file) waits up to 2 seconds for
+  its target, its popup's report or its frame, then is refused. A page
+  attached after its frames were made, a popup at its adoption, reads
+  them from its frame tree.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying
@@ -397,7 +401,7 @@ behave as a desktop browser's:
   in [Browser hardening](#browser-hardening).
   On Windows through WSL the launcher takes every download a pane page
   starts (WebView2's `DownloadStarting`, handled, so WebView2's own
-  download dialog never opens), WebView2 saves it, and the launcher reports
+  download dialog does not open for it), WebView2 saves it, and the launcher reports
   it to the backend as whole snapshots (`internal/webview2host/download.go`,
   `internal/browser/hosted_downloads.go`); no download crosses CDP. The
   launcher numbers each download's snapshots, and the backend applies a
@@ -428,9 +432,21 @@ behave as a desktop browser's:
   stays in the Downloads folder, listed nowhere. A second download a
   script starts with no user gesture gets WebView2's own "download
   multiple files" prompt in
-  the page and has no row until it is allowed. A window WebView2 opened
-  itself rather than as an AO tab keeps WebView2's own handling: its
-  dialog, the file in the Downloads folder, no row.
+  the page and has no row until it is allowed. A popup's downloads are
+  taken the same way. One it starts before the Manager lists its tab is
+  listed when the popup's fate is known: in the popup's tab when it is
+  adopted, and otherwise in the tab of its nearest opener still listed, as
+  it is, finished or running, or canceled with the reason when the popup's
+  close ended it (WebView2 cancels a closing page's downloads). A popup
+  whose window went before the launcher reported it is never a tab; its
+  downloads are listed at its close. With no opener listed, or over its
+  workspace's quota, it is canceled, and the file AO keeps for it (headless
+  Chromium's artifact, WebKit's staged file) is removed. Past 16 such downloads of a popup, or 64
+  popups holding some, a download is refused and canceled. When a popup's first navigation is
+  a download, WebView2 asks to close the popup, which closes when the
+  download ends, and opens its own download dialog over the opener, which
+  nothing a host sets prevents; the launcher closes it as it opens, so it
+  shows for about 0.2 s and nothing on it can be used.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
@@ -880,9 +896,7 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   quota. Files older than seven days are pruned on the next artifact
   use, while newer files are never silently evicted to make quota room.
 
-A download that begins in a page no thread owns is cancelled, except on
-WebView2, where a window WebView2 opened itself (a popup the Manager did
-not adopt as a tab) keeps WebView2's own download handling.
+A download that begins in a page no thread owns is cancelled.
 
 ## Codex browser parity boundary
 
@@ -971,6 +985,31 @@ launcher positions over the pane's fitted rect, with the page's viewport and
 presentation scale set through the CDP device-metrics override. Hidden pages
 keep a visible controller inside a hidden container window so they keep
 producing frames.
+
+A window a page opens (`window.open` with or without a user gesture, a
+`target=_blank` link or form, a middle or modified click) becomes a tab on
+every engine: the Manager adopts it into the opener's thread, workspace
+authority and jar, within the thread, workspace and process caps, or closes
+it. Window features change nothing; `noopener`, and a link or form, leave
+the popup no `window.opener`. A page whose `window.close()` the engine
+honors (on WebView2, a popup or a page with one history entry) closes its
+tab. On
+WebView2 the launcher answers the page's `NewWindowRequested` with a hidden
+controller of its own in the opener's profile, starting at the opener's
+bounds, so no window of WebView2's own opens and `window.opener` and
+`postMessage` work as in a browser; the opener's script waits in
+`window.open` until the controller is up. A request the launcher cannot take
+(four already being created, its 64 pages, or its opener closing), or
+whose controller is not up within 10 seconds, opens nothing, and
+`window.open` answers null. The popup reaches the backend as a
+report naming its opener and CDP target (`internal/webview2host/popup.go`,
+`internal/browser/hosted_popups.go`), after its opener's, and its requests
+before its adoption pass the browser-wide policy with its opener chain's
+authority, the opener its report names standing in where its target names
+none (a link a click opened in a new tab). Headless Chromium runs with its
+popup blocker off, so a window opened with no gesture opens there too. On every engine a popup opened by a popup still being adopted
+waits for that adoption, up to 10 seconds, and is closed with it when that
+popup is not adopted.
 
 **Serve mode drives a headless Chromium** (`docs/specs/remote-access.md` §7,
 and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A

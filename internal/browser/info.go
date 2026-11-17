@@ -151,13 +151,6 @@ func (p *managedPage) cachedInfo() PageInfo {
 	return info
 }
 
-// hasUnpushed reports whether a write to p is not in a push yet.
-func (p *managedPage) hasUnpushed() bool {
-	p.metaMu.RLock()
-	defer p.metaMu.RUnlock()
-	return p.load.unpushed
-}
-
 // updatePageInfo is engineEvents.PageInfoChanged, a CDP engine's report of
 // a page by its handle. A report for a handle no page answers to yet (an
 // engine page the Manager has not attached or adopted) is held, the newest
@@ -169,7 +162,10 @@ func (m *Manager) updatePageInfo(handle, url, title string, order uint64) {
 		found = m.creatingPageByHandleLocked(handle)
 	}
 	if found == nil {
-		if held, ok := m.heldInfo.get(handle); !ok || held.order < order {
+		// A handle that will not be listed again (unlistedLocked) has
+		// nothing to hold a report for.
+		_, unlisted := m.unlistedLocked().get(handle)
+		if held, ok := m.heldInfo.get(handle); !unlisted && (!ok || held.order < order) {
 			m.heldInfo.put(handle, heldInfo{url: url, title: title, order: order})
 		}
 	}
@@ -198,6 +194,21 @@ func (m *Manager) applyHeldInfo(p *managedPage, held heldInfo, ok bool) {
 	if ok {
 		m.pageInfoReport(p, held.url, held.title, held.order)
 	}
+}
+
+// commitHeldInfoLocked commits the report held for handle to p in the hold
+// of m.mu that lists p, so the listing's own push carries it and nothing
+// pushes it apart. The caller holds m.mu and pushes p's listing.
+func (m *Manager) commitHeldInfoLocked(p *managedPage, handle string) {
+	held, ok := m.heldInfo.take(handle)
+	if !ok {
+		return
+	}
+	update := pageUpdate{Report: held.order}
+	if held.url != "" {
+		update.Location = &pageLocation{URL: held.url, Title: held.title}
+	}
+	p.commitInfo(update)
 }
 
 // pageInfoReport is pageHooks.Info: an engine report of p's address and

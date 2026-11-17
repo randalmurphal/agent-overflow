@@ -523,7 +523,7 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	// The jar's own policy, which an engine asks for a popup it loads before
 	// adoption, answers with the opener's authority, so the popup may open
 	// what it may open once adopted: its worktree's files, not the other's.
-	allow := engine.profile("project:P").allow
+	allow := resolvedPolicy(t, engine.profile("project:P").allow)
 	openerA, openerB := paneHandle(manager, a, pageA.ID), paneHandle(manager, b, pageB.ID)
 	if !allow([]string{"popup", openerA}, "file://"+files["one"]) || !allow([]string{"popup", openerB}, "file://"+files["two"]) {
 		t.Fatal("a popup in the shared jar is refused its opener's worktree file")

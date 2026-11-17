@@ -28,8 +28,10 @@ import (
 //
 // The jar is only the engine's storage partition. Authority stays with the
 // page's workspace: navigation and file permissions are the page's own
-// Access (pageHooks.Allow, and for a frame or popup the profile's policy
-// sees, its owning page's or opener's: jarAllows), and download accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
+// Access (pageHooks.Allow on the in-process engines; on the CDP engines
+// the profile's policy, which answers with the Access of the page a
+// request's frame belongs to or its opener's: jarAllows), and download
+// accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
 // setting become a jar identity; an engine receives only that identity and
 // whether the jar is ephemeral (profileOptions).
 
@@ -143,20 +145,22 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 // allowed what the first owner that resolves to a page of the jar may open
 // (framePageLocked). So a popup the Manager has not adopted yet has its
 // opener's authority, which is what it is allowed once adopted. A request
-// none of whose owners resolves (a frame no page has reported, a popup seen
-// before its opener is known or after its opener closed) has no workspace's
-// authority: it may open what any page may, never a workspace file.
-func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) bool {
+// none of whose owners resolves (a frame no page has reported yet, a popup
+// seen before its opener is known or after its opener closed) is answered
+// unresolved, with what a page with no workspace's authority may open: its
+// engine allows that at once, and asks again for anything else
+// (awaitRequestOwner).
+func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (allowed, resolved bool) {
 	var access Access
 	m.mu.Lock()
 	for _, owner := range owners {
 		if p := framePageLocked(scope, owner); p != nil {
-			access = p.access
+			access, resolved = p.access, true
 			break
 		}
 	}
 	m.mu.Unlock()
-	return m.navigationAllowed(access, rawURL)
+	return m.navigationAllowed(access, rawURL), resolved
 }
 
 // framePageLocked answers the page of scope, live or being created, that

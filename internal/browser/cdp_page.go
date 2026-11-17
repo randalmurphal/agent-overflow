@@ -261,9 +261,6 @@ func (p *cdpPage) installHandlers() error {
 			logf("browser: answer a %s dialog: %v", event.Type, err)
 		}
 	})
-	onTargetEvent(ctx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
-		answerPausedRequest(ctx, session, event, p.hooks.Allow)
-	})
 	onTargetEvent(ctx, page.FrameAttached, logf, func(event page.EventFrameAttached) {
 		p.frames.attached(event.FrameID)
 	})
@@ -286,6 +283,14 @@ func (p *cdpPage) installHandlers() error {
 	onTargetEvent(ctx, page.FrameDetached, logf, func(event page.EventFrameDetached) {
 		p.frames.detached(event.FrameID)
 	})
+	// A frame that attached before the subscriptions above, as a popup's
+	// iframe made before its adoption did, sends no event of its own: the
+	// frame tree names it, read once they are in place.
+	tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{})
+	if err != nil {
+		return fmt.Errorf("browser: read the page's frames: %w", err)
+	}
+	p.frames.seed(tree.FrameTree)
 	// The main frame's id is the target's.
 	onTargetEvent(ctx, page.FrameStartedLoading, logf, func(event page.EventFrameStartedLoading) {
 		if string(event.FrameID) == p.handle {
@@ -325,9 +330,6 @@ func (p *cdpPage) installHandlers() error {
 	})
 	if err := p.watchDocumentTitle(); err != nil {
 		return err
-	}
-	if _, err := chromedp.Call(ctx, fetch.Enable, fetch.EnableParams{Patterns: navigationPolicyPatterns}); err != nil {
-		return fmt.Errorf("browser: install navigation policy: %w", err)
 	}
 	if _, err := chromedp.Call(ctx, cdplog.Enable, cdp.Empty{}); err != nil {
 		return fmt.Errorf("browser: enable console log capture: %w", err)
@@ -385,10 +387,13 @@ func answerPausedRequest(lifetime context.Context, session cdp.Session, event fe
 	}
 	requestID, rawURL := event.RequestID, event.Request.URL
 	go func() {
+		// Decided before the answer's own bound starts: the decision may
+		// wait for the request's owner (awaitRequestOwner).
+		allowed := allow(rawURL)
 		ctx, cancel := operationContext(context.Background(), lifetime, 5*time.Second)
 		defer cancel()
 		var err error
-		if allow(rawURL) {
+		if allowed {
 			_, err = cdp.Call(ctx, session, fetch.ContinueRequest, fetch.ContinueRequestParams{RequestID: requestID})
 		} else {
 			_, err = cdp.Call(ctx, session, fetch.FailRequest, fetch.FailRequestParams{RequestID: requestID, ErrorReason: network.ErrorReasonBlockedByClient})
@@ -400,6 +405,45 @@ func answerPausedRequest(lifetime context.Context, session cdp.Session, event fe
 			log.Printf("browser: answer paused request %s: %v", requestID, err)
 		}
 	}()
+}
+
+// requestOwnerWait bounds how long a paused request that needs an owner's
+// authority, and whose owners no page answers to yet, waits for one: its
+// target's creation, which chromedp delivers on a subscription of its own,
+// in no fixed order with the pause; its popup's report from the launcher;
+// or its frame's attach. Past it the request is refused. requestOwnerPoll
+// is how often it asks again.
+const (
+	requestOwnerWait = 2 * time.Second
+	requestOwnerPoll = 5 * time.Millisecond
+)
+
+// awaitRequestOwner answers a paused request with decide's answer once
+// decide resolves an owner, or at once when decide allows it with none (a
+// page with no workspace's authority may make it). Otherwise it asks again
+// every requestOwnerPoll for up to wait (requestOwnerWait when zero), and
+// refuses the request when no owner resolves by then or lifetime ends.
+// Runs off the event reader (answerPausedRequest).
+func awaitRequestOwner(lifetime context.Context, wait time.Duration, decide func() (allowed, resolved bool), logf func(string, ...any)) bool {
+	if wait <= 0 {
+		wait = requestOwnerWait
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		allowed, resolved := decide()
+		if resolved || allowed {
+			return allowed
+		}
+		if !time.Now().Before(deadline) {
+			logf("browser: refuse a request no page answered for within %v", wait)
+			return false
+		}
+		select {
+		case <-lifetime.Done():
+			return false
+		case <-time.After(requestOwnerPoll):
+		}
+	}
 }
 
 // consoleEntry converts one message of chromedp.Console. Uncaught exceptions

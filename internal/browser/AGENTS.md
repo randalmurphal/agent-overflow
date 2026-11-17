@@ -96,6 +96,35 @@ headless engine starts one Chromium process per profile with an isolated user
 data directory. Headless mode is selected explicitly by serve boot and must not
 become a fallback for an ordinary windowless process.
 
+Every engine reports a page it opened by itself as `PopupOpened`, and the
+Manager alone adopts or discards it (`adoptPopup`). A popup whose opener is
+still being adopted, or not reported yet, waits for it (`awaitOpener`), so
+an engine reports a popup under the handle its adoption keeps; a WebKit
+popup view gets its policy and create handlers when it is made
+(`pageHandle`). A
+download a popup starts before its tab is listed names the popup by the
+handle the Manager adopts it under (`downloadStart.Popup`), and the Manager
+parks it, newest progress only, until the popup's fate lists it in the
+popup's tab or its nearest listed opener's (`popup_adoption.go`); the tab
+and its parked downloads are listed in one `parkMu` hold that a page's
+close also takes. An engine keeps no download of its own for a popup.
+Headless Chromium runs with its popup blocker off, so a window a page opens
+with no gesture is a popup there as on WebView2. On the hosted engine a
+popup is the launcher's report (`hosted_popups.go`), attached only on its
+opener's connection, within the attach timeout, and canceled by its close;
+until the Manager lists its tab, the engine holds its crash and close and
+delivers them at the listing (`adoptedPage`). The CDP engines answer the
+navigation policy only browser-wide (`profileOptions.Allow`), one pause per
+request, so a popup's requests before its adoption have its opener chain's
+authority, the launcher's popup report counting as an opener edge on the
+hosted engine. A request whose owner does not resolve yet is answered at
+once with what a page with no workspace's authority may open (`jarAllows`);
+only one that needs an owner's authority waits up to `requestOwnerWait`
+for it, then is refused (`awaitRequestOwner`). A CDP page seeds its frames
+from its frame tree at attach and installs no interception of its own.
+Each CDP connection keeps one bounded record of its targets
+(`cdp_targets.go`), which goes with the connection.
+
 The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes
 only the title path; never observe a document's whole subtree from it.
@@ -158,7 +187,9 @@ downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 which it applies one at a time per download, held across the Manager's
 callbacks, and only when newer than the last applied; an answer never
 creates a row, and a download is the Manager's to cancel or ask about only
-once admitted. One status loop asks for a quiet download's snapshot, so a
+once admitted. A hosted page ends at the launcher's close, which follows
+its downloads' ends; its CDP target's destroy ends it only past
+`hostClosedFallback`. One status loop asks for a quiet download's snapshot, so a
 lost report never leaves a row running; headless Chromium's arrive over
 CDP (`headless_downloads.go`). Preserve the denial of sensitive website
 permissions.

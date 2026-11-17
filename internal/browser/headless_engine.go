@@ -97,6 +97,9 @@ type headlessEngine struct {
 	// and the popup path address a page by handle with no profile in hand,
 	// and a target this engine never bound must not be closed as one.
 	pageProfile map[string]*headlessProfile
+	// ownerWait bounds a paused request's wait for its owner
+	// (awaitRequestOwner); zero is requestOwnerWait.
+	ownerWait time.Duration
 }
 
 // newHeadlessChromiumEngine resolves the browser or explains why it could
@@ -329,6 +332,10 @@ func chromiumArgs(userDataDir string) []string {
 		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		// A window a page opens with no gesture is a popup the Manager
+		// adopts or refuses at its caps, as WebView2's are, rather than one
+		// Chromium's blocker drops with no report.
+		"--disable-popup-blocking",
 		// The kernel picks a free loopback port, and Chromium prints the
 		// browser websocket URL on it (startChromium reads that line).
 		"--remote-debugging-port=0",

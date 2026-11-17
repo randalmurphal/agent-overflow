@@ -212,16 +212,20 @@ type profileOptions struct {
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
 	Ephemeral bool
-	// Allow is the policy for a request an engine intercepts outside any one
-	// page's own policy: the headless engine's browser-wide interception,
-	// which also sees a popup before the Manager adopts it. owners is the
+	// Allow is the CDP engines' whole navigation policy: one browser-wide
+	// interception per connection, which also sees a popup before the
+	// Manager adopts it, so no page installs one of its own. owners is the
 	// frame the request belongs to followed by the pages that opened its
 	// page, nearest first, as far as the engine knows them. The Manager
 	// answers with the authority of the first owner it resolves to one of
-	// its pages, and with no workspace's authority when none resolves
-	// (jarAllows). The WebKit engines need none: their glue names a popup's
-	// opener for every navigation decision.
-	Allow func(owners []string, rawURL string) bool
+	// its pages, and when none resolves answers resolved false with what a
+	// page with no workspace's authority may open (jarAllows). The engine
+	// allows that at once; for anything else it asks again as it learns
+	// more owners and refuses the request past requestOwnerWait
+	// (awaitRequestOwner). The WebKit engines
+	// need none: their glue names a popup's opener for every navigation
+	// decision.
+	Allow func(owners []string, rawURL string) (allowed, resolved bool)
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry
@@ -232,7 +236,9 @@ type pageHooks struct {
 	// PageURL reports the page's last known URL, attributed to entries the
 	// engine reports without one of their own.
 	PageURL func() string
-	// Allow answers the navigation-authority question for one request URL.
+	// Allow answers the navigation-authority question for one request URL
+	// of an in-process engine's page (WebKitGTK, WKWebView, the fake). The
+	// CDP engines ask the profile's policy instead (profileOptions.Allow).
 	Allow func(url string) bool
 	// DocumentCommitted reports that the page's main frame committed a new
 	// document: a load, a reload, or a history move to another document. A
@@ -468,6 +474,15 @@ type pageAssets struct {
 	InlineSVGs []InlineSVG `json:"inlineSvgs"`
 }
 
+// adoptedPage is implemented by a page driver whose engine holds what a
+// popup reports while the Manager adopts it (the hosted engine:
+// hosted_popups.go). The Manager calls Adopted once the popup is in its
+// thread's tabs, so a download, crash or close it held reaches a listed
+// page.
+type adoptedPage interface {
+	Adopted()
+}
+
 // enginePopup is a page the engine opened on its own behalf. Nothing about
 // ownership is decided here: the Manager matches the opener and applies its
 // own per-thread and per-workspace limits before adopting it.
@@ -485,6 +500,15 @@ type downloadStart struct {
 	ID            string
 	URL           string
 	SuggestedName string
+	// Popup, set when the frame is a popup's the engine reported
+	// (PopupOpened), is that popup's handle, Openers the pages that opened
+	// it, nearest first, and Profile the handle of its engine profile. The
+	// Manager lists the download in the popup's tab, or in the nearest
+	// listed opener's if the popup is never listed, and cancels it through
+	// the profile when neither is (popup_adoption.go).
+	Popup   string
+	Openers []string
+	Profile string
 }
 
 // errDownloadEnded is CancelDownload's answer when the engine had already
@@ -495,6 +519,9 @@ var errDownloadEnded = errors.New("browser: the download already ended")
 // downloadProgress is an engine download advancing. Total is the size the
 // response announced, zero when unknown. Error is the engine's reason for a
 // download it stopped on its own (a network failure), when it reports one.
+// PageGone marks a cancel the engine made because the page the download
+// began in went before the Manager listed it; the Manager lists it as
+// canceled, with Error, as it does a download of a listed page that goes.
 type downloadProgress struct {
 	ID       string
 	Received float64
@@ -502,6 +529,7 @@ type downloadProgress struct {
 	State    string
 	FilePath string
 	Error    string
+	PageGone bool
 }
 
 // The states downloadProgress.State may carry.

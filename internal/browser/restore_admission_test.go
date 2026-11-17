@@ -109,7 +109,11 @@ func TestTheJarPolicyAnswersForAPageBeingCreated(t *testing.T) {
 	openPage(t, manager, b, "https://example.test/b")
 	page := openWorkspaceFile(t, manager, a)
 	suspendTab(t, manager, a, page.ID)
-	allow := engine.profile("project:P").allow
+	policy := engine.profile("project:P").allow
+	allow := func(owners []string, rawURL string) bool {
+		allowed, _ := policy(owners, rawURL)
+		return allowed
+	}
 
 	stop, polled := make(chan struct{}), make(chan struct{})
 	go func() {

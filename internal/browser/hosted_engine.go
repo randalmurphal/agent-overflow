@@ -58,6 +58,16 @@ const (
 	// user-data folder for up to its own 15s budget while the WebView2
 	// browser process lets go of its file handles.
 	hostClearTimeout = 45 * time.Second
+	// hostClosedFallback bounds how long a page whose CDP target went
+	// waits for the launcher's close before the engine retires it itself.
+	// The launcher reports a closing page's download ends and then its
+	// close on one serial queue, each call bounded at 5 seconds
+	// (wsllauncher's notificationBridgeRPCTimeout), and a finished
+	// download's apply here waits up to hostedPathTimeout, so the close
+	// follows the destroy well within it. Past it the close was lost (the
+	// launcher delivers reports once, with no retry), and a page with no
+	// target must not stay listed.
+	hostClosedFallback = 30 * time.Second
 	// hostProfilePrefix keeps a derived profile id inside
 	// ValidateProfileID's character class whatever the digest looks like.
 	hostProfilePrefix = "ws"
@@ -93,6 +103,14 @@ type hostedEngine struct {
 	createTimeout time.Duration
 	attachTimeout time.Duration
 	clearTimeout  time.Duration
+	// ownerWait bounds a paused request's wait for its owner
+	// (awaitRequestOwner); zero is requestOwnerWait.
+	ownerWait time.Duration
+	// closeFallback bounds the wait for the launcher's close of a page
+	// whose target went (hostClosedFallback), and closeFallbacks are the
+	// pages waiting, each with the timer that retires it at the bound.
+	closeFallback  time.Duration
+	closeFallbacks map[string]*time.Timer
 
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
@@ -135,6 +153,20 @@ type hostedEngine struct {
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
 	noFind map[string]bool
+	// pageProfile is each page's profile id, created or popup, and policies
+	// each live profile's navigation policy (profileOptions.Allow), for a
+	// popup's profile and the browser-wide policy (hosted_popups.go).
+	pageProfile map[string]string
+	policies    map[string]func(owners []string, rawURL string) (allowed, resolved bool)
+	// popups are the popups the launcher reported that the Manager has not
+	// listed, and popupByTarget their pages by CDP target.
+	popups        map[string]*hostedPopup
+	popupByTarget map[string]string
+	// targets is the current connection's record of its targets
+	// (cdp_targets.go): the info of a target no page answers to yet, and
+	// the target that opened each popup target, as the browser reports it.
+	// Each connection has its own, which goes with it.
+	targets *cdpTargets
 	// downloads is the record of the launcher's downloads
 	// (hosted_downloads.go).
 	downloads hostedDownloads
@@ -155,7 +187,7 @@ type hostedEngine struct {
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
-	return &hostedEngine{
+	e := &hostedEngine{
 		relay:         relay,
 		send:          send,
 		events:        events,
@@ -164,6 +196,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		createTimeout: hostCreateTimeout,
 		attachTimeout: hostAttachTimeout,
 		clearTimeout:  hostClearTimeout,
+		closeFallback: hostClosedFallback,
 
 		pending:      make(map[string]chan hostReport),
 		pageByTarget: make(map[string]string),
@@ -177,10 +210,19 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		noFind:       make(map[string]bool),
 		downloads:    newHostedDownloads(),
 
+		pageProfile:   make(map[string]string),
+		policies:      make(map[string]func([]string, string) (bool, bool)),
+		popups:        make(map[string]*hostedPopup),
+		popupByTarget: make(map[string]string),
+
+		closeFallbacks: make(map[string]*time.Timer),
+
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
+	e.targets = e.newTargets()
+	return e
 }
 
 // Start has nothing to start, and that is the design rather than a gap.
@@ -263,8 +305,22 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
+	e.pageProfile = make(map[string]string)
+	var cancelAttaches []func()
+	for _, popup := range e.popups {
+		cancelAttaches = append(cancelAttaches, popup.takeAttachCancelLocked())
+	}
+	e.popups = make(map[string]*hostedPopup)
+	e.popupByTarget = make(map[string]string)
+	for pageID := range e.closeFallbacks {
+		e.endCloseFallbackLocked(pageID)
+	}
+	e.targets = e.newTargets()
 	e.stopDownloadsLocked()
 	e.mu.Unlock()
+	for _, cancel := range cancelAttaches {
+		cancel()
+	}
 	if browserCancel != nil {
 		browserCancel()
 	}
@@ -284,6 +340,11 @@ func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (eng
 	// Site data is the engine's own (spec §4): a hosted profile is a real
 	// browser profile on disk and WebView2 persists it, so AO seeds nothing
 	// into it and reads nothing out of it.
+	if opts.Allow != nil {
+		e.mu.Lock()
+		e.policies[id] = opts.Allow
+		e.mu.Unlock()
+	}
 	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral}, nil
 }
 
@@ -426,17 +487,17 @@ func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDrive
 	return p.engine.createPage(ctx, p, hooks)
 }
 
-// AttachPage would adopt a page the engine opened by itself. The launcher
-// does not surface WebView2's NewWindowRequested, so no popup is ever
-// reported and this is unreachable; failing loudly beats returning a
-// driver for a controller nobody created.
-func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriver, error) {
-	return nil, errors.New("browser: the pane host does not report engine-opened popups")
+// AttachPage adopts a popup the launcher reported (hosted_popups.go).
+func (p *hostedProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+	return p.engine.attachPopup(p, handle, hooks)
 }
 
 func (p *hostedProfile) CancelDownload(id string) error { return p.engine.cancelDownload(id) }
 
 func (p *hostedProfile) Dispose(context.Context) error {
+	p.engine.mu.Lock()
+	delete(p.engine.policies, p.id)
+	p.engine.mu.Unlock()
 	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: p.id, Ephemeral: p.ephemeral})
 	return nil
 }

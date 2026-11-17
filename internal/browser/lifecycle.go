@@ -215,7 +215,7 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 		case err == nil && !closed:
 			delete(m.pending, p.id)
 			delete(scope.creating, p)
-			scope.pages[p.id] = p
+			m.listPageLocked(scope, p)
 		case err != nil && (closed || !user):
 			delete(m.pending, p.id)
 		case err != nil:
@@ -518,6 +518,10 @@ func (m *Manager) closeThreadPending(threadID string) {
 func (m *Manager) abandonPage(scope *jarScope, p *managedPage) error {
 	p.driver.Close()
 	m.mu.Lock()
+	// Never listed, so a popup its engine page opened is not adopted
+	// (awaitOpener).
+	m.unlistedLocked().put(p.driver.Handle(), struct{}{})
+	m.listingChangedLocked()
 	delete(scope.creating, p)
 	release := m.releaseScopeLocked(scope)
 	m.mu.Unlock()

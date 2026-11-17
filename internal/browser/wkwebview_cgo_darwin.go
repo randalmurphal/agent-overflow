@@ -312,24 +312,35 @@ func aoWKVPageCrashed(pageID C.uint64_t) {
 	}
 }
 
+// aoWKVPopup holds a popup WebKit created and answers its number, zero for
+// one nothing may own. Its opener is the page openerID, or, while that is
+// zero, the popup openerPopup, held or being adopted, whose handle is the
+// one its adoption keeps (pageHandle).
+//
 //export aoWKVPopup
-func aoWKVPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) {
+func aoWKVPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := wkTakeString(uri)
-	opener := wkLookupPage(uint64(openerID))
+	var opener string
+	if page := wkLookupPage(uint64(openerID)); page != nil {
+		opener = page.handle
+	} else if openerPopup != 0 {
+		opener = pageHandle(uint64(openerPopup))
+	}
 	profile := wkLookupProfile(uint64(profileID))
-	if opener == nil || profile == nil {
+	if opener == "" || profile == nil {
 		// Nothing can own it, so nothing may keep it alive — but not YET. This
 		// export runs inside -createWebViewWithConfiguration:, which is about to
 		// return this very view to WebKit; releasing it here would hand WebKit a
 		// dead object. The goroutine's dispatch lands on a later main-thread
 		// turn, after the delegate has returned.
 		go wkCloseView(view)
-		return
+		return 0
 	}
-	handle := profile.engine.holdPopup(view)
+	n, handle := profile.engine.holdPopup(view, opener)
 	go profile.engine.events.PopupOpened(enginePopup{
-		Profile: profile.Handle(), Opener: opener.handle, Handle: handle, URL: target,
+		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
+	return C.uint64_t(n)
 }
 
 //export aoWKVPagePresented
@@ -363,7 +374,7 @@ func aoWKVDownloadDestination(profileID, downloadID C.uint64_t) *C.char {
 }
 
 //export aoWKVDownloadStarted
-func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
+func aoWKVDownloadStarted(profileID, pageID, popupID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := wkTakeString(uri), wkTakeString(suggested)
 	profile := wkLookupProfile(uint64(profileID))
 	if profile == nil {
@@ -371,12 +382,9 @@ func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download uns
 		C.ao_wkv_download_release(download)
 		return
 	}
-	page := wkLookupPage(uint64(pageID))
-	frame := ""
-	if page != nil {
-		frame = page.handle
-	}
+	start := profile.downloadStart(wkLookupPage(uint64(pageID)), uint64(popupID))
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	start.ID, start.URL = handle, target
 	profile.mu.Lock()
 	stageErr := profile.stageFailures[handle]
 	delete(profile.stageFailures, handle)
@@ -384,10 +392,11 @@ func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download uns
 	if name == "" {
 		name = handle
 	}
+	start.SuggestedName = name
 	if stageErr != nil {
 		// The delegate canceled it before a byte was written; the row says why.
 		profile.engine.downloadEvents.Go(func() {
-			if profile.engine.events.DownloadStarted(downloadStart{Frame: frame, ID: handle, URL: target, SuggestedName: name}) {
+			if profile.engine.events.DownloadStarted(start) {
 				profile.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
 			}
 			wkReleaseDownload(download)
@@ -396,9 +405,7 @@ func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download uns
 	}
 	profile.registerDownload(handle, download)
 	profile.engine.downloadEvents.Go(func() {
-		if !profile.engine.events.DownloadStarted(downloadStart{
-			Frame: frame, ID: handle, URL: target, SuggestedName: name,
-		}) {
+		if !profile.engine.events.DownloadStarted(start) {
 			if err := profile.CancelDownload(handle); err != nil {
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}

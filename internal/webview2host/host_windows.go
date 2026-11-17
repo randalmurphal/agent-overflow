@@ -27,6 +27,12 @@ import (
 // through Config.OnMain, and every completion handler body runs INLINE on
 // the UI thread (WebView2 invokes them from the message pump) and
 // therefore must never call OnMain itself.
+//
+// The registry (pages) is the UI thread's alone. A page is looked up,
+// checked and used, or taken out and torn down, in one UI-thread turn, so
+// whatever holds a page in a turn holds a live one, and a page out of the
+// registry has no controller left but an asynchronous create's, which its
+// completion closes.
 type Host struct {
 	config Config
 
@@ -34,10 +40,16 @@ type Host struct {
 	// starts a new generation (environment.go).
 	env *paneEnvironment[paneEnv]
 
-	mu    sync.Mutex
-	pages map[string]*hostPage
-	// accelerators is the bound-chord set every page's key events are gated
-	// on (accelerators_windows.go). Replaced whole by OpAccelerators.
+	// pages are the live pages by id, and closed is set by Close, after
+	// which no page is admitted (admit). UI thread only.
+	pages    map[string]*hostPage
+	closed   bool
+	clearing bool
+
+	// mu guards accelerators, the bound-chord set every page's key events
+	// are gated on (accelerators_windows.go), replaced whole by
+	// OpAccelerators on the bridge goroutine.
+	mu           sync.Mutex
 	accelerators keybindings.AcceleratorSet
 
 	cdpPort int
@@ -45,9 +57,13 @@ type Host struct {
 	// (download.go); downloadSeq is UI thread only.
 	downloadToken string
 	downloadSeq   uint64
-	// cancelTimer runs fn after wait, on a goroutine of its own
-	// (settleCancelAfter); nil is time.AfterFunc. A test stands in its own.
-	cancelTimer func(wait time.Duration, fn func())
+	// popupSeq numbers popup page ids. UI thread only.
+	popupSeq uint64
+	// pendingPopups counts outstanding native popup controller creates. UI thread only.
+	pendingPopups int
+	// afterFunc runs fn after wait, on a goroutine of its own (after); nil
+	// is time.AfterFunc. A test stands in its own.
+	afterFunc func(wait time.Duration, fn func())
 	// foreground answers whether the launcher window is the foreground
 	// window (isForeground). A smoke stands in its answer so it never takes
 	// the user's foreground.
@@ -75,8 +91,14 @@ type Config struct {
 	Logf func(string, ...any)
 	// Report posts one BrowserHostReport back to the backend.
 	Report func(pageID string, kind ReportKind, detail string)
-	// OnMain runs fn on the UI thread and returns once it has run.
+	// OnMain runs fn on the UI thread and returns once it has run, inline
+	// when called there.
 	OnMain func(fn func())
+	// Post runs fn on the UI thread later, never inside the caller's call,
+	// and returns at once; it may be called on the UI thread. A page's own
+	// close request is posted, so the controller is not closed inside its
+	// own event.
+	Post func(fn func())
 	// Geometry holds the SPA's own pane geometry reports (geometry.go). A
 	// page bound to a mount with a report there is placed from it; nil, or
 	// no report, places pages from the backend's bounds alone.
@@ -90,6 +112,10 @@ type Config struct {
 type hostPage struct {
 	id        string
 	profileID string
+	ephemeral bool
+	// popup links a page a window request opened to that request
+	// (popup_windows.go); nil for a page the backend created.
+	popup *popupState
 	// beforeChildren is the host's child-window list captured
 	// immediately before CreateCoreWebView2ControllerWithOptions, so the
 	// completion handler can diff out this controller's own child HWND.
@@ -124,6 +150,15 @@ type hostPage struct {
 	failHandler *iProcessFailedHandler
 	keyHandler  *iAcceleratorKeyPressedHandler
 	targetInfo  *iDevToolsCompletedHandler
+	// newWindow and closeRequested take the windows the page opens and its
+	// own close (popup_windows.go); dialogOpened closes WebView2's download
+	// dialog (download_dialog_windows.go).
+	newWindow      *iNewWindowRequestedHandler
+	closeRequested *iViewEventHandler
+	dialogOpened   *iViewEventHandler
+	// closeAfterDownloads is set when the page asked to close while a
+	// download ran; it closes when the last one ends. UI thread only.
+	closeAfterDownloads bool
 	// findStarted is the page's one Start completion handler, made on the
 	// first find (find_windows.go). The page holds its constructor's
 	// reference until retireHandlers.
@@ -138,6 +173,15 @@ type hostPage struct {
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
 	shown paneView
+}
+
+// after runs fn after wait, on a goroutine of its own.
+func (h *Host) after(wait time.Duration, fn func()) {
+	if h.afterFunc != nil {
+		h.afterFunc(wait, fn)
+		return
+	}
+	time.AfterFunc(wait, fn)
 }
 
 // raiseTarget is the window that must sit on top of the host's child
@@ -178,8 +222,8 @@ func New(config Config) (*Host, error) {
 	if config.UserDataDir == "" {
 		return nil, errors.New("browser host user data folder is required")
 	}
-	if config.OnMain == nil {
-		return nil, errors.New("browser host main-thread dispatcher is required")
+	if config.OnMain == nil || config.Post == nil {
+		return nil, errors.New("browser host main-thread dispatchers are required")
 	}
 	if err := ValidateExtraBrowserArgs(config.ExtraBrowserArgs); err != nil {
 		return nil, err
@@ -205,7 +249,7 @@ func New(config Config) (*Host, error) {
 		foreground:    isForeground,
 		downloadToken: newDownloadToken(),
 	}
-	h.env = newPaneEnvironment(config.OnMain, h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
+	h.env = newPaneEnvironment(h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
 	return h, nil
 }
 
@@ -213,301 +257,6 @@ func New(config Config) (*Host, error) {
 // serves DevTools on. It is fixed for the host's lifetime and is the only
 // port the tunnel may reach.
 func (h *Host) CDPPort() int { return h.cdpPort }
-
-// Apply validates and executes one directive. It is safe to call from any
-// goroutine and blocks until the work has run on the UI thread.
-//
-// An invalid directive is logged and dropped. That is deliberate at both
-// ends: the launcher never guesses at a command that creates OS windows,
-// and dropping one costs a retry rather than tearing down the bridge the
-// retry would arrive on.
-func (h *Host) Apply(directive Directive) {
-	if err := directive.Validate(); err != nil {
-		h.config.Logf("browser host: ignore invalid directive: %v", err)
-		return
-	}
-	switch directive.Op {
-	case OpCreate:
-		h.create(directive)
-	case OpBounds:
-		h.withPage(directive.PageID, func(page *hostPage) {
-			page.pres.noteBounds(directive)
-			h.present(page, false)
-		})
-	case OpBackground:
-		h.withPage(directive.PageID, func(page *hostPage) { h.applyBackground(page, directive.Bg) })
-	case OpShow:
-		h.withPage(directive.PageID, func(page *hostPage) {
-			page.pres.backendShown = true
-			h.present(page, true)
-		})
-	case OpHide:
-		h.withPage(directive.PageID, func(page *hostPage) {
-			page.pres.backendShown = false
-			h.present(page, false)
-		})
-	case OpDevTools:
-		h.withPage(directive.PageID, func(page *hostPage) {
-			if err := page.view.openDevToolsWindow(); err != nil {
-				h.config.Logf("browser host: page %s devtools: %v", page.id, err)
-			}
-		})
-	case OpClose:
-		h.closePages(func(page *hostPage) bool { return page.id == directive.PageID })
-	case OpCloseProfile:
-		h.closePages(func(page *hostPage) bool { return page.profileID == directive.ProfileID })
-	case OpClearData:
-		h.clearData(directive.PageID)
-	case OpAccelerators:
-		h.setAccelerators(directive.Accelerators)
-	case OpFind:
-		h.withPage(directive.PageID, func(page *hostPage) { h.startFind(page, directive.Query) })
-	case OpFindStop:
-		h.withPage(directive.PageID, h.stopFind)
-	case OpFocus:
-		h.config.Focus.Deliver(directive.Mount, directive.Intent, directive.PageID)
-		h.withPage(directive.PageID, h.applyPendingFocus)
-	case OpCancelDownload:
-		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, true) })
-	case OpDownloadStatus:
-		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, false) })
-	}
-}
-
-// applyPendingFocus moves keyboard focus into the page for the focus intent
-// delivered for it, while the host shows the page, the launcher window is
-// the foreground window and the intent still stands (focusDecision). A page
-// not shown or a window in the background leaves the intent pending, and the
-// page's next show applies it (present). Runs on the UI thread, so the view
-// it checks is the one on screen.
-func (h *Host) applyPendingFocus(page *hostPage) {
-	var mount string
-	var intent uint64
-	take := func() bool {
-		var ok bool
-		mount, intent, ok = h.config.Focus.Take(page.id)
-		return ok
-	}
-	if focusDecision(page.shown, h.foreground(h.config.HostWindow()), take) != focusMove {
-		return
-	}
-	report := FocusReport{Mount: mount, Intent: intent}
-	if err := page.controller.moveFocus(moveFocusProgrammatic); err != nil {
-		h.config.Logf("browser host: page %s focus: %v", page.id, err)
-		report.Error = err.Error()
-		h.config.Report(page.id, ReportFocusFailed, report.Encode())
-		return
-	}
-	h.config.Report(page.id, ReportFocused, report.Encode())
-}
-
-// ApplyGeometry re-presents every page bound to a mount the reports name.
-// It runs on the UI thread, as the launcher's single pending drain of the
-// geometry mailbox, and must not be called from anywhere else.
-func (h *Host) ApplyGeometry(reports []PaneGeometry) {
-	if len(reports) == 0 {
-		return
-	}
-	mounts := make(map[string]bool, len(reports))
-	for _, report := range reports {
-		mounts[report.Mount] = true
-	}
-	h.mu.Lock()
-	pages := make([]*hostPage, 0, len(h.pages))
-	for _, page := range h.pages {
-		pages = append(pages, page)
-	}
-	h.mu.Unlock()
-	for _, page := range pages {
-		if page.controller != nil && page.pres.mount != "" && mounts[page.pres.mount] {
-			h.present(page, false)
-		}
-	}
-}
-
-// present brings one page to the view its presentation calls for
-// (presenter.go): moved before it is shown, never moved while hidden. raise
-// re-raises a page already shown. Runs on the UI thread.
-func (h *Host) present(page *hostPage, raise bool) {
-	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
-	step, next := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
-	if step.move {
-		h.applyBounds(page, step.bounds)
-	}
-	if step.show && !h.showPage(page) {
-		next.visible = page.shown.visible
-	}
-	if step.hide {
-		h.hidePage(page)
-	}
-	page.shown = next
-	if step.show {
-		h.applyPendingFocus(page)
-	}
-}
-
-// showPage shows the page's clip container and raises it.
-func (h *Host) showPage(page *hostPage) bool {
-	if err := page.controller.putIsVisible(true); err != nil {
-		h.config.Logf("browser host: page %s show: %v", page.id, err)
-		return false
-	}
-	// The container tracks visibility too. It is not decoration: a shown
-	// container with nothing in it is an invisible window swallowing every
-	// click over its rectangle, which is exactly what a hidden pane must not
-	// do.
-	showWindow(page.container, true)
-	// Every backend show re-raises: Wails' own recovery path can recreate
-	// the SPA controller, which would land it above the pane again, and a
-	// raise is cheap.
-	raiseChild(page.raiseTarget())
-	return true
-}
-
-// hidePage hides the page's clip container. Hiding is the CONTAINER's: the
-// controller stays IsVisible so Chromium keeps compositing the page (rAF,
-// scroll state, and the frame a screenshot copies). IsVisible=false stops
-// all of that and evicts the surface, so a hidden page's first capture would
-// wait for a frame that never comes (spike 2026-09-14). Only the unclipped
-// fallback, with no container to hide, has to hide the controller itself.
-func (h *Host) hidePage(page *hostPage) {
-	held := focusWithin(page.raiseTarget())
-	if page.container != 0 {
-		showWindow(page.container, false)
-	} else if err := page.controller.putIsVisible(false); err != nil {
-		h.config.Logf("browser host: page %s hide: %v", page.id, err)
-	}
-	h.releaseFocus(page, held)
-}
-
-// applyBounds positions one page. Runs on the UI thread.
-//
-// The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
-// it was measured under (deviceScale). BOTH rects are scaled by that one
-// factor pair: a clip scaled differently from the rect it crops would slide
-// across the page as the window resized.
-func (h *Host) applyBounds(page *hostPage, b paneBounds) {
-	cw, ch, hasClient := clientSize(h.config.HostWindow())
-	sx, sy := deviceScale(b, cw, ch, hasClient)
-	layout := resolvePaneLayout(b, sx, sy)
-
-	bounds := layout.Controller
-	if page.container == 0 {
-		// No container: the controller is still a direct child of the host,
-		// so its bounds are host-relative and there is nothing to clip
-		// against. Position the full rect and let it overhang, which is the
-		// behaviour that shipped before clipping existed.
-		bounds = rect{
-			Left:   layout.Container.Left + layout.Controller.Left,
-			Top:    layout.Container.Top + layout.Controller.Top,
-			Right:  layout.Container.Left + layout.Controller.Right,
-			Bottom: layout.Container.Top + layout.Controller.Bottom,
-		}
-	} else {
-		// Container first, then the controller inside it: moving the crop
-		// before its content means a growing pane never shows a frame of
-		// content outside the new clip.
-		moveWindow(page.container, layout.Container)
-	}
-	if err := page.controller.putBounds(bounds); err != nil {
-		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
-	}
-}
-
-// applyBackground sets the controller's default background colour (an
-// OpBackground's) when it changed. Runs on the UI thread, shown or hidden.
-func (h *Host) applyBackground(page *hostPage, bg string) {
-	if bg == page.bg {
-		return
-	}
-	if page.controller2 == nil {
-		if !page.bgUnsupported {
-			page.bgUnsupported = true
-			h.config.Logf("browser host: page %s: installed WebView2 runtime has no "+
-				"ICoreWebView2Controller2; pane background colour is unavailable", page.id)
-		}
-		return
-	}
-	color, ok := parsePaneColor(bg)
-	if !ok {
-		// Validate already refused every other spelling; reaching here
-		// would mean the two halves of that rule drifted apart.
-		h.config.Logf("browser host: page %s: ignoring unparseable background %q", page.id, bg)
-		return
-	}
-	if err := page.controller2.putDefaultBackgroundColor(color); err != nil {
-		h.config.Logf("browser host: page %s background %s: %v", page.id, bg, err)
-		return
-	}
-	page.bg = bg
-}
-
-// Close tears every controller down. The environment itself is released
-// with the process.
-func (h *Host) Close() {
-	h.closePages(func(*hostPage) bool { return true })
-}
-
-// withPage runs fn on the UI thread with the named page, or logs that it
-// is gone. A directive for a page that already died is normal (the
-// backend's view lags a process failure), not an error.
-func (h *Host) withPage(pageID string, fn func(*hostPage)) {
-	h.mu.Lock()
-	page := h.pages[pageID]
-	h.mu.Unlock()
-	if page == nil || page.controller == nil {
-		h.config.Logf("browser host: no live page %s", pageID)
-		return
-	}
-	h.config.OnMain(func() { fn(page) })
-}
-
-func (h *Host) closePages(match func(*hostPage) bool) {
-	h.mu.Lock()
-	var closing []*hostPage
-	for id, page := range h.pages {
-		if match(page) {
-			closing = append(closing, page)
-			delete(h.pages, id)
-		}
-	}
-	h.mu.Unlock()
-	if len(closing) == 0 {
-		return
-	}
-	h.config.OnMain(func() {
-		for _, page := range closing {
-			h.retireHandlers(page)
-			if page.view != nil {
-				page.view.release()
-			}
-			if page.controller2 != nil {
-				page.controller2.release()
-				page.controller2 = nil
-			}
-			if page.controller != nil {
-				held := focusWithin(page.raiseTarget())
-				if err := page.controller.close(); err != nil {
-					h.config.Logf("browser host: close page %s: %v", page.id, err)
-				}
-				page.controller.release()
-				// After the controller, always: closing it destroys the window
-				// inside the container, and a container that outlives its page
-				// is an invisible window eating every click over its rectangle.
-				destroyWindow(page.container)
-				page.container = 0
-				h.releaseFocus(page, held)
-			}
-			// A container with no controller is the parent of an asynchronous
-			// create still in flight. Its completion owns both the controller
-			// and container after observing that this page was unregistered;
-			// destroying the parent now destabilizes the WebView2 create itself.
-		}
-	})
-	for _, page := range closing {
-		h.config.Report(page.id, ReportClosed, "")
-	}
-}
 
 // ---------------------------------------------------------------------
 // Environment
@@ -631,10 +380,26 @@ func (h *Host) clearData(correlationID string) {
 	// jar back out over the cleared state. Releasing the environment starts
 	// a new generation, so the next directive builds a fresh one against
 	// the recreated folder.
-	h.closePages(func(*hostPage) bool { return true })
-	h.config.OnMain(h.env.release)
-
-	if err := clearUserDataDir(h.config.UserDataDir); err != nil {
+	var refused string
+	h.config.OnMain(func() {
+		switch {
+		case h.closed:
+			refused = "the browser host is closed"
+		case h.clearing:
+			refused = "the browser host is already clearing site data"
+		default:
+			h.clearing = true
+			h.closeTaken(h.take(func(*hostPage) bool { return true }), nil)
+			h.env.release()
+		}
+	})
+	if refused != "" {
+		h.config.Report(correlationID, ReportClearFailed, refused)
+		return
+	}
+	err := clearUserDataDir(h.config.UserDataDir)
+	h.config.OnMain(func() { h.clearing = false })
+	if err != nil {
 		h.config.Logf("browser host: clear site data: %v", err)
 		h.config.Report(correlationID, ReportClearFailed, TruncateDetail(err.Error()))
 		return
@@ -683,295 +448,6 @@ func clearUserDataDir(dir string) error {
 // ---------------------------------------------------------------------
 // Controllers
 // ---------------------------------------------------------------------
-
-func (h *Host) create(directive Directive) {
-	env, err := h.env.acquire()
-	if err != nil {
-		h.config.Report(directive.PageID, ReportCreateFailed, TruncateDetail(err.Error()))
-		return
-	}
-	env10 := env.env10
-	h.mu.Lock()
-	if _, exists := h.pages[directive.PageID]; exists {
-		h.mu.Unlock()
-		h.config.Report(directive.PageID, ReportCreateFailed, "page id already exists")
-		return
-	}
-	page := &hostPage{id: directive.PageID, profileID: directive.ProfileID}
-	h.pages[directive.PageID] = page
-	h.mu.Unlock()
-
-	hwnd := h.config.HostWindow()
-	if hwnd == 0 {
-		h.failUncreated(page, "launcher window is not available")
-		return
-	}
-
-	h.config.OnMain(func() {
-		// close/close-profile may have retired the page while this UI-thread
-		// hop was queued. Do not start a controller whose id is already
-		// settled and may already have been reused by a newer create.
-		if !h.pageRegistered(page) {
-			return
-		}
-		options, err := env10.createControllerOptions()
-		if err != nil {
-			h.failUncreated(page, "controller options: "+err.Error())
-			return
-		}
-		defer options.release()
-		if err := options.putProfileName(directive.ProfileID); err != nil {
-			h.failUncreated(page, "profile name: "+err.Error())
-			return
-		}
-		if err := options.putInPrivate(directive.Ephemeral); err != nil {
-			h.failUncreated(page, "inprivate: "+err.Error())
-			return
-		}
-
-		// Create the final parent BEFORE the controller. Reparenting a live
-		// windowed WebView2 controller can leave its compositor presenting
-		// stale/blank strips while the document scrolls. Passing the clip
-		// container to controller creation gives Chromium one stable parent
-		// for the controller's whole lifetime.
-		parent := hwnd
-		container, err := createClipContainer(hwnd)
-		if err != nil {
-			// Clipping is a presentation refinement, not a precondition. Keep
-			// the older direct-parent path and identify its child so it can be
-			// raised over the SPA controller.
-			h.config.Logf("browser host: page %s clip container: %v; pane will not clip", page.id, err)
-			page.beforeChildren = childWindows(hwnd)
-		} else {
-			page.container = container
-			parent = container
-		}
-
-		handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
-			h.controllerCompleted(page, hwnd, hr, controller)
-		})
-		// WebView2 holds its own reference until it calls back; this is the
-		// constructor's. The handler is not detached when the page closes:
-		// its completion closes a controller that outlived the page.
-		defer handler.ref.release()
-		if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
-			h.failUncreated(page, "create controller: "+err.Error())
-		}
-	})
-}
-
-// controllerCompleted runs on the UI thread from the message pump.
-func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, controller *iCoreWebView2Controller) {
-	if err := hresult(hr); err != nil {
-		// ERROR_INVALID_STATE (0x8007139F) here means "same user data
-		// folder, different browser arguments", not a process-wide
-		// conflict: the error surfaces at CONTROLLER creation even
-		// though the mismatch is the ENVIRONMENT's. If it ever appears,
-		// suspect a collapsed user data folder (see EnvOverrideNames)
-		// before suspecting the argument rule.
-		h.failUncreated(page, err.Error())
-		return
-	}
-	if controller == nil {
-		h.failUncreated(page, "controller completed with no controller")
-		return
-	}
-	controller.addRef()
-	if !h.pageRegistered(page) {
-		// A close or close-profile settled this page while the create was
-		// in flight; the backend has already heard closed. Adopting the
-		// controller now would leak a window no directive can address, and
-		// reporting created would arrive after closed.
-		if err := controller.close(); err != nil {
-			h.config.Logf("browser host: page %s close raced controller: %v", page.id, err)
-		}
-		controller.release()
-		destroyWindow(page.container)
-		page.container = 0
-		return
-	}
-	page.controller = controller
-	// ICoreWebView2Controller2 is the whole background-colour surface.
-	// Querying once here keeps every background directive off
-	// QueryInterface; a nil result is reported the first time a colour is
-	// actually asked for, not now.
-	page.controller2 = controller.queryController2()
-
-	// Pages start hidden: the clip container is created unshown, and
-	// browser_visibility is what shows it. The controller itself is visible
-	// from the start, for the reason OpHide gives.
-	if err := controller.putIsVisible(page.container != 0); err != nil {
-		h.config.Logf("browser host: page %s initial visibility: %v", page.id, err)
-	}
-
-	if page.container != 0 {
-		// Normal path: the container was the controller's parent from its
-		// creation call, so no live WebView2 window is ever reparented.
-		raiseChild(page.container)
-	} else {
-		// Container creation failed before the controller started. The
-		// controller is a direct child of the host, so identify and raise it
-		// over the SPA's own WebView2.
-		page.child = newChildWindow(page.beforeChildren, childWindows(hwnd))
-		page.beforeChildren = nil
-		if page.child == 0 {
-			h.config.Logf("browser host: page %s child window not identified; "+
-				"the pane may render behind the app and cannot be clipped", page.id)
-		} else {
-			raiseChild(page.child)
-		}
-	}
-
-	view, err := controller.coreWebView2()
-	if err != nil || view == nil {
-		h.discardCreated(page, "core webview: "+errString(err))
-		return
-	}
-	page.view = view
-
-	failHandler := newProcessFailedHandler(func(kind uint32) {
-		h.config.Report(page.id, ReportProcessFailed, processFailedKindName(kind))
-	})
-	page.failHandler = failHandler
-	if _, err := view.addProcessFailed(failHandler); err != nil {
-		h.config.Logf("browser host: page %s process-failed subscription: %v", page.id, err)
-	}
-	failHandler.ref.release()
-	keyHandler := newAcceleratorKeyPressedHandler(func(args *iAcceleratorKeyPressedEventArgs) {
-		h.acceleratorPressed(page, args)
-	})
-	page.keyHandler = keyHandler
-	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
-		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
-	}
-	keyHandler.ref.release()
-	h.watchDownloads(page, view)
-
-	// A runtime without the find API has to be known before the page is
-	// used, so its report precedes created.
-	if !h.findSupported(view) {
-		h.config.Report(page.id, ReportFindUnavailable, "")
-	}
-
-	// Target.getTargetInfo through the controller's own DevTools session
-	// answers with THIS page's targetInfo, which is the handle the
-	// backend attaches chromedp to. Reporting created only after it
-	// lands means the backend never sees a page it cannot drive.
-	done := newDevToolsCompletedHandler(func(hr uintptr, resultJSON string) {
-		if !h.pageRegistered(page) {
-			// Closed while the target-info round trip was in flight; the
-			// closed report has already settled this page.
-			return
-		}
-		if err := hresult(hr); err != nil {
-			h.discardCreated(page, "Target.getTargetInfo: "+err.Error())
-			return
-		}
-		targetID, err := ParseTargetID(resultJSON)
-		if err != nil {
-			h.discardCreated(page, err.Error())
-			return
-		}
-		h.config.Report(page.id, ReportCreated, targetID)
-	})
-	page.targetInfo = done
-	err = view.callDevToolsProtocolMethod("Target.getTargetInfo", "{}", done)
-	done.ref.release()
-	if err != nil {
-		h.discardCreated(page, "Target.getTargetInfo dispatch: "+err.Error())
-	}
-}
-
-// failUncreated settles a create that failed on the UI thread and tears down
-// the clip container that may already have become its final parent. The exact
-// pointer comparison keeps a late callback from deleting or reporting failure
-// for a newer page that reused the same id after this one was closed.
-func (h *Host) failUncreated(page *hostPage, detail string) {
-	h.mu.Lock()
-	mine := h.pages[page.id] == page
-	if mine {
-		delete(h.pages, page.id)
-	}
-	h.mu.Unlock()
-	destroyWindow(page.container)
-	page.container = 0
-	if mine {
-		h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
-	}
-}
-
-// pageRegistered reports whether page is still the registry's entry for
-// its id. A page that lost a race with close or close-profile is already
-// settled: its report went out and its teardown belongs to whoever
-// removed it.
-func (h *Host) pageRegistered(page *hostPage) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pages[page.id] == page
-}
-
-// discardCreated unwinds a create that failed AFTER its controller came
-// up: a create-failed report with a live controller left behind would be
-// a window no directive can ever address. Runs on the UI thread, like
-// every caller.
-func (h *Host) discardCreated(page *hostPage, detail string) {
-	// Take the registry entry atomically: whichever of this and
-	// closePages removes the page owns its teardown, so the controller
-	// can never be closed twice.
-	h.mu.Lock()
-	mine := h.pages[page.id] == page
-	if mine {
-		delete(h.pages, page.id)
-	}
-	h.mu.Unlock()
-	if !mine {
-		// Already settled by close or close-profile; their teardown owns
-		// the controller and their closed report is the final word.
-		return
-	}
-	h.retireHandlers(page)
-	if page.view != nil {
-		page.view.release()
-		page.view = nil
-	}
-	if page.controller2 != nil {
-		page.controller2.release()
-		page.controller2 = nil
-	}
-	if page.controller != nil {
-		if err := page.controller.close(); err != nil {
-			h.config.Logf("browser host: page %s discard: %v", page.id, err)
-		}
-		page.controller.release()
-		page.controller = nil
-	}
-	destroyWindow(page.container)
-	page.container = 0
-	h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
-}
-
-// retireHandlers detaches the callbacks of a page that is going, so a late
-// call from WebView2 does nothing and a reference it never releases keeps
-// only the small handler, not the page. The controller-completed handler is
-// not among them: its completion must still close a controller that
-// outlived the page. Runs on the UI thread.
-func (h *Host) retireHandlers(page *hostPage) {
-	if page.failHandler != nil {
-		page.failHandler.done.detach()
-	}
-	if page.keyHandler != nil {
-		page.keyHandler.pressed.detach()
-	}
-	if page.targetInfo != nil {
-		page.targetInfo.done.detach()
-	}
-	if page.findStarted != nil {
-		page.findStarted.done.detach()
-		page.findStarted.ref.release()
-		page.findStarted = nil
-	}
-	h.retireDownloads(page)
-}
 
 func errString(err error) string {
 	if err == nil {

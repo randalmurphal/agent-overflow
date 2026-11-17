@@ -293,12 +293,22 @@ func aoWebKitPageCrashed(pageID C.uint64_t, reason *C.char) {
 	}
 }
 
+// aoWebKitPopup holds a popup WebKit created and answers its number, zero
+// for one nothing may own. Its opener is the page openerID, or, while that
+// is zero, the popup openerPopup, held or being adopted, whose handle is
+// the one its adoption keeps (pageHandle).
+//
 //export aoWebKitPopup
-func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) {
+func aoWebKitPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := webkitTakeString(uri)
-	opener := webkitLookupPage(uint64(openerID))
+	var opener string
+	if page := webkitLookupPage(uint64(openerID)); page != nil {
+		opener = page.handle
+	} else if openerPopup != 0 {
+		opener = pageHandle(uint64(openerPopup))
+	}
 	profile := webkitLookupProfile(uint64(profileID))
-	if opener == nil || profile == nil {
+	if opener == "" || profile == nil {
 		// Nothing can own it, so nothing may keep it alive — but not YET, and
 		// not from here. This export runs on the GTK thread inside `create`,
 		// which is about to return this very widget to WebKit: unreffing it now
@@ -307,12 +317,13 @@ func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointe
 		// full gtkCallTimeout. The goroutine's dispatch lands on a later GTK
 		// turn, which is both safe and immediate.
 		go webkitCloseView(view)
-		return
+		return 0
 	}
-	handle := profile.engine.holdPopup(view)
+	n, handle := profile.engine.holdPopup(view, opener)
 	go profile.engine.events.PopupOpened(enginePopup{
-		Profile: profile.Handle(), Opener: opener.handle, Handle: handle, URL: target,
+		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
+	return C.uint64_t(n)
 }
 
 //export aoWebKitPagePresented
@@ -346,7 +357,7 @@ func aoWebKitDownloadDestination(profileID, downloadID C.uint64_t) *C.char {
 }
 
 //export aoWebKitDownloadStarted
-func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
+func aoWebKitDownloadStarted(profileID, pageID, popupID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := webkitTakeString(uri), webkitTakeString(suggested)
 	profile := webkitLookupProfile(uint64(profileID))
 	if profile == nil {
@@ -354,12 +365,9 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 		C.ao_wk_download_unref(download)
 		return
 	}
-	page := webkitLookupPage(uint64(pageID))
-	frame := ""
-	if page != nil {
-		frame = page.handle
-	}
+	start := profile.downloadStart(webkitLookupPage(uint64(pageID)), uint64(popupID))
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	start.ID, start.URL = handle, target
 	profile.mu.Lock()
 	stageErr := profile.stageFailures[handle]
 	delete(profile.stageFailures, handle)
@@ -367,10 +375,11 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 	if name == "" {
 		name = handle
 	}
+	start.SuggestedName = name
 	if stageErr != nil {
 		// The C side canceled it before a byte was written; the row says why.
 		profile.engine.downloadEvents.Go(func() {
-			if profile.engine.events.DownloadStarted(downloadStart{Frame: frame, ID: handle, URL: target, SuggestedName: name}) {
+			if profile.engine.events.DownloadStarted(start) {
 				profile.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
 			}
 			webkitReleaseDownload(download)
@@ -379,9 +388,7 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 	}
 	profile.registerDownload(handle, download)
 	profile.engine.downloadEvents.Go(func() {
-		if !profile.engine.events.DownloadStarted(downloadStart{
-			Frame: frame, ID: handle, URL: target, SuggestedName: name,
-		}) {
+		if !profile.engine.events.DownloadStarted(start) {
 			if err := profile.CancelDownload(handle); err != nil {
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}

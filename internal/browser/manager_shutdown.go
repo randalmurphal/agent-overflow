@@ -219,6 +219,8 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		m.idleTimer = nil
 	}
 	m.mu.Unlock()
+	// A popup not listed yet goes with the browser, its downloads with it.
+	m.dropParked()
 	for _, p := range pages {
 		m.endFind(p)
 	}

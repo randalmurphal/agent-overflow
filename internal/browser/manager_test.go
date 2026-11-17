@@ -945,10 +945,18 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	}
 	owners := []string{paneHandle(manager, access, page.ID)}
 	engine.mu.Lock()
-	allow := engine.opts.Allow
+	policy := engine.opts.Allow
 	engine.mu.Unlock()
-	if allow == nil {
+	if policy == nil {
 		t.Fatal("the profile was created without a navigation policy")
+	}
+	allow := resolvedPolicy(t, policy)
+	// A request no page owns is answered unresolved, with what a page with
+	// no workspace's authority may open.
+	for url, want := range map[string]bool{"https://example.test/": true, "file://" + files["workspace"]: false} {
+		if allowed, resolved := policy([]string{"F-none"}, url); allowed != want || resolved {
+			t.Errorf("a request no page owns for %s was answered allowed %v, resolved %v", url, allowed, resolved)
+		}
 	}
 	for url, want := range map[string]bool{
 		"file://" + files["workspace"]: true,
@@ -966,6 +974,19 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	manager.mu.Unlock()
 	if !allow(owners, "file://"+files["outside"]) {
 		t.Error("the profile's policy ignores the outside-workspace setting")
+	}
+}
+
+// resolvedPolicy answers policy's allowed answer, failing the test when an
+// owner it is asked with does not resolve.
+func resolvedPolicy(t *testing.T, policy func([]string, string) (bool, bool)) func([]string, string) bool {
+	return func(owners []string, rawURL string) bool {
+		t.Helper()
+		allowed, resolved := policy(owners, rawURL)
+		if !resolved {
+			t.Errorf("no owner of %v resolved", owners)
+		}
+		return allowed
 	}
 }
 

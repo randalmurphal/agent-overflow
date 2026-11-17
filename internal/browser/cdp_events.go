@@ -9,6 +9,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -281,6 +282,21 @@ func (t *frameTracker) navigated(id cdp.FrameID) {
 
 func (t *frameTracker) detached(id cdp.FrameID) {
 	t.record(id, func(f *frameEvents) { f.detaches++ })
+}
+
+// seed records the frames of tree, read after the page subscribed, as
+// navigated: that stands in for an attach no handler saw, and a frame's
+// own attach or detach handled before or after counts as it would.
+func (t *frameTracker) seed(tree *page.FrameTree) {
+	if tree == nil {
+		return
+	}
+	if tree.Frame != nil {
+		t.navigated(tree.Frame.ID)
+	}
+	for _, child := range tree.ChildFrames {
+		t.seed(child)
+	}
 }
 
 func (t *frameTracker) record(id cdp.FrameID, event func(*frameEvents)) {

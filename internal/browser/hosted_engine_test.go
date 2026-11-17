@@ -118,6 +118,7 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
 	engine.createTimeout = 150 * time.Millisecond
 	engine.attachTimeout = 150 * time.Millisecond
+	engine.ownerWait = 150 * time.Millisecond
 	engine.clearTimeout = 150 * time.Millisecond
 	engine.windowsPath = testWindowsPath
 	return engine, sink
@@ -456,12 +457,12 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	})
 	bindTestPage(t, engine, "page1", "TARGET-1")
 
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
 	}})
 	// The reports are numbered in the browser's order, which the Manager
 	// keeps the highest of.
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Retitled",
 	}})
 	if len(infos) != 2 || infos[0] != "page1 https://example.test/ Example 1" || infos[1] != "page1 https://example.test/ Retitled 2" {
@@ -469,18 +470,25 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	}
 	// A target this engine never created is dropped rather than reported
 	// under a handle the Manager does not own.
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-9", Type: "page", URL: "https://elsewhere.test/",
 	}})
 	if len(infos) != 2 {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
-	engine.targetDestroyed(target.EventTargetDestroyed{TargetID: "TARGET-1"})
+	// The launcher's close ends a page whose target went; with none, the
+	// destroy does at the fallback bound.
+	engine.closeFallback = 100 * time.Millisecond
+	destroyed := time.Now()
+	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "TARGET-1"})
 	select {
 	case handle := <-closed:
 		if handle != "page1" {
 			t.Fatalf("PageClosed saw %q", handle)
+		}
+		if waited := time.Since(destroyed); waited < engine.closeFallback {
+			t.Fatalf("the page was retired %v after its target went, before the launcher's close could come", waited)
 		}
 	case <-time.After(hostedTestDeadline):
 		t.Fatal("targetDestroyed did not retire the page")
@@ -503,12 +511,24 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	}
 }
 
-func TestHostedProfileReportsNoPopups(t *testing.T) {
+// A profile attaches only a popup the launcher reported in it, and not
+// once the popup closed (hosted_popups_test.go covers the adoption).
+func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	profile := testProfile(t, engine)
+	engine.mu.Lock()
+	engine.popups["popup-other"] = &hostedPopup{target: "T-other", profile: "another-profile"}
+	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id, closed: true}
+	engine.mu.Unlock()
 
-	if _, err := profile.AttachPage(context.Background(), "TARGET-1", pageHooks{}); err == nil {
-		t.Fatal("the pane host adopted a popup it can never report")
+	for handle, why := range map[string]string{
+		"TARGET-1":     "reported no popup",
+		"popup-other":  "reported no popup",
+		"popup-closed": "closed before it was adopted",
+	} {
+		if _, err := profile.AttachPage(context.Background(), handle, pageHooks{}); err == nil || !strings.Contains(err.Error(), why) {
+			t.Errorf("attach %s: %v, want %q", handle, err, why)
+		}
 	}
 }
 
@@ -890,6 +910,74 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 	}
 }
 
+// pausedRequest is the Fetch.requestPaused event Chromium sends on the
+// session whose interception matched a document request of frame.
+func pausedRequest(id, frame, url string) map[string]any {
+	return map[string]any{"method": "Fetch.requestPaused", "params": map[string]any{
+		"requestId": id, "frameId": frame, "resourceType": "Document",
+		"request": map[string]any{"url": url, "method": "GET", "headers": map[string]any{}},
+	}}
+}
+
+// browserCallParams decodes the parameters of every command of method the
+// fake answered on the browser session.
+func browserCallParams[T any](t *testing.T, calls []fakeCDPCall, method string) []T {
+	t.Helper()
+	var out []T
+	for _, call := range calls {
+		if call.Method != method || call.SessionID != "" {
+			continue
+		}
+		var params T
+		if err := json.Unmarshal(call.Params, &params); err != nil {
+			t.Fatalf("decode %s %s: %v", method, call.Params, err)
+		}
+		out = append(out, params)
+	}
+	return out
+}
+
+// assertOnePolicyPause holds a CDP engine to one navigation-policy
+// interception: Fetch.enable once, on the browser session, whatever pages
+// are attached, and one answer to a paused document request. A second
+// interception (a page's own) would pause every request twice, on the
+// hosted engine each time across the relay.
+func assertOnePolicyPause(t *testing.T, calls func() []fakeCDPCall, send func(map[string]any)) {
+	t.Helper()
+	var enables []string
+	for _, call := range calls() {
+		if call.Method == "Fetch.enable" {
+			enables = append(enables, "session "+call.SessionID)
+		}
+	}
+	if len(enables) != 1 || enables[0] != "session " {
+		t.Fatalf("Fetch.enable ran on %v, want once on the browser session", enables)
+	}
+	// A frame no page answers for, refused once the owner bound passes.
+	send(pausedRequest("R-once", "F-any", "https://example.test/"))
+	answers := func() int {
+		n := 0
+		for _, call := range calls() {
+			if call.Method == "Fetch.continueRequest" || call.Method == "Fetch.failRequest" {
+				n++
+			}
+		}
+		return n
+	}
+	eventually(t, "the paused request to be answered", func() bool { return answers() > 0 })
+	time.Sleep(50 * time.Millisecond)
+	if n := answers(); n != 1 {
+		t.Fatalf("one paused request was answered %d times", n)
+	}
+}
+
+// requestAnswer is the part of Fetch.continueRequest and Fetch.failRequest
+// a test reads.
+type requestAnswer struct {
+	RequestID   string `json:"requestId"`
+	ErrorReason string `json:"errorReason"`
+}
+
 // fakeCDPBrowser is what the launcher's WebView2 debugging endpoint looks
 // like to the dial: a browser that answers commands but has NO tabs of its
 // own to hand out.
@@ -951,6 +1039,9 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 		PageCrashed:     func(handle, reason string) { crashed <- handle + " " + reason },
 	})
 	engine.attachTimeout = 5 * time.Second
+	// No launcher reports the close, so the destroy retires the page at the
+	// fallback bound.
+	engine.closeFallback = 10 * time.Millisecond
 	bindTestPage(t, engine, "page1", "TARGET-1")
 	if _, err := engine.ensureBrowser(); err != nil {
 		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)

@@ -185,6 +185,29 @@ type Manager struct {
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
+	// popupListing is a test seam: adoptPopup calls it between listing a
+	// popup's tab and listing the downloads the popup started.
+	popupListing func()
+	// publishDecided is a test seam: publishPages calls it once it has
+	// decided to push, before the push.
+	publishDecided func()
+	// adopting is each popup whose adoption runs, by handle, unlisted the
+	// newest handles that will not be listed again, and listingChanged,
+	// when set, closes as the next page joins or leaves the tabs or an
+	// adoption ends (listingChangedLocked). Guarded by mu.
+	adopting       map[string]struct{}
+	unlisted       *boundedMap[string, struct{}]
+	listingChanged chan struct{}
+	// parked holds the downloads of popups not listed yet, by popup
+	// handle, parkedIDs each one's popup by download id, and popupFates
+	// what became of the newest popups. Guarded by parkMu, which is taken
+	// before mu.
+	parkMu     sync.Mutex
+	parked     map[string]*parkedPopup
+	parkedIDs  map[string]string
+	popupFates *boundedMap[string, popupFate]
+	// parkTimeout overrides popupParkTimeout when set (tests).
+	parkTimeout time.Duration
 	// heldInfo holds a CDP engine's newest report for each handle no page
 	// answers to yet (updatePageInfo). Bounded: a handle no page ever takes,
 	// a target closed before its adoption, ages out.

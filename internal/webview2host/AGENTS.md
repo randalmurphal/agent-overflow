@@ -21,7 +21,10 @@ generation contract in `paneEnvironment` (`environment.go`, cross-platform and
 unit-tested): clearing advances the generation, wakes old waiters, skips a
 start queued for the old generation, and forces a late completion to release
 its own COM references instead of adopting an environment rooted in the
-deleted profile.
+deleted profile. A create registers its page and requests its environment in
+one UI turn. After waiting, it starts the controller only if its page is
+still registered. While clear-data owns the profile, the host refuses page
+admissions and further clears. A closed host refuses clear-data.
 
 The launcher is the sole CDP dialer. Bind the relay to loopback, pair the target
 identifier with its page, and close the relay with the controller. Never expose
@@ -61,7 +64,16 @@ stays pending, and the page's next show applies it once (`present`).
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize
-reports to preserve created before later states such as closed.
+reports to preserve created before later states such as closed. The UI
+thread alone owns the page registry: membership, admission (`admit`, one
+check whose `MaxHostPages` counts every page) and teardown (`closeTaken`)
+run in `Config.OnMain` turns, which run inline on the UI thread; work for a
+later turn goes through `Config.Post`. A close a page asks for itself is
+posted and rereads the page's downloads when it runs. A page whose
+required handlers (downloads, the download dialog, new windows) cannot be
+subscribed, or whose dialog state cannot be read, is not created.
+Creation is `host_create_windows.go`, close and teardown
+`host_close_windows.go`, directive application `host_apply_windows.go`.
 
 Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
 reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
@@ -73,8 +85,35 @@ reference after the hand-off call, success or failure; a page detaches its
 callbacks when it goes, except controller-completed, whose completion closes
 a controller that outlived its page.
 
+Every window a page opens is a page of the launcher's, never a window of
+WebView2's own (`popup_windows.go`). `NewWindowRequested` is answered
+exactly once (`settlePopup`) on every path: with the new controller's view
+once it is up, or with no window when a bound (`MaxPendingPopups`,
+`MaxHostPages`), the opener's close, a failed create or the host's close
+comes first. A popup reaches the backend as `ReportPopup` under a page id
+the launcher mints, paired with the CDP target its view has after the
+deferral completes, and only after its opener's report; its other reports
+wait for that one (`pageReport`, `heldReports`: each kind of process
+failure once, up to `maxHeldProcessFailures`, and the newest snapshot per
+download). The launcher copies an address shortened to `MaxPopupURLBytes`
+and drops it at announcement. `popupCreateBound` discards a popup still
+waiting for a controller or target. A native controller create occupies
+one of `MaxPendingPopups` until its callback or synchronous failure,
+including after the window request was answered. A `ReportPopup` the
+launcher could not deliver closes the popup (`ReportUndelivered`), and
+with it its unannounced descendants. A middle, Ctrl or Shift click opens
+a popup whose target names no opener. A departing popup answers any open
+request. A departing unannounced popup ends its held running downloads
+with `PopupGoneReason`. If its opener is a live unannounced popup, held
+snapshots pass to that opener, up to `maxHeldPopupDownloads`.
+Otherwise an unannounced popup with downloads is announced and closed
+with its held reports, after any departing opener it needs. A popup with
+nothing to report leaves no trace. A handler detached from its page still
+refuses a late request. A page's `WindowCloseRequested` closes it, once its
+downloads end if any run.
+
 A page's downloads are the launcher's (`download_windows.go`): it handles
-each `DownloadStarting`, so WebView2's dialog never opens, keeps the
+each `DownloadStarting`, so WebView2's dialog does not open for it, keeps the
 `DownloadOperation` and reports every change as the download's whole
 snapshot (`ReportDownload`, `download.go`), progress throttled, each
 numbered (`Seq`) in the order taken so the backend applies only newer
@@ -92,27 +131,37 @@ running download from that address reads so (`resumedDownload`): it is set
 back to that download's file, and the operations it replaced are kept,
 detached, until the download ends, because releasing them stops the new
 one's reports. Otherwise it is a row of its own and nothing running is
-touched. A cancel always settles: WebView2's report ends it, or the
-launcher does after `downloadCancelBound` (`settleCancel`). A download
+touched. The held snapshot cap applies only to new downloads. A cancel
+settles through WebView2's report or after `downloadCancelBound`
+(`settleCancel`). A download
 ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
 (`retireDownloads`), which cancels it and reports nothing. What the real
 runtime does on a drop is recorded at `downloadStateChanged`,
-`settleCancel` and in `download_smoke_windows_test.go`.
+`settleCancel` and in `download_smoke_windows_test.go`. WebView2 opens the
+dialog by itself over a popup's opener when the popup's first navigation
+is a download; every page closes its dialog as it opens
+(`download_dialog_windows.go`).
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
 `crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
-`background_smoke_windows_test.go`),
+`background_smoke_windows_test.go`, `popup_smoke_windows_test.go`,
+`policy_smoke_windows_test.go`),
 which need an installed runtime. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the
 user's screen or takes their keyboard: the binary runs itself again on a
 desktop of its own, never switched to (`desktop_smoke_windows_test.go`),
-refuses to run the smokes when it cannot, and a smoke refuses to open a
-window on any other desktop, unless
-`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. That desktop is never the
+refuses to run the smokes when it cannot, and a smoke refuses to create a
+window from a thread whose desktop is the input desktop or `Default`,
+whatever the marker says, unless
+`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. Each smoke watches the
+top-level windows (`window_watch_smoke_windows_test.go`): the baseline must
+include the smoke window. The popup and policy smokes check observations
+from setup through cleanup and allow only WebView2 windows owned by the
+smoke window. That desktop is never the
 input desktop, so the focus smoke stands in the host's foreground answer
 (`Host.foreground`).
 

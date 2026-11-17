@@ -5,6 +5,8 @@ package webview2host
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -66,19 +68,20 @@ func downloadID(host string, n uint64) string {
 // watchDownloads takes every download the page starts, so WebView2's own
 // download dialog never opens for it. A runtime without DownloadStarting
 // keeps WebView2's dialog and the pane lists nothing.
-func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) {
+func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) error {
 	view4 := view.queryWebView4()
 	if view4 == nil {
-		h.config.Logf("browser host: page %s: the runtime has no DownloadStarting; its downloads show WebView2's dialog and are not listed", page.id)
-		return
+		return errors.New("the runtime has no DownloadStarting")
 	}
 	defer view4.release()
 	handler := newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { h.downloadStarting(page, args) })
 	page.downloadStarting = handler
-	if _, err := view4.addDownloadStarting(handler); err != nil {
-		h.config.Logf("browser host: page %s download subscription: %v", page.id, err)
-	}
+	_, err := view4.addDownloadStarting(handler)
 	handler.ref.release()
+	if err != nil {
+		return fmt.Errorf("download subscription: %w", err)
+	}
+	return nil
 }
 
 // downloadStarting takes one download: WebView2's dialog stays closed, the
@@ -115,6 +118,14 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 			h.resumeDownload(d, args, op, path, reason)
 			return
 		}
+	}
+	if page.popupDownloadRefused() {
+		h.config.Logf("browser host: page %s: cancel a download past the %d a popup may start before it is reported", page.id, maxHeldPopupDownloads)
+		if err := op.cancel(); err != nil {
+			h.config.Logf("browser host: page %s: cancel a download: %v", page.id, err)
+		}
+		op.release()
+		return
 	}
 	h.downloadSeq++
 	d := &hostDownload{id: downloadID(h.downloadToken, h.downloadSeq), page: page, path: path, uri: uri}
@@ -296,6 +307,9 @@ func (h *Host) downloadStateChanged(d *hostDownload) {
 
 // report sends one snapshot of a page's download.
 func (h *Host) report(page *hostPage, r DownloadReport) {
+	if h.holdDownload(page, r) {
+		return
+	}
 	detail, err := r.Encode()
 	if err != nil {
 		h.config.Logf("browser host: download %s: %v", r.ID, err)
@@ -312,6 +326,10 @@ func (h *Host) endDownload(d *hostDownload, terminal DownloadReport) {
 	delete(d.page.downloads, d.id)
 	d.page.ended.add(terminal)
 	h.report(d.page, terminal)
+	if d.page.closeAfterDownloads && len(d.page.downloads) == 0 {
+		// The page asked to close while this ran (windowCloseRequested).
+		h.closeAsked(d.page)
+	}
 }
 
 // releaseOperations lets go of every operation d had.
@@ -355,18 +373,7 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 // settleCancelAfter ends a canceled download as canceled once
 // downloadCancelBound passes with no end from WebView2 (settleCancel).
 func (h *Host) settleCancelAfter(d *hostDownload) {
-	after := h.cancelTimer
-	if after == nil {
-		after = func(wait time.Duration, fn func()) { time.AfterFunc(wait, fn) }
-	}
-	after(downloadCancelBound, func() {
-		h.mu.Lock()
-		live := h.pages[d.page.id] == d.page
-		h.mu.Unlock()
-		if live {
-			h.config.OnMain(func() { h.settleCancel(d) })
-		}
-	})
+	h.after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d) }) })
 }
 
 // settleCancel ends a download the backend canceled that WebView2 has not

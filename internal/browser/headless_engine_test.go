@@ -96,10 +96,18 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 			// whether it attached to a worker. A page answers Window.
 			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
 		case "Page.getFrameTree":
-			return map[string]any{"frameTree": map[string]any{"frame": map[string]any{
-				"id": "F-1", "loaderId": "L-1", "url": "about:blank",
-				"securityOrigin": "://", "mimeType": "text/html",
-			}}}
+			// A page whose frames attached before the attach, as a popup's
+			// made before its adoption did: a child and its child.
+			frame := func(id, parent string) map[string]any {
+				return map[string]any{"id": id, "parentId": parent, "loaderId": "L-1", "url": "about:blank", "securityOrigin": "://", "mimeType": "text/html"}
+			}
+			return map[string]any{"frameTree": map[string]any{
+				"frame": frame("F-1", ""),
+				"childFrames": []any{map[string]any{
+					"frame":       frame("F-child", "F-1"),
+					"childFrames": []any{map[string]any{"frame": frame("F-grandchild", "F-child")}},
+				}},
+			}}
 		case "DOM.getDocument":
 			// Attaching to a target that already exists, as adopting a
 			// popup does, reads its document at once.
@@ -227,7 +235,7 @@ func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string,
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
-		Allow: func([]string, string) bool { return true },
+		Allow: func([]string, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile for %s: %v", workspace, err)
@@ -313,6 +321,7 @@ func wantChromiumArgv(userDataDir string) []string {
 		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--disable-popup-blocking",
 		"--remote-debugging-port=0",
 		"about:blank",
 	}
@@ -411,6 +420,40 @@ func TestHeadlessProfileReusesItsBrowserForEveryPage(t *testing.T) {
 			t.Fatalf("page %q is bound to %v", driver.Handle(), owner)
 		}
 	}
+}
+
+// A page knows the frames it had before its attach, which no frame event
+// reports: a popup's iframe made before its adoption is the popup's.
+func TestCDPPageOwnsTheFramesItHadBeforeItsAttach(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frame := range []string{"F-child", "F-grandchild"} {
+		if !page.OwnsFrame(frame) {
+			t.Errorf("the page does not own its frame %s", frame)
+		}
+	}
+	if page.OwnsFrame("F-stranger") {
+		t.Error("the page owns a frame it never had")
+	}
+}
+
+// Two pages attached, the headless engine still pauses a request once: the
+// browser-wide policy is the only one.
+func TestHeadlessEnginePausesARequestOnce(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	for range 2 {
+		if _, err := profile.NewPage(context.Background(), testPageHooks()); err != nil {
+			t.Fatalf("new page: %v", err)
+		}
+	}
+	assertOnePolicyPause(t, browser.calls, browser.send)
 }
 
 func testPageHooks() pageHooks {
@@ -714,49 +757,15 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 	}
 }
 
-// pausedRequest is the Fetch.requestPaused event Chromium sends on the
-// session whose interception matched a document request of frame.
-func pausedRequest(id, frame, url string) map[string]any {
-	return map[string]any{"method": "Fetch.requestPaused", "params": map[string]any{
-		"requestId": id, "frameId": frame, "resourceType": "Document",
-		"request": map[string]any{"url": url, "method": "GET", "headers": map[string]any{}},
-	}}
-}
-
-// browserCallParams decodes the parameters of every command of method the
-// fake answered on the browser session.
-func browserCallParams[T any](t *testing.T, calls []fakeCDPCall, method string) []T {
-	t.Helper()
-	var out []T
-	for _, call := range calls {
-		if call.Method != method || call.SessionID != "" {
-			continue
-		}
-		var params T
-		if err := json.Unmarshal(call.Params, &params); err != nil {
-			t.Fatalf("decode %s %s: %v", method, call.Params, err)
-		}
-		out = append(out, params)
-	}
-	return out
-}
-
-// requestAnswer is the part of Fetch.continueRequest and Fetch.failRequest
-// a test reads.
-type requestAnswer struct {
-	RequestID   string `json:"requestId"`
-	ErrorReason string `json:"errorReason"`
-}
-
-// Chromium runs a page it opened by itself before the Manager can adopt it
-// and AttachPage can install the page's own policy, so the profile enables
-// the jar's policy on the browser session at launch, for every request the
-// page policy intercepts, and answers what it pauses there with the
+// The profile enables the jar's policy on the browser session at launch, so
+// it sees a page Chromium opened by itself before the Manager adopts it as
+// well as every page's requests, and answers what it pauses there with the
 // Manager's policy for the jar. In a jar two worktrees share, a request has
-// the authority of the page its frame belongs to, or of its popup's openers;
-// a request whose owner is not resolved (a popup's request before Chromium
+// the authority of the page its frame belongs to, or of its popup's openers.
+// A request whose owner is not resolved (a popup's request before Chromium
 // reports the popup, a subframe no page reported, a popup whose opener
-// closed) may open no workspace's files.
+// closed) is allowed at once what a page with no workspace's authority may
+// open; any other waits for one within the owner bound, then is refused.
 func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	manager, jars := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
@@ -779,6 +788,7 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	engine.events.PopupOpened = func(enginePopup) {}
+	engine.ownerWait = 100 * time.Millisecond
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: "project:P", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
 		Allow: jars.profile("project:P").allow,
@@ -842,8 +852,20 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		"R-frame-other":   {"F-of-A", files["two"], "refuse"},
 	})
 
+	// A request paused before its popup's creation is handled waits for it.
+	browser.send(pausedRequest("R-waits", "P-popup", files["one"]))
+	time.Sleep(20 * time.Millisecond)
 	browser.send(popupCreated("P-popup", openerA))
 	browser.send(popupCreated("P-nested", "P-popup"))
+	expect("a request paused before its popup was known", map[string][3]string{})
+	eventually(t, "the waiting request to be allowed", func() bool {
+		for _, answer := range browserCallParams[requestAnswer](t, browser.calls(), "Fetch.continueRequest") {
+			if answer.RequestID == "R-waits" {
+				return true
+			}
+		}
+		return false
+	})
 	eventually(t, "the popups to be known", func() bool {
 		_, popup := engine.profileForPage("P-popup")
 		_, nested := engine.profileForPage("P-nested")
@@ -916,6 +938,94 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	})
 	if got := browserCallParams[cancel](t, browser.calls(), "Browser.cancelDownload"); len(got) != 1 || got[0].GUID != "G-refused" {
 		t.Fatalf("cancelled %+v, want only G-refused", got)
+	}
+}
+
+// A download in a popup's main frame names the popup, its openers as the
+// browser reported them, and its profile, so the Manager lists it whatever
+// becomes of the popup; one in any other frame names no popup.
+func TestHeadlessProfileNamesThePopupADownloadBeganIn(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	starts := make(chan downloadStart, 4)
+	engine.events.DownloadStarted = func(start downloadStart) bool {
+		starts <- start
+		return true
+	}
+	engine.events.PopupOpened = func(enginePopup) {}
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	browser.send(popupCreated("P-1", "T-1"))
+	browser.send(popupCreated("P-2", "P-1"))
+	eventually(t, "the popups to be recorded", func() bool {
+		_, first := engine.profileForPage("P-1")
+		_, second := engine.profileForPage("P-2")
+		return first && second
+	})
+	browser.send(downloadWillBegin("G-popup", "P-2"))
+	browser.send(downloadWillBegin("G-page", "F-1"))
+	for range 2 {
+		var start downloadStart
+		select {
+		case start = <-starts:
+		case <-time.After(headlessTestDeadline):
+			t.Fatal("a download was never reported")
+		}
+		switch start.ID {
+		case "G-popup":
+			if start.Frame != "P-2" || start.Popup != "P-2" || !slices.Equal(start.Openers, []string{"P-1", "T-1"}) || start.Profile != profile.Handle() {
+				t.Errorf("the popup's download started as %+v", start)
+			}
+		case "G-page":
+			if start.Popup != "" || start.Openers != nil || start.Profile != "" {
+				t.Errorf("the page's download started as %+v", start)
+			}
+		}
+	}
+}
+
+// A download whose start Chromium sends after its popup's destroy was
+// handled still names the popup, its openers and its profile: the event
+// subscriptions run in no fixed order, and the Manager lists it by the
+// popup's fate.
+func TestHeadlessProfileNamesAGonePopupADownloadBeganIn(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	starts := make(chan downloadStart, 1)
+	engine.events.DownloadStarted = func(start downloadStart) bool {
+		starts <- start
+		return true
+	}
+	engine.events.PopupOpened = func(enginePopup) {}
+	engine.events.PageClosed = func(string) {}
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	browser.send(popupCreated("P-1", "T-1"))
+	browser.send(popupCreated("P-2", "P-1"))
+	eventually(t, "the popups to be recorded", func() bool {
+		_, first := engine.profileForPage("P-1")
+		_, second := engine.profileForPage("P-2")
+		return first && second
+	})
+	browser.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "P-1"}})
+	browser.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "P-2"}})
+	eventually(t, "the popups' destroys to be handled", func() bool {
+		_, first := engine.profileForPage("P-1")
+		_, second := engine.profileForPage("P-2")
+		return !first && !second
+	})
+	browser.send(downloadWillBegin("G-gone", "P-2"))
+	select {
+	case start := <-starts:
+		if start.Popup != "P-2" || !slices.Equal(start.Openers, []string{"P-1", "T-1"}) || start.Profile != profile.Handle() {
+			t.Fatalf("the gone popup's download started as %+v", start)
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("the download was never reported")
 	}
 }
 
@@ -1578,7 +1688,7 @@ setTimeout(() => { document.title = typeof __aoDocumentTitle + " by script" }, 3
 	}))
 	defer server.Close()
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) bool { return true },
+		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
@@ -1652,7 +1762,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []string, url string) bool { return inWorkspace(url) },
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []string, url string) (bool, bool) { return inWorkspace(url), true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

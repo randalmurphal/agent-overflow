@@ -51,7 +51,7 @@ func newNativeEngine(_ string, opts ManagerOptions, events engineEvents) browser
 	}
 	return &wkEngine{
 		window: opts.NativeWindow, events: events,
-		popups: make(map[string]unsafe.Pointer), slots: make(map[int]bool),
+		popups: make(map[string]heldPopupView), slots: make(map[int]bool),
 		pane: make(map[uint64]wkPaneState),
 	}
 }
@@ -66,8 +66,7 @@ type wkEngine struct {
 	started bool
 
 	mu       sync.Mutex
-	popupSeq uint64
-	popups   map[string]unsafe.Pointer
+	popups   map[string]heldPopupView
 	slots    map[int]bool
 	pane     map[uint64]wkPaneState
 	profiles map[uint64]*wkProfile
@@ -116,8 +115,8 @@ func (e *wkEngine) Stop() {
 	e.startMu.Unlock()
 	e.mu.Lock()
 	orphans := make([]unsafe.Pointer, 0, len(e.popups))
-	for handle, view := range e.popups {
-		orphans = append(orphans, view)
+	for handle, held := range e.popups {
+		orphans = append(orphans, held.view)
 		delete(e.popups, handle)
 	}
 	e.stopped = true
@@ -167,23 +166,57 @@ func (e *wkEngine) FocusApp() error { return wkFocusApp() }
 
 var _ engineAppFocus = (*wkEngine)(nil)
 
-// holdPopup takes ownership of an engine-created view until the Manager adopts
-// or discards it. The engine never decides which.
-func (e *wkEngine) holdPopup(view unsafe.Pointer) string {
+// holdPopup takes ownership of an engine-created view, opened by the page
+// with handle opener, until the Manager adopts or discards it. The engine
+// never decides which. It answers the popup's number, the page number its
+// adoption gives it, which the view keeps, and its handle.
+func (e *wkEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string) {
+	n := wkPageSeq.Add(1)
+	handle := pageHandle(n)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.popupSeq++
-	handle := fmt.Sprintf("popup-%d", e.popupSeq)
-	e.popups[handle] = view
-	return handle
+	e.popups[handle] = heldPopupView{view: view, opener: opener, n: n}
+	return n, handle
 }
 
-func (e *wkEngine) takePopup(handle string) unsafe.Pointer {
+func (e *wkEngine) takePopup(handle string) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	view := e.popups[handle]
+	held := e.popups[handle]
 	delete(e.popups, handle)
-	return view
+	return held
+}
+
+// heldOpener answers the opener of the held popup handle, "" for none.
+func (e *wkEngine) heldOpener(handle string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.popups[handle].opener
+}
+
+// downloadStart names where a download of this profile began: page, its
+// view's page, or, for a popup not adopted yet, the popup's number. A
+// popup's download names the popup by its handle and its opener, before
+// adoption and after, so the Manager lists it while the popup is not
+// (popup_adoption.go).
+func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
+	var start downloadStart
+	switch {
+	case page != nil:
+		start.Frame = page.handle
+		if page.popup != "" {
+			start.Popup, start.Openers = page.popup, []string{page.opener}
+		}
+	case popup != 0:
+		start.Popup = pageHandle(popup)
+		if opener := p.engine.heldOpener(start.Popup); opener != "" {
+			start.Openers = []string{opener}
+		}
+	}
+	if start.Popup != "" {
+		start.Profile = p.Handle()
+	}
+	return start
 }
 
 // DownloadSaving: WebKit writes into AO's directory and the Manager
@@ -191,8 +224,8 @@ func (e *wkEngine) takePopup(handle string) unsafe.Pointer {
 func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
 func (e *wkEngine) DiscardPage(handle string) {
-	if view := e.takePopup(handle); view != nil {
-		wkCloseView(view)
+	if held := e.takePopup(handle); held.view != nil {
+		wkCloseView(held.view)
 	}
 }
 
@@ -286,7 +319,7 @@ func wkUserScript() string {
 
 func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
 	script := wkUserScript()
-	page, err := p.newPageShell(hooks)
+	page, err := p.newPageShell(hooks, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -301,17 +334,19 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 }
 
 func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
-	view := p.engine.takePopup(handle)
+	held := p.engine.takePopup(handle)
+	view := held.view
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
 	}
 	script := wkUserScript()
-	page, err := p.newPageShell(hooks)
+	page, err := p.newPageShell(hooks, held.n)
 	if err != nil {
 		wkCloseView(view)
 		return nil, err
 	}
 	page.view = view
+	page.popup, page.opener = handle, held.opener
 	// The popup already exists and may already be loading, so its document start
 	// is gone: the injected script applies from its next document on. That is
 	// the same trade CDP's addScriptToEvaluateOnNewDocument makes for an adopted
@@ -327,20 +362,24 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 
 // newPageShell allocates the Go half of a page and registers it BEFORE the view
 // exists, so a delegate that fires during construction resolves to a real page
-// instead of being dropped.
-func (p *wkProfile) newPageShell(hooks pageHooks) (*wkPage, error) {
+// instead of being dropped. A popup's page takes the number it was held
+// under (holdPopup); zero numbers a new one.
+func (p *wkProfile) newPageShell(hooks pageHooks, id uint64) (*wkPage, error) {
 	p.mu.Lock()
 	if p.disposed {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("browser: workspace profile is closed")
 	}
 	p.mu.Unlock()
+	if id == 0 {
+		id = wkPageSeq.Add(1)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	page := &wkPage{
-		engine: p.engine, profile: p, id: wkPageSeq.Add(1),
+		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel, slot: -1,
 	}
-	page.handle = fmt.Sprintf("page-%d", page.id)
+	page.handle = pageHandle(page.id)
 	wkPageByID.Store(page.id, page)
 	p.mu.Lock()
 	p.pages[page] = struct{}{}

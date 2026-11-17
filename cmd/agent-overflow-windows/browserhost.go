@@ -137,7 +137,11 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 		// WebView2 requires every COM and window call on the thread owning
 		// the host window, which is the thread Wails runs its message pump
 		// on.
-		OnMain:   application.InvokeSync,
+		OnMain: application.InvokeSync,
+		// Wails runs InvokeAsync inline when called on the UI thread; from
+		// another goroutine it posts to the pump, so a post made inside a
+		// WebView2 event runs after the event returns.
+		Post:     func(fn func()) { go application.InvokeAsync(fn) },
 		Geometry: a.paneGeometry,
 		Focus:    a.paneFocus,
 	})
@@ -285,23 +289,32 @@ func advertisePaneGeometry(window *application.WebviewWindow) {
 // serial queue is both: submission returns at once, delivery stays in
 // order.
 //
-// Delivery itself is best effort. A lost report costs the backend one page
-// handle it re-derives on the next round trip.
+// Delivery itself is best effort, with no retry. A report that did not go
+// through is handed back to the host (Host.ReportUndelivered), which closes
+// a popup the backend may never adopt; any other lost report costs the
+// backend one page handle it re-derives on the next round trip.
 func (a *launcherApp) reportBrowserHost(pageID string, kind webview2host.ReportKind, detail string) {
 	a.browserReports.Go(func() {
 		a.mu.Lock()
 		client := a.notificationClient
 		ctx := a.notificationContext
+		host := a.browserHost
 		a.mu.Unlock()
+		var err error
 		if client == nil {
-			log.Printf("browser host: cannot report %s for page %s: bridge is down", kind, pageID)
+			err = errors.New("bridge is down")
+		} else {
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			err = client.ReportBrowserHost(ctx, pageID, kind, detail)
+		}
+		if err == nil {
 			return
 		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if err := client.ReportBrowserHost(ctx, pageID, kind, detail); err != nil {
-			log.Printf("browser host: report %s for page %s: %v", kind, pageID, err)
+		log.Printf("browser host: report %s for page %s: %v", kind, pageID, err)
+		if host != nil {
+			host.ReportUndelivered(pageID, kind)
 		}
 	})
 }

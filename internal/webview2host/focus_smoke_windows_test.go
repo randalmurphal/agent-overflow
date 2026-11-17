@@ -58,6 +58,7 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 		Focus:  intents,
 	})
 	if err != nil {
@@ -86,9 +87,8 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 			t.Fatal("no created report")
 		}
 	}
-	host.mu.Lock()
-	page := host.pages["page-1"]
-	host.mu.Unlock()
+	var page *hostPage
+	ui.do(func() { page = host.pages["page-1"] })
 	thread, _ := windows.GetWindowThreadProcessId(windows.HWND(ui.hwnd), nil)
 	inPage := func() (held bool) {
 		ui.do(func() { held = threadFocusWithin(thread, page.raiseTarget()) })
