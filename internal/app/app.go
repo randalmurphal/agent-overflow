@@ -797,6 +797,10 @@ type App struct {
 	// stopRequestsOfRestingThread), so a test can make a request at that
 	// moment.
 	agentStopCapturedForTest func(threadID string)
+	// restPausedReadForTest, when set, runs in a rest pass once it has read
+	// a held request's thread under a paused assistant (settleRestedReceipts),
+	// so a test can turn assistants off and on again at that moment.
+	restPausedReadForTest func(threadID string)
 	// admitWorkForTest, when set, runs as a call reaches admitWork, after
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.

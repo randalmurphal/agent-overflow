@@ -3,10 +3,12 @@ package app
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // A message the app queues for a paused assistant waits in its queue with no
@@ -306,9 +308,79 @@ func TestAHeldSpawnOfAPausedAssistantsHelperSettlesAtThePause(t *testing.T) {
 	}
 }
 
+// A rest pass that read a helper under a paused assistant, held there
+// while assistants go off and on again and a new request starts a turn on
+// the helper, stops nothing when it goes on: only the pause's convergence
+// stops a paused assistant's requests, and it reads the setting again under
+// its own lock.
+func TestARestPassThatSawThePauseStopsNothingAfterAssistantsReturn(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.configureTriageQueueCallbacks()
+	f.app.registerSettingsBroadcast()
+	f.watchAgentRows()
+	f.holdCallerSession()
+	testAssistant(t, f.app, f.caller.ID)
+	gate := filepath.Join(t.TempDir(), "turn")
+	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Looping on the board.")})
+	ack := f.spawnWorker(t, "keep an eye on the board")
+	f.awaitTurnRunning(t, ack.Token)
+	f.armLoop(t, ack.ThreadID, "board")
+	release(t, gate)
+	f.awaitRestHold(t, ack)
+
+	sawPause, proceed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.app.restPausedReadForTest = func(threadID string) {
+		if threadID == ack.ThreadID {
+			once.Do(func() { close(sawPause); <-proceed })
+		}
+	}
+	// Off is written and admission refuses; the convergence waits.
+	f.app.assistantsSwitch.mu.Lock()
+	switchAssistants(t, f.app, false)
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		f.app.settleRestedReceipts()
+	}()
+	select {
+	case <-sawPause:
+	case <-time.After(20 * time.Second):
+		f.app.assistantsSwitch.mu.Unlock()
+		t.Fatal("the rest pass never read the helper paused")
+	}
+	f.app.assistantsSwitch.mu.Unlock()
+	awaitAssistants(t, f.app, false)
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestCancelled, store.ThreadRequestInterrupted)
+	setAssistants(t, f.app, true)
+
+	fresh := filepath.Join(t.TempDir(), "fresh")
+	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(fresh, "Checked again.")})
+	sent, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{ThreadID: ack.ThreadID, Message: "check the board again", Notify: true})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	f.awaitTurnRunning(t, sent.Token)
+	waitUntil(t, 20*time.Second, func() bool {
+		return f.app.triage.LiveStateSnapshotForThread(ack.ThreadID).ActiveTurn != nil
+	})
+
+	close(proceed)
+	<-passed
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, sent.Token); row.State != store.ThreadRequestRunning {
+		t.Fatalf("the new request after the stale pass %+v; want it running", row)
+	}
+	if live := f.app.triage.LiveStateSnapshotForThread(ack.ThreadID); live.ActiveTurn == nil {
+		t.Fatal("the stale pass cut the new request's turn")
+	}
+	release(t, fresh)
+}
+
 // Off saved and the app ended before the pause reached a helper whose
 // spawn is held for its rest with a loop armed: the boot settles the spawn
-// as the pause does, keeps the loop armed with its schedule, and turning
+// as the pause does, before held requests may settle at rest, keeps the loop armed with its schedule, and turning
 // assistants on replays the loop's missed fires once and settles nothing
 // again.
 func TestAHeldSpawnOfAPausedAssistantsHelperSettlesAtTheBoot(t *testing.T) {
@@ -336,13 +408,14 @@ func TestAHeldSpawnOfAPausedAssistantsHelperSettlesAtTheBoot(t *testing.T) {
 	if !after.app.restHeld(ack.ThreadID, ack.Token) {
 		t.Fatal("the boot sweep did not hold the request again")
 	}
-	after.app.recoverAgentWakesAtBoot()
-	after.app.recoverRestAtBoot()
-	after.app.threadRequestsWG.Wait()
+	// Settled by the time held requests may settle at rest, not by a pass
+	// after it.
+	after.app.recoverThreadRequestsAtBoot()
 	settled := after.request(t, ack.Token)
 	if settled.State != store.ThreadRequestCancelled || !strings.Contains(string(settled.Answer), "Assistants were turned off") {
 		t.Fatalf("request after the boot %+v; want it settled as the pause settles it", settled)
 	}
+	after.app.threadRequestsWG.Wait()
 	if after.app.restHeld(ack.ThreadID, ack.Token) {
 		t.Fatal("the settled request is still held")
 	}

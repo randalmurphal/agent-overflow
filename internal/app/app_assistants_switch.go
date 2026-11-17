@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/errorsx"
@@ -81,6 +82,9 @@ type assistantsSwitchState struct {
 	// paused is what the last convergence applied, set at boot from the
 	// setting before anything runs.
 	paused bool
+	// requestsAsked is set while an asked settlePausedAssistantRequests has
+	// not started.
+	requestsAsked atomic.Bool
 	// convergedForTest, when set, runs after each convergence.
 	convergedForTest func(paused bool)
 	// resumeReadForTest, when set, runs as turning assistants on reads
@@ -271,12 +275,56 @@ func (a *App) pauseAssistantThread(threadID string) []string {
 
 // stopPausedAssistantRequests settles every request open on threadID, a
 // thread under a paused assistant, as turning assistants off settles it: as
-// a Stop of the thread does, with the pause's answer. The pause runs it for
-// each thread it stops, and a rest pass for a thread whose request is still
-// held for its rest (settleRestedReceipts): its loops do not fire while
-// assistants are off, so that rest would not come.
+// a Stop of the thread does, with the pause's answer. Only the convergence
+// runs it, under assistantsSwitch.mu: the pause for each thread it stops,
+// and settlePausedAssistantRequests for what is still open under a pause
+// already applied.
 func (a *App) stopPausedAssistantRequests(threadID string, result *ThreadAgentStop) {
 	a.stopRequestsOnRestingThread(a.lifeCtx(), threadID, assistantsOffStop(), result)
+}
+
+// settlePausedAssistantRequests is the pause's step for requests, run again
+// under the convergence's lock while the pause it applied holds: every
+// request still open on a thread under an assistant settles as the pause
+// settles it, its loops and watches left as they are. The boot runs it
+// with the setting off before held requests may settle at rest
+// (recoverThreadRequestsAtBoot), since the convergence the last run started
+// may not have reached every thread before it quit; a rest pass asks for it
+// (askPausedAssistantRequests) when it finds a held request on a paused
+// assistant's thread. With assistants on it does nothing.
+func (a *App) settlePausedAssistantRequests() {
+	a.assistantsSwitch.mu.Lock()
+	defer a.assistantsSwitch.mu.Unlock()
+	a.assistantsSwitch.requestsAsked.Store(false)
+	if !a.assistantsSwitch.paused {
+		return
+	}
+	threads, err := a.store.ListThreadsUnderAssistants()
+	if err != nil {
+		log.Printf("assistants: settle the requests on paused threads: %v", err)
+		return
+	}
+	for _, threadID := range threads {
+		reopen := a.resting.close(threadID)
+		result := &ThreadAgentStop{}
+		a.stopPausedAssistantRequests(threadID, result)
+		reopen()
+		if len(result.Failures) > 0 {
+			log.Printf("assistants: settle the requests on %s: %v", threadID, result.Failures)
+			a.emitErrorToThread(threadID, "Assistants are turned off, but the requests on this thread could not be settled: "+strings.Join(result.Failures, "; "))
+		}
+	}
+}
+
+// askPausedAssistantRequests runs settlePausedAssistantRequests off the
+// caller's goroutine, once for any number of asks made before it starts.
+func (a *App) askPausedAssistantRequests() {
+	if !a.assistantsSwitch.requestsAsked.CompareAndSwap(false, true) {
+		return
+	}
+	if !a.threadRequestsWG.Go(a.settlePausedAssistantRequests) {
+		a.assistantsSwitch.requestsAsked.Store(false)
+	}
 }
 
 // pauseAgentWakeRuns stops a thread's watch scripts and processes and its
