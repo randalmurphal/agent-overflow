@@ -281,7 +281,7 @@ func ownerOpRefusal(verb, threadID string, err error) threadOwnerOpAnswer {
 // here unless something else owns it, and the prompts its link held for
 // the spawner go where its prompts route now (handBackLinkPrompts). Every
 // write that ends links hands what it released here: a session end
-// (identity's OnLinksReleased, and the boot's BootstrapResult), the
+// (identity's OnLinksReleased), the
 // retention sweep's staleness release, and an owner's release or a delete
 // that found its worker given a sidebar row.
 func (a *App) announceReleasedWorkers(threadIDs []string) {

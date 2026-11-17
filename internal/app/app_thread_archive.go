@@ -32,7 +32,7 @@ import (
 // unchanged (app_session_reaper.go). Archive is different in kind: it
 // is a person stating they are done with the thread, and that intent
 // outranks the work, exactly as deleting the thread already does
-// (threadapp.DeleteThread stops the session before dropping rows).
+// (threadapp.Destroy stops the session before dropping rows).
 
 // ArchiveThread flips archived to true so the thread leaves the active
 // sidebar, and closes the thread's provider session so the host stops

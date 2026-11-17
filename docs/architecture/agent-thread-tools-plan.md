@@ -261,7 +261,7 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   `threadmode.hiddenModes` holds the workflow modes; six store queries
   use `hiddenThreadModesClause`. The chain stood at v100 before this
   work.
-- `DeleteThread` runs paced in 500-row chunks; `threadapp.DeleteThread`
+- `DeleteThread` runs paced in 500-row chunks; `threadapp.Destroy`
   calls `StopRemoteWork` before and after the session stop.
 - Move keeps the thread id and records the new owner
   (`thread_transfers.peer_backend_id`, surfaced by
@@ -740,7 +740,7 @@ same text returns the existing acceptance; anything else is refused
 with the state as the reason. Unknown token: `thread_request_unknown`.
 
 Scratch receipts settle on any non-running state and the settle
-function deletes the scratch thread (through `threadapp.DeleteThread`
+function deletes the scratch thread (through `threadapp.Destroy`
 outside the lock, DB rows only) after the answer is stored and after
 the `thread_reply` call that stored it has written its response, so the
 responder's own tool call never fails against a vanished thread. The
