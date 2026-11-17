@@ -1835,6 +1835,29 @@ test('a computer on v0.0.19: its threads archive and delete from this window, an
     for (const view of [page, phone]) await expect(view.getByTestId('toast')).toHaveCount(0);
     expect(missing).toEqual([]);
 
+    // Its settings name none of the keys added since: each page for them
+    // says so and offers nothing to change there.
+    await page.getByTestId('sidebar-settings-button').click();
+    const allSettings = page.getByRole('button', { name: 'All settings', exact: true });
+    if (await allSettings.isVisible()) await allSettings.click();
+    const tabs = page.getByRole('tablist', { name: 'Settings Sections' });
+    await tabs.getByRole('tab', { name: 'Assistants', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(olderID);
+    for (const [tab, testId, lacks] of [
+      ['Assistants', 'settings-assistants', 'assistants'],
+      ['Agent profiles', 'settings-agent-profiles', 'agent profiles'],
+      ['Memory', 'settings-memory', 'memory settings'],
+    ] as const) {
+      await tabs.getByRole('tab', { name: tab, exact: true }).click();
+      const pageBody = page.getByTestId(testId);
+      await expect(pageBody.getByTestId('settings-older-computer')).toHaveText(`Old computer runs an older version: it has no ${lacks}.`);
+      await expect(pageBody.locator('input, textarea, select, button, [role="switch"]')).toHaveCount(0);
+      if (tab === 'Memory') await capture(page, 'settings-older-computer-memory.png', pageBody);
+    }
+    await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+    await expect(page.getByTestId('toast')).toHaveCount(0);
+    expect(missing).toEqual([]);
+
     const there = await seed(older, 'older-owner-work', []);
     await setScenario(older, there.path, plainScenario({ name: 'older-owner-worker', provider: 'claude', texts: ['Done on the old computer.'] }));
     const owners: Array<{ caller: string; worker: string }> = [];

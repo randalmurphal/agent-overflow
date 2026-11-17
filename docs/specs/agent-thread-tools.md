@@ -449,7 +449,10 @@ destination that receives `home_files` refuses it.
 A profile is a named agent the person keeps in Settings, Agent profiles
 (`agentProfiles`, `internal/settings/agentroster.go`): a name, a
 use-for line, and optionally a provider, model, effort, runtime mode and
-instructions; an empty field inherits the spawning thread's. Choosing
+instructions; an empty field inherits the spawning thread's. A computer
+whose settings answer lacks the roster's keys runs a release before
+them: its page says `<computer> runs an older version: it has no agent
+profiles.` and checks and writes nothing there. Choosing
 notes (`agentNotes`) sit beside them, each shown always, only when the
 listed profiles run on both providers, or only when they run on one
 provider and at least two models. The app seeds eight profiles, each

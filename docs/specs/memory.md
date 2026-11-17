@@ -347,6 +347,10 @@ still indexed for the threads that read them.
 | Claude memory off | off | The app's Claude and claude-tui sessions send `autoMemoryEnabled: false` and, in the same inline `--settings` block's `env`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, which outranks the inherited environment and the user's settings; the user's settings files are never touched |
 | Codex memory off | off | The app's Codex threads send `features.memories = false` and `memories.generate_memories = false` in their thread config, and a resumed thread's stored memory mode is set to `disabled` (`thread/memoryMode/set`), so the thread neither uses memories nor is mined for them |
 
+A computer whose settings answer lacks these keys runs a release before
+them: its page says `<computer> runs an older version: it has no memory
+settings.`, and nothing is read from or written there.
+
 Turning shared memory on while a provider's own memory is on shows a
 warning on the setting that names the provider and the setting that
 turns it off (`GetNativeMemoryStatus`). Claude's memory is decided as

@@ -58,8 +58,8 @@ type Method struct {
 	// Static per signature — precomputed at Register like NeedsContext /
 	// IsVariadic so processResults doesn't re-derive it per invocation.
 	hasError bool
-	// resultless answers a success with null (RegisterOptions.Resultless).
-	resultless bool
+	// reshape rewrites a successful answer (RegisterOptions.Reshape).
+	reshape func(json.RawMessage) (json.RawMessage, error)
 }
 
 // RegisterOptions controls Register's filtering behavior.
@@ -83,10 +83,12 @@ type RegisterOptions struct {
 	// methods the binding generator emitted.
 	AllowList map[string]bool
 
-	// Resultless names methods whose successful call answers null, the
-	// way a release whose method returned only an error answered it. Only
-	// a harness boot standing in for an older computer sets it.
-	Resultless map[string]bool
+	// Reshape rewrites the encoded answer of a named method's successful
+	// call, the way an older release answered it: null for a method that
+	// returned only an error then, a settings snapshot without the keys it
+	// lacked. Errors are unchanged. Only a harness boot standing in for an
+	// older computer sets it.
+	Reshape map[string]func(json.RawMessage) (json.RawMessage, error)
 
 	// LocalOnly marks every method on this receiver as loopback-only.
 	// The harness receiver registers with this set: its entire surface
@@ -184,7 +186,7 @@ func (d *Dispatcher) Register(receiver any, opts RegisterOptions) ([]*Method, er
 			inputTypes:   inputTypes,
 			outputTypes:  outputTypes,
 			hasError:     len(outputTypes) > 0 && outputTypes[len(outputTypes)-1].Implements(errType),
-			resultless:   opts.Resultless[name],
+			reshape:      opts.Reshape[name],
 		}
 
 		if existing, ok := d.byID[m.ID]; ok {
@@ -506,9 +508,19 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.Ra
 		results = results[:len(results)-1]
 	}
 
-	if m.resultless {
-		return json.RawMessage(`null`), nil
+	answer, frame := encodeResults(m, results)
+	if frame != nil || m.reshape == nil {
+		return answer, frame
 	}
+	reshaped, err := m.reshape(answer)
+	if err != nil {
+		return nil, loggedFailure(m, ErrCodeInternal, "internal error", m.FQN+": reshape result", err)
+	}
+	return reshaped, nil
+}
+
+// encodeResults encodes a successful call's results, error removed.
+func encodeResults(m *Method, results []reflect.Value) (json.RawMessage, *FrameError) {
 	switch len(results) {
 	case 0:
 		return json.RawMessage(`null`), nil

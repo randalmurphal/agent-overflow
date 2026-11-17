@@ -6,6 +6,8 @@
 
 import { setBindingMock } from '../mocks/bindings-app';
 import { TransportError } from '../../lib/transport/wsClient';
+import type { Settings } from '../../lib/types/settings';
+import { makeSettings } from './settings';
 
 /** The App methods this build has and v0.0.19 does not. */
 export const METHODS_AFTER_V0_0_19 = [
@@ -22,6 +24,19 @@ export const METHODS_AFTER_V0_0_19 = [
 
 /** The App methods that answer a value in this build and `null` on v0.0.19. */
 export const RESULTLESS_AT_V0_0_19 = ['ArchiveThread', 'DeleteThread'] as const;
+
+/** The settings keys this build has and v0.0.19's Settings does not. */
+export const SETTINGS_AFTER_V0_0_19 = [
+  'agentNotes', 'agentProfiles', 'assistantsEnabled', 'claudeNativeMemoryDisabled',
+  'codexNativeMemoryDisabled', 'notifyThreadAttention', 'sharedMemoryEnabled', 'subThreadLevels',
+] as const;
+
+/** A settings answer shaped like v0.0.19's: this build's, less the keys it added. */
+export function settingsAsV0019(overrides: Partial<Settings> = {}): Partial<Settings> {
+  const answer: Partial<Settings> = makeSettings(overrides);
+  for (const key of SETTINGS_AFTER_V0_0_19) delete answer[key];
+  return answer;
+}
 
 /** What v0.0.19's dispatcher answers for a method it does not register. */
 export function methodNotFound(): TransportError {

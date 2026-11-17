@@ -427,7 +427,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		AllowList: transport.NewMethodAllowList(),
 	}
 	if opts.HarnessOlderComputer {
-		appOptions.Skip, appOptions.Resultless = olderComputerSurface()
+		appOptions.Skip, appOptions.Reshape = olderComputerSurface()
 	}
 	methods, err := dispatcher.Register(appService, appOptions)
 	if err != nil {

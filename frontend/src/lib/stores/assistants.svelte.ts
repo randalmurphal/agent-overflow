@@ -12,7 +12,7 @@ import { GetDeleteDependents, GetStandingAgent, StopSession } from './bindings';
 import { addErrorToast } from './toast.svelte';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { getThreads } from './threads.svelte';
-import { computerHasAssistants, getSettings } from './settings.svelte';
+import { computerHasSetting, getSettings, olderComputerNote } from './settings.svelte';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { threadBackend } from '../transport/entityIndex';
@@ -31,7 +31,7 @@ import { TransportError } from '../transport/wsClient';
  * has none, and nothing offers to make one there.
  */
 export function assistantsOn(backend: BackendKey): boolean {
-  return computerHasAssistants(backend) && getSettings(backend).assistantsEnabled;
+  return computerHasSetting('assistantsEnabled', backend) && getSettings(backend).assistantsEnabled;
 }
 
 /** The computer a thread lives on. */
@@ -65,11 +65,9 @@ export function hiddenAssistantThread(thread: Pick<Thread, 'id' | 'agentId' | 'p
 
 /** Why something of a computer's assistants is unavailable while it has them off. */
 export function assistantsOffOn(backend: BackendKey): string {
+  if (!computerHasSetting('assistantsEnabled', backend)) return olderComputerNote(backend, 'assistants');
   const entry = getAttachedBackends().find((candidate) => candidate.id === backend);
   const named = entry && getAttachedBackends().length > 1 ? backendDisplayName(entry) : '';
-  if (!computerHasAssistants(backend)) {
-    return `${named || 'This computer'} runs an older version: it has no assistants.`;
-  }
   return named ? `Assistants are turned off in Settings on ${named}.` : 'Assistants are turned off in Settings.';
 }
 

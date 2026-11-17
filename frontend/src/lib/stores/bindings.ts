@@ -147,9 +147,7 @@ export {
   GetPayloadData,
   ListItems,
 
-  // Settings
-  GetSettings,
-  UpdateSettings,
+  // Settings (GetSettings and UpdateSettings are below: answers as sent)
   GetClaudeTranscriptRetention,
   ClearBrowserSiteData,
   BrowserCompanionDo,
@@ -160,13 +158,6 @@ export {
   BrowserCompanionPaneRect,
   BrowserCompanionRevealPageFile,
   GetContextSettings,
-
-  // Custom provider environment. Dedicated mutators rather than
-  // UpdateSettings keys: GetSettings redacts sensitive values, so a
-  // read-mutate-write patch would persist the redaction. See
-  // app_provider_env.go.
-  SetProviderCustomEnvVar,
-  DeleteProviderCustomEnvVar,
 
   // Per-project worktree setup (Settings -> Projects). Dedicated
   // read/write pair rather than settings keys: the recipe lives on the
@@ -1353,7 +1344,7 @@ import {
   type ThreadAgentRowRead as ThreadAgentRowReadRow,
   type ThreadRequestState as ThreadRequestStateRow,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
-import type { AgentProfile } from '../../../bindings/agent-overflow/internal/settings/models.js';
+import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindings/agent-overflow/internal/settings/models.js';
 import type { PastAgentRowsCursor, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
 import { orOlder, ThreadsPartlyDeleted } from './olderComputer';
@@ -1373,6 +1364,32 @@ export async function ArchiveThread(id: string): Promise<ArchiveThreadResult> {
 export async function DeleteThread(id: string): Promise<DeleteThreadResult> {
   const answer = await Call.ByID(DELETE_THREAD, id);
   return answer == null ? new DeleteThreadResult() : DeleteThreadResult.createFrom(answer);
+}
+
+// The settings snapshots come back as the computer sent them. The generated
+// Settings class gives every key it declares a zero value, which would hide
+// that the computer's release has no such key (settings.svelte.ts,
+// computerHasSetting).
+const GET_SETTINGS = methodId('GetSettings');
+const UPDATE_SETTINGS = methodId('UpdateSettings');
+const SET_PROVIDER_CUSTOM_ENV_VAR = methodId('SetProviderCustomEnvVar');
+const DELETE_PROVIDER_CUSTOM_ENV_VAR = methodId('DeleteProviderCustomEnvVar');
+
+export async function GetSettings(): Promise<SettingsSnapshot> {
+  return await Call.ByID(GET_SETTINGS) as SettingsSnapshot;
+}
+
+export async function UpdateSettings(patch: { [_ in string]?: unknown }): Promise<SettingsSnapshot> {
+  return await Call.ByID(UPDATE_SETTINGS, patch) as SettingsSnapshot;
+}
+
+/** Dedicated mutator rather than an UpdateSettings key: GetSettings redacts sensitive values (app_provider_env.go). */
+export async function SetProviderCustomEnvVar(providerName: string, name: string, value: string, sensitive: boolean): Promise<SettingsSnapshot> {
+  return await Call.ByID(SET_PROVIDER_CUSTOM_ENV_VAR, providerName, name, value, sensitive) as SettingsSnapshot;
+}
+
+export async function DeleteProviderCustomEnvVar(providerName: string, name: string): Promise<SettingsSnapshot> {
+  return await Call.ByID(DELETE_PROVIDER_CUSTOM_ENV_VAR, providerName, name) as SettingsSnapshot;
 }
 
 /**

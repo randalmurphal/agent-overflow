@@ -86,7 +86,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`WatermarkInterval:\s+opts\.HarnessTiming\.Watermark,`,
 			`bootAttachedBackends\(opts\.HarnessTiming\.PairingProbe\)`,
 			`manager\.SetActivationProbe\(activationProbe\)`,
-			`if opts\.HarnessOlderComputer \{\s+appOptions\.Skip, appOptions\.Resultless = olderComputerSurface\(\)`,
+			`if opts\.HarnessOlderComputer \{\s+appOptions\.Skip, appOptions\.Reshape = olderComputerSurface\(\)`,
 		},
 	} {
 		source := readRootSource(t, file)

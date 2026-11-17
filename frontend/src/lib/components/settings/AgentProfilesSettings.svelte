@@ -7,9 +7,12 @@
   // makes, so a half-typed name never reaches the agents. An entry that
   // fails a check keeps what was typed and says why beside it. While an
   // entry is marked as changed elsewhere too, its list is not saved until
-  // the person answers the mark with Save mine or the other version.
+  // the person answers the mark with Save mine or the other version. A
+  // computer on a release before the roster gets none of it.
   import { onMount, untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
+  import { computerHasSetting } from '../../stores/settings.svelte';
+  import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import {
@@ -45,8 +48,10 @@
   import { CheckAgentProfiles } from '../../stores/bindings';
   import type { AgentNote, AgentNoteWhen, AgentProfile } from '../../types/settings';
 
-  const { getSettings, updateSetting, updateSettingsPatch, call } = settingsComputer();
+  const { backend, getSettings, updateSetting, updateSettingsPatch, call } = settingsComputer();
   let settings = $derived(getSettings());
+  const KEYS = ['agentProfiles', 'agentNotes', 'subThreadLevels'] as const;
+  let older = $derived(!KEYS.every((key) => computerHasSetting(key, backend)));
 
   const PROVIDERS: { value: AgentProfile['provider']; label: string }[] = [
     { value: '', label: 'Inherit' },
@@ -226,7 +231,7 @@
   }
 
   onMount(() => {
-    void checkProfiles(getSettings().agentProfiles.map(trimProfile));
+    if (!older) void checkProfiles(getSettings().agentProfiles.map(trimProfile));
   });
 </script>
 
@@ -251,6 +256,11 @@
 {/snippet}
 
 <div class="settings-sections" data-testid="settings-agent-profiles">
+  {#if older}
+  <section>
+    <SettingsOlderComputer {backend} lacks="agent profiles" />
+  </section>
+  {:else}
   <section>
     <div class="flex flex-col gap-1">
       <SettingsField
@@ -507,4 +517,5 @@
       </SettingsField>
     </div>
   </section>
+  {/if}
 </div>

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import AgentProfilesSettings from './AgentProfilesSettings.svelte';
-import { applySettingsSnapshot, loadSettings } from '../../stores/settings.svelte';
+import { applySettingsSnapshot, loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import ComputerSettingsPage from './ComputerSettingsPage.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { settingsAsV0019 } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { TransportError } from '../../transport/wsClient';
@@ -289,23 +292,26 @@ describe('<AgentProfilesSettings>', () => {
     warn.mockRestore();
   });
 
-  // v0.0.19 has no check: the save goes ahead, nothing is marked checked
-  // and nothing is logged.
-  it('saves without a check, quietly, on a computer without one', async () => {
-    await seed({ agentProfiles: [PROFILE] });
-    setBindingMock('CheckAgentProfiles', async () => { throw new TransportError('method_not_found', 'unknown method'); });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const view = render(AgentProfilesSettings);
-    await settle();
-
-    const name = view.getByLabelText('Name') as HTMLInputElement;
-    await fireEvent.input(name, { target: { value: 'Critic' } });
-    await fireEvent.change(name);
-    await settle();
-    expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
-    expect(view.queryByTestId('agent-profile-error')).toBeNull();
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+  // v0.0.19's settings name no profiles, notes or levels: the page says
+  // the computer runs an older version, offers no editor and checks nothing.
+  it('offers no agent profiles on a computer whose release has none', async () => {
+    await seed();
+    setBindingMock('CheckAgentProfiles', vi.fn(async () => { throw new TransportError('method_not_found', 'unknown method'); }));
+    stageBackend();
+    try {
+      applySettingsSnapshot(settingsAsV0019(), 'laptop');
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: AgentProfilesSettings, needsComputer: false } });
+      expect((await view.findByTestId('settings-older-computer')).textContent).toBe('Laptop runs an older version: it has no agent profiles.');
+      await settle();
+      const editors = view.container.querySelectorAll('input, textarea, select, button');
+      expect(editors, 'an editor for a key the computer lacks').toHaveLength(0);
+      expect(getBindingMock('CheckAgentProfiles')).not.toHaveBeenCalled();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      expect(view.queryByTestId('agent-profile-error')).toBeNull();
+    } finally {
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
   });
 
   describe('each list keeps its own draft', () => {

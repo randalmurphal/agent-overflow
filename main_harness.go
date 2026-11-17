@@ -388,11 +388,13 @@ type isolationOptions struct {
 }
 
 // olderComputerSurface is how v0.0.19 answers this build's window: the
-// App methods added since are absent, so a call answers method_not_found,
-// and ArchiveThread and DeleteThread, which returned only an error then,
-// answer a success with null. From the generated bindings at the tag and
-// at head.
-func olderComputerSurface() (absent, resultless map[string]bool) {
+// App methods added since are absent, so a call answers method_not_found;
+// ArchiveThread and DeleteThread, which returned only an error then,
+// answer a success with null; and a settings snapshot names none of the
+// keys added since. From the generated bindings and internal/settings at
+// the tag and at head. It reproduces the answers, not the release's write
+// path: a save of a key the release lacks is taken here.
+func olderComputerSurface() (absent map[string]bool, reshape map[string]func(json.RawMessage) (json.RawMessage, error)) {
 	absent = map[string]bool{}
 	for _, name := range []string{
 		"CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
@@ -407,7 +409,32 @@ func olderComputerSurface() (absent, resultless map[string]bool) {
 	} {
 		absent[name] = true
 	}
-	return absent, map[string]bool{"ArchiveThread": true, "DeleteThread": true}
+	answerNull := func(json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`null`), nil }
+	reshape = map[string]func(json.RawMessage) (json.RawMessage, error){
+		"ArchiveThread": answerNull, "DeleteThread": answerNull,
+	}
+	for _, name := range []string{"GetSettings", "UpdateSettings", "SetProviderCustomEnvVar", "DeleteProviderCustomEnvVar"} {
+		reshape[name] = settingsWithoutNewerKeys
+	}
+	return absent, reshape
+}
+
+// settingsAfterV0019 are the Settings keys v0.0.19's Settings does not have.
+var settingsAfterV0019 = []string{
+	"agentNotes", "agentProfiles", "assistantsEnabled", "claudeNativeMemoryDisabled",
+	"codexNativeMemoryDisabled", "notifyThreadAttention", "sharedMemoryEnabled", "subThreadLevels",
+}
+
+// settingsWithoutNewerKeys is a settings snapshot as v0.0.19 encodes it.
+func settingsWithoutNewerKeys(answer json.RawMessage) (json.RawMessage, error) {
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(answer, &snapshot); err != nil {
+		return nil, fmt.Errorf("older computer: read settings answer: %w", err)
+	}
+	for _, key := range settingsAfterV0019 {
+		delete(snapshot, key)
+	}
+	return json.Marshal(snapshot)
 }
 
 // isolationOptionsFor is the one mapping from boot flags to isolation

@@ -41,8 +41,11 @@ through `stores/layoutMode.svelte.ts`.
 - A paired computer may run an older release. A call it may lack, or whose
   result it answers as `null`, is decided once in `stores/bindings.ts`
   (`stores/olderComputer.ts`): an action goes through the method that release
-  has, a read of a feature it lacks answers empty. Tests answer as v0.0.19
-  with `test/helpers/olderComputer.ts`.
+  has, a read of a feature it lacks answers empty. A settings key it lacks is
+  one its settings answer does not name (`computerHasSetting` in
+  `stores/settings.svelte.ts`): nothing writes that key there, and a page for
+  it shows `SettingsOlderComputer` instead of its editors. Tests answer as
+  v0.0.19 with `test/helpers/olderComputer.ts`.
 
 ## Compact layout
 

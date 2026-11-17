@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,6 +99,13 @@ func FrontendDefaultsSource() string {
 		}
 	}
 	b.WriteString("] as const satisfies readonly (keyof Settings)[];\n")
+	b.WriteString("\n// Keys a settings answer leaves out while empty (`omitempty`). Every other key is in\n")
+	b.WriteString("// every answer of this build, so an answer without one is from a release without it.\n")
+	b.WriteString("export const SETTINGS_KEYS_OMITTED_WHEN_EMPTY = [\n")
+	for _, key := range omittedWhenEmptyKeys() {
+		b.WriteString("  " + strconv.Quote(key) + ",\n")
+	}
+	b.WriteString("] as const;\n")
 
 	emitFrontendConstraints(&b)
 	return b.String()
@@ -168,6 +176,23 @@ func emitValue(v reflect.Value, indent string) string {
 	default:
 		panic(fmt.Sprintf("settings: gendefaults cannot emit %s", v.Kind()))
 	}
+}
+
+// omittedWhenEmptyKeys are the Settings json names tagged omitempty, sorted.
+func omittedWhenEmptyKeys() []string {
+	t := reflect.TypeFor[Settings]()
+	var keys []string
+	for i := 0; i < t.NumField(); i++ {
+		name := jsonFieldName(t.Field(i))
+		if name == "" {
+			continue
+		}
+		if _, options, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); slices.Contains(strings.Split(options, ","), "omitempty") {
+			keys = append(keys, name)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // jsonFieldName is the same tag walk knownSettingsFieldNames does.

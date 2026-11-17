@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import MemorySettings from './MemorySettings.svelte';
-import { applySettingsSnapshot, loadSettings } from '../../stores/settings.svelte';
+import { applySettingsSnapshot, loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import ComputerSettingsPage from './ComputerSettingsPage.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { settingsAsV0019 } from '../../../test/helpers/olderComputer';
 import { settingsFields } from './fields';
 import { tick } from 'svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -121,15 +124,23 @@ describe('<MemorySettings>', () => {
     expect(queryAllByTestId('memory-overlap-warning')).toHaveLength(0);
   });
 
-  // v0.0.19 has no read of the providers' own memory: nothing to warn of
-  // and nothing failed.
-  it('says nothing of the providers on a computer without the read', async () => {
-    await seed({ sharedMemoryEnabled: true }, new TransportError('method_not_found', 'unknown method'));
-    const { getByTestId, queryAllByTestId } = render(MemorySettings);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(getBindingMock('GetNativeMemoryStatus')).toHaveBeenCalled();
-    expect(getByTestId('settings-memory')).toBeDefined();
-    expect(queryAllByTestId('memory-native-error')).toHaveLength(0);
-    expect(queryAllByTestId('memory-overlap-warning')).toHaveLength(0);
+  // v0.0.19's settings name none of the memory keys: the page says the
+  // computer runs an older version, offers no editor and reads nothing.
+  it('offers no memory settings on a computer whose release has none', async () => {
+    await seed({}, new TransportError('method_not_found', 'unknown method'));
+    stageBackend();
+    try {
+      applySettingsSnapshot(settingsAsV0019(), 'laptop');
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: MemorySettings, needsComputer: false } });
+      expect((await view.findByTestId('settings-older-computer')).textContent).toBe('Laptop runs an older version: it has no memory settings.');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(view.queryAllByRole('switch'), 'an editor for a key the computer lacks').toHaveLength(0);
+      expect(getBindingMock('GetNativeMemoryStatus')).not.toHaveBeenCalled();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      expect(view.queryAllByTestId('memory-native-error')).toHaveLength(0);
+    } finally {
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
   });
 });

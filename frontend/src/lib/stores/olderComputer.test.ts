@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { answerAsV0019, METHODS_AFTER_V0_0_19, methodNotFound } from '../../test/helpers/olderComputer';
+import { answerAsV0019, METHODS_AFTER_V0_0_19, methodNotFound, SETTINGS_AFTER_V0_0_19, settingsAsV0019 } from '../../test/helpers/olderComputer';
 import { SRC_ROOT } from '../../test/sourceScan';
 import { getPinnedBackend, withBackendTarget } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
@@ -21,7 +21,11 @@ import {
   DeleteThreadResult,
   DeleteThreads,
   GetDeleteDependents,
+  DeleteProviderCustomEnvVar,
   GetNativeMemoryStatus,
+  GetSettings,
+  SetProviderCustomEnvVar,
+  UpdateSettings,
   GetThreadAgentRows,
   GetThreadRequestStates,
   GetThreadWorkerSummary,
@@ -159,5 +163,24 @@ describe('the surfaces v0.0.19 lacks read empty', () => {
     await expect(GetDeleteDependents(['a'])).rejects.toBe(refusal);
     setBindingMock('CheckAgentProfiles', async () => { throw methodNotFound(); });
     await expect(CheckAgentProfiles([])).resolves.toBeNull();
+  });
+});
+
+// A settings answer reaches the store as the computer sent it: the
+// generated Settings class would give each key v0.0.19 lacks a zero value
+// and hide that it lacks it (settings.svelte.ts, computerHasSetting).
+describe('settings answers from a computer on v0.0.19', () => {
+  it('keep out every key that release does not send', async () => {
+    for (const name of ['GetSettings', 'UpdateSettings', 'SetProviderCustomEnvVar', 'DeleteProviderCustomEnvVar']) {
+      setBindingMock(name, async () => settingsAsV0019());
+    }
+    const answers = [
+      await GetSettings(), await UpdateSettings({ claudeEnabled: true }),
+      await SetProviderCustomEnvVar('claude', 'A', 'b', false), await DeleteProviderCustomEnvVar('claude', 'A'),
+    ];
+    for (const answer of answers) {
+      for (const key of SETTINGS_AFTER_V0_0_19) expect(answer, key).not.toHaveProperty(key);
+      expect(answer).toHaveProperty('claudeEnabled');
+    }
   });
 });

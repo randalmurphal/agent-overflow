@@ -3,11 +3,14 @@
   // by default, and a switch per provider that turns its own memory off for
   // the sessions this app starts. Shared memory beside a provider's own
   // memory gets a warning naming the switch that turns the provider's off.
+  // A computer on a release before these keys gets none of it.
   import { onMount } from 'svelte';
   import { GetNativeMemoryStatus } from '../../stores/bindings';
   import type { NativeMemoryStatus } from '../../types/models';
   import { errString } from '../../utils/errors';
   import { settingsComputer } from './settingsComputer';
+  import { computerHasSetting } from '../../stores/settings.svelte';
+  import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -15,6 +18,8 @@
 
   const { backend, getSettings, updateSetting, call } = settingsComputer();
   let settings = $derived(getSettings());
+  const KEYS = ['sharedMemoryEnabled', 'claudeNativeMemoryDisabled', 'codexNativeMemoryDisabled'] as const;
+  let older = $derived(!KEYS.every((key) => computerHasSetting(key, backend)));
 
   // The provider switches' labels, which the overlap warning names.
   const CLAUDE_OFF = "Turn off Claude's own memory";
@@ -27,6 +32,7 @@
   let nativeRead = 0;
 
   async function readNative(): Promise<void> {
+    if (older) return;
     const read = ++nativeRead;
     try {
       const status = await call(() => GetNativeMemoryStatus());
@@ -64,6 +70,11 @@
 </script>
 
 <div class="settings-sections" data-testid="settings-memory">
+  {#if older}
+  <section>
+    <SettingsOlderComputer {backend} lacks="memory settings" />
+  </section>
+  {:else}
   <section>
     <div class="flex flex-col gap-1">
       <SettingsField
@@ -124,4 +135,5 @@
       mode it was loaded with until its session ends.
     </p>
   </section>
+  {/if}
 </div>

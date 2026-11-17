@@ -302,6 +302,39 @@ export const FRONTEND_DEVICE_SETTINGS_KEYS = [
   "usagePeriod",
 ] as const satisfies readonly (keyof Settings)[];
 
+// Keys a settings answer leaves out while empty (`omitempty`). Every other key is in
+// every answer of this build, so an answer without one is from a release without it.
+export const SETTINGS_KEYS_OMITTED_WHEN_EMPTY = [
+  "$schemaVersion",
+  "accountAutoContinue",
+  "browserAllowOutsideWorkspace",
+  "browserChromiumPath",
+  "claudeCustomEnv",
+  "claudeDisabledTools",
+  "claudeHiddenModels",
+  "claudeOutputStyle",
+  "claudePromptOverrides",
+  "claudeTodoRemindersDisabled",
+  "claudeToolMemoryLimit",
+  "codexCustomEnv",
+  "codexDisabledTools",
+  "codexHiddenModels",
+  "codexPromptOverrides",
+  "dictationAPIDelay",
+  "dictationAPIEnabled",
+  "dictationAPIKeywords",
+  "dictationAPILanguages",
+  "dictationAPIPrompt",
+  "dictationSubscriptionEnabled",
+  "gitlabSelfHostedHosts",
+  "readAloudAPIEnabled",
+  "spinnerAnimationsEnabled",
+  "spinnerBuiltinVerbsDisabled",
+  "spinnerCompactionAnimation",
+  "spinnerCustomVerbs",
+  "spinnerDisabledAnimations",
+] as const;
+
 export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {
   "accountAutoSwitchStrategy": ["account-order","soonest-reset"],
   "activityRunDefault": ["collapsed","expanded"],

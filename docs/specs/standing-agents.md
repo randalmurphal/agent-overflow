@@ -1562,7 +1562,7 @@ window changes the setting of the computer it picks. A standalone
 frontend's own home has no assistants: its switch is disabled and the
 page never writes there. Nor does a computer on a release before
 assistants, whose settings name no `assistantsEnabled`: every surface
-reads it as having them off, and its switch is off, disabled and says
+reads it as having them off, and its page has no switch and says
 `<computer> runs an older version: it has no assistants.`
 
 **Hidden.** Every surface decides an assistant by the computer it lives
