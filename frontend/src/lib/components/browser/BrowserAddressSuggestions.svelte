@@ -187,7 +187,7 @@
     <!-- The rows keep focus in the field (mousedown), so the field's keys
          and its blur go on describing the list. -->
     <div
-      class="min-w-64 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 py-1 shadow-menu"
+      class="min-w-80 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 py-1 shadow-menu"
       data-testid="browser-address-suggestions"
     >
       {#if items.length > 0}
@@ -207,8 +207,10 @@
               onclick={() => pick(item)}
             >
               <Icon icon={ICONS[item.kind]} size={13} class="shrink-0 text-fg-muted" />
-              <span class="min-w-0 flex-1 truncate">
-                {#if item.title}<span class="text-fg">{item.title}</span><span class="px-1 text-fg-hint">·</span>{/if}<span class="font-mono text-[0.6875rem]">{item.address}</span>
+              <!-- Two lines, so a narrow address field still shows the address. -->
+              <span class="flex min-w-0 flex-1 flex-col">
+                {#if item.title}<span class="truncate text-fg">{item.title}</span>{/if}
+                <span class="truncate font-mono text-[0.6875rem] {item.title ? '' : 'text-fg'}">{item.address}</span>
               </span>
               {#if item.kind === 'tab'}
                 <span class="shrink-0 text-[0.6875rem] text-fg-hint">Switch to tab</span>
