@@ -103,14 +103,28 @@ export function clearBrowserDownloads(threadId: string): Promise<BrowserActionFa
   return act(threadId, 'downloads-clear');
 }
 
+/** Whether a companion event is one announceBrowserDownload takes. */
+export function isBrowserDownloadAnnouncement(event: BrowserCompanionEvent | null | undefined): boolean {
+  return event?.kind === 'download' || event?.kind === 'downloads-unmanaged';
+}
+
 /**
  * A Kind "download" event: one of the thread's downloads settled other than
- * by the user's cancel. Only a page that can host the thread's browser
- * announces it; the event is not replayed, so each page announces it once.
+ * by the user's cancel. A Kind "downloads-unmanaged" event: the browser
+ * refused AO's download directory for the profile a page of the thread
+ * opened in, said once per profile. Only a page that can host the thread's
+ * browser announces either; the events are not replayed, so each page
+ * announces one once.
  */
 export function announceBrowserDownload(event: BrowserCompanionEvent): void {
+  if (!event.threadId || !canUseNativeBrowser(event.threadId)) return;
+  if (event.kind === 'downloads-unmanaged') {
+    const message = event.error || 'Downloads are off in this browser profile';
+    addErrorToast(message, new Error(message));
+    return;
+  }
   const download = event.download;
-  if (!event.threadId || !download || !canUseNativeBrowser(event.threadId)) return;
+  if (!download) return;
   const threadId = event.threadId;
   if (download.state === 'completed') {
     addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {

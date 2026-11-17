@@ -505,23 +505,22 @@ func TestHeadlessTargetsSettleInAnyOrder(t *testing.T) {
 	})
 }
 
-// An info change held until its page's targetCreated is delivered before any
-// info change handled after that created, even while the held one is still
-// being delivered: the Manager ends with the newest info.
-func TestHeadlessTargetsDeliverHeldInfoFirst(t *testing.T) {
+// An info change held until its page's targetCreated is numbered before any
+// info change handled after that created, even when the newer one is
+// delivered while the held one still is: the Manager, which keeps the
+// highest order, ends with the newest info.
+func TestHeadlessTargetsNumberHeldInfoFirst(t *testing.T) {
 	const page = "T-own"
 	inHeld, releaseHeld := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
-	var urls []string
-	var orders []uint64
+	orders := map[string]uint64{}
 	events := engineEvents{PageInfoChanged: func(handle, url, title string, order uint64) {
 		if url == "https://held.test/" {
 			close(inHeld)
 			<-releaseHeld
 		}
 		mu.Lock()
-		urls = append(urls, url)
-		orders = append(orders, order)
+		orders[url] = order
 		mu.Unlock()
 	}}
 	p := newTargetTestProfile(t, events)
@@ -538,27 +537,16 @@ func TestHeadlessTargetsDeliverHeldInfoFirst(t *testing.T) {
 	case <-createdDone:
 		t.Fatal("targetCreated returned without delivering the held info")
 	}
-	newerDone := make(chan struct{})
-	go func() {
-		defer close(newerDone)
-		h.infoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{TargetID: page, Type: "page", URL: "https://newer.test/"}})
-	}()
-	// Unordered delivery would let the newer change through now.
-	select {
-	case <-newerDone:
-	case <-time.After(200 * time.Millisecond):
-	}
+	// The newer change is delivered while the held one is still being
+	// delivered.
+	h.infoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{TargetID: page, Type: "page", URL: "https://newer.test/"}})
 	close(releaseHeld)
 	<-createdDone
-	<-newerDone
 	mu.Lock()
 	defer mu.Unlock()
-	if len(urls) != 2 || urls[1] != "https://newer.test/" {
-		t.Fatalf("the Manager saw %q, want the held info then the newer one", urls)
-	}
-	// The Manager keeps the highest order (engineEvents.PageInfoChanged).
-	if orders[0] == 0 || orders[1] <= orders[0] {
-		t.Fatalf("the reports were numbered %v, want growing from 1", orders)
+	held, newer := orders["https://held.test/"], orders["https://newer.test/"]
+	if len(orders) != 2 || held == 0 || newer <= held {
+		t.Fatalf("the reports were numbered %v, want the held info first and the newer one after", orders)
 	}
 }
 

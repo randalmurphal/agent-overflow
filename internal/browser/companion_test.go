@@ -130,7 +130,7 @@ func TestBackgroundPageActivityDoesNotStealCompanionSelection(t *testing.T) {
 		sessions: map[string]SessionInfo{"thread": {ActivePageID: first.id, Visible: true}},
 	}
 
-	m.pageChanged(second, true)
+	m.pageUsed(second)
 	if got := m.threadState("thread").ActivePageID; got != first.id {
 		t.Fatalf("background activity selected %q, want %q", got, first.id)
 	}
@@ -156,7 +156,7 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 	if err != nil || !info.Visible || info.ActivePageID != second.id {
 		t.Fatalf("explicit show = %#v, %v", info, err)
 	}
-	m.pageChanged(first, true)
+	m.pageUsed(first)
 	if got := m.threadState("thread").ActivePageID; got != second.id {
 		t.Fatalf("background page stole pinned selection: %q", got)
 	}

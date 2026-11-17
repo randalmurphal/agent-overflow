@@ -159,9 +159,39 @@ describe('browser tab strip layout', () => {
     expect(inView(7)).toBe(true);
   });
 
+  // A reorder moves the active tab without changing which tab is active or
+  // how many there are, and the strip keeps its width.
+  it('keeps the active tab in view when a reorder moves it', async () => {
+    host = document.createElement('div');
+    host.style.cssText = 'position:fixed;top:0;left:0;width:320px';
+    document.body.append(host);
+    const props = rawProps({ sessionName: '', pages: pages(8) as never, activePageId: 'p0', onAct: async () => {}, onNewTab: () => {} });
+    app = mount(BrowserTabStrip, { target: host, props });
+    flushSync();
+    // Two frames: the strip's resize observer reports once after mounting.
+    await raf();
+    await raf();
+    const scroller = host.querySelector<HTMLElement>('[data-testid="browser-tab-scroller"]')!;
+    const inView = () => {
+      const t = box(host!.querySelector('[data-tab-id="p0"]')!);
+      const s = box(scroller);
+      return t.left >= s.left - 0.5 && t.right <= s.right + 0.5;
+    };
+    expect(scroller.scrollLeft).toBe(0);
+    expect(inView()).toBe(true);
+    const list = pages(8);
+    props.pages = [...list.slice(1), list[0]] as never;
+    flushSync();
+    await raf();
+    await raf();
+    expect([...host.querySelectorAll('[data-tab-id]')].at(-1)?.getAttribute('data-tab-id')).toBe('p0');
+    expect(inView()).toBe(true);
+  });
+
   // Keeping the active tab in view measures the strip, which forces a layout
   // of the whole document. Every state push hands the strip a new page list,
-  // so the measure runs only when the active tab or the tab count changed.
+  // so the measure runs only when the active tab, its place or the tab count
+  // changed.
   it('measures nothing for a state push that changes neither the active tab nor the tab count', async () => {
     host = document.createElement('div');
     host.style.cssText = 'position:fixed;top:0;left:0;width:320px';

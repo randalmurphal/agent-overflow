@@ -17,7 +17,16 @@ import (
 // offer. Nothing is kept for a private jar. A jar switch, closing every page
 // (Clear site data, turning the browser off, changing whether site data
 // persists: forgetAllPages) and closing the thread (delete, archive) forget
-// the list.
+// the list, and every forget goes through forgetRecentLocked or
+// forgetAllRecentLocked, which advance the Manager's forget generation.
+//
+// The generation rides each thread's state push (CompanionEvent.RecentGen):
+// a client that cached a list drops it when the number moves, which a round
+// trip of jar names (worktree, private, worktree) cannot hide. It is
+// Manager-wide, so it never repeats after a thread's entry is deleted; a
+// forget on another thread costs a client one re-read at its next push.
+// It starts at the launch time, so a restarted backend does not repeat a
+// number a client still holds.
 
 // maxRecentAddresses bounds a thread's list.
 const maxRecentAddresses = 50
@@ -86,6 +95,26 @@ func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
 		m.recent = make(map[string][]RecentAddress)
 	}
 	m.recent[p.owner] = next
+}
+
+// forgetRecentLocked forgets threadID's recent addresses and advances the
+// forget generation. The caller holds m.mu.
+func (m *Manager) forgetRecentLocked(threadID string) {
+	delete(m.recent, threadID)
+	m.recentGen++
+}
+
+// forgetAllRecentLocked forgets every thread's recent addresses and advances
+// the forget generation, answering the threads that had a list. The caller
+// holds m.mu.
+func (m *Manager) forgetAllRecentLocked() []string {
+	threads := make([]string, 0, len(m.recent))
+	for threadID := range m.recent {
+		threads = append(threads, threadID)
+	}
+	m.recent = nil
+	m.recentGen++
+	return threads
 }
 
 // RecentAddresses answers the thread's recent addresses, newest first.

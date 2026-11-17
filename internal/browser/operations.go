@@ -20,18 +20,20 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	since := p.infoGeneration()
 	snapshot, err := p.driver.Snapshot(opCtx)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	snapshot.ID = p.id
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
 	// The snapshot script reads the address and title, not the session
-	// history; the tab keeps its back/forward state, which the agent sees.
-	info, changed := p.setInfo(pageUpdate{URL: snapshot.URL, Title: snapshot.Title})
-	snapshot.PageInfo = info
-	m.pageChanged(p, changed)
+	// history: the tab keeps its back/forward state, and the agent is told it.
+	info, _ := m.commitRead(p, pageUpdate{Location: &pageLocation{URL: snapshot.URL, Title: snapshot.Title}}, since)
+	snapshot.CanGoBack, snapshot.CanGoForward = info.CanGoBack, info.CanGoForward
+	m.pageUsed(p)
 	return snapshot, nil
 }
 
@@ -353,17 +355,20 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 	return value, caveat + note, nil
 }
 
+// finishPageOperation reads and commits p's info after an operation. The
+// caller holds the page-operation lock.
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
-	info, changed, err := m.refreshInfo(ctx, p)
-	m.pageChanged(p, changed)
+	info, err := m.readInfo(ctx, p, pageListing{})
+	m.pageUsed(p)
 	return info, err
 }
 
+// refreshPageAfterOperation is finishPageOperation with no answer.
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
 	// A failed read leaves the tab as it was; the operation's own result
 	// reports its outcome.
-	_, changed, _ := m.refreshInfo(ctx, p)
-	m.pageChanged(p, changed)
+	_, _ = m.readInfo(ctx, p, pageListing{})
+	m.pageUsed(p)
 }
 
 // lookupOrSelectPage answers the live page a page-scoped call acts on: the

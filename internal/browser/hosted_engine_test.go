@@ -105,12 +105,20 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	engine.createTimeout = 150 * time.Millisecond
 	engine.attachTimeout = 150 * time.Millisecond
 	engine.clearTimeout = 150 * time.Millisecond
+	engine.windowsPath = testWindowsPath
 	return engine, sink
 }
 
+// testWindowsPath stands in for `wslpath -w`.
+func testWindowsPath(_ context.Context, path string) (string, error) {
+	return `\\wsl.localhost\Test` + strings.ReplaceAll(path, "/", `\`), nil
+}
+
+const testDownloadDir = "/home/dev/.ao/downloads/jar"
+
 func testProfile(t *testing.T, engine *hostedEngine) *hostedProfile {
 	t.Helper()
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", DownloadDir: testDownloadDir, Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -440,7 +448,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 
 func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", DownloadDir: testDownloadDir, Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -716,6 +724,12 @@ func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL s
 	return endpoint.wsURL, endpoint.calls
 }
 
+// fakeCDPError, returned by respond, answers the command with a CDP error.
+type fakeCDPError struct {
+	Code    int
+	Message string
+}
+
 // fakeCDPEndpoint is a started fake CDP server. announce, when set, returns
 // the events to send before the reply to one command, as {method, params}
 // maps, the order Chromium uses: the targets Target.setDiscoverTargets
@@ -797,6 +811,9 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 				}
 			}
 			frame := map[string]any{"id": msg.ID, "result": result}
+			if refusal, ok := result.(fakeCDPError); ok {
+				frame = map[string]any{"id": msg.ID, "error": map[string]any{"code": refusal.Code, "message": refusal.Message}}
+			}
 			if msg.SessionID != "" {
 				frame["sessionId"] = msg.SessionID
 			}

@@ -311,7 +311,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			continue
 		}
 		// The tab leaves its suspended state.
-		m.pageChanged(p, true)
+		m.pageAdded(p)
 		if err := m.persistThreads([]string{p.owner}); err != nil {
 			// The page is live; its saved copy still lists it as suspended, which
 			// only brings it back as a suspended page after a crash.
@@ -390,11 +390,14 @@ func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage
 	if err != nil || target == "" {
 		return scope, err
 	}
-	p.setInfo(pageUpdate{URL: target, Title: title})
+	// The page is in no thread's tabs yet, so no operation reaches it and no
+	// engine report finds it (pageByHandleLocked): the load's read is the
+	// only commit, and the registration push carries it.
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: target, Title: title}})
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	err = p.driver.Navigate(opCtx, target)
 	if err == nil {
-		_, _, err = m.refreshInfo(opCtx, p)
+		_, err = m.readInfo(opCtx, p, pageListing{})
 	}
 	cancel()
 	if err != nil {
@@ -455,7 +458,7 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	m.mu.Unlock()
 	p.mu.Lock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	_, _, err := m.refreshInfo(opCtx, p)
+	_, err := m.readInfo(opCtx, p, pageListing{})
 	cancel()
 	info := p.cachedInfo()
 	if err != nil && p.ctx.Err() == nil {

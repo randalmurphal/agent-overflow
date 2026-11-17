@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -171,6 +172,77 @@ func TestRecentAddressesForgetOnClearSiteDataAndThreadClose(t *testing.T) {
 	if got := recentURLs(m, access); len(got) != 0 {
 		t.Fatalf("recent = %q after Clear site data", got)
 	}
+}
+
+// Every forget advances the Manager's forget generation, and the thread's
+// pushed state reports the generation of its last forget: a jar switch, the
+// close of another thread, and the close of every page (Clear site data,
+// turning the browser off).
+func TestRecentAddressForgetsAdvanceTheGenerationTheStateReports(t *testing.T) {
+	m, access, pageID, _ := newNavigateFixture(t, false)
+	var mu sync.Mutex
+	pushed := map[string]uint64{}
+	m.SetEventSink(func(event CompanionEvent) {
+		if event.Kind == "state" {
+			mu.Lock()
+			pushed[event.ThreadID] = event.RecentGen
+			mu.Unlock()
+		}
+	})
+	lastPushed := func(threadID string) uint64 {
+		mu.Lock()
+		defer mu.Unlock()
+		return pushed[threadID]
+	}
+	reported := func() uint64 { return m.CompanionState(access).RecentGen }
+	other := Access{ThreadID: "other", Workspace: access.Workspace}
+	if _, err := m.Open(t.Context(), other, "https://example.test/other", OpenOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, forget := range []struct {
+		name string
+		run  func() error
+		// pushes is whether the forget pushes this thread's state; closing
+		// another thread does not, and its generation shows at the next push.
+		pushes bool
+	}{
+		{"jar switch", func() error { return m.SetJar(access, JarThread) }, true},
+		{"jar switch back", func() error { return m.SetJar(access, JarWorktree) }, true},
+		{"another thread's close", func() error { return m.CloseThread(t.Context(), other.ThreadID) }, false},
+		{"clear site data", func() error { return m.ClearSiteData(t.Context()) }, true},
+		{"disable", func() error { return m.Reconfigure(Config{Enabled: false}) }, true},
+	} {
+		// A list to forget, so the close of every page pushes for it.
+		if err := m.Reconfigure(Config{Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Open(t.Context(), access, "https://example.test/"+strings.ReplaceAll(forget.name, " ", "-"), OpenOptions{PageID: pageIDFor(t, m, access, pageID)}); err != nil {
+			t.Fatalf("%s: open: %v", forget.name, err)
+		}
+		before := reported()
+		if err := forget.run(); err != nil {
+			t.Fatalf("%s: %v", forget.name, err)
+		}
+		after := reported()
+		if after <= before {
+			t.Fatalf("%s: the generation went from %d to %d", forget.name, before, after)
+		}
+		if forget.pushes && lastPushed(access.ThreadID) != after {
+			t.Fatalf("%s: the last push carried %d, want %d", forget.name, lastPushed(access.ThreadID), after)
+		}
+	}
+}
+
+// pageIDFor answers the thread's tab to open in: pageID while it exists,
+// else a new page.
+func pageIDFor(t *testing.T, m *Manager, access Access, pageID string) string {
+	t.Helper()
+	for _, page := range m.CompanionState(access).Pages {
+		if page.ID == pageID {
+			return pageID
+		}
+	}
+	return ""
 }
 
 // overtakeOpen runs an open on the page that the engine finishes only once

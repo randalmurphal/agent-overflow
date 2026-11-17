@@ -5,6 +5,7 @@ import { resetBrowserCompanionForTest } from './browserCompanion.svelte';
 import {
   announceBrowserDownload,
   downloadProgressStep,
+  isBrowserDownloadAnnouncement,
   downloadSourceHost,
   downloadStatus,
 } from './browserDownloads.svelte';
@@ -80,9 +81,24 @@ describe('browser downloads', () => {
     expect(getToasts()).toMatchObject([{ type: 'error', message: 'report.pdf did not download: the server closed the connection' }]);
   });
 
+  it('takes the download and downloads-unmanaged kinds and leaves the rest to the companion state', () => {
+    expect(isBrowserDownloadAnnouncement({ kind: 'download' } as never)).toBe(true);
+    expect(isBrowserDownloadAnnouncement({ kind: 'downloads-unmanaged' } as never)).toBe(true);
+    expect(isBrowserDownloadAnnouncement({ kind: 'state' } as never)).toBe(false);
+    expect(isBrowserDownloadAnnouncement({ kind: 'error' } as never)).toBe(false);
+    expect(isBrowserDownloadAnnouncement(null)).toBe(false);
+  });
+
+  it('announces downloads that are off in a profile as an error with the reason', () => {
+    const error = 'Downloads are off in this browser profile: the pane browser refused AO\'s download directory';
+    announceBrowserDownload({ kind: 'downloads-unmanaged', threadId: THREAD, error } as never);
+    expect(getToasts()).toMatchObject([{ type: 'error', message: error }]);
+  });
+
   it('announces nothing on a page that cannot host the browser', () => {
     setHostWindowFromBootstrap(false);
     announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed' }) } as never);
+    announceBrowserDownload({ kind: 'downloads-unmanaged', threadId: THREAD, error: 'off' } as never);
     expect(getToasts()).toHaveLength(0);
   });
 });

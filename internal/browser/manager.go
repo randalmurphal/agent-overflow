@@ -132,8 +132,10 @@ type Manager struct {
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq  uint64
 	sessions map[string]SessionInfo
-	// recent is each thread's recent addresses (recent.go).
-	recent map[string][]RecentAddress
+	// recent is each thread's recent addresses, and recentGen their forget
+	// generation (recent.go).
+	recent    map[string][]RecentAddress
+	recentGen uint64
 	// viewportSyncs serializes viewport application per thread (viewport.go).
 	viewportSyncs map[string]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and
@@ -168,6 +170,13 @@ type Manager struct {
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
 	viewportApplied func(threadID string)
+	// pushCopied is a test seam: called, with m.mu held, once a push has
+	// taken the unpushed records and copied the tabs. Production leaves it
+	// nil.
+	pushCopied func()
+	// infoRead is a test seam: called between a read of a page's info (or
+	// history state) and its commit. Production leaves it nil.
+	infoRead func(p *managedPage)
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -253,6 +262,9 @@ type jarScope struct {
 	// downloadDir is where the engine writes this jar's downloads before
 	// they move to their workspace's directory.
 	downloadDir string
+	// downloadsWarned is whether the user was told downloads in this jar's
+	// profile are not managed. Guarded by m.mu.
+	downloadsWarned bool
 }
 
 type managedPage struct {
@@ -278,12 +290,14 @@ type managedPage struct {
 	// sorts run outside m.mu.
 	tabOrder atomic.Int64
 	metaMu   sync.RWMutex
-	// info is what the page's tab shows. After creation only setInfo,
-	// setReportedInfo, setHistoryState and setLabel change it.
+	// info is what the page's tab shows; once the page is in its thread's
+	// tabs only commitInfo changes it.
 	info PageInfo
-	// infoOrder is the order of the newest engine info report applied
-	// (setReportedInfo), guarded by metaMu.
-	infoOrder uint64
+	// infoGen counts commits of the address and history, and infoReport is
+	// the order of the newest engine report committed, both under metaMu
+	// (commitInfo).
+	infoGen    uint64
+	infoReport uint64
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load         pageLoad
@@ -363,6 +377,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:   findActionTimeout,
+		recentGen:     uint64(time.Now().UnixNano()),
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
@@ -450,8 +465,12 @@ func (m *Manager) Reconfigure(config Config) error {
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
 	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
 	m.mu.Lock()
-	m.recent = nil
+	threads := m.forgetAllRecentLocked()
 	m.mu.Unlock()
+	// The closes pushed state before the forget; these carry its generation.
+	for _, threadID := range threads {
+		m.emitThreadState(threadID)
+	}
 	return err
 }
 
@@ -480,9 +499,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
-	info, changed, err := m.refreshInfo(opCtx, p)
+	info, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
-		m.pageChanged(p, changed)
+		m.pageUsed(p)
 	}
 	return info, err
 }
@@ -520,11 +539,11 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 		return PageInfo{}, err
 	}
 	p.touch()
-	info, changed, err := m.refreshInfo(opCtx, p)
+	info, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
 		m.recordRecentAddress(p, info)
 	}
-	m.pageChanged(p, changed)
+	m.pageUsed(p)
 	return info, err
 }
 
@@ -547,15 +566,17 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-		info, _, err := m.refreshInfo(opCtx, p)
+		listing := pageListing{Selected: p.id == activePageID, LastOpened: time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)}
+		info, err := m.readInfo(opCtx, p, listing)
 		cancel()
 		p.mu.Unlock()
 		if err == nil {
-			info.Selected = p.id == activePageID
-			info.LastOpened = time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
+			info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
 			out = append(out, info)
 		}
 	}
+	// What the reads found, the tabs show.
+	m.publishPages(access.ThreadID)
 	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
 	return out, nil
 }
@@ -583,7 +604,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	// Forgotten here for a close that stops early, and again with the
 	// session below, after any open the closing pages were running.
-	delete(m.recent, threadID)
+	m.forgetRecentLocked(threadID)
 	m.mu.Unlock()
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
@@ -603,7 +624,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
-	delete(m.recent, threadID)
+	m.forgetRecentLocked(threadID)
 	m.mu.Unlock()
 	m.forgetThreadDownloads(threadID)
 	return errors.Join(errs...)
@@ -807,11 +828,25 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	if err != nil {
 		return err
 	}
+	warn := ""
+	if unmanaged, ok := driver.(downloadsUnmanaged); ok {
+		warn = unmanaged.downloadsUnmanaged()
+	}
 	// Under m.mu: the jar's policy resolves a request to the page being
 	// created (jarAllows) while it loads, before it is registered.
 	m.mu.Lock()
 	p.attach(driver)
+	if warn != "" {
+		// Once per profile: every page of it would say the same.
+		if scope.downloadsWarned {
+			warn = ""
+		}
+		scope.downloadsWarned = true
+	}
 	m.mu.Unlock()
+	if warn != "" {
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: "Downloads are off in this browser profile: " + warn})
+	}
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return err
@@ -930,7 +965,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	scope.pages[p.id] = p
 	m.mu.Unlock()
 	// A new tab.
-	m.pageChanged(p, true)
+	m.pageAdded(p)
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}

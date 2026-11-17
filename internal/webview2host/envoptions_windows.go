@@ -28,6 +28,7 @@ import (
 var (
 	ole32              = windows.NewLazySystemDLL("ole32.dll")
 	procCoTaskMemAlloc = ole32.NewProc("CoTaskMemAlloc")
+	procRtlMoveMemory  = windows.NewLazySystemDLL("kernel32.dll").NewProc("RtlMoveMemory")
 )
 
 // minTargetBrowserVersion is the WebView2 SDK's own floor. The host
@@ -78,14 +79,9 @@ func coTaskMemString(s string) uintptr {
 	if ptr == 0 {
 		return 0
 	}
-	// `go vet -unsafeptr` flags the conversion below, and the warning is
-	// expected rather than a defect: the address came from the COM task
-	// allocator, so it names memory outside the Go heap that the
-	// collector neither tracks nor moves. It is exactly the case the
-	// unsafe.Pointer rules permit and the checker cannot see. Note the
-	// checker is not part of `go test`'s default vet set, so this does
-	// not affect the gates.
-	copy(unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(encoded)), encoded)
+	// Windows copies into the allocation: its address names COM task
+	// memory, which is never a Go pointer.
+	procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&encoded[0])), size)
 	return ptr
 }
 
