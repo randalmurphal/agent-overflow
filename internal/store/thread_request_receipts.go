@@ -302,11 +302,19 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 	return listingChange(listedBefore, listedAfter), nil
 }
 
+// insertThreadReceiptSQL writes a receipt. A link is written only while its
+// owner's device can reach this computer, in the insert itself: a worker is
+// owned only while that device holds an unrevoked session here
+// (endSessionsTx), so a revocation that committed after the request was
+// authenticated and before this insert leaves a plain receipt, and its
+// thread a sidebar row, as the release would. A revocation after the insert
+// releases the link it finds (endSessionsTx), named or not.
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
     token, owner_device_id, source_computer_id, source_computer_name,
     source_thread_id, source_thread_title, kind, target_thread_id,
     message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at
- ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+ ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+    ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15)`
 
 // insertArgs writes a link as seen by its owner when it was made.
 func (r ThreadRequestReceipt) insertArgs() []any {

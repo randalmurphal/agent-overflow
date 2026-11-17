@@ -4,9 +4,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 
 	"agent-overflow/internal/owndevices"
+	"agent-overflow/internal/secret"
 )
 
 // acceptLink records, as the destination's acceptance does, a paired
@@ -14,6 +16,7 @@ import (
 // createdAt, then named with own.
 func acceptLink(t *testing.T, s *Store, token, device, target string, createdAt int64) {
 	t.Helper()
+	reachable(t, s, device)
 	if _, created, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
 		Token: token, OwnerDeviceID: device, SourceComputerID: "pc-" + device, SourceComputerName: "Desk " + device,
 		SourceThreadID: "lead-" + token, SourceThreadTitle: "Lead " + token, Kind: ThreadRequestSpawn,
@@ -23,6 +26,46 @@ func acceptLink(t *testing.T, s *Store, token, device, target string, createdAt 
 	}
 	if named, _, err := s.SetThreadReceiptTarget(token, target, true); err != nil || !named {
 		t.Fatalf("name link %s: named %v, %v", token, named, err)
+	}
+}
+
+// reachable gives device an unrevoked session here, the reach a link needs
+// to be written, unless it already holds one: a test that ends a device's
+// sessions to release its links seeds them itself.
+func reachable(t *testing.T, s *Store, device string) {
+	t.Helper()
+	var live bool
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM sessions WHERE device_id = ? AND revoked_at IS NULL)`, device).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live {
+		return
+	}
+	owner, err := s.EnsureOwnerUser("Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO devices (id, user_id, label, class, created_at)
+		 VALUES (?, ?, 'Paired', 'desktop', 1)`, device, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	key := SigningKey{ID: "reach-key", Secret: secret.New([]byte("0123456789abcdef")), CreatedAt: 100}
+	var keyed bool
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM signing_keys WHERE id = ?)`, key.ID).Scan(&keyed); err != nil {
+		t.Fatal(err)
+	}
+	if !keyed {
+		if err := s.InsertSigningKey(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ended int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE device_id = ?`, device).Scan(&ended); err != nil {
+		t.Fatal(err)
+	}
+	id := "reach-" + device + "-" + strconv.Itoa(ended)
+	if err := s.CreateSession(newTestSession(id, owner, Device{ID: device}, key, 1<<50)); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -136,6 +179,63 @@ func TestNamingAPlainReceiptOwnsNothing(t *testing.T) {
 	}
 	if _, found, err := s.SpawnOwnerOf("plain"); err != nil || found {
 		t.Fatalf("SpawnOwnerOf a plain receipt's thread = %v, %v; want none", found, err)
+	}
+}
+
+// A link needs its owner's device to hold an unrevoked session here, the
+// reach a release ends: a device with none, never paired or revoked before
+// the receipt is written, gets a plain receipt, and one whose last session
+// ends before the naming write gets its link released. Either way the
+// naming owns nothing and the thread stays standalone.
+func TestALinkNeedsItsDeviceToReachThisComputer(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"never", "revoked", "between"} {
+		mustCreateThread(t, s, id)
+	}
+	revoke := func(device string) {
+		t.Helper()
+		sessions, err := s.ListSessionsForDevice(device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, session := range sessions {
+			if _, _, err := s.RevokeSession(session.ID, 2000); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	accept := func(token, device string) {
+		t.Helper()
+		if _, created, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+			Token: token, OwnerDeviceID: device, SourceComputerID: "pc-" + device,
+			SourceThreadID: "lead-" + token, Kind: ThreadRequestSpawn, SpawnLink: true,
+		}); err != nil || !created {
+			t.Fatalf("accept %s: created %v, %v", token, created, err)
+		}
+	}
+	accept("never", "dev-never")
+	reachable(t, s, "dev-revoked")
+	revoke("dev-revoked")
+	accept("revoked", "dev-revoked")
+	reachable(t, s, "dev-between")
+	accept("between", "dev-between")
+	if !receiptLink(t, s, "between").SpawnLink {
+		t.Fatal("a reachable device's receipt is no link")
+	}
+	revoke("dev-between")
+	for _, id := range []string{"never", "revoked", "between"} {
+		if named, _, err := s.SetThreadReceiptTarget(id, id, true); err != nil || !named {
+			t.Fatalf("name %s: %v, %v", id, named, err)
+		}
+		if receiptLink(t, s, id).SpawnLink {
+			t.Errorf("%s: the receipt is a link", id)
+		}
+		if got, _ := placementOf(t, s, id); got != PlacementStandalone {
+			t.Errorf("%s: the thread is %s, want standalone", id, got)
+		}
+		if _, found, err := s.SpawnOwnerOf(id); err != nil || found {
+			t.Errorf("%s: SpawnOwnerOf = %v, %v; want none", id, found, err)
+		}
 	}
 }
 
