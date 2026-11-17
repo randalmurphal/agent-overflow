@@ -108,9 +108,10 @@ type Directive struct {
 	// pixels times DPR are the host window's client pixels. Zero means
 	// unknown, and the host falls back to its client size over VW/VH.
 	DPR float64 `json:"dpr,omitempty"`
-	// Bg is the pane surface's resolved CSS color ("#rrggbb"), painted by
-	// the controller where the page has not presented yet so freshly
-	// exposed strips match the pane. Empty leaves the engine default.
+	// Bg is the page's base color ("#rrggbb"), which the backend decides
+	// from the page's address: the controller paints it wherever the
+	// document leaves its background transparent or has not painted yet.
+	// Empty leaves the engine default.
 	Bg string `json:"bg,omitempty"`
 	// Mount names the pane mount the backend placed the page in, and
 	// PageW/PageH the page's viewport in CSS pixels. Seq is the number the

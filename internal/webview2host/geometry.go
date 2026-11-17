@@ -60,7 +60,6 @@ type PaneGeometry struct {
 	ViewportHeight   float64 `json:"viewportHeight"`
 	DevicePixelRatio float64 `json:"devicePixelRatio"`
 	Visible          bool    `json:"visible"`
-	Background       string  `json:"background"`
 }
 
 // ErrNotGeometry is ParseGeometryMessage's answer for a raw message that is
@@ -110,7 +109,6 @@ func (g PaneGeometry) bounds() paneBounds {
 		X: g.X, Y: g.Y, W: g.Width, H: g.Height,
 		CX: g.ClipX, CY: g.ClipY, CW: g.ClipWidth, CH: g.ClipHeight,
 		VW: g.ViewportWidth, VH: g.ViewportHeight, DPR: g.DevicePixelRatio,
-		Bg: g.Background,
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1049,6 +1051,64 @@ func TestCDPPageReportsOnlyMainFrameDocumentCommits(t *testing.T) {
 	}
 }
 
+// Chromium reports no event when a document sets its title, so a CDP page
+// installs the title watcher in an isolated world, for documents to come and
+// the current one, behind a binding only that world sees, and hands each
+// report of that binding to DocumentTitle. Another binding's calls are not
+// title reports. The hosted WebView2 engine drives the same page.
+func TestCDPPageWatchesItsDocumentTitle(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	type report struct{ url, title string }
+	reports := make(chan report, 4)
+	hooks := testPageHooks()
+	hooks.DocumentTitle = func(url, title string) { reports <- report{url, title} }
+	page, err := profile.NewPage(context.Background(), hooks)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	var binding, script bool
+	for _, call := range browser.calls() {
+		if call.SessionID == "" {
+			continue
+		}
+		var params map[string]any
+		_ = json.Unmarshal(call.Params, &params)
+		switch call.Method {
+		case "Runtime.addBinding":
+			binding = params["name"] == documentTitleBinding && params["executionContextName"] == documentTitleWorld
+		case "Page.addScriptToEvaluateOnNewDocument":
+			script = params["worldName"] == documentTitleWorld && params["runImmediately"] == true &&
+				strings.Contains(params["source"].(string), documentTitleBinding)
+		}
+	}
+	if !binding || !script {
+		t.Fatalf("binding in the watcher's world: %v, watcher script in that world on the current document too: %v", binding, script)
+	}
+	send := func(name, payload string) {
+		browser.send(map[string]any{"method": "Runtime.bindingCalled", "sessionId": "S-1", "params": map[string]any{
+			"name": name, "payload": payload, "executionContextId": 7,
+		}})
+	}
+	send("pageOwnBinding", `["https://example.test/","Not a title"]`)
+	send(documentTitleBinding, `["https://example.test/","Set by script"]`)
+	select {
+	case got := <-reports:
+		if got != (report{"https://example.test/", "Set by script"}) {
+			t.Fatalf("DocumentTitle got %+v", got)
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("the title report never reached DocumentTitle")
+	}
+	select {
+	case got := <-reports:
+		t.Fatalf("a second report %+v; another binding's call is not a title", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // A browser whose connection is lost is gone: the browser context is
 // cancelled, and the profile's watcher disposes the profile, which kills and
 // reaps the process and removes its ephemeral site data.
@@ -1459,6 +1519,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	}
 
 	assertRealPopupsPassThePolicy(t, engine)
+	assertRealDocumentTitles(t, engine)
 	assertRealEvaluateSemantics(t, engine)
 	assertRealPageOperations(t, engine)
 	if err := filepath.WalkDir(home, func(path string, _ os.DirEntry, err error) error {
@@ -1502,6 +1563,60 @@ func assertRealEvaluateSemantics(t *testing.T, engine *headlessEngine) {
 // from a workspace page, as a page script can, with and without an opener.
 // Each popup runs before AttachPage installs its own policy, so what keeps
 // the file out of the adopted page is the workspace's policy.
+// assertRealDocumentTitles proves the title watcher on a real Chromium: the
+// parsed <title> and a later assignment by script both reach DocumentTitle,
+// which no Target.targetInfoChanged reports, and a page script cannot see
+// the binding.
+func assertRealDocumentTitles(t *testing.T, engine *headlessEngine) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Parsed</title><script>
+setTimeout(() => { document.title = typeof __aoDocumentTitle + " by script" }, 300)
+</script>`))
+	}))
+	defer server.Close()
+	created, err := engine.NewProfile(t.Context(), profileOptions{
+		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) bool { return true },
+	})
+	if err != nil {
+		t.Fatalf("new profile: %v", err)
+	}
+	profile := created.(*headlessProfile)
+	defer func() {
+		if err := profile.Dispose(context.Background()); err != nil {
+			t.Errorf("dispose: %v", err)
+		}
+	}()
+	titles := make(chan string, 16)
+	hooks := testPageHooks()
+	hooks.DocumentTitle = func(url, title string) {
+		if url == server.URL+"/" {
+			titles <- title
+		}
+	}
+	page, err := profile.NewPage(t.Context(), hooks)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
+	defer cancel()
+	if err := page.Navigate(opCtx, server.URL+"/"); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	for _, want := range []string{"Parsed", "undefined by script"} {
+		select {
+		case got := <-titles:
+			if got != want {
+				t.Fatalf("the document reported %q, want %q", got, want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the document never reported %q", want)
+		}
+	}
+}
+
 func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	t.Helper()
 	workspace, outside := t.TempDir(), t.TempDir()

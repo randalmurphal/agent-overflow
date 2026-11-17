@@ -181,7 +181,7 @@ func (m *Manager) applyFocusIntent(threadID string) {
 		return
 	}
 	var page *managedPage
-	if m.presented[threadID] == in.pageID {
+	if m.presented[threadID].id == in.pageID {
 		// A closing page has left its scope's pages already.
 		if p, _ := m.livePageLocked(in.pageID); p != nil && p.owner == threadID {
 			page = p

@@ -16,7 +16,7 @@ import (
 // re-park into the 1x1 clipping slot, and devtools is the WebKit inspector
 // (docked in-app; developer extras are enabled at view creation). The page's
 // viewport is never touched here; SetViewport owns it, parked or presented.
-// The pane's own background color rides the same rect and is pushed to the
+// The page's base color (pageBase) rides the same rect and is pushed to the
 // view, not the host.
 //
 // The Manager always sends bounds before a show, so ShowPage presents at the

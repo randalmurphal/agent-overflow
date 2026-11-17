@@ -1111,10 +1111,11 @@ int ao_wk_view_close(void *view) {
   return ao_release_focus(held);
 }
 
-// ao_wk_view_set_background paints the page's base color — what shows wherever
-// the document has not painted yet, including a strip a clip rect just exposed.
-// Always opaque: the pane surface is a solid CSS color, and a translucent view
-// would show the SPA through the page.
+// ao_wk_view_set_background paints the page's base color (the Manager's
+// pageBase) — what shows wherever the document leaves its background
+// transparent or has not painted yet, including a strip a clip rect just
+// exposed. Always opaque: a translucent view would show the SPA through the
+// page.
 void ao_wk_view_set_background(void *view, double red, double green, double blue) {
   GdkRGBA color = {(float)red, (float)green, (float)blue, 1.0f};
   webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(view), &color);

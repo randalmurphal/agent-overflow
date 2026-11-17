@@ -99,6 +99,96 @@ func dialCDPBrowser(browserCtx context.Context, subscribe func() error) error {
 	return err
 }
 
+// Document titles on the CDP engines.
+//
+// Chromium's Target.targetInfoChanged reports a navigation's commit, with
+// the placeholder title the browser holds before the document has one (the
+// address without its scheme), and nothing when the document then sets its
+// title, whether its <title> is parsed or a script assigns document.title.
+// Both WebView2 and headless Chromium behave so (observed 2026-11-16), and
+// the Page domain has no title event. So each document reports its own:
+// a watcher installed in an isolated world of every new document sends
+// [location.href, document.title] through a binding exposed only to that
+// world, once at DOMContentLoaded and then on each change it sees (the
+// head's subtree, the root's children, the Navigation API's entry change),
+// deduplicated and at most once per documentTitleIntervalMs. Page scripts
+// see neither the binding nor the watcher. Each report is one event and no
+// round trip.
+const (
+	documentTitleWorld      = "ao-document-title"
+	documentTitleBinding    = "__aoDocumentTitle"
+	documentTitleIntervalMs = 250
+)
+
+// documentTitleWatcher is the isolated-world script. It cuts what it sends
+// at the Manager's bounds counted in UTF-16 units, so a page cannot push an
+// unbounded payload through the relay; commitInfo then bounds the bytes.
+var documentTitleWatcher = fmt.Sprintf(`(() => {
+  const send = globalThis[%[1]q];
+  if (typeof send !== "function" || globalThis.__aoDocumentTitleWatch) return;
+  globalThis.__aoDocumentTitleWatch = true;
+  let sent = "", last = 0, timer = 0, head = null;
+  const flush = () => {
+    timer = 0;
+    const report = JSON.stringify([String(location.href).slice(0, %[2]d), String(document.title).slice(0, %[3]d)]);
+    if (report === sent) return;
+    sent = report;
+    last = Date.now();
+    send(report);
+  };
+  const observer = new MutationObserver(() => changed());
+  const watchHead = () => {
+    if (document.head && document.head !== head) {
+      head = document.head;
+      observer.observe(head, {subtree: true, childList: true, characterData: true});
+    }
+  };
+  const changed = () => {
+    watchHead();
+    if (!timer) timer = setTimeout(flush, Math.max(0, last + %[4]d - Date.now()));
+  };
+  const start = () => {
+    if (document.documentElement) observer.observe(document.documentElement, {childList: true});
+    watchHead();
+    if (globalThis.navigation) navigation.addEventListener("currententrychange", changed);
+    flush();
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, {once: true});
+  else start();
+})()`, documentTitleBinding, maxBrowserURLBytes, maxBrowserTitleBytes, documentTitleIntervalMs)
+
+// watchDocumentTitle installs the title watcher and routes its reports to
+// hooks.DocumentTitle. The binding and the script are both registered for
+// documents still to come and run on the current one, so a page attached
+// after its load reports too.
+func (p *cdpPage) watchDocumentTitle() error {
+	if p.hooks.DocumentTitle == nil {
+		return nil
+	}
+	ctx := p.ctx
+	onTargetEvent(ctx, cdpruntime.BindingCalled, log.Printf, func(event cdpruntime.EventBindingCalled) {
+		if event.Name != documentTitleBinding {
+			return
+		}
+		var report []string
+		if err := json.Unmarshal([]byte(event.Payload), &report); err != nil || len(report) != 2 {
+			return
+		}
+		p.hooks.DocumentTitle(report[0], report[1])
+	})
+	if _, err := chromedp.Call(ctx, cdpruntime.AddBinding, cdpruntime.AddBindingParams{
+		Name: documentTitleBinding, ExecutionContextName: documentTitleWorld,
+	}); err != nil {
+		return fmt.Errorf("browser: install the document title binding: %w", err)
+	}
+	if _, err := chromedp.Call(ctx, page.AddScriptToEvaluateOnNewDocument, page.AddScriptToEvaluateOnNewDocumentParams{
+		Source: documentTitleWatcher, WorldName: documentTitleWorld, RunImmediately: new(true),
+	}); err != nil {
+		return fmt.Errorf("browser: install the document title watcher: %w", err)
+	}
+	return nil
+}
+
 // reportLoading hands a loading change to the Manager.
 func (p *cdpPage) reportLoading(loading bool, order uint64) {
 	if p.hooks.Loading != nil {
@@ -195,6 +285,9 @@ func (p *cdpPage) installHandlers() error {
 	onTargetEvent(ctx, network.LoadingFailed, logf, func(event network.EventLoadingFailed) {
 		p.network.ended(event.RequestID, time.Now())
 	})
+	if err := p.watchDocumentTitle(); err != nil {
+		return err
+	}
 	if _, err := chromedp.Call(ctx, fetch.Enable, fetch.EnableParams{Patterns: navigationPolicyPatterns}); err != nil {
 		return fmt.Errorf("browser: install navigation policy: %w", err)
 	}

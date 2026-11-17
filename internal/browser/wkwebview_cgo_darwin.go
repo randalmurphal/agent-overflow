@@ -482,7 +482,7 @@ func wkParkView(view unsafe.Pointer, slot int) {
 }
 
 // wkPresentView moves the view over the placement's fitted rect, cropped to
-// its visible intersection and carrying the pane's background colour. The
+// its visible intersection and carrying the page's base colour (pageBase). The
 // page's viewport was set by SetViewport and stays its bounds, so the fitted
 // frame over those bounds is the scale. The colour is parsed HERE rather than
 // on the main thread: the Objective-C half takes the packed value and never a
