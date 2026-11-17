@@ -524,3 +524,83 @@ func TestClosingTheThreadForgetsItsDownloads(t *testing.T) {
 		t.Fatal("the closed thread's downloads are still kept")
 	}
 }
+
+// However a page stops being the Manager's, a download it left running
+// settles, its reservations are released, the engine is asked to stop it,
+// and its row can be cleared.
+func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		teardown func(t *testing.T, manager *Manager, access Access, page PageInfo)
+		listGone bool
+	}{
+		{"clear site data", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.ClearSiteData(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"disable", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.Reconfigure(Config{Enabled: false}); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"persistence change", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.Reconfigure(Config{Enabled: true, PersistSiteData: true}); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"engine page closed", func(t *testing.T, manager *Manager, _ Access, page PageInfo) {
+			manager.mu.Lock()
+			p, _ := manager.livePageLocked(page.ID)
+			manager.mu.Unlock()
+			manager.engine.(*fakeEngine).events.PageClosed(p.driver.Handle())
+		}, false},
+		{"close the page", func(t *testing.T, manager *Manager, access Access, page PageInfo) {
+			if err := manager.closeLivePage(t.Context(), access, page.ID); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"thread close", func(t *testing.T, manager *Manager, access Access, _ PageInfo) {
+			if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, access, page := newDownloadManager(t)
+			baseline := manager.artifactBytes.Load()
+			startDownload(t, manager, access, page, "held.bin", 4096, "hold")
+			authority := authorityOf(t, manager, access)
+			item, err := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := fakeProfileOf(t, manager)
+
+			tc.teardown(t, manager, access, page)
+
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				listed := threadDownloads(manager, access)
+				running := slices.ContainsFunc(listed, func(d ThreadDownload) bool { return d.State == downloadStateRunning })
+				settled := (tc.listGone && len(listed) == 0) || (!tc.listGone && len(listed) == 1 && listed[0].State == downloadStateCanceled)
+				profile.mu.Lock()
+				_, held := profile.held[item.engineID]
+				profile.mu.Unlock()
+				if !running && settled && !held && authority.downloadBytes.Load() == 0 && manager.artifactBytes.Load() == baseline {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !tc.listGone {
+				manager.ClearThreadDownloads(access)
+				if listed := threadDownloads(manager, access); len(listed) != 0 {
+					t.Fatalf("Clear list keeps %+v", listed)
+				}
+			}
+		})
+	}
+}

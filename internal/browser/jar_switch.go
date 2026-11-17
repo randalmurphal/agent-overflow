@@ -71,7 +71,7 @@ func (m *Manager) SetJar(access Access, kind string) error {
 			continue
 		}
 		_, scope := m.livePageLocked(old.id)
-		c := markClosingLocked(old, scope)
+		c := m.markClosingLocked(old, scope)
 		rec := recordOf(old, old.cachedInfo())
 		m.suspended[old.id] = rec
 		closes = append(closes, switchClose{scope: scope, close: c})

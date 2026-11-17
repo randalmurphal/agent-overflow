@@ -239,9 +239,13 @@ behave as a desktop browser's:
   cancel push at once, byte progress at most once a second per thread. A
   download that settles other than by the user's cancel is announced once
   (a Kind `download` event): a toast with Show in folder when it finished,
-  an error toast with the reason otherwise. `canceled` means AO stopped it
-  (the user, a quota, its size, its page closing); an end the engine
-  reports on its own is `failed`, with the engine's reason when it gives one.
+  an error toast with the reason otherwise. `canceled` means AO stopped it:
+  the user (settled by the engine's own report, so a finish that beats the
+  cancel keeps its file), a quota, its size, or its page leaving by any
+  path (a close, a suspend, the engine's close, Clear site data, disabling
+  the browser), which settles it at once and releases its reservation; an
+  end the engine reports on its own is `failed`, with the engine's reason
+  when it gives one.
   On Windows through WSL the pane's WebView2 writes into the jar's AO
   directory through its Windows view (`internal/browser/hosted_downloads.go`,
   which records the protocol real WebView2 accepts; `TestDownloadSmoke` in

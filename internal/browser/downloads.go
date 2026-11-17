@@ -251,29 +251,52 @@ func (p *managedPage) signalDownloadLocked() {
 	p.downloadWait = make(chan struct{})
 }
 
-func (m *Manager) cancelPageDownloads(p *managedPage, scope *jarScope) {
+// endedDownloads are the downloads a page left running when it stopped being
+// the Manager's (pageLeftLocked): already settled as canceled with their
+// reservations released, still to be published and stopped in the engine.
+type endedDownloads struct {
+	scope *jarScope
+	notes []downloadNote
+	ids   []string
+}
+
+// pageLeftLocked takes p out of scope's live pages. Every way a page stops
+// being the Manager's goes through it (a close, a jar switch, a suspend, the
+// engine's own close, the browser's close), so none can leave the page's
+// downloads running with nothing to settle them: they settle here as
+// canceled with reason. The caller holds m.mu, publishes the answer once it
+// is released (publishDownloads), and stops it (stopEndedDownloads) before
+// the profile is disposed.
+func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string) endedDownloads {
+	delete(scope.pages, p.id)
+	ended := endedDownloads{scope: scope}
 	p.downloadMu.Lock()
-	ids := make([]string, 0)
-	notes := make([]downloadNote, 0)
 	for i := range p.downloads {
 		entry := &p.downloads[i]
 		if entry.State != downloadStateRunning {
 			continue
 		}
-		entry.State, entry.Error = downloadStateCanceled, "page closed"
+		entry.State, entry.Error = downloadStateCanceled, reason
 		m.releaseDownloadLocked(p, entry)
-		notes = append(notes, m.noteDownloadLocked(p, entry, ""))
-		ids = append(ids, entry.ID)
+		ended.notes = append(ended.notes, m.noteDownloadLocked(p, entry, ""))
+		ended.ids = append(ended.ids, entry.ID)
 	}
-	if len(ids) > 0 {
+	if len(ended.ids) > 0 {
 		p.signalDownloadLocked()
 	}
 	p.downloadMu.Unlock()
-	m.publishDownloads(notes...)
-	for _, id := range ids {
-		if err := scope.profile.CancelDownload(id); err != nil {
-			log.Printf("browser: cancel download %s of a closed page: %v", id, err)
+	return ended
+}
+
+// stopEndedDownloads asks the engine to stop the downloads a page left
+// running and removes what they wrote: their entries already say canceled,
+// so a file that finished meanwhile goes too.
+func (m *Manager) stopEndedDownloads(ended endedDownloads) {
+	for _, id := range ended.ids {
+		if err := ended.scope.profile.CancelDownload(id); err != nil && !errors.Is(err, errDownloadEnded) {
+			log.Printf("browser: cancel download %s of a page that went: %v", id, err)
 		}
+		removePartialDownload(ended.scope, id)
 	}
 }
 

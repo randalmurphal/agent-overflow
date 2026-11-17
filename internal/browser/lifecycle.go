@@ -86,6 +86,8 @@ type pageClose struct {
 	p    *managedPage
 	done chan struct{}
 	err  error
+	// ended are the downloads the page left running (pageLeftLocked).
+	ended endedDownloads
 }
 
 func (c *pageClose) wait(ctx context.Context) error {
@@ -374,7 +376,7 @@ func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, erro
 				m.mu.Unlock()
 				return nil, errPageNotFound
 			}
-			c := markClosingLocked(p, scope)
+			c := m.markClosingLocked(p, scope)
 			m.mu.Unlock()
 			m.startClose(scope, c)
 			return c, nil
@@ -386,9 +388,8 @@ func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, erro
 
 // markClosingLocked moves a live page to its scope's closing pages. The
 // caller holds m.mu and calls startClose after releasing it.
-func markClosingLocked(p *managedPage, scope *jarScope) *pageClose {
-	delete(scope.pages, p.id)
-	c := &pageClose{p: p, done: make(chan struct{})}
+func (m *Manager) markClosingLocked(p *managedPage, scope *jarScope) *pageClose {
+	c := &pageClose{p: p, done: make(chan struct{}), ended: m.pageLeftLocked(scope, p, "page closed")}
 	if scope.closing == nil {
 		scope.closing = make(map[string]*pageClose)
 	}
@@ -404,6 +405,7 @@ func (m *Manager) startClose(scope *jarScope, c *pageClose) {
 	p.cancelOps()
 	m.repairActivePage(p.owner)
 	m.emitThreadState(p.owner)
+	m.publishDownloads(c.ended.notes...)
 	// Hides the page (presentPanes hides closing pages) before its engine
 	// teardown, which can take a while.
 	m.syncPanePresentation(p.owner)
@@ -418,7 +420,7 @@ func (m *Manager) startClose(scope *jarScope, c *pageClose) {
 func (m *Manager) runClose(scope *jarScope, c *pageClose) {
 	p := c.p
 	p.mu.Lock()
-	m.cancelPageDownloads(p, scope)
+	m.stopEndedDownloads(c.ended)
 	p.driver.Close()
 	m.endFindLocked(p)
 	p.mu.Unlock()
@@ -545,10 +547,15 @@ func (m *Manager) disposeScope(ctx context.Context, scope *jarScope) error {
 	return err
 }
 
-// disposeReleased disposes a released scope off the caller, reporting a
-// failure as the teardown of the page whose close released it.
-func (m *Manager) disposeReleased(scope *jarScope, threadID, pageID string) {
+// disposeReleased stops the downloads a page closed by its engine left
+// running and disposes the scope its close released (nil for none), off the
+// caller, reporting a failure as the teardown of that page.
+func (m *Manager) disposeReleased(ended endedDownloads, scope *jarScope, threadID, pageID string) {
 	run := func() {
+		m.stopEndedDownloads(ended)
+		if scope == nil {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), disposeTimeout)
 		defer cancel()
 		if err := m.disposeScope(ctx, scope); err != nil {
