@@ -986,6 +986,49 @@ func TestHeadlessProfileNamesThePopupADownloadBeganIn(t *testing.T) {
 	}
 }
 
+// A download whose start Chromium sends after its popup's destroy was
+// handled still names the popup, its openers and its profile: the event
+// subscriptions run in no fixed order, and the Manager lists it by the
+// popup's fate.
+func TestHeadlessProfileNamesAGonePopupADownloadBeganIn(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	starts := make(chan downloadStart, 1)
+	engine.events.DownloadStarted = func(start downloadStart) bool {
+		starts <- start
+		return true
+	}
+	engine.events.PopupOpened = func(enginePopup) {}
+	engine.events.PageClosed = func(string) {}
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	browser.send(popupCreated("P-1", "T-1"))
+	browser.send(popupCreated("P-2", "P-1"))
+	eventually(t, "the popups to be recorded", func() bool {
+		_, first := engine.profileForPage("P-1")
+		_, second := engine.profileForPage("P-2")
+		return first && second
+	})
+	browser.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "P-1"}})
+	browser.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "P-2"}})
+	eventually(t, "the popups' destroys to be handled", func() bool {
+		_, first := engine.profileForPage("P-1")
+		_, second := engine.profileForPage("P-2")
+		return !first && !second
+	})
+	browser.send(downloadWillBegin("G-gone", "P-2"))
+	select {
+	case start := <-starts:
+		if start.Popup != "P-2" || !slices.Equal(start.Openers, []string{"P-1", "T-1"}) || start.Profile != profile.Handle() {
+			t.Fatalf("the gone popup's download started as %+v", start)
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("the download was never reported")
+	}
+}
+
 // A page owns its main frame, whose id is its target id, before it has
 // reported a frame at all: a download can begin in a navigation that never
 // commits, and the Manager finds the download's page by its frame.

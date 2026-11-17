@@ -25,9 +25,10 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	// A popup's main frame id is its target id, which is its handle. A
 	// download in a popup whose targetCreated the record has not handled
 	// yet names no popup and is refused; Chromium sends the target's
-	// creation before the navigation that downloads.
+	// creation before the navigation that downloads. One whose destroy the
+	// record handled first still names it (downloadOwners).
 	downloads.popup = func(frame string) downloadStart {
-		owners := targets.owners(frame)
+		owners := targets.downloadOwners(frame)
 		if len(owners) < 2 {
 			return downloadStart{}
 		}

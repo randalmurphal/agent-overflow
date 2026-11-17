@@ -6,26 +6,6 @@ import (
 	"github.com/chromedp/cdproto/target"
 )
 
-// cdpTargets is one CDP connection's record of its targets, kept across
-// targetCreated, targetInfoChanged and targetDestroyed, which chromedp
-// delivers on three subscriptions in no fixed order (cdp_events.go). A
-// target id is known (created handled, destroyed not), gone (destroyed
-// handled, whether or not created was), or has its info held (an info
-// change handled before anything answers to the target: the newest is
-// kept). A created or an info change for a gone target is dropped, so a
-// target destroyed before its creation is handled leaves nothing behind.
-//
-// known and openers hold live targets, and a target whose destroy was
-// handled before its creation once its tombstone left gone; both are
-// bounded by maxKnownTargets, gone and the held info by orderSlack. The record goes
-// with its connection: each connection makes its own.
-//
-// Every info change is numbered as it is handled, held or not, so a held
-// change delivered late is still older than every change handled after it,
-// and the Manager, which keeps the highest number, ends with the newest.
-// Each method runs the engine's part, when it takes one, under mu, so what
-// the engine binds or looks up there is settled against the other events of
-// the same target.
 // maxKnownTargets bounds the known targets and the opener edges a
 // connection keeps. A browser's live targets are far fewer (the launcher
 // keeps at most webview2host.MaxHostPages pages, each with its frames and
@@ -34,13 +14,36 @@ import (
 // kept for the connection's life.
 const maxKnownTargets = 4 * orderSlack
 
+// cdpTargets is one CDP connection's record of its targets, kept across
+// targetCreated, targetInfoChanged and targetDestroyed, which chromedp
+// delivers on three subscriptions in no fixed order (cdp_events.go). A
+// target id is known (created handled, destroyed not), gone (destroyed
+// handled, whether or not created was), or has its info held (an info
+// change handled before anything answers to the target: the newest is
+// kept). A created or an info change for a gone target is dropped, so a
+// target destroyed before its creation is handled leaves nothing behind.
+// A gone popup keeps its opener edge, for a download start Chromium sends
+// after the destroy was handled (downloadOwners).
+//
+// known and openers hold live targets, and a target whose destroy was
+// handled before its creation once its tombstone left gone; both are
+// bounded by maxKnownTargets, gone and the held info by orderSlack. The
+// record goes with its connection: each connection makes its own.
+//
+// Every info change is numbered as it is handled, held or not, so a held
+// change delivered late is still older than every change handled after it,
+// and the Manager, which keeps the highest number, ends with the newest.
+// Each method runs the engine's part, when it takes one, under mu, so what
+// the engine binds or looks up there is settled against the other events of
+// the same target.
 type cdpTargets struct {
 	mu    sync.Mutex
 	known *boundedMap[target.ID, struct{}]
 	// openers maps each known page target that has an opener to it, for the
 	// browser-wide navigation policy.
-	openers  *boundedMap[target.ID, target.ID]
-	gone     *boundedMap[target.ID, struct{}]
+	openers *boundedMap[target.ID, target.ID]
+	// gone maps each gone target to the opener it had, or to "".
+	gone     *boundedMap[target.ID, target.ID]
 	heldInfo *boundedMap[target.ID, heldTarget]
 	// next numbers the info changes, called under mu
 	// (engineEvents.PageInfoChanged).
@@ -69,7 +72,7 @@ func newCDPTargets(next func() uint64) *cdpTargets {
 		next:     next,
 		known:    newBoundedMap[target.ID, struct{}](maxKnownTargets),
 		openers:  newBoundedMap[target.ID, target.ID](maxKnownTargets),
-		gone:     newBoundedMap[target.ID, struct{}](orderSlack),
+		gone:     newBoundedMap[target.ID, target.ID](orderSlack),
 		heldInfo: newBoundedMap[target.ID, heldTarget](orderSlack),
 	}
 }
@@ -128,14 +131,19 @@ func (t *cdpTargets) takeHeld(id target.ID) (*target.Info, uint64, bool) {
 	return held.info, held.order, ok
 }
 
-// destroyed forgets a target and keeps it gone, then runs then.
+// destroyed forgets a target and keeps it gone, with the opener it had,
+// then runs then.
 func (t *cdpTargets) destroyed(id target.ID, then func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	opener, _ := t.openers.get(id)
+	if kept, _ := t.gone.get(id); opener == "" {
+		opener = kept
+	}
 	t.known.delete(id)
 	t.openers.delete(id)
 	t.heldInfo.delete(id)
-	t.gone.put(id, struct{}{})
+	t.gone.put(id, opener)
 	if then != nil {
 		then()
 	}
@@ -149,15 +157,31 @@ func (t *cdpTargets) isKnownLocked(id target.ID) bool {
 }
 
 // owners answers frame followed by the pages that opened it, nearest first,
-// when frame is a known popup, and frame alone otherwise.
+// when frame is a known popup, and frame alone otherwise. A gone popup's
+// edge is no authority for a request.
 func (t *cdpTargets) owners(frame string) []string {
+	return t.chain(frame, false)
+}
+
+// downloadOwners is owners following gone popups' edges too: a download
+// Chromium starts in a popup reaches its handler in no fixed order with
+// the popup's destroy, and its start names the popup and its openers
+// either way.
+func (t *cdpTargets) downloadOwners(frame string) []string {
+	return t.chain(frame, true)
+}
+
+func (t *cdpTargets) chain(frame string, gone bool) []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	owners := []string{frame}
-	// A popup has one opener, so the chain is at most every known popup
+	// A popup has one opener, so the chain is at most every recorded popup
 	// long; the bound stops a cycle.
-	for id := target.ID(frame); len(owners) <= t.openers.len(); {
+	for id := target.ID(frame); len(owners) <= t.openers.len()+t.gone.len(); {
 		opener, _ := t.openers.get(id)
+		if opener == "" && gone {
+			opener, _ = t.gone.get(id)
+		}
 		if opener == "" {
 			break
 		}
