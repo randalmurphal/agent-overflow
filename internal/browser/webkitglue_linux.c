@@ -1092,6 +1092,9 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
 void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
                       const char *console_handler) {
   ao_connect_view(WEBKIT_WEB_VIEW(view), page_id, user_script, console_handler);
+  // The popup's address and title changed unobserved until now: report them
+  // as they are, so its tab starts from them.
+  ao_notify_info(G_OBJECT(view), NULL, NULL);
 }
 
 int ao_wk_view_close(void *view) {

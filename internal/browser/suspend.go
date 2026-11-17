@@ -467,13 +467,12 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	m.mu.Unlock()
 	p.mu.Lock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	_, read, err := m.readInfo(opCtx, p, pageListing{})
+	read, err := m.settledAddress(opCtx, p)
 	cancel()
 	info := p.cachedInfo()
 	if err == nil {
-		// The page's address as of its suspension, read under the page lock:
-		// a report the cache took meanwhile can be one the engine made
-		// before the read, delivered late.
+		// The page's address as of its suspension, read under the page lock
+		// with no report landing during the read (settledAddress).
 		info.URL = truncateUTF8(read.URL, maxBrowserURLBytes)
 		info.Title = truncateUTF8(read.Title, maxBrowserTitleBytes)
 	} else if p.ctx.Err() == nil {

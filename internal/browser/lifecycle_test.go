@@ -17,7 +17,8 @@ import (
 // disposal, a navigation, an address read and a favicon read. A gate set
 // with hold makes every later call wait for its release; the matching
 // channel receives one value per call that reached it. onNewPage, when set,
-// runs with the page's hooks before NewPage returns.
+// runs with the page's hooks before NewPage returns, and onNewFakePage with
+// its fake engine page.
 type lifecycleEngine struct {
 	*recordingPaneHost
 	mu                                       sync.Mutex
@@ -28,6 +29,7 @@ type lifecycleEngine struct {
 	newPageErr, disposeErr                   error
 	favicon                                  string
 	onNewPage                                func(pageHooks)
+	onNewFakePage                            func(*fakePage)
 	disposed, closed                         atomic.Int64
 	disposingNow, profileDuringDispose       atomic.Bool
 }
@@ -117,11 +119,14 @@ func (p *lifecycleProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDr
 		return nil, err
 	}
 	e.mu.Lock()
-	hook := e.onNewPage
-	e.onNewPage = nil
+	hook, fakeHook := e.onNewPage, e.onNewFakePage
+	e.onNewPage, e.onNewFakePage = nil, nil
 	e.mu.Unlock()
 	if hook != nil {
 		hook(hooks)
+	}
+	if fakeHook != nil {
+		fakeHook(driver.(*fakePage))
 	}
 	return &lifecycleDriver{pageDriver: driver, engine: e}, nil
 }

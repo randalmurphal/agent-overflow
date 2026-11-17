@@ -190,8 +190,9 @@ type pageHooks struct {
 	// engine orders them (its UI thread), which only grows: the Manager
 	// keeps the report with the highest order, so reports that reach it out
 	// of order settle on the engine's latest. Bound from the moment the
-	// engine page exists, so no report misses that fence. Never called on a
-	// UI thread (it takes Manager locks).
+	// engine page exists, so no report misses that fence; a popup's view
+	// reports none before its adoption and reports its address and title as
+	// it is adopted. Never called on a UI thread (it takes Manager locks).
 	Info func(url, title string, order uint64)
 }
 
@@ -440,9 +441,12 @@ type engineEvents struct {
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
 	// native engine reports through the page's own hook (pageHooks.Info).
-	// order is as for pageHooks.Info. The engine delivers the reports one
-	// at a time, so one the Manager cannot route yet (a page whose engine
-	// page it has not attached) is never overtaken by an older one.
+	// order is as for pageHooks.Info. Reports can reach the Manager out of
+	// order (headless Chromium delivers a held report while a newer one
+	// is delivered), and one can name a handle no page answers to yet (an
+	// engine page being created before the Manager attaches it, a popup
+	// being adopted): the Manager holds the newest of those for the page
+	// that takes the handle, so its order fence sees them.
 	PageInfoChanged func(handle, url, title string, order uint64)
 	// DownloadStarted reports whether the download may continue. The engine
 	// cancels one it answers false for.

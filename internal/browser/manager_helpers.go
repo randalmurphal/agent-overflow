@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"os"
@@ -133,27 +134,63 @@ func operationContext(caller, pageCtx context.Context, timeout time.Duration) (c
 	return ctx, func() { stop(); cancel() }
 }
 
+// pageRead is what a read of a page's info found: the address and title it
+// read, and whether they were committed, which they are unless a write that
+// began later (an engine report) set the address during the read.
+type pageRead struct {
+	Location pageLocation
+	Located  bool
+}
+
 // readInfo reads one page's live URL, title, and history state and commits
 // them with listing as a read stamped before it asked (commitRead). It
 // answers the info the tab shows after, whose fields a write that began
-// during the read may hold instead, and the address and title it read.
-func (m *Manager) readInfo(ctx context.Context, p *managedPage, listing pageListing) (PageInfo, pageLocation, error) {
+// during the read may hold instead, and what it read.
+func (m *Manager) readInfo(ctx context.Context, p *managedPage, listing pageListing) (PageInfo, pageRead, error) {
 	stamp := p.readStamp()
 	location, title, err := p.driver.Info(ctx)
 	if err != nil {
-		return PageInfo{}, pageLocation{}, err
+		return PageInfo{}, pageRead{}, err
 	}
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
-		return PageInfo{}, pageLocation{}, err
+		return PageInfo{}, pageRead{}, err
 	}
-	read := pageLocation{URL: location, Title: title}
-	info, _ := m.commitRead(p, pageUpdate{
-		Location: &read,
+	read := pageRead{Location: pageLocation{URL: location, Title: title}}
+	info, located := m.commitRead(p, pageUpdate{
+		Location: &read.Location,
 		History:  &pageHistory{CanGoBack: back, CanGoForward: forward},
 		Listing:  listing,
 	}, stamp)
+	read.Located = located
 	return info, read, nil
+}
+
+// maxSettleReads bounds settledAddress on a page that keeps navigating.
+const maxSettleReads = 4
+
+// settledAddress reads p's address until a read commits with no engine
+// report landing during it, which makes that read the engine's address as
+// of then: a report committed during a read may be newer than the read's
+// answer (the page navigated itself) or older (delivered late), and a stamp
+// alone cannot tell which, but a read is at least as new as every report
+// committed before it began. After maxSettleReads it answers the last read.
+// The caller holds the page-operation lock, so no operation moves the page
+// between the reads.
+func (m *Manager) settledAddress(ctx context.Context, p *managedPage) (pageLocation, error) {
+	for attempt := 1; ; attempt++ {
+		_, read, err := m.readInfo(ctx, p, pageListing{})
+		if err != nil {
+			return pageLocation{}, err
+		}
+		if read.Located {
+			return read.Location, nil
+		}
+		if attempt == maxSettleReads {
+			log.Printf("browser: page %s reported a new address during each of %d reads; keeping the last read, %s", p.id, maxSettleReads, read.Location.URL)
+			return read.Location, nil
+		}
+	}
 }
 
 // truncateUTF8 bounds value to limit bytes at a rune boundary. A truncated

@@ -542,16 +542,44 @@ func (m *Manager) AcceleratorsChanged() {
 }
 
 // updatePageInfo is engineEvents.PageInfoChanged, a CDP engine's report of
-// a page by its handle.
+// a page by its handle. A report for a handle no page answers to yet (an
+// engine page the Manager has not attached or adopted) is held, the newest
+// by order, until its page takes it (takeHeldInfoLocked).
 func (m *Manager) updatePageInfo(handle, url, title string, order uint64) {
 	m.mu.Lock()
 	found := m.pageByHandleLocked(handle)
 	if found == nil {
 		found = m.creatingPageByHandleLocked(handle)
 	}
+	if found == nil {
+		if held, ok := m.heldInfo.get(handle); !ok || held.order < order {
+			m.heldInfo.put(handle, heldInfo{url: url, title: title, order: order})
+		}
+	}
 	m.mu.Unlock()
 	if found != nil {
 		m.pageInfoReport(found, url, title, order)
+	}
+}
+
+// heldInfo is an engine report of a handle no page answered to yet.
+type heldInfo struct {
+	url, title string
+	order      uint64
+}
+
+// takeHeldInfoLocked takes the report held for handle, in the hold of m.mu
+// that makes a page answer to it, so every report for the handle either was
+// held before or finds the page after. The caller commits it to the page
+// (applyHeldInfo) once it releases m.mu.
+func (m *Manager) takeHeldInfoLocked(handle string) (heldInfo, bool) {
+	return m.heldInfo.take(handle)
+}
+
+// applyHeldInfo commits a report taken by takeHeldInfoLocked to p.
+func (m *Manager) applyHeldInfo(p *managedPage, held heldInfo, ok bool) {
+	if ok {
+		m.pageInfoReport(p, held.url, held.title, held.order)
 	}
 }
 
