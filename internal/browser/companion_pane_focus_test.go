@@ -239,8 +239,17 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			aHandle := w.handle(w.a, w.aPage)
 			bHandle := w.handle(w.b, w.bPage)
 			w.e.click(t, aHandle)
+			// A change can return before its presentation: one asked for
+			// while another pass of the thread runs (here the drain's, laying
+			// out a tab the switch made active) is left to that pass's loop,
+			// which runs once more and reads the newest selection.
+			settle := func() {
+				awaitViewportIdle(t, w.m, w.a.ThreadID)
+				awaitViewportIdle(t, w.m, w.b.ThreadID)
+			}
 
 			tc.hide(t, w)
+			settle()
 			focus, shown := w.e.state()
 			if tc.keeps {
 				if !shown[aHandle] || focus != aHandle {
@@ -262,6 +271,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			}
 
 			tc.show(t, w)
+			settle()
 			focus, shown = w.e.state()
 			if !shown[aHandle] || !shown[bHandle] {
 				t.Fatalf("after the show the pages are shown a=%v b=%v, want both", shown[aHandle], shown[bHandle])
