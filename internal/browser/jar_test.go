@@ -58,8 +58,11 @@ func newJarManager(t *testing.T, dir string, config Config) (*Manager, *jarEngin
 	t.Helper()
 	manager := NewManager(dir, config, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
+	// Downloads AO keeps, whose directories and quotas are per workspace.
+	fake := newFakeEngine()
+	fake.artifactDownloads = true
 	engine := &jarEngine{
-		fakeEngine: newFakeEngine(), navErr: make(map[string]error),
+		fakeEngine: fake, navErr: make(map[string]error),
 		navigating: make(chan string, 16), creating: make(chan struct{}, 16), profiling: make(chan struct{}, 16),
 	}
 	manager.engine = engine

@@ -106,8 +106,9 @@ func TestPrepareHarnessRefusesSymlinkedPaths(t *testing.T) {
 
 func TestIsolateHarnessHome(t *testing.T) {
 	root := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
+	// Restored after the test; isolateHarnessHome sets both.
+	t.Setenv("HOME", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", os.Getenv("XDG_CONFIG_HOME"))
 
 	home, err := isolateHarnessHome(root)
 	if err != nil {
@@ -118,6 +119,14 @@ func TestIsolateHarnessHome(t *testing.T) {
 	}
 	if os.Getenv("HOME") != home {
 		t.Fatalf("HOME = %q, want %q", os.Getenv("HOME"), home)
+	}
+	// The browser pane's downloads land in the harness home, whatever the
+	// developer's user-dirs file names.
+	if got := os.Getenv("XDG_CONFIG_HOME"); got != filepath.Join(home, ".config") {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want under the harness home", got)
+	}
+	if info, err := os.Stat(filepath.Join(home, "Downloads")); err != nil || !info.IsDir() {
+		t.Fatalf("the harness Downloads folder: %v", err)
 	}
 	gitconfig, err := os.ReadFile(filepath.Join(home, ".gitconfig"))
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -282,8 +281,9 @@ func selectionOutcome(m *Manager, access Access) string {
 	for i, page := range state.Pages {
 		address := page.URL
 		if strings.HasPrefix(address, "file://") {
-			// A download's directory is per Manager.
-			address = "file:" + path.Base(address)
+			// The fixture's one download, whose name depends on what the
+			// Downloads folder already holds.
+			address = "file:download"
 		}
 		urls = append(urls, address)
 		if page.ID == state.ActivePageID {

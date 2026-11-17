@@ -187,7 +187,9 @@ type profileOptions struct {
 	// An engine derives its profile directory or id from it and nothing
 	// else, so one jar is one profile across restarts.
 	Jar string
-	// DownloadDir is the AO artifact directory downloads must land in.
+	// DownloadDir is the AO artifact directory downloads must land in, for
+	// an engine whose downloads AO keeps (artifactDownloadEngine); empty
+	// for the others.
 	DownloadDir string
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
@@ -337,14 +339,16 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
-// downloadPolicy is the optional half of an engine profile that can fail to
-// keep its downloads in AO's directory without failing its pages:
-// downloadsWarning answers the user-facing warning, empty while downloads
-// are managed. The engine reports each change, at page creation or any
-// later time, through engineEvents.DownloadPolicyChanged; the Manager shows
-// each distinct warning once per jar profile.
-type downloadPolicy interface {
-	downloadsWarning() string
+// artifactDownloadEngine is an engine whose downloads AO keeps: they land
+// in profileOptions.DownloadDir under engine ids, the Manager moves each
+// finished one to its workspace's artifact directory, and quotas, the
+// per-download cap and artifact pruning apply (downloads.go). Only headless
+// Chromium in serve mode answers true; it runs on a server, where no user
+// has a Downloads folder to look in. Every other engine saves into the
+// Downloads folder of the machine its pages run on, as any browser there
+// does, and AO bounds, moves and deletes none of those files.
+type artifactDownloadEngine interface {
+	DownloadsToArtifacts() bool
 }
 
 // pageFind is the optional find-in-page half of a page driver: the engine's
@@ -504,11 +508,6 @@ type engineEvents struct {
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool
 	DownloadProgress func(downloadProgress)
-	// DownloadPolicyChanged reports that the profile with this handle
-	// changed what it does with downloads (downloadPolicy). It carries no
-	// state: the Manager reads the current warning, so reports may arrive
-	// in any order, and an engine may report from any goroutine.
-	DownloadPolicyChanged func(profile string)
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held
 	// keyboard focus — does AO own it? True means the engine swallows the

@@ -240,7 +240,8 @@ func (m *Manager) threadDownload(threadID, id string) (threadDownload, error) {
 
 // CancelThreadDownload is the pane's cancel for a running download. It only
 // asks: the engine's terminal report settles the download, as a cancel when
-// the cancel won (downloadProgress then removes the partial file) or as a
+// the cancel won (the engine removes its partial file in the Downloads
+// folder, downloadProgress removes one among AO's artifacts) or as a
 // finish when the download finished first, so a cancel racing a finish never
 // deletes the finished file. The engine's refusal is the answer and the
 // download keeps running and listed as such.
@@ -281,8 +282,9 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 }
 
 // ClearThreadDownloads removes the thread's settled downloads from its list.
-// Running ones stay, so they can still be canceled. No file is deleted: the
-// files are artifacts, removed with the rest after artifactMaxAge.
+// Running ones stay, so they can still be canceled. No file is deleted:
+// one in the user's Downloads folder is the user's, and an artifact goes
+// with the rest after artifactMaxAge.
 func (m *Manager) ClearThreadDownloads(access Access) {
 	m.downloadsMu.Lock()
 	if list := m.threadDownloads[access.ThreadID]; list != nil {
@@ -311,8 +313,11 @@ func (m *Manager) finishedDownloadPath(access Access, id string) (threadDownload
 	}
 	current, err := os.Stat(item.path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && m.downloadsToArtifacts() {
 			return threadDownload{}, fmt.Errorf("browser: %s is gone; downloads are removed after %d days", item.Name, int(artifactMaxAge.Hours()/24))
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return threadDownload{}, fmt.Errorf("browser: %s is no longer at %s", item.Name, item.path)
 		}
 		return threadDownload{}, fmt.Errorf("browser: read the download %s: %w", item.Name, err)
 	}

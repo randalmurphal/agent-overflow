@@ -162,11 +162,15 @@ type Manager struct {
 	artifactReady  bool
 	artifactBytes  atomic.Int64
 	// downloadsMu guards threadDownloads, each thread's downloads as its
-	// pane lists them (downloads_thread.go). It is taken inside m.mu and
-	// inside a page's downloadMu, and never held around either.
-	downloadsMu     sync.Mutex
-	threadDownloads map[string]*threadDownloadList
-	downloadKeys    atomic.Uint64
+	// pane lists them (downloads_thread.go), and finishedDownloads, the
+	// files each workspace's downloads saved in the user's Downloads
+	// folder, with recordSeq (download_files.go). It is taken inside m.mu
+	// and inside a page's downloadMu, and never held around either.
+	downloadsMu       sync.Mutex
+	threadDownloads   map[string]*threadDownloadList
+	finishedDownloads map[string]*workspaceDownloads
+	recordSeq         uint64
+	downloadKeys      atomic.Uint64
 	// downloadPushInterval overrides downloadPushInterval when set (tests).
 	downloadPushInterval time.Duration
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.
@@ -419,8 +423,6 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		DownloadProgress:  m.downloadProgress,
 		KeyChord:          m.keyChord,
 		PageFocusReported: m.pageFocusReported,
-
-		DownloadPolicyChanged: m.downloadPolicyChanged,
 	})
 	pruneEncryptedCheckpoints(configDir)
 	m.loadPageRecords(opts.KeepThread)

@@ -970,11 +970,13 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 }
 
 // The Manager keeps a download only when a managed page owns the frame it
-// began in and the workspace has quota for it. It answers false for every
-// other one, which the engine then cancels.
+// began in and, on an engine whose downloads are AO's, the workspace has
+// quota for it. It answers false for every other one, which the engine then
+// cancels.
 func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { manager.Close() })
+	manager.engine.(*fakeEngine).artifactDownloads = true
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	page, err := manager.NewPage(t.Context(), access)
 	if err != nil {

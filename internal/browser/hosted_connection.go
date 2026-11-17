@@ -89,7 +89,6 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 		allocCancel()
 		return nil, fmt.Errorf("browser: attach to the pane browser: %w", attachCtx.Err())
 	}
-	e.enableDownloadEvents(browserCtx)
 	e.mu.Lock()
 	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
 	e.mu.Unlock()
@@ -168,12 +167,6 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 // Popups are not wired: the launcher does not surface WebView2's
 // NewWindowRequested, so no page can be created behind the Manager's back.
 func (e *hostedEngine) subscribe(browserCtx context.Context) error {
-	// Downloads carry no engine identity (the GUID is the handle on every
-	// CDP engine), so the shared tracker translates them; the engine notes
-	// each one's browser context on the way (hosted_downloads.go).
-	if err := newDownloadTracker(e.downloadEvents(), refusedDownloadCanceler(e.cancelDownload, e.logf)).subscribe(browserCtx, e.logf); err != nil {
-		return err
-	}
 	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
 		return err
 	}

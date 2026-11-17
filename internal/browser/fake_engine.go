@@ -44,7 +44,15 @@ type fakeEngine struct {
 	// release and its terminal report (finishHeld, CancelDownload), where a
 	// native engine releases its record. Nil outside tests.
 	downloadReleased func(id string)
+	// artifactDownloads has the engine keep its downloads in AO's artifact
+	// directory, as headless Chromium does (artifactDownloadEngine); left
+	// false it saves them to the user's Downloads folder, as the desktop
+	// engines do. Set by tests before the first profile.
+	artifactDownloads bool
 }
+
+// DownloadsToArtifacts is artifactDownloadEngine.
+func (e *fakeEngine) DownloadsToArtifacts() bool { return e.artifactDownloads }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{} }
 

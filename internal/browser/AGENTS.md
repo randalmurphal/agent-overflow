@@ -128,26 +128,27 @@ profile directory. Unsupported platform capabilities return a clear refusal.
 ## Files, downloads, and site data
 
 `browser_open_file` resolves symlinks and accepts regular files within the
-thread workspace or project root, or the workspace's own download directory,
-unless the explicit outside-workspace setting widens access. Use direct
-`file://` navigation.
+thread workspace or project root, or the workspace's own finished downloads
+(`authorizeFile`), unless the explicit outside-workspace setting widens
+access. Use direct `file://` navigation.
 
-Downloads use sanitized unique names under AO-owned artifact directories and
-never the user's Downloads directory. Preserve quota reservation, per-download
-bounds, page cancellation, and denial of sensitive website permissions. Every
-change to a page's download entry goes through `noteDownloadLocked` and
-`publishDownloads` (`downloads_thread.go`), which keep the thread's list the
-pane shows and coalesce byte progress; an engine reports one terminal event
-per download, and that report alone settles the user's cancel. Every
+Where a download goes is the engine's kind, decided once in the Manager
+(`downloadsToArtifacts`); the rule is browser-tools.md's Browser hardening.
+Every desktop engine saves to the user's Downloads folder: AO bounds, moves
+and deletes nothing there, and an engine in this process takes its path
+from `reserveDownloadPath` (`user_downloads.go`). Headless Chromium alone
+keeps downloads as artifacts with quota reservation, the per-download cap
+and pruning; keep those bounds on that path only. Every change to a page's
+download entry goes through `noteDownloadLocked` and `publishDownloads`
+(`downloads_thread.go`), which keep the thread's list the pane shows and
+coalesce byte progress; an engine reports one terminal event per download,
+after its start, and that report alone settles the user's cancel. Every
 removal of a live page goes through `pageLeftLocked`, which settles the
 page's running downloads and, under the page's `downloadMu`, ends its
-admission of new ones. The hosted engine sets each page's download
-behavior from the page's own session before handing the page over, has the
-profile's other live pages set it again, one profile-serialized walk per
-leaving page, before that page's session goes, and on a refusal leaves the
-page open and denies the profile's downloads (`hosted_downloads.go`). A
-profile's download-policy change, whenever it happens, reaches the user
-only through `engineEvents.DownloadPolicyChanged`.
+admission of new ones. The hosted engine's downloads are the launcher's
+reports (`hosted_downloads.go`); headless Chromium's arrive over CDP
+(`headless_downloads.go`). Preserve the denial of sensitive website
+permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and
 ephemeral profiles must remain distinct; a private jar is always ephemeral.

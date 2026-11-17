@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,12 +24,22 @@ const (
 // maxPageDownloads bounds one page's download log.
 const maxPageDownloads = 100
 
-// downloadStarted is the quota decision. The engine reports that a download
-// began; whether it is allowed to consume workspace and artifact bytes is
-// policy, and so is the sanitized name it will eventually be renamed to. It
-// answers false, and the engine cancels the download, when the download is
-// over quota or no managed page owns the frame it began in. The quota is the
-// page's workspace's (workspaceAuthority), whichever jar the page is in.
+// downloadsToArtifacts is where this Manager's downloads go: true when its
+// engine's downloads are AO's (artifactDownloadEngine), which quotas, a
+// per-download cap and artifact pruning bound; false when they go to the
+// user's Downloads folder, where AO bounds, moves and deletes nothing.
+func (m *Manager) downloadsToArtifacts() bool {
+	engine, ok := m.engine.(artifactDownloadEngine)
+	return ok && engine.DownloadsToArtifacts()
+}
+
+// downloadStarted admits a download into the log of the page whose frame
+// it began in. It answers false, and the engine cancels the download, when
+// no managed page owns that frame or, on an engine whose downloads are AO's,
+// the download is over quota: whether it may consume workspace and artifact
+// bytes is policy, and so is the sanitized name it will eventually be
+// renamed to. The quota is the page's workspace's (workspaceAuthority),
+// whichever jar the page is in.
 func (m *Manager) downloadStarted(event downloadStart) bool {
 	p, _ := m.pageForFrame(event.Frame)
 	if p == nil {
@@ -54,9 +63,26 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 	entry := DownloadInfo{
 		Sequence: p.downloadSeq, ID: event.ID, URL: event.URL,
 		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
-		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), reservedBytes: maxDownloadBytes,
+		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		key: fmt.Sprintf("d%d", m.downloadKeys.Add(1)),
 	}
+	if m.downloadsToArtifacts() {
+		entry.reservedBytes = maxDownloadBytes
+		m.reserveDownloadLocked(authority, &entry)
+	}
+	p.downloads = append(p.downloads, entry)
+	p.trimDownloadsLocked()
+	note := m.noteDownloadLocked(p, &p.downloads[len(p.downloads)-1], source)
+	p.signalDownloadLocked()
+	p.downloadMu.Unlock()
+	m.publishDownloads(note)
+	return entry.State != downloadStateCanceled
+}
+
+// reserveDownloadLocked reserves a new download's bytes against its
+// workspace's quota and the artifact root's, or settles entry as canceled
+// over quota. The caller holds the page's downloadMu.
+func (m *Manager) reserveDownloadLocked(authority *workspaceAuthority, entry *DownloadInfo) {
 	scopeReserved := authority != nil && authority.downloadBytes.Add(maxDownloadBytes) <= maxWorkspaceDownloadBytes
 	globalReserved := scopeReserved && m.reserveArtifacts(maxDownloadBytes)
 	if !scopeReserved || !globalReserved {
@@ -70,13 +96,6 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 			entry.Error = fmt.Sprintf("browser artifacts exceed %d bytes", maxArtifactRootBytes)
 		}
 	}
-	p.downloads = append(p.downloads, entry)
-	p.trimDownloadsLocked()
-	note := m.noteDownloadLocked(p, &p.downloads[len(p.downloads)-1], source)
-	p.signalDownloadLocked()
-	p.downloadMu.Unlock()
-	m.publishDownloads(note)
-	return entry.State != downloadStateCanceled
 }
 
 // trimDownloadsLocked keeps the page's log within maxPageDownloads by
@@ -121,9 +140,15 @@ func (m *Manager) releaseDownloadLocked(p *managedPage, entry *DownloadInfo) {
 	}
 }
 
-// removePartialDownload removes the handle-named file an engine was
-// streaming a download into, once AO stopped the download.
+// removePartialDownload removes the handle-named file an engine whose
+// downloads are AO's was streaming a download into, once AO stopped the
+// download. A scope with no artifact directory has nothing of AO's to
+// remove: an engine that saves to the user's Downloads folder removes its
+// own partial file.
 func removePartialDownload(scope *jarScope, id string) {
+	if scope.downloadDir == "" {
+		return
+	}
 	if err := os.Remove(filepath.Join(scope.downloadDir, filepath.Base(id))); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("browser: remove the partial download %s: %v", id, err)
 	}
@@ -146,7 +171,8 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 	if event.Total > 0 {
 		entry.TotalBytes = int64(event.Total)
 	}
-	if entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
+	artifacts := m.downloadsToArtifacts()
+	if artifacts && entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		m.releaseDownloadLocked(p, entry)
@@ -173,7 +199,17 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
 			entry.reservedBytes = 0
 		}
-		if scope != nil && p.authority != nil {
+		if !artifacts {
+			// The engine saved it in the user's Downloads folder, where it
+			// stays.
+			path, file, err := savedDownload(event.FilePath)
+			if err != nil {
+				entry.State, entry.Error = downloadStateFailed, err.Error()
+				break
+			}
+			entry.Path, entry.file = path, file
+			m.recordFinishedDownload(p.access.Workspace, path, file)
+		} else if scope != nil && p.authority != nil {
 			// The engine writes into its jar's directory; the finished file
 			// moves to the page's workspace's.
 			source := event.FilePath
@@ -221,40 +257,6 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		removePartialDownload(scope, event.ID)
 	}
 	m.publishDownloads(note)
-}
-
-// downloadPolicyChanged tells the threads with a page in the profile, live
-// or being created, its current download warning, once per change.
-func (m *Manager) downloadPolicyChanged(handle string) {
-	m.mu.Lock()
-	var threads []string
-	warn := ""
-	for _, scope := range m.scopes {
-		policy, ok := scope.profile.(downloadPolicy)
-		if !ok || scope.profile.Handle() != handle {
-			continue
-		}
-		warn = policy.downloadsWarning()
-		if warn == scope.downloadsWarned {
-			break
-		}
-		scope.downloadsWarned = warn
-		for _, p := range scope.pages {
-			threads = append(threads, p.owner)
-		}
-		for p := range scope.creating {
-			threads = append(threads, p.owner)
-		}
-		break
-	}
-	m.mu.Unlock()
-	if warn == "" {
-		return
-	}
-	slices.Sort(threads)
-	for _, thread := range slices.Compact(threads) {
-		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: thread, Error: warn})
-	}
 }
 
 func pathInside(root, path string) bool {
@@ -338,8 +340,11 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 }
 
 // stopEndedDownloads asks the engine to stop the downloads a page left
-// running and removes what they wrote: their entries already say canceled,
-// so a file that finished meanwhile goes too.
+// running. On an engine whose downloads are AO's it removes what they
+// wrote: their entries already say canceled, so a file that finished
+// meanwhile goes too. An engine saving to the user's Downloads folder
+// removes its own partial file on the cancel, and a file that finished
+// first stays there.
 func (m *Manager) stopEndedDownloads(ended endedDownloads) {
 	for _, id := range ended.ids {
 		if err := ended.scope.profile.CancelDownload(id); err != nil && !errors.Is(err, errDownloadEnded) {

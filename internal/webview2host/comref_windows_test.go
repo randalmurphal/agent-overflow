@@ -30,6 +30,10 @@ var comObjectKinds = []struct {
 		return unsafe.Pointer(newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) {}))
 	}},
 	{"process failed", func() unsafe.Pointer { return unsafe.Pointer(newProcessFailedHandler(func(uint32) {})) }},
+	{"download starting", func() unsafe.Pointer {
+		return unsafe.Pointer(newDownloadStartingHandler(func(*iDownloadStartingEventArgs) {}))
+	}},
+	{"download event", func() unsafe.Pointer { return unsafe.Pointer(newDownloadEventHandler(func() {})) }},
 }
 
 // One AddRef and one Release serve every vtable only while each object
@@ -44,6 +48,8 @@ func TestEveryCOMObjectStartsWithTheSharedLayout(t *testing.T) {
 		"find start completed":    unsafe.Offsetof(iFindStartCompletedHandler{}.ref),
 		"accelerator key pressed": unsafe.Offsetof(iAcceleratorKeyPressedHandler{}.ref),
 		"process failed":          unsafe.Offsetof(iProcessFailedHandler{}.ref),
+		"download starting":       unsafe.Offsetof(iDownloadStartingHandler{}.ref),
+		"download event":          unsafe.Offsetof(iDownloadEventHandler{}.ref),
 	} {
 		if got != want {
 			t.Errorf("%s keeps its count at offset %d, want %d", name, got, want)

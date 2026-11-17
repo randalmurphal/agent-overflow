@@ -267,9 +267,15 @@ func (m *Manager) authorizeFile(access Access, path string) (string, error) {
 	}
 	roots := []string{access.Workspace, access.ProjectRoot}
 	// The workspace's own downloads, which the pane opens in a tab
-	// (OpenThreadDownload).
+	// (OpenThreadDownload): its artifact directory on an engine whose
+	// downloads are AO's, and otherwise the files its downloads saved in
+	// the user's Downloads folder, never the folder (download_files.go).
 	if workspace, err := canonicalRoot(access.Workspace); err == nil && strings.TrimSpace(access.Workspace) != "" {
-		roots = append(roots, m.workspaceDownloadDir(workspace))
+		if m.downloadsToArtifacts() {
+			roots = append(roots, m.workspaceDownloadDir(workspace))
+		} else if m.recordedDownloadAllows(workspace, resolved) {
+			return resolved, nil
+		}
 	}
 	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {

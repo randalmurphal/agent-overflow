@@ -123,10 +123,13 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.scheduleIdleClose()
 		return nil, err
 	}
-	authorityDir := m.workspaceDownloadDir(workspace)
-	if err := os.MkdirAll(authorityDir, 0o700); err != nil {
-		m.scheduleIdleClose()
-		return nil, fmt.Errorf("browser: create download directory: %w", err)
+	authorityDir := ""
+	if m.downloadsToArtifacts() {
+		authorityDir = m.workspaceDownloadDir(workspace)
+		if err := os.MkdirAll(authorityDir, 0o700); err != nil {
+			m.scheduleIdleClose()
+			return nil, fmt.Errorf("browser: create download directory: %w", err)
+		}
 	}
 	m.mu.Lock()
 	var jar jarIdentity
@@ -263,9 +266,12 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 // policy answers with the authority of the page a request's frame belongs
 // to, or its opener's (jarAllows).
 func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
-	downloadDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
-	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
-		return nil, fmt.Errorf("browser: create download directory: %w", err)
+	downloadDir := ""
+	if m.downloadsToArtifacts() {
+		downloadDir = filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
+		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
+			return nil, fmt.Errorf("browser: create download directory: %w", err)
+		}
 	}
 	scope := &jarScope{
 		jar: jar, downloadDir: downloadDir,

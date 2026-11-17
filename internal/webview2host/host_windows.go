@@ -41,6 +41,10 @@ type Host struct {
 	accelerators keybindings.AcceleratorSet
 
 	cdpPort int
+	// downloadToken and downloadSeq make the launcher's download ids
+	// (download.go); downloadSeq is UI thread only.
+	downloadToken string
+	downloadSeq   uint64
 	// foreground answers whether the launcher window is the foreground
 	// window (isForeground). A smoke stands in its answer so it never takes
 	// the user's foreground.
@@ -121,6 +125,10 @@ type hostPage struct {
 	// first find (find_windows.go). The page holds its constructor's
 	// reference until retireHandlers.
 	findStarted *iFindStartCompletedHandler
+	// downloadStarting takes the page's downloads, and downloads holds each
+	// one until its operation ends (download_windows.go). UI thread only.
+	downloadStarting *iDownloadStartingHandler
+	downloads        map[string]*hostDownload
 	// pres is what the backend said about the page's presentation, and
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
@@ -189,7 +197,8 @@ func New(config Config) (*Host, error) {
 		pages:   make(map[string]*hostPage, 4),
 		cdpPort: port,
 
-		foreground: isForeground,
+		foreground:    isForeground,
+		downloadToken: newDownloadToken(),
 	}
 	h.env = newPaneEnvironment(config.OnMain, h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
 	return h, nil
@@ -253,6 +262,8 @@ func (h *Host) Apply(directive Directive) {
 	case OpFocus:
 		h.config.Focus.Deliver(directive.Mount, directive.Intent, directive.PageID)
 		h.withPage(directive.PageID, h.applyPendingFocus)
+	case OpCancelDownload:
+		h.withPage(directive.PageID, func(page *hostPage) { h.cancelDownload(page, directive.Download) })
 	}
 }
 
@@ -827,6 +838,7 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
 	keyHandler.ref.release()
+	h.watchDownloads(page, view)
 
 	// A runtime without the find API has to be known before the page is
 	// used, so its report precedes created.
@@ -951,6 +963,7 @@ func (h *Host) retireHandlers(page *hostPage) {
 		page.findStarted.ref.release()
 		page.findStarted = nil
 	}
+	h.retireDownloads(page)
 }
 
 func errString(err error) string {

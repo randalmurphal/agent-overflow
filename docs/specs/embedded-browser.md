@@ -72,8 +72,9 @@ headless Chrome process, pages are engine pages hosted as above.
   constructed against an explicit AO-owned data dir: merely
   instantiating the default session writes into
   `~/.local/share/webkitgtk/`.
-- A jar carries site data only. Navigation and file permissions,
-  download directories and download quotas stay per workspace, so two
+- A jar carries site data only. Navigation and file permissions, the
+  record of finished downloads, and headless Chromium's download
+  directories and quotas stay per workspace, so two
   worktrees sharing a project jar keep their own authority.
 - Pages start hidden (invisible controller / unparented or hidden
   view). `browser_visibility` presents one page inside the pane.
@@ -194,8 +195,9 @@ design.
   registered — not a general proxy.
 
 Existing `internal/browser` CDP code (locator, interaction,
-operations, downloads via CDP events, console ring, screenshots)
-carries over nearly unchanged on Windows: CDP is CDP.
+operations, console ring, screenshots) carries over nearly unchanged on
+Windows: CDP is CDP. Downloads are the exception: the launcher owns
+WebView2's (see the capability table).
 
 ### Pane directives
 
@@ -380,7 +382,7 @@ mechanism:
 | wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort; evaluate does not use page `eval`, so a page CSP without `'unsafe-eval'` allows it |
 | clipboard (isolated per tab) | AO-managed, engine-agnostic | same |
 | console_logs | CDP Runtime/Log | injected capture |
-| downloads | Browser.download events → AO artifact dirs. WebView2: Page.setDownloadBehavior allowAndName on each page's session (per profile, into the jar's AO dir's Windows view) and Browser.setDownloadBehavior with no context for the events; a named profile's context id is refused. A refusal leaves the page open and sets deny on the profile; only a refused deny leaves its downloads to the system Downloads folder, which the user is told (`internal/browser/hosted_downloads.go`) | WebKitDownload delegate → same dirs |
+| downloads | WebView2: the launcher handles each page's `DownloadStarting` (no dialog), WebView2 saves to the Windows Downloads folder, and the launcher reports each download's life (`internal/webview2host/download.go`). Headless Chromium: Browser.download events → AO artifact dirs | WebKitDownload delegate → the user's Downloads folder, under a name the backend chooses (`internal/browser/user_downloads.go`) |
 | assets | as today | JS inventory + fetch-in-page bundling |
 
 New behavior the engines give for free (previously impossible): file

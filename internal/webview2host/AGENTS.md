@@ -73,6 +73,17 @@ reference after the hand-off call, success or failure; a page detaches its
 callbacks when it goes, except controller-completed, whose completion closes
 a controller that outlived its page.
 
+A page's downloads are the launcher's (`download_windows.go`): it handles
+each `DownloadStarting`, so WebView2's dialog never opens, keeps the
+`DownloadOperation` and reports the download's start, throttled progress
+and one end (`ReportDownload`, `download.go`). A network retry is a new
+operation for the running download's file: it is adopted into that
+download, and the operations it replaced are kept, detached, until the
+download ends, because releasing them stops the new one's reports. A
+download ends, its handlers detached and every operation released, at its
+terminal state or when its page goes (`retireDownloads`), which cancels it
+and reports nothing.
+
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,

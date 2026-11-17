@@ -21,9 +21,9 @@ extern void aoWebKitPageCrashed(uint64_t page_id, const char *reason);
 extern void aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
                           void *view, char *uri);
 extern int aoWebKitPagePresented(uint64_t page_id);
-extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
-                                    uint64_t download_id, void *download,
-                                    char *uri, char *suggested);
+extern char *aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
+                                     uint64_t download_id, void *download,
+                                     char *uri, char *suggested);
 extern void aoWebKitDownloadProgress(uint64_t download_id, double received, double total,
                                      int state, char *path, char *error);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
@@ -38,7 +38,6 @@ extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_cou
 #define AO_PAGE_KEY "ao-page-id"
 #define AO_OPENER_KEY "ao-opener-page-id"
 #define AO_PROFILE_KEY "ao-profile-id"
-#define AO_SESSION_DL_DIR "ao-download-dir"
 #define AO_SESSION_KEY "ao-session"
 #define AO_DOWNLOAD_KEY "ao-download-id"
 #define AO_FIND_CALLS_KEY "ao-find-calls"
@@ -440,38 +439,33 @@ int ao_wk_view_focus_presented(void *view) {
 
 static uint64_t ao_download_seq = 0;
 
-// ao_download_destination forces the file into the profile's artifact directory
-// and is where the download is REPORTED: the suggested filename the Manager
-// sanitizes only exists once the response headers have been seen, and this
-// runs before any byte is written.
+// ao_download_destination is where the download is REPORTED and where Go
+// names its file in the user's Downloads folder: the suggested filename only
+// exists once the response headers have been seen, and this runs before any
+// byte is written. A NULL path means Go canceled the download and let it go.
 static gboolean ao_download_destination(WebKitDownload *download, gchar *suggested,
                                         gpointer data) {
   (void)data;
-  // The session stamped its artifact directory onto the download when it
-  // started; WebKitGTK 6.0 offers no download -> session accessor.
-  const char *dir = g_object_get_data(G_OBJECT(download), AO_SESSION_DL_DIR);
-  if (dir == NULL) {
-    webkit_download_cancel(download);
-    return TRUE;
-  }
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
-  // The handle IS the on-disk name. The Manager renames the finished file to a
-  // sanitized unique name inside the same directory; giving it a handle-named
-  // file also lets it clean up a download it had to cancel mid-flight.
-  char *name = g_strdup_printf("dl-%llu", (unsigned long long)id);
-  char *path = g_build_filename(dir, name, NULL);
-  webkit_download_set_destination(download, path);
-  g_free(path);
-  g_free(name);
   WebKitNetworkSession *session = g_object_get_data(G_OBJECT(download), AO_SESSION_KEY);
   uint64_t profile_id =
       session ? (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(session), AO_PROFILE_KEY)) : 0;
   WebKitWebView *view = webkit_download_get_web_view(download);
   WebKitURIRequest *request = webkit_download_get_request(download);
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;
-  aoWebKitDownloadStarted(profile_id, view ? ao_view_page_id(view) : 0, id, download,
-                          uri ? g_strdup(uri) : NULL,
-                          suggested ? g_strdup(suggested) : NULL);
+  char *path = aoWebKitDownloadStarted(profile_id, view ? ao_view_page_id(view) : 0, id, download,
+                                       uri ? g_strdup(uri) : NULL,
+                                       suggested ? g_strdup(suggested) : NULL);
+  if (path != NULL) {
+    // Go created the file empty and exclusively (claimDownloadFile), so the
+    // only file WebKit replaces here, or deletes when the download fails or
+    // is canceled, is the download's own. Refusing to overwrite would fail
+    // every download on that file, and WebKit deletes the destination of a
+    // failed download whoever made it.
+    webkit_download_set_allow_overwrite(download, TRUE);
+    webkit_download_set_destination(download, path);
+    free(path);
+  }
   return TRUE;
 }
 
@@ -520,12 +514,9 @@ static void ao_session_download_started(WebKitNetworkSession *session,
   (void)data;
   uint64_t id = ++ao_download_seq;
   g_object_set_data(G_OBJECT(download), AO_DOWNLOAD_KEY, GSIZE_TO_POINTER((gsize)id));
-  // WebKitGTK 6.0 has no download -> session accessor, so the two facts the
-  // destination callback needs travel on the download itself.
+  // WebKitGTK 6.0 has no download -> session accessor, so the destination
+  // callback finds the profile through the download itself.
   g_object_set_data(G_OBJECT(download), AO_SESSION_KEY, session);
-  const char *dir = g_object_get_data(G_OBJECT(session), AO_SESSION_DL_DIR);
-  g_object_set_data_full(G_OBJECT(download), AO_SESSION_DL_DIR,
-                         dir ? g_strdup(dir) : NULL, g_free);
   // Held until the Go side releases it, so a cancel arriving after the page
   // closed cannot reach a freed object.
   g_object_ref(download);
@@ -552,8 +543,7 @@ void ao_wk_download_unref(void *download) {
 // ---------------------------------------------------------------------------
 
 void *ao_wk_session_new(const char *data_dir, const char *cache_dir,
-                        const char *cookie_file, const char *download_dir,
-                        int ephemeral, uint64_t profile_id) {
+                        const char *cookie_file, int ephemeral, uint64_t profile_id) {
   WebKitNetworkSession *session =
       ephemeral ? webkit_network_session_new_ephemeral()
                 : webkit_network_session_new(data_dir, cache_dir);
@@ -561,7 +551,6 @@ void *ao_wk_session_new(const char *data_dir, const char *cache_dir,
     return NULL;
   }
   g_object_set_data(G_OBJECT(session), AO_PROFILE_KEY, GSIZE_TO_POINTER((gsize)profile_id));
-  g_object_set_data_full(G_OBJECT(session), AO_SESSION_DL_DIR, g_strdup(download_dir), g_free);
   if (!ephemeral && cookie_file != NULL) {
     webkit_cookie_manager_set_persistent_storage(
         webkit_network_session_get_cookie_manager(session), cookie_file,
