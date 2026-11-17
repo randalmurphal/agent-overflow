@@ -98,7 +98,7 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 		return false, fmt.Errorf("store: clear the forked_from_thread_id links to retired thread %s: %w", id, err)
 	}
 	result, err := tx.Exec(`UPDATE threads
-		    SET mode = ?, deleting = 0, delete_claim = '', delete_worktrees = 0, project_id = NULL, workspace_path = '', worktree_path = NULL,
+		    SET mode = ?, deleting = 0, delete_claim = '', project_id = NULL, workspace_path = '', worktree_path = NULL,
 		        branch = NULL, session_ref = NULL, pending_fork_session_ref = NULL,
 		        pending_fork_resume_at = '', fork_preparing = 0,
 		        forked_from_thread_id = NULL, pinned_at = NULL,

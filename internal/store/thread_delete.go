@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -123,10 +122,8 @@ func (s *Store) BeginThreadDelete(id string) error {
 //  2. Verify, in the app, writes nothing; a refusal releases every claim
 //     in one transaction (ReleaseDeleteClaim).
 //  3. Commit (CommitDeleteClaim): one transaction sets deleting on every
-//     row the operation claimed, and on each one on a worktree the
-//     operation checked and no thread outside it is on, that its destroy
-//     removes that worktree (delete_worktrees). From here the rows are gone
-//     to every listing and the delete only moves forward.
+//     row the operation claimed. From here the rows are gone to every
+//     listing and the delete only moves forward.
 //  4. Destroy, in the app, drops each committed row (DeleteThreadPaced),
 //     the threads under it first.
 //
@@ -239,14 +236,6 @@ func (s *Store) ThreadDeleteClaim(threadID string) (claim string, committed bool
 	return claim, committed, nil
 }
 
-// ThreadDeleteHold is how far a delete has gone with one thread
-// (ThreadWorkspaceRef.Delete): the delete that claimed it, empty for none,
-// and whether a delete committed it.
-type ThreadDeleteHold struct {
-	Claim     string
-	Committed bool
-}
-
 // ClaimDeleteFamily claims for the delete op, in one transaction, the
 // threads ids names and what deleting them takes (ListDeleteFamily). It
 // refuses, changing nothing, when one of them is claimed by another delete
@@ -333,125 +322,17 @@ func (s *Store) ReleaseDeleteClaim(op string) error {
 	return nil
 }
 
-// DeleteWorktrees is what a delete may remove (CommitDeleteClaim): the
-// worktrees it authorized and checked, each named by Site, which maps a
-// stored workspace or worktree path to the one of them it names, "" for
-// none. Path comparison resolves links, which is the app's
-// (gitops.CanonicalPath). Inside reports a thread of the delete. The zero
-// value removes nothing.
-type DeleteWorktrees struct {
-	Site   func(path string) string
-	Inside func(threadID string) bool
-}
-
-// DeleteCommit is what CommitDeleteClaim committed.
-type DeleteCommit struct {
-	// Threads are the threads it marked deleting.
-	Threads []string
-	// RemoveWorktrees are those of them whose worktree their destroy
-	// removes (threads.delete_worktrees).
-	RemoveWorktrees map[string]bool
-	// Occupied names, for each worktree of DeleteWorktrees a thread outside
-	// the delete was on at the commit, one such thread. No destroy of this
-	// delete removes it.
-	Occupied map[string]string
-}
-
 // CommitDeleteClaim commits every thread the delete op claimed, in one
 // transaction: each is marked deleting, and is gone to every listing from
-// here (owned_threads). A thread on one of worktrees' worktrees is recorded
-// to remove it (threads.delete_worktrees) unless, read in this transaction,
-// a thread outside the delete is on it too; every other thread removes
-// none.
-func (s *Store) CommitDeleteClaim(op string, worktrees DeleteWorktrees) (commit DeleteCommit, err error) {
+// here (owned_threads). It returns the threads it marked.
+func (s *Store) CommitDeleteClaim(op string) (_ []string, err error) {
 	action := fmt.Sprintf("store: commit delete %s", op)
-	tx, err := s.db.Begin()
+	ids, err := queryIDs(s.db, `UPDATE threads SET deleting = 1
+		 WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0 RETURNING id`, op)
 	if err != nil {
-		return DeleteCommit{}, fmt.Errorf("%s: begin: %w", action, err)
+		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	defer rollbackAgentWakeTx(tx, action, &err)
-	commit = DeleteCommit{RemoveWorktrees: map[string]bool{}, Occupied: map[string]string{}}
-	removes := []string{}
-	if worktrees.Site != nil && worktrees.Inside != nil {
-		if removes, err = deleteWorktreeRemovals(tx, op, worktrees, commit.Occupied); err != nil {
-			return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
-		}
-	}
-	encoded, err := json.Marshal(removes)
-	if err != nil {
-		return DeleteCommit{}, fmt.Errorf("%s: encode: %w", action, err)
-	}
-	rows, err := tx.Query(`UPDATE threads SET deleting = 1,
-		       delete_worktrees = id IN (SELECT value FROM json_each(?2))
-		 WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0 RETURNING id, delete_worktrees`, op, string(encoded))
-	if err != nil {
-		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
-	}
-	defer closeAgentWakeRows(rows, action, &err)
-	for rows.Next() {
-		var id string
-		var remove bool
-		if err := rows.Scan(&id, &remove); err != nil {
-			return DeleteCommit{}, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		commit.Threads = append(commit.Threads, id)
-		if remove {
-			commit.RemoveWorktrees[id] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
-	}
-	if err := rows.Close(); err != nil {
-		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return DeleteCommit{}, fmt.Errorf("%s: commit: %w", action, err)
-	}
-	return commit, nil
-}
-
-// deleteWorktreeRemovals reads, in the commit's transaction, the threads of
-// op on one of worktrees' worktrees no thread outside the delete is on, and
-// fills occupied with the worktrees one is on.
-func deleteWorktreeRemovals(tx *sql.Tx, op string, worktrees DeleteWorktrees, occupied map[string]string) (_ []string, err error) {
-	rows, err := tx.Query(`SELECT id, workspace_path, COALESCE(worktree_path, ''), delete_claim = ?1 AND deleting = 0 FROM threads`, op)
-	if err != nil {
-		return nil, fmt.Errorf("read the threads on its worktrees: %w", err)
-	}
-	defer closeAgentWakeRows(rows, "store: read the threads on a delete's worktrees", &err)
-	type claimed struct{ id, site string }
-	var mine []claimed
-	for rows.Next() {
-		var id, workspace, worktree string
-		var ours bool
-		if err := rows.Scan(&id, &workspace, &worktree, &ours); err != nil {
-			return nil, fmt.Errorf("read the threads on its worktrees: %w", err)
-		}
-		if ours {
-			if site := worktrees.Site(worktree); site != "" {
-				mine = append(mine, claimed{id: id, site: site})
-			}
-		}
-		if worktrees.Inside(id) {
-			continue
-		}
-		for _, path := range []string{workspace, worktree} {
-			if site := worktrees.Site(path); site != "" && occupied[site] == "" {
-				occupied[site] = id
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the threads on its worktrees: %w", err)
-	}
-	removes := []string{}
-	for _, row := range mine {
-		if occupied[row.site] == "" {
-			removes = append(removes, row.id)
-		}
-	}
-	return removes, nil
+	return ids, nil
 }
 
 // ReleaseUndecidedDeleteClaims takes back, at boot, every claim no delete

@@ -60,20 +60,26 @@ type DeletePorts struct {
 	ChunkPause store.ChunkPause
 }
 
-// A thread a family delete committed (store.CommitDeleteClaim) is destroyed
-// in two halves, so the worktree it was the last thread on is removed while
-// its row still names it: TearDown stops everything it runs and removes what
-// it owns outside its row, and Drop drops the row
-// (docs/specs/standing-agents.md, "Owned workers"). The threads under it are
-// the caller's, destroyed first.
+// Destroy destroys a thread a family delete committed
+// (store.CommitDeleteClaim): it stops everything the thread runs, removes
+// what it owns outside its row (tearDown), then drops the row (drop)
+// (docs/specs/standing-agents.md, "Owned workers"). The worktree the thread
+// was on stays. The threads under it are the caller's, destroyed first. Call
+// it under the thread's action lock.
+func (s *Service) Destroy(threadID string, ports DeletePorts) error {
+	if err := s.tearDown(threadID, ports); err != nil {
+		return err
+	}
+	return s.drop(threadID, ports)
+}
 
-// TearDown stops everything the committed thread runs and removes what it
-// owns outside its row; the row stays for Drop. An assistant's current
-// thread is refused, with nothing touched, while a past thread or helper
-// still lives under it (store.AssistantDependentsError): its home and
-// history go only once they are gone. Call it under the thread's action
-// lock.
-func (s *Service) TearDown(threadID string, ports DeletePorts) error {
+// tearDown stops everything the committed thread runs and removes what it
+// owns outside its row; the row stays for drop, so a failure here keeps it
+// for the next attempt. An assistant's current thread is refused, with
+// nothing touched, while a past thread or helper still lives under it
+// (store.AssistantDependentsError): its home and history go only once they
+// are gone.
+func (s *Service) tearDown(threadID string, ports DeletePorts) error {
 	retired, err := s.CheckDelete(threadID, true)
 	if err != nil {
 		return err
@@ -183,11 +189,10 @@ func (s *Service) TearDown(threadID string, ports DeletePorts) error {
 	return nil
 }
 
-// Drop drops the row of a thread TearDown finished, with its history
+// drop drops the row of a thread tearDown finished, with its history
 // (store.DeleteThreadPaced), and closes what a client opened for it since.
-// A row already gone is nothing to do. Call it under the thread's action
-// lock.
-func (s *Service) Drop(threadID string, ports DeletePorts) error {
+// A row already gone is nothing to do.
+func (s *Service) drop(threadID string, ports DeletePorts) error {
 	database, err := s.database("delete thread")
 	if err != nil {
 		return err

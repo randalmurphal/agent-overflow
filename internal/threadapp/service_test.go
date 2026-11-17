@@ -635,7 +635,7 @@ func TestAnAssistantsDeleteDropsItOnlyOnceNothingLivesUnderIt(t *testing.T) {
 	}
 
 	homeChecked := false
-	err = service.TearDown(ops.ID, DeletePorts{
+	err = service.tearDown(ops.ID, DeletePorts{
 		AssistantHome: func(string) (func() error, error) { homeChecked = true; return nil, nil },
 	})
 	var left *store.AssistantDependentsError
@@ -659,11 +659,8 @@ func TestAnAssistantsDeleteDropsItOnlyOnceNothingLivesUnderIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{helper.ID, ops.ID} {
-		if err := service.TearDown(id, DeletePorts{}); err != nil {
-			t.Fatalf("tear down %s: %v", id, err)
-		}
-		if err := service.Drop(id, DeletePorts{}); err != nil {
-			t.Fatalf("drop %s: %v", id, err)
+		if err := service.Destroy(id, DeletePorts{}); err != nil {
+			t.Fatalf("destroy %s: %v", id, err)
 		}
 	}
 	if _, found, err := database.GetAgent("ops"); err != nil || found {

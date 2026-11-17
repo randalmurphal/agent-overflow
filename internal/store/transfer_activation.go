@@ -184,7 +184,7 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	const keepPinInGroup = `,pinned_at=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pinned_at END` +
 		`,pin_group=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pin_group END` +
 		`,placement=CASE WHEN excluded.placement = 'standalone' AND threads.placement = 'owned' THEN 'owned' ELSE excluded.placement END`
-	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0,delete_claim='',delete_worktrees=0`); err != nil {
+	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0,delete_claim=''`); err != nil {
 		return false, err
 	}
 	tallies, err := readTransferHistoryTx(ctx, tx, target, history)

@@ -146,48 +146,6 @@ func (s *Service) ThreadsReferencingWorkspace(path string) ([]string, error) {
 	return ids, nil
 }
 
-// ThreadsReferencingWorkspaces is ThreadsReferencingWorkspace for several
-// directories in one read of the thread rows, each stored path resolved
-// once: the i-th answer is paths[i]'s. Each thread comes with how far a
-// delete had gone with it in that read (store.ThreadWorkspaceRef.Delete).
-func (s *Service) ThreadsReferencingWorkspaces(paths []string) ([][]store.ThreadWorkspaceRef, error) {
-	refs, err := s.store.ListThreadWorkspaceRefs()
-	if err != nil {
-		return nil, err
-	}
-	at := make(map[string][]int, len(paths))
-	for i, path := range paths {
-		canonical := gitops.CanonicalPath(path)
-		at[canonical] = append(at[canonical], i)
-	}
-	resolved := make(map[string]string)
-	canonical := func(path string) string {
-		if path == "" {
-			return ""
-		}
-		if c, ok := resolved[path]; ok {
-			return c
-		}
-		c := gitops.CanonicalPath(path)
-		resolved[path] = c
-		return c
-	}
-	out := make([][]store.ThreadWorkspaceRef, len(paths))
-	for _, ref := range refs {
-		worktree, workspace := canonical(ref.WorktreePath), canonical(ref.WorkspacePath)
-		for _, i := range at[worktree] {
-			out[i] = append(out[i], ref)
-		}
-		if workspace == worktree {
-			continue
-		}
-		for _, i := range at[workspace] {
-			out[i] = append(out[i], ref)
-		}
-	}
-	return out, nil
-}
-
 // WorkspaceRefMatches compares both stored path columns to an already
 // canonicalized directory.
 func WorkspaceRefMatches(ref store.ThreadWorkspaceRef, canonicalPath string) bool {

@@ -10,23 +10,15 @@ import (
 )
 
 // commitDelete claims and commits the delete of ids as one family delete
-// would, so TearDown and Drop see what they run on.
+// would, so Destroy sees what it runs on.
 func commitDelete(t *testing.T, database *store.Store, ids ...string) {
 	t.Helper()
 	if _, err := database.ClaimDeleteFamily("op", ids); err != nil {
 		t.Fatalf("ClaimDeleteFamily: %v", err)
 	}
-	if _, err := database.CommitDeleteClaim("op", store.DeleteWorktrees{}); err != nil {
+	if _, err := database.CommitDeleteClaim("op"); err != nil {
 		t.Fatalf("CommitDeleteClaim: %v", err)
 	}
-}
-
-// destroy is a committed thread's destroy: TearDown, then Drop.
-func destroy(service *Service, threadID string, ports DeletePorts) error {
-	if err := service.TearDown(threadID, ports); err != nil {
-		return err
-	}
-	return service.Drop(threadID, ports)
 }
 
 func TestDestroyPreservesResourceOrder(t *testing.T) {
@@ -52,15 +44,15 @@ func TestDestroyPreservesResourceOrder(t *testing.T) {
 		Dropped:                 func(store.Thread, []string) { calls = append(calls, "dropped") },
 		Forget:                  func(string) { calls = append(calls, "forget") },
 	}
-	if err := service.TearDown(thread.ID, ports); err != nil {
-		t.Fatalf("TearDown: %v", err)
+	if err := service.tearDown(thread.ID, ports); err != nil {
+		t.Fatalf("tearDown: %v", err)
 	}
 	if _, err := database.GetThread(thread.ID); err != nil {
 		t.Fatalf("the row after the teardown: %v, want it kept for the drop", err)
 	}
 	calls = append(calls, "|")
-	if err := service.Drop(thread.ID, ports); err != nil {
-		t.Fatalf("Drop: %v", err)
+	if err := service.drop(thread.ID, ports); err != nil {
+		t.Fatalf("drop: %v", err)
 	}
 	want := []string{
 		"background", "session", "setup", "shell", "terminal", "browser", "reconnect",
@@ -75,8 +67,8 @@ func TestDestroyPreservesResourceOrder(t *testing.T) {
 		t.Fatalf("GetThread error = %v, want sql.ErrNoRows", err)
 	}
 	// A row already gone is nothing to do: a destroy the boot resumes.
-	if err := service.Drop(thread.ID, ports); err != nil {
-		t.Fatalf("Drop of a dropped row: %v", err)
+	if err := service.drop(thread.ID, ports); err != nil {
+		t.Fatalf("drop of a dropped row: %v", err)
 	}
 }
 
@@ -91,7 +83,7 @@ func TestTearDownContinuesCleanupButKeepsTheRowOnFailure(t *testing.T) {
 	cleanupErr := errors.New("disk busy")
 	browserErr := errors.New("profile busy")
 	recordsErr := errors.New("records busy")
-	err = service.TearDown(thread.ID, DeletePorts{
+	err = service.tearDown(thread.ID, DeletePorts{
 		StopSession:       func(string) error { calls = append(calls, "session"); return nil },
 		CloseBrowserPages: func(string) error { calls = append(calls, "browser"); return browserErr },
 		CleanupAttachments: func(string) error {
@@ -106,7 +98,7 @@ func TestTearDownContinuesCleanupButKeepsTheRowOnFailure(t *testing.T) {
 		Forget: func(string) { calls = append(calls, "forget") },
 	})
 	if !errors.Is(err, cleanupErr) || !errors.Is(err, browserErr) || !errors.Is(err, recordsErr) {
-		t.Fatalf("TearDown error = %v, want disk, browser and records errors", err)
+		t.Fatalf("tearDown error = %v, want disk, browser and records errors", err)
 	}
 	if !slices.Equal(calls, []string{"session", "browser", "attachments", "replay", "records"}) {
 		t.Fatalf("cleanup calls = %v", calls)
@@ -130,13 +122,13 @@ func TestTearDownRefusesAHomeBeforeStoppingAnything(t *testing.T) {
 	commitDelete(t, database, thread.ID)
 	homeErr := errors.New("this assistant was not deleted: its home is not its own folder")
 	stopped := false
-	err = service.TearDown(thread.ID, DeletePorts{
+	err = service.tearDown(thread.ID, DeletePorts{
 		AssistantHome:  func(string) (func() error, error) { return nil, homeErr },
 		StopRemoteWork: func(string) error { stopped = true; return nil },
 		StopSession:    func(string) error { stopped = true; return nil },
 	})
 	if !errors.Is(err, homeErr) {
-		t.Fatalf("TearDown error = %v, want the home's refusal", err)
+		t.Fatalf("tearDown error = %v, want the home's refusal", err)
 	}
 	if stopped {
 		t.Fatal("a refused teardown stopped the thread's work")
@@ -155,7 +147,7 @@ func TestDropClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
 	var rowPresent []bool
 	var forgotten, dropped bool
 	closeErr := errors.New("profile busy")
-	err = destroy(service, thread.ID, DeletePorts{
+	err = service.Destroy(thread.ID, DeletePorts{
 		CloseBrowserPages: func(id string) error {
 			_, err := database.GetThread(id)
 			rowPresent = append(rowPresent, err == nil)
@@ -193,7 +185,7 @@ func TestDropClosesTerminalsAgainAfterTheRowDrops(t *testing.T) {
 	var rowPresent []bool
 	var forgotten, dropped bool
 	closeErr := errors.New("pty busy")
-	err = destroy(service, thread.ID, DeletePorts{
+	err = service.Destroy(thread.ID, DeletePorts{
 		CloseTerminals: func(id string) error {
 			_, err := database.GetThread(id)
 			rowPresent = append(rowPresent, err == nil)
@@ -228,7 +220,7 @@ func TestTearDownStopsRemoteWorkAdmittedDuringCleanup(t *testing.T) {
 	commitDelete(t, database, thread.ID)
 	admitted := false
 	busy := errors.New("remote command admitted during cleanup could not be stopped")
-	err = service.TearDown(thread.ID, DeletePorts{
+	err = service.tearDown(thread.ID, DeletePorts{
 		StopRemoteWork: func(string) error {
 			if admitted {
 				return busy

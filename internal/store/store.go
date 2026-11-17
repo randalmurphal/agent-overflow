@@ -697,10 +697,6 @@ type ThreadWorkspaceRef struct {
 	ID            string
 	WorkspacePath string
 	WorktreePath  string
-	// Delete is how far a delete had gone with the thread when its paths
-	// were read, from the same row, so a delete that weighs who is on a
-	// worktree reads who and how far deleted at once.
-	Delete ThreadDeleteHold
 }
 
 // Project represents a user-defined grouping of threads rooted at a

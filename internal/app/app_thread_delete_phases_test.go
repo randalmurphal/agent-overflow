@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/entityid"
-	"agent-overflow/internal/identity"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -24,7 +23,6 @@ import (
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/transport"
 	workflowwake "agent-overflow/internal/workflow/wake"
 )
 
@@ -229,8 +227,7 @@ func TestEveryAppMessageDoorQueuesForAClaimedThread(t *testing.T) {
 // Two deletes over one family never overlap: a delete of a thread another
 // delete holds is refused with nothing claimed, and the first finishes. A
 // first delete refused at its verify releases every claim, so the second,
-// retried, deletes the whole family: here a Delete with worktrees from a
-// client without git:operate, crossed by a plain delete of the same thread.
+// retried, deletes the whole family.
 func TestDeletesOverOneFamilyDoNotOverlap(t *testing.T) {
 	t.Parallel()
 	t.Run("the second is refused while the first holds the family", func(t *testing.T) {
@@ -255,22 +252,19 @@ func TestDeletesOverOneFamilyDoNotOverlap(t *testing.T) {
 	})
 	t.Run("the first is refused at its verify and the second retried", func(t *testing.T) {
 		t.Parallel()
-		f := newDeleteWorktreeFixture(t)
-		if err := f.app.initIdentity("backend-under-test"); err != nil {
-			t.Fatal(err)
-		}
-		limited := callFrom(pairSessionWithScopes(t, f.app, "delete-limited", []identity.Scope{identity.ScopeThreadsOperate}).ID, false)
-		tree := f.worktree(t, "worker-tree")
+		f := newDeleteFixture(t)
 		owner := f.thread(t, "owner")
-		worker := f.thread(t, "worker", on(tree))
+		worker := f.thread(t, "worker")
 		recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
 		var second error
 		var once sync.Once
 		f.app.deleteVerifiedForTest = func(string) {
 			once.Do(func() { _, second = f.app.DeleteThread(owner.ID) })
 		}
-		_, err := f.app.DeleteThreadsAndWorktrees(limited, []string{owner.ID})
-		wantScopeRefusal(t, err, transport.ScopeGitOperate)
+		refused := errors.New("refused at the verify")
+		if _, err := f.app.deleteThreads(deleteRequest{seeds: []string{owner.ID}, verified: func([]store.DeleteMember) error { return refused }}); !errors.Is(err, refused) {
+			t.Fatalf("the first delete = %v, want it refused at its verify", err)
+		}
 		if !errors.Is(second, store.ErrThreadDeleting) {
 			t.Fatalf("the crossing delete = %v, want it refused", second)
 		}
@@ -281,9 +275,6 @@ func TestDeletesOverOneFamilyDoNotOverlap(t *testing.T) {
 		}
 		if !gone(t, f.app, owner.ID) || !gone(t, f.app, worker.ID) {
 			t.Error("the retried delete left the family")
-		}
-		if !exists(t, tree) {
-			t.Error("a plain delete removed the worktree")
 		}
 	})
 }
@@ -358,12 +349,12 @@ func TestADeleteReadsItsFamilyOncePerGrowthPass(t *testing.T) {
 	}
 }
 
-// A worker running a real turn on a worktree with unsaved work refuses its
-// owner's Delete with worktrees: nothing stops, and the turn completes.
-func TestARunningWorkerOnADirtyWorktreeRefusesTheDeleteAndFinishes(t *testing.T) {
+// A worker running a real turn on a worktree with unsaved work is stopped
+// and deleted with its owner, and the worktree stays with the unsaved work.
+func TestDeletingAnOwnerStopsItsWorkerOnADirtyWorktreeAndKeepsTheWorktree(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
-	release := f.mockClaudeAfterTheAck(t, "working")
+	f.mockClaudeAfterTheAck(t, "working")
 	repo := t.TempDir()
 	testutil.RunGit(t, repo, "init", "-b", "main")
 	testutil.RunGit(t, repo, "config", "user.name", "Agent Overflow")
@@ -391,26 +382,24 @@ func TestARunningWorkerOnADirtyWorktreeRefusesTheDeleteAndFinishes(t *testing.T)
 	}
 	dirty(t, tree)
 
-	_, err = f.app.DeleteThreadsAndWorktrees(t.Context(), []string{owner.ID})
-	if err == nil || !strings.Contains(err.Error(), "unsaved work") {
-		t.Fatalf("DeleteThreadsAndWorktrees = %v, want it refused for the unsaved work", err)
+	if result, err := f.app.DeleteThreads([]string{owner.ID}); err != nil || len(result.WorkersNotDeleted) > 0 {
+		t.Fatalf("DeleteThreads = %+v, %v; want it to go through", result, err)
 	}
-	untouched(t, f.app, owner.ID, ack.ThreadID)
-	if _, live := f.app.sessionManager().get(ack.ThreadID); !live {
-		t.Fatal("the refused delete stopped the worker")
+	for _, id := range []string{owner.ID, ack.ThreadID} {
+		if !gone(t, f.app, id) {
+			t.Errorf("%s outlived the delete", id)
+		}
+		if _, live := f.app.sessionManager().get(id); live {
+			t.Errorf("%s holds a session after the delete", id)
+		}
 	}
-	release(t, ack)
-	waitUntil(t, 10*time.Second, func() bool {
-		row, found, err := f.app.store.GetThreadRequestReceipt(ack.Token)
-		return err == nil && found && row.State == store.ThreadReceiptFinished
-	})
-	if !exists(t, tree) {
-		t.Error("the refused delete removed the worktree")
+	if body, err := os.ReadFile(filepath.Join(tree, "unsaved.txt")); err != nil || string(body) != "work" {
+		t.Errorf("the unsaved work after the delete = %q, %v; want it kept", body, err)
 	}
 }
 
 // crashFamily is an assistant whose current thread sorts before its helper,
-// each with a worker on its own clean worktree, deleted with its worktrees.
+// each with a worker on its own clean worktree.
 type crashFamily struct {
 	app        *App
 	path, home string
@@ -472,8 +461,8 @@ func newCrashFamily(t *testing.T) crashFamily {
 // stopped after its claim, before its commit, deleted nothing: the boot
 // takes the claims back and every thread, worktree and the assistant's home
 // are as they were. One stopped after its commit, before its first destroy
-// or between two, is finished by one boot with the policy it committed:
-// every thread, both worktrees and the home are gone.
+// or between two, is finished by one boot: every thread and the home are
+// gone, and both worktrees stay.
 func TestABootSettlesAnInterruptedFamilyDelete(t *testing.T) {
 	t.Parallel()
 	for _, crash := range []string{"after the claim", "after the commit", "between two destroys"} {
@@ -493,7 +482,7 @@ func TestABootSettlesAnInterruptedFamilyDelete(t *testing.T) {
 			go func() {
 				returned := false
 				defer func() { stopped <- returned }()
-				_, _ = app.DeleteThreadsAndWorktrees(context.Background(), []string{"a-agent"})
+				_, _ = app.DeleteThreads([]string{"a-agent"})
 				returned = true
 			}()
 			if within(t, "the interrupted delete", stopped) {
@@ -533,11 +522,13 @@ func TestABootSettlesAnInterruptedFamilyDelete(t *testing.T) {
 				return
 			}
 			waitUntil(t, 10*time.Second, func() bool {
-				if len(remaining(t, boot, family.ids)) > 0 || exists(t, family.home) {
-					return false
-				}
-				return !slices.ContainsFunc(family.trees, func(tree string) bool { return exists(t, tree) })
+				return len(remaining(t, boot, family.ids)) == 0 && !exists(t, family.home)
 			})
+			for _, tree := range family.trees {
+				if !exists(t, tree) {
+					t.Errorf("worktree %s was removed by the delete", tree)
+				}
+			}
 			if _, found, err := boot.store.GetStandingAgent("a-agent"); err != nil || found {
 				t.Errorf("the assistant's record after the boot = %v, %v", found, err)
 			}
@@ -621,9 +612,9 @@ func TestAnAssistantWhoseHelperFailsIsFinishedByDeletingAgain(t *testing.T) {
 	}
 }
 
-// Two threads selected together on one worktree with a terminal open: the
-// confirmation counts the worktree and its terminal once, and one delete
-// removes it once. Either thread alone leaves it to the other.
+// Two threads selected together on one worktree with a terminal open are
+// one delete: one claim takes both, both go with the terminal, and the
+// worktree stays.
 func TestTwoSelectedThreadsOnOneWorktreeAreOneDelete(t *testing.T) {
 	t.Parallel()
 	f := newDeleteWorktreeFixture(t)
@@ -635,24 +626,20 @@ func TestTwoSelectedThreadsOnOneWorktreeAreOneDelete(t *testing.T) {
 	if _, err := f.app.terminals.Open(a.ID, terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: tree}); err != nil {
 		t.Fatal(err)
 	}
-	alone, err := f.app.GetDeleteDependents([]string{a.ID})
-	if err != nil || len(alone.Worktrees) != 0 {
-		t.Fatalf("one thread's dependents = %+v, %v; want the worktree left to the other", alone, err)
+	var claims [][]string
+	f.app.deleteClaimedForTest = func(ids []string) { claims = append(claims, slices.Sorted(slices.Values(ids))) }
+	result, err := f.app.DeleteThreads([]string{a.ID, b.ID})
+	if err != nil || len(result.WorkersNotDeleted) > 0 {
+		t.Fatalf("DeleteThreads = %+v, %v", result, err)
 	}
-	got, err := f.app.GetDeleteDependents([]string{a.ID, b.ID})
-	if err != nil {
-		t.Fatal(err)
+	if len(claims) != 1 || !slices.Equal(claims[0], []string{a.ID, b.ID}) {
+		t.Errorf("claims = %v, want one of both threads", claims)
 	}
-	want := DeleteDependents{Worktrees: []DeleteWorktree{{ProjectID: f.project.ID, WorktreePath: tree, Terminals: 1}}}
-	if gotJSON, wantJSON := mustJSON(t, got), mustJSON(t, want); gotJSON != wantJSON {
-		t.Fatalf("GetDeleteDependents = %s, want %s", gotJSON, wantJSON)
+	if !gone(t, f.app, a.ID) || !gone(t, f.app, b.ID) {
+		t.Error("the delete left a thread")
 	}
-	result, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{a.ID, b.ID})
-	if err != nil || len(result.WorkersNotDeleted) > 0 || len(result.RetainedWorktrees) > 0 {
-		t.Fatalf("DeleteThreadsAndWorktrees = %+v, %v", result, err)
-	}
-	if !gone(t, f.app, a.ID) || !gone(t, f.app, b.ID) || exists(t, tree) {
-		t.Error("the delete left a thread or the worktree")
+	if !exists(t, tree) {
+		t.Error("the delete removed the worktree")
 	}
 	if open := f.app.terminals.Matching(func(terminal.SessionSummary) bool { return true }); len(open) != 0 {
 		t.Errorf("terminals after the delete = %+v, want none", open)

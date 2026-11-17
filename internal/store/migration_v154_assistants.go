@@ -38,8 +38,8 @@ import (
 //
 // threads gains the phases of a family delete (thread_delete.go): a
 // thread's `delete_claim` is the id of the delete that claimed it, empty
-// for none, and its `delete_worktrees` whether the commit of that delete
-// (`deleting`) recorded that its destroy removes its worktree. A claimed
+// for none. `delete_worktrees` is unused: deleting a thread removes no
+// worktree (docs/decisions.md), and the frozen schema keeps the column. A claimed
 // thread stays listed and refuses execution and every move;
 // idx_threads_delete_claim holds the claimed ones, for the boot that
 // releases the claims no delete committed. `spawn_instructions` is the text
