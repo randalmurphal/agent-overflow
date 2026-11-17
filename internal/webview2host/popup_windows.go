@@ -16,13 +16,13 @@ import (
 //
 // What the real runtime does, measured by popup_smoke_windows_test.go:
 // every way a page opens a window (window.open with or without a user
-// gesture, a target=_blank link or form, a middle, Ctrl or Shift click)
-// raises NewWindowRequested, IsUserInitiated true for each but a script's
-// call with no gesture. While the deferral is open the opener's script
-// waits in window.open. A view handed over with put_NewWindow gets a new
-// CDP target when the deferral completes, which names the opener as its
-// opener and starts the window's navigation at once; a click that opens a
-// background tab keeps the view's target and has no opener. Handled with no
+// gesture, a target=_blank link or form, a middle, Ctrl or Shift click on
+// a link) raises NewWindowRequested. While the deferral is open the
+// opener's script waits in window.open. A view handed over with
+// put_NewWindow gets a new CDP target when the deferral completes, which
+// names the opener as its opener and starts the window's navigation at
+// once; the target of a middle, Ctrl or Shift click's window names no
+// opener, and the opener stays where it is. Handled with no
 // new window opens nothing and window.open answers null. A download
 // started in the view reaches its DownloadStarting, and window.close()
 // raises WindowCloseRequested on the view, where the page may close itself

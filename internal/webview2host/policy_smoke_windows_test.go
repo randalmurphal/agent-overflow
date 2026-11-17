@@ -153,11 +153,18 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 	step := func(name string, run func()) {
 		t.Helper()
 		t.Logf("---- %s", name)
-		watch.take()
+		if _, err := watch.take(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 		run()
 		time.Sleep(300 * time.Millisecond)
-		for _, w := range watch.take() {
-			if !w.statusBubble() {
+		seen, err := watch.take()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, w := range seen {
+			t.Logf("%s: a window appeared: %s", name, w)
+			if !w.statusBubble(ui.hwnd) {
 				t.Fatalf("%s: a window of WebView2's own appeared: %s", name, w)
 			}
 		}

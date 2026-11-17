@@ -3,8 +3,11 @@
 package webview2host
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -18,8 +21,9 @@ import (
 // there (STARTUPINFO.lpDesktop); the WebView2 processes it starts inherit
 // the desktop, and the child dies with the parent (a kill-on-close job).
 // A binary that cannot make the desktop refuses to run the smokes, and a
-// smoke refuses to open a window on any other desktop (requireSmokeDesktop),
-// unless smokeUserDesktopEnv is 1.
+// smoke refuses to open a window on the interactive desktop
+// (refuseInteractiveDesktop), decided from the creating thread's own
+// desktop whatever the environment says, unless smokeUserDesktopEnv is 1.
 
 const (
 	// smokeDesktopEnv names the private desktop to the child that runs on it.
@@ -34,6 +38,9 @@ var (
 	procCloseDesktop      = user32.NewProc("CloseDesktop")
 	procGetThreadDesktop  = user32.NewProc("GetThreadDesktop")
 	procGetUserObjectInfo = user32.NewProc("GetUserObjectInformationW")
+	procOpenInputDesktop  = user32.NewProc("OpenInputDesktop")
+	procOpenDesktop       = user32.NewProc("OpenDesktopW")
+	procSetThreadDesktop  = user32.NewProc("SetThreadDesktop")
 )
 
 // uoiName is GetUserObjectInformation's UOI_NAME.
@@ -51,20 +58,37 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// requireSmokeDesktop fails a smoke about to open a window anywhere but the
-// desktop the runner made for it, unless smokeUserDesktopEnv allows it.
+// requireSmokeDesktop fails a smoke whose thread is on the interactive
+// desktop (refuseInteractiveDesktop).
 func requireSmokeDesktop(t *testing.T) {
 	t.Helper()
+	if err := refuseInteractiveDesktop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// refuseInteractiveDesktop answers an error when the calling thread, about
+// to create a window, is on the interactive desktop: the window station's
+// input desktop, or Default, which is the user's whenever the input
+// desktop is the lock screen's. It reads the thread's actual desktop, not
+// the runner's marker, and refuses when it cannot tell. Only
+// smokeUserDesktopEnv=1 allows it.
+func refuseInteractiveDesktop() error {
 	if os.Getenv(smokeUserDesktopEnv) == "1" {
-		return
+		return nil
 	}
 	name, err := threadDesktopName()
 	if err != nil {
-		t.Fatalf("the smoke cannot tell which desktop it is on: %v", err)
+		return fmt.Errorf("the smoke cannot tell which desktop it is on: %w", err)
 	}
-	if want := os.Getenv(smokeDesktopEnv); want == "" || name != want {
-		t.Fatalf("the smoke would open a window on desktop %q, not its own %q; set %s=1 to allow it", name, want, smokeUserDesktopEnv)
+	input, err := inputDesktopName()
+	if err != nil {
+		return fmt.Errorf("the smoke cannot tell which desktop is the user's: %w", err)
 	}
+	if name == input || strings.EqualFold(name, "Default") {
+		return fmt.Errorf("the smoke would open a window on desktop %q, the user's (input desktop %q); set %s=1 to allow it", name, input, smokeUserDesktopEnv)
+	}
+	return nil
 }
 
 // runOnPrivateDesktop runs this binary, with its arguments, on a new
@@ -149,6 +173,23 @@ func threadDesktopName() (string, error) {
 	if desktop == 0 {
 		return "", fmt.Errorf("GetThreadDesktop: %w", err)
 	}
+	return desktopName(desktop)
+}
+
+// inputDesktopName answers the name of the desktop that receives the
+// user's input.
+func inputDesktopName() (string, error) {
+	const desktopReadObjects = 0x0001
+	desktop, _, err := procOpenInputDesktop.Call(0, 0, desktopReadObjects)
+	if desktop == 0 {
+		return "", fmt.Errorf("OpenInputDesktop: %w", err)
+	}
+	defer func() { _, _, _ = procCloseDesktop.Call(desktop) }()
+	return desktopName(desktop)
+}
+
+// desktopName answers a desktop handle's name.
+func desktopName(desktop uintptr) (string, error) {
 	var name [256]uint16
 	var needed uint32
 	ok, _, err := procGetUserObjectInfo.Call(desktop, uoiName, uintptr(unsafe.Pointer(&name[0])), uintptr(len(name)*2), uintptr(unsafe.Pointer(&needed)))
@@ -176,5 +217,47 @@ func TestSmokeRunsOnAPrivateDesktop(t *testing.T) {
 	ui.do(func() { uiDesktop, err = threadDesktopName() })
 	if err != nil || uiDesktop != name {
 		t.Fatalf("the smoke window's thread is on desktop %q (%v), want %q", uiDesktop, err, name)
+	}
+}
+
+// A thread on the user's desktop is refused a window, whatever the
+// runner's marker names: checked on a thread of the binary's own moved to
+// Default, which only asks and opens nothing.
+func TestASmokeRefusesTheUsersDesktopWhateverTheMarker(t *testing.T) {
+	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" || os.Getenv(smokeUserDesktopEnv) == "1" {
+		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run the real-window checks on their own desktop")
+	}
+	t.Setenv(smokeDesktopEnv, "Default")
+	refused := make(chan error, 1)
+	go func() {
+		// Never unlocked: the thread ends with this goroutine, on Default.
+		runtime.LockOSThread()
+		refused <- func() error {
+			name, err := windows.UTF16PtrFromString("Default")
+			if err != nil {
+				return err
+			}
+			const desktopReadObjects = 0x0001
+			desktop, _, callErr := procOpenDesktop.Call(uintptr(unsafe.Pointer(name)), 0, 0, desktopReadObjects)
+			if desktop == 0 {
+				return fmt.Errorf("OpenDesktop: %w", callErr)
+			}
+			defer func() { _, _, _ = procCloseDesktop.Call(desktop) }()
+			if ok, _, callErr := procSetThreadDesktop.Call(desktop); ok == 0 {
+				return fmt.Errorf("SetThreadDesktop: %w", callErr)
+			}
+			err = refuseInteractiveDesktop()
+			if err == nil {
+				return errors.New("a thread on Default was not refused")
+			}
+			t.Logf("refused: %v", err)
+			return nil
+		}()
+	}()
+	if err := <-refused; err != nil {
+		t.Fatal(err)
+	}
+	if err := refuseInteractiveDesktop(); err != nil {
+		t.Fatalf("the smoke's own desktop was refused: %v", err)
 	}
 }

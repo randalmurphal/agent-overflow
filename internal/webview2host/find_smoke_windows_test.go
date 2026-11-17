@@ -275,8 +275,11 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 }
 
 // createSmokeWindow creates the one kind of top-level window a smoke uses,
-// on the smoke's own desktop (requireSmokeDesktop).
+// never on the interactive desktop (refuseInteractiveDesktop).
 func createSmokeWindow() (uintptr, error) {
+	if err := refuseInteractiveDesktop(); err != nil {
+		return 0, err
+	}
 	var module windows.Handle
 	if err := windows.GetModuleHandleEx(0, nil, &module); err != nil {
 		return 0, err

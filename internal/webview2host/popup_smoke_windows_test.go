@@ -27,6 +27,8 @@ import (
 //     whose target names its opener, and no window of WebView2's own
 //     appears; window features change nothing, and the popup starts at its
 //     opener's bounds;
+//   - a middle, Ctrl or Shift click on a plain link each becomes a reported
+//     popup with no opener, its target naming none, and the opener stays;
 //   - a window.open popup has window.opener and its postMessage reaches the
 //     opener; noopener, a link and a form leave the popup none, and
 //     window.open answers null for noopener;
@@ -104,6 +106,28 @@ func TestPopupSmokeMakesEveryWindowAPage(t *testing.T) {
 			t.Fatalf("the form's popup reads %q", title)
 		}
 	})
+	// A click that opens a link in a new tab or window, with the middle
+	// button, Ctrl or Shift, is a window request too.
+	for _, click := range []struct {
+		name      string
+		button    string
+		modifiers int
+	}{
+		{"a middle click on a link", "middle", 0},
+		{"a Ctrl click on a link", "left", cdpModifierCtrl},
+		{"a Shift click on a link", "left", cdpModifierShift},
+	} {
+		s.step(click.name, nil, func() {
+			s.clickWith(s.opener, "plain", click.button, click.modifiers)
+			popup := s.popupOpenedBy("page-1", false)
+			if title := s.title(popup.id); title != "opener:no:plain:" {
+				t.Fatalf("the click's popup reads %q", title)
+			}
+			if got := s.eval(s.opener, `location.pathname`, false); got != "/opener" {
+				t.Fatalf("the click navigated the opener to %s", got)
+			}
+		})
+	}
 	s.step("a refused request", nil, func() {
 		s.ui.do(func() { s.host.pendingPopups = MaxPendingPopups })
 		got := s.eval(s.opener, `String(window.open("/popup?k=refused"))`, true)
@@ -312,6 +336,7 @@ func (s *popupSmoke) serve(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/opener":
 		_, _ = fmt.Fprint(w, `<!doctype html><title>opener</title><body style="margin:0">
 <a id="blank" target="_blank" href="/popup?k=link" style="display:block;height:40px">blank</a>
+<a id="plain" href="/popup?k=plain" style="display:block;height:40px">plain</a>
 <form target="_blank" action="/popup"><input name="k" value="form"><button id="submit" style="height:40px">go</button></form>`+collect)
 	case r.URL.Path == "/popup":
 		k := r.URL.Query().Get("k")
@@ -350,12 +375,17 @@ setTimeout(() => { window.opener.postMessage("done", "*"); window.close() }, 300
 func (s *popupSmoke) step(name string, allow func([]smokeWindowSeen) error, run func()) {
 	s.t.Helper()
 	s.t.Logf("---- %s", name)
-	s.windows.take()
+	if _, err := s.windows.take(); err != nil {
+		s.t.Fatalf("%s: %v", name, err)
+	}
 	run()
 	// A window WebView2 opens at a request's completion shows within a
 	// frame or two; give it time to.
 	time.Sleep(300 * time.Millisecond)
-	seen := s.windows.take()
+	seen, err := s.windows.take()
+	if err != nil {
+		s.t.Fatalf("%s: %v", name, err)
+	}
 	for _, w := range seen {
 		s.t.Logf("%s: a window appeared: %s", name, w)
 	}
@@ -366,18 +396,20 @@ func (s *popupSmoke) step(name string, allow func([]smokeWindowSeen) error, run 
 		return
 	}
 	for _, w := range seen {
-		if !w.statusBubble() {
+		if !w.statusBubble(s.ui.hwnd) {
 			s.t.Fatalf("%s: a window of WebView2's own appeared: %s", name, w)
 		}
 	}
 }
 
-// dialogFlash accepts WebView2's download dialog shown for a moment, as
-// the launcher closes it, and nothing else.
+// dialogFlash accepts WebView2's download dialog, a window of its over the
+// smoke's, shown for a moment as the launcher closes it, and nothing else.
 func (s *popupSmoke) dialogFlash(seen []smokeWindowSeen) error {
 	for _, w := range seen {
 		switch {
-		case w.statusBubble():
+		case !w.webView2Window(s.ui.hwnd):
+			return fmt.Errorf("a window not WebView2's over the smoke's appeared: %s", w)
+		case w.statusBubble(s.ui.hwnd):
 		case w.gone.IsZero():
 			return fmt.Errorf("a window stayed: %s", w)
 		case w.gone.Sub(w.shown) > time.Second:
@@ -433,6 +465,14 @@ func (s *popupSmoke) quiet(d time.Duration) []smokeReport {
 // that its target names that opener, and attaches to it.
 func (s *popupSmoke) popup(opener string) smokePopup {
 	s.t.Helper()
+	return s.popupOpenedBy(opener, true)
+}
+
+// popupOpenedBy waits for the next popup report, of a window opener opened,
+// and attaches to it; its target names that opener as its CDP opener when
+// targetOpener is set, and none when it is not.
+func (s *popupSmoke) popupOpenedBy(opener string, targetOpener bool) smokePopup {
+	s.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		report, ok := s.next(time.Until(deadline))
@@ -468,8 +508,11 @@ func (s *popupSmoke) popup(opener string) smokePopup {
 			s.cdp.call("Target.getTargetInfo", map[string]any{}, s.sessionOf(opener), &own)
 			openerTarget = own.TargetInfo.TargetID
 		}
+		if !targetOpener {
+			openerTarget = ""
+		}
 		if info.TargetInfo.OpenerID != openerTarget || info.TargetInfo.Type != "page" {
-			s.t.Fatalf("popup target %s: %+v, want a page opened by %s", parsed.Target, info.TargetInfo, openerTarget)
+			s.t.Fatalf("popup target %s: %+v, want a page opened by %q", parsed.Target, info.TargetInfo, openerTarget)
 		}
 		s.t.Logf("popup %s of %s at %s: %s", popup.id, opener, popup.target, parsed.URL)
 		s.sessions[popup.id] = popup.session
@@ -508,15 +551,31 @@ func (s *popupSmoke) eval(session, expression string, gesture bool) string {
 	return fmt.Sprint(result.Result.Value)
 }
 
-// click clicks the element with id in session with the mouse.
+// click clicks the element with id in session with the left button.
 func (s *popupSmoke) click(session, id string) {
+	s.t.Helper()
+	s.clickWith(session, id, "left", 0)
+}
+
+// Input.dispatchMouseEvent's modifier bits.
+const (
+	cdpModifierCtrl  = 2
+	cdpModifierShift = 8
+)
+
+// clickWith clicks the element with id in session with button, holding
+// the modifier keys modifiers names.
+func (s *popupSmoke) clickWith(session, id, button string, modifiers int) {
 	s.t.Helper()
 	var xy []float64
 	if err := json.Unmarshal([]byte(s.eval(session, `JSON.stringify((() => { const r = document.getElementById("`+id+`").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2] })())`, false)), &xy); err != nil || len(xy) != 2 {
 		s.t.Fatalf("locate %s: %v", id, err)
 	}
+	buttons := map[string]int{"left": 1, "middle": 4}[button]
 	for _, kind := range []string{"mousePressed", "mouseReleased"} {
-		s.cdp.call("Input.dispatchMouseEvent", map[string]any{"type": kind, "x": xy[0], "y": xy[1], "button": "left", "clickCount": 1}, session, nil)
+		s.cdp.call("Input.dispatchMouseEvent", map[string]any{
+			"type": kind, "x": xy[0], "y": xy[1], "button": button, "buttons": buttons, "clickCount": 1, "modifiers": modifiers,
+		}, session, nil)
 	}
 }
 
