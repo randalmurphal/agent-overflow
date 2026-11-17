@@ -89,9 +89,11 @@ GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 # the checkout's directory out of a package's build cache key, so worktrees
 # holding the same sources share cache entries. File paths in stack traces and
 # from runtime.Caller become module-relative (agent-overflow/internal/...);
-# tests locate the checkout through internal/testutil/reporoot. `go env
-# GOFLAGS` carries over flags the developer set.
-export GOFLAGS := $(strip $(filter-out -trimpath,$(shell go env GOFLAGS 2>/dev/null)) -trimpath)
+# tests locate the checkout through internal/testutil/reporoot. Flags the
+# developer set are kept: GOFLAGS from the make command line or the
+# environment, else the value saved with `go env -w`.
+override GOFLAGS := $(strip $(filter-out -trimpath,$(or $(GOFLAGS),$(shell go env GOFLAGS 2>/dev/null))) -trimpath)
+export GOFLAGS
 
 # Single source of truth for the release version is build/config.yml#info.version.
 # `make build` reads it and forwards it via VERSION= to wails3 build, which the

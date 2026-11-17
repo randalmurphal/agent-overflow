@@ -19,13 +19,18 @@ import (
 	"testing"
 )
 
-var root, rootErr = find()
+var root, rootErr = fromWorkingDirectory()
 
-func find() (string, error) {
+func fromWorkingDirectory() (string, error) {
 	start, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("reporoot: working directory: %w", err)
 	}
+	return find(start)
+}
+
+// find returns the nearest directory at or above start that holds go.mod.
+func find(start string) (string, error) {
 	for dir := start; ; {
 		_, err := os.Stat(filepath.Join(dir, "go.mod"))
 		if err == nil {
@@ -56,4 +61,32 @@ func Dir(t testing.TB) string {
 func Path(t testing.TB, rel string) string {
 	t.Helper()
 	return filepath.Join(Dir(t), filepath.FromSlash(rel))
+}
+
+// goSourceRoots are the directories under the checkout that hold Go packages,
+// beside the root package itself: the Makefile's GO_PACKAGE_ROOTS.
+var goSourceRoots = []string{"cmd", "internal"}
+
+// ObserveGoSources puts the Go source tree in the calling test's cache key.
+//
+// The test cache keys a result on the files and directories the test process
+// itself opens. A test that inspects the tree through a child process, such as
+// `go list`, is otherwise answered from a pass recorded before the tree
+// changed, in this checkout or in another that built the same test binary.
+// Reading the root and every directory under the package roots records each
+// entry's name, size and modification time.
+func ObserveGoSources(t testing.TB) {
+	t.Helper()
+	dir := Dir(t)
+	if _, err := os.ReadDir(dir); err != nil {
+		t.Fatalf("reporoot: read %s: %v", dir, err)
+	}
+	for _, sourceRoot := range goSourceRoots {
+		err := filepath.WalkDir(filepath.Join(dir, sourceRoot), func(_ string, _ fs.DirEntry, err error) error {
+			return err
+		})
+		if err != nil {
+			t.Fatalf("reporoot: walk %s: %v", sourceRoot, err)
+		}
+	}
 }

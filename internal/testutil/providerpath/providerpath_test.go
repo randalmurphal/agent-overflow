@@ -40,6 +40,7 @@ type listedPackage struct {
 }
 
 func TestEveryTestBinaryThatCanStartAProviderInstallsThePoison(t *testing.T) {
+	reporoot.ObserveGoSources(t)
 	// -e keeps listing past a package that does not load, such as the root
 	// package before frontend/dist is built, and reports why per package.
 	cmd := exec.Command("go", "list", "-e", "-test", "-json=ImportPath,Deps,Error", "./...")

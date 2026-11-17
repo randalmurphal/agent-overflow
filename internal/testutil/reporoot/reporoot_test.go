@@ -22,11 +22,27 @@ func TestDirIsTheCheckoutEvenAfterTheTestChangesDirectory(t *testing.T) {
 	}
 }
 
-func TestFindFailsOutsideACheckout(t *testing.T) {
-	outside := t.TempDir()
-	t.Chdir(outside)
+func TestFindStopsAtTheNearestGoMod(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "module")
+	start := filepath.Join(inner, "internal", "pkg")
+	if err := os.MkdirAll(start, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{outer, inner} {
+		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	if dir, err := find(); err == nil {
-		t.Fatalf("find from %s = %s, want an error naming the missing go.mod", outside, dir)
+	if got, err := find(start); err != nil || got != inner {
+		t.Fatalf("find(%s) = %s, %v; want %s", start, got, err, inner)
+	}
+}
+
+func TestFindFailsWithNoGoModAbove(t *testing.T) {
+	volumeRoot := filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	if dir, err := find(volumeRoot); err == nil {
+		t.Fatalf("find(%s) = %s, want an error naming the missing go.mod", volumeRoot, dir)
 	}
 }
