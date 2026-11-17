@@ -153,6 +153,7 @@ export {
   BrowserCompanionPaneAttach,
   BrowserCompanionPaneDetach,
   BrowserCompanionPaneRect,
+  BrowserCompanionRecentAddresses,
   BrowserCompanionRevealPageFile,
   GetContextSettings,
 
@@ -816,6 +817,7 @@ export {
   FindState as BrowserFindState,
   PageInfo as BrowserPageInfo,
   PaneRect as BrowserPaneRect,
+  RecentAddress as BrowserRecentAddress,
 } from '../../../bindings/agent-overflow/internal/browser/models.js';
 export {
   Keybinding,

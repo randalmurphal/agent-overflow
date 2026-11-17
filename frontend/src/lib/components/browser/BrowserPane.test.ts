@@ -318,6 +318,9 @@ describe('<BrowserPane> tab lifecycle', () => {
     openCompanion('main', 'browser');
     setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
     setBindingMock('BrowserCompanionPaneRect', async () => undefined);
+    // What the address suggestions read when the field takes focus.
+    setBindingMock('BrowserCompanionRecentAddresses', async () => []);
+    setBindingMock('GetDevServers', async () => ({ previewHost: '', servers: [] }));
   });
   afterEach(() => resetAll());
 

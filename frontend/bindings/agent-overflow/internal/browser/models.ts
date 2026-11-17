@@ -444,6 +444,31 @@ export class PaneRect {
     }
 }
 
+/**
+ * RecentAddress is one address a thread's page loaded, with the title it had.
+ */
+export class RecentAddress {
+    "url": string;
+    "title"?: string;
+
+    /** Creates a new RecentAddress instance. */
+    constructor($$source: Partial<RecentAddress> = {}) {
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RecentAddress instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RecentAddress {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RecentAddress($$parsedSource as Partial<RecentAddress>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
