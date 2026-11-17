@@ -9,8 +9,8 @@ import (
 
 type fakeEnv struct{ id int }
 
-// envRig drives a paneEnvironment the way the Windows host does: one UI
-// goroutine runs begin, completed and release in order, and each start is
+// envRig drives a paneEnvironment with one UI goroutine running begin,
+// completed and release in order. Each start is
 // reported so the test decides when and how it completes. beforeDispatch,
 // when set, runs once between an arm and its dispatch to the UI thread,
 // which is where a clear-data can slip in.
@@ -40,17 +40,7 @@ func newEnvRig(t *testing.T, timeout time.Duration) *envRig {
 		}
 	}()
 	t.Cleanup(func() { close(stop) })
-	onMain := func(fn func()) {
-		r.mu.Lock()
-		hook := r.beforeDispatch
-		r.beforeDispatch = nil
-		r.mu.Unlock()
-		if hook != nil {
-			hook()
-		}
-		r.do(fn)
-	}
-	r.env = newPaneEnvironment(onMain,
+	r.env = newPaneEnvironment(
 		func(gen uint64) { r.starts <- gen },
 		func(e *fakeEnv) {
 			r.mu.Lock()
@@ -101,7 +91,18 @@ type acquired struct {
 func (r *envRig) acquireAsync() <-chan acquired {
 	out := make(chan acquired, 1)
 	go func() {
-		env, err := r.env.acquire()
+		request, start := r.env.request()
+		if start {
+			r.mu.Lock()
+			hook := r.beforeDispatch
+			r.beforeDispatch = nil
+			r.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
+			r.do(func() { r.env.begin(request.gen) })
+		}
+		env, err := r.env.await(request)
 		out <- acquired{env, err}
 	}()
 	return out

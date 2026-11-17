@@ -42,8 +42,9 @@ type Host struct {
 
 	// pages are the live pages by id, and closed is set by Close, after
 	// which no page is admitted (admit). UI thread only.
-	pages  map[string]*hostPage
-	closed bool
+	pages    map[string]*hostPage
+	closed   bool
+	clearing bool
 
 	// mu guards accelerators, the bound-chord set every page's key events
 	// are gated on (accelerators_windows.go), replaced whole by
@@ -249,7 +250,7 @@ func New(config Config) (*Host, error) {
 		foreground:    isForeground,
 		downloadToken: newDownloadToken(),
 	}
-	h.env = newPaneEnvironment(config.OnMain, h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
+	h.env = newPaneEnvironment(h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
 	return h, nil
 }
 
@@ -380,10 +381,26 @@ func (h *Host) clearData(correlationID string) {
 	// jar back out over the cleared state. Releasing the environment starts
 	// a new generation, so the next directive builds a fresh one against
 	// the recreated folder.
-	h.closePages(func(*hostPage) bool { return true })
-	h.config.OnMain(h.env.release)
-
-	if err := clearUserDataDir(h.config.UserDataDir); err != nil {
+	var refused string
+	h.config.OnMain(func() {
+		switch {
+		case h.closed:
+			refused = "the browser host is closed"
+		case h.clearing:
+			refused = "the browser host is already clearing site data"
+		default:
+			h.clearing = true
+			h.closeTaken(h.take(func(*hostPage) bool { return true }), nil)
+			h.env.release()
+		}
+	})
+	if refused != "" {
+		h.config.Report(correlationID, ReportClearFailed, refused)
+		return
+	}
+	err := clearUserDataDir(h.config.UserDataDir)
+	h.config.OnMain(func() { h.clearing = false })
+	if err != nil {
 		h.config.Logf("browser host: clear site data: %v", err)
 		h.config.Report(correlationID, ReportClearFailed, TruncateDetail(err.Error()))
 		return

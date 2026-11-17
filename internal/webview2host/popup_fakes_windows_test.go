@@ -419,7 +419,7 @@ func newPopupRig(t *testing.T) *popupRig {
 			},
 		},
 	}
-	r.host.env = newPaneEnvironment(r.host.config.OnMain, func(gen uint64) {
+	r.host.env = newPaneEnvironment(func(gen uint64) {
 		r.host.env.completed(gen, paneEnv{env10: r.env.com()}, nil)
 	}, func(paneEnv) {}, t.Logf, time.Second)
 	return r

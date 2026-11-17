@@ -21,7 +21,10 @@ generation contract in `paneEnvironment` (`environment.go`, cross-platform and
 unit-tested): clearing advances the generation, wakes old waiters, skips a
 start queued for the old generation, and forces a late completion to release
 its own COM references instead of adopting an environment rooted in the
-deleted profile.
+deleted profile. A create registers its page and requests its environment in
+one UI turn. After waiting, it starts the controller only if its page is
+still registered. While clear-data owns the profile, the host refuses page
+admissions and further clears. A closed host refuses clear-data.
 
 The launcher is the sole CDP dialer. Bind the relay to loopback, pair the target
 identifier with its page, and close the relay with the controller. Never expose

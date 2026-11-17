@@ -9,18 +9,34 @@ import (
 // Page creation: admission, the controller's start and its completion.
 
 func (h *Host) create(directive Directive) {
-	env, err := h.env.acquire()
-	if err != nil {
-		h.config.Report(directive.PageID, ReportCreateFailed, TruncateDetail(err.Error()))
-		return
-	}
+	page := &hostPage{id: directive.PageID, profileID: directive.ProfileID, ephemeral: directive.Ephemeral}
+	var request environmentRequest
+	var refused string
 	h.config.OnMain(func() {
-		if why := h.admit(directive.PageID); why != "" {
-			h.config.Report(directive.PageID, ReportCreateFailed, why)
+		refused = h.admit(page.id)
+		if refused != "" {
 			return
 		}
-		page := &hostPage{id: directive.PageID, profileID: directive.ProfileID, ephemeral: directive.Ephemeral}
-		h.pages[directive.PageID] = page
+		h.pages[page.id] = page
+		var start bool
+		request, start = h.env.request()
+		if start {
+			h.env.begin(request.gen)
+		}
+	})
+	if refused != "" {
+		h.config.Report(page.id, ReportCreateFailed, refused)
+		return
+	}
+	env, err := h.env.await(request)
+	h.config.OnMain(func() {
+		if !h.pageRegistered(page) {
+			return
+		}
+		if err != nil {
+			h.failUncreated(page, err.Error())
+			return
+		}
 		h.startController(page, env.env10, h.config.HostWindow())
 	})
 }
@@ -32,6 +48,8 @@ func (h *Host) admit(id string) string {
 	switch {
 	case h.closed:
 		return "the browser host is closed"
+	case h.clearing:
+		return "the browser host is clearing site data"
 	case h.pages[id] != nil:
 		return "page id already exists"
 	case len(h.pages) >= MaxHostPages:
