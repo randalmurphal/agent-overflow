@@ -146,6 +146,30 @@ func TestAgentCallsInABurstShareOneConnectionAndTicket(t *testing.T) {
 	}
 }
 
+// TestAConnectionOutlastsTheIntervalOfAPeriodicCheck: a status poll or a
+// running command's watch asks again five seconds after its last answer,
+// and that check reuses the connection the last one left, pinged first,
+// instead of paying a ticket, an upgrade and a hello.
+func TestAConnectionOutlastsTheIntervalOfAPeriodicCheck(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	first := query(t, m, p.id)
+	held, err := m.carrier(context.Background(), p.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Five seconds of cadence and a wake that came late.
+	held.peers.mu.Lock()
+	held.peers.idle[0].since = time.Now().Add(-10 * time.Second)
+	held.peers.mu.Unlock()
+	held.peers.expire()
+	if got := query(t, m, p.id); got != first {
+		t.Fatalf("the next check ran on connection %d, want the reused %d", got, first)
+	}
+	if got := p.tickets.Load(); got != 1 {
+		t.Fatalf("minted %d tickets for two checks, want 1", got)
+	}
+}
+
 func TestAConnectionTheFarSideClosedIsNotReused(t *testing.T) {
 	m, p := newThreadPeerManager(t)
 	first := query(t, m, p.id)

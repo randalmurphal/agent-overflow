@@ -11,19 +11,23 @@ import (
 
 // Agent calls to one computer come in bursts: paging a transcript or a
 // large tool output is one call per window, and every new connection
-// spends a ticket from that computer's credential budget. A finished call
-// leaves its connection here for the next one instead.
+// spends a ticket from that computer's credential budget. Periodic checks
+// come every few seconds: a thread request's status poll and a running
+// remote command's watch ask again five seconds after their last answer.
+// A finished call leaves its connection here for the next one instead, and
+// the idle window outlasts a periodic check's interval with room for a
+// late wake.
 //
 // Each connection is used by one call at a time, as a fresh one was, so a
-// call that is cancelled still ends only its own connection. The idle
-// window stays well inside the far side's keepalive verdict, and a
-// connection the far side closed (a revoked session, a listener rebind) is
-// skipped by its reader's Done rather than handed to a call. One whose path
-// died without a close (a network change, a NAT rebinding) is caught by a
-// ping before reuse, so the call dials again instead of waiting out its
-// own deadline on a socket nothing answers.
+// call that is cancelled still ends only its own connection. An idle
+// connection stays open on the far side: its reader answers that side's
+// keepalive pings. A connection the far side closed (a revoked session, a
+// listener rebind) is skipped by its reader's Done rather than handed to a
+// call. One whose path died without a close (a network change, a NAT
+// rebinding) is caught by a ping before reuse, so the call dials again
+// instead of waiting out its own deadline on a socket nothing answers.
 const (
-	peerConnIdle     = 5 * time.Second
+	peerConnIdle     = 30 * time.Second
 	maxIdlePeerConns = 4
 	peerPingTimeout  = 2 * time.Second
 )
