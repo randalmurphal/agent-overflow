@@ -1274,8 +1274,11 @@ void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
                        const char *download_dir) {
   @autoreleasepool {
     if (view != NULL) {
-      ao_connect_view((WKWebView *)view, page_id, profile_id, user_script, console_handler,
-                      download_dir);
+      WKWebView *v = (WKWebView *)view;
+      ao_connect_view(v, page_id, profile_id, user_script, console_handler, download_dir);
+      // The popup's URL and title changed unobserved until now: report them
+      // as they are, so its tab starts from them.
+      aoWKVPageInfo(page_id, ao_dup([[v URL] absoluteString]), ao_dup([v title]));
     }
   }
 }

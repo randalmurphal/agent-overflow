@@ -78,6 +78,8 @@ func (m *Manager) pageCrashed(handle, reason string) {
 		return
 	}
 	ended := m.pageLeftLocked(scope, p, "the page's process ended")
+	// The cache, not a read: a page whose process ended answers none, and
+	// its last reports stand.
 	rec := recordOf(p, p.cachedInfo())
 	rec.failure = crashFailure(reason)
 	m.suspended[p.id] = rec

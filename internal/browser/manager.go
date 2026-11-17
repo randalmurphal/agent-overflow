@@ -173,6 +173,10 @@ type Manager struct {
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
+	// heldInfo holds a CDP engine's newest report for each handle no page
+	// answers to yet (updatePageInfo). Bounded: a handle no page ever takes,
+	// a target closed before its adoption, ages out.
+	heldInfo *boundedMap[string, heldInfo]
 	// viewportApplied is a test seam for the asynchronous pane-size follow:
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
@@ -391,6 +395,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		scopes:        make(map[string]*jarScope),
 		suspended:     make(map[string]*suspendedPage),
 		pending:       make(map[string]*pendingPage),
+		heldInfo:      newBoundedMap[string, heldInfo](orderSlack),
 		disposing:     make(map[string]chan struct{}),
 		recordDir:     filepath.Join(configDir, browserPageRecordDir),
 		panes:         make(map[string]paneMount),
@@ -863,7 +868,9 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	// created (jarAllows) while it loads, before it is registered.
 	m.mu.Lock()
 	p.attach(driver)
+	held, hasHeld := m.takeHeldInfoLocked(driver.Handle())
 	m.mu.Unlock()
+	m.applyHeldInfo(p, held, hasHeld)
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return err
@@ -1015,7 +1022,10 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		return
 	}
 	scope.pages[p.id] = p
+	held, hasHeld := m.takeHeldInfoLocked(popup.Handle)
 	m.mu.Unlock()
+	// A report made while the popup was adopted.
+	m.applyHeldInfo(p, held, hasHeld)
 	// A new tab.
 	m.pageAdded(p)
 	if m.pageAdopted != nil {
