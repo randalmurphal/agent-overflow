@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The table is the whole feature: a wrong or missing key leaves a tool the
@@ -287,19 +287,10 @@ func setOf(values []string) map[string]struct{} {
 	return set
 }
 
-// readRepoFile reads a repo-relative path. The repository root is derived
-// from this source file's own location rather than the working directory,
-// which `go test` sets to the package directory.
+// readRepoFile reads a file by its repository-relative path.
 func readRepoFile(t *testing.T, rel string) string {
 	t.Helper()
-
-	_, sourcePath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve the repository root: runtime.Caller failed")
-	}
-	// internal/provider/codex/<this file> → repository root.
-	root := filepath.Join(filepath.Dir(sourcePath), "..", "..", "..")
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	data, err := os.ReadFile(reporoot.Path(t, rel))
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}

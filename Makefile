@@ -85,6 +85,14 @@ WSL_VERSION ?= $(VERSION)
 
 GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 
+# Every Go command under make builds with -trimpath. The compiler then leaves
+# the checkout's directory out of a package's build cache key, so worktrees
+# holding the same sources share cache entries. File paths in stack traces and
+# from runtime.Caller become module-relative (agent-overflow/internal/...);
+# tests locate the checkout through internal/testutil/reporoot. `go env
+# GOFLAGS` carries over flags the developer set.
+export GOFLAGS := $(strip $(filter-out -trimpath,$(shell go env GOFLAGS 2>/dev/null)) -trimpath)
+
 # Single source of truth for the release version is build/config.yml#info.version.
 # `make build` reads it and forwards it via VERSION= to wails3 build, which the
 # platform Taskfiles consume as {{.VERSION | default "dev"}} to stamp

@@ -25,6 +25,15 @@ Nothing watches the tree for changes: rerun the target after editing. Use the ro
 commands for completion: the Go Make targets apply platform flags and
 `go-build` also compiles the `nogui` variant.
 
+Every Go command under make runs with `-trimpath` (exported as `GOFLAGS` in
+the Makefile), so worktrees holding the same sources share build cache
+entries. A bare `go build` or `go test` compiles a second copy of every
+package under a different cache key. With `-trimpath`, file paths in stack
+traces and from `runtime.Caller` are module-relative
+(`agent-overflow/internal/...`), so a test finds the checkout with
+`internal/testutil/reporoot`, and a debugger attached to a `make dev` build
+needs that prefix mapped to the checkout.
+
 ## Generated artifacts
 
 - After changing `info` or `fileAssociations` in `build/config.yml`, run

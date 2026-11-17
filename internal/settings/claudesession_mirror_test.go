@@ -3,12 +3,12 @@ package settings
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The Claude session-axis editor validates before it saves, so every bound
@@ -85,18 +85,10 @@ func TestClaudeToolMemoryGrammarMatchesTheFrontendMirror(t *testing.T) {
 	}
 }
 
-// readRepoFileForMirror resolves a repo-relative path from this source
-// file's own location, not the working directory: `go test` sets that to
-// the package directory.
+// readRepoFileForMirror reads a file by its repository-relative path.
 func readRepoFileForMirror(t *testing.T, rel string) string {
 	t.Helper()
-	_, sourcePath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve the repository root: runtime.Caller failed")
-	}
-	// internal/settings/<this file> → repository root.
-	root := filepath.Join(filepath.Dir(sourcePath), "..", "..")
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	data, err := os.ReadFile(reporoot.Path(t, rel))
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // spawnPackages hold the exec sites that run a provider CLI: provider
@@ -38,14 +40,10 @@ type listedPackage struct {
 }
 
 func TestEveryTestBinaryThatCanStartAProviderInstallsThePoison(t *testing.T) {
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate source")
-	}
 	// -e keeps listing past a package that does not load, such as the root
 	// package before frontend/dist is built, and reports why per package.
 	cmd := exec.Command("go", "list", "-e", "-test", "-json=ImportPath,Deps,Error", "./...")
-	cmd.Dir = filepath.Join(filepath.Dir(source), "..", "..", "..")
+	cmd.Dir = reporoot.Dir(t)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
