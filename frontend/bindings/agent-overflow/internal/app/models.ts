@@ -8185,7 +8185,8 @@ export class ThreadAgentRow {
      * BlockedOn is approval or question for a target waiting on a prompt,
      * here or as a paired computer's agent_rows answer reports it, and
      * person for a paired computer's target known only to be blocked;
-     * BlockedDetail says what it asks and BlockedRoutedTo names the
+     * BlockedDetail says what it asks, an approval's only to a reader that
+     * may answer it (withholdApprovalDetail), and BlockedRoutedTo names the
      * spawner its prompt went to (ruling 19). BlockedRoutedHere marks a
      * paired computer's prompt routed back to the spawner here, which
      * BlockedRoutedTo then names as this computer does.
@@ -8400,9 +8401,10 @@ export class ThreadAgentRows {
     /**
      * BlockedOn, BlockedDetail and BlockedRoutedTo are the prompt the
      * listed thread waits on, as its own Agents row here reads it
-     * (threadWaitingOn). RoutedToAsker says that prompt went to the thread
-     * on the asking computer whose link owns the listed thread
-     * (routedToAsker), which that computer names itself.
+     * (threadWaitingOn), an approval's detail withheld from a session that
+     * may not answer it (withholdApprovalDetail). RoutedToAsker says that
+     * prompt went to the thread on the asking computer whose link owns the
+     * listed thread (routedToAsker), which that computer names itself.
      */
     "blockedOn"?: string;
     "blockedDetail"?: string;
@@ -9272,11 +9274,18 @@ export class ThreadPeerRequest {
 
     /**
      * BlockedRoutedToCaller is set when that prompt went back to the
-     * asking computer, to the thread whose link owns the target there
-     * (routedToAsker): the caller's own spawner, not a thread on that
-     * computer.
+     * request's caller, the thread whose link owns the target there
+     * (routedToAsker), not a thread on that computer.
      */
     "blockedRoutedToCaller"?: boolean;
+
+    /**
+     * BlockedRoutedToThread names the asking computer's thread that prompt
+     * went back to, whichever of its threads made the request: the
+     * spawner, which a send from another thread names. A computer that
+     * does not send it says only BlockedRoutedToCaller.
+     */
+    "blockedRoutedToThread"?: string;
 
     /**
      * Placement is the target thread's placement there: owned, grouped or
@@ -9339,14 +9348,14 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField21_0 = $$createType168;
         const $$createField22_0 = $$createType168;
+        const $$createField23_0 = $$createType168;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField21_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField22_0($$parsedSource["answerAgent"]);
         }
         if ("lateReplyAgent" in $$parsedSource) {
-            $$parsedSource["lateReplyAgent"] = $$createField22_0($$parsedSource["lateReplyAgent"]);
+            $$parsedSource["lateReplyAgent"] = $$createField23_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }

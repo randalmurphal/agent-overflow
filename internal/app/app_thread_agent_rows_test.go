@@ -228,7 +228,7 @@ func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 	}
 	read := func(threadID, token string) ThreadAgentRowRead {
 		t.Helper()
-		got, err := f.app.GetThreadAgentRows(threadID, []string{token})
+		got, err := f.app.GetThreadAgentRows(t.Context(), threadID, []string{token})
 		if err != nil || len(got) != 1 || got[0].Token != token {
 			t.Fatalf("GetThreadAgentRows(%s) = %+v, %v", token, got, err)
 		}
@@ -246,7 +246,7 @@ func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 	// Read together, in the order asked, with what is not listed named.
 	tokens := append(agentRowTokens(listing), "quiet")
 	slices.Reverse(tokens)
-	batch, err := f.app.GetThreadAgentRows(f.caller.ID, tokens)
+	batch, err := f.app.GetThreadAgentRows(t.Context(), f.caller.ID, tokens)
 	if err != nil || len(batch) != len(tokens) {
 		t.Fatalf("GetThreadAgentRows = %d reads, %v", len(batch), err)
 	}
@@ -255,7 +255,7 @@ func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 			t.Fatalf("read %d = %+v; want %s", i, got, tokens[i])
 		}
 	}
-	if _, err := f.app.GetThreadAgentRows(f.caller.ID, make([]string, maxThreadAgentRowReads+1)); err == nil {
+	if _, err := f.app.GetThreadAgentRows(t.Context(), f.caller.ID, make([]string, maxThreadAgentRowReads+1)); err == nil {
 		t.Fatal("an oversized read was answered")
 	}
 	for _, token := range []string{"quiet", "chain-e", "missing"} {
@@ -963,7 +963,7 @@ func TestThreadAgentRowsChangesAreEmitted(t *testing.T) {
 			if frames() <= seen {
 				return false
 			}
-			reads, err := f.app.GetThreadAgentRows(f.caller.ID, []string{ack.Token})
+			reads, err := f.app.GetThreadAgentRows(t.Context(), f.caller.ID, []string{ack.Token})
 			if err != nil {
 				t.Fatalf("GetThreadAgentRows: %v", err)
 			}

@@ -409,9 +409,9 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 	// A send that woke a worker a spawn from here owns there, which then
 	// asked a prompt it routed back here, holds that prompt on the spawn's
 	// listing: the spawn itself may be at rest here, so its rows are asked
-	// for at the poll's pace too.
+	// for at the poll's pace too, whichever thread here sent it.
 	for _, row := range rows {
-		if row.Kind != store.ThreadRequestSend || row.TargetComputerID == "" || !a.remoteRequestBlocked(row.Token).routedToCaller {
+		if row.Kind != store.ThreadRequestSend || row.TargetComputerID == "" || !a.remoteRequestBlocked(row.Token).routedHere() {
 			continue
 		}
 		spawn, found, err := a.store.RemoteSpawnLinkTo(row.TargetComputerID, row.TargetThreadID)
@@ -694,7 +694,8 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 		return 0, wakes, err
 	}
 	a.noteRemoteRequestBlocked(token, remoteBlocked{
-		blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo, routedToCaller: answer.BlockedRoutedToCaller, waitingOn: answer.WaitingOn,
+		blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo, routedToCaller: answer.BlockedRoutedToCaller,
+		routedToThread: answer.BlockedRoutedToThread, waitingOn: answer.WaitingOn,
 	})
 	if target := threadPeerTarget(row, answer); target != "" {
 		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title, answer.Provider); err != nil {

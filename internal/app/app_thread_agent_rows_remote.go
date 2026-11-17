@@ -522,9 +522,10 @@ func errorText(err error) string {
 }
 
 // forgetPeerAgentRows forgets a computer no longer paired: its answers,
-// its spawns waiting to be asked and its backoff here, and nested_open on
+// its spawns waiting to be asked and its backoff here, nested_open on
 // every spawn to it, so a settled one leaves its caller's Agents segment
-// by the settled window and the sweep stops asking. A call to it still in
+// by the settled window and the sweep stops asking, and the prompts its
+// workers put to threads here (forgetRemotePrompts). A call to it still in
 // flight records nothing when it returns.
 func (a *App) forgetPeerAgentRows(computerID string) {
 	c := &a.threadAgentPeers
@@ -549,6 +550,9 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	delete(c.backoff, computerID)
 	c.mu.Unlock()
 	callers, err := a.store.ForgetRemoteSpawnsOnComputer(computerID)
+	// Behind every reconcile an answer recorded before this queued, and
+	// ahead of none: no answer from it is recorded from here on.
+	a.workerPrompts.run(func() { a.forgetRemotePrompts(computerID) })
 	c.recording.Unlock()
 	if err != nil {
 		// The sweep clears what this could not: it drops a spawn whose

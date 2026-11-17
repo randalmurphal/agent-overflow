@@ -856,15 +856,30 @@ Ruling 36, as built:
   ... stays: <reason>`) for an older computer. The request sweep sends the rest, 5 s after an attempt
   doubling to 10 min, until that computer answers
   (`deliverOwedOwnerOps`); a refusal or a computer that does not answer
-  never undoes the archive or delete here. That computer admits each
-  through its own doors, fenced by the spawn's link (`agent_owner_op`):
+  never undoes the archive or delete here. That computer reads the
+  spawn's link for the calling device and source thread, its lineage
+  past the retention floor included (`ReachSpawnLink`), and admits each
+  operation through its own doors, fenced by the link (`agent_owner_op`):
   an archive through the archive's path, taking each operation's
   sequence once (`ArchiveLinkedWorker`), so one admitted after its
   supersede changes nothing; a delete through its own claim, verify,
   commit and destroy, the claim holding only while the link owns the
   worker (`ClaimLinkedDelete`), so its refusals and its gate are that
   computer's; a release ends the link. A worker given a sidebar row there
-  is kept, and the delete ends its link. Every write that ends links
+  is kept, and the delete ends its link. A worker below the spawn's
+  worker there that the archive or delete could not reach keeps the
+  operation owed here (`unfinished`), named pending with its computer,
+  and the same operation sent again walks again: an archive while the
+  worker is still archived under that sequence, a delete through its
+  committed claim. That computer answers that a spawn is gone only when
+  no worker can appear for it: an operation for a spawn it has no
+  receipt for yet writes the receipt settled, cancelled under that
+  sequence (`FenceSpawn`), so the spawn, if it still arrives, creates
+  nothing, and a receipt settled before its thread was named names none
+  (`SetThreadReceiptTarget`), and its creation deletes the thread it
+  made. A local spawn on its way when its spawner is archived or deleted
+  holds that archive or delete until its thread exists, which the
+  archive or delete then takes with the rest. Every write that ends links
   announces the workers it released and hands back the prompts their
   links held (`announceReleasedWorkers`): a
   release, that delete, the end of the owner device's last session there,
@@ -950,7 +965,11 @@ Ruling 36, as built:
   it would read it, whatever rows the answer has room for. It carries the
   thread's placement and archive state there and the prompt it waits on
   (`blockedOn`, `blockedDetail`, `blockedRoutedTo`), with `routedToAsker`
-  when that prompt went to the asking device's thread whose link owns it. The sweep keeps
+  when that prompt went to the asking thread, whose link owns it. An
+  approval's `blockedDetail` quotes its command, so a session without
+  `approvals:respond` is answered without it, here and by every Agents
+  rows read of a window; a question's stays, as `provider:user_input` is
+  `threads:read`. The sweep keeps
   asking while it is (`thread_requests.nested_open`). A remote spawn at
   the listing's last level asks for that state alone, which lists no rows
   and asks no computer further on, so a chain of computers is asked no
@@ -1760,7 +1779,10 @@ closes up their spacing so the row holds at a phone width.
   and its request's poll only that it waits and on which thread. A
   prompt that computer routed back to the spawner here names the spawner
   as this computer does (`blockedRoutedHere`) and does not count as
-  needing the person. A
+  needing the person, whichever thread's row it is: a send from another
+  thread here names the spawner its prompt went to
+  (`blockedRoutedToThread`), and the poll picks the prompt up through
+  that spawner's spawn. A
   spawn's row says what its thread did as a subagent's row says what its
   agent did, from the one formatter both use (`AgentMetrics.svelte`),
   read with the thread's name (`store.ThreadTally`, one probe per

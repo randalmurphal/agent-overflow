@@ -176,7 +176,7 @@ func TestAgentTreeReadCost(t *testing.T) {
 	for _, n := range []int{1, 8, maxThreadAgentRowReads} {
 		tokens := append(slices.Clone(named[:n-min(n, 3)]), named[len(named)-min(n, 3):]...)
 		rowReads[n] = measureAgentTree(f.app, 20, func() {
-			reads, err := f.app.GetThreadAgentRows(chief, tokens)
+			reads, err := f.app.GetThreadAgentRows(t.Context(), chief, tokens)
 			if err != nil || len(reads) != n {
 				t.Fatalf("GetThreadAgentRows: %d reads, %v", len(reads), err)
 			}

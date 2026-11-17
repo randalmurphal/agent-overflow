@@ -84,7 +84,7 @@ func TestAWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, nil)
 	f.expectRested(t, "facts-spawn")
-	past, err := f.app.ListThreadPastAgentRows(f.caller.ID, store.PastAgentRowsCursor{}, 8)
+	past, err := f.app.ListThreadPastAgentRows(t.Context(), f.caller.ID, store.PastAgentRowsCursor{}, 8)
 	if err != nil {
 		t.Fatal(err)
 	}

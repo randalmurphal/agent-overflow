@@ -259,7 +259,14 @@ link's thread reports it; do not call either part alone. The spawner's
 computer gives a prompt back at once when no thread there can take it
 (`store.RemotePromptHolder`, which applies the assistants pause). Only
 `IsolationConfig.WorkerPromptLease` shortens the lease, for tests and
-harness boots.
+harness boots. Listing, renewing, answering and returning a held prompt
+need the calling session to hold `approvals:respond`. A prompt being
+answered is skipped by every other transition, so an answer that does not
+land ends through one exit per side, which reconciles what happened
+meanwhile: `endPromptAnswer` (a hand-back asked for, the link, the lease)
+and `endRemoteAnswer` (the holder, a wake not taken). Forgetting a computer
+closes the prompts its workers put here (`forgetRemotePrompts`) behind the
+recording fence.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to

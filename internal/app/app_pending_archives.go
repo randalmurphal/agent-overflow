@@ -41,7 +41,20 @@ func (a *App) beginArchiveWalk(threadID string) {
 // computers the archives of its workers there, and returns what it owed
 // for its caller to deliver (deliverOwnerOps). A failure leaves the archive
 // unfinished, for the next boot to finish.
+//
+// It holds the thread's action lock across the decision and the end: a new
+// archive commits its mark and records its walk under that lock
+// (runArchive), so it lands before the decision, which then counts it, or
+// after the end, which then leaves its mark alone.
 func (a *App) endArchiveWalk(threadID string) ([]store.OwnerOp, error) {
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	return a.endArchiveWalkLocked(threadID)
+}
+
+// endArchiveWalkLocked is endArchiveWalk for a caller that holds the
+// thread's action lock.
+func (a *App) endArchiveWalkLocked(threadID string) ([]store.OwnerOp, error) {
 	w := &a.archiveWalks
 	w.mu.Lock()
 	if w.running[threadID] > 1 {
@@ -51,6 +64,9 @@ func (a *App) endArchiveWalk(threadID string) ([]store.OwnerOp, error) {
 	}
 	delete(w.running, threadID)
 	w.mu.Unlock()
+	if hook := a.archiveWalkEndingForTest; hook != nil {
+		hook(threadID)
+	}
 	owed, err := a.store.OweRemoteArchives(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("record that the archive of %s finished; the next start finishes it: %w", threadID, err)

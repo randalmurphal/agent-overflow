@@ -269,20 +269,24 @@ func (a *App) threadWaitingOn(threadID string) threadWaiting {
 	return waiting
 }
 
-// routedToAsker reports whether the prompt threadID waits on went to the
-// thread on a paired computer that owns it, and device is that computer's:
-// the thread's link (store.SpawnOwnerOf) names device, and the route names
-// the link's source thread. A route to a thread here, and a prompt the
-// person owns, are not.
-func (a *App) routedToAsker(threadID string, route *provider.PromptRoute, device string) (bool, error) {
+// routedToAsker names the thread on the asking device's computer that the
+// prompt threadID waits on went to: the thread's link (store.SpawnOwnerOf)
+// names device, and the route names the link's source thread. It is ""
+// for a route to a thread here, a prompt the person owns, and a link of
+// another device. A row is routed to its own caller only when this is the
+// row's caller thread; the row of another thread there names this one.
+func (a *App) routedToAsker(threadID string, route *provider.PromptRoute, device string) (string, error) {
 	if route == nil || device == "" {
-		return false, nil
+		return "", nil
 	}
 	owner, found, err := a.store.SpawnOwnerOf(threadID)
 	if err != nil {
-		return false, fmt.Errorf("read the owner of thread %s: %w", threadID, err)
+		return "", fmt.Errorf("read the owner of thread %s: %w", threadID, err)
 	}
-	return found && owner.ComputerID != "" && owner.DeviceID == device && owner.ThreadID == route.ThreadID, nil
+	if !found || owner.ComputerID == "" || owner.DeviceID != device || owner.ThreadID != route.ThreadID {
+		return "", nil
+	}
+	return owner.ThreadID, nil
 }
 
 // threadToolsLiveState projects one live snapshot, for a reader that also

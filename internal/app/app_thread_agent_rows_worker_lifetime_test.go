@@ -73,7 +73,7 @@ func (f *requestFixture) workerSummary(t *testing.T, threadID string) ThreadWork
 // pastTokens reads the first page of threadID's Past, checking its total.
 func (f *requestFixture) pastTokens(t *testing.T, threadID string) []string {
 	t.Helper()
-	past, err := f.app.ListThreadPastAgentRows(threadID, store.PastAgentRowsCursor{}, 8)
+	past, err := f.app.ListThreadPastAgentRows(t.Context(), threadID, store.PastAgentRowsCursor{}, 8)
 	if err != nil {
 		t.Fatalf("ListThreadPastAgentRows: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestAWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 0 {
 		t.Fatalf("after the window: %+v; want the resting worker gone from the open list", after.Rows)
 	}
-	past, err := f.app.ListThreadPastAgentRows(f.caller.ID, store.PastAgentRowsCursor{}, 8)
+	past, err := f.app.ListThreadPastAgentRows(t.Context(), f.caller.ID, store.PastAgentRowsCursor{}, 8)
 	if err != nil || len(past.Rows) != 1 || past.Rows[0].Token != ack.Token || past.Rows[0].Answer != "The deploy started; I am watching it." {
 		t.Fatalf("past = %+v, %v; want the spawn with its reply", past, err)
 	}

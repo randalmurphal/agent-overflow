@@ -211,7 +211,7 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 // asked for are recorded in it. A call for the state alone asks no other
 // computer: Hidden says whether the thread has rows. It says where the
 // thread is placed here, whether it is archived, and what prompt it waits
-// on, routed back to the asking device's spawner or not (RoutedToAsker),
+// on, routed back to the calling thread or not (RoutedToAsker),
 // and for a call that names the spawn whose link owns it, the prompts
 // routed to that spawn's thread (peerPromptsOf).
 func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, args threadAgentPeerArgs) (ThreadAgentRows, error) {
@@ -235,10 +235,12 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	listing.Placement, listing.Archived = thread.Placement, thread.Archived
 	waiting := a.threadWaitingOn(args.ThreadID)
 	listing.BlockedOn, listing.BlockedDetail, listing.BlockedRoutedTo = waiting.on, waiting.detail, waiting.routedTo()
-	if listing.RoutedToAsker, err = a.routedToAsker(args.ThreadID, waiting.route, owner); err != nil {
+	holder, err := a.routedToAsker(args.ThreadID, waiting.route, owner)
+	if err != nil {
 		return ThreadAgentRows{}, err
 	}
-	if listing.Prompts, err = a.peerPromptsOf(owner, source, thread.Title, args); err != nil {
+	listing.RoutedToAsker = holder != "" && holder == source
+	if listing.Prompts, err = a.peerPromptsOf(ctx, owner, source, thread.Title, args); err != nil {
 		return ThreadAgentRows{}, err
 	}
 	rest, err := a.threadRest(args.ThreadID)
@@ -275,6 +277,7 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 		}
 		listing.Hidden = state.Rows
 	}
+	a.withholdApprovalDetail(ctx, &listing)
 	return listing, nil
 }
 

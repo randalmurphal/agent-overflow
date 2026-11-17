@@ -1366,7 +1366,7 @@ func TestARemoteWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	if got, err := pair.source.GetThreadWorkerSummary(t.Context(), pair.caller.ID); err != nil || got.Open != 1 {
 		t.Fatalf("summary %+v, %v; want the remote worker counted", got, err)
 	}
-	past, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8)
+	past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8)
 	if err != nil || past.Total != 0 {
 		t.Fatalf("past = %+v, %v; want the running remote worker kept out", past, err)
 	}
@@ -1386,7 +1386,7 @@ func TestARemoteWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	if row, listed := rowOf(); listed && row.open() {
 		t.Fatalf("row = %+v; want the resting remote worker settled", row)
 	}
-	past, err = pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8)
+	past, err = pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8)
 	if err != nil || past.Total != 1 || past.Rows[0].Token != ack.Token || past.Rows[0].Answer != "The deploy started; I am watching it." {
 		t.Fatalf("past = %+v, %v; want the spawn with its reply", past, err)
 	}

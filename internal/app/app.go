@@ -866,6 +866,14 @@ type App struct {
 	// it rendered the message and before it is queued
 	// (deliverThreadWakeMessage), so a test can hand the caller off then.
 	threadWakeRenderedForTest func(carrier string)
+	// archiveWalkEndingForTest, when set, runs once the last walk of
+	// threadID's archive decided to end it and before the store ends it
+	// (endArchiveWalk), so a test can archive the thread again then.
+	archiveWalkEndingForTest func(threadID string)
+	// workerPromptAnsweringForTest, when set, runs once an answer claimed
+	// a routed prompt and before it is written to the worker
+	// (answerRoutedPrompt); an error it returns is that write's failure.
+	workerPromptAnsweringForTest func(token string) error
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

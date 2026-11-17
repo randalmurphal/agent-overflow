@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -38,7 +39,7 @@ import (
 const threadOwnerOpTool = "agent_owner_op"
 
 // What the other computer answers an owner operation. applied, gone and
-// not_owned settle it; pending and refused leave it owed.
+// not_owned settle it; pending, unfinished and refused leave it owed.
 const (
 	// ownerOpApplied: admitted, or admitted before under this sequence.
 	ownerOpApplied = "applied"
@@ -52,6 +53,11 @@ const (
 	ownerOpNotOwned = "not_owned"
 	// ownerOpRefused: that computer refuses it for now, Reason says why.
 	ownerOpRefused = "refused"
+	// ownerOpUnfinished: admitted, and a worker below the thread there was
+	// not archived or deleted; Failures names each. The same operation sent
+	// again walks again (store.ArchiveLinkedWorker, the delete's committed
+	// claim), so the spawner's ledger is the one retry.
+	ownerOpUnfinished = "unfinished"
 )
 
 // threadOwnerOpArgs are agent_owner_op's arguments.
@@ -70,8 +76,8 @@ type threadOwnerOpAnswer struct {
 	Outcome string `json:"outcome"`
 	// Reason says why a refused operation was refused.
 	Reason string `json:"reason,omitempty"`
-	// Failures name the workers under the thread there that an admitted
-	// archive or delete could not reach; that computer retries them.
+	// Failures name, for an unfinished operation, the workers under the
+	// thread there that its archive or delete could not reach.
 	Failures []WorkerFailure `json:"failures,omitempty"`
 }
 
@@ -122,27 +128,36 @@ func (a *App) serveThreadOwnerOp(ctx context.Context, owner string, call ThreadP
 
 // admitOwnerOp carries out one owner operation the device owner sent from
 // its thread source, for the spawn args names. Only that device's spawn,
-// from that thread, is reached; any other is gone, which tells the caller
-// nothing it did not know.
+// from that thread, is reached (store.ReachSpawnLink, the lineage the
+// retention floor kept included); any other is gone, which tells the caller
+// nothing it did not know. A spawn with no receipt here yet is fenced
+// (store.FenceSpawn): its acceptance, if it still arrives, creates nothing,
+// so gone is answered only when no worker can appear for the token.
 func (a *App) admitOwnerOp(_ context.Context, owner, source string, args threadOwnerOpArgs) (threadOwnerOpAnswer, error) {
-	receipt, found, err := a.store.GetThreadRequestReceipt(args.Spawn)
+	now := time.Now().UnixMilli()
+	reach, found, err := a.store.ReachSpawnLink(args.Spawn, owner, source, now)
 	if err != nil {
 		return threadOwnerOpAnswer{}, err
 	}
-	if !found || receipt.Kind != store.ThreadRequestSpawn || receipt.OwnerDeviceID != owner || receipt.SourceThreadID != source {
+	if !found && args.Op != store.OwnerOpSupersede {
+		reach, found, err = a.store.FenceSpawn(args.Spawn, owner, source, args.Seq, now)
+		if err != nil {
+			return threadOwnerOpAnswer{}, err
+		}
+	}
+	if !found {
 		return threadOwnerOpAnswer{Outcome: ownerOpGone}, nil
 	}
-	// The owner reached its link: the staleness release counts from here.
-	if _, err := a.store.TouchSpawnLinkOwner(args.Spawn, owner, source, time.Now().UnixMilli()); err != nil {
-		log.Printf("thread tools: note the owner of spawn %s: %v", args.Spawn, err)
-	}
-	worker := receipt.TargetThreadID
+	worker := reach.TargetThreadID
 	if worker == "" {
-		if slices.Contains(store.ThreadReceiptOpenStates(), receipt.State) {
+		if reach.Open() {
+			// Its creation runs: it names the thread, or loses to a
+			// settlement and discards it (store.SetThreadReceiptTarget).
 			return threadOwnerOpAnswer{Outcome: ownerOpPending}, nil
 		}
-		// Settled with no thread: interrupted before it named one, or its
-		// thread was deleted or moved away.
+		// Settled with no thread, which nothing can name now: fenced,
+		// interrupted before it named one, or its thread was deleted or
+		// moved away.
 		return threadOwnerOpAnswer{Outcome: ownerOpGone}, nil
 	}
 	held, err := a.ownerOpReachesThread(worker, args.Op)
@@ -200,9 +215,10 @@ func (a *App) ownerOpReachesThread(threadID, op string) (bool, error) {
 // admitLinkedArchive archives worker for the link's owner through the
 // archive's own path (runArchive), fenced by the link and taking args.Seq
 // once, then finishes it here: its session stops, its workers here are
-// archived, and what it owes further computers is left to the sweep. The
-// answer follows the admission; a worker below it that could not be
-// archived is named, and its archive retried here.
+// archived, and what it owes further computers is left to the sweep. A
+// worker below it that could not be archived makes the answer unfinished,
+// naming it; the owner sends the same operation again, which walks again
+// while the worker is still archived under it.
 func (a *App) admitLinkedArchive(worker, owner string, args threadOwnerOpArgs) threadOwnerOpAnswer {
 	work, err := a.runArchive(worker, archiveRequest{link: &linkedArchive{token: args.Spawn, device: owner, seq: args.Seq}})
 	switch {
@@ -219,15 +235,20 @@ func (a *App) admitLinkedArchive(worker, owner string, args threadOwnerOpArgs) t
 	if outcome.cleanup != nil {
 		log.Printf("thread tools: archive %s for its spawner on another computer: %v", worker, outcome.cleanup)
 	}
-	return threadOwnerOpAnswer{Outcome: ownerOpApplied, Failures: a.workerFailures(outcome.workers)}
+	if len(outcome.workers) > 0 {
+		return threadOwnerOpAnswer{Outcome: ownerOpUnfinished, Failures: a.workerFailures(outcome.workers)}
+	}
+	return threadOwnerOpAnswer{Outcome: ownerOpApplied}
 }
 
 // admitLinkedDelete deletes worker for the link's owner through the
 // delete's own claim, verify, commit and destroy (deleteThreads), the claim
 // fenced by the link. A worker the link no longer owns is kept, and its
 // link ended: its spawner is gone, so nothing may make it that spawner's
-// worker again. A refusal leaves the delete to be sent again; a delete
-// committed and not finished is joined by the next one or the boot.
+// worker again. A refusal leaves the delete to be sent again. A worker
+// below it that could not be destroyed keeps the threads above it
+// committed, the worker included, and makes the answer unfinished, naming
+// it: the owner sends the delete again, which joins the committed delete.
 func (a *App) admitLinkedDelete(worker, owner, source string, args threadOwnerOpArgs) (threadOwnerOpAnswer, error) {
 	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{worker}, link: &store.LinkFence{Token: args.Spawn, DeviceID: owner}})
 	switch {
@@ -240,10 +261,12 @@ func (a *App) admitLinkedDelete(worker, owner, source string, args threadOwnerOp
 		return threadOwnerOpAnswer{Outcome: ownerOpNotOwned}, nil
 	case err != nil:
 		return ownerOpRefusal("delete", worker, err), nil
+	case len(outcome.failed) > 0:
+		return threadOwnerOpAnswer{Outcome: ownerOpUnfinished, Failures: a.workerFailures(outcome.failed)}, nil
 	case !slices.Contains(outcome.deleted, worker):
 		return threadOwnerOpAnswer{Outcome: ownerOpGone}, nil
 	}
-	return threadOwnerOpAnswer{Outcome: ownerOpApplied, Failures: a.workerFailures(outcome.failed)}, nil
+	return threadOwnerOpAnswer{Outcome: ownerOpApplied}, nil
 }
 
 // ownerOpRefusal is a refused owner operation, its reason in words fit for
@@ -297,6 +320,9 @@ type ownerOpAttempt struct {
 	busy bool
 	// reason says why a pending operation did not land, in a person's words.
 	reason string
+	// members are the workers below its worker that an unfinished operation
+	// did not reach, as that computer named them.
+	members []WorkerFailure
 }
 
 // deliverOwnerOps delivers what a door owed, as reach says, and reports
@@ -344,6 +370,13 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 		computer := names[op.ComputerID]
 		if computer == "" {
 			computer = "The other computer"
+		}
+		for _, member := range attempt.members {
+			failures = append(failures, workerFailure{threadID: member.ThreadID, title: member.Title, computer: computer, pending: true,
+				err: fmt.Errorf("%s: %s; it is %s there once that computer takes it", computer, member.Error, ownerOpVerb(op.Op))})
+		}
+		if len(attempt.members) > 0 {
+			continue
 		}
 		target := targets[op.Token]
 		failure := workerFailure{threadID: target.TargetThreadID, title: target.TargetThreadTitle, computer: computer, pending: !attempt.older}
@@ -409,11 +442,16 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 	}
 	switch answer.Outcome {
 	case ownerOpApplied, ownerOpGone, ownerOpNotOwned:
-		for _, failure := range answer.Failures {
-			log.Printf("thread tools: %s of spawn %s: worker %s there was not %s: %s", op.Op, op.Token, failure.ThreadID, ownerOpVerb(op.Op), failure.Error)
-		}
 		a.settleOwnerOp(op)
 		return ownerOpAttempt{settled: true}
+	case ownerOpUnfinished:
+		names := make([]string, 0, len(answer.Failures))
+		for _, failure := range answer.Failures {
+			names = append(names, cmp.Or(failure.Title, failure.ThreadID))
+		}
+		reason := fmt.Sprintf("the threads under it there were not all %s yet (%s)", ownerOpVerb(op.Op), strings.Join(names, ", "))
+		a.rescheduleOwnerOp(op, reason)
+		return ownerOpAttempt{reason: reason, members: answer.Failures}
 	case ownerOpPending:
 		a.rescheduleOwnerOp(op, "its thread there is still being made")
 		return ownerOpAttempt{reason: "its thread there is still being made"}

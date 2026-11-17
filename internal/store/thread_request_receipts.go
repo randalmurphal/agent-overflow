@@ -95,7 +95,7 @@ type ThreadRequestReceipt struct {
 	// spawn_links.go). Written at acceptance, ended by a release.
 	SpawnLink bool `json:"-"`
 	// OwnerSeenAt is when the source computer last reached a link; the
-	// acceptance writes the creation time (TouchSpawnLinkOwner).
+	// acceptance writes the creation time (touchSpawnLinkOwner).
 	OwnerSeenAt int64 `json:"-"`
 	// OwnerOpSeq is the newest owner operation the link admitted.
 	OwnerOpSeq int64 `json:"-"`
@@ -240,7 +240,8 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 // NameLocalThreadRequestTarget names the thread a local spawn or ask
 // created, on its receipt and its source row in one transaction, and
 // accepts the source row unless a settlement already moved it. The receipt
-// must still have no target, or it is an error and nothing is written. A
+// must still have no target and be open (openReceiptSQL), or it is an error
+// and nothing is written. A
 // source row that is gone, its caller deleted while the thread was being
 // created, is not an error: the thread exists and runs, and the receipt
 // names it. own makes a spawn's thread owned by its spawner in the same
@@ -265,7 +266,7 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 	}
 	result, err := tx.Exec(`UPDATE thread_request_receipts SET target_thread_id = ?1, updated_at = ?2,
 		    spawn_instructions = `+spawnInstructionsAtNamingSQL("kind")+`
-		  WHERE token = ?3 AND target_thread_id IS NULL`, threadID, now, token)
+		  WHERE token = ?3 AND target_thread_id IS NULL AND `+openReceiptSQL, threadID, now, token)
 	if err != nil {
 		return ListingUnchanged, fmt.Errorf("%s: receipt: %w", action, err)
 	}
@@ -301,6 +302,12 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 	}
 	return listingChange(listedBefore, listedAfter), nil
 }
+
+// openReceiptSQL holds for a receipt that can still name its thread: a
+// settled one, cancelled by its owner's operation before its thread existed
+// (FenceSpawn) or settled by a retry that found it unnamed, names none, so
+// the creation that lost to it discards what it made.
+const openReceiptSQL = `state IN ('` + ThreadReceiptAccepted + `', '` + ThreadReceiptRunning + `')`
 
 // insertThreadReceiptSQL writes a receipt. A link is written only while its
 // owner's device can reach this computer, in the insert itself: a worker is
@@ -360,9 +367,10 @@ func (r ThreadRequestReceipt) validated(action string) (ThreadRequestReceipt, er
 
 // SetThreadReceiptTarget names the thread a spawn or ask receipt answers for,
 // once the destination has created it. It applies only while the target is
-// still undecided, so a retry that raced the first attempt cannot repoint a
-// receipt at a second thread; false means the target was already set and the
-// caller's thread is the loser of that race. own makes the thread owned in
+// still undecided and the receipt open (openReceiptSQL), so a retry that
+// raced the first attempt cannot repoint a receipt at a second thread, and a
+// receipt settled meanwhile names nothing; false means the caller's thread
+// lost and is to be discarded. own makes the thread owned in
 // the same transaction when the receipt is a spawn link, as
 // NameLocalThreadRequestTarget does for a local spawn; a receipt that is
 // not a link owns nothing. It returns how the naming moved the thread
@@ -386,7 +394,7 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string, own bool) (bool, 
 	err = tx.QueryRow(
 		`UPDATE thread_request_receipts SET target_thread_id = ?1, updated_at = ?2,
 		    spawn_instructions = `+spawnInstructionsAtNamingSQL("kind")+`
-		  WHERE token = ?3 AND target_thread_id IS NULL
+		  WHERE token = ?3 AND target_thread_id IS NULL AND `+openReceiptSQL+`
 		  RETURNING spawn_link`,
 		threadID, nowMillis(), token,
 	).Scan(&link)

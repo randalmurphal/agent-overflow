@@ -228,7 +228,7 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		if i > 0 {
 			caller = c.threads[i-1]
 		}
-		if past, err := app.ListThreadPastAgentRows(caller, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
+		if past, err := app.ListThreadPastAgentRows(t.Context(), caller, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
 			t.Fatalf("past on computer %d = %+v, %v; want its open worker kept out", i, past, err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestAnOlderComputersOpenStateIsReadFromItsRows(t *testing.T) {
 	if row.NestedUnavailable != "" || !row.open() {
 		t.Fatalf("the spawn row = %+v; want it open and nothing wrong", row)
 	}
-	if past, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
+	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
 		t.Fatalf("past = %+v, %v; want the remote worker kept out", past, err)
 	}
 

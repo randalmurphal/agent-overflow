@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -372,5 +373,49 @@ func TestAWalkThatCouldNotArchiveAWorkerStillEnds(t *testing.T) {
 	}
 	if left := unfinishedArchives(t, f.app); len(left) != 0 {
 		t.Fatalf("unfinished after a walk that reported its worker = %v", left)
+	}
+}
+
+// A thread reopened and archived again while its older walk ends keeps
+// the newer archive unfinished: the end of the older walk and a new
+// archive's mark are ordered by the thread's action lock, so the end never
+// clears a mark it did not count.
+func TestAnArchiveMadeAsAnOlderWalkEndsStaysUnfinished(t *testing.T) {
+	t.Parallel()
+	f := newOrganizeFixture(t)
+	owner := f.thread(t, "owner")
+	work, err := f.app.archiveThreadLocked(owner.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rearchived := make(chan struct{})
+	var once sync.Once
+	f.app.archiveWalkEndingForTest = func(id string) {
+		if id != owner.ID {
+			return
+		}
+		once.Do(func() {
+			go func() {
+				defer close(rearchived)
+				if _, err := f.app.UnarchiveThread(owner.ID); err != nil {
+					t.Error(err)
+					return
+				}
+				if _, err := f.app.archiveThreadLocked(owner.ID, ""); err != nil {
+					t.Error(err)
+				}
+			}()
+			// Room for the reopen and the archive to land inside the end.
+			select {
+			case <-rearchived:
+			case <-time.After(500 * time.Millisecond):
+			}
+		})
+	}
+	f.app.finishArchive(work, reachLater)
+	within(t, "the second archive", rearchived)
+	archivedIs(t, f.app, "after the second archive", map[string]bool{owner.ID: true})
+	if left := unfinishedArchives(t, f.app); !slices.Equal(left, []string{owner.ID}) {
+		t.Fatalf("unfinished = %v, want the second archive, whose walk has not ended", left)
 	}
 }

@@ -575,7 +575,7 @@ func (a *App) handOffAssistantLocked(oldThreadID, newThreadID string) (store.Ass
 	// requests, so its archive has nothing to walk and ends here; a crash
 	// before this leaves it for the boot, which finds nothing to walk.
 	a.beginArchiveWalk(oldThreadID)
-	owed, err := a.endArchiveWalk(oldThreadID)
+	owed, err := a.endArchiveWalkLocked(oldThreadID)
 	if err != nil {
 		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
 	}

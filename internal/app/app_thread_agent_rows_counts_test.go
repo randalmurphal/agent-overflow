@@ -138,7 +138,7 @@ func TestACrashedWorkersPastRuntimeEndsAtItsLastActivity(t *testing.T) {
 	}
 	past := func() ThreadAgentRow {
 		t.Helper()
-		page, err := after.app.ListThreadPastAgentRows(f.caller.ID, store.PastAgentRowsCursor{}, 8)
+		page, err := after.app.ListThreadPastAgentRows(t.Context(), f.caller.ID, store.PastAgentRowsCursor{}, 8)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,7 +202,7 @@ func TestAWorkerRowsRuntimeIsItsTurnsTime(t *testing.T) {
 	ran := *first.CompletedAt - first.StartedAt
 	past := func() ThreadAgentRow {
 		t.Helper()
-		page, err := f.app.ListThreadPastAgentRows(f.caller.ID, store.PastAgentRowsCursor{}, 8)
+		page, err := f.app.ListThreadPastAgentRows(t.Context(), f.caller.ID, store.PastAgentRowsCursor{}, 8)
 		if err != nil {
 			t.Fatal(err)
 		}

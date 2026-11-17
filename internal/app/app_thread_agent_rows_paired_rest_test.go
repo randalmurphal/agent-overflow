@@ -92,7 +92,7 @@ func TestAPairedSpawnUnderPastKeepsItsCounts(t *testing.T) {
 	pair.poll(t)
 	past := func() ThreadAgentRow {
 		t.Helper()
-		page, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8)
+		page, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8)
 		if err != nil {
 			t.Fatal(err)
 		}

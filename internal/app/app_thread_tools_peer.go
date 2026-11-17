@@ -126,10 +126,14 @@ type ThreadPeerRequest struct {
 	// owns the prompt, and from a computer that does not send it.
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
 	// BlockedRoutedToCaller is set when that prompt went back to the
-	// asking computer, to the thread whose link owns the target there
-	// (routedToAsker): the caller's own spawner, not a thread on that
-	// computer.
+	// request's caller, the thread whose link owns the target there
+	// (routedToAsker), not a thread on that computer.
 	BlockedRoutedToCaller bool `json:"blockedRoutedToCaller,omitempty"`
+	// BlockedRoutedToThread names the asking computer's thread that prompt
+	// went back to, whichever of its threads made the request: the
+	// spawner, which a send from another thread names. A computer that
+	// does not send it says only BlockedRoutedToCaller.
+	BlockedRoutedToThread string `json:"blockedRoutedToThread,omitempty"`
 	// Placement is the target thread's placement there: owned, grouped or
 	// standalone. A computer that predates ownership across computers
 	// sends none, and its spawn's thread has a sidebar row there.
@@ -646,9 +650,12 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 			// The same reading this computer's own Agents row makes.
 			waiting := a.threadWaitingOn(receipt.TargetThreadID)
 			state.Blocked, state.BlockedRoutedTo = waiting.live.Blocked(), waiting.routedTo()
-			if state.BlockedRoutedToCaller, err = a.routedToAsker(receipt.TargetThreadID, waiting.route, owner); err != nil {
+			holder, err := a.routedToAsker(receipt.TargetThreadID, waiting.route, owner)
+			if err != nil {
 				return ThreadPeerRequest{}, err
 			}
+			state.BlockedRoutedToThread = holder
+			state.BlockedRoutedToCaller = holder != "" && holder == receipt.SourceThreadID
 			if a.restHeld(receipt.TargetThreadID, token) {
 				rest, err := a.threadRest(receipt.TargetThreadID)
 				if err != nil {

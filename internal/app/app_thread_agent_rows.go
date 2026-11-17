@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/engine"
 )
@@ -123,7 +124,8 @@ type ThreadAgentRow struct {
 	// BlockedOn is approval or question for a target waiting on a prompt,
 	// here or as a paired computer's agent_rows answer reports it, and
 	// person for a paired computer's target known only to be blocked;
-	// BlockedDetail says what it asks and BlockedRoutedTo names the
+	// BlockedDetail says what it asks, an approval's only to a reader that
+	// may answer it (withholdApprovalDetail), and BlockedRoutedTo names the
 	// spawner its prompt went to (ruling 19). BlockedRoutedHere marks a
 	// paired computer's prompt routed back to the spawner here, which
 	// BlockedRoutedTo then names as this computer does.
@@ -217,9 +219,10 @@ type ThreadAgentRows struct {
 	Archived  bool   `json:"archived,omitempty"`
 	// BlockedOn, BlockedDetail and BlockedRoutedTo are the prompt the
 	// listed thread waits on, as its own Agents row here reads it
-	// (threadWaitingOn). RoutedToAsker says that prompt went to the thread
-	// on the asking computer whose link owns the listed thread
-	// (routedToAsker), which that computer names itself.
+	// (threadWaitingOn), an approval's detail withheld from a session that
+	// may not answer it (withholdApprovalDetail). RoutedToAsker says that
+	// prompt went to the thread on the asking computer whose link owns the
+	// listed thread (routedToAsker), which that computer names itself.
 	BlockedOn       string `json:"blockedOn,omitempty"`
 	BlockedDetail   string `json:"blockedDetail,omitempty"`
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
@@ -278,6 +281,7 @@ func (a *App) ListThreadAgentRows(ctx context.Context, threadID string) (ThreadA
 		return ThreadAgentRows{}, fmt.Errorf("read the thread: %w", err)
 	}
 	listing, _, err := a.threadAgentTreeDepth(ctx, newThreadAgentView(a), threadID, threadAgentRowDepth, threadAgentPeersCached)
+	a.withholdApprovalDetail(ctx, &listing)
 	return listing, err
 }
 
@@ -351,7 +355,7 @@ const maxThreadAgentRowReads = 32
 // each named row and the spawns above it up to the thread, no other row.
 //
 //ao:scope threads:read
-func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgentRowRead, error) {
+func (a *App) GetThreadAgentRows(ctx context.Context, threadID string, tokens []string) ([]ThreadAgentRowRead, error) {
 	if len(tokens) == 0 || len(tokens) > maxThreadAgentRowReads {
 		return nil, fmt.Errorf("read agent rows: %d tokens, 1 to %d", len(tokens), maxThreadAgentRowReads)
 	}
@@ -364,6 +368,7 @@ func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgen
 	if err != nil {
 		return nil, fmt.Errorf("read agent rows: %w", err)
 	}
+	a.withholdApprovalDetail(ctx, &ThreadAgentRows{Rows: rows})
 	found := make(map[string]ThreadAgentRow, len(rows))
 	for _, row := range rows {
 		found[row.Token] = row
@@ -397,7 +402,7 @@ type PastAgentRows struct {
 // the retention floor reduced to its lineage shows no answer.
 //
 //ao:scope threads:read
-func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRowsCursor, limit int) (PastAgentRows, error) {
+func (a *App) ListThreadPastAgentRows(ctx context.Context, threadID string, after store.PastAgentRowsCursor, limit int) (PastAgentRows, error) {
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return PastAgentRows{}, fmt.Errorf("read the thread: %w", err)
 	}
@@ -411,6 +416,7 @@ func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRows
 		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
 	}
 	a.pastPeerSpawnCounts(rows, page.Requests)
+	a.withholdApprovalDetail(ctx, &ThreadAgentRows{Rows: rows})
 	return PastAgentRows{Rows: rows, Total: page.Total, Next: page.Next}, nil
 }
 
@@ -980,8 +986,13 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		// spawner here.
 		if state.State == threadtools.RequestBlocked {
 			out.BlockedOn, out.BlockedRoutedTo = "person", remote.routedTo
-			if remote.routedToCaller {
+			switch {
+			case remote.routedToCaller:
 				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(row.CallerThreadID, remote.routedTo), true
+			case remote.routedToThread != "":
+				// Another thread here holds it: the spawner of the thread
+				// this row's request went to.
+				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(remote.routedToThread, remote.routedTo), true
 			}
 		}
 		out.Activity = rest.detail
@@ -1052,6 +1063,29 @@ func threadAgentBlockedOn(snapshot triage.LiveStateSnapshot) (on, detail string,
 		return "question", clipLine(detail), request.RoutedTo
 	}
 	return "", "", nil
+}
+
+// withholdApprovalDetail clears what an approval asks from the listing's
+// own prompt and from each of its rows, nested and a paired computer's
+// included, for a session without approvals:respond. That detail quotes
+// the command, which only that scope is shown, as provider:approval
+// carries it (transport/event_channels.go); the session still reads that
+// the worker waits on an approval and where it went. A question's detail
+// is thread content, which threads:read reads. A call with no session, an
+// agent's own thread tools on this computer, keeps it. Every reader of the
+// listing that answers a session passes its answer here.
+func (a *App) withholdApprovalDetail(ctx context.Context, listing *ThreadAgentRows) {
+	if a.requireScope(ctx, transport.ScopeApprovalsRespond, "") == nil {
+		return
+	}
+	if listing.BlockedOn == "approval" {
+		listing.BlockedDetail = ""
+	}
+	for i := range listing.Rows {
+		if listing.Rows[i].BlockedOn == "approval" {
+			listing.Rows[i].BlockedDetail = ""
+		}
+	}
 }
 
 func firstNonEmpty(values ...string) string {

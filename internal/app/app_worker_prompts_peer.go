@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 )
 
 // The prompts this computer's workers route to a thread on a paired
@@ -29,6 +30,9 @@ import (
 //     held (threadAgentPeerArgs.Held). Listing alone renews nothing.
 //   - agent_prompt_reply answers one, as thread_reply does here
 //     (answerRoutedPrompt); agent_prompt_return gives one back.
+//   - Listing, renewing, answering and returning need the calling session
+//     to hold approvals:respond, as answering the person's own prompts
+//     does; agent_rows without it lists no prompt content.
 //   - A lease hands a prompt back to where the worker's prompts route now,
 //     the person when that is the same thread, once the lease has passed
 //     since it was registered or last held, whichever is later: a
@@ -148,7 +152,8 @@ func (a *App) holdPeerWorkerPrompt(route provider.PromptRoute, prompt workerProm
 	a.armPromptLease(registered.token, a.promptLease())
 }
 
-// armPromptLease checks the lease of the prompt held under token after d.
+// armPromptLease checks the lease of the prompt held under token after d,
+// in place of a check already armed.
 func (a *App) armPromptLease(token string, d time.Duration) {
 	w := &a.workerPrompts
 	w.mu.Lock()
@@ -157,11 +162,28 @@ func (a *App) armPromptLease(token string, d time.Duration) {
 	if prompt == nil || prompt.remote == nil || prompt.state != workerPromptRouted {
 		return
 	}
+	if prompt.remote.timer != nil {
+		prompt.remote.timer.Stop()
+	}
 	prompt.remote.timer = time.AfterFunc(d, func() { w.run(func() { a.expirePromptLease(token) }) })
 }
 
+// promptLinkStands reports whether the link a held prompt was routed
+// through still owns its worker and routes its prompts to the prompt's
+// agent on that computer (store.SpawnOwnerOf). A failed read is a link
+// that does not stand: the prompt goes to the person here.
+func (a *App) promptLinkStands(prompt workerPrompt) bool {
+	link, linked, err := a.store.SpawnOwnerOf(prompt.workerID)
+	if err != nil {
+		log.Printf("worker prompts: %v", err)
+	}
+	return err == nil && linked && link.Token == prompt.remote.spawnToken && link.DeviceID == prompt.remote.device &&
+		link.ComputerID == prompt.remote.computerID && link.ThreadID == prompt.agentID
+}
+
 // expirePromptLease hands back the prompt held under token once its lease
-// has run out, and checks again when it was renewed meanwhile.
+// has run out, and checks again when it was renewed meanwhile. A prompt
+// being answered is checked when its answer ends (endPromptAnswer).
 func (a *App) expirePromptLease(token string) {
 	w := &a.workerPrompts
 	w.mu.Lock()
@@ -193,42 +215,46 @@ func (w *workerPrompts) stopLeases() {
 
 // remotePromptFor is the binding every renewal, answer and return passes:
 // the prompt under promptToken is held for a paired computer through the
-// spawn spawnToken names, and that spawn's link still owns its worker for
-// the calling device and its source thread.
+// spawn spawnToken names, and that spawn's link, reached for the calling
+// device and its source thread (store.ReachSpawnLink), still owns its
+// worker.
 func (a *App) remotePromptFor(device, source, spawnToken, promptToken string) (workerPrompt, error) {
 	prompt, found := a.workerPrompts.get(promptToken)
 	if !found || prompt.remote == nil || prompt.remote.spawnToken != spawnToken ||
 		prompt.remote.device != device || prompt.agentID != source {
 		return workerPrompt{}, errPeerPromptNotYours
 	}
-	link, linked, err := a.store.SpawnOwnerOf(prompt.workerID)
+	reach, found, err := a.store.ReachSpawnLink(spawnToken, device, source, time.Now().UnixMilli())
 	if err != nil {
 		return workerPrompt{}, fmt.Errorf("read the link of thread %s: %w", prompt.workerID, err)
 	}
-	if !linked || link.Token != spawnToken || link.DeviceID != device || link.ThreadID != source {
+	if !found || !reach.Owned || reach.TargetThreadID != prompt.workerID {
 		return workerPrompt{}, errPeerPromptNotYours
 	}
 	return prompt, nil
 }
 
-// peerPromptsOf answers the prompts part of agent_rows: for a call that
-// names the spawn whose link owns threadID, from that link's device and
-// source thread, the link's held prompts, with the lease of each it says it
-// holds renewed. It also notes that the link's owner reached it
-// (store.TouchSpawnLinkOwner). Any other call lists none.
-func (a *App) peerPromptsOf(owner, source, title string, args threadAgentPeerArgs) ([]ThreadAgentPrompt, error) {
+// peerPromptsOf answers the prompts part of agent_rows. A call that names
+// the spawn whose link reaches threadID, from that link's device and source
+// thread, is its owner's contact, whatever the thread's placement
+// (store.ReachSpawnLink). While the link owns the thread, a calling session
+// that may answer prompts (approvals:respond) gets the link's held prompts,
+// with the lease of each it says it holds renewed; one that may not gets
+// none and renews nothing, and still reads the thread's blocked state from
+// the row. Any other call lists none.
+func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, args threadAgentPeerArgs) ([]ThreadAgentPrompt, error) {
 	if args.Spawn == "" {
 		return nil, nil
 	}
-	link, linked, err := a.store.SpawnOwnerOf(args.ThreadID)
+	reach, found, err := a.store.ReachSpawnLink(args.Spawn, owner, source, time.Now().UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("read the link of thread %s: %w", args.ThreadID, err)
 	}
-	if !linked || link.ComputerID == "" || link.Token != args.Spawn || link.DeviceID != owner || link.ThreadID != source {
+	if !found || !reach.Owned || reach.TargetThreadID != args.ThreadID {
 		return nil, nil
 	}
-	if _, err := a.store.TouchSpawnLinkOwner(link.Token, owner, source, time.Now().UnixMilli()); err != nil {
-		log.Printf("worker prompts: %v", err)
+	if a.requireScope(ctx, transport.ScopeApprovalsRespond, "") != nil {
+		return nil, nil
 	}
 	for _, token := range args.Held {
 		if _, err := a.remotePromptFor(owner, source, args.Spawn, token); err == nil {
@@ -295,6 +321,9 @@ func (a *App) servePeerPrompt(ctx context.Context, owner string, call ThreadPeer
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A prompt call must name the thread it came from, its spawn and the prompt's token.", err)
 	}
+	if err := a.requireScope(ctx, transport.ScopeApprovalsRespond, "answer or give back a prompt routed to your thread"); err != nil {
+		return ThreadPeerReply{}, err
+	}
 	prompt, err := a.remotePromptFor(owner, source, args.Spawn, args.Token)
 	if err != nil {
 		return ThreadPeerReply{}, err
@@ -336,7 +365,8 @@ func (a *App) handBackLinkPrompts(threadIDs []string) {
 }
 
 // heldByWorkers is the tokens of the routed prompts held for a paired
-// computer whose worker is among workerIDs.
+// computer whose worker is among workerIDs. One being answered is checked
+// against its link when its answer ends (endPromptAnswer).
 func (w *workerPrompts) heldByWorkers(workerIDs []string) []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()

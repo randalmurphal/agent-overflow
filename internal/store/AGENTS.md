@@ -202,6 +202,12 @@ an atomic persistence decision; they must not become a business-logic layer.
   (`thread_archive.go`): it marks the archive unfinished and an unarchive
   withdraws what the archive owed, in the flip's transaction. A new path
   that archives or reopens a thread calls it with its fence.
+- A paired computer's call about its spawn is authenticated by one reader,
+  `ReachSpawnLink` (`spawn_links.go`): the receipt for the token, device
+  and source thread, lineage included, which records the owner's contact
+  with a standing link. Do not add another device and source check. A
+  receipt names its thread only while it is open (`openReceiptSQL`), for
+  every naming write.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

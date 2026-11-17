@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -145,13 +146,21 @@ func TestAPolledPromptRoutedBackToTheAskerIsRoutedHere(t *testing.T) {
 		"no asking device":  {provider.PromptRoute{ThreadID: here.caller.ID}, "", false},
 	} {
 		route := tc.route
-		if got, err := there.routedToAsker(worker.ID, &route, tc.device); err != nil || got != tc.want {
-			t.Errorf("%s: routed to the asker = %v, %v; want %v", name, got, err, tc.want)
+		if got, err := there.routedToAsker(worker.ID, &route, tc.device); err != nil || (got == here.caller.ID) != tc.want || (got != "" && got != here.caller.ID) {
+			t.Errorf("%s: routed to the asker's thread %q, %v; want %v", name, got, err, tc.want)
 		}
 	}
 	state, err := there.threadPeerRequestState(t.Context(), device, token)
-	if err != nil || !state.Blocked || !state.BlockedRoutedToCaller || state.Placement != store.PlacementOwned {
+	if err != nil || !state.Blocked || !state.BlockedRoutedToCaller || state.BlockedRoutedToThread != here.caller.ID || state.Placement != store.PlacementOwned {
 		t.Fatalf("the owner's poll = %+v, %v; want blocked, routed back to it, owned", state, err)
+	}
+	// The listing says routed to the asker only to the thread it is routed
+	// to; the same device's other thread is told it is a thread's there.
+	for source, want := range map[string]bool{here.caller.ID: true, entityid.New(): false} {
+		listing, err := there.answerThreadAgentRows(t.Context(), device, source, threadAgentPeerArgs{ThreadID: worker.ID, Depth: 1, StateOnly: true})
+		if err != nil || listing.RoutedToAsker != want || listing.BlockedRoutedTo == "" {
+			t.Fatalf("the listing for %s = routed to the asker %v (routed to %q), %v; want %v", source, listing.RoutedToAsker, listing.BlockedRoutedTo, err, want)
+		}
 	}
 	wire, err := json.Marshal(state)
 	if err != nil {
