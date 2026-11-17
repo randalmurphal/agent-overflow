@@ -5,8 +5,10 @@
 // not fire though it comes due; on again, they are back and the loop serves
 // its missed fires once, saying how many. A pane already showing the
 // assistant's thread stays readable with a line saying assistants are off
-// in place of its composer and without New Thread, Same Assistant. The
-// body is assistants-toggle-helpers.ts.
+// in place of its composer and without New Thread, Same Assistant, and an
+// edit open in it closes, its text kept as the composer's draft. The body
+// is assistants-toggle-helpers.ts; two computers each with their own
+// setting are assistants-toggle-paired.spec.ts.
 import { test } from './fixtures.js';
 import { runAssistantsToggle, runAssistantsTogglePane } from './assistants-toggle-helpers.js';
 import type { ProviderName } from './thread-tools-helpers.js';

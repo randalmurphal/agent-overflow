@@ -4,7 +4,7 @@
 // Settings, and what the window and the loop do meanwhile.
 import type { Page } from '@playwright/test';
 
-import { expect } from './fixtures.js';
+import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 import { longPress } from './touch-helpers.js';
 import { assistantRow, assistantsSection, type Layout } from './sidebar-sections-helpers.js';
@@ -15,6 +15,8 @@ const TITLE = 'Toggle agent';
 const LOOP_FIRED = 'Loop "beat" fired.';
 const EVERY_SECONDS = 3;
 const NOTE = 'Assistants are turned off in Settings. Turn them on to continue this thread.';
+const ASKED = 'Check the deploy.';
+const EDITED = 'Check the deploy and the logs.';
 
 async function press(page: Page, layout: Layout, target: ReturnType<Page['locator']>): Promise<void> {
   if (layout === 'desktop') await target.click();
@@ -116,20 +118,35 @@ export async function runAssistantsToggle(harness: HarnessApp, page: Page, layou
 /**
  * A pane showing the assistant's thread when the setting goes off stays
  * readable, saying why it takes nothing, and is as it was once it is on.
- * The setting is turned through the binding so the pane stays in front.
+ * An edit open in it closes, its text kept as the composer's draft. The
+ * setting is turned through the binding so the pane stays in front.
  */
 export async function runAssistantsTogglePane(harness: HarnessApp, page: Page, layout: Layout, provider: ProviderName): Promise<void> {
   const tag = `${layout === 'desktop' ? '' : 'compact-'}assistants-toggle-pane`;
-  const agent = await seedWakeAgent(harness, provider, tag, TITLE);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: `${tag}-${provider}`, repo: {}, threads: [{
+      title: TITLE, provider, turns: [{ userText: ASKED, items: [{ kind: 'assistant_text', summary: 'Checked.' }] }],
+    }] }],
+  });
+  const thread = seed.projects[0].threadIds[0];
+  await harness.rpc('HarnessMakeAssistant', thread);
   await harness.open(page);
-  await press(page, layout, assistantRow(page, agent.thread));
+  await press(page, layout, assistantRow(page, thread));
   const title = page.getByTestId('chat-header-title').filter({ visible: true });
   await expect(title).toHaveText(TITLE);
   const composer = page.getByTestId('composer-root');
 
+  // An edit of the message is open when the setting goes off.
+  await page.getByText(ASKED).hover();
+  await press(page, layout, page.getByLabel('Edit message and resend from here').first());
+  const editor = page.getByTestId('user-message-editor');
+  await expect(editor).toBeVisible();
+  await editor.getByLabel('Message Input').fill(EDITED);
+
   await harness.rpc('UpdateSettings', { assistantsEnabled: false });
   const note = page.getByTestId('assistants-off-note');
   await expect(note).toHaveText(NOTE);
+  await expect(editor).toHaveCount(0);
   await expect(title).toHaveText(TITLE);
   await expect(composer).toBeHidden();
   await expect(page.getByTestId('chat-header-next-thread')).toHaveCount(0);
@@ -138,5 +155,6 @@ export async function runAssistantsTogglePane(harness: HarnessApp, page: Page, l
   await harness.rpc('UpdateSettings', { assistantsEnabled: true });
   await expect(note).toHaveCount(0);
   await expect(composer.filter({ visible: true })).toBeVisible();
+  await expect(composer.getByLabel('Message Input')).toHaveValue(EDITED);
   await expect(page.getByTestId('chat-header-next-thread').filter({ visible: true })).toBeVisible();
 }

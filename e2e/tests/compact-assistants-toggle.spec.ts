@@ -3,8 +3,9 @@
 // turned from Settings on a phone hides the Assistants section and New
 // Assistant in the project's long-press menu and pauses the loop; on again,
 // they are back and the loop serves its missed fires once. The thread
-// screen of an assistant says assistants are off in place of its composer.
-// The body is assistants-toggle-helpers.ts.
+// screen of an assistant says assistants are off in place of its composer,
+// and an edit open in its sheet closes, its text kept as the draft. The
+// body is assistants-toggle-helpers.ts.
 import { test } from './fixtures.js';
 import { runAssistantsToggle, runAssistantsTogglePane } from './assistants-toggle-helpers.js';
 
