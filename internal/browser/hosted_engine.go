@@ -135,9 +135,11 @@ type hostedEngine struct {
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
 	noFind map[string]bool
-	// downloads is the page of each running download, by the launcher's
-	// download id (hosted_downloads.go).
-	downloads map[string]string
+	// downloads is the record of the launcher's downloads
+	// (hosted_downloads.go).
+	downloads hostedDownloads
+	// downloadQuiet overrides hostedDownloadQuiet when set (tests).
+	downloadQuiet time.Duration
 
 	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
 	// to stand in for the CDP evaluate.
@@ -173,7 +175,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		ratios:       make(map[string]pageRatio),
 		scales:       make(map[string]*viewScaleState),
 		noFind:       make(map[string]bool),
-		downloads:    make(map[string]string),
+		downloads:    newHostedDownloads(),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
@@ -261,7 +263,7 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
-	e.downloads = make(map[string]string)
+	e.stopDownloadsLocked()
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()

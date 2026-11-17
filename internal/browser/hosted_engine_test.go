@@ -71,6 +71,19 @@ func (s *directiveSink) next(t *testing.T) webview2host.Directive {
 	return webview2host.Directive{}
 }
 
+// drain answers the directives sent since the last next or drain.
+func (s *directiveSink) drain() []webview2host.Directive {
+	var out []webview2host.Directive
+	for {
+		select {
+		case directive := <-s.feed:
+			out = append(out, directive)
+		default:
+			return out
+		}
+	}
+}
+
 // expectOps asserts the exact directive sequence, which is the whole
 // observable contract of a failed create: ask, then clean up.
 func (s *directiveSink) expectOps(t *testing.T, want ...webview2host.Op) {

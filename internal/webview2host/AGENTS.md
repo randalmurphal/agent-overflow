@@ -75,14 +75,23 @@ a controller that outlived its page.
 
 A page's downloads are the launcher's (`download_windows.go`): it handles
 each `DownloadStarting`, so WebView2's dialog never opens, keeps the
-`DownloadOperation` and reports the download's start, throttled progress
-and one end (`ReportDownload`, `download.go`). A network retry is a new
-operation for the running download's file: it is adopted into that
-download, and the operations it replaced are kept, detached, until the
-download ends, because releasing them stops the new one's reports. A
-download ends, its handlers detached and every operation released, at its
-terminal state or when its page goes (`retireDownloads`), which cancels it
-and reports nothing.
+`DownloadOperation` and reports every change as the download's whole
+snapshot (`ReportDownload`, `download.go`), progress throttled. A
+directive naming a download (`OpCancelDownload`, `OpDownloadStatus`) is
+answered with its snapshot: a running one's, an ended one's kept terminal
+snapshot (up to `MaxEndedDownloads` per page while the page lives), or one
+saying the id is unknown. A report is bounded: the address is shortened,
+then the path left out, never the start or end. WebView2 resumes a
+dropped download as a new `DownloadStarting` whose operation carries the
+interruption's reason; it is adopted into the page's running download from
+that address (the one saving to its file, else the oldest), set back to
+that download's file, and the operations it replaced are kept, detached,
+until the download ends, because releasing them stops the new one's
+reports. A download ends, its handlers detached and every operation
+released, at its terminal state (an interrupted operation canceled first)
+or when its page goes (`retireDownloads`), which cancels it and reports
+nothing. What the real runtime does on a drop is recorded at
+`downloadStateChanged` and in `download_smoke_windows_test.go`.
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
@@ -92,12 +101,12 @@ Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 which need an installed runtime. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the
-user's screen or takes their keyboard: its one window comes from
-`startSmokeUIThread` (an inactive tool window off every monitor), which
-also locks `SetForegroundWindow` and watches every top-level window of the
-test's process tree for the whole smoke (`offscreen_smoke_windows_test.go`),
-failing it for one on a monitor or in the foreground. A smoke never takes
-the foreground; the focus smoke stands in the host's foreground answer
+user's screen or takes their keyboard: the binary runs itself again on a
+desktop of its own, never switched to (`desktop_smoke_windows_test.go`),
+refuses to run the smokes when it cannot, and a smoke refuses to open a
+window on any other desktop, unless
+`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. That desktop is never the
+input desktop, so the focus smoke stands in the host's foreground answer
 (`Host.foreground`).
 
 See [embedded browser specification](../../docs/specs/embedded-browser.md).

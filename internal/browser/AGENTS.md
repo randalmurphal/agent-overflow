@@ -150,9 +150,11 @@ reports one terminal event per download, after its start, and that report
 alone settles the user's cancel. Every removal of a live page goes through
 `pageLeftLocked`, which settles the page's running downloads, except one
 whose file is being published, which its publish settles, and, under the
-page's `downloadMu`, ends its admission of new ones. The hosted engine's downloads are the launcher's
-reports (`hosted_downloads.go`); headless Chromium's arrive over CDP
-(`headless_downloads.go`). Preserve the denial of sensitive website
+page's `downloadMu`, ends its admission of new ones. The hosted engine's
+downloads are the launcher's snapshots (`hosted_downloads.go`), which it
+applies idempotently and asks for again through one status loop, so a
+lost report never leaves a row running; headless Chromium's arrive over
+CDP (`headless_downloads.go`). Preserve the denial of sensitive website
 permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and

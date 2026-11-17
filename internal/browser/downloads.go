@@ -215,6 +215,11 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 			// The engine saved it in the user's Downloads folder, where it
 			// stays. Only the regular file the engine reported, as it is
 			// now, is openable; anything else completes with the reason.
+			if event.FilePath == "" && event.Error != "" {
+				// Saved where the engine could not name or reach it.
+				entry.Error = event.Error
+				break
+			}
 			size := int64(event.Total)
 			if size <= 0 {
 				size = int64(event.Received)

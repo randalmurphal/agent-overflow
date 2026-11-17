@@ -382,7 +382,7 @@ mechanism:
 | wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort; evaluate does not use page `eval`, so a page CSP without `'unsafe-eval'` allows it |
 | clipboard (isolated per tab) | AO-managed, engine-agnostic | same |
 | console_logs | CDP Runtime/Log | injected capture |
-| downloads | WebView2: the launcher handles each page's `DownloadStarting` (no dialog), WebView2 saves to the Windows Downloads folder, and the launcher reports each download's life (`internal/webview2host/download.go`). Headless Chromium: Browser.download events → AO artifact dirs | WebKitDownload delegate → the jar's AO directory; the backend publishes each finished file into the user's Downloads folder (`internal/browser/user_downloads.go`) |
+| downloads | WebView2: the launcher handles each page's `DownloadStarting` (no dialog), WebView2 saves to the Windows Downloads folder, and the launcher reports each download as whole snapshots the backend applies idempotently (`internal/webview2host/download.go`). Headless Chromium: Browser.download events → AO artifact dirs | WebKitDownload delegate → the jar's AO directory; the backend publishes each finished file into the user's Downloads folder (`internal/browser/user_downloads.go`) |
 | assets | as today | JS inventory + fetch-in-page bundling |
 
 New behavior the engines give for free (previously impossible): file

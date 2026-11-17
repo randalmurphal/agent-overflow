@@ -125,10 +125,12 @@ type hostPage struct {
 	// first find (find_windows.go). The page holds its constructor's
 	// reference until retireHandlers.
 	findStarted *iFindStartCompletedHandler
-	// downloadStarting takes the page's downloads, and downloads holds each
-	// one until its operation ends (download_windows.go). UI thread only.
+	// downloadStarting takes the page's downloads, downloads holds each one
+	// until it ends, and ended keeps the terminal snapshots that answer a
+	// later directive (download_windows.go). UI thread only.
 	downloadStarting *iDownloadStartingHandler
 	downloads        map[string]*hostDownload
+	ended            endedDownloads
 	// pres is what the backend said about the page's presentation, and
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
@@ -263,7 +265,9 @@ func (h *Host) Apply(directive Directive) {
 		h.config.Focus.Deliver(directive.Mount, directive.Intent, directive.PageID)
 		h.withPage(directive.PageID, h.applyPendingFocus)
 	case OpCancelDownload:
-		h.withPage(directive.PageID, func(page *hostPage) { h.cancelDownload(page, directive.Download) })
+		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, true) })
+	case OpDownloadStatus:
+		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, false) })
 	}
 }
 

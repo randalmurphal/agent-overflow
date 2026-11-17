@@ -349,6 +349,26 @@ func TestALinkSwappedInBeforeTheFinishGrantsNothing(t *testing.T) {
 	}
 }
 
+// A download the engine saved under a path it could not name or reach
+// (the launcher's report had no room for it, or wslpath failed) completes
+// saying so, with nothing to open.
+func TestAnEngineSavedFileWithNoPathCompletesWithItsReason(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsSavedByEngine)
+	frame := paneHandle(manager, access, page.ID)
+	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "dl-x-1", URL: "https://example.test/x", SuggestedName: "x.bin"}) {
+		t.Fatal("the download was refused")
+	}
+	const reason = "the saved file's path is too long to report"
+	manager.downloadProgress(downloadProgress{ID: "dl-x-1", Received: 5, Total: 5, State: downloadCompleted, Error: reason})
+	got := threadDownloads(manager, access)[0]
+	if got.State != downloadStateCompleted || got.Error != reason || got.Openable {
+		t.Fatalf("the download lists as %+v, want completed saying %q with nothing to open", got, reason)
+	}
+	if _, err := manager.OpenThreadDownload(t.Context(), access, got.ID); err == nil {
+		t.Fatal("the row opens")
+	}
+}
+
 // A page that leaves while its download's file is being published leaves
 // that download to the publish, which settles it once, completed.
 func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {

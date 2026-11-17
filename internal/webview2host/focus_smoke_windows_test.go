@@ -22,11 +22,11 @@ import (
 // alone for a withdrawn intent, pending or not, for a hidden page, and while
 // another window is in the foreground.
 //
-// The smoke never takes the user's foreground: its window stays off screen
-// and inactive, and the host's foreground answer is stood in (Host.foreground)
-// while focus is read from the smoke window's own thread. The real
-// GetForegroundWindow gate is focusDecision's input, unit-tested in
-// presenter_test.go.
+// The smoke runs on its own desktop (desktop_smoke_windows_test.go), which
+// is never the input desktop, so its window is never the foreground window:
+// the host's foreground answer is stood in (Host.foreground) while focus is
+// read from the smoke window's own thread. The real GetForegroundWindow gate
+// is focusDecision's input, unit-tested in presenter_test.go.
 func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
 		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")

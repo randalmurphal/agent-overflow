@@ -19,20 +19,25 @@ import (
 // the operation's events there, and directives reach it through OnMain.
 
 // hostDownload is one download a page started, from its DownloadStarting
-// until its operation ends or its page goes.
+// until it ends or its page goes.
 type hostDownload struct {
-	id    string
+	id string
+	// seq orders the page's downloads by start, oldest first.
+	seq   uint64
 	page  *hostPage
 	op    *iCoreWebView2DownloadOperation
-	path  string
 	bytes *iDownloadEventHandler
 	state *iDownloadEventHandler
 	// bytesToken and stateToken remove the two subscriptions.
 	bytesToken, stateToken eventRegistrationToken
 	gate                   progressGate
-	// cancelRequested is the backend's cancel, applied to a retry too.
+	// uri and path are the snapshot's address and file; received and total
+	// its bytes as last read from an operation.
+	uri, path       string
+	received, total int64
+	// cancelRequested is the backend's cancel, applied to a resume too.
 	cancelRequested bool
-	// stale holds the operations retries replaced (retireOperation).
+	// stale holds the operations resumes replaced (retireOperation).
 	stale []downloadOp
 }
 
@@ -72,14 +77,20 @@ func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) {
 }
 
 // downloadStarting takes one download: WebView2's dialog stays closed, the
-// operation is kept under a launcher id, and the backend hears it began.
+// operation is kept under a launcher id, and the backend hears its first
+// snapshot.
 //
-// WebView2 retries a download whose connection dropped by starting it again:
-// a new DownloadStarting with a new operation for the same file, while the
-// old operation stays in progress and never reports again. A file name is
-// reserved while its download runs, so no other download of the page can
-// start with it; a start naming the file of the page's running download is
-// that download's retry, and takes its place under the same id.
+// WebView2 resumes a download whose connection dropped by starting it
+// again: a new DownloadStarting with a new operation, while the old
+// operation stays in progress and never reports again. Measured on the real
+// runtime, the new operation alone carries the interruption's reason while
+// in progress (a fresh download's is 0), and its file is the running
+// download's when WebView2 restarts from nothing, or "name (1)" when it
+// continues from the bytes it has. Such a start is that download's resume
+// (resumedDownload): it takes the old operation's place under the same id,
+// saving to the file the download started with, so one click is one row,
+// one file and one end. A resume with no running download to take (its row
+// ended) is a new download.
 func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs) {
 	if args == nil {
 		return
@@ -92,40 +103,86 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		h.config.Logf("browser host: page %s: a download has no operation: %v", page.id, err)
 		return
 	}
-	path := args.resultFilePath()
-	if d := page.runningDownload(path); d != nil {
-		h.retireOperation(d)
-		h.attachOperation(d, op)
-		if d.cancelRequested {
-			h.cancelDownload(page, d.id)
+	path, uri := args.resultFilePath(), op.uri()
+	if reason := op.interruptReason(); reason != 0 {
+		if d := page.resumedDownload(uri, path); d != nil {
+			h.resumeDownload(d, args, op, path, reason)
+			return
 		}
-		h.downloadStateChanged(d)
-		return
 	}
 	h.downloadSeq++
-	d := &hostDownload{id: downloadID(h.downloadToken, h.downloadSeq), page: page, path: path}
+	d := &hostDownload{id: downloadID(h.downloadToken, h.downloadSeq), seq: h.downloadSeq, page: page, path: path, uri: uri}
 	h.attachOperation(d, op)
 	if page.downloads == nil {
 		page.downloads = make(map[string]*hostDownload)
 	}
 	page.downloads[d.id] = d
-	h.reportDownload(d, DownloadReport{State: DownloadStarted, URI: op.uri(), Received: op.bytesReceived(), Total: op.totalBytes()})
+	h.report(page, d.snapshot(DownloadRunning, ""))
 	// One that ended before its subscriptions were made reports nothing
 	// more on its own.
 	h.downloadStateChanged(d)
 }
 
-// runningDownload answers the page's running download saving to path.
-func (p *hostPage) runningDownload(path string) *hostDownload {
-	if path == "" {
-		return nil
-	}
+// resumedDownload answers the page's running download a resume from uri
+// saving to path continues: the one saving to path, otherwise the oldest
+// from uri. A resume names nothing else of the download it continues, so
+// with two downloads from one address running and both resumed into
+// "name (1)" files, each may take the other's row: each row still ends once,
+// naming the file its own operation wrote.
+func (p *hostPage) resumedDownload(uri, path string) *hostDownload {
+	var oldest *hostDownload
 	for _, d := range p.downloads {
-		if d.op != nil && strings.EqualFold(d.path, path) {
+		if d.op == nil || d.uri != uri {
+			continue
+		}
+		if path != "" && strings.EqualFold(d.path, path) {
 			return d
 		}
+		if oldest == nil || d.seq < oldest.seq {
+			oldest = d
+		}
 	}
-	return nil
+	return oldest
+}
+
+// resumeDownload makes op, which WebView2 started to resume d after an
+// interruption for reason, d's operation. It saves to d's file: WebView2
+// chose path while d's own file name was still taken, and on the real
+// runtime a resume set back to it completes there byte for byte, whether
+// it continues from the bytes it has or restarts. Should the runtime refuse
+// the path, the download names the file it does write.
+func (h *Host) resumeDownload(d *hostDownload, args *iDownloadStartingEventArgs, op *iCoreWebView2DownloadOperation, path string, reason uint32) {
+	h.config.Logf("browser host: download %s: WebView2 resumes it after %s", d.id, downloadInterruptReason(reason))
+	if !strings.EqualFold(path, d.path) {
+		if err := args.putResultFilePath(d.path); err != nil {
+			h.config.Logf("browser host: download %s: keep its file %s: %v", d.id, d.path, err)
+			d.path = path
+		}
+	}
+	h.retireOperation(d)
+	h.attachOperation(d, op)
+	if d.cancelRequested {
+		if err := op.cancel(); err != nil {
+			h.config.Logf("browser host: cancel download %s: %v", d.id, err)
+		}
+	}
+	h.downloadStateChanged(d)
+}
+
+// snapshot is the download's whole state as a report.
+func (d *hostDownload) snapshot(state, reason string) DownloadReport {
+	if d.op != nil {
+		d.received, d.total = d.op.bytesReceived(), d.op.totalBytes()
+	}
+	return DownloadReport{
+		ID: d.id, State: state, URI: d.uri, Name: windowsFileName(d.path), Path: d.path,
+		Received: d.received, Total: d.total, Reason: reason,
+	}
+}
+
+// windowsFileName is the last element of a Windows path.
+func windowsFileName(path string) string {
+	return path[strings.LastIndexAny(path, `\/`)+1:]
 }
 
 // downloadOp is one operation a download had, with its subscriptions.
@@ -136,7 +193,7 @@ type downloadOp struct {
 }
 
 // retireOperation stops d's operation from reporting and keeps it until d
-// ends: a retry's operation shares the download with the one it replaces,
+// ends: a resume's operation shares the download with the one it replaces,
 // and letting the old one go meanwhile stops the new one's state reports
 // (measured on the real runtime).
 func (h *Host) retireOperation(d *hostDownload) {
@@ -184,17 +241,24 @@ func (h *Host) detachOperation(d *hostDownload) {
 	d.op = nil
 }
 
-// downloadBytes reports a download's bytes, at most once per
-// DownloadProgressInterval.
+// downloadBytes reports a download's snapshot as its bytes change, at most
+// once per DownloadProgressInterval.
 func (h *Host) downloadBytes(d *hostDownload) {
 	if d.op == nil || !d.gate.due(time.Now()) {
 		return
 	}
-	h.reportDownload(d, DownloadReport{State: DownloadProgress, Received: d.op.bytesReceived(), Total: d.op.totalBytes()})
+	h.report(d.page, d.snapshot(DownloadRunning, ""))
 }
 
-// downloadStateChanged reports a download's end and lets the operation go.
-// An operation back in progress (WebView2 resuming it) reports nothing.
+// downloadStateChanged follows the operation's state: completed or
+// interrupted ends the download. WebView2 resumes a download as a new
+// DownloadStarting (downloadStarting), never as this operation coming back
+// to in progress, and raises no interruption before it. Measured on the
+// real runtime for a dropped connection, a body shorter than its
+// Content-Length and a refused Range: the reasons that arrived were the
+// length mismatch (24), at the end of WebView2's own retries, and the
+// user's cancel; FILE_TOO_SHORT, FILE_HASH_MISMATCH and SERVER_NO_RANGE,
+// which WebView2 documents as resumed by itself, never did.
 func (h *Host) downloadStateChanged(d *hostDownload) {
 	if d.op == nil {
 		return
@@ -204,66 +268,76 @@ func (h *Host) downloadStateChanged(d *hostDownload) {
 		if path := d.op.resultFilePath(); path != "" {
 			d.path = path
 		}
-		h.reportDownload(d, DownloadReport{State: DownloadCompleted, Received: d.op.bytesReceived(), Total: d.op.totalBytes()})
-		h.endDownload(d)
+		h.endDownload(d, d.snapshot(DownloadCompleted, ""))
 	case downloadStateInterrupted:
-		h.reportDownload(d, DownloadReport{State: DownloadInterrupted, Received: d.op.bytesReceived(), Total: d.op.totalBytes(), Reason: downloadInterruptReason(d.op.interruptReason())})
-		h.endDownload(d)
-	}
-}
-
-// reportDownload sends one report of d, with its id and file. A report too
-// large for the bridge ends the download as interrupted, so the backend
-// still hears an end.
-func (h *Host) reportDownload(d *hostDownload, r DownloadReport) {
-	r.ID, r.Path = d.id, d.path
-	detail, err := r.Encode()
-	if err != nil {
-		h.config.Logf("browser host: download %s: %v", d.id, err)
-		if r.State == DownloadInterrupted {
-			r.Path, r.URI = "", ""
-		} else {
-			r = DownloadReport{ID: d.id, State: DownloadInterrupted, Reason: "the download's file path is too long to report"}
-			if d.op != nil {
-				_ = d.op.cancel()
-				h.endDownload(d)
+		reason := d.op.interruptReason()
+		terminal := d.snapshot(DownloadInterrupted, downloadInterruptReason(reason))
+		// Nothing WebView2 might continue on this operation runs unobserved
+		// once it is let go. On the real runtime the cancel of an
+		// interrupted operation succeeds and leaves its state and reason.
+		if reason != downloadUserCanceled {
+			if err := d.op.cancel(); err != nil {
+				h.config.Logf("browser host: cancel interrupted download %s: %v", d.id, err)
 			}
 		}
-		if detail, err = r.Encode(); err != nil {
-			return
-		}
+		h.endDownload(d, terminal)
 	}
-	h.config.Report(d.page.id, ReportDownload, detail)
 }
 
-// endDownload lets a download go once it ended or its page went, with
-// every operation it had.
-func (h *Host) endDownload(d *hostDownload) {
+// report sends one snapshot of a page's download.
+func (h *Host) report(page *hostPage, r DownloadReport) {
+	detail, err := r.Encode()
+	if err != nil {
+		h.config.Logf("browser host: download %s: %v", r.ID, err)
+		return
+	}
+	h.config.Report(page.id, ReportDownload, detail)
+}
+
+// endDownload ends a download with its terminal snapshot: every operation
+// it had is let go, the snapshot is kept for a directive that names the
+// download later, and the backend hears it.
+func (h *Host) endDownload(d *hostDownload, terminal DownloadReport) {
+	h.releaseOperations(d)
+	delete(d.page.downloads, d.id)
+	d.page.ended.add(terminal)
+	h.report(d.page, terminal)
+}
+
+// releaseOperations lets go of every operation d had.
+func (h *Host) releaseOperations(d *hostDownload) {
 	h.detachOperation(d)
 	for _, stale := range d.stale {
 		d.op, d.bytes, d.state, d.bytesToken, d.stateToken = stale.op, stale.bytes, stale.state, stale.bytesToken, stale.stateToken
 		h.detachOperation(d)
 	}
 	d.stale = nil
-	delete(d.page.downloads, d.id)
 }
 
-// cancelDownload cancels one of the page's downloads. Its interrupted
-// report follows from the operation's own state change.
-func (h *Host) cancelDownload(page *hostPage, id string) {
+// answerDownload answers a directive naming one of the page's downloads
+// with its snapshot. A cancel cancels a running download first, and its end
+// follows from the operation's state change. An ended download's answer is
+// its terminal snapshot again; an id with no record gets a terminal
+// snapshot saying so.
+func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	d := page.downloads[id]
-	if d == nil || d.op == nil {
+	if d == nil {
+		h.report(page, page.ended.answer(id))
 		return
 	}
-	// Kept for a retry that replaces the operation.
-	d.cancelRequested = true
-	if err := d.op.cancel(); err != nil {
-		h.config.Logf("browser host: cancel download %s: %v", id, err)
+	if cancel && d.op != nil {
+		// Kept for a resume that replaces the operation.
+		d.cancelRequested = true
+		if err := d.op.cancel(); err != nil {
+			h.config.Logf("browser host: cancel download %s: %v", id, err)
+		}
 	}
+	h.report(page, d.snapshot(DownloadRunning, ""))
 }
 
 // retireDownloads cancels and lets go every download of a page that is
-// going. The backend settles them as its page leaves; nothing is reported.
+// going, with every terminal snapshot it kept. The backend settles them as
+// its page leaves; nothing is reported.
 func (h *Host) retireDownloads(page *hostPage) {
 	if page.downloadStarting != nil {
 		page.downloadStarting.starting.detach()
@@ -274,8 +348,10 @@ func (h *Host) retireDownloads(page *hostPage) {
 				h.config.Logf("browser host: cancel download %s of a closing page: %v", d.id, err)
 			}
 		}
-		h.endDownload(d)
+		h.releaseOperations(d)
 	}
+	page.downloads = nil
+	page.ended = endedDownloads{}
 }
 
 // ---------------------------------------------------------------------
@@ -372,6 +448,17 @@ func (a *iDownloadStartingEventArgs) downloadOperation() (*iCoreWebView2Download
 
 func (a *iDownloadStartingEventArgs) resultFilePath() string {
 	return comString(a.vtbl.GetResultFilePath, unsafe.Pointer(a))
+}
+
+// putResultFilePath is put_ResultFilePath([in] LPCWSTR): the file the
+// download saves to.
+func (a *iDownloadStartingEventArgs) putResultFilePath(path string) error {
+	value, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	hr, _, _ := a.vtbl.PutResultFilePath.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(value)))
+	return hresult(hr)
 }
 
 // ---------------------------------------------------------------------

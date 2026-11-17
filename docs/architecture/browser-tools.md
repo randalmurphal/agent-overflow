@@ -398,10 +398,19 @@ behave as a desktop browser's:
   On Windows through WSL the launcher takes every download a pane page
   starts (WebView2's `DownloadStarting`, handled, so WebView2's own
   download dialog never opens), WebView2 saves it, and the launcher reports
-  its life to the backend (`internal/webview2host/download.go`,
-  `internal/browser/hosted_downloads.go`); no download crosses CDP. A
-  network retry WebView2 makes of the same download names the same file
-  and stays one row with one end. A second download a script starts with
+  it to the backend as whole snapshots (`internal/webview2host/download.go`,
+  `internal/browser/hosted_downloads.go`); no download crosses CDP. The
+  backend applies them idempotently, so a lost report heals on the next:
+  the first it gets starts the row, a repeat changes nothing, and nothing
+  after the end reopens it. A cancel is answered with the download's
+  snapshot, and a running download the launcher has not reported for ten
+  seconds is asked for one, so a row whose end was lost settles. WebView2
+  resumes a dropped download itself, as a new download start that carries
+  the interruption's reason; the launcher keeps it as the same row, saving
+  to the file the download started with, so one click is one row, one file
+  and one end. A resume names nothing else of its download: with two
+  downloads of one address running and both resumed, each may take the
+  other's row. A second download a script starts with
   no user gesture gets WebView2's own "download multiple files" prompt in
   the page and has no row until it is allowed. A window WebView2 opened
   itself rather than as an AO tab keeps WebView2's own handling: its
