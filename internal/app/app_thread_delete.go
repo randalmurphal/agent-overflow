@@ -57,7 +57,7 @@ import (
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) DeleteThread(id string) (DeleteThreadResult, error) {
-	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{id}})
+	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{id}, reach: reachNow})
 	return outcome.result(a), err
 }
 
@@ -68,7 +68,7 @@ func (a *App) DeleteThread(id string) (DeleteThreadResult, error) {
 //ao:scope threads:operate
 //ao:route home
 func (a *App) DeleteThreads(threadIDs []string) (DeleteThreadResult, error) {
-	outcome, err := a.deleteThreads(deleteRequest{seeds: threadIDs})
+	outcome, err := a.deleteThreads(deleteRequest{seeds: threadIDs, reach: reachNow})
 	return outcome.result(a), err
 }
 
@@ -78,7 +78,9 @@ type DeleteThreadResult struct {
 	// WorkersNotDeleted names each thread under the named ones, at any
 	// depth, whose destroy failed, and why. It and the threads above it are
 	// committed and hidden until deleting the named threads again, or the
-	// next boot, finishes them.
+	// next boot, finishes them. A worker on another computer named here
+	// either has not taken the delete yet (Pending), which is sent again
+	// until it does, or runs a version that cannot take it.
 	WorkersNotDeleted []WorkerFailure `json:"workersNotDeleted,omitempty"`
 }
 
@@ -88,21 +90,36 @@ type WorkerFailure struct {
 	ThreadID string `json:"threadId"`
 	Title    string `json:"title"`
 	Error    string `json:"error"`
+	// Computer names the paired computer a worker there is on, as this
+	// computer names it; empty for a worker here.
+	Computer string `json:"computer,omitempty"`
+	// Pending is a worker on another computer that has not taken the
+	// archive or delete yet: it is sent again until that computer takes
+	// it, and Error says why the last attempt did not land.
+	Pending bool `json:"pending,omitempty"`
 }
 
 type workerFailure struct {
 	threadID string
 	err      error
+	// computer names the paired computer of a worker there, whose title
+	// is the one its spawn recorded; pending is WorkerFailure.Pending.
+	computer string
+	title    string
+	pending  bool
 }
 
-// workerFailures renders failures for a binding, titled by the rows they
-// name.
+// workerFailures renders failures for a binding, a worker here titled by
+// its row.
 func (a *App) workerFailures(failures []workerFailure) []WorkerFailure {
 	var out []WorkerFailure
 	for _, worker := range failures {
-		failure := WorkerFailure{ThreadID: worker.threadID, Error: worker.err.Error()}
-		if row, err := a.store.GetThread(worker.threadID); err == nil {
-			failure.Title = row.Title
+		failure := WorkerFailure{ThreadID: worker.threadID, Title: worker.title, Error: worker.err.Error(),
+			Computer: worker.computer, Pending: worker.pending}
+		if worker.computer == "" {
+			if row, err := a.store.GetThread(worker.threadID); err == nil {
+				failure.Title = row.Title
+			}
 		}
 		out = append(out, failure)
 	}
@@ -117,6 +134,11 @@ type DeleteDependents struct {
 	PastThreads int `json:"pastThreads"`
 	Helpers     int `json:"helpers"`
 	Workers     int `json:"workers"`
+	// RemoteWorkers is whether any of them spawned a thread on another
+	// computer, which the delete deletes there too: a worker there that
+	// still belongs to its spawner. Not counted, because only that computer
+	// knows which do.
+	RemoteWorkers bool `json:"remoteWorkers"`
 }
 
 // GetDeleteDependents reads what deleting threadIDs, threads of this
@@ -130,7 +152,9 @@ func (a *App) GetDeleteDependents(threadIDs []string) (DeleteDependents, error) 
 		return DeleteDependents{}, err
 	}
 	var dependents DeleteDependents
+	ids := make([]string, 0, len(family))
 	for _, member := range family {
+		ids = append(ids, member.ThreadID)
 		switch member.Kind {
 		case store.DeletePastThread:
 			dependents.PastThreads++
@@ -139,6 +163,9 @@ func (a *App) GetDeleteDependents(threadIDs []string) (DeleteDependents, error) 
 		case store.DeleteWorker:
 			dependents.Workers++
 		}
+	}
+	if dependents.RemoteWorkers, err = a.store.HasRemoteSpawns(ids); err != nil {
+		return DeleteDependents{}, err
 	}
 	return dependents, nil
 }
@@ -176,6 +203,13 @@ type deleteRequest struct {
 	// ctx, when set, stops the destroy before its next thread once done,
 	// leaving the rest committed for the boot.
 	ctx context.Context
+	// link, for the delete a paired computer's owner sends for its worker,
+	// the one seed, claims that worker only while the link owns it
+	// (store.ClaimLinkedDelete).
+	link *store.LinkFence
+	// reach is when the delete delivers what its commit owed the paired
+	// computers its threads spawned on.
+	reach ownerOpReach
 }
 
 // deleteOutcome is what a delete did and could not do after its commit.
@@ -184,16 +218,19 @@ type deleteOutcome struct {
 	// conversations, as against a moved thread's cache or a holder.
 	deleted []string
 	failed  []workerFailure
+	// remote are the workers on other computers the delete did not reach
+	// yet, or cannot: it stands here, and is delivered there later.
+	remote []workerFailure
 }
 
 func (o deleteOutcome) result(a *App) DeleteThreadResult {
-	return DeleteThreadResult{WorkersNotDeleted: a.workerFailures(o.failed)}
+	return DeleteThreadResult{WorkersNotDeleted: a.workerFailures(slices.Concat(o.failed, o.remote))}
 }
 
 // logFailures is the report of a delete no person is waiting on, named by
 // what.
 func (o deleteOutcome) logFailures(what string) {
-	for _, worker := range o.failed {
+	for _, worker := range slices.Concat(o.failed, o.remote) {
 		log.Printf("app: %s: thread %s was not deleted: %v", what, worker.threadID, worker.err)
 	}
 }
@@ -217,7 +254,9 @@ func (a *App) deleteThreads(req deleteRequest) (deleteOutcome, error) {
 	if err := op.commit(); err != nil {
 		return deleteOutcome{}, op.refuse(err)
 	}
-	return op.destroy()
+	outcome, err := op.destroy()
+	outcome.remote = a.deliverOwnerOps(op.owed, op.owedTargets, req.reach)
+	return outcome, err
 }
 
 // maxFamilyChanges bounds how often a delete's family may grow while it is
@@ -242,6 +281,10 @@ type familyDelete struct {
 	// reopens are the admission closures, released when the delete ends.
 	reopens []func()
 	closed  map[string]bool
+	// owed are the owner operations the commit owed, and owedTargets the
+	// spawns they are for, read before the destroy drops them.
+	owed        []store.OwnerOp
+	owedTargets map[string]store.ThreadRequest
 }
 
 func (a *App) newFamilyDelete(req deleteRequest) *familyDelete {
@@ -278,7 +321,16 @@ func (op *familyDelete) claimFamily() ([]store.DeleteMember, error) {
 	if hook := op.app.deleteFamilyReadForTest; hook != nil {
 		hook()
 	}
-	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds)
+	var members []store.DeleteMember
+	var err error
+	switch {
+	case op.req.link == nil:
+		members, err = op.app.store.ClaimDeleteFamily(op.id, op.req.seeds)
+	case len(op.req.seeds) == 1:
+		members, err = op.app.store.ClaimLinkedDelete(op.id, op.req.seeds[0], *op.req.link)
+	default:
+		err = errors.New("a delete through a link names one thread")
+	}
 	if err != nil {
 		return nil, op.claimRefusal(err)
 	}
@@ -575,6 +627,11 @@ func (op *familyDelete) commit() error {
 	// The starts waiting for the decision find the threads committed and
 	// start nothing; their queues are their teardowns'.
 	op.app.deleteDecisions.decide(op.id, true)
+	op.owed = committed.OwedOps
+	if op.req.reach == reachNow {
+		// Its report names the workers by the spawns the destroy drops.
+		op.owedTargets = op.app.ownerOpTargets(committed.OwedOps)
+	}
 	for _, id := range committed.Threads {
 		i, ok := op.index[id]
 		if !ok {

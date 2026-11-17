@@ -94,10 +94,14 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 	}
 	result.Updated = true
 	for _, worker := range applied.archive.workers {
-		message, code := organizeRefusal(worker.threadID, worker.err)
-		result.WorkersNotArchived = append(result.WorkersNotArchived, threadtools.WorkerNotArchived{
-			ThreadID: worker.threadID, Error: message, ErrorCode: code,
-		})
+		notArchived := threadtools.WorkerNotArchived{ThreadID: worker.threadID, Computer: worker.computer, Pending: worker.pending}
+		if worker.computer != "" {
+			// A worker on another computer: the report is this computer's own.
+			notArchived.Error = worker.err.Error()
+		} else {
+			notArchived.Error, notArchived.ErrorCode = organizeRefusal(worker.threadID, worker.err)
+		}
+		result.WorkersNotArchived = append(result.WorkersNotArchived, notArchived)
 	}
 	if applied.archive.cleanup != nil {
 		// The cause may name paths and queries; the host log keeps it.
@@ -150,7 +154,7 @@ func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, pat
 		// already durable, so what of that failed is reported beside the
 		// change that landed rather than turned into a refusal of it; the
 		// destination stops remote work itself after the owner grace.
-		applied.archive = a.finishArchive(*work)
+		applied.archive = a.finishArchive(*work, reachNow)
 	}
 	return applied, nil
 }

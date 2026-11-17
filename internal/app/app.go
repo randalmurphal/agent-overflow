@@ -284,6 +284,9 @@ type App struct {
 	// (app_pending_archives.go).
 	pendingArchives pendingArchives
 	archiveWalks    archiveWalks
+	// ownerOps delivers what archives and deletes owe the paired computers
+	// their threads spawned on (app_thread_owner_ops.go).
+	ownerOps ownerOpDelivery
 	// deleteDecisions are the running deletes' decision gates, which the
 	// app's own starts wait at (app_thread_delete.go).
 	deleteDecisions deleteDecisions

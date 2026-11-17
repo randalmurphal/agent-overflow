@@ -767,7 +767,7 @@ func TestAnArchiveCascadeActsOnlyOnWhatItsArchiveOwned(t *testing.T) {
 		if len(tokens) != 2 {
 			t.Fatalf("the reopened owner holds prompt wakes %q, want the approval's and the question's", tokens)
 		}
-		if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
+		if outcome := f.app.finishArchive(work, reachLater); outcome.cleanup != nil || len(outcome.workers) > 0 {
 			t.Fatalf("cleanup = %+v", outcome)
 		}
 		prompts.drain(t)
@@ -807,14 +807,14 @@ func TestAnArchiveCascadeActsOnlyOnWhatItsArchiveOwned(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The first archive's cleanup reaches only what that archive owned.
-		if outcome := f.app.finishArchive(stale); outcome.cleanup != nil || len(outcome.workers) > 0 {
+		if outcome := f.app.finishArchive(stale, reachLater); outcome.cleanup != nil || len(outcome.workers) > 0 {
 			t.Fatalf("stale cleanup = %+v", outcome)
 		}
 		if !f.reload(t, before.ID).Archived || f.reload(t, after.ID).Archived {
 			t.Fatalf("after the first archive's cleanup: before archived %v, after archived %v; want only before",
 				f.reload(t, before.ID).Archived, f.reload(t, after.ID).Archived)
 		}
-		if outcome := f.app.finishArchive(current); outcome.cleanup != nil || len(outcome.workers) > 0 {
+		if outcome := f.app.finishArchive(current, reachLater); outcome.cleanup != nil || len(outcome.workers) > 0 {
 			t.Fatalf("current cleanup = %+v", outcome)
 		}
 		if !f.reload(t, after.ID).Archived {
@@ -836,7 +836,7 @@ func TestAnArchiveCascadeActsOnlyOnWhatItsArchiveOwned(t *testing.T) {
 		if _, err := f.app.SetThreadPlacement([]string{moved.ID}, store.PlacementStandalone); err != nil {
 			t.Fatal(err)
 		}
-		if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
+		if outcome := f.app.finishArchive(work, reachLater); outcome.cleanup != nil || len(outcome.workers) > 0 {
 			t.Fatalf("cleanup = %+v", outcome)
 		}
 		if f.reload(t, moved.ID).Archived {

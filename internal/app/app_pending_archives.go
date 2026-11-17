@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"sync"
+
+	"agent-overflow/internal/store"
 )
 
 // An archive is durable at its flip, which marks it unfinished
@@ -36,22 +38,24 @@ func (a *App) beginArchiveWalk(threadID string) {
 // endArchiveWalk records the end of a walk of threadID's archive. The last
 // walk to end ends the archive while the thread is still archived
 // (store.OweRemoteArchives), in the transaction that owes the paired
-// computers the archives of its workers there. A failure leaves the archive
+// computers the archives of its workers there, and returns what it owed
+// for its caller to deliver (deliverOwnerOps). A failure leaves the archive
 // unfinished, for the next boot to finish.
-func (a *App) endArchiveWalk(threadID string) error {
+func (a *App) endArchiveWalk(threadID string) ([]store.OwnerOp, error) {
 	w := &a.archiveWalks
 	w.mu.Lock()
 	if w.running[threadID] > 1 {
 		w.running[threadID]--
 		w.mu.Unlock()
-		return nil
+		return nil, nil
 	}
 	delete(w.running, threadID)
 	w.mu.Unlock()
-	if _, err := a.store.OweRemoteArchives(threadID); err != nil {
-		return fmt.Errorf("record that the archive of %s finished; the next start finishes it: %w", threadID, err)
+	owed, err := a.store.OweRemoteArchives(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("record that the archive of %s finished; the next start finishes it: %w", threadID, err)
 	}
-	return nil
+	return owed, nil
 }
 
 // pendingArchives owns the boot walk over the archives a crash stopped
@@ -114,7 +118,7 @@ func (a *App) resumeArchive(id string) {
 	if !work.captured {
 		return
 	}
-	outcome := a.finishArchive(work)
+	outcome := a.finishArchive(work, reachLater)
 	if outcome.cleanup != nil {
 		log.Printf("app: pending archive of %s: %v", id, outcome.cleanup)
 	}

@@ -831,6 +831,33 @@ Ruling 36, as built:
   are one delete per computer. The window stops no session for a delete.
   The cleanup of a thread moved to another computer deletes none of the
   workers it left here.
+- Archiving and deleting reach the owned workers the threads spawned on
+  paired computers. The write that decides it owes each remote spawn one
+  operation, in its own transaction (`thread_owner_ops`): the archive's
+  end an `archive` (`OweRemoteArchives`), the delete's commit a `delete`,
+  or a `release` for a moved thread's cache, and an unarchive a
+  `supersede` of an archive already sent. The sidebar's doors and
+  `thread_update` make one attempt, all of them within 5 s, before they
+  return: a worker whose computer has not taken it is named pending with
+  its computer (`WorkerFailure.pending`, `computer`), and one on a
+  computer that predates this as running an older version, which is not
+  asked again. The request sweep sends the rest, 5 s after an attempt
+  doubling to 10 min, until that computer answers
+  (`deliverOwedOwnerOps`); a refusal or a computer that does not answer
+  never undoes the archive or delete here. That computer admits each
+  through its own doors, fenced by the spawn's link (`agent_owner_op`):
+  an archive through the archive's path, taking each operation's
+  sequence once (`ArchiveLinkedWorker`), so one admitted after its
+  supersede changes nothing; a delete through its own claim, verify,
+  commit and destroy, the claim holding only while the link owns the
+  worker (`ClaimLinkedDelete`), so its refusals and its gate are that
+  computer's; a release ends the link. A worker given a sidebar row there
+  is kept, and the delete ends its link. Every write that ends links
+  announces the workers it released (`announceReleasedWorkers`): a
+  release, that delete, the end of the owner device's last session there,
+  and the retention floor. The delete's confirmation says when the
+  threads it takes spawned workers on other computers
+  (`DeleteDependents.remoteWorkers`).
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it

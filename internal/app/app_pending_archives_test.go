@@ -244,7 +244,7 @@ func TestAnArchiveIsUnfinishedUntilItsWalkEnds(t *testing.T) {
 			if left := unfinishedArchives(t, f.app); !slices.Equal(left, []string{"owner"}) {
 				t.Fatalf("unfinished after the flip = %v, want [owner]", left)
 			}
-			if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
+			if outcome := f.app.finishArchive(work, reachLater); outcome.cleanup != nil || len(outcome.workers) > 0 {
 				t.Fatalf("walk = %+v", outcome)
 			}
 			archivedIs(t, f.app, "after the walk", map[string]bool{"owner": true, "worker": true, "deep": true})
@@ -275,7 +275,7 @@ func TestAnArchiveIsUnfinishedUntilItsWalkEnds(t *testing.T) {
 				if left := unfinishedArchives(t, f.app); slices.Contains(left, step.id) {
 					t.Fatalf("%s is unfinished after its unarchive: %v", step.id, left)
 				}
-				if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
+				if outcome := f.app.finishArchive(work, reachLater); outcome.cleanup != nil || len(outcome.workers) > 0 {
 					t.Fatalf("late walk of %s = %+v", step.id, outcome)
 				}
 			}
@@ -323,11 +323,11 @@ func TestOnlyTheLastWalkEndsAnArchive(t *testing.T) {
 				after := f.thread(t, "after")
 				recordSpawn(t, f.app, "tok-after", owner.ID, after.ID)
 				current := archiveCurrent(t, f.app, owner.ID)
-				f.app.finishArchive(stale)
+				f.app.finishArchive(stale, reachLater)
 				if left := unfinishedArchives(t, f.app); !slices.Equal(left, []string{owner.ID}) {
 					t.Fatalf("unfinished after the stale walk = %v, want the owner's newer archive", left)
 				}
-				f.app.finishArchive(current)
+				f.app.finishArchive(current, reachLater)
 				if left := unfinishedArchives(t, f.app); len(left) != 0 {
 					t.Fatalf("unfinished after the current walk = %v", left)
 				}

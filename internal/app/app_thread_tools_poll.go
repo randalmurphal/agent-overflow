@@ -147,6 +147,7 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
 		a.pollRemoteThreadRequests(now)
+		a.deliverOwedOwnerOps(now)
 		a.refreshNestedOpenRemoteSpawns()
 		a.retryUndeliveredThreadWakes(now)
 		if now.Sub(lastExpiry) >= threadRequestExpiryInterval {
@@ -198,6 +199,11 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 		}
 		if !a.threadRequestPollInFlight() {
 			due = append(due, schedule.Poll)
+		}
+		if !a.ownerOpDrainInFlight() {
+			// What archives and deletes still owe paired computers, on the
+			// same terms as the poll's rows.
+			due = append(due, schedule.OwnerOp)
 		}
 		if a.restRecoveryPending() {
 			due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
@@ -923,9 +929,7 @@ func (a *App) expireThreadRequests(now time.Time) {
 		}
 		// A worker whose paired owner went silent past the floor was
 		// released to a sidebar row here.
-		for _, threadID := range released {
-			a.announcePlaced(threadID)
-		}
+		a.announceReleasedWorkers(released)
 	}
 	if swept, err := a.store.DeleteRemoteWatchesBefore(floor); err != nil {
 		logThreadRequestSweep("delete remote job watches past retention", err)
