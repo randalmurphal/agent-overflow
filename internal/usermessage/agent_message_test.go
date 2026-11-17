@@ -78,10 +78,10 @@ func TestConstructorsWriteWhatDecodeStoredReads(t *testing.T) {
 			return Answer(threadtools.Wake{Kind: threadtools.WakeReminder, Text: "Check.", Sources: []threadtools.WakeSource{{Tokens: []string{"r", "s"}}}})
 		},
 		"digest": func() (AgentMessage, error) {
-			return Answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Text: threadtools.InterruptRestart, Sources: []threadtools.WakeSource{source, other}})
+			return Answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseRestart}, Sources: []threadtools.WakeSource{source, other}})
 		},
 		"answer from a thread never created": func() (AgentMessage, error) {
-			return Answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Text: threadtools.InterruptNeverStarted, Sources: []threadtools.WakeSource{{Tokens: []string{"k"}}}})
+			return Answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseNeverStarted}, Sources: []threadtools.WakeSource{{Tokens: []string{"k"}}}})
 		},
 		"report with no data": func() (AgentMessage, error) { return Report(agentmeta.ReportSend, Reporter{}, "n", "", "") },
 	}

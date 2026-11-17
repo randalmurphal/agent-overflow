@@ -1426,7 +1426,7 @@ What settles a request, in order:
 4. `thread_cancel` by token settles `cancelled`; a Stop of the request
    in the caller's Agents tray settles `cancelled` saying the user
    stopped it. A turn stopped some other way settles `interrupted` with
-   its cause as the text, and the wake states it: another thread's
+   its cause, and the wake states it: another thread's
    `thread_cancel` (named, with its computer when it is another one),
    the user stopping it from the Agents tray, the user taking the thread
    over from its workflow, the workflow ending its attempt, a restart of
@@ -1438,6 +1438,23 @@ What settles a request, in order:
    stopper. The user's own Stop of the thread settles `interrupted`
    with what the turn said by then as its `final` answer; its wake says
    the user stopped the turn.
+
+An interruption's cause is data, recorded where its settlement decides
+it: a code from one closed vocabulary (`threadtools.Cause`) and the one
+argument some codes carry (the previous thread of a handoff, the
+computer a move went to, the thread whose `thread_cancel` stopped the
+turn). The receipt and the request store it beside the answer, whose
+text is then what the turn had written, if anything, and a paired
+computer reports it beside the answer (`cause`, with what the turn
+wrote). Every reader renders words from the cause: `thread_status`, a
+written answer file, the wake and the facts its row shows
+(`Stopped by: ...`); none reads a cause out of text, so a sentence
+reworded on one computer leaves the other's facts as they were. An
+interruption recorded with no cause, by a build before causes or a
+computer that reports none or one this computer does not know, is its
+text: shown whole as the answer, naming no stopper. The answer a
+paired computer reports beside the cause is the same in its own words,
+which is what an earlier build there reads.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. A late reply that lands before the first answer was
@@ -1473,12 +1490,12 @@ settles `interrupted` saying the session ended before the thread read
 it. One the provider had taken in settles saying it ended before the
 thread answered it, and a session that ends during the turn that read
 the request ends that turn and settles the request `interrupted` with
-what the turn had written. The three answers are the
-`threadtools.InterruptSessionEnded*` sentences, which the sender's wake
-row shows as "Stopped by: the session ended ...". A message the provider
+what the turn had written. Each is a `threadtools.CauseSessionEnded*`
+cause, which the sender's wake row shows as "Stopped by: the session
+ended ...". A message the provider
 refuses while its session lives on (Claude's `cancelled`, a failed Codex
 resend, a rollback that purges it) settles the request saying the thread
-did not take it in (`threadtools.InterruptNotTakenIn*`), which the
+did not take it in (`threadtools.CauseNotTakenIn*`), which the
 sender's row shows as "Stopped by: the thread did not take it in". A
 restore never puts a request's text in the person's composer on its
 own: a message that held the person's text gives back that text alone,

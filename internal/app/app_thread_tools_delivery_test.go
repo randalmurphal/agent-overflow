@@ -375,8 +375,8 @@ func TestARequestHeldWhenTheSessionDiesSettlesInterrupted(t *testing.T) {
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
 
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if !strings.Contains(string(row.Answer), "session ended before it answered") {
-		t.Fatalf("answer = %q, want it read and not answered", row.Answer)
+	if row.Cause != threadtools.CauseSessionEndedUnanswered || len(row.Answer) != 0 {
+		t.Fatalf("cause = %q answer = %q, want it read and not answered", row.Cause, row.Answer)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return len(f.wakes(t, token)) == 1 })
 }
@@ -395,8 +395,8 @@ func TestARequestRetiredUnrunSettlesWhenItsMessageGoesBack(t *testing.T) {
 	h.lifecycle(t, uuid, provider.CommandQueued)
 	h.lifecycle(t, uuid, provider.CommandCancelled)
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if string(row.Answer) != threadtools.InterruptNotTakenIn {
-		t.Fatalf("answer = %q", row.Answer)
+	if row.Cause != threadtools.CauseNotTakenIn || len(row.Answer) != 0 {
+		t.Fatalf("cause = %q, answer = %q", row.Cause, row.Answer)
 	}
 	if draft, _, err := f.app.store.GetThreadDraft(h.thread.ID); err != nil || strings.Contains(draft.Content, "check the changelog") {
 		t.Fatalf("draft = %q, %v; want the request's text kept out of it", draft.Content, err)
@@ -577,9 +577,9 @@ func TestARequestARestoreTakesBackIsRequeuedOrSettled(t *testing.T) {
 		want    string
 	}{
 		{path: "session death", parts: true, requeue: true},
-		{path: "failed resend", parts: true, want: threadtools.InterruptNotTakenIn},
-		{path: "session death", want: threadtools.InterruptNotTakenInToComposer},
-		{path: "failed resend", want: threadtools.InterruptNotTakenInToComposer},
+		{path: "failed resend", parts: true, want: threadtools.CauseNotTakenIn},
+		{path: "session death", want: threadtools.CauseNotTakenInToComposer},
+		{path: "failed resend", want: threadtools.CauseNotTakenInToComposer},
 	} {
 		name := tc.path
 		if !tc.parts {
@@ -643,8 +643,8 @@ func TestARequestARestoreTakesBackIsRequeuedOrSettled(t *testing.T) {
 				}
 			} else {
 				row := f.request(t, undelivered)
-				if row.State != store.ThreadRequestInterrupted || string(row.Answer) != tc.want {
-					t.Fatalf("undelivered request = %q %q, want interrupted with %q", row.State, row.Answer, tc.want)
+				if row.State != store.ThreadRequestInterrupted || row.Cause != tc.want {
+					t.Fatalf("undelivered request = %q %q, want interrupted for %q", row.State, row.Cause, tc.want)
 				}
 			}
 			if receipt := f.receipt(t, delivered); receipt.State != store.ThreadReceiptRunning {
@@ -944,9 +944,8 @@ func TestARequestReadWhenItsSessionDiesSettlesWithWhatItWrote(t *testing.T) {
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if !strings.Contains(string(row.Answer), "session ended during the turn that read the request") ||
-		!strings.Contains(string(row.Answer), "Halfway through the changelog.") {
-		t.Fatalf("answer = %q, want the session's end and what the turn had written", row.Answer)
+	if row.Cause != threadtools.CauseSessionEndedMidTurn || string(row.Answer) != "Halfway through the changelog." {
+		t.Fatalf("cause = %q answer = %q, want the session's end with what the turn had written as the answer", row.Cause, row.Answer)
 	}
 }
 
@@ -976,8 +975,8 @@ func TestARequestAnArchivedThreadCannotTakeBackSettlesUnread(t *testing.T) {
 				h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
 			}
 			row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-			if string(row.Answer) != threadtools.InterruptSessionEndedUnread {
-				t.Fatalf("answer = %q, want the session's end before it read the request", row.Answer)
+			if row.Cause != threadtools.CauseSessionEndedUnread {
+				t.Fatalf("cause = %q, want the session's end before it read the request", row.Cause)
 			}
 			if record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token)); err != nil || (found && !record.dispatched) {
 				t.Fatalf("request message = %+v found=%v err=%v, want it not queued", record, found, err)
@@ -1417,9 +1416,8 @@ func heldRequestMidTurn(t *testing.T, f *requestFixture) (*heldRequestTarget, st
 func assertEndedMidTurn(t *testing.T, f *requestFixture, threadID, token string, turnIndex int, written string) {
 	t.Helper()
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if !strings.Contains(string(row.Answer), "session ended during the turn that read the request") ||
-		!strings.Contains(string(row.Answer), written) {
-		t.Fatalf("answer = %q, want the session's end and what the turn had written", row.Answer)
+	if row.Cause != threadtools.CauseSessionEndedMidTurn || string(row.Answer) != written {
+		t.Fatalf("cause = %q answer = %q, want the session's end with what the turn had written as the answer", row.Cause, row.Answer)
 	}
 	turn, found, err := f.app.store.GetTurnByThreadIndex(threadID, turnIndex)
 	if err != nil || !found || turn.CompletedAt == nil || turn.StopReason != "interrupted" {

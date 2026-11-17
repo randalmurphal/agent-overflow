@@ -11,7 +11,22 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
+
+// turnStoppedUnknown is the cause of an interrupted turn no stop was
+// recorded for, as turnSettlement settles it.
+var turnStoppedUnknown = threadtools.Cause{Code: threadtools.CauseTurn}
+
+// turnStopCause is the cause recorded against a thread's turn, or
+// turnStoppedUnknown when none is: what a request that turn answers
+// settles with.
+func (a *App) turnStopCause(threadID string, turnIndex int) threadtools.Cause {
+	if recorded, ok := a.turnStopOf(threadID, store.Turn{TurnIndex: turnIndex}); ok {
+		return recorded.cause
+	}
+	return turnStoppedUnknown
+}
 
 func insertTurns(t *testing.T, app *App, threadID string, turns ...store.Turn) {
 	t.Helper()
@@ -169,7 +184,7 @@ func TestAPassRetiresOnlyTheStopsItRead(t *testing.T) {
 	}
 	app.settleReceiptsForEndedTurn(thread.ID)
 	if got, want := app.turnStopCause(thread.ID, 0), stopByThread("Lead", "lead-id", "").cause; got != want {
-		t.Fatalf("cause at index 0 = %q, want the stop recorded during the pass (%q)", got, want)
+		t.Fatalf("cause at index 0 = %+v, want the stop recorded during the pass (%+v)", got, want)
 	}
 }
 

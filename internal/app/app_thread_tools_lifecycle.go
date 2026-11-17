@@ -45,7 +45,7 @@ const (
 func stopFromAgentsTray() turnStop {
 	return turnStop{
 		label: triage.StoppedByUser,
-		cause: "The user stopped its turn from the Agents tray before it answered.",
+		cause: threadtools.Cause{Code: threadtools.CauseTrayStop},
 	}
 }
 
@@ -417,7 +417,7 @@ func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error
 // It runs BEFORE the rows are deleted, because the settlement reads the
 // receipt and the collection writes the caller's row; afterwards there would
 // be nothing to say and nobody to say it to.
-func (a *App) settleReceiptsForThread(threadID, state, reason string) {
+func (a *App) settleReceiptsForThread(threadID string, settlement store.ThreadRequestSettlement) {
 	receipts, err := a.store.ListThreadRequestReceiptsForThread(threadID)
 	if err != nil {
 		log.Printf("thread tools: list receipts for %s: %v", threadID, err)
@@ -432,13 +432,9 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 		// thread's destruction and are running inside it: deleting it again
 		// from the settlement would wait for the thread action lock the
 		// caller already holds, which is nobody's to release.
-		work, _, err := a.settleThreadReceiptNoScratch(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-			State:      state,
-			Answer:     []byte(reason),
-			AnswerKind: store.ThreadAnswerError,
-		})
+		work, _, err := a.settleThreadReceiptNoScratch(receipt.Token, store.ThreadReceiptOpenStates(), settlement)
 		if err != nil {
-			log.Printf("thread tools: settle receipt %s as %s: %v", receipt.Token, state, err)
+			log.Printf("thread tools: settle receipt %s as %s: %v", receipt.Token, settlement.State, err)
 			continue
 		}
 		works = append(works, work)
@@ -463,7 +459,11 @@ func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID s
 	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was deleted"); err != nil {
 		log.Printf("agent wakes: %v", err)
 	}
-	a.settleReceiptsForThread(threadID, store.ThreadReceiptErrored, "The thread was deleted before it answered.")
+	a.settleReceiptsForThread(threadID, store.ThreadRequestSettlement{
+		State:      store.ThreadReceiptErrored,
+		Answer:     []byte("The thread was deleted before it answered."),
+		AnswerKind: store.ThreadAnswerError,
+	})
 	return a.cancelThreadRequests(ctx, threadID)
 }
 
@@ -472,14 +472,13 @@ func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID s
 // usual; nothing is re-addressed, because the request was made of a thread on
 // this computer and that thread is gone from it.
 func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, destination string) (undelivered, err error) {
-	reason := threadtools.InterruptMoved(destination)
 	// Loops and watches are this computer's clock and processes; they do
 	// not travel with the conversation.
 	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer"); err != nil {
 		log.Printf("agent wakes: %v", err)
 	}
 	withdrawErr := a.withdrawCancelledAgentWakes(threadID)
-	a.settleReceiptsForThread(threadID, store.ThreadReceiptInterrupted, reason)
+	a.settleReceiptsForThread(threadID, interruptedSettlement(threadtools.Cause{Code: threadtools.CauseMoved, Arg: destination}, ""))
 	undelivered, err = a.cancelThreadRequests(ctx, threadID)
 	return undelivered, errors.Join(withdrawErr, err)
 }

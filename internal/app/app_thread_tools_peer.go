@@ -71,6 +71,14 @@ type ThreadPeerCall struct {
 	UserStop bool `json:"userStop,omitempty"`
 }
 
+// ThreadPeerCause is an interruption's cause on the wire: its code and
+// argument (threadtools.Cause) and what the turn had written by then.
+type ThreadPeerCause struct {
+	Code    string `json:"code"`
+	Arg     string `json:"arg,omitempty"`
+	Written string `json:"written,omitempty"`
+}
+
 // ThreadPeerAgent is a forwarded request's standing agent sender.
 type ThreadPeerAgent struct {
 	Role string `json:"role,omitempty"`
@@ -105,6 +113,11 @@ type ThreadPeerRequest struct {
 	State      string `json:"state,omitempty"`
 	Answer     string `json:"answer,omitempty"`
 	AnswerKind string `json:"answerKind,omitempty"`
+	// Cause is why an `interrupted` answer was interrupted, as this
+	// computer recorded it. Answer beside it is the same in this computer's
+	// words, which a computer that does not read Cause, or does not know its
+	// code, shows whole.
+	Cause *ThreadPeerCause `json:"cause,omitempty"`
 	// LateReply is a thread_reply that arrived after the receipt had
 	// already finished. It is a later revision than Answer.
 	LateReply   string `json:"lateReply,omitempty"`
@@ -626,6 +639,10 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 	state.TargetThreadID = receipt.TargetThreadID
 	state.State = receipt.State
 	state.Answer = string(receipt.Answer)
+	if receipt.Cause != "" {
+		state.Answer = threadtools.Cause{Code: receipt.Cause, Arg: receipt.CauseArg}.Answer(state.Answer)
+		state.Cause = &ThreadPeerCause{Code: receipt.Cause, Arg: receipt.CauseArg, Written: string(receipt.Answer)}
+	}
 	state.AnswerKind = receipt.AnswerKind
 	state.LateReply = string(receipt.LateReply)
 	state.LateReplyAt = receipt.LateReplyAt

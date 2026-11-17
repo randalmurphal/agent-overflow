@@ -1685,10 +1685,10 @@
     ]
   },
   {
-    "name": "interrupted by the person's Stop with no last message recorded",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered.",
+    "name": "interrupted, recorded with no cause by an earlier build",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: This computer restarted before the request finished.",
     "members": [
-      110
+      116
     ],
     "legacy": false,
     "origins": [
@@ -1699,18 +1699,23 @@
         "kind": "wake",
         "facts": {
           "form": "answer",
-          "bytes": 110,
+          "bytes": 116,
           "outcome": "interrupted",
+          "body": [
+            {
+              "start": 64,
+              "end": 116
+            }
+          ],
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
-          ],
-          "stoppedBy": "the user"
+          ]
         }
       }
     ],
     "parts": [
       {
-        "body": "",
+        "body": "This computer restarted before the request finished.",
         "footer": null,
         "wake": {
           "kind": "interrupted",
@@ -1723,55 +1728,7 @@
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
           ],
           "agentRole": null,
-          "stoppedBy": "the user",
-          "clipped": false,
-          "madeIn": "",
-          "now": "",
-          "threads": []
-        }
-      }
-    ]
-  },
-  {
-    "name": "interrupted with no reason recorded",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
-    "members": [
-      108
-    ],
-    "legacy": false,
-    "origins": [
-      {
-        "threadId": "t-work",
-        "title": "Worker",
-        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
-        "kind": "wake",
-        "facts": {
-          "form": "answer",
-          "bytes": 108,
-          "outcome": "interrupted",
-          "tokens": [
-            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
-          ],
-          "stoppedBy": "an interrupt"
-        }
-      }
-    ],
-    "parts": [
-      {
-        "body": "",
-        "footer": null,
-        "wake": {
-          "kind": "interrupted",
-          "title": "Worker",
-          "threadId": "t-work",
-          "computer": "",
-          "age": "",
-          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
-          "tokens": [
-            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
-          ],
-          "agentRole": null,
-          "stoppedBy": "an interrupt",
+          "stoppedBy": "",
           "clipped": false,
           "madeIn": "",
           "now": "",
@@ -3243,10 +3200,10 @@
     ]
   },
   {
-    "name": "digest: interrupted with no reason recorded",
-    "text": "2 threads were interrupted.\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]",
+    "name": "digest: interrupted, recorded with no cause by another computer's earlier build",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nThe thread's session ended before it read the request.",
     "members": [
-      158
+      239
     ],
     "legacy": false,
     "origins": [
@@ -3257,14 +3214,19 @@
         "kind": "wake",
         "facts": {
           "form": "answer",
-          "bytes": 158,
+          "bytes": 239,
           "outcome": "interrupted",
+          "body": [
+            {
+              "start": 185,
+              "end": 239
+            }
+          ],
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
             "tok-2",
             "tok-3"
           ],
-          "stoppedBy": "an interrupt",
           "threads": [
             {
               "threadId": "t-work",
@@ -3290,7 +3252,7 @@
     ],
     "parts": [
       {
-        "body": "",
+        "body": "The thread's session ended before it read the request.",
         "footer": null,
         "wake": {
           "kind": "interrupted",
@@ -3305,7 +3267,7 @@
             "tok-3"
           ],
           "agentRole": null,
-          "stoppedBy": "an interrupt",
+          "stoppedBy": "",
           "clipped": false,
           "madeIn": "",
           "now": "",

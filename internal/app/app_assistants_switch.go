@@ -67,7 +67,7 @@ func assistantsOffStop() restStop {
 	return restStop{
 		turn: turnStop{
 			label: "Stopped: assistants were turned off",
-			cause: "Assistants were turned off in Settings before it answered.",
+			cause: threadtools.Cause{Code: threadtools.CauseAssistantsOff},
 		},
 		answer: "Assistants were turned off in Settings before it answered; nobody cancelled it.",
 	}

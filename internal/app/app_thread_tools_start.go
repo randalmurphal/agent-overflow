@@ -557,15 +557,12 @@ func (t threadToolsApp) acceptRequest(
 			// leave it for the next boot sweep, which is the only other
 			// thing that would ever look at it; a second thread now would be
 			// a second piece of work nobody asked for.
-			if err := t.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-				State:      store.ThreadReceiptInterrupted,
-				Answer:     []byte(threadReceiptNeverStarted),
-				AnswerKind: store.ThreadAnswerError,
-			}); err != nil {
+			neverStarted := threadtools.Cause{Code: threadtools.CauseNeverStarted}
+			if err := t.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), interruptedSettlement(neverStarted, "")); err != nil {
 				return "", false, err
 			}
 			return "", false, errorsx.Public(threadtools.CodeInvalidRequest,
-				threadReceiptNeverStarted+" It is settled as interrupted; make the request again.", nil)
+				neverStarted.Answer("")+" It is settled as interrupted; make the request again.", nil)
 		}
 		thread, err := create()
 		if err != nil {
@@ -649,11 +646,6 @@ func threadReceiptFor(origin threadRequestOrigin, token, kind, targetThreadID st
 		TargetThreadID:     targetThreadID,
 	}
 }
-
-// threadReceiptNeverStarted is what a receipt accepted without its thread
-// says on both ends: the answer stored on the settled receipt, and the
-// refusal the retry that found it reads.
-const threadReceiptNeverStarted = threadtools.InterruptNeverStarted
 
 // failRequest settles a source row on this computer whose acceptance or
 // dispatch failed before the destination ever ran it, and returns the

@@ -87,9 +87,8 @@ func TestAHeldSpawnSettlesInterruptedWhenItsSessionEndsInALaterTurn(t *testing.T
 		t.Fatal(err)
 	}
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
-	want := threadtools.InterruptSessionEndedWorking + threadtools.SessionEndedWrittenSoFar + "Halfway through the check."
-	if string(row.Answer) != want {
-		t.Fatalf("settled %s %q; want interrupted with %q", row.State, row.Answer, want)
+	if row.Cause != threadtools.CauseSessionEndedWorking || string(row.Answer) != "Halfway through the check." {
+		t.Fatalf("settled %s %q %q; want interrupted while still working with what it wrote", row.State, row.Cause, row.Answer)
 	}
 }
 

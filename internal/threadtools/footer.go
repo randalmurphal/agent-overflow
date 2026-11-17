@@ -228,9 +228,13 @@ type WakeSource struct {
 type Wake struct {
 	Kind    string
 	Sources []WakeSource
-	// Text is the answer, the final message, the error or the note. It is
-	// clipped to WakePreviewBytes with a pointer to thread_status.
+	// Text is the answer, the final message, the error or the note; for an
+	// interruption, what the turn had written when its Cause carries that,
+	// or the whole text of one with no cause. It is clipped to
+	// WakePreviewBytes with a pointer to thread_status.
 	Text string
+	// Cause is why a WakeInterrupted request was interrupted.
+	Cause Cause
 	// MadeIn is the assistant's past thread the requests were made in, set
 	// when the wake goes to a later thread of the same assistant, Now. One
 	// wake carries only requests made in the same thread.
@@ -350,34 +354,34 @@ func (w Wake) status(b *spanBuilder, facts *MessageFacts) {
 		b.write(who + " was cancelled: ")
 		w.writeAnswer(b, facts, w.Text, 0)
 	case WakeInterrupted:
-		// The cause the settlement recorded, as its own sentence: one of the
-		// reasons below, or who stopped the turn (a thread's cancel, a
-		// workflow, the user). A restart names the computer that restarted.
-		if w.Text == InterruptRestart {
+		// The cause the settlement recorded, in its words. A restart names
+		// the computer that restarted.
+		if w.Cause.Code == CauseRestart {
 			facts.StoppedBy = "a restart of " + restartedComputer(source.Computer)
 			b.write(fmt.Sprintf("%s was interrupted by a restart of %s.", who, restartedComputer(source.Computer)))
 			return
 		}
-		reason := w.Text
-		if reason == "" {
-			reason = InterruptTurn
-		}
 		b.write(who + ": ")
-		stoppedBy, shownFrom := interruptStopper(reason)
-		facts.StoppedBy = stoppedBy
+		words, known := w.Cause.words()
+		if !known {
+			// No cause: the text is the answer, whole, and names no stopper.
+			w.writeAnswer(b, facts, w.Text, 0)
+			return
+		}
+		facts.StoppedBy = words.stoppedBy
 		// What a turn its session ended had written is an answer, clipped
-		// as one; any other reason is a sentence, said whole.
-		if prefix, ok := sessionEndedWritten(reason); ok {
-			b.write(prefix)
-			w.writeAnswer(b, facts, reason[len(prefix):], 0)
+		// as one; the sentence before it is said whole.
+		if words.written && w.Text != "" {
+			b.write(words.sentence + SessionEndedWrittenSoFar)
+			w.writeAnswer(b, facts, w.Text, 0)
 			return
 		}
-		if shownFrom < 0 {
-			b.write(reason)
+		if words.shownFrom < 0 {
+			b.write(words.sentence)
 			return
 		}
-		b.write(reason[:shownFrom])
-		b.writeBody(reason[shownFrom:])
+		b.write(words.sentence[:words.shownFrom])
+		b.writeBody(words.sentence[words.shownFrom:])
 	case WakeStopped:
 		facts.StoppedBy = "the user"
 		b.write(who + ": " + WakePersonStopped)
@@ -419,93 +423,6 @@ func (w Wake) writeAnswer(b *spanBuilder, facts *MessageFacts, text string, show
 // cut before it answered.
 const WakePersonStopped = "The user stopped this turn before it answered."
 
-// Why a request was interrupted: the answer an interrupted settlement
-// records, which its wake states (WakeInterrupted). A turn someone stopped
-// records who did instead, as a sentence the app words; a person's own Stop
-// is WakeStopped, with what the turn said.
-const (
-	// InterruptRestart: the computer that held the request restarted.
-	InterruptRestart = "This computer restarted before the request finished."
-	// InterruptSessionEndedUnread: the thread's session ended, by a crash,
-	// a stop, a teardown or a replacement, before the provider took the
-	// request's message in.
-	InterruptSessionEndedUnread = "The thread's session ended before it read the request."
-	// InterruptSessionEndedUnanswered: the session ended after the provider
-	// took the message in and before the turn that reads it opened.
-	InterruptSessionEndedUnanswered = "The thread's session ended before it answered the request."
-	// InterruptSessionEndedMidTurn: the session ended during the turn that
-	// read the message. Its answer goes on with what the turn had written
-	// by then (SessionEndedWrittenSoFar), when it wrote anything.
-	InterruptSessionEndedMidTurn = "The thread's session ended during the turn that read the request."
-	// InterruptSessionEndedWorking: the turn that read the message ended,
-	// and the request waited for its thread to come to rest (a spawn, or a
-	// send to a thread its caller spawned); the session ended during a later
-	// turn of that thread. Its answer goes on as InterruptSessionEndedMidTurn's
-	// does.
-	InterruptSessionEndedWorking = "The thread's session ended while it was still working on the request."
-	// InterruptTurn: the turn was interrupted and no cause was recorded.
-	InterruptTurn = "The turn was interrupted before it answered."
-	// InterruptNeverStarted: the request was accepted and its thread was
-	// never created.
-	InterruptNeverStarted = "That request was accepted but its thread was never created."
-	// InterruptNotTakenIn: the provider gave the request's message back
-	// before taking it in, and the request could not go back to its queue
-	// (a cancelled send with the session alive, a failed Codex resend).
-	InterruptNotTakenIn = "The thread did not take the request in."
-	// InterruptNotTakenInToComposer: the message was not taken in and was
-	// joined with the person's own text it could not be split from, so all
-	// of it went back to the target thread's composer.
-	InterruptNotTakenInToComposer = "The thread did not take the request in, and its message went back to that thread's composer."
-)
-
-// SessionEndedWrittenSoFar introduces, after InterruptSessionEndedMidTurn,
-// what the turn had written when its session ended.
-const SessionEndedWrittenSoFar = " What it had written by then:\n\n"
-
-// InterruptSessionEndedReasons are the reasons a request reads when its
-// thread's session ended before a turn answered it.
-var InterruptSessionEndedReasons = []string{
-	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn, InterruptSessionEndedWorking,
-}
-
-// sessionEndedWritten reads a reason that goes on with what the turn had
-// written when its session ended, and returns the part before that text.
-func sessionEndedWritten(reason string) (string, bool) {
-	for _, opening := range []string{InterruptSessionEndedMidTurn, InterruptSessionEndedWorking} {
-		if prefix := opening + SessionEndedWrittenSoFar; strings.HasPrefix(reason, prefix) {
-			return prefix, true
-		}
-	}
-	return "", false
-}
-
-// InterruptHandedOff is the reason of a request whose thread, an
-// assistant's, was replaced by New Thread, Same Assistant after it read the
-// request and before it answered. It names the old thread, so the sender
-// can read what was done.
-func InterruptHandedOff(previousThreadID string) string {
-	return InterruptHandedOffSentence + " Its previous thread is " + previousThreadID +
-		"; read it with thread_show to see what was done, or ask the assistant again by name."
-}
-
-// InterruptHandedOffSentence opens InterruptHandedOff; a wake's facts name
-// the stopper from it and show the rest (interruptStopper).
-const InterruptHandedOffSentence = "The assistant moved to a new thread before it answered."
-
-// InterruptMoved is the reason of a request whose thread was moved to
-// destination, another computer, before it answered.
-func InterruptMoved(destination string) string {
-	if destination == "" {
-		destination = "another computer"
-	}
-	return interruptMovedOpening + destination + interruptMovedClosing
-}
-
-const (
-	interruptMovedOpening = "The thread was moved to "
-	interruptMovedClosing = " before it answered."
-)
-
 // digest renders a wake that speaks for several threads: what happened to
 // each of them, one line naming each with its tokens (and, under it, that it
 // is a standing agent when it is one), then the text they share. The text is
@@ -515,9 +432,10 @@ const (
 func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 	count := len(w.Sources)
 	var head string
-	shared := w.Text != ""
-	// shownFrom is where in a shared reason the part a person reads as the
-	// message starts (interruptStopper); a shared answer is read whole.
+	text := w.Text
+	shared := text != ""
+	// shownFrom is where in a shared cause's words the part a person reads
+	// as the message starts; a shared answer is read whole.
 	shownFrom := 0
 	switch w.Kind {
 	case WakeReply:
@@ -535,16 +453,18 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 			head = fmt.Sprintf("%d threads were cancelled, each for the same reason:", count)
 		}
 	case WakeInterrupted:
-		switch w.Text {
-		case InterruptRestart:
+		if w.Cause.Code == CauseRestart {
 			head, shared = fmt.Sprintf("%d threads were interrupted by a restart of %s.", count, w.restartedComputers()), false
 			facts.StoppedBy = "a restart of " + w.restartedComputers()
-		case "":
-			head = fmt.Sprintf("%d threads were interrupted.", count)
-			facts.StoppedBy = "an interrupt"
-		default:
-			head = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count)
-			facts.StoppedBy, shownFrom = interruptStopper(w.Text)
+			break
+		}
+		// Their shared cause in its words, or with no cause their shared
+		// text, whole.
+		head = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count)
+		text, shownFrom = w.Cause.answer(w.Text)
+		shared = text != ""
+		if words, known := w.Cause.words(); known {
+			facts.StoppedBy = words.stoppedBy
 		}
 	case WakeStopped:
 		facts.StoppedBy = "the user"
@@ -574,7 +494,7 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 	}
 	if shared {
 		b.write("\n")
-		w.writeAnswer(b, facts, w.Text, shownFrom)
+		w.writeAnswer(b, facts, text, shownFrom)
 	}
 }
 

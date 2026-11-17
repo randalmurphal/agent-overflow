@@ -226,43 +226,58 @@ func wakePart(wake Wake) fixtureMessage {
 	}
 	switch wake.Kind {
 	case WakeInterrupted:
-		// The frontend names what stopped it, or shows a reason that names
-		// no stopper as the message.
-		switch moved, isMoved := strings.CutPrefix(wake.Text, "The thread was moved to "); {
-		case wake.Text == InterruptRestart:
-			part.Wake.StoppedBy = "a restart of " + restarted
-		case slices.Contains(InterruptSessionEndedReasons, wake.Text):
-			part.Wake.StoppedBy = wantSessionEndedBy(wake.Text)
-		case wake.Text == InterruptNotTakenIn:
-			part.Wake.StoppedBy = "the thread did not take it in"
-		case wake.Text == InterruptNotTakenInToComposer:
-			part.Wake.StoppedBy = "the thread did not take it in, and its message went back to that thread's composer"
-		case strings.HasPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar),
-			strings.HasPrefix(wake.Text, InterruptSessionEndedWorking+SessionEndedWrittenSoFar):
-			opening, _, _ := strings.Cut(wake.Text, SessionEndedWrittenSoFar)
-			part.Wake.StoppedBy = wantSessionEndedBy(opening)
-			prefix := opening + SessionEndedWrittenSoFar
-			part.Body = strings.TrimPrefix(wake.Text, prefix)
-			if len(wake.Sources) > 1 && len(wake.Text) > WakePreviewBytes {
-				// A digest clips the shared reason whole.
-				part.Body = strings.TrimPrefix(clipBytes(wake.Text, WakePreviewBytes), prefix)
+		// The frontend names what stopped it, or shows a cause that names no
+		// stopper, and a text recorded with no cause, as the message.
+		clip := func(body string) string {
+			if len(body) > WakePreviewBytes {
 				part.Wake.Clipped = true
-			} else if len(part.Body) > WakePreviewBytes {
-				part.Body = clipBytes(part.Body, WakePreviewBytes)
-				part.Wake.Clipped = true
+				return clipBytes(body, WakePreviewBytes)
 			}
-		case wake.Text == "" || wake.Text == InterruptTurn:
+			return body
+		}
+		sessionEnded := map[string]string{
+			CauseSessionEndedUnread:     "the session ended before it read the request",
+			CauseSessionEndedUnanswered: "the session ended before it answered the request",
+			CauseSessionEndedMidTurn:    "the session ended during the turn that read the request",
+			CauseSessionEndedWorking:    "the session ended while it was still working on the request",
+		}
+		switch code := wake.Cause.Code; code {
+		case CauseRestart:
+			part.Wake.StoppedBy = "a restart of " + restarted
+		case CauseSessionEndedUnread, CauseSessionEndedUnanswered, CauseSessionEndedMidTurn, CauseSessionEndedWorking:
+			part.Wake.StoppedBy = sessionEnded[code]
+			if wake.Text == "" {
+				break
+			}
+			// What it wrote is the body, clipped as an answer; a digest
+			// clips the shared words whole.
+			if len(wake.Sources) > 1 {
+				words := wake.Cause.Answer(wake.Text)
+				part.Body = strings.TrimPrefix(clip(words), strings.TrimSuffix(words, wake.Text))
+			} else {
+				part.Body = clip(wake.Text)
+			}
+		case CauseTurn:
 			part.Wake.StoppedBy = "an interrupt"
-		case wake.Text == WakePersonStopped:
-			part.Wake.StoppedBy = "the user"
-		case isMoved:
-			part.Wake.StoppedBy = "a move to " + strings.TrimSuffix(moved, " before it answered.")
-		case strings.HasPrefix(wake.Text, InterruptHandedOffSentence+" "):
+		case CauseNotTakenIn:
+			part.Wake.StoppedBy = "the thread did not take it in"
+		case CauseNotTakenInToComposer:
+			part.Wake.StoppedBy = "the thread did not take it in, and its message went back to that thread's composer"
+		case CauseMoved:
+			destination := wake.Cause.Arg
+			if destination == "" {
+				destination = "another computer"
+			}
+			part.Wake.StoppedBy = "a move to " + destination
+		case CauseHandedOff:
 			// The rest names the previous thread, for the sender to read.
 			part.Wake.StoppedBy = "the assistant moving to a new thread"
-			part.Body = strings.TrimPrefix(wake.Text, InterruptHandedOffSentence+" ")
+			part.Body = "Its previous thread is " + wake.Cause.Arg + "; read it with thread_show to see what was done, or ask the assistant again by name."
+		case "":
+			part.Body = clip(wake.Text)
 		default:
-			part.Body = wake.Text
+			// A sentence in the stopper's own words is the message.
+			part.Body = wake.Cause.Answer("")
 		}
 	case WakeStopped:
 		// The frontend reads both as an interrupted request, told apart by
@@ -343,29 +358,28 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("errored, agent, multi-line error", wake(Wake{Kind: WakeErrored, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{}}}, Text: "boom\nstack"})),
 		one("errored with no error text", wake(Wake{Kind: WakeErrored, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
 		one("cancelled", wake(Wake{Kind: WakeCancelled, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
-		one("interrupted by a restart locally", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptRestart})),
-		one("interrupted by a restart on another computer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}}}, Text: InterruptRestart})),
-		one("interrupted by its session ending before it read the request", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedUnread})),
-		one("interrupted by its session ending before it answered the request", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedUnanswered})),
-		one("interrupted by its session ending during the turn, having written nothing", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedMidTurn})),
-		one("interrupted by its session ending during the turn, with what it wrote", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.\nSecond line."})),
-		one("interrupted by its session ending during a turn that wrote past the preview", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + strings.Repeat("Long answer. ", WakePreviewBytes/12+8)})),
-		one("interrupted by the thread not taking it in", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptNotTakenIn})),
-		one("interrupted by the thread not taking it in, its message back in that thread's composer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptNotTakenInToComposer})),
-		one("interrupted by a move", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptMoved("Desk (Linux)")})),
-		one("interrupted by a move to an unknown computer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptMoved("")})),
-		one("interrupted by a handoff", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptHandedOff("t-old")})),
-		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptTurn})),
-		one("interrupted by a workflow, its recorded cause", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Its workflow stopped the turn before it answered."})),
-		one("interrupted by its session ending while it was still working, having written nothing", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedWorking})),
-		one("interrupted by its session ending while it was still working, with what it wrote", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedWorking + SessionEndedWrittenSoFar + "Half done."})),
-		one("interrupted by the user from the Agents tray", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "The user stopped its turn from the Agents tray before it answered."})),
-		one("interrupted by the user taking the thread over from its workflow", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "The user took the thread over from its workflow before it answered."})),
-		one("interrupted by another thread's thread_cancel", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "\"Lead \\\"one\\\"\" (t-lead, on desk) stopped its turn with thread_cancel before it answered."})),
-		one("interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Assistants were turned off in Settings before it answered."})),
-		one("interrupted by the person's Stop with no last message recorded", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: WakePersonStopped})),
-		one("interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
-		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptNeverStarted})),
+		one("interrupted by a restart locally", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseRestart}})),
+		one("interrupted by a restart on another computer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}}}, Cause: Cause{Code: CauseRestart}})),
+		one("interrupted by its session ending before it read the request", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedUnread}})),
+		one("interrupted by its session ending before it answered the request", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedUnanswered}})),
+		one("interrupted by its session ending during the turn, having written nothing", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedMidTurn}})),
+		one("interrupted by its session ending during the turn, with what it wrote", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: "Half done.\nSecond line."})),
+		one("interrupted by its session ending during a turn that wrote past the preview", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: strings.Repeat("Long answer. ", WakePreviewBytes/12+8)})),
+		one("interrupted by the thread not taking it in", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseNotTakenIn}})),
+		one("interrupted by the thread not taking it in, its message back in that thread's composer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseNotTakenInToComposer}})),
+		one("interrupted by a move", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseMoved, Arg: "Desk (Linux)"}})),
+		one("interrupted by a move to an unknown computer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseMoved}})),
+		one("interrupted by a handoff", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseHandedOff, Arg: "t-old"}})),
+		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseTurn}})),
+		one("interrupted by a workflow, its recorded cause", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseWorkflow}})),
+		one("interrupted by its session ending while it was still working, having written nothing", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedWorking}})),
+		one("interrupted by its session ending while it was still working, with what it wrote", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedWorking}, Text: "Half done."})),
+		one("interrupted by the user from the Agents tray", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseTrayStop}})),
+		one("interrupted by the user taking the thread over from its workflow", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseTakeover}})),
+		one("interrupted by another thread's thread_cancel", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseThreadCancel, Arg: `"Lead \"one\"" (t-lead, on desk)`}})),
+		one("interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseAssistantsOff}})),
+		one("interrupted, recorded with no cause by an earlier build", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "This computer restarted before the request finished."})),
+		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseNeverStarted}})),
 		one("stopped by the person with its last message", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.\nSecond line."})),
 		one("stopped by the person before it said anything, standing agent", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}})),
 		one("expired", wake(Wake{Kind: WakeExpired, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Age: 26 * time.Hour}}})),
@@ -383,17 +397,17 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: errored with no text", wake(Wake{Kind: WakeErrored, Sources: digestSources})),
 		one("digest: cancelled", wake(Wake{Kind: WakeCancelled, Sources: digestSources})),
 		one("digest: cancelled for the caller", wake(Wake{Kind: WakeCancelled, Text: "Its workflow cancelled it.", Sources: digestSources})),
-		one("digest: interrupted by restarts of several computers", wake(Wake{Kind: WakeInterrupted, Text: InterruptRestart, Sources: digestSources})),
-		one("digest: interrupted by a restart of one computer", wake(Wake{Kind: WakeInterrupted, Text: InterruptRestart, Sources: []WakeSource{
+		one("digest: interrupted by restarts of several computers", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseRestart}, Sources: digestSources})),
+		one("digest: interrupted by a restart of one computer", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseRestart}, Sources: []WakeSource{
 			{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}},
 			{Title: "Lexer", ThreadID: "t-lex", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{"tok-2"}},
 		}})),
-		one("digest: interrupted by their sessions ending", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedUnread, Sources: digestSources})),
-		one("digest: interrupted mid-turn, with what they wrote", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.", Sources: digestSources})),
-		one("digest: interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Sources: digestSources})),
-		one("digest: interrupted by a workflow", wake(Wake{Kind: WakeInterrupted, Text: "Its workflow stopped the turn before it answered.", Sources: digestSources})),
-		one("digest: interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Text: "Assistants were turned off in Settings before it answered.", Sources: digestSources})),
-		one("digest: interrupted while still working, with what they wrote, past the preview", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedWorking + SessionEndedWrittenSoFar + strings.Repeat("Long answer. ", WakePreviewBytes/12+8), Sources: digestSources})),
+		one("digest: interrupted by their sessions ending", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedUnread}, Sources: digestSources})),
+		one("digest: interrupted mid-turn, with what they wrote", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: "Half done.", Sources: digestSources})),
+		one("digest: interrupted, recorded with no cause by another computer's earlier build", wake(Wake{Kind: WakeInterrupted, Text: "The thread's session ended before it read the request.", Sources: digestSources})),
+		one("digest: interrupted by a workflow", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseWorkflow}, Sources: digestSources})),
+		one("digest: interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseAssistantsOff}, Sources: digestSources})),
+		one("digest: interrupted while still working, with what they wrote, past the preview", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedWorking}, Text: strings.Repeat("Long answer. ", WakePreviewBytes/12+8), Sources: digestSources})),
 		one("digest: stopped by the person", wake(Wake{Kind: WakeStopped, Sources: digestSources})),
 		one("digest: stopped by the person, with the same last message", wake(Wake{Kind: WakeStopped, Text: "Half done.", Sources: digestSources})),
 		one("digest: expired", wake(Wake{Kind: WakeExpired, Sources: digestSources})),
@@ -407,10 +421,10 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("reminder made in a past thread", wake(Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{token}}}, Text: "Check the build.", MadeIn: "t-old", Now: "t-new"})),
 		one("stopped by the person with its last message, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.", MadeIn: "t-old", Now: "t-new"})),
 		one("stopped by the person before it said anything, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, MadeIn: "t-old", Now: "t-new"})),
-		one("session ended before it answered, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedUnanswered, MadeIn: "t-old", Now: "t-new"})),
-		one("session ended during the turn with what it wrote, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.", MadeIn: "t-old", Now: "t-new"})),
+		one("session ended before it answered, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedUnanswered}, MadeIn: "t-old", Now: "t-new"})),
+		one("session ended during the turn with what it wrote, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: "Half done.", MadeIn: "t-old", Now: "t-new"})),
 		one("digest: the same reply, made in a past thread", wake(Wake{Kind: WakeReply, Text: "Done.", Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
-		one("digest: interrupted by their sessions ending, made in a past thread", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedUnread, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
+		one("digest: interrupted by their sessions ending, made in a past thread", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedUnread}, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		one("digest: stopped by the person, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		// The spawner's answer to a worker's async questions, in the words
 		// store.AsyncAnswerMessage writes it.
@@ -534,6 +548,3 @@ func TestRowHeadNamesTheSenderOfAnAgentRow(t *testing.T) {
 
 // wantSessionEndedBy is what a row names as having stopped a request whose
 // session ended: the reason without its subject.
-func wantSessionEndedBy(reason string) string {
-	return "the session ended " + strings.TrimSuffix(strings.TrimPrefix(reason, "The thread's session ended "), ".")
-}

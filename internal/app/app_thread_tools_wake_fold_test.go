@@ -402,7 +402,7 @@ func TestARestoreSettlingTwoRequestsUnreadWakesTheirSenderOnce(t *testing.T) {
 			var unread []unreadRequest
 			for _, r := range requests {
 				r.bind(t)
-				unread = append(unread, unreadRequest{token: r.token, why: threadtools.InterruptSessionEndedUnread})
+				unread = append(unread, unreadRequest{token: r.token, why: threadtools.CauseSessionEndedUnread})
 			}
 			q.f.app.settleNotTakenIn(q.target.ID, []notTakenIn{{unread: unread}})
 		}},

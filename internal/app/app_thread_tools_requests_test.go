@@ -783,8 +783,11 @@ func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
 		t.Fatalf("retry of a half-created request: code = %q, err = %v", code, err)
 	}
-	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted {
-		t.Fatalf("receipt state = %q, want interrupted", receipt.State)
+	if _, message, _ := errorsx.PublicDetails(err); message != "That request was accepted but its thread was never created. It is settled as interrupted; make the request again." {
+		t.Fatalf("retry of a half-created request reads %q", message)
+	}
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != threadtools.CauseNeverStarted || len(receipt.Answer) != 0 {
+		t.Fatalf("receipt = %q %q %q, want interrupted, never started", receipt.State, receipt.Cause, receipt.Answer)
 	}
 	if after := threadIDsInStore(t, f.app); len(after) != len(before) {
 		t.Fatalf("threads after the refusal = %v, want the %v it started with", after, before)
@@ -1662,7 +1665,7 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 		}
 		body, err := wakeBodyOf(f.app, store.ThreadRequest{
 			Token: "tok-1", TargetThreadID: threadID, State: settlement.State,
-			Answer: settlement.Answer, AnswerKind: settlement.AnswerKind,
+			Answer: settlement.Answer, AnswerKind: settlement.AnswerKind, Cause: settlement.Cause, CauseArg: settlement.CauseArg,
 		}, false)
 		if err != nil {
 			t.Fatal(err)
@@ -1675,11 +1678,11 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 	}
 	reused := stopped
 	reused.StartedAt = started + 1
-	if body := wakeFor(reused); !strings.Contains(body, threadtools.InterruptTurn) {
+	if body := wakeFor(reused); !strings.Contains(body, ": The turn was interrupted before it answered.") {
 		t.Fatalf("another turn at the stopped index reaches the sender as %q", body)
 	}
 	f.app.forgetReceiptRunning(threadID, "tok-1")
-	if body := wakeFor(stopped); !strings.Contains(body, threadtools.InterruptTurn) {
+	if body := wakeFor(stopped); !strings.Contains(body, ": The turn was interrupted before it answered.") {
 		t.Fatalf("with the request settled, the mark should be gone; the wake reads %q", body)
 	}
 }

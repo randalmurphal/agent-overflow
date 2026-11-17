@@ -145,12 +145,8 @@
     "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":122,\"start\":64}],\"bytes\":122,\"form\":\"answer\",\"headline\":\"Assistants were turned off in Settings before it answered.\",\"outcome\":\"interrupted\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"]},\"kind\":\"wake\",\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"}"
   },
   {
-    "name": "interrupted by the person's Stop with no last message recorded",
-    "meta": "{\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"kind\":\"wake\",\"facts\":{\"form\":\"answer\",\"bytes\":110,\"outcome\":\"interrupted\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"],\"stoppedBy\":\"the user\"}}}"
-  },
-  {
-    "name": "interrupted with no reason recorded",
-    "meta": "{\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"kind\":\"wake\",\"facts\":{\"form\":\"answer\",\"bytes\":108,\"outcome\":\"interrupted\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"],\"stoppedBy\":\"an interrupt\"}}}"
+    "name": "interrupted, recorded with no cause by an earlier build",
+    "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":116,\"start\":64}],\"bytes\":116,\"form\":\"answer\",\"headline\":\"This computer restarted before the request finished.\",\"outcome\":\"interrupted\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"]},\"kind\":\"wake\",\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"}"
   },
   {
     "name": "interrupted before its thread existed",
@@ -234,8 +230,8 @@
     "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":291,\"start\":281}],\"bytes\":291,\"form\":\"answer\",\"headline\":\"Half done.\",\"outcome\":\"interrupted\",\"stoppedBy\":\"the session ended during the turn that read the request\",\"threads\":[{\"threadId\":\"t-work\",\"title\":\"Worker\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"]},{\"age\":\"3h\",\"computerId\":\"computer-desk\",\"computerName\":\"desk\",\"threadId\":\"t-lex\",\"title\":\"Lexer\",\"tokens\":[\"tok-2\",\"tok-3\"]}],\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"tok-2\",\"tok-3\"]},\"kind\":\"wake\",\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"}"
   },
   {
-    "name": "digest: interrupted with no reason recorded",
-    "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"bytes\":158,\"form\":\"answer\",\"headline\":\"Worker, Lexer\",\"outcome\":\"interrupted\",\"stoppedBy\":\"an interrupt\",\"threads\":[{\"threadId\":\"t-work\",\"title\":\"Worker\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"]},{\"age\":\"3h\",\"computerId\":\"computer-desk\",\"computerName\":\"desk\",\"threadId\":\"t-lex\",\"title\":\"Lexer\",\"tokens\":[\"tok-2\",\"tok-3\"]}],\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"tok-2\",\"tok-3\"]},\"kind\":\"wake\",\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"}"
+    "name": "digest: interrupted, recorded with no cause by another computer's earlier build",
+    "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":239,\"start\":185}],\"bytes\":239,\"form\":\"answer\",\"headline\":\"The thread's session ended before it read the request.\",\"outcome\":\"interrupted\",\"threads\":[{\"threadId\":\"t-work\",\"title\":\"Worker\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"]},{\"age\":\"3h\",\"computerId\":\"computer-desk\",\"computerName\":\"desk\",\"threadId\":\"t-lex\",\"title\":\"Lexer\",\"tokens\":[\"tok-2\",\"tok-3\"]}],\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\",\"tok-2\",\"tok-3\"]},\"kind\":\"wake\",\"threadId\":\"t-work\",\"title\":\"Worker\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"}"
   },
   {
     "name": "digest: interrupted by a workflow",

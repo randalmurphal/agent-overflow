@@ -502,6 +502,9 @@ type peerFaults struct {
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
 	stall chan struct{}
+	// reword, when set, rewrites each request a ThreadToolRequestStatus
+	// reply reports, as a computer of another build would word it.
+	reword atomic.Pointer[func(*ThreadPeerRequest)]
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
@@ -523,7 +526,13 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 			return ThreadPeerPollReply{}, ctx.Err()
 		}
 	}
-	return p.App.ThreadToolRequestStatus(ctx, poll)
+	reply, err := p.App.ThreadToolRequestStatus(ctx, poll)
+	if reword := p.reword.Load(); err == nil && reword != nil {
+		for i := range reply.Requests {
+			(*reword)(&reply.Requests[i])
+		}
+	}
+	return reply, err
 }
 
 // serveFaultyApp serves one destination through the fault wrapper.
@@ -1317,8 +1326,8 @@ func TestThreadToolsRemoteAnswerSurvivesARestartOfEitherSide(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("the restarted source lost the request: found=%v err=%v", found, err)
 	}
-	if row.State != store.ThreadRequestInterrupted || !strings.Contains(string(row.Answer), "restarted") {
-		t.Fatalf("the restarted source collected %q %q, want the interruption", row.State, row.Answer)
+	if row.State != store.ThreadRequestInterrupted || row.Cause != threadtools.CauseRestart {
+		t.Fatalf("the restarted source collected %q %q, want the interruption by the restart", row.State, row.Cause)
 	}
 }
 

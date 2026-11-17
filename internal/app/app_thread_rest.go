@@ -356,7 +356,7 @@ func threadRestStop(title, threadID, computer string) restStop {
 			why:     fmt.Sprintf("thread %q stopped the thread before the agent took it in", title),
 		},
 		turn:   turn,
-		answer: turn.cause,
+		answer: turn.cause.Answer(""),
 	}
 }
 
