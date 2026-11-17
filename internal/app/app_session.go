@@ -1560,9 +1560,9 @@ func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue 
 		// The cleanup wiped the queue these re-entered: they are queued
 		// again under the same hold of the mutation lock as the restore
 		// read their rows, and finishFlushRestore announces the queue.
-		var err error
-		restore.requeued, err = a.requeueUnconfirmedFlushItemsLocked(threadID, restore.requeued)
-		restore.requeueFailed = errors.Join(restore.requeueFailed, err)
+		var failures requeueFailures
+		restore.requeued, failures = a.requeueUnconfirmedFlushItemsLocked(threadID, restore.requeued)
+		restore.requeueFailed = restore.requeueFailed.join(failures)
 	}
 	return held, requests, restore
 }

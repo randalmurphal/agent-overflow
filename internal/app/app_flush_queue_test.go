@@ -2771,7 +2771,8 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	}
 
 	app.restoreEagerPersistedFlushesToDraft(thread.ID, []triage.EagerPersistedFlush{{
-		UserItemID: rowID, TurnIndex: 1, Content: resolved.content, Meta: resolved.userMessageMeta, QueueItemID: "queue:q1", EnqueuedAt: 10, RowRetired: true,
+		UserItemID: rowID, TurnIndex: 1, Content: resolved.content, Meta: resolved.userMessageMeta, QueueItemID: "queue:q1", EnqueuedAt: 10,
+		QueueMembers: []triage.FlushQueueMember{{QueueItemID: "queue:q1", NoRow: true}},
 	}})
 
 	requeued := app.triage.QueuedFlushItems(thread.ID)

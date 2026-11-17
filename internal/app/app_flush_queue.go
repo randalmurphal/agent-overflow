@@ -212,7 +212,7 @@ func unconfirmedFromQueued(item triage.QueuedFlushItem) triage.UnconfirmedFlushI
 		StaleUserItemID: item.StaleUserItemID,
 		Settlement:      item.Settlement,
 		Queued:          true,
-		NoRow:           item.NoRow,
+		QueueMembers:    []triage.FlushQueueMember{{QueueItemID: item.ID, NoRow: item.NoRow}},
 	}
 }
 
@@ -421,16 +421,36 @@ func rowIDs(items []triage.QueuedFlushItem) []string {
 // requeueWantedFlushItems puts items, which a dispatch took and did not
 // write, back on the queue for its next trigger, less those whose rows a
 // withdrawal took meanwhile, under the mutation lock the withdrawal takes.
-// The caller holds the thread's action lock.
+// The timeline row such a message still had goes with it
+// (retireWithdrawnCopies). The caller holds the thread's action lock.
 func (a *App) requeueWantedFlushItems(threadID string, items []triage.QueuedFlushItem) {
 	unlock := a.threadApplication().LockMutations(threadID)
-	defer unlock()
 	wanted := a.wantedFlushItems(threadID, items)
+	var withdrawn []triage.QueuedFlushItem
 	for _, item := range items {
 		if wanted(item) {
 			a.triage.RegisterQueueItem(threadID, item)
+		} else {
+			withdrawn = append(withdrawn, item)
 		}
 	}
+	err := a.retireWithdrawnCopies(threadID, withdrawn)
+	unlock()
+	a.emitRequeueFailures(threadID, requeueFailures{retire: err})
+}
+
+// retireWithdrawnCopies takes out of the timeline the rows that copies of
+// withdrawn messages still had from an earlier dispatch
+// (QueuedFlushItem.StaleUserItemID): the copy that carries a row's cleanup is
+// the only thing that would retire it.
+func (a *App) retireWithdrawnCopies(threadID string, copies []triage.QueuedFlushItem) error {
+	var rows []string
+	for _, item := range copies {
+		if item.StaleUserItemID != "" {
+			rows = append(rows, item.StaleUserItemID)
+		}
+	}
+	return a.retireWithdrawnRows(threadID, rows)
 }
 
 // commitFlushGroup is a group's commit point, before anything of the group
@@ -440,27 +460,29 @@ func (a *App) requeueWantedFlushItems(threadID string, items []triage.QueuedFlus
 // the worker holds, and marks the rest as being written, which a
 // withdrawal from now on finds dispatched (flushItemWritten). A withdrawal
 // and a send of one message are thereby ordered: whichever takes the lock
-// first wins. The caller holds the thread's action lock.
+// first wins. The timeline row a dropped message still had goes with it
+// (retireWithdrawnCopies). The caller holds the thread's action lock.
 func (a *App) commitFlushGroup(threadID string, generation uint64, group []triage.QueuedFlushItem) ([]triage.QueuedFlushItem, error) {
 	unlock := a.threadApplication().LockMutations(threadID)
-	defer unlock()
 	present, err := a.store.FlushQueueItemsPresent(threadID, rowIDs(group))
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	sending := make([]triage.QueuedFlushItem, 0, len(group))
 	writing := make(map[string]struct{}, len(group))
 	dropped := make(map[string]struct{})
+	var withdrawn []triage.QueuedFlushItem
 	for _, item := range group {
 		if item.NoRow || present[item.ID] {
 			sending = append(sending, item)
 			writing[item.ID] = struct{}{}
 		} else {
 			dropped[item.ID] = struct{}{}
+			withdrawn = append(withdrawn, item)
 		}
 	}
 	a.flushDispatch.mu.Lock()
-	defer a.flushDispatch.mu.Unlock()
 	if current, ok := a.flushDispatch.current[threadID]; ok && current.generation == generation {
 		current.items = withoutIDs(current.items, dropped)
 		current.writing = writing
@@ -469,6 +491,10 @@ func (a *App) commitFlushGroup(threadID string, generation uint64, group []triag
 	if len(dropped) > 0 {
 		a.forgetDispatchingLocked(threadID, dropped)
 	}
+	a.flushDispatch.mu.Unlock()
+	retireErr := a.retireWithdrawnCopies(threadID, withdrawn)
+	unlock()
+	a.emitRequeueFailures(threadID, requeueFailures{retire: retireErr})
 	return sending, nil
 }
 
@@ -538,21 +564,33 @@ func (a *App) flushItemWritten(threadID string, row store.FlushQueueItem) bool {
 // queue snapshot shows: triage's queue and the batches the dispatch holds.
 // The message's row is the authority, so a copy this does not reach, as in
 // triage's handoff, is dropped at the dispatch's commit point; this only
-// keeps the snapshot from listing it until then.
-func (a *App) forgetUnsentCopies(threadID, id string) {
+// keeps the snapshot from listing it until then. It returns the copies it
+// took, whose timeline rows go with them (retireWithdrawnCopies).
+func (a *App) forgetUnsentCopies(threadID, id string) []triage.QueuedFlushItem {
 	a.flushDispatch.mu.Lock()
 	defer a.flushDispatch.mu.Unlock()
 	a.ensureFlushDispatchMapsLocked()
+	var copies []triage.QueuedFlushItem
 	if a.triage != nil {
-		a.triage.RemoveQueuedFlushItem(threadID, id)
+		if item, ok := a.triage.RemoveQueuedFlushItem(threadID, id); ok {
+			copies = append(copies, item)
+		}
 	}
 	gone := map[string]struct{}{id: {}}
+	taken := func(items []triage.QueuedFlushItem) {
+		for _, item := range items {
+			if item.ID == id {
+				copies = append(copies, item)
+			}
+		}
+	}
 	queue := a.flushDispatch.queues[threadID]
 	for i, batch := range queue {
 		kept := withoutIDs(batch.items, gone)
 		if len(kept) == len(batch.items) {
 			continue
 		}
+		taken(batch.items)
 		if len(kept) == 0 {
 			queue = slices.Delete(queue, i, i+1)
 		} else {
@@ -566,10 +604,12 @@ func (a *App) forgetUnsentCopies(threadID, id string) {
 		break
 	}
 	if current, ok := a.flushDispatch.current[threadID]; ok {
+		taken(current.items)
 		current.items = withoutIDs(current.items, gone)
 		a.flushDispatch.current[threadID] = current
 	}
 	a.forgetDispatchingLocked(threadID, gone)
+	return copies
 }
 
 // currentFlushDispatchGeneration is the thread's dispatch generation, kept
@@ -1079,7 +1119,7 @@ func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushIt
 // some members' rows and loses the others', then each member's injector
 // bookkeeping runs. session is the token of the session the group was
 // written to, empty when it was not written. A written member whose row the
-// statement retired, or that never had one, says so on its pending send
+// statement retired says so on its pending send
 // (triage.Router.NoteFlushRowRetired): a recovery has no row to look for.
 func (a *App) settleFlushGroup(threadID string, group []triage.QueuedFlushItem, session string) {
 	ids := make([]string, 0, len(group))
@@ -1091,7 +1131,7 @@ func (a *App) settleFlushGroup(threadID string, group []triage.QueuedFlushItem, 
 		log.Printf("flush queue: delete durable rows [%s] of %s: %v", strings.Join(ids, " "), threadID, err)
 	}
 	for _, item := range group {
-		if session != "" && (item.NoRow || retired[item.ID]) {
+		if session != "" && retired[item.ID] {
 			a.triage.NoteFlushRowRetired(threadID, item.ID)
 		}
 		item.Settlement.Settle(session)
@@ -1343,6 +1383,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// the two cannot drift.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, userItem.Meta, sendUUID)
 	sendExpect.JoinedParts = joined.parts
+	sendExpect.QueueMembers = flushQueueMembers(members)
 	// What this message puts on the wire, block by block. Headless Claude can
 	// acknowledge a queued message whose content is this message CONCATENATED
 	// onto earlier ones the CLI merged with it at a turn boundary, and the
@@ -1359,8 +1400,8 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	}
 
 	// The group's queue identity for the pending-send entry is its first
-	// member's: one entry per outbound message, and the session-death restore
-	// reads the entry's own joined row rather than the queue ids.
+	// member's: one entry per outbound message. Each member keeps its own
+	// (PendingSendExpectation.QueueMembers), which a recovery decides by.
 	leadQueueItemID := members[0].item.ID
 	leadEnqueuedAt := members[0].item.EnqueuedAt
 
@@ -1470,6 +1511,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, userItem.Meta, "")
 			refreshExpect.JoinedParts = joined.parts
+			refreshExpect.QueueMembers = sendExpect.QueueMembers
 			// The message is now the fresh turn's input, which a Stop does
 			// not discard, so the Stop does not send it again.
 			a.triage.RegisterPendingFlushTurnStartWithExpectation(
@@ -1498,6 +1540,16 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	}
 	a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 	return flushedItems, eagerPersist, nil, sess.Token, nil
+}
+
+// flushQueueMembers names the queued messages a group's send carries: each
+// member's queue row, its send id, and whether it had none.
+func flushQueueMembers(members []flushMember) []triage.FlushQueueMember {
+	out := make([]triage.FlushQueueMember, 0, len(members))
+	for _, member := range members {
+		out = append(out, triage.FlushQueueMember{QueueItemID: member.item.ID, SendID: member.payload.SendID, NoRow: member.item.NoRow})
+	}
+	return out
 }
 
 // applyJoinedPlanAcceptance marks each member's plan / comment bookkeeping
@@ -2017,7 +2069,7 @@ func (a *App) removeQueuedItemWith(ctx context.Context, threadID, sendID string,
 	if err := deleteRow(row); err != nil {
 		return queueRemovalAbsent, fmt.Errorf("remove queued item: %w", err)
 	}
-	a.forgetUnsentCopies(threadID, row.ID)
+	a.emitRequeueFailures(threadID, requeueFailures{retire: a.retireWithdrawnCopies(threadID, a.forgetUnsentCopies(threadID, row.ID))})
 	a.emitQueueStateChanged(threadID)
 	return queueRemovalRemoved, nil
 }

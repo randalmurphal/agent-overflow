@@ -117,12 +117,18 @@ sweep. A failed write's requeue and a session end's restore keep only
 messages whose rows stand. A message is rowless (`QueuedFlushItem.NoRow`),
 and passes those checks, only when its write is known to have retired its
 row and the row is not written again, or it had none: the write records
-that on its pending send (`NoteFlushRowRetired`), and an interrupted Codex
+that on its pending send for each queued message it carried
+(`FlushQueueMember`, `NoteFlushRowRetired`), and an interrupted Codex
 message's resend or a requeued send that still has its timeline row
 carries it. An unconfirmed send a failed restore requeues gets its row
 again (`requeueUnconfirmedFlushItemsLocked`). Any other message whose row
 is gone was withdrawn, and is dropped; an answer keeps its row until its
-echo. Every handoff carries the dispatch generation it was made in
+echo. A joined message decides for each message it carries: a withdrawn
+one is cut out of its text and the rest kept, and a requeue puts each one
+that still has its row back as its own queue item, the rest as one, so a
+later withdrawal takes it alone; the dispatch joins them again. A dropped
+copy takes with it the timeline row an earlier dispatch left
+(`QueuedFlushItem.StaleUserItemID`). Every handoff carries the dispatch generation it was made in
 (`QueuedFlushItem.DispatchGeneration`): one a recovery overtook goes where
 that recovery took the rest of the queue, unless a Stop's teardown or a
 revert dropped its generation by the time that restore holds the mutation

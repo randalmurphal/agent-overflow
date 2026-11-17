@@ -2,6 +2,7 @@ package triage
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -40,10 +41,9 @@ import (
 type pendingSend struct {
 	AOItemID    string // opaque send-derived ID, or a legacy numeric ID
 	QueueItemID string
-	// RowRetired is set when the write retired the message's durable queue
-	// row, or it had none (NoteFlushRowRetired). Without it the row stands
-	// until the echo, as an async answer's does.
-	RowRetired   bool
+	// QueueMembers are the queued messages the send carries
+	// (PendingSendExpectation.QueueMembers); QueueItemID is the first's.
+	QueueMembers []FlushQueueMember
 	TurnIndex    int
 	EnqueuedAt   int64
 	DeferredItem *store.Item
@@ -312,6 +312,11 @@ type PendingSendExpectation struct {
 	// "" for one sent without (usermessage.MemberSendIDs). Its delivery
 	// names them (SendDelivery.Members).
 	Members []string
+
+	// QueueMembers are the queued messages a flush send carries, in order,
+	// one per queue row it was dispatched from (FlushQueueMember). Empty
+	// for a send of one queued message, which is its queue item's.
+	QueueMembers []FlushQueueMember
 }
 
 // RegisterPendingSendWithExpectation registers a direct send — the
@@ -374,6 +379,18 @@ func (r *Router) RegisterPendingQuietFlushSendWithExpectation(threadID, queueIte
 	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect, sendShapeFlush, false)
 }
 
+// queueMembersOf is the queued messages a send of queue item queueItemID
+// carries: members when its dispatch named them, or the one item.
+func queueMembersOf(queueItemID string, members []FlushQueueMember) []FlushQueueMember {
+	if len(members) > 0 {
+		return slices.Clone(members)
+	}
+	if queueItemID == "" {
+		return nil
+	}
+	return []FlushQueueMember{{QueueItemID: queueItemID}}
+}
+
 func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation, shape sendShape, turnInput bool) {
 	if threadID == "" || aoItemID == "" {
 		return
@@ -412,6 +429,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		InterruptedTurnIndex:       -1,
 		WrittenDuringTurn:          writtenDuring,
 		Members:                    expect.Members,
+		QueueMembers:               queueMembersOf(queueItemID, expect.QueueMembers),
 	})
 	// The ledger outlives the FIFO entry on purpose: a merge is recognised
 	// from the SURVIVOR's echo, by which time the earlier members' entries
@@ -948,8 +966,8 @@ type EagerPersistedFlush struct {
 	// TurnInput is the send's pendingSend.TurnInput: it went out as the
 	// input of a turn it starts, which the interrupt did not discard.
 	TurnInput bool
-	// RowRetired is the pending send's (pendingSend.RowRetired).
-	RowRetired bool
+	// QueueMembers are the pending send's (pendingSend.QueueMembers).
+	QueueMembers []FlushQueueMember
 }
 
 // EagerPersistDeferredFlushSends immediately persists all deferred
@@ -1037,7 +1055,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 		queueItemID string
 		enqueuedAt  int64
 		turnInput   bool
-		rowRetired  bool
+		members     []FlushQueueMember
 	}
 	var snapshots []eagerSnapshot
 	for i := range pending {
@@ -1047,7 +1065,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 				queueItemID: pending[i].QueueItemID,
 				enqueuedAt:  pending[i].EnqueuedAt,
 				turnInput:   pending[i].TurnInput,
-				rowRetired:  pending[i].RowRetired,
+				members:     slices.Clone(pending[i].QueueMembers),
 			})
 			pending[i].QuietItem = pending[i].DeferredItem
 			pending[i].DeferredItem = nil
@@ -1080,15 +1098,15 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			confirmedHook(threadID, persisted)
 		}
 		result = append(result, EagerPersistedFlush{
-			UserItemID:  persisted.ID,
-			TurnIndex:   persisted.TurnIndex,
-			ItemIndex:   persisted.ItemIndex,
-			Content:     persisted.Summary,
-			Meta:        persisted.Meta,
-			QueueItemID: snap.queueItemID,
-			EnqueuedAt:  snap.enqueuedAt,
-			TurnInput:   snap.turnInput,
-			RowRetired:  snap.rowRetired,
+			UserItemID:   persisted.ID,
+			TurnIndex:    persisted.TurnIndex,
+			ItemIndex:    persisted.ItemIndex,
+			Content:      persisted.Summary,
+			Meta:         persisted.Meta,
+			QueueItemID:  snap.queueItemID,
+			EnqueuedAt:   snap.enqueuedAt,
+			TurnInput:    snap.turnInput,
+			QueueMembers: snap.members,
 		})
 	}
 	return result

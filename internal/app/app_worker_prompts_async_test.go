@@ -618,7 +618,7 @@ func TestASessionDeathSplitsASpawnerAnswerFromThePersonsText(t *testing.T) {
 // until its echo. A session death that cannot retire its quiet row requeues
 // it; withdrawn before the teardown registers that requeue again, it stays
 // withdrawn: the re-registration does not take its missing row for one the
-// write retired, and nothing sends it again.
+// write retired, nothing sends it again, and its quiet row is retired.
 func TestAWrittenAnswerWithdrawnAfterAFailedRestoreStaysWithdrawn(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-answer-requeued", store.PlacementOwned)
@@ -658,6 +658,230 @@ func TestAWrittenAnswerWithdrawnAfterAFailedRestoreStaysWithdrawn(t *testing.T) 
 		t.Fatalf("the worker was written %d messages, want the answer once", n)
 	}
 	f.requireReturned(t, sendID)
+	// Nothing of the message is left, so its quiet row leaves the timeline.
+	f.requireRowGone(t, *sends[0].QuietItem)
+}
+
+// answeredAgain answers a second question of the worker, itemID, through its
+// own prompt to the spawner, and returns the answer's send id.
+func (f asyncQuestionFixture) answeredAgain(t *testing.T, itemID string) string {
+	t.Helper()
+	before := workerPromptTokens(t, f.app, f.spawner.ID)
+	f.ask(t, itemID, `{"delivery":"async","questions":[{"title":"Which branch?"}]}`)
+	var token string
+	for _, candidate := range workerPromptTokens(t, f.app, f.spawner.ID) {
+		if !slices.Contains(before, candidate) {
+			token = candidate
+		}
+	}
+	if token == "" {
+		t.Fatalf("no prompt for %s reached the spawner", itemID)
+	}
+	if ack, _, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: token, Text: "Main"}); err != nil || !ack.Accepted {
+		t.Fatalf("the spawner's reply = %+v, %v", ack, err)
+	}
+	f.drain(t)
+	return workerAnswerSendIDRoot + token
+}
+
+// requireUnanswered fails unless the worker's question itemID is unanswered.
+func (f asyncQuestionFixture) requireUnanswered(t *testing.T, itemID string) {
+	t.Helper()
+	questions, err := f.app.store.ListAsyncQuestions(f.worker.ID, itemID)
+	if err != nil || len(questions) == 0 || questions[0].State != "unanswered" || questions[0].SendID != "" {
+		t.Fatalf("question %s = %+v, %v; want it unanswered", itemID, questions, err)
+	}
+}
+
+// joinedWithFailedRestore writes what the worker's queue holds to a live
+// session as one joined message, with a Claude turn running so its row is
+// persisted quietly (the questions were a Codex worker's), then ends the session with the quiet row's cleanup
+// failing, so the restore requeues the message. It returns the requeued
+// items, the quiet row and the stdin log.
+func (f asyncQuestionFixture) joinedWithFailedRestore(t *testing.T) ([]triage.UnconfirmedFlushItem, store.Item, string) {
+	t.Helper()
+	f.claudeTurnRunning(t)
+	stdinLog := f.workerRecordingSession(t)
+	f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
+	f.app.triage.FlushQueuedItems(f.worker.ID)
+	if envelopes := waitForRecordedUserEnvelopes(t, stdinLog, 1); len(envelopes) != 1 {
+		t.Fatalf("the session was written %d messages, want one joined", len(envelopes))
+	}
+	f.app.flushDispatch.wg.Wait()
+	sends := f.app.triage.UnconfirmedFlushSends(f.worker.ID)
+	if len(sends) != 1 || sends[0].QuietItem == nil || !unconfirmedMembersOf(sends[0]).joined {
+		t.Fatalf("unconfirmed sends = %+v, want one joined message with its quiet row", sends)
+	}
+	quiet := *sends[0].QuietItem
+	execOnStore(t, f.dbPath, fmt.Sprintf(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = '%s' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`, quiet.ID))
+	requeued := f.app.restoreUnconfirmedQueueOnSessionDeath(f.worker.ID)
+	execOnStore(t, f.dbPath, `DROP TRIGGER refuse_row_delete`)
+	if len(requeued) == 0 {
+		t.Fatal("the failed restore requeued nothing")
+	}
+	return requeued, quiet, stdinLog
+}
+
+// claudeTurnRunning makes the worker a Claude thread with a turn running, so
+// a dispatch persists its row quietly into it.
+func (f asyncQuestionFixture) claudeTurnRunning(t *testing.T) {
+	t.Helper()
+	execOnStore(t, f.dbPath, fmt.Sprintf(`UPDATE threads SET provider = 'claude' WHERE id = '%s'`, f.worker.ID))
+	if err := f.app.store.InsertTurn(store.Turn{TurnID: "turn-0", ThreadID: f.worker.ID, TurnIndex: 0, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireRowGone fails unless the worker's timeline no longer has the joined
+// message's row. A message sent again alone may land under the same id, its
+// send id's, with its own text.
+func (f asyncQuestionFixture) requireRowGone(t *testing.T, joined store.Item) {
+	t.Helper()
+	items, err := f.app.store.ListItems(f.worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(items, func(item store.Item) bool { return item.ID == joined.ID && item.Summary == joined.Summary }) {
+		t.Fatalf("the joined message's row %s is still in the timeline", joined.ID)
+	}
+}
+
+// resendAfterWithdrawal withdraws withdrawn from the worker's Incoming rows
+// and sends what is queued. With teardown, the queue is torn down and
+// requeued registered again in between, as a session end's teardown does;
+// without, the requeue stays queued as it was. It returns what the session
+// was written after the joined message.
+func (f asyncQuestionFixture) resendAfterWithdrawal(t *testing.T, requeued []triage.UnconfirmedFlushItem, withdrawn, stdinLog string, teardown bool) []string {
+	t.Helper()
+	if stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.worker.ID, withdrawn); err != nil || stop.Outcome != threadAgentStopped {
+		t.Fatalf("withdraw = %+v, %v", stop, err)
+	}
+	if teardown {
+		f.app.triage.CleanupThread(f.worker.ID)
+		f.app.requeueUnconfirmedFlushItems(f.worker.ID, requeued)
+	}
+	f.app.triage.FlushQueuedItems(f.worker.ID)
+	f.app.flushDispatch.wg.Wait()
+	f.drain(t)
+	var later []string
+	for _, envelope := range recordedUserEnvelopes(t, stdinLog)[1:] {
+		text, _ := envelopeText(t, envelope)
+		later = append(later, text)
+	}
+	return later
+}
+
+// joinedCases are the cases a joined send's withdrawal tests run: each
+// member order, with and without a teardown registering the requeue again
+// after the withdrawal.
+func joinedCases(first string) []struct {
+	name            string
+	first, teardown bool
+} {
+	var cases []struct {
+		name            string
+		first, teardown bool
+	}
+	for _, isFirst := range []bool{true, false} {
+		for _, teardown := range []bool{true, false} {
+			name := "the other first"
+			if isFirst {
+				name = first
+			}
+			if teardown {
+				name += ", then a teardown"
+			}
+			cases = append(cases, struct {
+				name            string
+				first, teardown bool
+			}{name, isFirst, teardown})
+		}
+	}
+	return cases
+}
+
+// S r10: a joined message holds each queued message it carries as its own.
+// The spawner's answer joined with the person's text, in either order, whose
+// session ends with the quiet row's cleanup failing, is requeued; the answer
+// withdrawn while it is queued again, or before a teardown registers the
+// requeue again, takes the answer alone. The person's text is sent again
+// exactly once, the answer never again, and neither the joined row nor a
+// queue row is left behind.
+func TestAWithdrawnAnswerOfAJoinedSendLeavesThePersonsText(t *testing.T) {
+	t.Parallel()
+	for _, c := range joinedCases("the answer first") {
+		answerFirst := c.first
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := newAsyncQuestionFixture(t, "async-joined-withdrawn", store.PlacementOwned)
+			// The session below stands in for the one the dispatcher would
+			// start for the person's message, so the dispatcher is held until
+			// it is up.
+			holdFlushQueue(f.app)
+			person := func() {
+				if _, err := f.app.RegisterQueueItem(t.Context(), f.worker.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !answerFirst {
+				person()
+			}
+			sendID := f.answered(t)
+			if answerFirst {
+				person()
+			}
+			requeued, quiet, stdinLog := f.joinedWithFailedRestore(t)
+			later := f.resendAfterWithdrawal(t, requeued, sendID, stdinLog, c.teardown)
+
+			if len(later) != 1 || later[0] != "my own words" {
+				t.Fatalf("written after the joined message: %q, want the person's text alone, once", later)
+			}
+			if draft, _, err := f.app.store.GetThreadDraft(f.worker.ID); err != nil || draft.Content != "" {
+				t.Fatalf("the worker's composer = %q, %v; want it empty, the text sent", draft.Content, err)
+			}
+			f.requireReturned(t, sendID)
+			f.requireRowGone(t, quiet)
+			if rows := durableQueueRows(t, f.app, f.worker.ID); len(rows) != 0 {
+				t.Fatalf("queue rows left: %+v", rows)
+			}
+		})
+	}
+}
+
+// Two of the spawner's answers joined, one withdrawn after a failed restore
+// requeued them, with or without a teardown after: the other is sent again alone, the withdrawn one never, and
+// the joined row leaves the timeline whichever of them held it.
+func TestAJoinedSendOfTwoAnswersKeepsTheOneNotWithdrawn(t *testing.T) {
+	t.Parallel()
+	for _, c := range joinedCases("the first withdrawn") {
+		withdrawFirst := c.first
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := newAsyncQuestionFixture(t, "async-joined-answers", store.PlacementOwned)
+			holdFlushQueue(f.app)
+			first := f.answered(t)
+			second := f.answeredAgain(t, "question:ask2")
+			texts := make(map[string]string)
+			for _, row := range durableQueueRows(t, f.app, f.worker.ID) {
+				texts[row.SendID] = row.Message
+			}
+			withdrawn, kept, withdrawnItem := second, first, "question:ask2"
+			if withdrawFirst {
+				withdrawn, kept, withdrawnItem = first, second, "question:ask"
+			}
+			requeued, quiet, stdinLog := f.joinedWithFailedRestore(t)
+			later := f.resendAfterWithdrawal(t, requeued, withdrawn, stdinLog, c.teardown)
+			if len(later) != 1 || !strings.Contains(later[0], texts[kept]) || strings.Contains(later[0], texts[withdrawn]) {
+				t.Fatalf("written after the joined message: %q, want the answer kept (%q) alone, once", later, texts[kept])
+			}
+			f.requireUnanswered(t, withdrawnItem)
+			f.requireRowGone(t, quiet)
+			// The answer sent again keeps its row until its echo.
+			if durable, _ := queuedSendIDs(t, f.app, f.worker.ID); !slices.Equal(durable, []string{kept}) {
+				t.Fatalf("queue rows = %q, want the kept answer's alone", durable)
+			}
+		})
+	}
 }
 
 // A hand-back announced behind the reconcile that closed its question

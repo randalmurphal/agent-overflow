@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,8 +77,9 @@ type QueuedFlushItem struct {
 	// dispatch of this message whose session-death cleanup failed
 	// (app-layer requeue, round-11 R11-1). The dispatcher must retry
 	// that cleanup before persisting a fresh row — dispatching over
-	// the stale row would show the message twice in the timeline.
-	// Empty for normal queue items.
+	// the stale row would show the message twice in the timeline. A
+	// joined row's cleanup is one item's, and a copy dropped as withdrawn
+	// retires the row it names. Empty for normal queue items.
 	StaleUserItemID string
 	// Settlement is opaque app-layer bookkeeping whose lifetime is the
 	// message's. The app settles it when the message reaches either durable
@@ -102,6 +104,23 @@ type QueuedFlushItem struct {
 	// teardown or a recovery carries an older one than the thread's.
 	DispatchGeneration uint64
 }
+
+// FlushQueueMember is one queued message a flush send carries: the queue row
+// it was dispatched from, its send id, and whether it is known to have no
+// row: its write retired the row (Router.NoteFlushRowRetired), or it had none
+// (QueuedFlushItem.NoRow). Any other member keeps its row while it is wanted,
+// as an async answer does until its echo, and was withdrawn once the row is
+// gone. A joined message has one per queued message it joined, each deciding
+// for itself whether it is still wanted.
+type FlushQueueMember struct {
+	QueueItemID string
+	SendID      string
+	NoRow       bool
+}
+
+// KeepsRow reports whether the member has a durable row for as long as it is
+// wanted.
+func (m FlushQueueMember) KeepsRow() bool { return m.QueueItemID != "" && !m.NoRow }
 
 type UnconfirmedFlushItem struct {
 	QueueItemID  string
@@ -128,14 +147,12 @@ type UnconfirmedFlushItem struct {
 	// the session lives on.
 	Discarded bool
 	// Queued marks a message drained from a queue, never handed to the
-	// provider: it is restored only while its durable row stands, unless
-	// NoRow says it has none.
+	// provider.
 	Queued bool
-	// NoRow is the queued message's QueuedFlushItem.NoRow.
-	NoRow bool
-	// RowRetired is the pending send's: the provider was handed the message
-	// and the write retired its queue row, or it had none.
-	RowRetired bool
+	// QueueMembers are the queued messages the item carries: the one a
+	// queued message or a message sent alone is, or every member of a
+	// joined one, from its pending send (pendingSend.QueueMembers).
+	QueueMembers []FlushQueueMember
 }
 
 // FlushSettlement owns the one durable-delivery transition for an injected
@@ -760,7 +777,7 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 			StaleUserItemID: item.StaleUserItemID,
 			Settlement:      item.Settlement,
 			Queued:          true,
-			NoRow:           item.NoRow,
+			QueueMembers:    []FlushQueueMember{{QueueItemID: item.ID, NoRow: item.NoRow}},
 		})
 	}
 	drainState.queuedFlushItems = nil
@@ -816,8 +833,9 @@ func (r *Router) UnconfirmedFlushSends(threadID string) []UnconfirmedFlushItem {
 	return append(sends, st.undeliveredSends...)
 }
 
-// NoteFlushRowRetired records on the flush send of queue item queueItemID,
-// pending or retired unrun, that its write retired the item's durable row.
+// NoteFlushRowRetired records on the flush send that carries queue item
+// queueItemID, pending or retired unrun, that its write retired the item's
+// durable row (FlushQueueMember.NoRow).
 func (r *Router) NoteFlushRowRetired(threadID, queueItemID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -826,13 +844,19 @@ func (r *Router) NoteFlushRowRetired(threadID, queueItemID string) {
 		return
 	}
 	for i := range st.pendingSends {
-		if st.pendingSends[i].QueueItemID == queueItemID && st.pendingSends[i].Shape == sendShapeFlush {
-			st.pendingSends[i].RowRetired = true
+		if st.pendingSends[i].Shape == sendShapeFlush {
+			markFlushMemberRowless(st.pendingSends[i].QueueMembers, queueItemID)
 		}
 	}
 	for i := range st.undeliveredSends {
-		if st.undeliveredSends[i].QueueItemID == queueItemID {
-			st.undeliveredSends[i].RowRetired = true
+		markFlushMemberRowless(st.undeliveredSends[i].QueueMembers, queueItemID)
+	}
+}
+
+func markFlushMemberRowless(members []FlushQueueMember, queueItemID string) {
+	for i := range members {
+		if members[i].QueueItemID == queueItemID {
+			members[i].NoRow = true
 		}
 	}
 }
@@ -842,11 +866,11 @@ func (r *Router) NoteFlushRowRetired(threadID, queueItemID string) {
 // A direct send retains none; its row is in the store under UserItemID.
 func unconfirmedFlushItemFromPending(entry pendingSend) UnconfirmedFlushItem {
 	restored := UnconfirmedFlushItem{
-		QueueItemID: entry.QueueItemID,
-		UserItemID:  entry.AOItemID,
-		EnqueuedAt:  entry.EnqueuedAt,
-		JoinedParts: entry.JoinedParts,
-		RowRetired:  entry.RowRetired,
+		QueueItemID:  entry.QueueItemID,
+		UserItemID:   entry.AOItemID,
+		EnqueuedAt:   entry.EnqueuedAt,
+		JoinedParts:  entry.JoinedParts,
+		QueueMembers: slices.Clone(entry.QueueMembers),
 	}
 	if entry.DeferredItem != nil {
 		item := *entry.DeferredItem

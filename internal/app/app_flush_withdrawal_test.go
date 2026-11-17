@@ -400,6 +400,72 @@ func TestAWithdrawalAroundAFailedGroupsRequeue(t *testing.T) {
 	}
 }
 
+// A withdrawn message whose copy in triage's handoff still carries the
+// timeline row an earlier dispatch left (QueuedFlushItem.StaleUserItemID)
+// takes that row out of the timeline when the copy is dropped: at its group's
+// commit point with a live session, or as its batch goes back to the queue
+// for a resting thread with none. Nothing is sent.
+func TestAWithdrawnCopyInTheHandoffTakesItsTimelineRow(t *testing.T) {
+	t.Parallel()
+	for _, live := range []bool{true, false} {
+		name := "at the commit point"
+		if !live {
+			name = "as its batch goes back"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			q := newCodexQueue(t)
+			now := time.Now().UnixMilli()
+			stale := "user:0:flush:1"
+			if _, err := q.app.store.AppendItem(store.Item{
+				ID: stale, ThreadID: q.thread.ID, TurnIndex: 0, Kind: "user_text", Role: "user", Status: "completed",
+				Summary: "withdrawn", CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			sendID := "send-" + entityid.New()
+			id := "queue:" + entityid.New()
+			payload := flushQueuePayloadJSON(t, flushQueuePayload{SendID: sendID})
+			if err := q.app.store.InsertFlushQueueItem(store.FlushQueueItem{ID: id, ThreadID: q.thread.ID, SendID: sendID, Message: "withdrawn", Payload: payload, EnqueuedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			q.app.triage.RegisterQueueItem(q.thread.ID, triage.QueuedFlushItem{ID: id, Message: "withdrawn", Payload: payload, EnqueuedAt: now, StaleUserItemID: stale})
+			if !live {
+				if _, ok := q.app.sessionManager().take(q.thread.ID); !ok {
+					t.Fatal("the thread had no session")
+				}
+				if err := q.closeSession(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(q.app.resting.hold(q.thread.ID))
+			}
+			hook, at, proceed := holdOnce()
+			q.app.flushHandoffForTest = hook
+			drained := make(chan bool, 1)
+			go func() { drained <- q.app.triage.FlushQueuedItems(q.thread.ID) }()
+			within(t, "the handoff", at)
+			if removal, err := q.withdraw(t, sendID); err != nil || removal != queueRemovalRemoved {
+				t.Fatalf("the withdrawal = %v, %v; want it removed", removal, err)
+			}
+			if _, found, err := q.app.store.GetThreadItem(q.thread.ID, stale); err != nil || !found {
+				t.Fatalf("the row went before its copy was dropped: found %v, %v", found, err)
+			}
+			close(proceed)
+			within(t, "the handoff's end", drained)
+			q.app.flushDispatch.wg.Wait()
+			if q.sent(id) {
+				t.Fatal("the withdrawn message was sent")
+			}
+			if _, found, err := q.app.store.GetThreadItem(q.thread.ID, stale); err != nil || found {
+				t.Fatalf("the withdrawn copy's row is still in the timeline: found %v, %v", found, err)
+			}
+			if memory, durable := q.queued(t, id); memory || durable {
+				t.Fatalf("the withdrawn message is queued (memory %v, durable %v)", memory, durable)
+			}
+		})
+	}
+}
+
 // A message in triage's handoff when a recovery takes the session's queue
 // goes where the recovery took the rest of the queue, never to the session
 // that replaces it: a death's restore puts it in the composer, and a Stop's
@@ -571,7 +637,8 @@ func TestAMessageRequeuedAfterItsWriteIsSentAgain(t *testing.T) {
 		t.Parallel()
 		q := newCodexQueue(t)
 		q.app.requeueEagerPersistedFlushes(q.thread.ID, []triage.EagerPersistedFlush{{
-			UserItemID: "user:3:eager:1", Content: "interrupted", QueueItemID: "queue:interrupted", EnqueuedAt: 1, RowRetired: true,
+			UserItemID: "user:3:eager:1", Content: "interrupted", QueueItemID: "queue:interrupted", EnqueuedAt: 1,
+			QueueMembers: []triage.FlushQueueMember{{QueueItemID: "queue:interrupted", NoRow: true}},
 		}})
 		q.flush(t)
 		if !q.sent("queue:interrupted") {
@@ -785,13 +852,14 @@ func TestARequeuedUnconfirmedSendIsWithdrawnLikeAQueuedOne(t *testing.T) {
 	thread := noticeTestThread(t, app, "requeued-send")
 	sendID := workflowWakeSendIDRoot + entityid.New()
 	unlock := app.threadApplication().LockMutations(thread.ID)
-	requeued, err := app.requeueUnconfirmedFlushItemsLocked(thread.ID, []triage.UnconfirmedFlushItem{{
-		QueueItemID: "queue:handed", Message: "handed over", EnqueuedAt: 1, RowRetired: true,
-		Payload: flushQueuePayloadJSON(t, flushQueuePayload{SendID: sendID}),
+	requeued, failures := app.requeueUnconfirmedFlushItemsLocked(thread.ID, []triage.UnconfirmedFlushItem{{
+		QueueItemID: "queue:handed", Message: "handed over", EnqueuedAt: 1,
+		QueueMembers: []triage.FlushQueueMember{{QueueItemID: "queue:handed", NoRow: true}},
+		Payload:      flushQueuePayloadJSON(t, flushQueuePayload{SendID: sendID}),
 	}})
 	unlock()
-	if err != nil {
-		t.Fatalf("requeue: %v", err)
+	if failures.persist != nil || failures.retire != nil {
+		t.Fatalf("requeue: %+v", failures)
 	}
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 1 || rows[0].ID != "queue:handed" {
 		t.Fatalf("durable rows after the requeue = %+v, want the message's row again", rows)
