@@ -100,8 +100,8 @@ func TestASettlementRefusesACauseItCannotHave(t *testing.T) {
 	}
 }
 
-// An answer the hold dropped, and a row the retention floor keeps as
-// lineage, keep no cause with no answer.
+// An answer the hold dropped, and an interrupted spawn the retention sweep
+// keeps as its surviving thread's lineage, keep no cause with no answer.
 func TestADroppedAnswerTakesItsCauseWithIt(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
@@ -116,24 +116,42 @@ func TestADroppedAnswerTakesItsCauseWithIt(t *testing.T) {
 		t.Fatalf("expired receipt = %q cause %q arg %q, want no cause", receipt.State, receipt.Cause, receipt.CauseArg)
 	}
 
-	seedLocalThreadRequest(t, s, "tok-old", "t-caller", "t-target", "")
-	if _, err := s.SettleLocalThreadRequest("tok-old", ThreadReceiptOpenStates(), ThreadRequestSettlement{
-		State: ThreadReceiptInterrupted, AnswerKind: ThreadAnswerError, Cause: "thread_cancel", CauseArg: `"Lead" (t-lead)`, SettledAt: 10,
+	// The retention sweep keeps an interrupted spawn whose thread survives
+	// as that thread's lineage, both rows of it.
+	mustCreateThread(t, s, "t-worker")
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-spawn", CallerThreadID: "t-caller", Kind: ThreadRequestSpawn, TargetThreadID: "t-worker",
+		State: ThreadRequestRunning, CreatedAt: 5, UpdatedAt: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-spawn", OwnerDeviceID: "local", SourceThreadID: "t-caller", Kind: ThreadRequestSpawn,
+		TargetThreadID: "t-worker", State: ThreadReceiptRunning, CreatedAt: 5, UpdatedAt: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SettleLocalThreadRequest("tok-spawn", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptInterrupted, Answer: []byte("Half done."), AnswerKind: ThreadAnswerError,
+		Cause: "thread_cancel", CauseArg: `"Lead" (t-lead)`, SettledAt: 10,
 	}, ThreadRequestInterrupted); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(clearLineagePayloadSQL + ` AND token = 'tok-old'`); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(50); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(clearReceiptLineageSQL + ` token = 'tok-old'`); err != nil {
-		t.Fatal(err)
-	}
+	var requestLineage, receiptLineage bool
 	var requestCause, requestArg, receiptCause, receiptArg string
-	if err := s.db.QueryRow(`SELECT answer_cause, answer_cause_arg FROM thread_requests WHERE token = 'tok-old'`).Scan(&requestCause, &requestArg); err != nil {
-		t.Fatal(err)
+	if err := s.db.QueryRow(`SELECT lineage_only, answer_cause, answer_cause_arg FROM thread_requests WHERE token = 'tok-spawn'`).
+		Scan(&requestLineage, &requestCause, &requestArg); err != nil {
+		t.Fatalf("the spawn's request is not kept as lineage: %v", err)
 	}
-	if err := s.db.QueryRow(`SELECT answer_cause, answer_cause_arg FROM thread_request_receipts WHERE token = 'tok-old'`).Scan(&receiptCause, &receiptArg); err != nil {
-		t.Fatal(err)
+	if err := s.db.QueryRow(`SELECT lineage_only, answer_cause, answer_cause_arg FROM thread_request_receipts WHERE token = 'tok-spawn'`).
+		Scan(&receiptLineage, &receiptCause, &receiptArg); err != nil {
+		t.Fatalf("the spawn's receipt is not kept as lineage: %v", err)
+	}
+	if !requestLineage || !receiptLineage {
+		t.Fatalf("lineage_only = request %v, receipt %v; want both kept as lineage", requestLineage, receiptLineage)
 	}
 	if requestCause+requestArg+receiptCause+receiptArg != "" {
 		t.Fatalf("lineage keeps a cause: request %q %q, receipt %q %q", requestCause, requestArg, receiptCause, receiptArg)
