@@ -255,6 +255,13 @@ export const recoveryRules: RecoveryRule[] = [
     to: "b.completed_at IS NOT NULL AND b.stop_reason = 'interrupted'",
   },
   {
+    // The crashed turn's span, to its last activity, is added to its
+    // thread's runtime as an ended turn's is (tallyTurnSpanTx).
+    name: 'crashed-turn-runtime', writer: 'store.(*Store).RecoverCrashedTurns (tallyTurnSpanTx)', table: 'thread_tallies',
+    rows: 'EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = s.thread_id AND t.completed_at IS NULL)',
+    columns: ['turn_ms'], to: 'b.turn_ms >= s.turn_ms',
+  },
+  {
     name: 'crashed-turn-rows', writer: 'store.(*Store).RecoverCrashedTurns (flipCrashedTurnItemsTx)', table: 'items',
     rows: `s.status IN ('streaming', 'running') AND NOT (s.is_background = 1 AND s.kind = 'tool_call')
       AND EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = s.thread_id AND t.turn_index = s.turn_index AND t.completed_at IS NULL)`,
@@ -795,7 +802,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'items', values: { kind: ['compaction_reasoning', 'workflow_proposal', 'command_result', 'terminal_interaction', 'api_retry'], status: ['streaming', 'killed', 'parked'], decision: ['approved', 'amended', 'lost'] }, reason: 'compaction reasoning, API retry, terminal and workflow-proposal rows need scenarios no library entry provides; the approval scenarios raise their request without a toolUseId, so an allowed decision is not matched to the tool row that follows, and an amended or lost one needs an edited or abandoned request; streaming, killed and parked are mid-turn states' },
   { table: 'threads', columns: ['history_bulk_load', 'fork_preparing', 'fork_cut_turn_index', 'deleting', 'delete_claim', 'delete_worktrees', 'created_remote_url', 'worktree_setup_state'], reason: 'fork-in-progress, delete-in-progress and worktree-setup-in-progress markers, which rest at their defaults; the remote a thread was created from needs a forge remote' },
   { table: 'threads', values: { reasoning_effort: ['none', 'minimal'] }, reason: 'efforts no catalog model declares' },
-  { table: 'threads', columns: ['spawn_instructions', 'spawn_level'], reason: "a spawn's system prompt instructions, which the top-up's spawn does not pass, and the level a paired computer's spawn carries, which needs a second computer" },
+  { table: 'threads', columns: ['spawn_level'], reason: "the level a paired computer's spawn carries, which needs a second computer" },
   { table: 'threads', values: { attention_kind: ['decision', 'problem'] }, reason: "the other kinds of an agent's thread_attention flag; the top-up's one flag is a review" },
   { table: 'subagent_aggregates', columns: ['state', 'transcript_count', 'transcript_newest_turn', 'transcript_newest_item'], reason: 'a subagent still running or failed when its thread rested, and transcript cursors of Codex children' },
   { table: 'work_items', columns: ['wake_signature', 'pending_guidance', 'auto_resume_at', 'budget', 'triage_thread_id', 'origin_thread_id', 'disposition', 'parent_item_id', 'parent_phase_id', 'parent_unit_id', 'parent_attempt', 'call_depth', 'soft_stop', 'source_ref'], values: { state: ['running', 'needs-human', 'failed'], workflow_scope: ['shared'], source: ['agent', 'call'], reason: ['gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted', 'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted', 'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed', 'taken-over', 'unit-failed', 'child-failed', 'paused', 'checkpoint'] }, reason: 'running and needs-human are states a run passes through; the rest are failures, budgets, child runs, shared-scope and agent-started runs the top-up does not stage; source_ref is set only on a run a phase started or a call phase invoked' },

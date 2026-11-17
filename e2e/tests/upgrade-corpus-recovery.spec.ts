@@ -450,6 +450,7 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     expect(byRule(clean)).toEqual({
       'crashed-turns turns': 1,
       'crashed-turn-rows items': 1,
+      'crashed-turn-runtime thread_tallies': 1,
       'codex-background-runtime items': 1,
       'claude-background-launches items': 1,
       'claude-agent-rows items': 1,
@@ -494,6 +495,8 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     // row it does not select, or a row it removes kept with a change.
     const outside: Array<{ rule: string; table: string; sql: string }> = [
       { rule: 'crashed-turns', table: 'turns', sql: `UPDATE turns SET error_message = 'edited' WHERE thread_id = '${threadId}' AND turn_index = 1` },
+      { rule: 'crashed-turn-runtime', table: 'thread_tallies', sql: `UPDATE thread_tallies SET tool_calls = tool_calls + 1 WHERE thread_id = '${threadId}'` },
+      { rule: 'crashed-turn-runtime: runtime taken back', table: 'thread_tallies', sql: `UPDATE thread_tallies SET turn_ms = 0 WHERE thread_id = '${threadId}'` },
       { rule: 'codex-background-runtime', table: 'items', sql: `UPDATE items SET tool_name = 'other' WHERE thread_id = '${codexId}' AND id = 'codex-bg'` },
       { rule: 'worktree-setups', table: 'threads', sql: `UPDATE threads SET worktree_setup_state = '' WHERE id = '${codexId}'` },
       { rule: 'unsettled-review-claims', table: 'diff_review_comments', sql: `UPDATE diff_review_comments SET body = 'edited' WHERE id = 'drc-unsettled'` },

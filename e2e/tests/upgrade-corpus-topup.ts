@@ -201,7 +201,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
         provider: 'claude',
         turns: [{
           steps: [
-            { call: { tool: 'thread_spawn', args: { prompt: 'Collect the inbox notes.', title: `Top-up v${version}: helper`, provider: 'codex', wait_seconds: 0 } } },
+            { call: { tool: 'thread_spawn', args: { prompt: 'Collect the inbox notes.', title: `Top-up v${version}: helper`, provider: 'codex', instructions: 'Keep each note to one line.', wait_seconds: 0 } } },
             { call: { tool: 'thread_loop', args: { label: 'board', note: 'look at the board', every_seconds: 3600 } } },
             // A run prints nothing on stdout, so it wakes nobody, and the
             // line on stderr is kept on the row (last_stderr).
