@@ -363,7 +363,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       let mockId: string;
       if (provider === 'claude') {
         const joined = await wakeInput(harness, home, 'my own words');
-        console.log(`${provider}: the provider read one message: ${JSON.stringify(joined.report.input)}`);
         expect(joined.report.input).toContain(`${aoMessageOpening('a script, through agent-overflow thread send')}Message sent from outside Agent Overflow`);
         expect(joined.report.input).toContain(`${aoMessageOpening('your watch "tick"')}Watch "tick" reported.`);
         mockId = joined.mockId;
@@ -394,7 +393,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           .n;
       if (provider === 'claude') {
         await expect.poll(draft, { timeout: 30_000 }).not.toBe('');
-        console.log(`${provider}: composer after the session ended: ${JSON.stringify(draft())}`);
         expect(draft()).toBe(own);
         await expect.poll(notices, { timeout: 30_000 }).toBe(1);
         expect(wakeRow().last_outcome).toBe('not delivered: the session ended before it took the wake in');
@@ -416,7 +414,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         expect(userRows('my own words')).toBe(1);
         expect(userRows('deploy 9 is done')).toBe(0);
       }
-      console.log(`${provider}: wake row after the session ended: ${JSON.stringify(wakeRow().last_outcome)}`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Joined watcher', { exact: true }).click();

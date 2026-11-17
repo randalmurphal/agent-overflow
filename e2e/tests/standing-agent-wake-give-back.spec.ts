@@ -248,7 +248,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await writeFile(release, '');
       await expect.poll(queued, { timeout: 30_000 }).toEqual(['thread-wake', 'remote-completion']);
       expect(owners()).toEqual({ request: { delivered: 1, how: 'queued', notify: 1 }, watch: 'queued' });
-      console.log(`${provider}: held at the crash: ${JSON.stringify(queued())}, ${JSON.stringify(owners())}`);
       expect(await harness.crash()).toBe(true);
       harness = undefined;
       await b.mend();
@@ -275,7 +274,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect.poll(queued, { timeout: 60_000 }).toEqual(['remote-completion']);
       expect(owners()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued' });
       expect(composer()).toEqual({ draft: '', bubbles: 0 });
-      console.log(`${provider}: booted: request owed and disarmed, the completion queued again by its watch, composer empty`);
 
       // The next start delivers the completion once; the answer never
       // reaches the agent as a message.
@@ -293,7 +291,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(queued()).toEqual([]);
       expect(owners()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued' });
       expect(composer().draft).toBe('');
-      console.log(`${provider}: the watcher delivered the completion once; the answer stayed with its request`);
 
       // The agent reads the answer with thread_status. The mock numbers
       // tool calls per process, so this one names its own id.
@@ -326,7 +323,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(status.value!.requests![0].answer).toContain(ANSWER);
       await awaitTurnCompleted(harness, caller);
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
-      console.log(`${provider}: thread_status returned the answer`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -569,7 +565,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
       expect(countInputs(harness, g.callerPath, ANSWER)).toBe(1);
-      console.log(`${provider}: died holding the answer: request owed and disarmed, composer empty`);
 
       // ---- The completion.
       await g.holdNextSession(`give-back-death-completion-held-${provider}`);
@@ -595,7 +590,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await new Promise((resolve) => setTimeout(resolve, 10_000));
       expect(countInputs(harness, g.callerPath, g.completion)).toBe(1);
       expect(g.state().watch).toBe('pending');
-      console.log(`${provider}: died holding the completion: redelivery booked ${out}ms out, not delivered 10s later`);
       // Then it is delivered once to the session the watcher starts, and the
       // echo confirms it.
       await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 60_000 }).toBe(2);
@@ -605,7 +599,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(countInputs(harness, g.callerPath, g.completion)).toBe(2);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
       expect(g.marks().completion).toBe(1);
-      console.log(`${provider}: the watcher delivered it again at the booked time, once, and the echo confirmed it; composer empty`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -645,7 +638,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(countInputs(harness, g.callerPath, ANSWER)).toBe(1);
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
-      console.log(`${provider}: stopped holding the answer: request owed and disarmed, composer empty`);
 
       // ---- The completion, and an archive.
       await g.holdNextSession(`give-back-stop-completion-held-${provider}`);
@@ -661,18 +653,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await new Promise((resolve) => setTimeout(resolve, 6_000));
       expect(countInputs(harness, g.callerPath, g.completion)).toBe(1);
       expect(g.state().watch).toBe('pending');
-      console.log(`${provider}: archived holding the completion: the watch is pending and waits for the unarchive`);
 
-      const unarchived = Date.now();
       await harness.rpc('UnarchiveThread', g.caller);
       await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 20_000 }).toBe(2);
-      const redelivered = Date.now() - unarchived;
       await awaitTurnCompleted(harness, g.caller);
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(countInputs(harness, g.callerPath, g.completion)).toBe(2);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
       expect(g.marks()).toMatchObject({ completion: 1, attempts: 0 });
-      console.log(`${provider}: unarchived: the watcher delivered the completion ${redelivered}ms later, once, and the echo confirmed it`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -728,7 +716,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       let app = await relaunch();
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
       await away.restore();
-      console.log(`${provider}: crashed holding the answer: at boot the request is owed and disarmed, composer empty`);
 
       // ---- The completion.
       await g.holdNextSession(`give-back-crash-completion-held-${provider}`);
@@ -752,7 +739,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(deliveries()).toBe(1);
       expect(countInputs(app, g.callerPath, ANSWER)).toBe(0);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
-      console.log(`${provider}: crashed holding the completion: at boot its watch queued it again; the next start delivered it once`);
 
       // The agent reads the answer with thread_status. The mock numbers tool
       // calls per process, so this one names its own id.
@@ -784,7 +770,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(status.value!.requests![0].token).toBe(g.token);
       expect(status.value!.requests![0].answer).toContain(ANSWER);
       await awaitTurnCompleted(app, g.caller);
-      console.log(`${provider}: thread_status returned the answer`);
 
       await app.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -864,9 +849,6 @@ test('codex: a completion the provider took in before its session died reaches t
     expect(rows, 'the person sees the completion once').toBe(1);
     expect(g.state()).toMatchObject({ watch: 'queued', draft: '', rows: 0 });
     expect(g.marks().completion).toBe(1);
-    console.log(
-      `codex: died after the provider took the completion in: the resumed agent holds it twice, the transcript shows ${rows} row, the composer is empty`,
-    );
 
     await harness.open(page);
     await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -1027,7 +1009,6 @@ test('codex: an answer queued while an archive waits behind a start goes back to
     expect(request()).toEqual({ delivered: 1, how: 'queued', notify: 1 });
     expect(archived()).toBe(0);
     expect(settled, 'the held start and the archive were both still waiting when the answer was queued').toBe('');
-    console.log(`codex: the answer was queued ${Date.now() - started}ms into the held start, before the archive's flip`);
 
     await Promise.all([starting, archiving]);
     expect(Date.now() - started).toBeGreaterThanOrEqual(HOLD_MS);
@@ -1040,7 +1021,6 @@ test('codex: an answer queued while an archive waits behind a start goes back to
     expect(owedAndDisarmed()).toEqual(want);
     expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
     expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
-    console.log('codex: archived: the answer went back to its request, owed and disarmed, and nothing is queued');
 
     // Unarchived and started, the thread gets nothing it did not ask for; the
     // agent still reads the answer with thread_status.
@@ -1076,7 +1056,6 @@ test('codex: an answer queued while an archive waits behind a start goes back to
     await awaitTurnCompleted(harness, caller);
     expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
     expect(queued()).toEqual([]);
-    console.log('codex: unarchived and started: no wake reached the agent, and thread_status returned the answer');
 
     await harness.open(page);
     await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -1234,7 +1213,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(owedAndDisarmed()).toEqual(want);
       expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
-      console.log(`${provider}: stopped: the answer went back to its request, owed and disarmed, and nothing started the session`);
 
       await harness.rpc('StartSession', caller);
       await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
@@ -1249,7 +1227,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await awaitTurnCompleted(harness, caller);
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
       expect(queued()).toEqual([]);
-      console.log(`${provider}: started again: no wake reached the agent, and thread_status returned the answer`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -1381,7 +1358,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const truthful =
         (watched === 'pending' && rows.length === 0) || (watched === 'queued' && (rows.length === 1 || inputs === 1));
       expect(truthful, `after the Stop: watch ${watched}, queue ${JSON.stringify(rows)}, ${inputs} deliveries`).toBe(true);
-      console.log(`${provider}: stopped: watch ${watched}, queue ${JSON.stringify(rows)}`);
 
       // The watcher delivers it again and starts the session for it, once.
       const input = await wakeInput(harness, cwd, completion, 30_000);
@@ -1392,7 +1368,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(countInputs(harness, cwd, completion)).toBe(1);
       expect(queued()).toEqual([]);
       expect(watch()).toBe('queued');
-      console.log(`${provider}: the watcher delivered the completion again, once, to a session it started`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
@@ -1499,13 +1474,11 @@ async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: Ha
   await expect.poll(() => destinationState(build), { timeout: 30_000, intervals: [50] }).toBe('succeeded');
   const observed = watch(build);
   expect(observed, 'the archive lands before the watcher reads the finish').toMatchObject({ notification: 'pending', state: 'running' });
-  const margin = observed.next_check - Date.now();
   await harness.rpc('ArchiveThread', thread);
 
   expect(watch(build)).toMatchObject({ notification: 'pending', state: 'succeeded' });
   expect(watch(soak).notification).toBe('dismissed');
   await expect.poll(() => destinationState(soak), { timeout: 15_000 }).toBe('canceled');
-  console.log(`${provider}: archived ${margin} ms before the watcher's next check: build ${JSON.stringify(watch(build))}, soak test canceled and dismissed`);
 
   // The watcher leaves an archived thread's result where it is.
   await new Promise((resolve) => setTimeout(resolve, 6_000));
@@ -1545,7 +1518,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(countInputs(harness, cwd, `request_id: ${soak}`)).toBe(0);
       expect(queued()).toEqual([]);
       expect(watch(build).notification).toBe('queued');
-      console.log(`${provider}: unarchived: the build's completion arrived once, the soak test's never`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();
@@ -1591,13 +1563,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect(page.getByTestId('attached-system')).toHaveCount(0);
       expect(await harness.rpc<Array<{ id: string }>>('ListBackends')).toHaveLength(0);
       expect(watch(build).notification).toBe('dismissed');
-      console.log(`${provider}: forget refused with the held count, then confirmed: computer gone, held result dismissed`);
 
       await harness.rpc('UnarchiveThread', thread);
       await new Promise((resolve) => setTimeout(resolve, 6_000));
       expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(0);
       expect(queued()).toEqual([]);
-      console.log(`${provider}: unarchived after the forget: nothing arrived`);
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
     }
