@@ -96,25 +96,25 @@ func githubReactions(groups []githubReactionGroupRaw) []CommentReaction {
 // at the head the caller saw) and its comments' ids (the comment must be
 // one of them), the comment's body and author (the Co-authored-by
 // trailer), and the viewer (no trailer for their own suggestion).
-const githubSuggestionTargetQuery = `query SuggestionTarget($threadID: ID!, $commentID: ID!) {
+var githubSuggestionTargetQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query SuggestionTarget($threadID: ID!, $commentID: ID!) {
   viewer { login }
   thread: node(id: $threadID) {
     __typename
     ... on PullRequestReviewThread {
       id isResolved isOutdated path line startLine diffSide startDiffSide subjectType
       pullRequest { number state headRefName headRefOid repository { nameWithOwner } headRepository { nameWithOwner } }
-      comments(first: 100) { ` + githubPageInfoFields + ` nodes { id } }
+      comments(first: 100) { `+githubPageInfoFields+` nodes { id } }
     }
   }
   comment: node(id: $commentID) {
     __typename
     ... on PullRequestReviewComment { id body author { login ... on User { databaseId name } } }
   }
-}`
+}`)
 
-const githubSuggestionCommitMutation = `mutation SuggestionCommit($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $headline: String!, $body: String, $path: String!, $contents: Base64String!) {
+var githubSuggestionCommitMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation SuggestionCommit($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $headline: String!, $body: String, $path: String!, $contents: Base64String!) {
   createCommitOnBranch(input: {branch: {repositoryNameWithOwner: $repository, branchName: $branch}, expectedHeadOid: $expectedHeadOid, message: {headline: $headline, body: $body}, fileChanges: {additions: [{path: $path, contents: $contents}]}}) { commit { oid } }
-}`
+}`)
 
 type githubSuggestionTargetRaw struct {
 	Viewer *struct {
@@ -169,7 +169,7 @@ func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req 
 		return err
 	}
 	var raw githubSuggestionTargetRaw
-	if _, err := client.GraphQL(ctx, "SuggestionTarget", githubSuggestionTargetQuery, map[string]any{"threadID": req.Target.ThreadID, "commentID": req.Target.CommentID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubSuggestionTargetQuery, map[string]any{"threadID": req.Target.ThreadID, "commentID": req.Target.CommentID}, &raw); err != nil {
 		var gql *forgeapi.GraphQLError
 		if errors.As(err, &gql) && graphQLNotFound(gql) {
 			return &CommentNotOnPRError{CommentID: req.Target.CommentID}
@@ -249,7 +249,7 @@ func (f *githubForge) ApplySuggestion(ctx context.Context, ref PRReference, req 
 			} `json:"commit"`
 		} `json:"createCommitOnBranch"`
 	}
-	if _, err := client.GraphQL(ctx, "SuggestionCommit", githubSuggestionCommitMutation, vars, &commit); err != nil {
+	if _, err := client.GraphQL(ctx, githubSuggestionCommitMutation, vars, &commit); err != nil {
 		return writeOutcome(err)
 	}
 	if commit.CreateCommitOnBranch == nil || commit.CreateCommitOnBranch.Commit == nil || commit.CreateCommitOnBranch.Commit.OID == "" {
@@ -284,14 +284,14 @@ func githubCoAuthor(author *struct {
 // githubSuggestionFileQuery reads the tree entry at path on the head
 // commit: what the apply may rewrite is a regular file's blob, which the
 // entry's mode, type and blob size decide before any content is read.
-const githubSuggestionFileQuery = `query SuggestionFile($owner: String!, $name: String!, $oid: GitObjectID!, $path: String!) {
+var githubSuggestionFileQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query SuggestionFile($owner: String!, $name: String!, $oid: GitObjectID!, $path: String!) {
   repository(owner: $owner, name: $name) {
     object(oid: $oid) {
       __typename
       ... on Commit { file(path: $path) { mode type oid object { __typename ... on Blob { byteSize isBinary } } } }
     }
   }
-}`
+}`)
 
 type githubSuggestionFileRaw struct {
 	Repository *struct {
@@ -343,7 +343,7 @@ func gitTreeMode(mode int) int {
 func readGitHubFileAt(ctx context.Context, client *forgeapi.Client, repo, path, sha string) ([]byte, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	var raw githubSuggestionFileRaw
-	if _, err := client.GraphQL(ctx, "SuggestionFile", githubSuggestionFileQuery, map[string]any{"owner": owner, "name": name, "oid": sha, "path": path}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubSuggestionFileQuery, map[string]any{"owner": owner, "name": name, "oid": sha, "path": path}, &raw); err != nil {
 		return nil, err
 	}
 	refuse := func(reason string) ([]byte, error) { return nil, &SuggestionNotAppliedError{Reason: reason} }

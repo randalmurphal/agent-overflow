@@ -1,23 +1,21 @@
 // The sidebar hierarchy rulings (docs/specs/standing-agents.md rulings 4
 // and 32 to 36): an assistant is one row and a worker owned by its spawner
-// is none, the container bound of a group, the order inside it, and the
-// rolled-up dot of a collapsed group or a show-more row.
+// is none, the order inside a group, and the rolled-up dot of a collapsed
+// group or a show-more row. A group's preview cut is in
+// sidebarTreeView.test.ts.
 
 import { describe, expect, it } from 'vitest';
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
-import { buildSidebarThreadTree, sidebarNodeSection, type SidebarGroupTreeNode } from './sidebarTree';
+import { buildSidebarThreadTree, sidebarNodeSection, sidebarTreeNodeId, type SidebarGroupTreeNode } from './sidebarTree';
 import {
-  boundContainerMembers,
   flattenSidebarThreadTree,
-  nextContainerRevealLimit,
   previewSidebarThreads,
   rollupDisplayStatus,
-  sameSidebarVisibleNodes,
-  sidebarVisibleNodeId,
-  type SidebarTreeVisibleNode,
+  type SidebarTreeVisibleRow,
 } from './sidebarTreeView';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
+import { flattenTreeNodes } from '../../test/helpers/sidebarTree';
 import { bucketSidebarThreads } from '../components/sidebar/sidebarBuckets';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -46,7 +44,6 @@ function statuses(map: Record<string, ThreadLiveStatus>) {
   return (id: string): ThreadLiveStatus => map[id] ?? 'idle';
 }
 
-const ids = (rows: readonly SidebarTreeVisibleNode[]) => rows.map(sidebarVisibleNodeId);
 const group: ThreadGroup = { id: 'g', projectId: 'project-1', name: 'g', createdAt: 0, updatedAt: 0 };
 
 describe('sidebar rows', () => {
@@ -65,8 +62,8 @@ describe('sidebar rows', () => {
     expect(names(buckets.threadsByProject.get('other'))).toEqual(['standalone', 'grouped', 'local']);
     expect([...buckets.threadsByProject.keys()]).toEqual(['other']);
     // Nothing nests: the Assistants section's tree is its rows alone.
-    const rows = flattenSidebarThreadTree({ nodes: buildSidebarThreadTree({ threads: buckets.assistants }) });
-    expect(ids(rows)).toEqual(['agent']);
+    const rows = flattenTreeNodes({ nodes: buildSidebarThreadTree({ threads: buckets.assistants }) });
+    expect(rows.map(sidebarTreeNodeId)).toEqual(['agent']);
   });
 
   it('gives an owned worker no row, whatever brought the row to the list', () => {
@@ -124,72 +121,13 @@ describe('sidebar rows', () => {
     const pinned = mkThread('pinned', { agentId: 'p', projectId: '', pinnedAt: 1, updatedAt: 1 });
     const busy = mkThread('busy', { agentId: 'b', projectId: '', updatedAt: 2 });
     const nodes = buildSidebarThreadTree({ threads: [pinned, busy], liveStatusOf: statuses({ busy: 'running' }) });
-    expect(nodes.map((n) => sidebarVisibleNodeId({ ...n, startsSection: false, ownerGroupId: null }))).toEqual(['busy', 'pinned']);
+    expect(nodes.map(sidebarTreeNodeId)).toEqual(['busy', 'pinned']);
     expect(nodes.map(sidebarNodeSection)).toEqual(['unpinned', 'unpinned']);
   });
 });
 
-describe('container bound', () => {
-  const many = (prefix: string, n: number, extra: Partial<Thread> = {}) =>
-    Array.from({ length: n }, (_, i) => mkThread(`${prefix}${i}`, { updatedAt: 1000 - i, ...extra }));
-
-  it('shows the preview limit of unpinned members, every pinned one, and the open ones past the cut', () => {
-    const members = [
-      ...many('m', THREAD_PREVIEW_LIMIT + 4, { groupId: 'g' }),
-      ...many('pin', 2, { groupId: 'g', pinnedAt: 1 }),
-    ];
-    const nodes = buildSidebarThreadTree({ threads: members, groups: [group] });
-    const rows = flattenSidebarThreadTree({ nodes, openThreadIds: new Set([`m${THREAD_PREVIEW_LIMIT + 3}`]) });
-    const shown = ids(rows);
-    expect(shown.slice(1, 3)).toEqual(['pin0', 'pin1']);
-    expect(shown.filter((id) => /^m\d/.test(id))).toEqual([
-      ...Array.from({ length: THREAD_PREVIEW_LIMIT }, (_, i) => `m${i}`),
-      `m${THREAD_PREVIEW_LIMIT + 3}`,
-    ]);
-    const more = rows[rows.length - 1];
-    expect(more).toMatchObject({ kind: 'container-more', containerKey: 'g', hiddenCount: 3, ownerGroupId: 'g' });
-  });
-
-  it('reveals past a member open in a pane rather than stopping short', () => {
-    const members = many('m', THREAD_PREVIEW_LIMIT + 3);
-    const nodes = buildSidebarThreadTree({ threads: members }).map((node) => ({ ...node, depth: 1 }));
-    const threadNodes = nodes.filter((node) => node.kind === 'thread');
-    const open = new Set([`m${THREAD_PREVIEW_LIMIT}`]);
-    expect(boundContainerMembers(threadNodes, THREAD_PREVIEW_LIMIT, open).hidden).toHaveLength(2);
-    expect(nextContainerRevealLimit(threadNodes, open, THREAD_PREVIEW_LIMIT)).toBe(THREAD_PREVIEW_LIMIT + 3);
-  });
-
-  it('cuts off on the show-more row\'s count', () => {
-    const members = many('m', THREAD_PREVIEW_LIMIT + 3, { groupId: 'g' });
-    const build = (n: number) => flattenSidebarThreadTree({
-      nodes: buildSidebarThreadTree({ threads: members.slice(0, n), groups: [group] }),
-    });
-    expect(sameSidebarVisibleNodes(build(THREAD_PREVIEW_LIMIT + 2), build(THREAD_PREVIEW_LIMIT + 2))).toBe(true);
-    expect(sameSidebarVisibleNodes(build(THREAD_PREVIEW_LIMIT + 2), build(THREAD_PREVIEW_LIMIT + 3))).toBe(false);
-  });
-});
-
-describe('row identity cutoff', () => {
-  it('tells a show-more row by its count and its dot', () => {
-    const members = Array.from({ length: THREAD_PREVIEW_LIMIT + 2 }, (_, i) =>
-      mkThread(`m${i}`, { groupId: 'g', updatedAt: 1000 - i, ...unread }));
-    const rows = flattenSidebarThreadTree({ nodes: buildSidebarThreadTree({ threads: members, groups: [group] }) });
-    const more = rows.length - 1;
-    const with_ = (i: number, patch: object) => rows.map((row, j) => (j === i ? { ...row, ...patch } : row)) as SidebarTreeVisibleNode[];
-    expect(sameSidebarVisibleNodes(rows, [...rows])).toBe(true);
-    const moreRow = rows[more];
-    if (moreRow.kind !== 'container-more' || moreRow.hiddenStatus === null) throw new Error('want a lit show-more row');
-    expect(sameSidebarVisibleNodes(rows, with_(more, { hiddenCount: moreRow.hiddenCount + 1 }))).toBe(false);
-    expect(sameSidebarVisibleNodes(rows, with_(more, { hiddenStatus: null }))).toBe(false);
-    expect(sameSidebarVisibleNodes(rows, with_(more, { hiddenStatus: { ...moreRow.hiddenStatus, liveStatus: 'running' } }))).toBe(false);
-    expect(sameSidebarVisibleNodes(rows, with_(more, {
-      hiddenStatus: { ...moreRow.hiddenStatus, pill: { ...moreRow.hiddenStatus.pill, label: 'Other' } },
-    }))).toBe(false);
-  });
-});
-
 describe('order inside a container', () => {
-  it('puts running above unread inside a group, and leaves the top level by activity', () => {
+  it('puts running above unread inside a group, as at the top level', () => {
     const live = { 'g-run': 'running', 'top-run': 'running' } as const;
     const nodes = buildSidebarThreadTree({
       threads: [
@@ -204,7 +142,7 @@ describe('order inside a container', () => {
     const groupNode = nodes.find((n) => n.kind === 'group') as SidebarGroupTreeNode;
     expect(groupNode.children.map((n) => n.thread.id)).toEqual(['g-run', 'g-unread']);
     const top = nodes.filter((n) => n.kind === 'thread').map((n) => n.kind === 'thread' && n.thread.id);
-    expect(top).toEqual(['top-unread', 'top-run']);
+    expect(top).toEqual(['top-run', 'top-unread']);
   });
 });
 
@@ -221,15 +159,18 @@ describe('rolled-up dot', () => {
   it('lights a show-more row for an unread hidden member, and ranks a working one above it', () => {
     const members = (prefix: string, extra: Partial<Thread>) =>
       Array.from({ length: THREAD_PREVIEW_LIMIT + 1 }, (_, i) => mkThread(`${prefix}${i}`, { updatedAt: 1000 - i, ...extra }));
-    const moreOf = (rows: readonly SidebarTreeVisibleNode[]) => {
+    const moreOf = (rows: readonly SidebarTreeVisibleRow[]) => {
       const more = rows[rows.length - 1];
-      if (more?.kind !== 'container-more') throw new Error('no show-more row');
+      if (more?.kind !== 'group-more') throw new Error('no show-more row');
       return more.hiddenStatus;
     };
 
-    // Unread rows sort first, so every member is unread for one to be cut.
+    // Unread rows sort above read ones, so every member is unread for one
+    // to be cut.
     const groupRows = flattenSidebarThreadTree({
       nodes: buildSidebarThreadTree({ threads: members('m', { groupId: 'g', ...unread }), groups: [group] }),
+      openThreadIds: new Set(),
+      groupVisibleLimit: () => THREAD_PREVIEW_LIMIT,
     });
     expect(moreOf(groupRows)).toMatchObject({ liveStatus: 'idle', pill: { label: 'Completed' } });
 

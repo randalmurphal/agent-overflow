@@ -4,7 +4,7 @@
 //
 // Two layers:
 //
-//   - A live sidecar process (the `__reap` subcommand) holds the read end
+//   - A live sidecar process (a /bin/sh script) holds the read end
 //     of a control pipe whose write end the app keeps. The app sends
 //     `watch <pgid>` / `release <pgid>` as sessions start and stop. If the
 //     app dies by any means — clean exit, panic, or SIGKILL — the kernel

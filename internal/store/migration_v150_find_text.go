@@ -162,9 +162,9 @@ func (table findTextTable) pendingSQL() string {
 	  LIMIT ` + strconv.Itoa(findTextBackfillBatch)
 }
 
-// backfillFindText is v150's deferred phase, and v156's: it fills the
+// backfillFindText is v150's deferred phase, and v157's: it fills the
 // candidate text of every row that has none (written before v150, or unset
-// by v156), a batch per transaction, in each table's pending-index order,
+// by v157), a batch per transaction, in each table's pending-index order,
 // then drops the pending indexes. A find
 // meanwhile computes an unfilled row's candidate text as it reads it
 // (findMatchSQL). A batch that fails is filled a row at a time; a row that

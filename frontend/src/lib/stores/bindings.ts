@@ -376,7 +376,6 @@ export {
   MoveThreadTerminals,
   RefreshTerminal,
   ResizeTerminal,
-  RestartTerminal,
   WriteTerminal,
 
   // Provider terminal (claude-tui take-control)

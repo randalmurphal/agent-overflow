@@ -31,12 +31,12 @@ func threadAnswerDueSQL(alias string) string {
            OR (` + a + `late_delivered_at IS NOT NULL AND ` + a + `late_confirmed_at IS NULL)))))`
 }
 
-// threadAnswerDueV154SQL indexes the requests whose answer is on its way to
+// threadAnswerDueV155SQL indexes the requests whose answer is on its way to
 // their caller, by caller: the rows ThreadAnswerDue, ThreadsWithAnswerDue and
 // the Agents tree's held work (agentHeldSQL) read.
 //
 // thread_requests.rest_unreported is ThreadRequest.RestUnreported.
-var threadAnswerDueV154SQL = `
+var threadAnswerDueV155SQL = `
 CREATE INDEX idx_thread_requests_answer_due ON thread_requests(caller_thread_id)
  WHERE ` + threadAnswerDueSQL("") + `;
 ALTER TABLE thread_requests ADD COLUMN rest_unreported INTEGER NOT NULL DEFAULT 0 CHECK(rest_unreported IN (0,1));

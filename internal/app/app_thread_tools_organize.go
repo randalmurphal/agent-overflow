@@ -103,10 +103,12 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 		}
 		result.WorkersNotArchived = append(result.WorkersNotArchived, notArchived)
 	}
-	if applied.archive.cleanup != nil {
-		// The cause may name paths and queries; the host log keeps it.
-		log.Printf("thread tools: archive thread %s: %v", threadID, applied.archive.cleanup)
-		result.Warning = "Archived, but some of the work these threads were waiting on could not be stopped or withdrawn; the host log has the cause."
+	if cause := applied.archive.cleanup.Unwrap(); cause != nil {
+		// The patch applied; the error is what may still be running or open,
+		// for the agent to pass on. The causes may name paths and queries;
+		// the host log keeps them.
+		log.Printf("thread tools: archive thread %s: %v", threadID, cause)
+		result.Error, result.ErrorCode = applied.archive.cleanup.message(), threadtools.CodeCleanupFailed
 	}
 	return result
 }
@@ -152,8 +154,7 @@ func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, pat
 		// queued for it is withdrawn, the commands it started elsewhere are
 		// cancelled, and its workers are archived. The archive itself is
 		// already durable, so what of that failed is reported beside the
-		// change that landed rather than turned into a refusal of it; the
-		// destination stops remote work itself after the owner grace.
+		// change that landed rather than turned into a refusal of it.
 		applied.archive = a.finishArchive(*work, reachNow)
 	}
 	return applied, nil
@@ -191,7 +192,7 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	if work != nil {
 		a.beginArchiveWalk(threadID)
 		if work.captured {
-			a.stopArchivedThreadSession(threadID, requestedAt)
+			a.stopArchivedThreadSession(work, requestedAt)
 		}
 		a.readArchivedWorkers(work)
 	}

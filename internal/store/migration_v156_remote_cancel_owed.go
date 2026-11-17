@@ -1,6 +1,6 @@
 package store
 
-// Migration v155 keeps what a rest or an archive did to a remote command it
+// Migration v156 keeps what a rest or an archive did to a remote command it
 // stopped. It cancels the commands the thread started on paired computers and
 // dismisses their completions; when the destination cannot be reached the
 // cancel is still owed, and the watcher sends it again until the destination
@@ -12,9 +12,9 @@ package store
 // the completion, 0 when none did: such a dismissal is final, where the
 // dismissal of a refused start gives way to a later proof the destination
 // accepted it.
-const remoteCancelOwedMigrationVersion = 155
+const remoteCancelOwedMigrationVersion = 156
 
-const remoteCancelOwedV155SQL = `
+const remoteCancelOwedV156SQL = `
 ALTER TABLE remote_watches ADD COLUMN cancel_owed_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE remote_watches ADD COLUMN cancel_next_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE remote_watches ADD COLUMN stopped_at INTEGER NOT NULL DEFAULT 0;

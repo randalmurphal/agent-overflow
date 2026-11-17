@@ -19,11 +19,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestTransferredDiscussionInstallsAsChat: a peer from before migration v153
+// TestTransferredDiscussionInstallsAsChat: a peer from before migration v154
 // sends a former discussion thread with mode 'discussion' and the discussion
-// keys v153 dropped, under manifest version 1. The receiver installs it as a
-// chat, as v153 did with its stored rows. A recipe that receiver prepared
-// before its own update to v153 still holds 'discussion' and installs the
+// keys v154 dropped, under manifest version 1. The receiver installs it as a
+// chat, as v154 did with its stored rows. A recipe that receiver prepared
+// before its own update to v154 still holds 'discussion' and installs the
 // same way.
 func TestTransferredDiscussionInstallsAsChat(t *testing.T) {
 	t.Parallel()

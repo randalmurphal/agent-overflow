@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// v154 counts what each thread did before it: its top-level tool calls, the
+// v155 counts what each thread did before it: its top-level tool calls, the
 // tokens its settled turns spent itself, cache reads not among them, and the
 // time its settled turns ran. A nested tool call, another row kind, the
 // ledger rows of a deleted thread, and what a pointer fork inherited through

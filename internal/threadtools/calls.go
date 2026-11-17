@@ -368,7 +368,9 @@ type UpdateReport struct {
 }
 
 // ThreadUpdateResult is one thread's outcome. A refusal names the thread
-// and the reason and leaves that thread untouched.
+// and the reason and leaves that thread untouched. An error on an updated
+// thread is an archive whose cleanup did not finish
+// (CodeCleanupFailed): the patch applied.
 type ThreadUpdateResult struct {
 	ThreadID   string `json:"thread_id"`
 	ComputerID string `json:"computer_id,omitempty"`
@@ -381,9 +383,6 @@ type ThreadUpdateResult struct {
 	// not archive, at any depth. It stays open; archiving it, or this
 	// thread again, retries it.
 	WorkersNotArchived []WorkerNotArchived `json:"workers_not_archived,omitempty"`
-	// Warning says what an archive that applied could not stop of the
-	// work its threads were waiting on.
-	Warning string `json:"warning,omitempty"`
 }
 
 // WorkerNotArchived is one worker an archive could not archive, and why.

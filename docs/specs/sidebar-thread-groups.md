@@ -9,7 +9,7 @@ show-more footer's dot counts unread rows, and running members sort
 above unread ones
 ([standing agents](standing-agents.md) rulings 31 to 34). Revised
 2026-10-17: a thread a standing agent spawned may be a member, and
-membership is the row's `placement` (store v153, standing agents
+membership is the row's `placement` (store v154, standing agents
 ruling 36).
 
 ## Goal
@@ -56,17 +56,18 @@ the row. Collapsed, it carries its members' bubbled dot.
   remain visible when they exceed the limit, leaving no preview slots
   for unpinned rows. Drafts and threads open in panes retain their
   visibility exceptions. A group takes one slot; its members take none.
-- **Member bound.** Inside a group, the members show the project's
-  preview limit (8), then a show-more footer under the group's rail that
-  reveals the project's increment (20) per click. The footer carries the
-  hidden members' rolled-up dot, ranked as a collapsed group ranks its
-  members, so one unread hidden member lights it and a working or
-  needs-you one outranks it. The project's own show-more footer and a
-  collapsed project's dot rank the same way (ruling 2026-10-16,
-  replacing the rule that only a working or needs-you status lit them).
-  Pinned members
-  always show and take no slot; a member open in a pane is never hidden
-  by the bound. The paging is session state per group.
+- **Group preview cut.** An expanded group cuts its members by the same
+  rules against its own limit: the default preview, pinned and open
+  members always visible, then "Show N More" and "Show Less" under the
+  last member, with the hidden members' status dot, ranked as a
+  collapsed group ranks its members, so one unread hidden member lights
+  it and a working or needs-you one outranks it. The project's own
+  show-more footer and a collapsed project's dot rank the same way
+  (ruling 2026-10-16, replacing the rule that only a working or
+  needs-you status lit them). The limit persists per group in the
+  project limits map (`sidebar:threadListVisibleLimits`), keyed by group
+  id, and is dropped when the group is deleted. The footer sits inside
+  the group's rail and takes a thread drop like a member row.
 - **No nesting.** No groups inside groups, and threads do not nest under
   threads. Render depth inside a group is two (group, member).
 - **One project.** A group belongs to one project and cannot span
@@ -179,7 +180,7 @@ the row. Collapsed, it carries its members' bubbled dot.
 - `DeleteThreadGroup` clears the members' pins, active and archived, in
   the transaction that deletes the group, and returns the member rows as
   they now stand.
-- Migration v153 adds `threads.placement` (`owned`, `grouped`,
+- Migration v154 adds `threads.placement` (`owned`, `grouped`,
   `standalone`) with a CHECK that a row is `grouped` exactly when its
   `group_id` is set. `SetThreadGroup` writes `grouped` with the group;
   an ungroup writes `standalone` on a row that was grouped and leaves
@@ -333,9 +334,11 @@ Names are trimmed and non-empty; a blank rename is rejected.
   dividers for every combination of sections, none inside a group;
   groups stay above
   the preview cut; a group takes one preview slot and its
-  members none; collapsed and expanded flatten shapes; search by group
-  name pulls all members; a focused member remains visible under its
-  collapsed group;
+  members none; an expanded group cuts its members at its own limit,
+  keeps pinned and open members, and ends with a footer only when it
+  hid members or can show less; collapsed and expanded flatten shapes;
+  search by group name pulls all members; a focused member remains
+  visible under its collapsed group;
   `sameSidebarVisibleNodes` distinguishes a group from a thread node at
   the same index.
 - Component tests: group row renders count when collapsed and members

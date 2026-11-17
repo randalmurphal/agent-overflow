@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Migration v154 adds the assistants (standing agents), their wakes and the
+// Migration v155 adds the assistants (standing agents), their wakes and the
 // request ledger's agent records (docs/specs/standing-agents.md).
 //
 // `agents` is the assistant: its own id, its current thread, its home and
@@ -67,7 +67,7 @@ import (
 //     is still there and no row carrying the provider's id answers for it
 //     (app.queuedSendDelivered). A request that rode with another's wake
 //     reads its carrier's send id. Those are left unconfirmed, and the boot
-//     gives them back to their requests. v154_undelivered_wakes, a
+//     gives them back to their requests. v155_undelivered_wakes, a
 //     temporary table dropped before the migration ends, holds those send
 //     ids by thread so each request's check is one keyed probe.
 //   - `answer_agent` and `answer_agent_role`, `late_reply_agent` and
@@ -166,9 +166,9 @@ import (
 // of an item with one revision ask the same questions: a worker's question
 // is put to its spawner under one, and an answer written for an older one
 // is refused where it is claimed (QueueAsyncAnswers).
-const assistantsMigrationVersion = 154
+const assistantsMigrationVersion = 155
 
-const assistantsV154SQL = `
+const assistantsV155SQL = `
 CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
     thread_id        TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
@@ -257,7 +257,7 @@ ALTER TABLE thread_request_receipts ADD COLUMN own_turn INTEGER NOT NULL DEFAULT
 ALTER TABLE thread_request_receipts ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
 
-CREATE TEMP TABLE v154_undelivered_wakes (
+CREATE TEMP TABLE v155_undelivered_wakes (
     thread_id TEXT NOT NULL,
     send_id   TEXT NOT NULL,
     PRIMARY KEY (thread_id, send_id)
@@ -274,11 +274,11 @@ WITH residue(thread_id, send_id, joined) AS (
      AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index)
      AND NOT EXISTS (SELECT 1 FROM items later
                       WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index AND later.parent_id = ''))
-INSERT OR IGNORE INTO v154_undelivered_wakes (thread_id, send_id)
+INSERT OR IGNORE INTO v155_undelivered_wakes (thread_id, send_id)
 SELECT thread_id, send_id FROM residue WHERE send_id GLOB 'thread-wake*'
 UNION
 SELECT r.thread_id, j.value FROM residue r JOIN json_each(r.joined) j WHERE j.type = 'text' AND j.value GLOB 'thread-wake*';
-INSERT OR IGNORE INTO v154_undelivered_wakes (thread_id, send_id)
+INSERT OR IGNORE INTO v155_undelivered_wakes (thread_id, send_id)
 SELECT q.thread_id, q.send_id
   FROM flush_queue_items q
  WHERE q.send_id GLOB 'thread-wake*'
@@ -291,15 +291,15 @@ SELECT q.thread_id, q.send_id
 
 UPDATE thread_requests SET confirmed_at = delivered_at
  WHERE delivered_at IS NOT NULL
-   AND NOT (delivered_how = 'queued' AND EXISTS (SELECT 1 FROM v154_undelivered_wakes x
+   AND NOT (delivered_how = 'queued' AND EXISTS (SELECT 1 FROM v155_undelivered_wakes x
         WHERE x.thread_id = thread_requests.caller_thread_id
           AND x.send_id = 'thread-wake:' || CASE WHEN thread_requests.delivered_with <> '' THEN thread_requests.delivered_with ELSE thread_requests.token END));
 UPDATE thread_requests SET late_delivered_how = delivered_how,
-       late_confirmed_at = CASE WHEN delivered_how = 'queued' AND EXISTS (SELECT 1 FROM v154_undelivered_wakes x
+       late_confirmed_at = CASE WHEN delivered_how = 'queued' AND EXISTS (SELECT 1 FROM v155_undelivered_wakes x
         WHERE x.thread_id = thread_requests.caller_thread_id AND x.send_id = 'thread-wake-late:' || thread_requests.token)
        THEN NULL ELSE late_delivered_at END
  WHERE late_delivered_at IS NOT NULL;
-DROP TABLE v154_undelivered_wakes;
+DROP TABLE v155_undelivered_wakes;
 
 UPDATE thread_requests SET superseded = 1, lineage_only = 1
  WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id <> ''

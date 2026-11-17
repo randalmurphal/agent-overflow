@@ -13,7 +13,7 @@ import (
 // forwards it to the session's loopback relay, and writes the relay's response
 // to stdout (empty for observe-mode events; the hookSpecificOutput answer for
 // AskUserQuestion). main.go short-circuits to RunHookChild before any other
-// startup, exactly as it does for the orphan-reaper sidecar.
+// startup.
 
 // HookSubcommand is the argv[1] sentinel that routes to RunHookChild.
 const HookSubcommand = "__claude-hook"

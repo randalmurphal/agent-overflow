@@ -169,6 +169,9 @@ func TestGitHubManageActionsThroughTheAppsForgeCode(t *testing.T) {
 	if got := reviewerStates(m.Reviewers); len(got) != 2 || got["acme/core"] != gitops.ReviewerPending || got["carol"] != gitops.ReviewerChangesRequested {
 		t.Fatalf("reviewers after the change = %+v", m.Reviewers)
 	}
+	if i := slices.IndexFunc(m.Reviewers, func(p gitops.PRReviewer) bool { return p.Team }); i < 0 || m.Reviewers[i].Name != "Core" {
+		t.Fatalf("the team reviewer's name: %+v", m.Reviewers)
+	}
 	if !slices.Equal(logins(m.Assignees), []string{"bob"}) || !slices.Equal(labelNames(m.Labels), []string{"ui"}) {
 		t.Fatalf("assignees %+v, labels %+v", m.Assignees, m.Labels)
 	}

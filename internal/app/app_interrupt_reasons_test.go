@@ -81,8 +81,8 @@ func TestEachInterruptionTellsTheSenderWhy(t *testing.T) {
 
 	moved := siblingThread(t, app, thread, "interrupt-reasons-moved")
 	runningReceipt(t, app, moved.ID, "tok-moved", 0)
-	if err := app.stopThreadRequestsForMovedThread(context.Background(), moved.ID, "Desk"); err != nil {
-		t.Fatal(err)
+	if undelivered, err := app.stopThreadRequestsForMovedThread(context.Background(), moved.ID, "Desk"); undelivered != nil || err != nil {
+		t.Fatal(undelivered, err)
 	}
 
 	restarted := siblingThread(t, app, thread, "interrupt-reasons-restart")

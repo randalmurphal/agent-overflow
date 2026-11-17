@@ -86,21 +86,34 @@ describe('buildSidebarThreadTree', () => {
     expect(tree[1].sortGroup).toBe('idle');
   });
 
-  it('keeps running and unread completed threads in the same activity tier', () => {
+  it('puts running threads above unread completed ones regardless of activity time', () => {
+    // Opening a completed row reads it and drops it to the idle tier. With
+    // completed below running, that move never crosses a running row.
     const running = mkThread('running', { updatedAt: 1000 });
     const completed = mkThread('completed', {
       updatedAt: 9000,
       latestTurnCompletedAt: 9000,
       lastReadAt: 1000,
     });
+    const plain = mkThread('plain', { updatedAt: 99_000 });
     const tree = buildSidebarThreadTree({
-      threads: [running, completed],
+      threads: [plain, completed, running],
       liveStatusOf: liveStatusMap({ running: 'running' }),
     });
 
-    expect(tree.map(nodeId)).toEqual(['completed', 'running']);
-    expect(tree[0].sortGroup).toBe('completed');
-    expect(tree[1].sortGroup).toBe('running');
+    expect(tree.map(nodeId)).toEqual(['running', 'completed', 'plain']);
+    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'completed', 'idle']);
+  });
+
+  it('orders running above completed inside a pin block', () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('front-completed', { pinnedAt: 1, updatedAt: 9000, latestTurnCompletedAt: 9000, lastReadAt: 1 }),
+        mkThread('front-running', { pinnedAt: 2, updatedAt: 1000 }),
+      ],
+      liveStatusOf: liveStatusMap({ 'front-running': 'running' }),
+    });
+    expect(tree.map(nodeId)).toEqual(['front-running', 'front-completed']);
   });
 
   it('uses the running tier for every running thread mode', () => {

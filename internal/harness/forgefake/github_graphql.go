@@ -1267,7 +1267,7 @@ func ghViewerReviews(e *Engine, c *call, v graphQLVars) response {
 	nodes := make([]map[string]any, 0, len(reviews))
 	for _, review := range reviews {
 		nodes = append(nodes, map[string]any{
-			"databaseId": review.ID, "viewerDidAuthor": strings.EqualFold(review.Author, e.viewer),
+			"fullDatabaseId": strconv.FormatInt(review.ID, 10), "viewerDidAuthor": strings.EqualFold(review.Author, e.viewer),
 			"state": review.State, "body": review.Body, "commit": map[string]any{"oid": review.CommitSHA},
 		})
 	}

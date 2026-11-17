@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// v155 adds the cancel a remote command is owed and the mark of a stopped
+// v156 adds the cancel a remote command is owed and the mark of a stopped
 // completion. A watch from before it owes none and was stopped by nothing,
 // and the watcher's due list reads the owed ones through their index.
 func TestRemoteCancelOwedMigrationOwesNothingForOldWatches(t *testing.T) {

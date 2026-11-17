@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"agent-overflow/internal/memory"
-	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/wsldistro"
@@ -18,13 +17,6 @@ import (
 // contract after relocating the package, then run against the shared migrated
 // store template so the suite does not replay every migration per fixture.
 func TestMain(m *testing.M) {
-	// On macOS and Linux a Start that reaches its background work re-execs this binary
-	// as the orphan-reaper sidecar, as main() handles in the shipped binary.
-	// Without this dispatch the sidecar would run the whole suite again.
-	if len(os.Args) > 1 && os.Args[1] == orphanreaper.Subcommand() {
-		orphanreaper.RunChild()
-		return
-	}
 	// A session that receives memory runs this binary as its SessionStart
 	// hook (os.Executable in readSessionMemory), as main() handles in the
 	// shipped binary.

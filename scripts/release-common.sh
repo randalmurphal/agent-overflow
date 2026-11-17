@@ -37,6 +37,12 @@ copy_file() {
 	cp "$src" "$dst"
 }
 
+# The newest glibc a Linux artifact may require. The requirement comes from
+# the build machine, not the source: a compiler that defaults to C23 binds
+# strtol to a glibc 2.38 symbol, and the binary then fails to start on every
+# distribution with an older glibc.
+GLIBC_FLOOR=2.34
+
 validate_elf() {
 	path=$1
 	[ -f "$path" ] || { echo "ERROR: missing Linux payload: $path" >&2; exit 1; }
@@ -44,6 +50,16 @@ validate_elf() {
 	[ "$size" -gt 1048576 ] || { echo "ERROR: Linux payload is too small; refusing placeholder: $path" >&2; exit 1; }
 	if ! LC_ALL=C dd if="$path" bs=4 count=1 2>/dev/null | od -An -tx1 | grep -q '7f 45 4c 46'; then
 		echo "ERROR: Linux payload is not an ELF executable: $path" >&2
+		exit 1
+	fi
+	command -v objdump >/dev/null 2>&1 || { echo "ERROR: objdump (binutils) is required to read the glibc versions $path requires" >&2; exit 1; }
+	symbols=$(LC_ALL=C objdump -T "$path" | grep 'GLIBC_[0-9]' || true)
+	needed=$(printf '%s\n' "$symbols" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -u -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+	[ -n "$needed" ] || { echo "ERROR: could not read the glibc versions $path requires" >&2; exit 1; }
+	newest=$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$needed" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+	if [ "$newest" != "$GLIBC_FLOOR" ]; then
+		echo "ERROR: $path requires glibc $needed; Linux artifacts must start on glibc $GLIBC_FLOOR. Symbols newer than the floor:" >&2
+		printf '%s\n' "$symbols" | grep "GLIBC_$needed" >&2
 		exit 1
 	fi
 }

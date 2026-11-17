@@ -136,7 +136,7 @@ Decisions (2026-08-17, with user):
   context-tier marker (`[1m]`) before comparison.
 
 On the wire (`GetSettings`, `UpdateSettings` and the provider env
-replies, all through `redactedSettings`) an entry carries `id`,
+replies, all through `settingsForCaller`) an entry carries `id`,
 `enabled`, `models`, `path`, `problem` and `blank`, never `prompt`
 (`settings.PromptOverridesForWire`). `blank` is true when the file is
 empty, whitespace only, or has a `problem`. `Prompt` still decodes from a

@@ -65,7 +65,7 @@ func TestPullsSearchAnswersTheRepositorysOpenPulls(t *testing.T) {
 	if mine["number"] != float64(1) || mine["isDraft"] != true || mine["viewerDidAuthor"] != true || mine["totalCommentsCount"] != float64(3) ||
 		mine["createdAt"] != "2026-10-01T00:00:00Z" || mine["updatedAt"] != "2026-10-02T00:00:00Z" ||
 		mustJSON(t, mine["commits"]) != `{"nodes":[{"commit":{"committedDate":"2026-10-01T12:00:00Z","statusCheckRollup":{"state":"SUCCESS"}}}],"totalCount":3}` ||
-		mine["viewerLatestReview"] != nil || mine["id"] == "" || mustJSON(t, mine["reviewThreads"]) != `{"nodes":[{"isResolved":false}],"pageInfo":{"endCursor":"cursor:1","hasNextPage":false}}` ||
+		mine["viewerLatestReview"] != nil || mine["id"] == "" || mustJSON(t, mine["reviewThreads"]) != `{"nodes":[{"isResolved":false}],"pageInfo":{"hasNextPage":false}}` ||
 		mustJSON(t, mine["baseRef"]) != `{"refUpdateRule":null,"rules":{"nodes":[]}}` {
 		t.Errorf("own draft = %v", mustJSON(t, mine))
 	}

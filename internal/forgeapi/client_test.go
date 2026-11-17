@@ -211,7 +211,7 @@ func TestRateLimitedRequestsCloseTheGate(t *testing.T) {
 		t.Fatalf("interactive under the reserve refused: %v", err)
 	}
 	// GraphQL is another pool.
-	if _, err := gh.GraphQL(t.Context(), "Viewer", "query Viewer { viewer { login } }", nil, nil); err != nil {
+	if _, err := gh.GraphQL(t.Context(), testViewerDocument, nil, nil); err != nil {
 		t.Fatalf("graphql stalled by the core reserve: %v", err)
 	}
 

@@ -21,7 +21,7 @@ func githubQueueFixture() forgefake.Fixture {
 				CI:        &forgefake.Pipeline{ID: 220, Jobs: []forgefake.Job{{ID: 221, Name: "unit", Status: "running"}}},
 			},
 			{Number: 3, Title: "Queued", Author: "octo", HeadRef: "queued", HeadSHA: strings.Repeat("3", 40),
-				Queued: &forgefake.QueueEntry{Position: 1, State: "AWAITING_CHECKS", By: "bob"}},
+				Queued: &forgefake.QueueEntry{Position: 1, By: "bob"}},
 		},
 	}, {
 		Forge: "github", Project: "acme/triage", ID: 5251,

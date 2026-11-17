@@ -181,9 +181,13 @@ or an archive finds handed to the provider and not confirmed, and the watcher
 delivers it again, starting the session for it. A copy waits for outstanding
 remote work and its notification handoff like the existing
 queued/background-work checks; the refusal for an archived conversation that
-holds a finished job says to unarchive it to receive the result. The cancel is
-delivered on a best-effort basis and logged when the destination cannot be
-reached. Deletion runs it before provider cleanup and again under the thread
+holds a finished job says to unarchive it to receive the result. A cancel that
+cannot reach the destination does not hold the operation: it is owed on the
+watch and sent again while the watch stays (below), and a delete, which takes
+the watch with it, leaves the command to run there until the owner grace
+(`remotejobs.DefaultOwnerGrace`) ends it. An archive or delete from the
+sidebar reports it in its cleanup error; a move logs it. Deletion runs it
+before provider cleanup and again under the thread
 mutation lock, so a concurrent send cannot leave an orphaned command.
 Forgetting a computer waits for outstanding jobs and notification handoff;
 reconnect an offline computer and stop its jobs first. Finished jobs held for

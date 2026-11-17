@@ -38,7 +38,6 @@ import (
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
-	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/servercert"
@@ -111,20 +110,10 @@ func main() {
 	if err := disclaimHarnessResponsibility(); err != nil {
 		fatalf("isolate macOS harness responsibility: %v", err)
 	}
-	// The orphan-reaper sidecar (macOS, Linux) re-execs this binary with the
-	// __reap subcommand. Short-circuit before any other startup — flag
-	// parsing, shell-env sync, Wails — so the sidecar stays a tiny pipe
-	// reader that owns no GUI or transport. See internal/orphanreaper.
-	if len(os.Args) > 1 && os.Args[1] == orphanreaper.Subcommand() {
-		orphanreaper.RunChild()
-		return
-	}
-
 	// The interactive Claude TUI provider registers this binary as its hook
 	// command; Claude Code re-execs us with the __claude-hook subcommand for
-	// every captured hook event. Short-circuit before any other startup — same
-	// tiny-sidecar shape as the orphan reaper — so the relay client owns no GUI
-	// or transport. See internal/provider/claudetui/hookcmd.go.
+	// every captured hook event. Short-circuit before any other startup so the
+	// relay client owns no GUI or transport. See internal/provider/claudetui/hookcmd.go.
 	if len(os.Args) > 1 && os.Args[1] == claudetui.HookSubcommand {
 		claudetui.RunHookChild()
 		return

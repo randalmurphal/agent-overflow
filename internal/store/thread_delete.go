@@ -14,8 +14,7 @@ import (
 // (and therefore a single write transaction) removes while a thread is
 // being deleted. Each item delete fires the two payload-GC triggers, so
 // a 38k-item thread deleted through the FK cascade alone is one ~6s
-// write transaction, longer than the 5s busy_timeout, meaning any
-// concurrent writer errors SQLITE_BUSY instead of briefly waiting.
+// write transaction that every other write queues behind.
 // 500-item chunks keep every write transaction in the tens of
 // milliseconds.
 const deleteThreadItemChunk = 500

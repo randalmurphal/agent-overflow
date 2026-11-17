@@ -161,6 +161,9 @@ func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) erro
 // first, so none opens a page after the close; the caller's thread lock keeps
 // a session start from registering the thread again meanwhile.
 func (a *App) closeThreadBrowserPages(threadID string) error {
+	if a.closeBrowserPagesFn != nil {
+		return a.closeBrowserPagesFn(threadID)
+	}
 	if a.browser.manager == nil {
 		return nil
 	}

@@ -40,16 +40,16 @@ export interface MigrationException {
 }
 
 export const migrationExceptions: MigrationException[] = [
-  { version: 153, table: 'channels', dropped: true, reason: 'v153 removes discussions and their channels' },
-  { version: 153, table: 'channel_messages', dropped: true, reason: 'v153 removes discussions and their channel messages' },
-  { version: 153, table: 'discussion_definitions', dropped: true, reason: 'v153 removes discussion definitions' },
-  { version: 153, table: 'threads', columns: ['mode'], reason: 'v153 turns a former discussion thread into a chat thread' },
-  { version: 153, table: 'scratch_threads', columns: ['return_mode'], reason: 'v153 returns a side chat opened from a discussion to chat mode' },
-  { version: 153, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v153 keeps only model favorites; discussion favorites are removed' },
-  { version: 153, table: 'automations', dropped: true, reason: 'v153 removes the workflow scheduler and drops its automations' },
-  { version: 153, table: 'automation_cursors', dropped: true, reason: "v153 drops the scheduler's per-source cursors with its automations" },
-  { version: 153, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v153 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
-  { version: 153, table: 'remote_watches', rowsMayShrink: true, reason: 'v153 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 154, table: 'channels', dropped: true, reason: 'v154 removes discussions and their channels' },
+  { version: 154, table: 'channel_messages', dropped: true, reason: 'v154 removes discussions and their channel messages' },
+  { version: 154, table: 'discussion_definitions', dropped: true, reason: 'v154 removes discussion definitions' },
+  { version: 154, table: 'threads', columns: ['mode'], reason: 'v154 turns a former discussion thread into a chat thread' },
+  { version: 154, table: 'scratch_threads', columns: ['return_mode'], reason: 'v154 returns a side chat opened from a discussion to chat mode' },
+  { version: 154, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v154 keeps only model favorites; discussion favorites are removed' },
+  { version: 154, table: 'automations', dropped: true, reason: 'v154 removes the workflow scheduler and drops its automations' },
+  { version: 154, table: 'automation_cursors', dropped: true, reason: "v154 drops the scheduler's per-source cursors with its automations" },
+  { version: 154, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v154 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
 ];
 
 /**
@@ -67,8 +67,8 @@ export const fingerprintIgnoredTables: Record<string, string> = {
  * rewrite whenever the row's text does.
  */
 export const fingerprintIgnoredColumns: Record<string, string> = {
-  'items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
-  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
+  'items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill, v153 and v157",
+  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill, v153 and v157",
 };
 
 /**
@@ -181,7 +181,7 @@ const wakeEchoConfirmed = (x: string) => `${x}.lineage_only = 0 AND (
  * The confirmed thread request `x` whose wake's queue row outlived the echo:
  * the boot drops that row, and before it confirms the send from its echo's
  * row again (app.confirmEchoedAtBoot), which on a confirmed wake only names
- * that row (store.ConfirmThreadWake), as a wake v154 confirmed never has.
+ * that row (store.ConfirmThreadWake), as a wake v155 confirmed never has.
  */
 const wakeRowNamed = (x: string) => `${x}.lineage_only = 0 AND (
   (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NOT NULL
@@ -759,10 +759,10 @@ export const coverageAllowlist: CoverageAllowance[] = [
     table: 'thread_request_receipts',
     columns: ['spawn_link', 'owner_op_seq'],
     values: { spawn_link: [1] },
-    reason: "the link of a paired computer's owned spawn and the owner operations it admitted (v157), which need a second computer",
+    reason: "the link of a paired computer's owned spawn and the owner operations it admitted (v158), which need a second computer",
   },
-  { table: 'thread_requests', columns: ['owner_op_seq'], reason: 'the owner operations owed for a spawn on a paired computer (v157), which need a second computer' },
-  { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v157), which needs a second computer' },
+  { table: 'thread_requests', columns: ['owner_op_seq'], reason: 'the owner operations owed for a spawn on a paired computer (v158), which need a second computer' },
+  { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },
   {

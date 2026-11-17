@@ -134,11 +134,15 @@ test('health rolls up the same instance and exits ok', async ({ harness, page })
   await harness.open(page);
   await waitForBridge(harness);
 
+  // A red rollup exits non-zero with its sections on stdout, which
+  // execFile's own message leaves out; the failure has to name the section.
   const { stdout } = await execProduct(
     productBinary('ao-harness'),
     ['--instance', harness.bootstrap.dataRoot, 'health'],
     { timeout: 30_000 },
-  );
+  ).catch((err: Error & { stdout?: string }) => {
+    throw new Error(`${err.message}\n${err.stdout ?? ''}`, { cause: err });
+  });
   expect(stdout).toContain('health ');
   for (const section of ['process', 'frontend-errors', 'ui-oracles', 'database', 'mocks']) {
     expect(stdout).toContain(section);

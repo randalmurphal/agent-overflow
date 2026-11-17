@@ -169,11 +169,10 @@ Both confirmed LIVE in the spike with **both** post-hooks registered:
 
 ## The hook relay
 
-One relay **command**, a hidden AO subcommand (`agent-overflow __claude-hook`,
-mirroring the existing `__reap` orphan-reaper sidecar pattern), is registered
-for every captured event via the `--settings` flag layer. Claude runs it on each
-hook; it reads the payload on stdin and forwards to AO's per-session loopback
-relay endpoint. Two modes:
+One relay **command**, a hidden AO subcommand (`agent-overflow __claude-hook`),
+is registered for every captured event via the `--settings` flag layer. Claude
+runs it on each hook; it reads the payload on stdin and forwards to AO's
+per-session loopback relay endpoint. Two modes:
 
 - **Observe mode** (`PostToolUse`, `PostToolUseFailure`, `SessionStart`,
   `PreCompact`, `PostCompact`, and optionally `SubagentStop` / `Notification`):
@@ -541,7 +540,7 @@ internal/provider/claudetui/
 ```
 
 The relay subcommand lives at the repo root alongside the other hidden
-subcommands (`__reap`): `agent-overflow __claude-hook` reads stdin, posts to
+subcommands: `agent-overflow __claude-hook` reads stdin, posts to
 `AO_CLAUDE_HOOK_URL` with `AO_CLAUDE_HOOK_TOKEN`, blocks only for AskUserQuestion.
 
 Registration (the seam already anticipates a third provider:

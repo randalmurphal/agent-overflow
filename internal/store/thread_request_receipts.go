@@ -91,7 +91,7 @@ type ThreadRequestReceipt struct {
 	// for every other kind.
 	SpawnInstructions string `json:"-"`
 	// SpawnLink marks a paired computer's owned spawn: its thread is owned
-	// by the source thread there while the link stands (migration v157,
+	// by the source thread there while the link stands (migration v158,
 	// spawn_links.go). Written at acceptance, ended by a release.
 	SpawnLink bool `json:"-"`
 	// OwnerSeenAt is when the source computer last reached a link; the
@@ -255,7 +255,7 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 		return ListingUnchanged, fmt.Errorf("%s: thread id is required", action)
 	}
 	now := nowMillis()
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return ListingUnchanged, fmt.Errorf("%s: begin: %w", action, err)
 	}
@@ -380,7 +380,7 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string, own bool) (bool, 
 	if threadID == "" {
 		return false, ListingUnchanged, fmt.Errorf("%s: thread id is required", action)
 	}
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return false, ListingUnchanged, fmt.Errorf("%s: begin: %w", action, err)
 	}

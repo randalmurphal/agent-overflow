@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/settings"
@@ -21,7 +23,7 @@ import (
 // this is the only way in.
 
 // SetProviderCustomEnvVar adds or replaces one custom environment variable for
-// a provider and returns the redacted settings snapshot the frontend store
+// a provider and returns the projected settings snapshot the frontend store
 // re-seeds from. Reserved names, malformed names, oversize values, and
 // duplicates are rejected here — never dropped silently at spawn time.
 //
@@ -29,6 +31,7 @@ import (
 //ao:route home
 //ao:stepup
 func (a *App) SetProviderCustomEnvVar(
+	ctx context.Context,
 	providerName, name, value string,
 	sensitive bool,
 ) (settings.Settings, error) {
@@ -36,7 +39,7 @@ func (a *App) SetProviderCustomEnvVar(
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	return redactedSettings(next), nil
+	return a.settingsForCaller(ctx, next), nil
 }
 
 // DeleteProviderCustomEnvVar removes one custom environment variable. A name
@@ -46,12 +49,12 @@ func (a *App) SetProviderCustomEnvVar(
 //ao:scope settings:write
 //ao:route home
 //ao:stepup
-func (a *App) DeleteProviderCustomEnvVar(providerName, name string) (settings.Settings, error) {
+func (a *App) DeleteProviderCustomEnvVar(ctx context.Context, providerName, name string) (settings.Settings, error) {
 	next, err := a.providerDiscoveryService().DeleteProviderCustomEnvVar(providerName, name)
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	return redactedSettings(next), nil
+	return a.settingsForCaller(ctx, next), nil
 }
 
 // claudetuiUpstream is where a take-control session's loopback gateway

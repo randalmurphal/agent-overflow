@@ -116,14 +116,27 @@ func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 			// An open ask the thread owns: the stop settles it before it
 			// cancels the commands, and the settle lock the test holds keeps
 			// the stop there until a later command is running.
+			// Its scratch thread is idle, so the stop finds nothing queued
+			// and nothing running there.
+			caller, err := source.store.GetThread(threadID)
+			if err != nil {
+				t.Fatalf("GetThread: %v", err)
+			}
+			scratch := testThread(uuid.NewString())
+			scratch.ProjectID = caller.ProjectID
+			if err := source.store.CreateThread(scratch); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
 			ask := newThreadRequestToken()
 			if err := source.store.InsertThreadRequest(store.ThreadRequest{
 				Token: ask, CallerThreadID: threadID, Kind: store.ThreadRequestAsk, State: store.ThreadRequestAccepted,
+				TargetThreadID: scratch.ID,
 			}); err != nil {
 				t.Fatalf("InsertThreadRequest: %v", err)
 			}
 			if _, _, err := source.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 				Token: ask, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: threadID, Kind: store.ThreadRequestAsk,
+				TargetThreadID: scratch.ID,
 			}); err != nil {
 				t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 			}

@@ -16,12 +16,12 @@ const mainAgentRequest = "Ship it now.\n\n---\nAgent request from thread \"L\" 
 
 const mainAgentRequestMeta = `{"origin":"agent-thread","originThread":{"threadId":"t-l","title":"L","token":"a"},"sendId":"thread-request:a"}`
 
-// findTextAtV155 opens a store upgraded to v156 from a v155 database whose
+// findTextAtV156 opens a store upgraded to v157 from a v156 database whose
 // user rows hold the candidate text v150 gave them, their loose summary.
 // Thread T holds main's agent request ("agent"), the person's message
 // ("person"), an assistant row ("answer") and a user row nested under it
 // ("nested").
-func findTextAtV155(t *testing.T) *Store {
+func findTextAtV156(t *testing.T) *Store {
 	t.Helper()
 	s := openStoreAt(t)
 	mustCreateThread(t, s, "T")
@@ -63,16 +63,16 @@ func findTextAtV155(t *testing.T) *Store {
 	return s
 }
 
-// TestMigrationV156RefillsTheUserRowsFindText: the upgrade unsets the
+// TestMigrationV157RefillsTheUserRowsFindText: the upgrade unsets the
 // candidate text of the top-level user rows, which v150 filled from their
 // summary alone, and leaves every other row's; find answers from each
 // unset row's content until the deferred phase fills it again with what
 // the row shows: an agent's header line read from its meta.
-func TestMigrationV156RefillsTheUserRowsFindText(t *testing.T) {
+func TestMigrationV157RefillsTheUserRowsFindText(t *testing.T) {
 	if strings.Contains(findLoose(mainAgentRequest), findLoose("Ship it now.")) {
 		t.Fatal("the fixture's header line is in its loose summary; it proves nothing")
 	}
-	s := findTextAtV155(t)
+	s := findTextAtV156(t)
 	unset := func() string {
 		rows, err := s.db.Query(`SELECT id FROM items WHERE thread_id = 'T' AND find_text IS NULL ORDER BY id`)
 		if err != nil {

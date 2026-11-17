@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/stringsx"
@@ -23,20 +22,25 @@ import (
 //
 // The loose form (findLoose) is the text folded by the find rule with every
 // ASCII byte that is not a letter or digit removed: markup punctuation,
-// white space and line breaks. A find query is one line, and a match is a
-// run of rendered text the query spells; removing the same bytes from both
-// keeps every match a substring. What rendering adds or removes beyond such
-// bytes is covered by variants, joined by "\n", which no loose query holds:
+// white space and line breaks. A find query is one line (SearchThreadItems
+// refuses one that is not), so a match is a run of rendered text within one
+// line, which the query spells; removing the same bytes from both keeps
+// every match a substring. Rendering that drops whole lines, as the bubble
+// drops a typed `!command`, needs nothing: every line it keeps lies in the
+// text. What rendering adds or removes within a line is covered by
+// variants, joined by "\n", which no loose query holds:
 //
 //   - every row: its summary;
 //   - assistant rows: the summary as its Markdown shows (findShownMarkdown),
 //     and the text of each table cell a row-span marker merges into the cell
 //     above;
-//   - user rows: the summary without its attachment image blocks, and its
-//     first line with white space collapsed, which a provider's agent
-//     message shows; an agent's message (agentmeta) also its header line
-//     and each joined member's, and the person's message joined after a
-//     report also the report's data decoded;
+//   - user rows: the summary without its attachment image blocks, the
+//     command of each shell output in meta, which its command block shows
+//     whether or not the typed text still holds it, and its first line with
+//     white space collapsed, which a provider's agent message shows; an
+//     agent's message (agentmeta) also its header line and each joined
+//     member's, and the person's message joined after a report also the
+//     report's data decoded;
 //   - tool rows: also the tool name and every string in meta and in their
 //     payload's meta, where a card's command and arguments come from;
 //   - reasoning rows: the full streamed content, which an expanded row
@@ -135,6 +139,9 @@ func findCandidateText(kind, summary, meta, toolName string, payload *string) st
 		if stripped != summary {
 			variants = append(variants, findLoose(stripped))
 		}
+		for _, command := range findUserShellCommands(meta) {
+			variants = append(variants, findLoose(command))
+		}
 		// A provider's agent message (frontend utils/agentMessage.ts
 		// fromProvider), and an agent's whose facts a client cannot read,
 		// show the first line, white space collapsed.
@@ -151,10 +158,6 @@ func findCandidateText(kind, summary, meta, toolName string, payload *string) st
 			// The person's message joined after a report shows the
 			// report's quoted data decoded (userMessageVisibleText).
 			variants = append(variants, findLoose(agentmeta.ReadableWakeText(stripped)))
-		default:
-			if findUserMayJoinAroundCommand(stripped) {
-				return findAnyCandidate
-			}
 		}
 	}
 	if findToolKind(kind) {
@@ -231,21 +234,31 @@ func appendMetaStrings(variants []string, meta string) []string {
 	return variants
 }
 
-// findUserMayJoinAroundCommand reports whether the bubble may join text
-// across a removed `!command`. The bubble drops each shell invocation, a run
-// of whole parts split on agentmeta.JoinSeparator whose trimmed text is `!command`
-// (usermessage.ShellInvocationRuns), so the run's first part starts with `!`
-// after white space. Dropping a run at either end leaves a substring of the
-// text; only a run with a part before and after it joins two parts, and its
-// first part is then one of the inner parts, which this checks.
-func findUserMayJoinAroundCommand(text string) bool {
-	parts := strings.Split(text, agentmeta.JoinSeparator)
-	for _, part := range parts[1:max(1, len(parts)-1)] {
-		if strings.HasPrefix(strings.TrimLeftFunc(part, unicode.IsSpace), "!") {
-			return true
+// findUserShellCommands is the command of each shell output a user row's
+// meta lists (usermessage.ShellMeta), the text its command block shows. Meta
+// that does not decode lists none: the frontend shows no block for it
+// (userMessageMeta.ts parseUserMessageMeta).
+func findUserShellCommands(meta string) []string {
+	if !strings.Contains(meta, `"shell"`) {
+		return nil
+	}
+	var decoded struct {
+		Attachments []struct {
+			Shell *struct {
+				Command string `json:"command"`
+			} `json:"shell"`
+		} `json:"attachments"`
+	}
+	if json.Unmarshal([]byte(meta), &decoded) != nil {
+		return nil
+	}
+	var commands []string
+	for _, attachment := range decoded.Attachments {
+		if attachment.Shell != nil {
+			commands = append(commands, attachment.Shell.Command)
 		}
 	}
-	return false
+	return commands
 }
 
 var (

@@ -31,7 +31,7 @@ import (
 // writes are the REST award emoji endpoints
 // (https://docs.gitlab.com/api/emoji_reactions/).
 
-const gitlabNoteReactionsQuery = `query MRNoteReactions($fullPath: ID!, $iid: String!, $after: String) {
+var gitlabNoteReactionsQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query MRNoteReactions($fullPath: ID!, $iid: String!, $after: String) {
   project(fullPath: $fullPath) {
     mergeRequest(iid: $iid) {
       notes(first: 100, after: $after) {
@@ -40,7 +40,7 @@ const gitlabNoteReactionsQuery = `query MRNoteReactions($fullPath: ID!, $iid: St
       }
     }
   }
-}`
+}`)
 
 const (
 	// gitlabReactionNotesMaxPages bounds the notes pages one read takes:
@@ -348,7 +348,7 @@ func readGitLabNoteReactions(ctx context.Context, client *forgeapi.Client, ref P
 				} `json:"mergeRequest"`
 			} `json:"project"`
 		}
-		if _, err := client.GraphQL(ctx, "MRNoteReactions", gitlabNoteReactionsQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, gitlabNoteReactionsQuery, vars, &raw); err != nil {
 			return gitlabNoteReactions{}, err
 		}
 		if raw.Project == nil || raw.Project.MergeRequest == nil {

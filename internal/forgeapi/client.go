@@ -139,19 +139,24 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 	return resp, nil
 }
 
-// GraphQL posts query with vars as the JSON variables (never interpolated
-// into the query) and decodes the envelope's data into out. operation is
-// the name of the operation query defines, sent as operationName so the
-// forge (and the isolated boot's fake, which dispatches on it) runs that
-// one. Errors in the envelope are a *GraphQLError, returned with the
-// Response and with any data beside them decoded into out, so the caller
-// decides what partial data it accepts. Both forges serve it; a GitLab
-// request draws on the same quota pool as its REST calls (pool).
-func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[string]any, out any) (*Response, error) {
-	if operation == "" {
-		return nil, errors.New("forgeapi: a GraphQL request names its operation")
+// GraphQL posts doc with vars as the JSON variables (never interpolated
+// into the document) and decodes the envelope's data into out. The
+// document's operation is sent as operationName so the forge (and the
+// isolated boot's fake, which dispatches on it) runs that one. A
+// document not made by NewDocument, or made for the other forge, is
+// refused before anything is sent. Errors in the envelope are a
+// *GraphQLError, returned with the Response and with any data beside
+// them decoded into out, so the caller decides what partial data it
+// accepts. Both forges serve it; a GitLab request draws on the same
+// quota pool as its REST calls (pool).
+func (c *Client) GraphQL(ctx context.Context, doc Document, vars map[string]any, out any) (*Response, error) {
+	switch {
+	case doc.text == "":
+		return nil, errors.New("forgeapi: a GraphQL request sends a document NewDocument made")
+	case doc.forge != c.forge:
+		return nil, fmt.Errorf("forgeapi: a %s GraphQL document sent to %s", doc.forge, c.forge)
 	}
-	payload := map[string]any{"query": query, "operationName": operation}
+	payload := map[string]any{"query": doc.text, "operationName": doc.operation}
 	if len(vars) > 0 {
 		payload["variables"] = vars
 	}

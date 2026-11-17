@@ -79,27 +79,38 @@ func TestFindShownMarkdownErasesOnlyWhatRendersNoLetters(t *testing.T) {
 	}
 }
 
-// A user row whose bubble may join two parts around a dropped `!command`
-// matches every query; a `!` that cannot start such a part does not.
-func TestFindCandidateTextOfUserRowAroundACommandIsAny(t *testing.T) {
+// A user row's command blocks show the command each shell output's meta
+// holds, which the typed text may no longer hold, and the text around a
+// dropped `!command` narrows the row like any other text.
+func TestFindCandidateTextOfUserRowHoldsItsShellCommands(t *testing.T) {
+	shell := func(commands ...string) string {
+		var attachments []string
+		for i, command := range commands {
+			encoded, err := json.Marshal(command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attachments = append(attachments, `{"id":"att-`+string(rune('a'+i))+`","kind":"file","shell":{"command":`+string(encoded)+`,"exitCode":1}}`)
+		}
+		return `{"attachments":[` + strings.Join(attachments, ",") + `]}`
+	}
+	for _, tc := range []struct{ summary, meta, query string }{
+		{"rerun it, please", shell("make needle-target"), "make needle-target"},
+		{"!ls -la", shell("ls -la"), "ls -la"},
+		{"a\n\n---\n\n!ls\n\n---\n\nb\n\n---\n\n!cat x", shell("ls", "grep -rn second-cmd ."), "second-cmd"},
+	} {
+		got := findCandidateText("user_text", tc.summary, tc.meta, "", nil)
+		if got == findAnyCandidate || !strings.Contains(got, findNeedle(tc.query)) {
+			t.Errorf("candidate of %q with %s = %q, want one narrowed to %q", tc.summary, tc.meta, got, tc.query)
+		}
+	}
 	for _, summary := range []string{
 		"a\n\n---\n\n!ls\n\n---\n\nb",
 		"a\n\n---\n\n  !ls\n\n---\n\nb\n\n---\n\nc",
 		"a\n\n![image](attachment://att-1)\n\n---\n\n!ls\n\n---\n\nb",
 	} {
-		if got := findCandidateText("user_text", summary, "{}", "", nil); got != findAnyCandidate {
-			t.Errorf("candidate of %q = %q", summary, got)
-		}
-	}
-	for _, summary := range []string{
-		"Wow! !important",
-		"!ls",
-		"a\n\n---\n\n!ls",
-		"!ls\n\n---\n\nb",
-		"a\n\n---\n\nb !c\n\n---\n\nd",
-	} {
-		if got := findCandidateText("user_text", summary, "{}", "", nil); got == findAnyCandidate {
-			t.Errorf("candidate of %q matches every query", summary)
+		if got := findCandidateText("user_text", summary, shell("ls"), "", nil); got == findAnyCandidate || strings.Contains(got, findNeedle("zebra")) {
+			t.Errorf("candidate of %q = %q, want it narrowed", summary, got)
 		}
 	}
 }
@@ -316,9 +327,10 @@ func TestFindTableMergesJoinEachMarkedCellToTheOneAbove(t *testing.T) {
 
 // findCandidateVectors.json holds, for rows of each kind, the runs of text
 // the frontend's find text gives them (threadFindText.ts; its browser
-// test holds the file to its projections). Every run's loose form must lie
-// in the row's candidate text, or the candidate text matches every query:
-// then every match the bar counts is in a candidate. The rows include every
+// test holds the file to its projections). A query is one line, so a match
+// lies in one line of a run. Every such line's loose form must lie in the
+// row's candidate text, or the candidate text matches every query: then
+// every match the bar counts is in a candidate. The rows include every
 // pair of a set of Markdown pieces and seeded sequences of them
 // (markdownFindCorpus.ts findCandidateCombinations).
 func TestFindCandidateTextHoldsEveryFrontendFindRun(t *testing.T) {
@@ -352,8 +364,10 @@ func TestFindCandidateTextHoldsEveryFrontendFindRun(t *testing.T) {
 		}
 		for _, run := range row.Runs {
 			runs++
-			if loose := findLoose(run); !strings.Contains(candidate, loose) {
-				t.Errorf("%s: candidate %q misses run %q (loose %q)\nsummary %q", row.Name, candidate, run, loose, row.Summary)
+			for _, line := range strings.Split(run, "\n") {
+				if loose := findLoose(line); !strings.Contains(candidate, loose) {
+					t.Errorf("%s: candidate %q misses line %q (loose %q) of run %q\nsummary %q", row.Name, candidate, line, loose, run, row.Summary)
+				}
 			}
 		}
 	}

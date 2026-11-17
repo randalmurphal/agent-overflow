@@ -370,7 +370,7 @@ func TestRestoreKeepsOwedOwnerOps(t *testing.T) {
 	}
 }
 
-// The reads of v157's indexes use them.
+// The reads of v158's indexes use them.
 func TestRemoteOwnershipReadsUseTheirIndexes(t *testing.T) {
 	s := newTestStore(t)
 	for name, plan := range map[string]struct {

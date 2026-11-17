@@ -126,7 +126,7 @@ func TestWriteNotAppliedRateLimitedOnTheWire(t *testing.T) {
 						ID string `json:"id"`
 					} `json:"updateIssueComment"`
 				}
-				_, err = client.GraphQL(t.Context(), "UpdateIssueComment", "mutation UpdateIssueComment { updateIssueComment { id } }", nil, &out)
+				_, err = client.GraphQL(t.Context(), testUpdateIssueCommentDocument, nil, &out)
 			}
 			if err == nil {
 				t.Fatal("no error")
@@ -172,7 +172,7 @@ func TestWriteNotAppliedGraphQLOnTheWire(t *testing.T) {
 					ID string `json:"id"`
 				} `json:"m"`
 			}
-			_, err := isolatedService(t, srv).GitHub("github.com").GraphQL(t.Context(), "M", "mutation M { m { id } }", nil, &out)
+			_, err := isolatedService(t, srv).GitHub("github.com").GraphQL(t.Context(), testMutationDocument, nil, &out)
 			if err == nil {
 				t.Fatal("no error")
 			}

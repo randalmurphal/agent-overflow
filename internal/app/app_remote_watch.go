@@ -587,15 +587,16 @@ func (a *App) remoteCommandStatus(ctx context.Context, computerID, requestID str
 // it stood, and a finished one there is recorded and kept. Parked tool calls
 // return at once. A job whose cancel could not be delivered is owed it, and
 // the watcher sends it again (retryOwedRemoteCancels) while the watch stays;
-// a delete cascades the watch, leaving it to the destination's owner grace.
-// Only store failures are returned, so the delete or move proceeds.
-func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string, keepFinished bool) error {
+// a delete cascades the watch, leaving it to the destination's owner grace
+// (remotejobs.DefaultOwnerGrace). It returns, apart, the cancels it could not
+// deliver (undelivered) and the store failures that left commands untracked
+// (err). Each caller decides whether its operation proceeds past either.
+func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string, keepFinished bool) (undelivered, err error) {
 	rows, err := a.disarmRemoteCommands(threadID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = a.cancelRemoteCommands(ctx, threadID, rows, keepFinished)
-	return err
+	return a.cancelRemoteCommands(ctx, threadID, rows, keepFinished)
 }
 
 // disarmRemoteCommands ends the thread's parked remote waits and returns the
@@ -613,12 +614,10 @@ func (a *App) disarmRemoteCommands(threadID string) ([]store.RemoteWatch, error)
 // keeping a finished one's notification when keepFinished is set
 // (cancelThreadRemoteCommands). A cancel the destination did not take is
 // owed and named in undelivered; the dismissal goes ahead, so the thread is
-// told nothing of the job either way. err is a store failure.
+// told nothing of the job either way. err gathers the store failures. One
+// failure does not stop the rest.
 func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch, keepFinished bool) (undelivered, err error) {
-	dismiss := func(computerID, requestID string) error {
-		return a.store.StopRemoteWatch(computerID, requestID, keepFinished)
-	}
-	var cancels []error
+	var cancels, failed []error
 	for _, w := range rows {
 		unfinished := w.Receipt.ID == "" || w.Receipt.State == "running"
 		if !unfinished && keepFinished {
@@ -627,33 +626,32 @@ func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []
 		if unfinished && a.backends != nil {
 			call, cancel := context.WithTimeout(ctx, 20*time.Second)
 			var receipt RemoteCommand
-			err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
+			callErr := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
 			cancel()
-			if err != nil {
-				log.Printf("remote command %s on %s: cancel for conversation %s not delivered, sent again until it is: %v", w.RequestID, w.ComputerID, threadID, err)
+			if callErr != nil {
 				now := time.Now()
 				if oweErr := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, now.UnixMilli(), now.Add(remoteCancelRetryDelay).UnixMilli()); oweErr != nil {
-					return errors.Join(cancels...), oweErr
+					failed = append(failed, fmt.Errorf("remote command %s on %s: owe its cancel: %w", w.RequestID, w.ComputerID, oweErr))
 				}
 				cancels = append(cancels, fmt.Errorf("cancel remote command %q: %s; it is sent again until the computer takes it",
-					w.Label, remoteErrorText(a.remoteOperationError("cancel", w.ComputerID, w.RequestID, err))))
+					w.Label, remoteErrorText(a.remoteOperationError("cancel", w.ComputerID, w.RequestID, callErr))))
 			} else if keepFinished && receipt.ID == w.RequestID && receipt.SourceThreadID == w.LaunchedIn && receipt.State != "running" {
 				// The destination snapshots the receipt under the lock that
 				// signals the cancel, so a finished one ended on its own.
-				if err := a.observeRemoteCommand(w.ComputerID, w.RequestID, threadID, receipt); err != nil {
-					return errors.Join(cancels...), err
+				if observeErr := a.observeRemoteCommand(w.ComputerID, w.RequestID, threadID, receipt); observeErr != nil {
+					failed = append(failed, fmt.Errorf("remote command %s on %s: record its finish: %w", w.RequestID, w.ComputerID, observeErr))
 				}
 				continue
 			}
 		}
-		if err := dismiss(w.ComputerID, w.RequestID); err != nil {
-			return errors.Join(cancels...), err
+		if dismissErr := a.store.StopRemoteWatch(w.ComputerID, w.RequestID, keepFinished); dismissErr != nil {
+			failed = append(failed, fmt.Errorf("remote command %s on %s: dismiss: %w", w.RequestID, w.ComputerID, dismissErr))
 		}
 	}
 	if len(rows) > 0 {
 		a.emitBackgroundChanged(threadID)
 	}
-	return errors.Join(cancels...), nil
+	return errors.Join(cancels...), errors.Join(failed...)
 }
 
 // remoteCancelRetryDelay is how long an owed cancel waits before it is sent

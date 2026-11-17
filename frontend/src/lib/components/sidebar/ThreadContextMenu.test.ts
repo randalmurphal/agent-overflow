@@ -10,12 +10,14 @@ import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { answerAsV0019 } from '../../../test/helpers/olderComputer';
-import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
+import { clearThreadSelection, getSelectedThreadIds, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
 import { getPreviousThreads, resetPreviousThreadsForTest } from '../../stores/assistantPastThreads.svelte';
-import { getToasts } from '../../stores/toast.svelte';
+import { getPane } from '../../stores/panes.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { buildPane } from '../../../test/helpers/chat';
 import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import {
@@ -215,6 +217,33 @@ describe('<ThreadContextMenu> Archive Thread', () => {
   it('is not offered for a terminal thread', () => {
     const { baseElement } = renderMenu(makeThread({ mode: 'terminal' }));
     expect(visibleLabels(baseElement)).not.toContain('Archive Thread');
+  });
+
+  // Each archive reports its own failure into the walk, which shows one
+  // aggregate toast and keeps the selection. The pane the menu belongs to
+  // shows the first thread, which the walk archives, so the aggregate must
+  // not go to that pane.
+  it('toasts a failed archive in a bulk archive that closed its own pane', async () => {
+    await primeSettings({ confirmArchive: false });
+    resetToastsForTest();
+    const first = makeThread({ id: 'thread-1' });
+    replaceAllThreads([first, makeThread({ id: 'thread-2' })]);
+    setBindingMock('ArchiveThread', async (id: string) => {
+      if (id === 'thread-2') throw new Error('archive refused');
+    });
+    setThreadSelection(['thread-1', 'thread-2']);
+    const pane = await buildPane(first, [], 'pane-first');
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const { getByRole } = render(ThreadContextMenu, {
+      props: { thread: first, pane, anchor, open: true, onClose: () => {}, onRename: () => {}, isActive: true },
+    });
+    await fireEvent.click(getByRole('menuitem', { name: 'Archive (2)' }));
+
+    await vi.waitFor(() => expect(getToasts().filter((t) => t.type === 'error').map((t) => t.message))
+      .toEqual(['1/2 succeeded — Archive refused.']));
+    expect(getPane('pane-first')).toBeUndefined();
+    expect(getSelectedThreadIds()).toEqual(new Set(['thread-1', 'thread-2']));
   });
 });
 

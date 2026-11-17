@@ -7,6 +7,8 @@ import {
 } from './frontendErrorCapture';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { copyToClipboard, reportCopyFailure } from './clipboard';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
+import { TransportError } from '../transport/wsClient';
 
 function dispatchError(message: string, options: { error?: unknown; filename?: string } = {}): void {
   window.dispatchEvent(
@@ -367,6 +369,59 @@ describe('frontendErrorCapture', () => {
     await flushFrontendErrors();
     expect(frontendErrorCaptureStateForTest().pendingCount).toBe(0);
     expect(getBindingMock('ReportFrontendErrorBatch')?.mock.calls).toHaveLength(1);
+  });
+
+  it('disables capture permanently on a scope refusal', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setBindingMock('ReportFrontendErrorBatch', async () => {
+      throw Object.assign(new TransportError('scope_required', 'refused'), { scope: 'host' });
+    });
+    installFrontendErrorCapture();
+
+    dispatchError('refused once');
+    await flushFrontendErrors();
+
+    expect(frontendErrorCaptureStateForTest().reporterUnavailable).toBe(true);
+    expect(frontendErrorCaptureStateForTest().pendingCount).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    dispatchError('another error');
+    await flushFrontendErrors();
+    expect(getBindingMock('ReportFrontendErrorBatch')?.mock.calls).toHaveLength(1);
+  });
+
+  it('never sends from a page off the host', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
+    __resetScopesForTest();
+    installFrontendErrorCapture();
+
+    // Captured before the manifest answers locality, as a connection failure
+    // on a pairing page is.
+    dispatchError('before locality');
+    const flushed = flushFrontendErrors();
+    setPageGrantsFromBootstrap(true);
+    await flushed;
+    dispatchError('after locality');
+    await flushFrontendErrors();
+
+    expect(getBindingMock('ReportFrontendErrorBatch')?.mock.calls ?? []).toHaveLength(0);
+    expect(frontendErrorCaptureStateForTest()).toMatchObject({ reporterUnavailable: true, pendingCount: 0 });
+  });
+
+  it('holds captures until the manifest places the page on the host', async () => {
+    setBindingMock('ReportFrontendErrorBatch', async () => '/tmp/frontend-errors.jsonl');
+    __resetScopesForTest();
+    installFrontendErrorCapture();
+
+    dispatchError('during startup');
+    const flushed = flushFrontendErrors();
+    await Promise.resolve();
+    expect(getBindingMock('ReportFrontendErrorBatch')?.mock.calls ?? []).toHaveLength(0);
+
+    setPageGrantsFromBootstrap(false);
+    await flushed;
+    expect(JSON.parse(reportedLines()[0]).message).toBe('during startup');
   });
 
   it('chunks large flushes under the batch byte budget', async () => {

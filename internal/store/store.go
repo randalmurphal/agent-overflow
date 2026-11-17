@@ -154,7 +154,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	if opts.scratch {
 		pragmas = scratchWriterConnPragmas
 	}
-	db, err := openPool(dbPath, pragmas, gate, commits, writes, committed)
+	db, err := openPool(writerDSN(dbPath, pragmas), gate, commits, writes, committed)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -237,7 +237,7 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := openPool(dbPath, readerConnPragmas, gate, nil, nil, nil)
+	read, err := openPool(poolDSN(dbPath, readerConnPragmas), gate, nil, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
@@ -569,7 +569,7 @@ type Thread struct {
 	// leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
 	// DeleteThreadGroup ungroups its members before the group row goes.
 	GroupID string `json:"groupId,omitempty"`
-	// Placement is where the sidebar shows the row (migration v153):
+	// Placement is where the sidebar shows the row (migration v154):
 	// PlacementOwned nowhere, as a worker of the thread that spawned it
 	// (SpawnedByThreadID); PlacementGrouped in GroupID's group;
 	// PlacementStandalone as a plain row of its project. The schema makes
@@ -640,13 +640,13 @@ type Thread struct {
 	SpawnedByComputerID string `json:"spawnedByComputerId,omitempty"`
 	// SpawnInstructions is the text a thread_spawn appended to this
 	// thread's system prompt for its whole life: its profile's
-	// instructions, then the spawn's own (migration v154). Every session
+	// instructions, then the spawn's own (migration v155). Every session
 	// start appends it after what the app and the person append. Written
 	// at creation and carried by a fork and a transfer; absent from
 	// updateThreadSetSQL, so nothing rewrites it.
 	SpawnInstructions string `json:"spawnInstructions,omitempty"`
 	// SpawnLevel is the sub-thread level a paired computer's spawn or ask
-	// carried here (migration v154): how far below a thread the person
+	// carried here (migration v155): how far below a thread the person
 	// talks to the thread is. Zero for every thread a local spawn, a local
 	// ask or the person made, whose level its links answer
 	// (SubThreadLevel), and zero again once the thread is transferred. It

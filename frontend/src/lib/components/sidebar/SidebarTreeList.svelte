@@ -33,12 +33,9 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     collapseThreadList,
-    getContainerVisibleLimit,
     getCollapsedGroups,
     getThreadListVisibleLimit,
     isGroupExpanded,
-    isThreadListExpanded,
-    setContainerVisibleLimit,
     setThreadListVisibleLimit,
   } from '../../stores/sidebar.svelte';
   import { isThreadSelected, toggleThreadSelection } from '../../stores/threadFilter.svelte';
@@ -47,23 +44,20 @@
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { openThreadIds } from '../../stores/panes.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
-  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
+  import { buildSidebarThreadTree, type SidebarGroupTreeNode, type SidebarTreeNode } from '../../utils/sidebarTree';
   import {
     flattenSidebarThreadTree,
-    nextContainerRevealLimit,
     nextSidebarThreadRevealLimit,
     previewSidebarThreads,
     rollupDisplayStatus,
-    sameSidebarVisibleNodes,
+    sameSidebarVisibleRows,
     sameThreadStatusPill,
-    sidebarVisibleNodeId,
-    type SidebarContainerMoreNode,
-    type SidebarTreeVisibleNode,
+    sidebarVisibleRowKey,
   } from '../../utils/sidebarTreeView';
-  import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
+  import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
-  import ContainerShowMore from './ContainerShowMore.svelte';
   import ThreadGroupRow from './ThreadGroupRow.svelte';
+  import ThreadListMoreFooter from './ThreadListMoreFooter.svelte';
   import ThreadRow from './ThreadRow.svelte';
 
   interface Props {
@@ -71,7 +65,7 @@
     threads: readonly Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
-    /** The key the list's show-more paging persists under (stores/sidebar.svelte.ts). */
+    /** The key the list's top-level show-more paging persists under (stores/sidebar.svelte.ts). */
     listKey: string;
     pane: ThreadPane | null;
     /** An assistant row's third line, the projects its assistant serves; none when absent. */
@@ -102,7 +96,6 @@
   // Threads mounted in any pane never hide behind the cut. Re-minted only
   // when a pane opens, closes, or swaps thread.
   let openIds = $derived(openThreadIds());
-  let listExpanded = $derived(isThreadListExpanded(listKey));
   let visibleLimit = $derived(getThreadListVisibleLimit(listKey));
 
   // Truncation operates on top-level nodes only: group members sit under
@@ -116,7 +109,6 @@
   });
 
   let hiddenThreadCount = $derived(preview.hiddenNodes.length);
-  let nextRevealCount = $derived(Math.min(THREAD_REVEAL_INCREMENT, hiddenThreadCount));
 
   // Identity cutoff: the rollup object is minted per tree build, so
   // return the previous one when its content is unchanged; otherwise
@@ -140,7 +132,7 @@
   // each-block from reconciling. This is load-bearing for streaming
   // performance: without it every item-event flush re-ran the FLIP
   // measure pass (a forced synchronous layout per beat). See
-  // sameSidebarVisibleNodes.
+  // sameSidebarVisibleRows.
   let prevVisibleNodes: ReturnType<typeof flattenSidebarThreadTree> = [];
   let visibleNodes = $derived.by(() => {
     const next = flattenSidebarThreadTree({
@@ -148,37 +140,30 @@
       collapsedGroupIds: getCollapsedGroups(),
       activeThreadId: pane?.threadId ?? null,
       openThreadIds: openIds,
-      memberLimitOf: getContainerVisibleLimit,
+      groupVisibleLimit: getThreadListVisibleLimit,
     });
-    if (sameSidebarVisibleNodes(prevVisibleNodes, next)) return prevVisibleNodes;
+    if (sameSidebarVisibleRows(prevVisibleNodes, next)) return prevVisibleNodes;
     prevVisibleNodes = next;
     return next;
   });
 
-  // A group's show-more: the members its bound cuts.
-  function handleContainerReveal(more: SidebarContainerMoreNode): void {
-    for (const node of tree) {
-      if (node.kind !== 'group' || node.group.id !== more.containerKey) continue;
-      const key = node.group.id;
-      setContainerVisibleLimit(key, nextContainerRevealLimit(node.children, openIds, getContainerVisibleLimit(key)));
-      return;
-    }
-  }
-
-  function handleShowMore(e: MouseEvent): void {
-    e.stopPropagation();
-    const nextLimit = nextSidebarThreadRevealLimit({
-      nodes: tree,
+  /**
+   * Reveal the next step of a thread list: the list's top level (`ownerId`
+   * = listKey) or a group's members (`ownerId` = the group).
+   */
+  function showMore(ownerId: string, nodes: readonly SidebarTreeNode[]): void {
+    setThreadListVisibleLimit(ownerId, nextSidebarThreadRevealLimit({
+      nodes,
       openThreadIds: openIds,
-      currentLimit: visibleLimit,
+      currentLimit: getThreadListVisibleLimit(ownerId),
       revealCount: THREAD_REVEAL_INCREMENT,
-    });
-    setThreadListVisibleLimit(listKey, nextLimit);
+    }));
   }
 
-  function handleShowLess(e: MouseEvent): void {
-    e.stopPropagation();
-    collapseThreadList(listKey);
+  function showMoreGroup(groupId: string): void {
+    const group = tree.find((node): node is SidebarGroupTreeNode => node.kind === 'group' && node.group.id === groupId);
+    if (!group) throw new Error(`Show more: group ${groupId} is not in list ${listKey}`);
+    showMore(groupId, group.children);
   }
 
   /**
@@ -200,24 +185,24 @@
   }
 
   // A row's wrapper hands a drag to the group it renders inside.
-  function dragOver(e: DragEvent, node: SidebarTreeVisibleNode): void {
-    if (drops && node.ownerGroupId) drops.memberDragOver(e, node.ownerGroupId);
+  function dragOver(e: DragEvent, groupId: string | null): void {
+    if (drops && groupId) drops.memberDragOver(e, groupId);
   }
 
-  function dragLeave(e: DragEvent, node: SidebarTreeVisibleNode): void {
-    if (drops && node.ownerGroupId) drops.memberDragLeave(e, node.ownerGroupId);
+  function dragLeave(e: DragEvent, groupId: string | null): void {
+    if (drops && groupId) drops.memberDragLeave(e, groupId);
   }
 
-  function drop(e: DragEvent, node: SidebarTreeVisibleNode): void {
-    if (drops && node.ownerGroupId) drops.memberDrop(e, node.ownerGroupId);
+  function drop(e: DragEvent, groupId: string | null): void {
+    if (drops && groupId) drops.memberDrop(e, groupId);
   }
 </script>
 
-{#each visibleNodes as node (sidebarVisibleNodeId(node))}
+{#each visibleNodes as node (sidebarVisibleRowKey(node))}
   <!-- role="presentation" keeps the animated wrapper transparent to the
        list > listitem structure now that the divider shares it. -->
   <div role="presentation" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
-    {#if node.startsSection}
+    {#if node.kind !== 'group-more' && node.startsSection}
       <div
         role="separator"
         aria-hidden="true"
@@ -225,18 +210,26 @@
         class="mx-2 my-1 border-t border-border-subtle/60"
       ></div>
     {/if}
-    {#if node.kind === 'container-more'}
+    {#if node.kind === 'group-more'}
+      <!-- Inside the group's rail and a drop target for the group,
+           like the member rows above it. -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         role="listitem"
         class="border-l border-border-subtle/60 pb-px -mb-px"
         style:margin-left="{GROUP_RAIL_LEFT_PX}px"
-        data-group-member=""
-        ondragover={(e) => dragOver(e, node)}
-        ondragleave={(e) => dragLeave(e, node)}
-        ondrop={(e) => drop(e, node)}
+        ondragover={(e) => dragOver(e, node.groupId)}
+        ondragleave={(e) => dragLeave(e, node.groupId)}
+        ondrop={(e) => drop(e, node.groupId)}
       >
-        <ContainerShowMore {node} onReveal={() => handleContainerReveal(node)} />
+        <ThreadListMoreFooter
+          hiddenCount={node.hiddenCount}
+          hiddenStatus={node.hiddenStatus}
+          canShowLess={node.canShowLess}
+          testIdPrefix="thread-group"
+          onShowMore={() => showMoreGroup(node.groupId)}
+          onShowLess={() => collapseThreadList(node.groupId)}
+        />
       </div>
     {:else if node.kind === 'group'}
       <div role="listitem">
@@ -266,9 +259,9 @@
         class={node.ownerGroupId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
         style:margin-left={node.ownerGroupId ? `${GROUP_RAIL_LEFT_PX}px` : null}
         data-group-member={node.ownerGroupId ? '' : null}
-        ondragover={(e) => dragOver(e, node)}
-        ondragleave={(e) => dragLeave(e, node)}
-        ondrop={(e) => drop(e, node)}
+        ondragover={(e) => dragOver(e, node.ownerGroupId)}
+        ondragleave={(e) => dragLeave(e, node.ownerGroupId)}
+        ondrop={(e) => drop(e, node.ownerGroupId)}
       >
         <ThreadRow
           thread={node.thread}
@@ -284,38 +277,13 @@
   </div>
 {/each}
 
-{#if hiddenThreadCount > 0 || (listExpanded && tree.length > THREAD_PREVIEW_LIMIT)}
-  <div class="flex items-center gap-1 mr-1">
-    {#if hiddenThreadCount > 0}
-      <button
-        type="button"
-        onclick={handleShowMore}
-        data-testid="project-thread-list-show-more"
-        class="group/more flex items-center gap-1.5 h-6 compact:h-9 px-2 rounded-[var(--radius-field)] text-[0.625rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-      >
-        {#if hiddenStatus}
-          <span
-            class="w-1.5 h-1.5 rounded-full shrink-0 {hiddenStatus.pill.dotClass} {hiddenStatus.pill.pulse ? 'animate-pulse' : ''}"
-            aria-hidden="true"
-            data-testid="project-thread-list-hidden-status"
-            data-status={hiddenStatus.liveStatus}
-          ></span>
-        {/if}
-        <span>
-          Show {nextRevealCount} More{hiddenThreadCount > THREAD_REVEAL_INCREMENT ? ` (${hiddenThreadCount})` : ''}
-        </span>
-      </button>
-    {/if}
-
-    {#if listExpanded && tree.length > THREAD_PREVIEW_LIMIT}
-      <button
-        type="button"
-        onclick={handleShowLess}
-        data-testid="project-thread-list-show-less"
-        class="flex items-center h-6 compact:h-9 px-2 rounded-[var(--radius-field)] text-[0.625rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-      >
-        Show Less
-      </button>
-    {/if}
-  </div>
+{#if hiddenThreadCount > 0 || preview.canShowLess}
+  <ThreadListMoreFooter
+    hiddenCount={hiddenThreadCount}
+    {hiddenStatus}
+    canShowLess={preview.canShowLess}
+    testIdPrefix="project-thread-list"
+    onShowMore={() => showMore(listKey, tree)}
+    onShowLess={() => collapseThreadList(listKey)}
+  />
 {/if}

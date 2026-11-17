@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// v157 adds the link a paired computer's owned spawn makes and what its
+// v158 adds the link a paired computer's owned spawn makes and what its
 // owner owes it. Rows from before it are not links and owe nothing; the
 // new objects exist and enforce what they declare.
 func TestRemoteOwnershipMigration(t *testing.T) {

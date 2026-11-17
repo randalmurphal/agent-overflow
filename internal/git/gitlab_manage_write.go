@@ -65,9 +65,9 @@ func gitlabMutationErrors(errs []string) error {
 // field of the answer, into payload (a struct with Errors). An envelope
 // error is classified as writeOutcome does, a missing payload is
 // unconfirmed, and the payload's errors are GitLab refusing it.
-func gitlabMutation[P any](ctx context.Context, client *forgeapi.Client, op, doc, field string, vars map[string]any, errorsOf func(*P) []string) (*P, error) {
+func gitlabMutation[P any](ctx context.Context, client *forgeapi.Client, doc forgeapi.Document, field string, vars map[string]any, errorsOf func(*P) []string) (*P, error) {
 	var raw map[string]*P
-	if _, err := client.GraphQL(ctx, op, doc, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, doc, vars, &raw); err != nil {
 		return nil, writeOutcome(err)
 	}
 	payload := raw[field]
@@ -96,13 +96,13 @@ func gitlabMRVars(ref PRReference) map[string]any {
 // drops the rest without an error. MergeRequest.allowsMultipleReviewers is
 // "Allows assigning multiple reviewers to a merge request." (GraphQL
 // reference at 18.0), allowsMultipleAssignees the same for assignees.
-const gitlabSetReviewersMutation = `mutation PRSetReviewers($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
+var gitlabSetReviewersMutation = forgeapi.NewDocument(forgeapi.ForgeGitLab, `mutation PRSetReviewers($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
   mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { allowsMultipleReviewers reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
-}`
+}`)
 
-const gitlabSetAssigneesMutation = `mutation PRSetAssignees($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
+var gitlabSetAssigneesMutation = forgeapi.NewDocument(forgeapi.ForgeGitLab, `mutation PRSetAssignees($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
   mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { allowsMultipleAssignees assignees(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
-}`
+}`)
 
 type gitlabUserConnection struct {
 	PageInfo githubPageInfo      `json:"pageInfo"`
@@ -125,9 +125,9 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 	if err != nil {
 		return err
 	}
-	op, doc, field, list := "PRSetAssignees", gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees"
+	doc, field, list := gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees"
 	if reviewers {
-		op, doc, field, list = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers"
+		doc, field, list = gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers"
 	}
 	step := func(mode string, people []PRPerson) changeStep {
 		names := logins(people)
@@ -135,7 +135,7 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 		return changeStep{done: done, next: next, run: func() error {
 			vars := gitlabMRVars(ref)
 			vars["usernames"], vars["mode"] = names, mode
-			payload, err := gitlabMutation(ctx, client, op, doc, field, vars, func(p *gitlabPeoplePayload) []string { return p.Errors })
+			payload, err := gitlabMutation(ctx, client, doc, field, vars, func(p *gitlabPeoplePayload) []string { return p.Errors })
 			if err != nil {
 				return err
 			}
@@ -234,9 +234,9 @@ func labelNames(labels []PRLabel) []string {
 	return out
 }
 
-const gitlabSetLabelsMutation = `mutation PRSetLabels($projectPath: ID!, $iid: String!, $labelIds: [LabelID!]!, $mode: MutationOperationMode!) {
+var gitlabSetLabelsMutation = forgeapi.NewDocument(forgeapi.ForgeGitLab, `mutation PRSetLabels($projectPath: ID!, $iid: String!, $labelIds: [LabelID!]!, $mode: MutationOperationMode!) {
   mergeRequestSetLabels(input: {projectPath: $projectPath, iid: $iid, labelIds: $labelIds, operationMode: $mode}) { errors mergeRequest { labels(first: 100) { pageInfo { hasNextPage } nodes { id } } } }
-}`
+}`)
 
 type gitlabLabelsPayload struct {
 	Errors       []string `json:"errors"`
@@ -263,7 +263,7 @@ func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 			}
 			vars := gitlabMRVars(ref)
 			vars["labelIds"], vars["mode"] = ids, mode
-			payload, err := gitlabMutation(ctx, client, "PRSetLabels", gitlabSetLabelsMutation, "mergeRequestSetLabels", vars, func(p *gitlabLabelsPayload) []string { return p.Errors })
+			payload, err := gitlabMutation(ctx, client, gitlabSetLabelsMutation, "mergeRequestSetLabels", vars, func(p *gitlabLabelsPayload) []string { return p.Errors })
 			if err != nil {
 				return err
 			}
@@ -293,9 +293,9 @@ func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 	return runSteps(steps)
 }
 
-const gitlabSetDraftMutation = `mutation PRSetDraft($projectPath: ID!, $iid: String!, $draft: Boolean!) {
+var gitlabSetDraftMutation = forgeapi.NewDocument(forgeapi.ForgeGitLab, `mutation PRSetDraft($projectPath: ID!, $iid: String!, $draft: Boolean!) {
   mergeRequestSetDraft(input: {projectPath: $projectPath, iid: $iid, draft: $draft}) { errors mergeRequest { draft } }
-}`
+}`)
 
 // gitlabSetDraft marks the merge request draft or ready with
 // mergeRequestSetDraft, which leaves the rest of the title as it is now.
@@ -308,7 +308,7 @@ func gitlabSetDraft(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 			Draft bool `json:"draft"`
 		} `json:"mergeRequest"`
 	}
-	answer, err := gitlabMutation(ctx, client, "PRSetDraft", gitlabSetDraftMutation, "mergeRequestSetDraft", vars, func(p *payload) []string { return p.Errors })
+	answer, err := gitlabMutation(ctx, client, gitlabSetDraftMutation, "mergeRequestSetDraft", vars, func(p *payload) []string { return p.Errors })
 	if err != nil {
 		return err
 	}
@@ -331,13 +331,13 @@ func (f *gitlabForge) SetPRState(ctx context.Context, ref PRReference, state str
 	return gitlabPut(ctx, client, ref, map[string]any{"state_event": state})
 }
 
-const gitlabRereviewMutation = `mutation PRRereview($projectPath: ID!, $iid: String!, $userId: UserID!) {
+var gitlabRereviewMutation = forgeapi.NewDocument(forgeapi.ForgeGitLab, `mutation PRRereview($projectPath: ID!, $iid: String!, $userId: UserID!) {
   mergeRequestReviewerRereview(input: {projectPath: $projectPath, iid: $iid, userId: $userId}) { errors }
-}`
+}`)
 
-const gitlabBypassMutation = `mutation PRBypassChanges($projectPath: ID!, $iid: String!) {
+var gitlabBypassMutation = forgeapi.NewDocument(forgeapi.ForgeGitLab, `mutation PRBypassChanges($projectPath: ID!, $iid: String!) {
   mergeRequestUpdate(input: {projectPath: $projectPath, iid: $iid, overrideRequestedChanges: true}) { errors }
-}`
+}`)
 
 // RerequestReview asks reviewer, one of the merge request's reviewers
 // (GitLab refuses anyone else), for a new review, by user id.
@@ -349,7 +349,7 @@ func (f *gitlabForge) RerequestReview(ctx context.Context, ref PRReference, revi
 	id, _ := gitlabUserID(reviewer.ID)
 	vars := gitlabMRVars(ref)
 	vars["userId"] = "gid://gitlab/User/" + strconv.FormatInt(id, 10)
-	_, err = gitlabMutation(ctx, client, "PRRereview", gitlabRereviewMutation, "mergeRequestReviewerRereview", vars, gitlabErrorsOf)
+	_, err = gitlabMutation(ctx, client, gitlabRereviewMutation, "mergeRequestReviewerRereview", vars, gitlabErrorsOf)
 	return err
 }
 
@@ -365,13 +365,13 @@ func (f *gitlabForge) BypassRequestedChanges(ctx context.Context, ref PRReferenc
 	if err != nil {
 		return err
 	}
-	_, err = gitlabMutation(ctx, client, "PRBypassChanges", gitlabBypassMutation, "mergeRequestUpdate", gitlabMRVars(ref), gitlabErrorsOf)
+	_, err = gitlabMutation(ctx, client, gitlabBypassMutation, "mergeRequestUpdate", gitlabMRVars(ref), gitlabErrorsOf)
 	return err
 }
 
-const gitlabSearchLabelsQuery = `query SearchProjectLabels($fullPath: ID!, $search: String) {
+var gitlabSearchLabelsQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query SearchProjectLabels($fullPath: ID!, $search: String) {
   project(fullPath: $fullPath) { labels(first: 20, searchTerm: $search, includeAncestorGroups: true) { pageInfo { hasNextPage } nodes { id title color } } }
-}`
+}`)
 
 // SearchCandidates answers the project's members (reviewers and
 // assignees alike, REST) or its labels and its groups' (GraphQL, with
@@ -395,7 +395,7 @@ func (f *gitlabForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 				} `json:"labels"`
 			} `json:"project"`
 		}
-		if _, err := client.GraphQL(ctx, "SearchProjectLabels", gitlabSearchLabelsQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, gitlabSearchLabelsQuery, vars, &raw); err != nil {
 			return PRCandidates{}, err
 		}
 		if raw.Project == nil {
@@ -438,9 +438,9 @@ func (u gitlabUserRaw) person() PRPerson {
 	return PRPerson{Login: u.Username, Name: u.Name, ID: strconv.FormatInt(u.ID, 10)}
 }
 
-const gitlabMergeMessageQuery = `query PRMergeMessage($fullPath: ID!, $iid: String!) {
+var gitlabMergeMessageQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query PRMergeMessage($fullPath: ID!, $iid: String!) {
   project(fullPath: $fullPath) { mergeRequest(iid: $iid) { defaultMergeCommitMessage defaultSquashCommitMessage } }
-}`
+}`)
 
 // DefaultMergeMessage is GitLab's default merge or squash commit message,
 // the project's commit templates applied.
@@ -458,7 +458,7 @@ func (f *gitlabForge) DefaultMergeMessage(ctx context.Context, ref PRReference, 
 		} `json:"project"`
 	}
 	vars := map[string]any{"fullPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
-	if _, err := client.GraphQL(ctx, "PRMergeMessage", gitlabMergeMessageQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, gitlabMergeMessageQuery, vars, &raw); err != nil {
 		return MergeMessage{}, err
 	}
 	if raw.Project == nil || raw.Project.MergeRequest == nil {

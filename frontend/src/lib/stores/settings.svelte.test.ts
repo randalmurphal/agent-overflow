@@ -48,6 +48,20 @@ describe('settings store', () => {
       expect(getSettings().network.bindAll).toBe(false);
     });
 
+    it('loads the projection a caller without access:admin receives', async () => {
+      // Go's zero network block keeps only its non-omitempty field, and the
+      // OTLP endpoint arrives empty (app_settings.go settingsForCaller).
+      setBindingMock('GetSettings', async () => ({
+        ...FULL_SETTINGS,
+        network: { bindAll: false },
+        observabilityOtlpEndpoint: '',
+      } as Partial<Settings>));
+      await loadSettings();
+      expect(getSettings().network).toEqual(makeSettings().network);
+      expect(getSettings().observabilityOtlpEndpoint).toBe('');
+      expect(getSettings().codexEnabled).toBe(false);
+    });
+
     it('merges the first GetSettings result over defaults for migration', async () => {
       localStorage.clear();
       resetSettingsForTest();

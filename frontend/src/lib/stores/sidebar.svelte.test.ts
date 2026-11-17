@@ -3,8 +3,6 @@ import {
   collapseProject,
   isSidebarSectionExpanded,
   toggleSidebarSection,
-  getContainerVisibleLimit,
-  setContainerVisibleLimit,
   expandProject,
   collapseThreadList,
   getCollapsedGroups,
@@ -14,9 +12,7 @@ import {
   getThreadListVisibleLimit,
   isGroupExpanded,
   isProjectExpanded,
-  isThreadListExpanded,
   resetSidebarForTest,
-  revealMoreThreadList,
   setThreadListVisibleLimit,
   setProjectSortMode,
   toggleGroup,
@@ -42,11 +38,11 @@ describe('sidebar store', () => {
   });
 
   it('forgets a group\'s paging when the group goes', () => {
-    setContainerVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-    setContainerVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    setThreadListVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    setThreadListVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
     removeThreadGroup('group-1');
-    expect(getContainerVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
-    expect(getContainerVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    expect(getThreadListVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(getThreadListVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
   });
 
   describe('sections', () => {
@@ -303,23 +299,18 @@ describe('sidebar store', () => {
   });
 
   describe('thread list visible limit', () => {
-    it('starts at the preview limit and reveals 20 more per call', () => {
+    it('starts at the preview limit', () => {
       expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(isThreadListExpanded('p1')).toBe(false);
-
-      revealMoreThreadList('p1');
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-      expect(isThreadListExpanded('p1')).toBe(true);
-
-      revealMoreThreadList('p1');
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT * 2);
     });
 
-    it('collapseThreadList resets a project to the preview limit', () => {
-      revealMoreThreadList('p1');
+    it('collapseThreadList resets one list to the preview limit, twice in a row', () => {
+      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+      setThreadListVisibleLimit('g1', 40);
+      collapseThreadList('p1');
       collapseThreadList('p1');
       expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(isThreadListExpanded('p1')).toBe(false);
+      // A group's list is keyed by its own id and keeps its size.
+      expect(getThreadListVisibleLimit('g1')).toBe(40);
     });
 
     it('setThreadListVisibleLimit persists explicit reveal sizes and resets defaults', () => {

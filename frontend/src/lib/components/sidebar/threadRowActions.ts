@@ -41,6 +41,7 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { asSentence, userFacingError } from '../../utils/userFacingError';
 import { isAssistantNameTaken } from '../../stores/assistants.svelte';
 import { ThreadsPartlyDeleted } from '../../stores/olderComputer';
+import { reportThreadCleanupError } from '../../stores/threadCleanupReport';
 import type { ArchiveThreadResult, DeleteThreadResult, Thread, WorkerFailure } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
@@ -277,7 +278,7 @@ function reportRemoteLeftovers(
  * here whose archive was refused stay open, and the toast archives them
  * again; workers on paired computers are named as pending there or as on
  * an older computer (reportRemoteLeftovers); work it could not stop is said
- * once.
+ * once (reportThreadCleanupError).
  */
 function reportArchiveLeftovers(backend: BackendKey, title: string, result: ArchiveThreadResult): void {
   const { here: workers, pending, older } = splitWorkerFailures(result.workersNotArchived ?? []);
@@ -290,9 +291,7 @@ function reportArchiveLeftovers(backend: BackendKey, title: string, result: Arch
     });
   }
   reportRemoteLeftovers('Archived', title, 'its', pending, older);
-  if (result.cleanupError) {
-    addToast('warning', `Archived "${title}", but some of its work could not be stopped: ${userFacingError(result.cleanupError)}`);
-  }
+  reportThreadCleanupError(result);
 }
 
 async function archiveWorkersAgain(backend: BackendKey, workers: WorkerFailure[]): Promise<void> {
@@ -415,12 +414,13 @@ export async function deleteThread(
  * ones whose delete failed keeps itself and the threads above it hidden
  * and unfinished; the toast deletes `seeds`, what the delete named, again,
  * which finishes them. Workers on paired computers are named as pending
- * there or as on an older computer (reportRemoteLeftovers).
+ * there or as on an older computer (reportRemoteLeftovers), and work it
+ * could not stop is said once (reportThreadCleanupError).
  */
 export function reportDeleteLeftovers(
   backend: BackendKey,
   title: string,
-  result: Pick<DeleteThreadResult, 'workersNotDeleted'>,
+  result: DeleteThreadResult,
   seeds: readonly string[],
 ): void {
   const { here: workers, pending, older } = splitWorkerFailures(result.workersNotDeleted ?? []);
@@ -433,6 +433,7 @@ export function reportDeleteLeftovers(
     });
   }
   reportRemoteLeftovers('Deleted', title, seeds.length === 1 ? 'its' : 'their', pending, older);
+  reportThreadCleanupError(result);
 }
 
 async function deleteAgain(backend: BackendKey, title: string, seeds: readonly string[]): Promise<void> {

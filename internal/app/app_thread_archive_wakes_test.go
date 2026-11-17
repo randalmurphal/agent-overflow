@@ -62,8 +62,8 @@ func TestAnArchiveLeavesSchedulesRegisteredAfterTheThreadCameBack(t *testing.T) 
 				t.Fatal("the re-registered watch has no process")
 			}
 
-			if err := a.stopRestingThreadWork(work); err != nil {
-				t.Fatalf("stopRestingThreadWork: %v", err)
+			if cleanup := a.stopRestingThreadWork(work); cleanup.Unwrap() != nil {
+				t.Fatalf("stopRestingThreadWork: %v", cleanup.Unwrap())
 			}
 
 			for _, want := range []struct {

@@ -22,7 +22,7 @@ import (
 // its Details say so (gitlab_version.go). The writes are
 // gitlab_manage_write.go.
 
-const gitlabManageChecksQuery = `query PRManageChecks($fullPath: ID!, $iid: String!) {
+var gitlabManageChecksQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query PRManageChecks($fullPath: ID!, $iid: String!) {
   project(fullPath: $fullPath) {
     mergeRequest(iid: $iid) {
       userPermissions { updateMergeRequest adminMergeRequest }
@@ -32,7 +32,7 @@ const gitlabManageChecksQuery = `query PRManageChecks($fullPath: ID!, $iid: Stri
       mergeabilityChecks { identifier status }
     }
   }
-}`
+}`)
 
 type gitlabGraphQLUser struct {
 	ID       string `json:"id"`
@@ -98,7 +98,7 @@ func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, r
 	}
 	var raw gitlabManageRaw
 	vars := map[string]any{"fullPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
-	if _, err := client.GraphQL(ctx, "PRManageChecks", gitlabManageChecksQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, gitlabManageChecksQuery, vars, &raw); err != nil {
 		return gitlabManage{}, err
 	}
 	if raw.Project == nil || raw.Project.MergeRequest == nil {

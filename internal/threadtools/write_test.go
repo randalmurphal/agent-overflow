@@ -486,6 +486,26 @@ func TestUpdateRefusesPerIdAndStillAppliesTheRest(t *testing.T) {
 	}
 }
 
+// An archive whose cleanup failed reaches the model as an updated row with
+// the cleanup's error, from the computer that holds the thread, and the note
+// says it was archived rather than refused.
+func TestUpdateReportsAnArchiveWhoseCleanupFailed(t *testing.T) {
+	p := newPair(t)
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
+	message := "The thread was archived, but its browser pages could not all be closed."
+	p.remote.updated = []ThreadUpdateResult{{ThreadID: remoteThreadID, Updated: true, Error: message, ErrorCode: CodeCleanupFailed}}
+
+	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+remoteThreadID+`"],"archived":true}`)
+	list := rows(t, result["results"])
+	if len(list) != 1 || field(t, list[0], "updated") != true || field(t, list[0], "error_code") != CodeCleanupFailed || field(t, list[0], "error") != message {
+		t.Fatalf("results = %v", result["results"])
+	}
+	note, _ := result["note"].(string)
+	if !strings.Contains(note, "tell the user") || strings.Contains(note, "left untouched") {
+		t.Errorf("note = %q", note)
+	}
+}
+
 // TestUpdateGroupsIdsByTheComputerThatHoldsThem, so one unreachable
 // computer fails only its own ids.
 func TestUpdateGroupsIdsByTheComputerThatHoldsThem(t *testing.T) {
@@ -523,7 +543,8 @@ func TestUpdateReportsWorkersAnArchiveLeftOpen(t *testing.T) {
 	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
 	left := []WorkerNotArchived{{ThreadID: "worker", Error: "That change could not be applied on this computer, and nothing was changed."}}
 	p.local.updated = []ThreadUpdateResult{{ThreadID: localThreadID, Updated: true, WorkersNotArchived: left}}
-	p.remote.updated = []ThreadUpdateResult{{ThreadID: remoteThreadID, Updated: true, WorkersNotArchived: left, Warning: "Archived, but"}}
+	cleanup := "The thread was archived, but its browser pages could not all be closed."
+	p.remote.updated = []ThreadUpdateResult{{ThreadID: remoteThreadID, Updated: true, WorkersNotArchived: left, Error: cleanup, ErrorCode: CodeCleanupFailed}}
 
 	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`","`+remoteThreadID+`"],"archived":true}`)
 	list := rows(t, result["results"])
@@ -536,10 +557,10 @@ func TestUpdateReportsWorkersAnArchiveLeftOpen(t *testing.T) {
 			t.Errorf("row = %v, want updated and naming the worker", row)
 		}
 	}
-	if field(t, list[1], "warning") != "Archived, but" {
-		t.Errorf("the forwarded warning was dropped: %v", list[1])
+	if field(t, list[1], "error") != cleanup || field(t, list[1], "error_code") != CodeCleanupFailed {
+		t.Errorf("the forwarded cleanup error was dropped: %v", list[1])
 	}
-	if note, _ := result["note"].(string); !strings.Contains(note, "workers_not_archived") || strings.Contains(note, "left untouched") {
+	if note, _ := result["note"].(string); !strings.Contains(note, "workers_not_archived") || strings.Contains(note, "left untouched") || !strings.Contains(note, "tell the user") {
 		t.Errorf("note = %q", note)
 	}
 }

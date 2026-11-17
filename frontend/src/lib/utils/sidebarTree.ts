@@ -8,22 +8,24 @@
 // Sort order (highest first):
 //   0. Drafts, newest first.
 //   1. Groups, a section of their own at the top level. A group is not
-//      pinnable; groups take the normal comparator below among themselves.
-//   2. Pinned front-burner block, then pinned back-burner block.
-//      Within each block: the normal status/activity/id comparator below.
-//      A group's members pin the same way inside their group.
-//   3. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
-//   4. running (any mode — Working / Planning) and completed (idle + unread).
-//   5. paused (reserved for future; no current source emits it).
-//   6. idle + read (no pill).
-// Within each tier (after pinned): latestActivityAt desc, then thread.id
-// localeCompare for stability. Inside a group (depth 1), tier 4 splits:
-// running rows sort above completed (unread) ones, so a group reads
-// needs-you, running, unread, idle.
+//      pinnable; groups take the status tiers below among themselves.
+//   2. Pinned front-burner block, then pinned back-burner block, then
+//      unpinned rows. Every block, a group's members included, orders by
+//      the status tiers below.
+// Status tiers (a pin is not one):
+//   a. needs-attention (error / pending-approval / awaiting-input /
+//      setup-failed / plan-ready / interrupted).
+//   b. running (any mode — Working / Planning).
+//   c. completed (idle + unread). Below running because opening the row
+//      reads it and drops it to idle, and that move must not cross the
+//      running rows.
+//   d. idle + read (no pill).
+// Within each tier: latestActivityAt desc, then id for stability.
 //
 // Every thread renders flat: at the top level or as a direct member of a
 // group. Members bubble:
-//   - displayStatus: the group row shows its most important member's status.
+//   - displayStatus: the group row shows its most important member's
+//     status, by tier and then by live status.
 //   - latestActivityAt: a group's activity is its newest member's, so a
 //     group with a freshly-active member surfaces in the sort.
 //
@@ -43,31 +45,24 @@ import {
 } from './threadStatusPill';
 import { isHiddenThreadMode } from './threadModes';
 
+/** A row's status tier. A pin orders rows separately and is never a tier. */
 export type ThreadStatusSortGroup =
-  | 'pinned'
   | 'needs-attention'
   | 'running'
-  | 'paused'
   | 'completed'
   | 'idle';
 
-export type NormalThreadStatusSortGroup = Exclude<ThreadStatusSortGroup, 'pinned'>;
 export type SidebarPinGroup = 'front' | 'back' | null;
 
-// Running and completed rows share the non-blocking activity tier so
-// their relative order stays activity-driven. Plain idle/read rows sit
-// below them because they have no status indicator worth surfacing.
-export const SORT_GROUP_PRIORITY: Record<ThreadStatusSortGroup, number> = {
-  pinned: 3,
-  'needs-attention': 2,
-  running: 1,
-  paused: 1,
+const SORT_GROUP_PRIORITY: Record<ThreadStatusSortGroup, number> = {
+  'needs-attention': 3,
+  running: 2,
   completed: 1,
   idle: 0,
 };
 
-// Within-group ordering of live statuses. Used by displayStatus bubbling
-// to pick the most important member status, NOT by the tree compare
+// Ordering of live statuses inside one tier. Used by displayStatus
+// bubbling to pick the most important status, NOT by the tree compare
 // (which collapses all needs-attention rows into one tier and sorts by
 // activity timestamp). Higher number = higher priority.
 const STATUS_PRIORITY: Record<ThreadLiveStatus, number> = {
@@ -108,9 +103,8 @@ export interface SidebarTreeNodeBase {
    * pill verbatim so mode-derived labels (Planning) read accurately.
    */
   displayStatus: ThreadStatusPill | null;
+  /** Status tier of the displayed status; orders rows inside a pin block. */
   sortGroup: ThreadStatusSortGroup;
-  /** Status tier without the pin override; orders rows inside a pin block. */
-  normalSortGroup: NormalThreadStatusSortGroup;
   /**
    * A thread's own activity; a group's newest member activity, or its own
    * updatedAt while it is empty. Unix ms.
@@ -171,19 +165,15 @@ export interface BuildSidebarThreadTreeInput {
   unreachableMachineOf?: (thread: Thread) => string | null;
 }
 
-/**
- * statusPriority — idle collapses to 0 (lowest) so an idle+read member
- * loses the bubble check against any member that has any pill. Exported for
- * `sidebarTreeView.ts`'s rollup, which ranks the same statuses.
- */
-export function statusPriority(status: ThreadLiveStatus): number {
+/** A missing entry collapses to 0, the rank of idle. */
+function statusPriority(status: ThreadLiveStatus): number {
   return STATUS_PRIORITY[status] ?? 0;
 }
 
-function getNormalStatusSortGroup(
+function getStatusSortGroup(
   liveStatus: ThreadLiveStatus,
   status: ThreadStatusPill | null,
-): NormalThreadStatusSortGroup {
+): ThreadStatusSortGroup {
   switch (liveStatus) {
     case 'error':
     case 'pending-approval':
@@ -202,15 +192,6 @@ function getNormalStatusSortGroup(
       // it visible without claiming attention it hasn't earned.
       return 'idle';
   }
-}
-
-function getStatusSortGroup(
-  thread: Thread,
-  liveStatus: ThreadLiveStatus,
-  status: ThreadStatusPill | null,
-): ThreadStatusSortGroup {
-  if (sidebarPinGroup(thread) !== null) return 'pinned';
-  return getNormalStatusSortGroup(liveStatus, status);
 }
 
 /**
@@ -252,33 +233,32 @@ export function isDraftNode(node: SidebarTreeNode): boolean {
   return node.kind === 'thread' && node.thread.isDraft === true;
 }
 
+type RankedStatus = Pick<SidebarTreeNodeBase, 'sortGroup' | 'displayLiveStatus'>;
+
 /**
- * How strongly a node's displayed status claims a rolled-up dot: its status
- * tier, then its live-status priority. The tier ignores pins, so a pinned
- * idle member never masks a running one, and it ranks an unread idle row
- * (the Completed pill) above a read one. Every rolled-up dot ranks with
- * this: a container row's (groupDisplay) and a show-more row's or
- * collapsed project's (rollupDisplayStatus).
+ * Whether `a`'s displayed status ranks strictly above `b`'s: by tier,
+ * then by live-status priority inside the tier. The one rank for every
+ * rolled-up dot: a group row's (groupDisplay) and a show-more row's or
+ * collapsed container's (sidebarTreeView.ts rollupDisplayStatus). Pins
+ * play no part, so a pinned idle member never masks a running one.
  */
-export function displayRank(node: Pick<SidebarTreeNode, 'normalSortGroup' | 'displayLiveStatus'>): number {
-  return SORT_GROUP_PRIORITY[node.normalSortGroup] * 1000 + statusPriority(node.displayLiveStatus);
+export function displayStatusOutranks(a: RankedStatus, b: RankedStatus): boolean {
+  const tierCmp = SORT_GROUP_PRIORITY[a.sortGroup] - SORT_GROUP_PRIORITY[b.sortGroup];
+  if (tierCmp !== 0) return tierCmp > 0;
+  return statusPriority(a.displayLiveStatus) > statusPriority(b.displayLiveStatus);
 }
 
 /**
- * The status a container row shows: its most important member's, pill
- * included (displayRank).
+ * The status a group row shows: its most important member's
+ * (displayStatusOutranks), pill reused verbatim so mode-derived labels read
+ * accurately.
  */
 function groupDisplay(
   members: readonly SidebarThreadTreeNode[],
 ): { displayLiveStatus: ThreadLiveStatus; displayStatus: ThreadStatusPill | null } {
   let top: SidebarThreadTreeNode | null = null;
-  let topRank = -1;
   for (const member of members) {
-    const rank = displayRank(member);
-    if (rank > topRank) {
-      topRank = rank;
-      top = member;
-    }
+    if (top === null || displayStatusOutranks(member, top)) top = member;
   }
   if (!top) return { displayLiveStatus: 'idle', displayStatus: null };
   return { displayLiveStatus: top.displayLiveStatus, displayStatus: top.displayStatus };
@@ -286,8 +266,8 @@ function groupDisplay(
 
 /**
  * compareTreeNodes — drafts pinned to the very top (newest createdAt
- * first), then groups, then front/back pin blocks (normal comparator
- * within each), then sort group, activity desc, and id for stability.
+ * first), then groups, then front/back pin blocks, each ordered by status
+ * tier, activity desc, and id for stability.
  * Drafts outrank everything because the user is actively composing them
  * and needs them surfaced regardless of pin state.
  */
@@ -319,16 +299,8 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
     return leftPinGroup === 'front' ? -1 : 1;
   }
 
-  const leftSortGroup = leftPinGroup === null ? left.sortGroup : left.normalSortGroup;
-  const rightSortGroup = rightPinGroup === null ? right.sortGroup : right.normalSortGroup;
-  const groupCmp = SORT_GROUP_PRIORITY[rightSortGroup] - SORT_GROUP_PRIORITY[leftSortGroup];
+  const groupCmp = SORT_GROUP_PRIORITY[right.sortGroup] - SORT_GROUP_PRIORITY[left.sortGroup];
   if (groupCmp !== 0) return groupCmp;
-  // Inside a container the shared activity tier splits: running above
-  // unread. The top level keeps the two interleaved by activity.
-  if (left.depth > 0 && right.depth > 0) {
-    const runningCmp = Number(rightSortGroup === 'running') - Number(leftSortGroup === 'running');
-    if (runningCmp !== 0) return runningCmp;
-  }
 
   if (right.latestActivityAt !== left.latestActivityAt) {
     return right.latestActivityAt > left.latestActivityAt ? 1 : -1;
@@ -349,9 +321,8 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  *
  * Groups: a thread whose `groupId` names one of `input.groups` is built at
  * depth 1 under that group's node instead of at the top level. Group nodes
- * sort above every top-level thread and among themselves by the normal
- * comparator, so a group with a running member rises within the group
- * section. Members sort by the same comparator, their own pins included.
+ * sort above every top-level thread and among themselves by status tier,
+ * so a group with a running member rises within the group section. Members sort by the same comparator, their own pins included.
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const visibleThreads = input.threads.filter((thread) => !isHiddenThreadMode(thread.mode));
@@ -371,8 +342,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ownStatus: ownPill,
       displayLiveStatus: ownLiveStatus,
       displayStatus: ownPill,
-      sortGroup: getStatusSortGroup(thread, ownLiveStatus, ownPill),
-      normalSortGroup: getNormalStatusSortGroup(ownLiveStatus, ownPill),
+      sortGroup: getStatusSortGroup(ownLiveStatus, ownPill),
       latestActivityAt: input.activityOf ? input.activityOf(thread) : (thread.updatedAt ?? 0),
     };
   };
@@ -392,8 +362,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ownStatus: null,
       displayLiveStatus: display.displayLiveStatus,
       displayStatus: display.displayStatus,
-      sortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
-      normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      sortGroup: getStatusSortGroup(display.displayLiveStatus, display.displayStatus),
       // An empty group has nothing to bubble, so it sorts on its own last
       // write — which is when it was created or renamed.
       latestActivityAt: members.length === 0 ? (group.updatedAt ?? 0) : latestActivityAt,

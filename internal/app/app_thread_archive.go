@@ -42,9 +42,8 @@ import (
 // The row flip commits first and the rest follows. Once the flip has
 // committed the call succeeds: the archive itself has succeeded durably,
 // and failing the call would tell the caller otherwise. What it could not
-// finish afterwards, a worker whose archive was refused or work that could
-// not be stopped, is reported in the result. A failed session close is
-// logged.
+// finish afterwards, a worker whose archive was refused or work that may
+// still be running or open, is reported in the result.
 //
 //ao:scope threads:operate
 //ao:route thread
@@ -66,30 +65,31 @@ type ArchiveThreadResult struct {
 	// (Pending), which is sent again until it does, or runs a version that
 	// cannot take it.
 	WorkersNotArchived []WorkerFailure `json:"workersNotArchived,omitempty"`
-	// CleanupError says what could not be stopped or withdrawn of the work
-	// the archived threads were waiting on. Their archives stand.
+	// CleanupError says, for a person, what of the archived threads may
+	// still be running or open (threadCleanupError). Their archives stand.
 	CleanupError string `json:"cleanupError,omitempty"`
 }
 
 // archiveOutcome is what finishArchive could not do, for each door to
 // report in its own terms.
 type archiveOutcome struct {
-	cleanup error
+	cleanup threadCleanupError
 	workers []workerFailure
 }
 
-func (o *archiveOutcome) add(other archiveOutcome) {
-	o.cleanup = errors.Join(o.cleanup, other.cleanup)
-	o.workers = append(o.workers, other.workers...)
+// add gathers what the archive of a thread under this one could not do.
+func (o *archiveOutcome) add(child archiveOutcome) {
+	o.cleanup.addBelow(child.cleanup)
+	o.workers = append(o.workers, child.workers...)
 }
 
 // result renders the outcome for the binding. The host log keeps the
-// cleanup failure.
+// cleanup's causes.
 func (o archiveOutcome) result(a *App) ArchiveThreadResult {
 	var result ArchiveThreadResult
-	if o.cleanup != nil {
-		log.Printf("app: archive: %v", o.cleanup)
-		result.CleanupError = o.cleanup.Error()
+	if cause := o.cleanup.Unwrap(); cause != nil {
+		log.Printf("app: archive thread: %v", cause)
+		result.CleanupError = o.cleanup.message()
 	}
 	result.WorkersNotArchived = a.workerFailures(o.workers)
 	return result
@@ -118,6 +118,7 @@ func (a *App) finishArchive(work restingThreadWork, reach ownerOpReach) archiveO
 // again, under a newer sequence.
 func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.OwnerOp) {
 	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
+	outcome.cleanup.outcome = "archived"
 	for _, worker := range work.workers {
 		child, err := a.archiveThreadLocked(worker.ThreadID, worker.OwnerID)
 		switch {
@@ -134,7 +135,7 @@ func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.Owner
 	// delivered or not; the archived workers' prompts ended with them.
 	a.reroutePromptsFrom(work.threadID)
 	owed, err := a.endArchiveWalk(work.threadID)
-	outcome.cleanup = errors.Join(outcome.cleanup, err)
+	outcome.cleanup.remoteWorkers = err
 	return outcome, owed
 }
 
@@ -193,7 +194,7 @@ func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, erro
 		return work, nil
 	}
 	a.beginArchiveWalk(id)
-	a.stopArchivedThreadSession(id, requestedAt)
+	a.stopArchivedThreadSession(&work, requestedAt)
 	a.readArchivedWorkers(&work)
 	return work, nil
 }
@@ -207,7 +208,7 @@ func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, erro
 func (a *App) readArchivedWorkers(work *restingThreadWork) {
 	workers, err := a.store.ListOwnedWorkersToArchive(work.threadID)
 	if err != nil {
-		work.err = errors.Join(work.err, fmt.Errorf("archive the workers of %s: %w", work.threadID, err))
+		work.cleanup.workers = fmt.Errorf("read the workers of %s: %w", work.threadID, err)
 		return
 	}
 	work.workers = workers
@@ -315,15 +316,19 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 // The thread's browser pages close with the session, suspended ones and
 // their saved copies included, and stay open exactly when the session is
 // kept: a turn that started after the request may be using them.
-func (a *App) stopArchivedThreadSession(threadID string, requestedAtMillis int64) {
+//
+// What it could not close goes into work.cleanup. A re-engaged session is
+// kept on purpose and is not a failure.
+func (a *App) stopArchivedThreadSession(work *restingThreadWork, requestedAtMillis int64) {
+	threadID := work.threadID
 	if _, live := a.sessionManager().get(threadID); live {
 		reengaged, err := a.threadTurnStartedAfter(threadID, requestedAtMillis)
 		if err != nil {
 			// Fail in the same direction the idle reaper does on its own
 			// probe error: an unreadable turn history is not evidence that
-			// nothing started, so leave the session alone. Shutdown and the
-			// next archive still reach it.
-			log.Printf("app: archive thread %s: read turn history: %v", threadID, err)
+			// nothing started, so leave the session alone, and its pages
+			// with it.
+			work.cleanup.session = fmt.Errorf("read turn history: %w", err)
 			return
 		}
 		if reengaged {
@@ -331,13 +336,15 @@ func (a *App) stopArchivedThreadSession(threadID string, requestedAtMillis int64
 			return
 		}
 		if sess, ok := a.sessionManager().take(threadID); ok {
-			if err := a.teardownAndCloseSession(threadID, sess); err != nil {
-				log.Printf("app: archive thread %s: close provider session: %v", threadID, err)
+			if err := a.teardownAndCloseSession(threadID, sess); errors.Is(err, errBackgroundNotRetired) {
+				work.cleanup.background = err
+			} else if err != nil {
+				work.cleanup.session = fmt.Errorf("close provider session: %w", err)
 			}
 		}
 	}
 	if err := a.closeThreadBrowserPages(threadID); err != nil {
-		log.Printf("app: archive thread %s: close browser pages: %v", threadID, err)
+		work.cleanup.browser = fmt.Errorf("close browser pages: %w", err)
 	}
 }
 

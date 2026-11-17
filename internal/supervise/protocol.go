@@ -276,7 +276,7 @@ func OpenChildChannel(lookupEnv func(string) (string, bool), unsetEnv func(strin
 // It exists so the supervisor can ask a version it has never run whether the
 // two can talk BEFORE anything is written down — the check t3code puts before
 // the staging directory is renamed into place. Double-underscored like the
-// other internal re-execs (`__reap`), because nobody types it.
+// other internal re-execs (`__claude-hook`), because nobody types it.
 const PreflightSubcommand = "__service-preflight"
 
 // Preflight is what that subcommand prints: one JSON object, one line, then

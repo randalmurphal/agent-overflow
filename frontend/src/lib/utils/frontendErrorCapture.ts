@@ -1,6 +1,8 @@
 import { ReportFrontendErrorBatch } from '../stores/bindings';
 import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
 import { installDiagnosticsSinkEverywhere } from '../transport/backends';
+import { isScopeRefusal } from '../transport/scopeRefusal';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
 import { setClipboardDiagnosticsSink } from './clipboard';
@@ -67,9 +69,8 @@ let flushTimer: number | null = null;
 let listenerAbort: AbortController | null = null;
 let flushInFlight = false;
 let consecutiveFlushFailures = 0;
-// Set when the backend refuses the method (non-loopback remote client —
-// ReportFrontendErrorBatch is host-scoped). Persisting is impossible for
-// the rest of the session; stop capturing instead of warn-spamming.
+// Set when the page is off the host or the backend refuses the method
+// (ReportFrontendErrorBatch is host-scoped). See standDown.
 let reporterUnavailable = false;
 
 export function installFrontendErrorCapture(): void {
@@ -298,20 +299,23 @@ export async function flushFrontendErrors(): Promise<void> {
   if (flushInFlight || reporterUnavailable) return;
   flushInFlight = true;
   try {
+    // ReportFrontendErrorBatch is host-scoped, so a page off the host never
+    // asks. Locality is unknown until the bootstrap manifest answers;
+    // captures wait for it, bounded by MAX_PENDING_LINES.
+    await pageGrantsResolved();
+    if (!hasScope('host')) {
+      standDown('this page is not on the host');
+      return;
+    }
     while (pendingLines.length > 0) {
       const batch = takeBatch();
       try {
         await ReportFrontendErrorBatch(batch);
         consecutiveFlushFailures = 0;
       } catch (err) {
-        if (isMethodUnavailable(err)) {
-          // Non-loopback client: the backend refuses local-FS writes from
-          // this peer for the whole session. Warn once and stand down.
-          reporterUnavailable = true;
-          pendingLines.length = 0;
-          console.warn(
-            '[frontendErrorCapture] backend refuses error persistence for this connection; capture disabled',
-          );
+        if (isMethodUnavailable(err) || isScopeRefusal(err)) {
+          // The backend will refuse this connection for its whole life.
+          standDown('the backend refuses error persistence for this connection');
           return;
         }
         consecutiveFlushFailures += 1;
@@ -333,6 +337,14 @@ export async function flushFrontendErrors(): Promise<void> {
   } finally {
     flushInFlight = false;
   }
+}
+
+// Persisting is impossible for the rest of the session: stop capturing
+// instead of retrying, and warn once.
+function standDown(reason: string): void {
+  reporterUnavailable = true;
+  pendingLines.length = 0;
+  console.warn(`[frontendErrorCapture] ${reason}; capture disabled`);
 }
 
 // Take pending lines from the head up to the serialized-byte budget

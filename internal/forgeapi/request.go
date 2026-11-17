@@ -88,6 +88,13 @@ func (c *Client) build(ctx context.Context, r Request, graphQL bool) (*http.Requ
 			virtualHost = c.host
 		}
 	}
+	// A GraphQL request goes through GraphQL, whose documents are the ones
+	// checked against the forge's schema. GitHub's REST base is the GraphQL
+	// endpoint's parent, and an attachment URL may name any https address,
+	// so both ways of naming a REST target are held to this.
+	if !graphQL && gql != nil && strings.EqualFold(target.Host, gql.Host) && strings.TrimSuffix(target.Path, "/") == gql.Path {
+		return nil, false, fmt.Errorf("forgeapi: request path %q is the GraphQL endpoint; send it with GraphQL", r.Path)
+	}
 	if len(r.Query) > 0 {
 		query := target.Query()
 		for k, v := range r.Query {

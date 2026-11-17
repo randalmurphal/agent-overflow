@@ -251,8 +251,8 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	if n := starts.Load(); n != 0 {
 		t.Fatalf("started %d sessions for an archived thread", n)
 	}
-	if err := a.stopRestingThreadWork(a.captureRestingThreadWork(thread.ID, archiveRest)); err != nil {
-		t.Fatalf("stopRestingThreadWork: %v", err)
+	if cleanup := a.stopRestingThreadWork(a.captureRestingThreadWork(thread.ID, archiveRest)); cleanup.Unwrap() != nil {
+		t.Fatalf("stopRestingThreadWork: %v", cleanup.Unwrap())
 	}
 
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
@@ -287,8 +287,8 @@ func TestAnArchiveLeavesAMessageQueuedAfterTheThreadCameBack(t *testing.T) {
 	}
 	later := sendWithin(t, a, thread.ID, "deploy 5 is done", 5*time.Second)
 	a.waitAgentNoticeWork()
-	if err := a.stopRestingThreadWork(work); err != nil {
-		t.Fatalf("stopRestingThreadWork: %v", err)
+	if cleanup := a.stopRestingThreadWork(work); cleanup.Unwrap() != nil {
+		t.Fatalf("stopRestingThreadWork: %v", cleanup.Unwrap())
 	}
 
 	rows := durableQueueRows(t, a, thread.ID)
@@ -772,8 +772,8 @@ func TestCancellingAStoppedThreadsLoopOrWatchWithdrawsItsHeldWake(t *testing.T) 
 	if got, want := held(), []string{agentWakeSendID(inbox.ID, 1), agentWakeSendID(feed.ID, 1)}; !slices.Equal(got, want) {
 		t.Fatalf("after cancelling %s: %q, want %q", board.Label, got, want)
 	}
-	if err := a.stopThreadRequestsForMovedThread(context.Background(), thread.ID, ""); err != nil {
-		t.Fatalf("stopThreadRequestsForMovedThread: %v", err)
+	if undelivered, err := a.stopThreadRequestsForMovedThread(context.Background(), thread.ID, ""); undelivered != nil || err != nil {
+		t.Fatalf("stopThreadRequestsForMovedThread: %v, %v", undelivered, err)
 	}
 	if got := held(); len(got) != 0 {
 		t.Fatalf("after moving the thread away: %q, want nothing queued", got)
@@ -823,7 +823,8 @@ func TestAWithdrawalThatFailsIsReported(t *testing.T) {
 		!strings.Contains(err.Error(), `the loop "board" is cancelled, but its wake already queued could not be taken back`) {
 		t.Fatalf("CancelWake: %v, want the wake left queued reported", err)
 	}
-	if err := a.stopRestingThreadWork(a.captureRestingThreadWork(thread.ID, archiveRest)); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
+	cleanup := a.stopRestingThreadWork(a.captureRestingThreadWork(thread.ID, archiveRest))
+	if err := cleanup.Unwrap(); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
 		t.Fatalf("stopRestingThreadWork: %v, want the wakes left queued reported", err)
 	}
 }

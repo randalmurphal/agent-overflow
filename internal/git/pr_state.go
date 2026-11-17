@@ -94,9 +94,9 @@ func (c *Core) ReadPRStates(ctx context.Context, prs []TrackedPR) (map[int]PRSta
 
 // githubPRStatesQuery reads pull requests by node id. A node that does not
 // resolve answers null beside a NOT_FOUND error.
-const githubPRStatesQuery = `query PRStates($ids: [ID!]!) {
+var githubPRStatesQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRStates($ids: [ID!]!) {
   nodes(ids: $ids) { ... on PullRequest { id number state mergedAt } }
-}`
+}`)
 
 func (f *githubForge) ReadPRStates(ctx context.Context, repo RepoReference, prs []TrackedPR) (map[int]PRState, error) {
 	client, err := f.core.githubAPI(repo.Host)
@@ -125,7 +125,7 @@ func (f *githubForge) ReadPRStates(ctx context.Context, repo RepoReference, prs 
 				MergedAt *string `json:"mergedAt"`
 			} `json:"nodes"`
 		}
-		if _, err := client.GraphQL(ctx, "PRStates", githubPRStatesQuery, map[string]any{"ids": batch}, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubPRStatesQuery, map[string]any{"ids": batch}, &raw); err != nil {
 			if !onlyNotFound(err) {
 				return nil, err
 			}

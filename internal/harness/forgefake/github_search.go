@@ -148,7 +148,7 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull, checks bool) map[string]any 
 		"reviewRequests":           map[string]any{"nodes": requests},
 		"latestOpinionatedReviews": map[string]any{"nodes": opinions},
 		"viewerLatestReview":       latest,
-		"reviewThreads":            graphQLConnection(threads, 0, githubGraphQLPageSize),
+		"reviewThreads":            map[string]any{"pageInfo": map[string]any{"hasNextPage": len(threads) > githubGraphQLPageSize}, "nodes": threads[:min(len(threads), githubGraphQLPageSize)]},
 		"baseRef":                  base,
 		"commits":                  map[string]any{"totalCount": p.Commits, "nodes": []map[string]any{{"commit": commit}}},
 		"comments":                 map[string]any{"nodes": comments},
