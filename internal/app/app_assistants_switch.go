@@ -352,15 +352,8 @@ func (a *App) resumeAssistants() bool {
 	if hook := a.assistantsSwitch.resumeReadForTest; hook != nil {
 		hook(false)
 	}
-	rows, err := a.store.ListLiveAssistantAgentWakes()
-	if hook := a.assistantsSwitch.resumeReadForTest; hook != nil {
-		hook(true)
-	}
-	if err != nil {
-		log.Printf("assistants: turning them on: %v", err)
-	}
-	recovered := a.recoverOrphanedAgentWakes(rows)
-	if !a.releaseAssistantsPause() {
+	recovered, released := a.recoverAndReleaseAssistants()
+	if !released {
 		return false
 	}
 	a.restartAgentWakes(recovered, false)
@@ -374,6 +367,27 @@ func (a *App) resumeAssistants() bool {
 		a.startWaitingAssistantSession(threadID)
 	}
 	return true
+}
+
+// recoverAndReleaseAssistants reads the assistants' loops and watches,
+// recovers what a quit cut, and releases the pause unless the setting turned
+// off meanwhile, as one step under the wake lifecycle lock. A run admitted,
+// refused or registered takes the same lock, so each is either seen by the
+// recovery or runs after the release: a supervisor registered here goes on
+// running, and one the pause refused gave up its registration and is
+// recovered here.
+func (a *App) recoverAndReleaseAssistants() ([]recoveredAgentWake, bool) {
+	a.agentWakes.lifecycle.Lock()
+	defer a.agentWakes.lifecycle.Unlock()
+	rows, err := a.store.ListLiveAssistantAgentWakes()
+	if hook := a.assistantsSwitch.resumeReadForTest; hook != nil {
+		hook(true)
+	}
+	if err != nil {
+		log.Printf("assistants: turning them on: %v", err)
+	}
+	recovered := a.recoverOrphanedAgentWakesLocked(rows)
+	return recovered, a.releaseAssistantsPause()
 }
 
 // startWaitingAssistantSession starts the session of a thread that has

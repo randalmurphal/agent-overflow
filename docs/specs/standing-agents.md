@@ -1386,7 +1386,10 @@ Restart rules:
   `missed N while the app was closed`. A reminder keeps its existing
   fire-at-boot behavior.
 - A row in `running` at boot was cut by quit: its outcome is recorded as
-  `cancelled-by-quit` and it runs again now.
+  `cancelled-by-quit` and it runs again now. An interval row is armed due
+  at the fire the cut run was for, so the rerun stays owed until a fire
+  claims it, through another quit or a pause, and counts no missed fire
+  for the run it replaces.
 - A long-running `watch` is restarted from scratch. Its cursor is the
   script's own business in the home; the app holds none.
 - Output that was produced but not queued before quit is lost by
@@ -1490,8 +1493,12 @@ stopped completely says so in its pane.
 
 Turning it on first recovers, while the pause still holds, what a quit
 left running: a run with no live process is settled, and a run still
-registered as live is left alone. Then the pause is released, if the
-setting is still on, and only the runs it recovered are run again: the
+registered as live is left alone. A long-running watch whose restart the
+pause refused gives up its registration in the same step, so it is
+recovered, not taken for live. Then the pause is released, if the
+setting is still on, in the same step as the recovery, and only the runs
+it recovered are run again; a recovered interval run turned off before
+the release stays due and runs once when assistants are next on: the
 long-running watches start, the sweep serves each loop and watch that
 came due meanwhile once, saying how many fires it missed since the
 previous wake, fires the reminders that came due, and starts the session

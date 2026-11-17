@@ -463,10 +463,15 @@ func (s *Store) ReleaseQueuedAgentWake(id, outcome, output string, fireAt int64)
 }
 
 // RecoverAgentWake records what a quit did to a row it left `running` and
-// arms it, so the boot pass can claim it again.
-func (s *Store) RecoverAgentWake(id, outcome string) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: recover agent wake %s", id),
-		`UPDATE agent_wakes SET state = 'armed', last_outcome = ? WHERE id = ? AND state = 'running'`,
+// arms it, so the run can be claimed again, and returns the row as it left
+// it. An interval row is due again at the fire the cut run was for, as
+// PauseAgentWakeRun leaves one, so its replay stays owed until a fire
+// claims it, whatever stops the caller first.
+func (s *Store) RecoverAgentWake(id, outcome string) (AgentWake, bool, error) {
+	return s.changeAgentWakeRow(fmt.Sprintf("store: recover agent wake %s", id),
+		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?,
+		        next_at = CASE WHEN long_running = 0 THEN COALESCE(last_run_at, next_at) ELSE next_at END
+		  WHERE id = ? AND state = 'running'`,
 		outcome, id)
 }
 

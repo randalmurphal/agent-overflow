@@ -1,6 +1,9 @@
+//go:build !windows
+
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
 )
 
@@ -226,7 +230,10 @@ func TestAssistantsToggledQuicklyLeaveNoDuplicateAndNothingStranded(t *testing.T
 	}
 }
 
-// livePIDs lists the process ids recorded in path that are still alive.
+// livePIDs lists the process ids recorded in path that are still alive. A
+// process is gone once signal 0 finds no such process or the platform's
+// process table shows it exited (procutil.Exited); a signal that fails for
+// another reason is an error, not an exit.
 func livePIDs(t *testing.T, path string) []int {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -239,19 +246,180 @@ func livePIDs(t *testing.T, path string) []int {
 		if err != nil {
 			t.Fatalf("pid %q: %v", field, err)
 		}
-		if syscall.Kill(pid, 0) == nil && !zombie(pid) {
+		switch err := syscall.Kill(pid, 0); {
+		case errors.Is(err, syscall.ESRCH):
+			continue
+		case err != nil && !errors.Is(err, syscall.EPERM):
+			t.Fatalf("signal 0 to %d: %v", pid, err)
+		}
+		if !procutil.Exited(pid) {
 			live = append(live, pid)
 		}
 	}
 	return live
 }
 
-// zombie reports whether pid has exited and waits to be reaped.
-func zombie(pid int) bool {
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return true
+// A long-running watch whose restart the pause refused is still registered
+// when turning assistants on reads the rows. Resume either finds a
+// supervisor that goes on or owns the replacement: once the refused one
+// returns, exactly one process runs, supervised, with no further toggle.
+func TestAWatchRefusedAsAssistantsComeBackOnKeepsOneProcess(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "resume-refused-watch")
+	testAssistant(t, a, thread.ID)
+	dir := t.TempDir()
+	pids, first := filepath.Join(dir, "pids"), filepath.Join(dir, "first")
+	// The first process exits at once, so the supervisor restarts it.
+	command := "if [ -e '" + first + "' ]; then echo $$ >> '" + pids + "'; exec sleep 60; fi; touch '" + first + "'"
+	refused, release := make(chan struct{}), make(chan struct{})
+	var once atomic.Bool
+	a.agentWatchRefusedForTest = func(string) {
+		if once.CompareAndSwap(false, true) {
+			close(refused)
+			<-release
+		}
 	}
-	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
-	return len(fields) > 0 && fields[0] == "Z"
+	tail := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "tail", Command: command, LongRunning: true})
+	t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
+	waitUntil(t, 10*time.Second, func() bool {
+		_, err := os.Stat(first)
+		return err == nil
+	})
+	// Off and on again before an off convergence ran: the observer's pause
+	// holds while the setting reads on, and the supervisor's restart meets it.
+	a.store.PauseAssistants(true)
+	select {
+	case <-refused:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the restart was not refused")
+	}
+
+	// The final on's convergence, while the refused supervisor has not
+	// returned.
+	a.convergeAssistants()
+	close(release)
+
+	waitUntil(t, 10*time.Second, func() bool { return len(livePIDs(t, pids)) == 1 && agentWakeRunning(a, tail.ID) })
+	// Long enough for a second supervisor to start a second process.
+	time.Sleep(2 * agentWakeRestartBase)
+	if live := livePIDs(t, pids); len(live) != 1 || !agentWakeRunning(a, tail.ID) {
+		t.Fatalf("the long-running watch has %d processes alive (supervised=%v), want one", len(live), agentWakeRunning(a, tail.ID))
+	}
+	if row := agentWake(t, a, tail.ID); row.State != store.AgentWakeRunning {
+		t.Fatalf("the long-running watch = %+v; want it running", row)
+	}
+}
+
+// Off, an on whose recovery is written and then turned off before the pause
+// is released, off, and on again, with an interval watch a quit cut whose
+// next fire is an hour away: the cut run is replayed once as soon as
+// assistants are on, and only once.
+func TestAnAbortedResumeKeepsTheReplayACutRunIsOwed(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "resume-aborted-replay")
+	testAssistant(t, a, thread.ID)
+	command, marker := markerWatch(t)
+	now := time.Now()
+	hour := now.Add(time.Hour).UnixMilli()
+	poll := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: command, IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: now.Add(-time.Minute).UnixMilli()})
+	t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
+	setAssistants(t, a, false)
+	// A run a quit cut while assistants were off: claimed, its next fire an
+	// hour away, with no process.
+	if _, claimed, err := a.store.ClaimAgentWake(poll, now.UnixMilli(), hour, 0); err != nil || !claimed {
+		t.Fatalf("claim: %v %v", claimed, err)
+	}
+
+	var aborted atomic.Bool
+	onResumeRead(a, func(read bool) {
+		if read && aborted.CompareAndSwap(false, true) {
+			switchAssistants(t, a, false)
+		}
+	})
+	switchAssistants(t, a, true)
+	waitUntil(t, 10*time.Second, aborted.Load)
+	awaitAssistants(t, a, false)
+	if row := agentWake(t, a, poll.ID); row.State != store.AgentWakeArmed || markerRuns(t, marker) != 0 {
+		t.Fatalf("after the aborted resume: %+v, %d runs; want it recovered and not run", row, markerRuns(t, marker))
+	}
+
+	setAssistants(t, a, true)
+	// The sweep the resume nudges.
+	a.fireDueAgentWakes(time.Now())
+	waitUntil(t, 10*time.Second, func() bool { return markerRuns(t, marker) == 1 })
+	awaitNoAgentWakeRun(t, a, poll.ID)
+	a.fireDueAgentWakes(time.Now())
+	awaitNoAgentWakeRun(t, a, poll.ID)
+	if runs := markerRuns(t, marker); runs != 1 {
+		t.Fatalf("the cut run was replayed %d times, want once", runs)
+	}
+	if row := agentWake(t, a, poll.ID); row.State != store.AgentWakeArmed || row.NextAt <= time.Now().UnixMilli() {
+		t.Fatalf("the watch after its replay = %+v; want it armed for its next fire", row)
+	}
+}
+
+// cutWatch registers an interval watch whose run a quit cut: claimed, its
+// next fire an hour away, with no process.
+func cutWatch(t *testing.T, a *App, threadID string) (store.AgentWake, string) {
+	t.Helper()
+	command, marker := markerWatch(t)
+	now := time.Now()
+	poll := registerTestWake(t, a, store.AgentWake{ThreadID: threadID, Kind: store.AgentWakeWatch, Label: "poll", Command: command, IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: now.Add(-time.Minute).UnixMilli()})
+	t.Cleanup(func() { a.stopAgentWakeRunsForThread(threadID) })
+	if _, claimed, err := a.store.ClaimAgentWake(poll, now.UnixMilli(), now.Add(time.Hour).UnixMilli(), 0); err != nil || !claimed {
+		t.Fatalf("claim: %v %v", claimed, err)
+	}
+	return poll, marker
+}
+
+// awaitOneReplay waits for the cut watch's replay and checks that the sweep
+// serves it no second time.
+func awaitOneReplay(t *testing.T, a *App, poll store.AgentWake, marker string) store.AgentWake {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool { return markerRuns(t, marker) == 1 })
+	awaitNoAgentWakeRun(t, a, poll.ID)
+	a.fireDueAgentWakes(time.Now())
+	awaitNoAgentWakeRun(t, a, poll.ID)
+	if runs := markerRuns(t, marker); runs != 1 {
+		t.Fatalf("the cut run was replayed %d times, want once", runs)
+	}
+	row := agentWake(t, a, poll.ID)
+	if row.State != store.AgentWakeArmed || row.NextAt <= time.Now().UnixMilli() {
+		t.Fatalf("the watch after its replay = %+v; want it armed for its next fire", row)
+	}
+	return row
+}
+
+// At boot, a run a quit cut within its interval is replayed at once, once,
+// and stands for no missed fire.
+func TestABootReplaysACutRunOnceCountingNothingMissed(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "boot-replay")
+	testAssistant(t, a, thread.ID)
+	poll, marker := cutWatch(t, a, thread.ID)
+
+	a.recoverAgentWakesAtBoot()
+	if row := awaitOneReplay(t, a, poll, marker); row.Missed != 0 {
+		t.Fatalf("the replay counted %d missed fires, want none", row.Missed)
+	}
+}
+
+// A boot that recovered a cut run and quit before replaying it leaves the
+// replay owed: the next boot replays it once.
+func TestABootThatQuitBeforeTheReplayLeavesItOwed(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "boot-replay-owed")
+	testAssistant(t, a, thread.ID)
+	poll, marker := cutWatch(t, a, thread.ID)
+	// The first boot's recovery, then the quit.
+	if _, applied, err := a.store.RecoverAgentWake(poll.ID, agentWakeOutcomeCutByQuit); err != nil || !applied {
+		t.Fatalf("recover: %v %v", applied, err)
+	}
+
+	a.recoverAgentWakesAtBoot()
+	awaitOneReplay(t, a, poll, marker)
 }

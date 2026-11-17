@@ -304,7 +304,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	if _, claimed, err := s.ClaimAgentWake(read(), at, at+60_000, 1); err != nil || !claimed {
 		t.Fatalf("claim before the quit: %v %v", claimed, err)
 	}
-	if _, err := s.RecoverAgentWake("w", "cancelled-by-quit"); err != nil {
+	if _, _, err := s.RecoverAgentWake("w", "cancelled-by-quit"); err != nil {
 		t.Fatal(err)
 	}
 	if row := read(); row.LastOutcome != "cancelled-by-quit" || row.Undelivered != skipped {

@@ -748,6 +748,10 @@ type App struct {
 	// and its run's registration (fireAgentWake), under the wake lifecycle
 	// lock, so a test can cancel the row at that moment.
 	agentWakeClaimedForTest func(row store.AgentWake)
+	// agentWatchRefusedForTest, when set, runs in a long-running watch's
+	// supervisor after the pause refused its process start and before the
+	// supervisor returns (superviseAgentWatch).
+	agentWatchRefusedForTest func(wakeID string)
 	// cancelReadForTest, when set, runs in a request cancel between its read
 	// of the receipt and its settlement (stopThreadRequestWorkFor), so a
 	// test can settle the receipt at that moment.
