@@ -855,15 +855,18 @@ Ruling 36, as built:
   `supersede` of an archive already sent. The sidebar's doors and
   `thread_update` make one attempt, all of them within 5 s, before they
   return: a worker whose computer has not taken it is named pending with
-  its computer (`WorkerFailure.pending`, `computer`), and one on a
-  computer that predates this as running an older version, which is not
-  asked again. The sidebar's archive and delete say so in one toast per
+  its computer (`WorkerFailure.pending`, `computer`), one on a computer
+  that predates this as running an older version, and one on a computer
+  whose pairing ended (forgotten in Remote access, or expired) as no longer
+  connected; neither of those is asked again, and forgetting a computer
+  drops what is owed to it. The sidebar's archive and delete say so in one toast per
   computer, told apart by its id (`WorkerFailure.computerId`), since two
   can share a name, after the toast for the workers here and with no
   action: `Archived "<owner>". Its worker "<title>" is pending on
   <computer>. <reason>` while pending, and `Archived "<owner>", but its
   worker "<title>" on <computer> is still open: <reason>` (a delete's:
-  `Deleted ... stays: <reason>`) for an older computer. Workers with
+  `Deleted ... stays: <reason>`) for an older or no longer connected
+  computer. Workers with
   different reasons keep each one: the reasons follow, each after the
   workers it applies to (`"<title>", "<title>": <reason>. "<title>":
   <reason>.`). The request sweep sends the rest, 5 s after an attempt

@@ -307,6 +307,8 @@ type ownerOpAttempt struct {
 	settled bool
 	// older: the computer predates owner operations; dropped.
 	older bool
+	// unpaired: the pairing with the computer ended; dropped.
+	unpaired bool
 	// busy: another attempt at the same spawn was under way.
 	busy bool
 	// reason says why a pending operation did not land, in a person's words.
@@ -371,10 +373,12 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 		}
 		target := targets[op.Token]
 		failure := workerFailure{threadID: target.TargetThreadID, title: target.TargetThreadTitle, computer: computer, computerID: op.ComputerID,
-			pending: !attempt.older}
+			pending: !attempt.older && !attempt.unpaired}
 		switch {
 		case attempt.older:
 			failure.err = fmt.Errorf("%s runs an older version, so the worker there was not %s", computer, ownerOpVerb(op.Op))
+		case attempt.unpaired:
+			failure.err = fmt.Errorf("%s is no longer connected, so the worker there was not %s", computer, ownerOpVerb(op.Op))
 		case attempt.reason != "":
 			failure.err = fmt.Errorf("%s: %s; it is %s there once that computer takes it", computer, attempt.reason, ownerOpVerb(op.Op))
 		default:
@@ -406,8 +410,9 @@ func (a *App) ownerOpTargets(ops []store.OwnerOp) map[string]store.ThreadRequest
 }
 
 // deliverOwnerOp makes one attempt at op: marked sent before its call, and
-// settled when its computer answered it for good or predates owner
-// operations, rescheduled on the retry ladder otherwise. An attempt that
+// settled when its computer answered it for good, predates owner operations
+// or is no longer paired (threadPairingEnded), rescheduled on the retry
+// ladder otherwise. An attempt that
 // finds another under way for the spawn, or op replaced by a newer
 // operation, does nothing.
 func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttempt {
@@ -424,10 +429,18 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 		return ownerOpAttempt{settled: true}
 	}
 	answer, err := a.callOwnerOp(ctx, op)
+	var code string
+	if err != nil {
+		code, _, _ = threadErrorDetails("owner operation", err)
+	}
 	switch {
 	case errors.Is(err, errThreadAgentPeerOlder):
 		a.settleOwnerOp(op)
 		return ownerOpAttempt{older: true}
+	case err != nil && threadPairingEnded(code):
+		// Nothing can deliver it until the person pairs the computer again.
+		a.settleOwnerOp(op)
+		return ownerOpAttempt{unpaired: true}
 	case err != nil:
 		a.rescheduleOwnerOp(op, err.Error())
 		return ownerOpAttempt{}

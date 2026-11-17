@@ -537,6 +537,52 @@ func TestDeletingASpawnerDeletesItsWorkersOnAnotherComputer(t *testing.T) {
 	}
 }
 
+// A spawner deleted after its worker's computer was forgotten owes that
+// computer nothing past the one attempt: the pairing ended, so the
+// operation settles and the worker is reported on a computer no longer
+// connected, not pending.
+func TestDeletingASpawnerAfterItsWorkersComputerWasForgottenSettles(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	if err := p.source.RemoveBackend(p.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	result, err := p.source.DeleteThread(p.caller.ID)
+	if err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if len(result.WorkersNotDeleted) != 1 {
+		t.Fatalf("WorkersNotDeleted = %+v, want the worker there", result.WorkersNotDeleted)
+	}
+	if failure := result.WorkersNotDeleted[0]; failure.Pending || failure.ThreadID != p.worker || !strings.Contains(failure.Error, "no longer connected") {
+		t.Fatalf("the worker there is reported %+v, want it not pending, on a computer no longer connected", failure)
+	}
+	if owed := p.owed(t); len(owed) != 0 {
+		t.Fatalf("the delete still owes %+v to a forgotten computer", owed)
+	}
+}
+
+// A delete owed to a computer that was asleep is dropped when that
+// computer is forgotten.
+func TestForgettingAComputerDropsTheDeleteOwedToIt(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	p.peer.asleep.Store(true)
+	result, err := p.source.DeleteThread(p.caller.ID)
+	if err != nil || len(result.WorkersNotDeleted) != 1 || !result.WorkersNotDeleted[0].Pending {
+		t.Fatalf("DeleteThread = %+v, %v; want the worker there pending", result, err)
+	}
+	if owed := p.owed(t); len(owed) != 1 {
+		t.Fatalf("owed = %+v, want the delete", owed)
+	}
+	if err := p.source.RemoveBackend(p.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	if owed := p.owed(t); len(owed) != 0 {
+		t.Fatalf("forgetting the computer left %+v owed", owed)
+	}
+}
+
 // A delete the other computer refuses, because its worker is being
 // transferred, stands here and is sent again until that computer answers:
 // once the transfer committed the worker is no longer there to delete.
