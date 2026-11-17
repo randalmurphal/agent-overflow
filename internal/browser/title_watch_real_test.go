@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -80,7 +81,86 @@ setTimeout(() => { document.querySelector("title").textContent = "Early changed"
 </script></body></html>`,
 		want: []string{"Early", "Early changed"},
 	},
+	{
+		// document.title reads the first title in tree order, which is now
+		// the root's child before the head, not the head's.
+		name: "a title is put before the head's", path: "/before-head-title", contentType: "text/html",
+		body: `<!doctype html><title>Head title</title><script>
+setTimeout(() => {
+  const title = document.createElement("title");
+  title.textContent = "Root title";
+  document.documentElement.prepend(title);
+  setTimeout(() => { title.textContent = "Root changed" }, 300);
+}, 300)
+</script>`,
+		want: []string{"Head title", "Root title", "Root changed"},
+	},
+	{
+		name: "the head's title is replaced by one in the body", path: "/body-title", contentType: "text/html",
+		body: `<!doctype html><title>Head title</title><body><div id="d"></div><script>
+setTimeout(() => {
+  document.querySelector("title").remove();
+  const title = document.createElement("title");
+  title.textContent = "Body title";
+  document.getElementById("d").append(title);
+  setTimeout(() => { title.textContent = "Body changed" }, 300);
+}, 300)
+</script></body>`,
+		want: []string{"Head title", "Body title", "Body changed"},
+	},
+	{
+		// The first script ends the parse's first observed mutations before
+		// the body's title is parsed, so the report is what finds it.
+		name: "a title parsed into the body", path: "/parsed-body-title", contentType: "text/html",
+		body: `<!doctype html><body><script>0</script><div><title>Body title</title></div><script>
+setTimeout(() => { document.querySelector("title").textContent = "Body changed" }, 300)
+</script></body>`,
+		want: []string{"Body title", "Body changed"},
+	},
+	{
+		// An inline SVG's title comes first in tree order but is not an
+		// HTML title element: the body's is the document's.
+		name: "an inline SVG title is not the document's", path: "/inline-svg", contentType: "text/html",
+		body: `<!doctype html><body><svg><title>Icon</title></svg><div><title>Body title</title></div><script>
+setTimeout(() => { document.querySelector("div title").textContent = "Body changed" }, 300)
+</script></body>`,
+		want: []string{"Body title", "Body changed"},
+	},
 }
+
+// lateBody is the watcher's stated limit: a title inserted into the body
+// after load while nothing the watcher observes changes.
+const lateBody = `<!doctype html><body><div id="d"></div><script>
+setTimeout(() => {
+  const title = document.createElement("title");
+  title.textContent = "Late";
+  document.getElementById("d").append(title);
+  window.inserted = true;
+}, 300)
+</script></body>`
+
+// headChildInsertions is how many head children the untitled document
+// inserts, each delivered on its own, over a body of bodyElements.
+const (
+	headChildInsertions = 1000
+	bodyElements        = 5000
+)
+
+// untitledHead inserts head children one per microtask into an untitled
+// document whose body is large, so each one costs the watcher a callback
+// and a title lookup over the whole document, and records how long the
+// insertions took.
+var untitledHead = fmt.Sprintf(`<!doctype html><body><script>
+for (let i = 0; i < %d; i++) document.body.append(document.createElement("p"));
+setTimeout(async () => {
+  const start = performance.now();
+  for (let i = 0; i < %d; i++) {
+    document.head.append(document.createElement("meta"));
+    await null;
+  }
+  window.elapsed = performance.now() - start;
+}, 300)
+</script></body>`, bodyElements, headChildInsertions)
 
 // busyBodyMutations is how many separately delivered body mutations the
 // busy document makes before it retitles itself.
@@ -111,10 +191,12 @@ func assertRealDocumentTitleChanges(t *testing.T, engine *headlessEngine) {
 			_, _ = w.Write([]byte(tc.body))
 		})
 	}
-	mux.HandleFunc("/busy", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(busyBody))
-	})
+	for path, body := range map[string]string{"/busy": busyBody, "/late": lateBody, "/untitled-head": untitledHead} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(body))
+		})
+	}
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	created, err := engine.NewProfile(t.Context(), profileOptions{
@@ -182,6 +264,44 @@ func assertRealDocumentTitleChanges(t *testing.T, engine *headlessEngine) {
 		}
 		t.Logf("the watcher ran %.0f callbacks over %d body mutations", callbacks, busyBodyMutations)
 	})
+	t.Run("a title inserted into the body after load reads right", func(t *testing.T) {
+		p, _ := open(t, "/late")
+		ctx, cancel := operationContext(t.Context(), p.Lifetime(), operationTimeout)
+		defer cancel()
+		pageValue[bool](t, ctx, "window.inserted === true")
+		if _, title, err := p.Info(ctx); err != nil || title != "Late" {
+			t.Fatalf("an info read answers %q (%v), want Late", title, err)
+		}
+	})
+	t.Run("head insertions in an untitled document stay bounded", func(t *testing.T) {
+		p, _ := open(t, "/untitled-head")
+		ctx, cancel := operationContext(t.Context(), p.Lifetime(), operationTimeout)
+		defer cancel()
+		elapsed := pageValue[float64](t, ctx, "window.elapsed")
+		callbacks := titleWatchCallbacks(t, p)
+		if callbacks > headChildInsertions+20 {
+			t.Fatalf("the watcher ran %.0f callbacks for %d head insertions", callbacks, headChildInsertions)
+		}
+		if elapsed > 2000 {
+			t.Fatalf("%d head insertions over a %d-element body took %.0f ms", headChildInsertions, bodyElements, elapsed)
+		}
+		t.Logf("%d head insertions over a %d-element body: %.0f callbacks, %.1f ms", headChildInsertions, bodyElements, callbacks, elapsed)
+	})
+}
+
+// pageValue waits for expression to be truthy in the page's own world and
+// answers it.
+func pageValue[T any](t *testing.T, ctx context.Context, expression string) T {
+	t.Helper()
+	var zero T
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		value, err := chromedp.Run(ctx, chromedp.Evaluate[T](expression))
+		if err == nil && any(value) != any(zero) {
+			return value
+		}
+	}
+	t.Fatalf("the page never answered %s", expression)
+	return zero
 }
 
 // titleWatchCallbacks reads the watcher's callback count from its own

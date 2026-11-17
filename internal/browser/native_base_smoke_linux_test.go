@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -231,6 +233,133 @@ func TestNativeEngineRealHiddenPageBase(t *testing.T) {
 		t.Fatalf("navigate the hidden tab: %v", err)
 	}
 	shot("hidden document", color.RGBA{0xff, 0xff, 0xff, 0xff})
+}
+
+// heldBaseEngine is the real WebKitGTK engine with its first white base
+// held until released, as a GTK thread busy elsewhere holds it.
+type heldBaseEngine struct {
+	*webkitEngine
+	handle  string
+	entered chan struct{}
+	gate    chan struct{}
+	held    atomic.Bool
+}
+
+func (e *heldBaseEngine) SetPageBase(handle, color string) {
+	if handle == e.handle && color == documentBase && e.held.CompareAndSwap(false, true) {
+		e.entered <- struct{}{}
+		<-e.gate
+	}
+	e.webkitEngine.SetPageBase(handle, color)
+}
+
+// TestNativeEngineRealHeldBase shows a blank tab on the pane's color, hides
+// it, navigates it to a document with no background of its own while the
+// white base that address calls for is held, and shows it: the pane does not
+// show the page on the pane's color while the base is held, and shows it
+// white once it lands.
+func TestNativeEngineRealHeldBase(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	if os.Getenv(nativeSmokeWestonEnv) == "" {
+		t.Skip("the screenshot needs the run's own weston")
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	engine := &heldBaseEngine{webkitEngine: manager.engine.(*webkitEngine), entered: make(chan struct{}, 1), gate: make(chan struct{})}
+	manager.engine = engine
+	release := sync.OnceFunc(func() { close(engine.gate) })
+	t.Cleanup(func() {
+		release()
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-held-base", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	file := writeSmokeFile(t, workspace, "plain.html", `<!doctype html><title>plain</title>`)
+	blank, err := manager.NewCompanionPage(ctx, access, "")
+	if err != nil {
+		t.Fatalf("open a blank tab: %v", err)
+	}
+	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.handle = p.driver.Handle()
+	if err := p.driver.Navigate(ctx, "about:blank"); err != nil {
+		t.Fatalf("load about:blank: %v", err)
+	}
+	show := true
+	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
+		t.Fatalf("show the pane: %v", err)
+	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("mount a pane: %v", err)
+	}
+	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	if err := manager.SetPaneRect(mount.ID, PaneRect{
+		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
+		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
+	}); err != nil {
+		t.Fatalf("place the pane: %v", err)
+	}
+	pane := color.RGBA{0x1e, 0x1e, 0x2e, 0xff}
+	white := color.RGBA{0xff, 0xff, 0xff, 0xff}
+	var region image.Rectangle
+	share := func(want color.RGBA) float64 {
+		img, _ := westonScreenshot(t)
+		if region.Empty() {
+			region = boundsOf(img, pane)
+		}
+		return shareOf(img, region, want)
+	}
+	waitFor := func(step string, want color.RGBA) {
+		t.Helper()
+		var got float64
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+			if got = share(want); got > 0.99 && region.Dx() >= 100 && region.Dy() >= 100 {
+				return
+			}
+		}
+		t.Fatalf("%s: %.0f%% of the pane region %v is %v", step, got*100, region, want)
+	}
+	waitFor("blank tab shown", pane)
+	hide := false
+	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
+		t.Fatalf("hide the pane: %v", err)
+	}
+	if err := p.driver.Navigate(ctx, smokeFileURL(file)); err != nil {
+		t.Fatalf("navigate the hidden tab: %v", err)
+	}
+	select {
+	case <-engine.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the white base was never applied")
+	}
+	shown := make(chan error, 1)
+	go func() {
+		_, err := manager.Visibility(ctx, access, &show, blank.ID)
+		shown <- err
+	}()
+	time.Sleep(time.Second)
+	if got := share(pane); got > 0.99 {
+		t.Fatalf("the document was shown on the pane's color while its white base was held (%.0f%% of %v)", got*100, region)
+	}
+	release()
+	if err := <-shown; err != nil {
+		t.Fatalf("show the pane: %v", err)
+	}
+	waitFor("document shown on its base", white)
 }
 
 // TestNativeEngineRealStaticPageShowsAgain hides a static page (one solid

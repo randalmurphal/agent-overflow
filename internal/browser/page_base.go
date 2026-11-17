@@ -56,7 +56,11 @@ func paneColor(value string) (string, bool) {
 // applyPageBase decides p's base from its address and its thread's pane
 // color, and tells the engine when that changed. Its callers are the inputs:
 // a committed address (info.go), a pane color (notePaneColorLocked) and p
-// joining its tabs, created or restored (pageAdded). A page not in its tabs
+// joining its tabs, created or restored (pageAdded); and a presentation pass
+// before it shows p (presentPanes), which is what keeps a show from
+// overtaking an application another caller has not finished. It must not be
+// called with Manager.mu held, and the engine's SetPageBase, called under
+// baseMu, must not run a presentation pass. A page not in its tabs
 // is left alone: its driver is published to other goroutines by its listing,
 // and pageAdded applies its base once it is listed.
 //

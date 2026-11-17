@@ -114,15 +114,22 @@ func dialCDPBrowser(browserCtx context.Context, subscribe func() error) error {
 // neither the binding nor the watcher, and nothing a page does to events
 // stops it: it starts when it is evaluated, before the document has a root.
 //
-// It observes the nodes a title change passes through and nothing else: the
-// Document's own children (a root replaced, or removed by document.open),
-// the root's children (a head or an SVG title arriving), the head's
-// children, and the subtree of the title element document.title reads (the
-// head's, or a root child's; an SVG root's own title child). Each callback
-// re-points those observations when the root, the head or the title element
-// changed, so a body's mutations cost nothing. The Navigation API's entry
-// change reports a same-document address change. A document still loading
-// with no title yet sends nothing first; it is looked at again each
+// The title element it follows is the one document.title reads: under an
+// SVG root, the root's first SVG title child; under any other root, the
+// document's first HTML title element in tree order, wherever it is (an
+// inline SVG's title is not one). It observes the nodes a title change
+// passes through and nothing else: the Document's own children (a root
+// replaced, or removed by document.open), the root's children, the head's
+// children, and that title element's subtree. Each observed mutation and
+// each report looks the title element up again and re-points the
+// observations when the root, the head or the title element changed; the
+// lookup over the document runs only then, so a body's mutations cost
+// nothing. The stated limit: a title element a script inserts into or
+// removes from the body after load, while nothing observed changes, is not
+// seen until the next observed change or report; an explicit read
+// (pageDriver.Info) asks document.title and is right. The Navigation API's
+// entry change reports a same-document address change. A document still
+// loading with no title yet sends nothing first; it is looked at again each
 // interval, so an untitled page reports once it has loaded. Each report is
 // one event and no round trip.
 const (
@@ -140,9 +147,11 @@ var documentTitleWatcher = fmt.Sprintf(`(() => {
   if (typeof send !== "function" || globalThis.__aoDocumentTitleWatch || window.top !== window) return;
   const watch = globalThis.__aoDocumentTitleWatch = {callbacks: 0};
   const svg = "http://www.w3.org/2000/svg";
+  const htmlTitles = document.getElementsByTagNameNS("http://www.w3.org/1999/xhtml", "title");
   let sent = "", last = 0, timer = 0, root = null, head = null, title = null;
   const flush = () => {
     timer = 0;
+    point();
     const now = String(document.title);
     if (!sent && !now && document.readyState === "loading") {
       timer = setTimeout(flush, %[4]d);
@@ -157,11 +166,10 @@ var documentTitleWatcher = fmt.Sprintf(`(() => {
   const changed = () => {
     if (!timer) timer = setTimeout(flush, Math.max(0, last + %[4]d - Date.now()));
   };
-  const titleOf = (r, h) => {
+  const titleOf = (r) => {
     if (!r) return null;
-    const inHead = h && h.getElementsByTagName("title")[0];
-    if (inHead) return inHead;
-    for (const child of r.children) if (child.localName === "title" && child.namespaceURI === r.namespaceURI) return child;
+    if (r.namespaceURI !== svg) return htmlTitles[0] || null;
+    for (const child of r.children) if (child.localName === "title" && child.namespaceURI === svg) return child;
     return null;
   };
   const observer = new MutationObserver(() => {
@@ -172,7 +180,7 @@ var documentTitleWatcher = fmt.Sprintf(`(() => {
   const point = () => {
     const r = document.documentElement;
     const h = r && r.namespaceURI !== svg ? document.head : null;
-    const t = titleOf(r, h);
+    const t = titleOf(r);
     if (r === root && h === head && t === title) return;
     root = r, head = h, title = t;
     observer.disconnect();

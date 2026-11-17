@@ -303,7 +303,9 @@ positioned over.
   while the thread's pane never reported one). The Manager applies it,
   shown or hidden, when the page joins its tabs, when its committed
   address changes between a document and none, and when the pane's color
-  changes; geometry carries no color. The Manager also fits the page's viewport into that rect (`placePage`:
+  changes, and a presentation pass brings it up to date before it shows
+  the page, so no show overtakes a base still being applied; geometry
+  carries no color. The Manager also fits the page's viewport into that rect (`placePage`:
   scale = min(rect/viewport, 1), centered by whole CSS pixels so a page
   that follows the pane starts at the rect's origin, clip intersected) and the
   platform host positions the native view at the fitted rect, drawn

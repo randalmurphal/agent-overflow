@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -59,7 +60,7 @@ func newBaseEngine(t *testing.T) (*Manager, *recordingPaneHost, *baseLog, Access
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	log :=&baseLog{last: map[string]string{}, bases: map[string]int{}}
+	log := &baseLog{last: map[string]string{}, bases: map[string]int{}}
 	engine := &recordingPaneHost{fakeEngine: manager.engine.(*fakeEngine), onBase: log.base, onShow: log.show}
 	engine.onBounds = func(placement PanePlacement) {
 		if placement.Rect.Background != "" {
@@ -235,6 +236,117 @@ func TestThePresentingPanesColorIsTheBase(t *testing.T) {
 	}
 	manager.DetachPane(mountID)
 	waitForBase(t, log, handle, basePaneDark)
+}
+
+// holdBase makes the engine's first SetPageBase that match accepts wait
+// until release, signalling entered once it waits. The log records a base
+// when its call returns, as an engine has applied it then.
+func holdBase(t *testing.T, m *Manager, log *baseLog, match func(handle, color string) bool) (entered chan struct{}, release func()) {
+	t.Helper()
+	entered = make(chan struct{}, 1)
+	gate := make(chan struct{})
+	var claimed atomic.Bool
+	engine := m.engine.(*recordingPaneHost)
+	engine.mu.Lock()
+	engine.onBase = func(handle, color string) {
+		if match(handle, color) && claimed.CompareAndSwap(false, true) {
+			entered <- struct{}{}
+			<-gate
+		}
+		log.base(handle, color)
+	}
+	engine.mu.Unlock()
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return entered, release
+}
+
+func receiveWithin(t *testing.T, ch chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// assertBaseBeforeShow waits for handle to be shown and fails when it was
+// shown before the base want was recorded for it.
+func assertBaseBeforeShow(t *testing.T, log *baseLog, handle, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		events := log.snapshot()
+		show := slices.Index(events, "show:"+handle)
+		if show >= 0 {
+			base := slices.Index(events, "base:"+handle+":"+want)
+			if base < 0 || base > show {
+				t.Fatalf("page %s was shown before its base %s: %v", handle, want, events)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("page %s was never shown: %v", handle, events)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A hidden blank page navigates to a document while its white base is still
+// being applied, and another call shows it: the show waits for that base.
+func TestAShowWaitsForTheBaseUnderWay(t *testing.T) {
+	manager, log, access, _, secondID, _ := newBaseManager(t, true)
+	handle := paneHandle(manager, access, secondID)
+	waitForBase(t, log, handle, basePane)
+	p := ownedPage(t, manager, access, secondID)
+	entered, release := holdBase(t, manager, log, func(h, color string) bool { return h == handle && color == documentBase })
+	go manager.pageInfoReport(p, "https://example.test/doc", "example.test/doc", 1000)
+	receiveWithin(t, entered, "the white base to be applied")
+	activated := make(chan error, 1)
+	go func() { activated <- manager.ActivateCompanionPage(t.Context(), access, secondID) }()
+	time.Sleep(200 * time.Millisecond)
+	if slices.Contains(log.snapshot(), "show:"+handle) {
+		t.Fatalf("the page was shown while its white base was being applied: %v", log.snapshot())
+	}
+	release()
+	if err := <-activated; err != nil {
+		t.Fatal(err)
+	}
+	assertBaseBeforeShow(t, log, handle, documentBase)
+}
+
+// A new tab's first base is still being applied when the pane reports
+// again with the same color: that report's pass does not show the tab
+// before its base.
+func TestANewTabIsNotShownBeforeItsFirstBase(t *testing.T) {
+	manager, log, access, firstID, secondID, mountID := newBaseManager(t, true)
+	known := []string{paneHandle(manager, access, firstID), paneHandle(manager, access, secondID)}
+	waitForBase(t, log, known[1], basePane)
+	entered, release := holdBase(t, manager, log, func(h, color string) bool { return color == basePane && !slices.Contains(known, h) })
+	created := make(chan PageInfo, 1)
+	go func() {
+		info, err := manager.NewCompanionPage(t.Context(), access, "")
+		if err != nil {
+			t.Errorf("new tab: %v", err)
+		}
+		created <- info
+	}()
+	receiveWithin(t, entered, "the new tab's first base to be applied")
+	reported := make(chan error, 1)
+	go func() { reported <- manager.SetPaneRect(mountID, baseRect(basePane)) }()
+	time.Sleep(200 * time.Millisecond)
+	for _, event := range log.snapshot() {
+		if handle, ok := strings.CutPrefix(event, "show:"); ok && !slices.Contains(known, handle) {
+			t.Fatalf("the new tab was shown before its first base: %v", log.snapshot())
+		}
+	}
+	release()
+	if err := <-reported; err != nil {
+		t.Fatal(err)
+	}
+	info := <-created
+	assertBaseBeforeShow(t, log, paneHandle(manager, access, info.ID), basePane)
 }
 
 // A restored page takes its base before it is shown: the pane color it never
