@@ -20,7 +20,7 @@ func TestListThreadPastAgentRequestsPagesNewestSettledFirst(t *testing.T) {
 	}
 	seedAgentRequest(t, s, "old-spawn", "lead", ThreadRequestSpawn, "old", false, 5)
 	settleAgentRequest(t, s, "old-spawn", 10)
-	if _, _, err := s.DeleteThreadRequestsBefore(50); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(50, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	type seed struct {

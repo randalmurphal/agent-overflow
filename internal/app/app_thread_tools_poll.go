@@ -939,7 +939,11 @@ func (a *App) expireThreadRequests(now time.Time) {
 		log.Printf("thread tools: dropped %d uncollected answer(s) past their hold", dropped)
 	}
 	floor := now.AddDate(0, 0, -store.ThreadRequestRetentionDays).UnixMilli()
-	if swept, released, err := a.store.DeleteThreadRequestsBefore(floor); err != nil {
+	if err := a.reassessSpawnsPastFloor(floor); err != nil {
+		// Nothing past the floor is cleared on a partial reading of rest;
+		// the next pass reads again.
+		logThreadRequestSweep("read the rest of the threads of spawns past retention", err)
+	} else if swept, released, err := a.store.DeleteThreadRequestsBefore(floor, a.parkedRequestTokens(), a.liveWorkerThreads()); err != nil {
 		logThreadRequestSweep("delete requests past retention", err)
 	} else {
 		if swept > 0 {
@@ -955,6 +959,19 @@ func (a *App) expireThreadRequests(now time.Time) {
 		log.Printf("thread tools: deleted %d finished remote job watch(es) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
 	}
 	a.sweepThreadExports(now)
+}
+
+// reassessSpawnsPastFloor reads, from their sources now, the threads of the
+// spawns past floor and every thread below them (reassessSpawnedBelow), so
+// the sweep's clearing of a spawn, which cannot be taken back, reads their
+// rest as the listing does and fresh. Nothing to read while no spawn is
+// past the floor.
+func (a *App) reassessSpawnsPastFloor(floor int64) error {
+	targets, err := a.store.SpawnTargetsPastFloor(floor)
+	if err != nil || len(targets) == 0 {
+		return err
+	}
+	return a.reassessSpawnedBelow(targets, true)
 }
 
 // sweepThreadExports deletes the two kinds of export file nobody keeps: an

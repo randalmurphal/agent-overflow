@@ -32,7 +32,7 @@ func lineageOnly(t *testing.T, p *ownerOpPair) {
 	if _, found, err := p.dest.store.ReachSpawnLink(p.token, p.device, p.caller.ID, floor+time.Hour.Milliseconds()); err != nil || !found {
 		t.Fatalf("the owner's contact: %v, %v", found, err)
 	}
-	if _, released, err := p.dest.store.DeleteThreadRequestsBefore(floor); err != nil || len(released) != 0 {
+	if _, released, err := p.dest.store.DeleteThreadRequestsBefore(floor, nil, nil); err != nil || len(released) != 0 {
 		t.Fatalf("the sweep there: released %v, %v; want the link kept", released, err)
 	}
 	if _, found, err := p.dest.store.GetThreadRequestReceipt(p.token); err != nil || found {

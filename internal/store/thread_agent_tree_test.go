@@ -105,7 +105,7 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	if got := listed(); !slices.Equal(got, want) {
 		t.Fatalf("before the sweep the tree = %v, want %v", got, want)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(5_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := listed(); !slices.Equal(got, want) {
@@ -122,7 +122,7 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	if ok, err := s.SetThreadRequestNestedOpen("remote", false); err != nil || !ok {
 		t.Fatalf("nested closed: %v %v", ok, err)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(8_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(8_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := listed(); len(got) != 0 {
@@ -149,7 +149,7 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	settleAgentRequest(t, s, "g-r", 7_100)
-	if _, _, err := s.DeleteThreadRequestsBefore(9_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(9_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := s.SetThreadRequestNestedOpen("remote", true); err != nil || !ok {
@@ -204,7 +204,7 @@ func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
 	}
 	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
 	settleAgentRequest(t, s, "l-c", 200)
-	if _, _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(5_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if row := rawThreadRequest(t, s, "l-c"); !row.LineageOnly || row.Answer != nil {
@@ -486,7 +486,7 @@ func TestRetentionKeepsSpawnReceiptsWithOpenWorkUnderThem(t *testing.T) {
 		}
 		return out
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(5_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := receipts(), []string{"in-own", "in-nests", "in-far"}; !slices.Equal(got, want) {
@@ -498,7 +498,7 @@ func TestRetentionKeepsSpawnReceiptsWithOpenWorkUnderThem(t *testing.T) {
 	if ok, err := s.SetThreadRequestNestedOpen("far-remote", false); err != nil || !ok {
 		t.Fatalf("nested closed: %v %v", ok, err)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(5_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := receipts(); len(got) != 0 {
@@ -912,7 +912,7 @@ func TestListThreadAgentStopRowsReadsTheListingsLevelWhole(t *testing.T) {
 	}
 	seedAgentRequest(t, s, "gone-spawn", "lead", ThreadRequestSpawn, "w-gone", false, 111)
 	settleAgentRequest(t, s, "gone-spawn", 200)
-	if _, _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(5_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	seedAgentRequest(t, s, "gone-under", "w-gone", ThreadRequestSend, "gone-grand", true, 6_000)

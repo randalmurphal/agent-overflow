@@ -605,8 +605,28 @@ func (s *Store) ReadThreadAgentState(read ThreadAgentStateRead) (ThreadAgentStat
 // threadAgentStateSQL is ReadThreadAgentState's read: ?1 the thread, ?2 the
 // held work (agentHeldParam), ?3 the settled window.
 var threadAgentStateSQL = `WITH RECURSIVE ` + agentHeldSQL + `
-SELECT (` + agentOpenUnderSQL(agentRootSQL) + ` OR EXISTS (SELECT 1 FROM held WHERE held.thread = ` + agentRootSQL + `)),
+SELECT ` + agentOpenBelowThreadSQL(agentRootSQL) + `,
        (` + agentRowsUnderSQL(agentRootSQL) + `)`
+
+// agentOpenBelowThreadSQL is whether thread has open work at any depth
+// below it, as agentTargetOpenSQL reads it for a spawn of it: a request it
+// made that is open work, or a local spawn it made whose marks count open
+// work, within agentOpenDepth (agentOpenUnderSQL), or held work it keeps
+// (agentHeldSQL), deeper or only in memory. The statement defines `held`.
+func agentOpenBelowThreadSQL(thread string) string {
+	return `(` + agentOpenUnderSQL(thread) + ` OR EXISTS (SELECT 1 FROM held WHERE held.thread = ` + thread + `))`
+}
+
+// agentThreadOpenSQL is whether thread is not at rest as the listing reads
+// it: live on this computer (?2's live threads) or with open work below it
+// (agentOpenBelowThreadSQL). With every thread not at rest by its own
+// sources among the live ones, it answers for a thread a local spawn
+// reaches as that spawn's agentTargetOpenSQL does, and it answers the same
+// for a thread a paired computer's spawn made here, whose spawn row is on
+// that computer. The statement defines `held`.
+func agentThreadOpenSQL(thread string) string {
+	return `(` + thread + ` IN (SELECT value FROM json_each(?2, '$.live')) OR ` + agentOpenBelowThreadSQL(thread) + `)`
+}
 
 // agentRowKindSQL matches a request kind the listing shows: every spawn,
 // and a send or ask whose wake is armed or that a call is parked on (?2).

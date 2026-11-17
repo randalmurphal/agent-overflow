@@ -1097,34 +1097,34 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // (idx_thread_requests_age), a receipt past it
 // (idx_thread_request_receipts_age), and a lineage row whose spawned thread
 // is gone (idx_thread_requests_lineage, idx_thread_request_receipts_lineage). An open row is in neither age
-// index: it is still work, and waits for its own settlement. A spawn with
-// open work under it, a local one's marks (agentOpenBelowSQL) or a remote
-// one's nested_open, waits for that work the same way: the Agents segment
-// lists it for that work, with its answer, and deleting a remote one would
-// take the open rows below it out of its caller's tree. A local spawn's
-// lineage stays its target's link once cleared (agentSpawnLinkSQL). A
-// spawn's receipt waits while its target or a thread up to agentOpenDepth
-// spawns below it has open work (agentOpenUnderSQL), and once past the
-// floor is kept the same way while its thread exists, as its lineage
-// (receiptLineageSQL): it is what lets the computer that made the spawn
-// list and stop that thread's work, now or once it is continued
-// (ThreadSpawnedForSource), and that computer keeps its own row for open
-// work there through nested_open.
+// index: it is still work, and waits for its own settlement. A spawn whose
+// thread is not at rest waits for it the same way, read by the listing's
+// own predicate (agentTargetOpenSQL): the Agents segment lists it with its
+// answer, its worker can still reply on its token, and deleting a remote
+// one would take the open rows below it out of its caller's tree. A local
+// spawn's lineage stays its target's link once cleared (agentSpawnLinkSQL).
+// A spawn's receipt waits while its thread is not at rest by the same
+// reading (agentThreadOpenSQL), and once past the floor is kept the same
+// way while its thread exists, as its lineage (receiptLineageSQL): it is
+// what lets the computer that made the spawn list and stop that thread's
+// work, now or once it is continued (ThreadSpawnedForSource), and that
+// computer keeps its own row for open work there through nested_open. Both
+// read ?1 as the floor and ?2 as the held work (agentHeldParam), in a
+// statement that defines `held` (agentHeldSQL).
 //
 // The lineage set is the one the sweep's probe cannot search: "no thread
 // has this id" is an anti-join, so the probe walks every lineage row on
 // idx_thread_requests_lineage and looks each up in threads. Measured at
 // 5 us with none and 1.8 ms with 5,000, once per sweep.
-const (
+var (
 	requestPastFloorSQL = `lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running')
-	    AND COALESCE(settled_at, due_at, created_at) < ?
-	    AND (nested_open = 0 OR target_computer_id = '') AND (open_below_0 + open_below_1 + open_below_2 + open_below_3) = 0`
-	orphanLineageSQL = `lineage_only = 1 AND target_computer_id = ''
-	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
+	    AND COALESCE(settled_at, due_at, created_at) < ?1 AND NOT ` + agentTargetOpenSQL("thread_requests")
+	receiptPastFloorSQL = `lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?1
+	    AND NOT (kind = 'spawn' AND ` + agentThreadOpenSQL("COALESCE(thread_request_receipts.target_thread_id, '')") + `)`
 )
 
-var receiptPastFloorSQL = `lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?
-	    AND NOT (kind = 'spawn' AND ` + agentOpenUnderSQL("thread_request_receipts.target_thread_id") + `)`
+const orphanLineageSQL = `lineage_only = 1 AND target_computer_id = ''
+	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
 
 const (
 	// receiptLineageSQL matches a spawn's receipt whose thread still exists.
@@ -1156,6 +1156,10 @@ const (
 // for a day. A local spawn request whose thread exists keeps its lineage
 // past the floor, marked lineage_only with its payload cleared
 // (spawnLineageSQL), and so does a spawn's receipt (receiptLineageSQL).
+// A spawn whose thread is not at rest is left whole: waiting and live are
+// the held work, as ThreadAgentTreeRead's, and live must name the threads
+// below the spawns past the floor as their sources read now
+// (SpawnTargetsPastFloor names those spawns' threads).
 //
 // The same transaction releases each paired computer's link whose owner has
 // not reached it since the floor (staleSpawnLinkSQL), one link at a time
@@ -1165,15 +1169,21 @@ const (
 // The sweep runs every few minutes and almost never finds anything, so it
 // asks first, on the read pool, through the indexes the sets have, and
 // takes the writer only when something is past the floor.
-func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (swept int64, released []string, err error) {
+func (s *Store) DeleteThreadRequestsBefore(cutoff int64, waiting, live []string) (swept int64, released []string, err error) {
+	held, err := agentHeldParam(waiting, live)
+	if err != nil {
+		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: %w", cutoff, err)
+	}
+	withHeld := `WITH RECURSIVE ` + agentHeldSQL + ` `
 	var due bool
-	if err := s.reader().QueryRow(`SELECT
+	// staleSpawnLinkSQL's two bare parameters follow ?1 and ?2: ?3 and ?4.
+	if err := s.reader().QueryRow(withHeld+`SELECT
 	    EXISTS (SELECT 1 FROM thread_requests WHERE `+requestPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)`,
-		cutoff, cutoff, cutoff, cutoff).Scan(&due); err != nil {
+		cutoff, held, cutoff, cutoff).Scan(&due); err != nil {
 		return 0, nil, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
 	if !due {
@@ -1187,16 +1197,17 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (swept int64, released 
 	if released, err = releaseSpawnLinksTx(tx, staleSpawnLinkSQL, cutoff, cutoff); err != nil {
 		return 0, nil, fmt.Errorf("store: release the spawn links silent since %d: %w", cutoff, err)
 	}
+	floor := []any{cutoff, held}
 	steps := []struct {
 		what, query string
 		args        []any
 	}{
-		{"clear kept thread_requests", clearLineagePayloadSQL + ` AND ` + requestPastFloorSQL + ` AND ` + spawnLineageSQL, []any{cutoff}},
-		{"sweep thread_requests", `DELETE FROM thread_requests WHERE ` + requestPastFloorSQL + ` AND NOT (` + spawnLineageSQL + `)`, []any{cutoff}},
+		{"clear kept thread_requests", withHeld + clearLineagePayloadSQL + ` AND ` + requestPastFloorSQL + ` AND ` + spawnLineageSQL, floor},
+		{"sweep thread_requests", withHeld + `DELETE FROM thread_requests WHERE ` + requestPastFloorSQL + ` AND NOT (` + spawnLineageSQL + `)`, floor},
 		{"sweep lineage thread_requests", `DELETE FROM thread_requests WHERE ` + orphanLineageSQL, nil},
-		{"clear kept thread_request_receipts", clearReceiptLineageSQL + receiptPastFloorSQL + ` AND ` + receiptLineageSQL, []any{cutoff}},
+		{"clear kept thread_request_receipts", withHeld + clearReceiptLineageSQL + receiptPastFloorSQL + ` AND ` + receiptLineageSQL, floor},
 		// The step before kept the lineage, which the floor's set leaves out.
-		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, []any{cutoff}},
+		{"sweep thread_request_receipts", withHeld + `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, floor},
 		{"sweep lineage thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + orphanReceiptLineageSQL, nil},
 	}
 	for _, step := range steps {
@@ -1214,6 +1225,42 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (swept int64, released 
 		return 0, nil, fmt.Errorf("store: commit thread request retention sweep: %w", err)
 	}
 	return swept, released, nil
+}
+
+// SpawnTargetsPastFloor lists, by id, the threads of this computer that a
+// spawn past the floor names, its request or its receipt, not yet reduced
+// to its lineage: the threads whose rest decides whether the sweep at
+// cutoff leaves those spawns whole. One read through the age indexes, so it
+// follows the rows past the floor, which are the spawns kept for their
+// threads' work.
+func (s *Store) SpawnTargetsPastFloor(cutoff int64) (_ []string, err error) {
+	action := fmt.Sprintf("store: list the threads of the spawns past %d", cutoff)
+	rows, err := s.reader().Query(`SELECT past.id FROM (
+	    SELECT target_thread_id AS id FROM thread_requests
+	     WHERE lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running') AND COALESCE(settled_at, due_at, created_at) < ?1
+	       AND kind = 'spawn' AND target_computer_id = '' AND target_thread_id <> ''
+	    UNION
+	    SELECT target_thread_id FROM thread_request_receipts
+	     WHERE lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?1
+	       AND kind = 'spawn' AND COALESCE(target_thread_id, '') <> '') AS past
+	  CROSS JOIN threads ON threads.id = past.id
+	 ORDER BY past.id`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("%s: scan: %w", action, err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: iterate: %w", action, err)
+	}
+	return out, nil
 }
 
 // stateInClause renders a validated `state IN (...)` predicate. A typo would

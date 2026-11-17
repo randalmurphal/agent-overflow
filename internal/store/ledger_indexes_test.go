@@ -322,22 +322,23 @@ func TestThreadRequestSweepSkipsWithNothingPastTheFloor(t *testing.T) {
 		settleAgentRequest(t, s, token, 2_000+int64(i))
 	}
 	writes, commits := s.WriteCount(), s.CommitCount()
-	swept, _, err := s.DeleteThreadRequestsBefore(1_500)
+	swept, _, err := s.DeleteThreadRequestsBefore(1_500, nil, nil)
 	if err != nil || swept != 0 {
 		t.Fatalf("sweep = %d, %v", swept, err)
 	}
 	if w, c := s.WriteCount()-writes, s.CommitCount()-commits; w != 0 || c != 0 {
 		t.Fatalf("a sweep with nothing due wrote %d statements in %d transactions", w, c)
 	}
-	probe := `SELECT EXISTS (SELECT 1 FROM thread_requests WHERE ` + requestPastFloorSQL + `)`
-	assertPlanSearches(t, s, "the request floor probe", "thread_requests", []string{"idx_thread_requests_age"}, probe, int64(1))
-	probe = `SELECT EXISTS (SELECT 1 FROM thread_request_receipts WHERE ` + receiptPastFloorSQL + `)`
-	assertPlanSearches(t, s, "the receipt floor probe", "thread_request_receipts", []string{"idx_thread_request_receipts_age"}, probe, int64(1))
+	withHeld, held := `WITH RECURSIVE `+agentHeldSQL+` `, `{"waiting":[],"live":[]}`
+	probe := withHeld + `SELECT EXISTS (SELECT 1 FROM thread_requests WHERE ` + requestPastFloorSQL + `)`
+	assertPlanSearches(t, s, "the request floor probe", "thread_requests", []string{"idx_thread_requests_age"}, probe, int64(1), held)
+	probe = withHeld + `SELECT EXISTS (SELECT 1 FROM thread_request_receipts WHERE ` + receiptPastFloorSQL + `)`
+	assertPlanSearches(t, s, "the receipt floor probe", "thread_request_receipts", []string{"idx_thread_request_receipts_age"}, probe, int64(1), held)
 	// A spawn's receipt asks whether its thread has open work through the
 	// indexes that hold only open work.
 	assertPlanSearches(t, s, "the receipt floor's open work", "o", []string{
 		"idx_thread_requests_open_created", "idx_thread_requests_nested_caller", "idx_thread_requests_open_below",
-	}, probe, int64(1))
+	}, probe, int64(1), held)
 	// The lineage probe walks the lineage rows alone, one per spawned
 	// thread that outlived the floor, in their own index.
 	probe = `SELECT EXISTS (SELECT 1 FROM thread_requests WHERE ` + orphanLineageSQL + `)`
@@ -347,7 +348,7 @@ func TestThreadRequestSweepSkipsWithNothingPastTheFloor(t *testing.T) {
 		}
 	}
 	assertPlanSearches(t, s, "the request delete", "thread_requests", []string{"idx_thread_requests_age"},
-		`DELETE FROM thread_requests WHERE `+requestPastFloorSQL+` AND NOT (`+spawnLineageSQL+`)`, int64(1))
+		withHeld+`DELETE FROM thread_requests WHERE `+requestPastFloorSQL+` AND NOT (`+spawnLineageSQL+`)`, int64(1), held)
 }
 
 // Past the floor the sweep still does all it did: a settled request and
@@ -373,7 +374,7 @@ func TestThreadRequestSweepAfterTheSkip(t *testing.T) {
 	settleAgentRequest(t, s, "orphan-spawn", 20)
 	seedAgentRequest(t, s, "open", "lead", ThreadRequestSend, "child", false, 10)
 
-	swept, _, err := s.DeleteThreadRequestsBefore(1_000)
+	swept, _, err := s.DeleteThreadRequestsBefore(1_000, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +386,7 @@ func TestThreadRequestSweepAfterTheSkip(t *testing.T) {
 	if err := s.DeleteThread("gone"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(1_000); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(1_000, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	var tokens []string

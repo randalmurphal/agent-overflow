@@ -557,7 +557,7 @@ func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing
 	floor := time.Now().Add(-time.Minute).UnixMilli()
 	sweep := func(app *App) {
 		t.Helper()
-		if _, _, err := app.store.DeleteThreadRequestsBefore(floor); err != nil {
+		if _, _, err := app.store.DeleteThreadRequestsBefore(floor, nil, nil); err != nil {
 			t.Fatalf("sweep: %v", err)
 		}
 	}

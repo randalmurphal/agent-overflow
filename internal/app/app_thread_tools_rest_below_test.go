@@ -1,9 +1,10 @@
 package app
 
-// A held request settles `finished` from a reading of its thread's rest that
-// is fresh at that moment, the threads below it included: a thread a spawn
-// of it made that started work since the Agents rows' drain last ran keeps
-// it held, and a source that cannot be read holds it for the next pass.
+// A decision that cannot be taken back reads rest fresh at that moment, the
+// threads below included: a held request settles `finished` only when a
+// thread a spawn of its thread made has no work the Agents rows' drain has
+// not recorded yet, and the retention sweep clears no spawn whose thread
+// works. A source that cannot be read holds either for the next pass.
 
 import (
 	"bytes"
@@ -235,6 +236,66 @@ func TestAFailedReadBelowAHeldRequestHoldsIt(t *testing.T) {
 	row := f.awaitRequestState(t, w.Token, store.ThreadRequestFinished)
 	if string(row.Answer) != "Handed it on." {
 		t.Fatalf("settled %+v; want finished with the worker's message", row)
+	}
+}
+
+// A spawn past the retention floor whose worker has a loop armed, which
+// nothing reported to the Agents rows, keeps its answer and token on both
+// sides: the sweep reads the worker's sources before it clears anything,
+// and clears nothing while it cannot read them. Once the loop is cancelled
+// the next sweep keeps only its lineage.
+func TestTheRetentionSweepLeavesAWorkingSpawnWhole(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	f.holdCallerSession()
+	installMockClaudeTurns(t, f.app, [][]string{reportTurn("Rebuilt the index.")})
+	ack := f.spawnWorker(t, "rebuild the index")
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	waitUntil(t, 10*time.Second, func() bool {
+		f.app.threadRequestsWG.Wait()
+		return f.app.liveThreadRest(ack.ThreadID).unrest == ""
+	})
+	wake, err := f.app.store.RegisterAgentWake(store.AgentWake{
+		ID: "wake-worker", ThreadID: ack.ThreadID, Kind: store.AgentWakeLoop, Label: "index",
+		IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.app.liveWorker(ack.ThreadID) {
+		t.Fatalf("the record knows the loop (%+v); the test needs it not to", f.app.liveThreadRest(ack.ThreadID))
+	}
+	later := time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1)
+	whole := func(what string) {
+		t.Helper()
+		if row, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || !found || string(row.Answer) != "Rebuilt the index." {
+			t.Fatalf("the spawn after %s: %+v, found %v, %v; want it whole", what, row, found, err)
+		}
+		if receipt, found, err := f.app.store.GetThreadRequestReceipt(ack.Token); err != nil || !found || string(receipt.Answer) != "Rebuilt the index." {
+			t.Fatalf("the spawn's receipt after %s: %+v, found %v, %v; want it whole", what, receipt, found, err)
+		}
+	}
+	// A sweep that cannot read the worker's sources clears nothing.
+	restore := f.failRestSource(t)
+	f.app.expireThreadRequests(later)
+	whole("a sweep that could not read its worker")
+	restore()
+	f.app.expireThreadRequests(later)
+	whole("the sweep")
+
+	if _, found, err := f.app.store.CancelAgentWake(ack.ThreadID, wake.Label, store.AgentWakeLoop, agentWakeOutcomeCancelled); err != nil || !found {
+		t.Fatalf("CancelAgentWake: %v %v", found, err)
+	}
+	f.app.expireThreadRequests(later)
+	if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
+		t.Fatalf("the spawn's token once its worker rests: found %v, %v; want unknown", found, err)
+	}
+	if _, found, err := f.app.store.GetThreadRequestReceipt(ack.Token); err != nil || found {
+		t.Fatalf("the receipt once its worker rests: found %v, %v; want unknown", found, err)
+	}
+	if link, found, err := f.app.store.SpawnLinkOf(ack.ThreadID); err != nil || !found || link != ack.Token {
+		t.Fatalf("the spawn's lineage %q, %v, %v; want it kept as the worker's link", link, found, err)
 	}
 }
 
