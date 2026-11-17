@@ -50,9 +50,11 @@ type ThreadDownload struct {
 
 type threadDownload struct {
 	ThreadDownload
-	// engineID is the engine's id for the download; path the finished file.
+	// engineID is the engine's id for the download; path the finished file
+	// and file what it was when the download finished.
 	engineID string
 	path     string
+	file     os.FileInfo
 }
 
 type threadDownloadList struct {
@@ -119,7 +121,7 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 	wasRunning := started || item.State == downloadStateRunning
 	item.Name = entry.SuggestedName
 	if entry.Path != "" {
-		item.path = entry.Path
+		item.path, item.file = entry.Path, entry.file
 		item.Name = filepath.Base(entry.Path)
 	}
 	item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
@@ -304,11 +306,17 @@ func (m *Manager) finishedDownloadPath(access Access, id string) (threadDownload
 	if item.State != downloadStateCompleted || item.path == "" {
 		return threadDownload{}, fmt.Errorf("browser: the download of %s did not finish", item.Name)
 	}
-	if _, err := os.Stat(item.path); err != nil {
+	current, err := os.Stat(item.path)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return threadDownload{}, fmt.Errorf("browser: %s is gone; downloads are removed after %d days", item.Name, int(artifactMaxAge.Hours()/24))
 		}
 		return threadDownload{}, fmt.Errorf("browser: read the download %s: %w", item.Name, err)
+	}
+	// A name is reused once its file is moved away, so the path alone may
+	// name a later download's file.
+	if item.file == nil || !os.SameFile(item.file, current) {
+		return threadDownload{}, fmt.Errorf("browser: %s was moved or replaced since it downloaded", item.Name)
 	}
 	return item, nil
 }

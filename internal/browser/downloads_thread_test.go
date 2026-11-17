@@ -478,6 +478,65 @@ func TestRevealingADownloadShowsItsFile(t *testing.T) {
 	}
 }
 
+// A row acts only on the file its download wrote. Moving a download out
+// frees its name for the next one, so the two rows share a path: the older
+// row refuses the newer file, and once the older file is back in its place
+// the newer row refuses it.
+func TestADownloadRowActsOnlyOnItsOwnFile(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	var revealed []string
+	manager.revealFileInFileManager = func(_ context.Context, path string) error {
+		revealed = append(revealed, path)
+		return nil
+	}
+	act := func(id string) error {
+		revealErr := manager.RevealThreadDownload(t.Context(), access, id)
+		_, openErr := manager.OpenThreadDownload(t.Context(), access, id)
+		if (revealErr == nil) != (openErr == nil) {
+			t.Fatalf("Show in folder answers %v and Open %v", revealErr, openErr)
+		}
+		return revealErr
+	}
+	replaced := func(err error) bool { return err != nil && strings.Contains(err.Error(), "moved or replaced") }
+
+	startDownload(t, manager, access, page, "report.pdf", 10)
+	older := threadDownloads(manager, access)[0]
+	olderItem, _ := manager.threadDownload(access.ThreadID, older.ID)
+	moved := olderItem.path + ".moved"
+	if err := os.Rename(olderItem.path, moved); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "report.pdf", 20)
+	newer := threadDownloads(manager, access)[0]
+	newerItem, _ := manager.threadDownload(access.ThreadID, newer.ID)
+	if newerItem.path != olderItem.path {
+		t.Fatalf("the second download is at %s, not the freed name %s", newerItem.path, olderItem.path)
+	}
+
+	if err := act(older.ID); !replaced(err) {
+		t.Fatalf("the older row acting on the newer file answers %v", err)
+	}
+	if err := act(newer.ID); err != nil {
+		t.Fatalf("the newer row: %v", err)
+	}
+
+	if err := os.Rename(newerItem.path, newerItem.path+".newer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, olderItem.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := act(newer.ID); !replaced(err) {
+		t.Fatalf("the newer row acting on the older file answers %v", err)
+	}
+	if err := act(older.ID); err != nil {
+		t.Fatalf("the older row with its own file back: %v", err)
+	}
+	if !slices.Equal(revealed, []string{newerItem.path, olderItem.path}) {
+		t.Fatalf("revealed %q", revealed)
+	}
+}
+
 // Open shows a finished download of a type tabs show in a new tab; a page
 // may open its own workspace's downloads and no other workspace's.
 func TestOpeningADownloadShowsItInANewTab(t *testing.T) {

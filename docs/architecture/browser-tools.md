@@ -230,7 +230,10 @@ behave as a desktop browser's:
   failure. A running one cancels; a finished one shows in the file manager
   (the reveal hand-off of Show in folder) and, for a type every engine shows
   in a tab (PDF, PNG, JPEG, GIF, WebP, BMP, text, JSON), opens in a new tab.
-  Script-capable types (HTML, SVG, XML) are never opened from the list. There
+  Script-capable types (HTML, SVG, XML) are never opened from the list. A
+  row acts only on the file its download wrote (`os.SameFile` against the
+  file as it finished): one moved away or replaced since, including by a
+  later download given the freed name, is refused with that reason. There
   is no "open with the system's default app": the OS opener refuses `file:`
   URLs (`internal/externalurl`). Clear list drops the settled downloads and
   deletes no file. The list is in memory and goes with the thread; the page's

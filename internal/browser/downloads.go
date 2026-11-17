@@ -179,10 +179,14 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 			if renameErr == nil {
 				renameErr = os.Rename(source, destination)
 			}
+			var file os.FileInfo
+			if renameErr == nil {
+				file, renameErr = os.Stat(destination)
+			}
 			if renameErr != nil {
 				entry.State, entry.Error = downloadStateFailed, renameErr.Error()
 			} else {
-				entry.Path = destination
+				entry.Path, entry.file = destination, file
 			}
 		}
 	case downloadCanceled:
