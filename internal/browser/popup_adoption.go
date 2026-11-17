@@ -28,7 +28,10 @@ import (
 // it is: running, finished or ended. A popup's fate is known at the end of
 // its adoption, at its page's close (removeClosedPage), or after
 // popupParkTimeout if neither comes, and is remembered (popupFate), so a
-// download the popup starts after it goes the same way at once. With no
+// download the popup starts after it goes the same way at once. The tab
+// and its downloads are listed in one m.parkMu hold, which a page's close
+// also takes (removeClosedPage), so a close never takes the tab before the
+// downloads, with their newest progress, are in it. With no
 // listed page left to take it, the download is refused, and its engine
 // cancels it, or, if it finished, its file stays where the engine saved it.
 //
@@ -219,6 +222,11 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 func (m *Manager) resolveParked(handle string, p *managedPage, openers ...string) {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
+	m.resolveParkedLocked(handle, p, openers...)
+}
+
+// resolveParkedLocked is resolveParked for a caller that holds m.parkMu.
+func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...string) {
 	fate, _ := m.fates().get(handle)
 	if p != nil {
 		fate.listed = p.driver.Handle()

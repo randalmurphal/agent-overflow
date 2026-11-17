@@ -57,6 +57,10 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		return
 	}
 	m.pageAttached(p)
+	// The tab and the downloads the popup started are listed in one
+	// m.parkMu hold, which a page's close takes too (removeClosedPage), so
+	// a close never takes the tab before its downloads are in it.
+	m.parkMu.Lock()
 	m.mu.Lock()
 	// The opener may have closed meanwhile, with its thread's other pages. A
 	// jar switch is one such close: it moves every live page of the thread
@@ -64,6 +68,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	// is always in its thread's current jar and the popup is too.
 	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil || m.popupRefusedLocked(scope, p) {
 		m.mu.Unlock()
+		m.parkMu.Unlock()
 		driver.Close()
 		return
 	}
@@ -73,9 +78,13 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	// push carries it.
 	m.commitHeldInfoLocked(p, popup.Handle)
 	m.mu.Unlock()
+	if m.popupListing != nil {
+		m.popupListing()
+	}
 	// Its downloads, before anything the engine held for the listing can
 	// close it.
-	m.resolveParked(popup.Handle, p, popup.Opener)
+	m.resolveParkedLocked(popup.Handle, p, popup.Opener)
+	m.parkMu.Unlock()
 	// A new tab.
 	m.pageAdded(p)
 	if adopted, ok := driver.(adoptedPage); ok {
@@ -107,6 +116,9 @@ func pageWithHandle(scope *jarScope, handle string) *managedPage {
 }
 
 func (m *Manager) removeClosedPage(handle string) {
+	// Before m.mu, so a popup's tab is taken only once the downloads its
+	// listing owes it are in it (adoptPopup).
+	m.parkMu.Lock()
 	m.mu.Lock()
 	var owner string
 	var closed *managedPage
@@ -125,8 +137,9 @@ func (m *Manager) removeClosedPage(handle string) {
 	m.mu.Unlock()
 	if closed == nil {
 		// A popup never listed: what it downloaded goes to its opener's tab.
-		m.resolveParked(handle, nil)
+		m.resolveParkedLocked(handle, nil)
 	}
+	m.parkMu.Unlock()
 	if closed != nil {
 		m.publishDownloads(ended.notes...)
 		m.endFind(closed)

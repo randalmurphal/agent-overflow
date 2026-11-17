@@ -304,6 +304,70 @@ func awaitPromptly(t *testing.T, done <-chan struct{}) {
 	}
 }
 
+// A popup's download is listed with its terminal state before the popup's
+// close takes its tab, however the close, the download's last progress
+// and the park timeout fall around the popup's listing: before it, between
+// its tab's listing and its downloads' (popupListing), or after.
+func TestAPopupsDownloadEndsBeforeItsCloseInEveryOrder(t *testing.T) {
+	type step func(m *Manager, e *adoptionEngine)
+	complete := func(m *Manager, _ *adoptionEngine) { m.downloadProgress(progressOf("dl-1", downloadCompleted, 100)) }
+	closePopup := func(m *Manager, _ *adoptionEngine) { m.removeClosedPage("popup") }
+	expire := func(m *Manager, _ *adoptionEngine) { m.resolveParked("popup", nil) }
+	for _, tc := range []struct {
+		name                  string
+		before, during, after []step
+		// inTab says the download is still listed in the popup's tab.
+		inTab bool
+	}{
+		{name: "all before", before: []step{complete, closePopup}},
+		{name: "complete before, close during", before: []step{complete}, during: []step{closePopup}},
+		{name: "both during", during: []step{complete, closePopup}},
+		{name: "complete during, close after", during: []step{complete}, after: []step{closePopup}},
+		{name: "complete before, close after", before: []step{complete}, after: []step{closePopup}},
+		{name: "expiry during", before: []step{complete}, during: []step{expire}, inTab: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, engine, access, opener := newAdoptionManager(t)
+			if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+				t.Fatal("the popup's download was refused")
+			}
+			manager.downloadProgress(progressOf("dl-1", downloadInProgress, 10))
+			for _, s := range tc.before {
+				s(manager, engine)
+			}
+			var wg sync.WaitGroup
+			manager.popupListing = func() {
+				// On a goroutine, since the listing may hold what they wait
+				// for; the pause gives them the chance to run in the window.
+				wg.Go(func() {
+					for _, s := range tc.during {
+						s(manager, engine)
+					}
+				})
+				time.Sleep(50 * time.Millisecond)
+			}
+			manager.adoptPopup(engine.popup(opener, "popup"))
+			wg.Wait()
+			for _, s := range tc.after {
+				s(manager, engine)
+			}
+			var got []string
+			for _, d := range manager.CompanionState(access).Downloads {
+				got = append(got, d.State)
+			}
+			if !slices.Equal(got, []string{downloadStateCompleted}) {
+				t.Fatalf("the thread lists downloads %v, want one completed", got)
+			}
+			if tc.inTab {
+				wantDownloads(t, manager, "popup", "dl-1 completed 100")
+			}
+			if got := engine.cancels(); len(got) != 0 {
+				t.Errorf("canceled %v", got)
+			}
+		})
+	}
+}
+
 // A popup whose opener left before the popup's report is handled is
 // discarded at once.
 func TestAPopupOfAnOpenerThatLeftIsDiscardedAtOnce(t *testing.T) {
