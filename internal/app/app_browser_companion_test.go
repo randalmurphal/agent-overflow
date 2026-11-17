@@ -150,6 +150,49 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 	}
 }
 
+// Every kind that selects a tab carries its mount and number to the Manager:
+// one the user made before a selection already applied from the same mount
+// selects nothing, and a tab it opens stays in the background.
+func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-order")
+	ctx := t.Context()
+	do := func(action BrowserCompanionAction) appbrowser.CompanionEvent {
+		t.Helper()
+		state, err := app.BrowserCompanionDo(ctx, thread.ID, action)
+		if err != nil {
+			t.Fatalf("%s: %v", action.Kind, err)
+		}
+		return state
+	}
+	first := do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/a"}).PageID
+	second := do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"}).PageID
+	do(BrowserCompanionAction{Kind: "close", PageID: do(BrowserCompanionAction{Kind: "new"}).PageID})
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := uint64(10)
+	for _, late := range []BrowserCompanionAction{
+		{Kind: "activate", PageID: second},
+		{Kind: "step", Index: 1},
+		{Kind: "new"},
+		{Kind: "duplicate", PageID: second},
+		{Kind: "reopen"},
+	} {
+		seq += 2
+		do(BrowserCompanionAction{Kind: "activate", PageID: first, Mount: mount.ID, Select: seq})
+		late.Mount, late.Select = mount.ID, seq-1
+		if state := do(late); state.ActivePageID != first {
+			t.Fatalf("an overtaken %s selected %s, want %s", late.Kind, state.ActivePageID, first)
+		}
+	}
+}
+
 // The pane's "jar" sets the thread's cookie jar; the project jar is keyed by
 // the thread's project, which the app passes in with its workspace.
 func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {

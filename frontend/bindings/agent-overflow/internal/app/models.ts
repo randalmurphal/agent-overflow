@@ -861,6 +861,16 @@ export class BrowserCompanionAction {
     "intent"?: number;
 
     /**
+     * Select numbers a user's tab selection made in Mount ("activate",
+     * "step", and the "new", "reopen", "duplicate" and "download-open" that
+     * select the tab they open), increasing per mount in the order the user
+     * acted. The Manager applies a selection only if no newer one from the
+     * same mount was applied (internal/browser/selection.go). Zero, from an
+     * older client, applies in arrival order.
+     */
+    "select"?: number;
+
+    /**
      * DownloadID names one of the thread's downloads (ThreadDownload.ID)
      * for "download-cancel", "download-reveal" and "download-open".
      */
