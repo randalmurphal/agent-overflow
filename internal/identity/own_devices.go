@@ -80,7 +80,7 @@ func (s *Sessions) MintOwnIntroduction(req PairingRequest) (PairingLink, error) 
 		s.ownMu.Unlock()
 		return PairingLink{}, errors.New("own-device introduction is not authorized")
 	}
-	ids, err := s.store.RetireOwnIntroductions(req.ExpectedKey, s.now().UnixMilli())
+	ids, _, err := s.store.RetireOwnIntroductions(req.ExpectedKey, s.now().UnixMilli())
 	if err != nil {
 		s.ownMu.Unlock()
 		return PairingLink{}, err

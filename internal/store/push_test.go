@@ -94,7 +94,7 @@ func TestDeletingADeviceCascadesToItsPushToken(t *testing.T) {
 	if _, err := s.RevokeDevice(device.ID, 500); err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
-	deleted, err := s.DeleteDevice(device.ID)
+	deleted, _, err := s.DeleteDevice(device.ID)
 	if err != nil {
 		t.Fatalf("DeleteDevice: %v", err)
 	}
