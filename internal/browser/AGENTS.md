@@ -137,10 +137,13 @@ keep no second one. Use direct `file://` navigation.
 Where a download goes is the engine's `DownloadSaving`; the rule is
 browser-tools.md's Browser hardening. An engine never writes into the
 user's Downloads folder by a path AO chose: an engine in this process
-writes into the jar's AO directory and the Manager publishes the finished
-file (`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
-which never replaces a file; WebView2 saves there itself and only a
-regular file of the reported size is openable (`engineSavedDownload`).
+writes only inside the app's private staging directory there, into the
+file the Manager names as the download starts (`download_staging.go`),
+and the Manager moves the finished file beside it without copying
+(`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
+never replacing a file; WebView2 saves there itself and only a regular
+file of the reported size is openable (`engineSavedDownload`, whose
+comment states the limit). Close waits for a publish under way.
 Headless Chromium alone keeps downloads as artifacts with quota
 reservation, the per-download cap and pruning; keep those bounds on that
 path only. Every change to a page's download entry goes through

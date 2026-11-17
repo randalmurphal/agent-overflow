@@ -813,33 +813,49 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   openable from AO only while the path WebView2 reported is a regular
   file, not a link, of the size it reported; otherwise the row completes
   with the reason and opens nothing.
-- WebKitGTK and WKWebView write each download under its id into the
-  jar's AO directory, which nothing else touches, so the engine's writes,
-  cancel and failure cleanup reach only the download's own file. The
-  Manager publishes a finished one into the Downloads folder
-  (`internal/browser/user_downloads.go`): it hard-links the staged file
-  to the sanitized suggested name, or that name with ` (1)`, ` (2)` and
-  on, taking the next on a name that exists, so it replaces nothing and
-  the published file is the staged one; across filesystems it creates the
-  name exclusively and copies into it. The row stays running until the
-  file is in place and completes with its path; a publish that fails is
-  the row's error, removes the staged file and leaves nothing partial in
-  Downloads. On Linux the folder is `XDG_DOWNLOAD_DIR` from
+- WebKitGTK and WKWebView write each download only into the app's
+  private staging folder in the Downloads folder,
+  `.agent-overflow-downloads` (mode 0700), under a name the Manager gives
+  as the engine asks for the destination: `dl-<process token>-<n>`, so a
+  file another run left never collides
+  (`internal/browser/download_staging.go`). The folder is resolved per
+  download, created on demand with a missing Downloads folder, checked to
+  be a real folder and not a link before every use, and removed once no
+  download stages in it and it is empty. The Manager publishes a finished
+  file into the Downloads folder beside it
+  (`internal/browser/user_downloads.go`): it hard-links the staged file to
+  the sanitized suggested name, or that name with ` (1)`, ` (2)` and on,
+  or where the filesystem refuses hard links renames it with a rename
+  that refuses to replace (`renameat2` `RENAME_NOREPLACE` on Linux,
+  `renamex_np` `RENAME_EXCL` on macOS), taking the next name on one that
+  exists, so it replaces nothing, copies nothing and nothing partial ever
+  has a public name. A filesystem with neither fails the row with the
+  reason. The row stays running until the file is in place and completes
+  with its path; a publish that fails is the row's error and its staged
+  file goes. Closing the browser waits for a publish under way. On Linux
+  the folder is `XDG_DOWNLOAD_DIR` from
   `$XDG_CONFIG_HOME/user-dirs.dirs` (`$HOME/.config` when unset), read as
   xdg-user-dirs writes it (double-quoted, backslash escapes, a leading
   `$HOME`), else `$HOME/Downloads`; on macOS `$HOME/Downloads`.
-- A Downloads folder that does not exist is created when a download is
-  published there. A path that is not a folder, or a folder that cannot
-  be created or written, fails the download on its row with the reason;
-  nothing falls back elsewhere.
+- A Downloads folder that does not exist is created when a download
+  starts. A path that is not a folder, a folder that cannot be created or
+  written, or a staging folder that is a link fails the download on its
+  row with the reason, before the engine writes; nothing falls back
+  elsewhere. A Downloads folder relocated while the app runs takes the
+  next download; one moved or removed while a download runs fails that
+  download at its publish, and nothing is written anywhere else.
 - In the Downloads folder AO applies no quota, per-download cap or
   pruning and never deletes or replaces a file it did not put there. A
   canceled or failed download leaves the folder as it was: WebView2
-  removes its own partial file, and the other desktop engines never wrote
-  there. A file staged and left behind by a run that ended mid-download
-  is pruned from the AO directory after seven days. Nothing that deletes
-  a thread, clears site data, turns the browser off or prunes artifacts
-  deletes a file in the Downloads folder.
+  removes its own partial file, and the other desktop engines remove
+  their staged file and the emptied staging folder. A staged file left
+  by a run that ended mid-download is removed when a download of a later
+  run first uses the staging folder, once it is 24 hours old; a running
+  download's file never is. A download another app process lets stall
+  for 24 hours can lose its staged file that way and fails at its
+  publish. Nothing that deletes a thread, clears site data, turns the
+  browser off or prunes artifacts deletes a file in the Downloads
+  folder.
 - Headless Chromium in serve mode alone keeps downloads as AO artifacts:
   under the download's id in the jar's AO directory, moved on finishing
   to the workspace's under a sanitized unique name, capped at 512 MiB

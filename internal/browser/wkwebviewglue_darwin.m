@@ -24,6 +24,7 @@ extern void aoWKVPageClosed(uint64_t page_id);
 extern void aoWKVPageCrashed(uint64_t page_id);
 extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
+extern char *aoWKVDownloadDestination(uint64_t profile_id, uint64_t download_id);
 extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t download_id,
                                  void *download, char *uri, char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path,
@@ -42,7 +43,6 @@ extern void aoWKVFindDone(uint64_t call_id, int found);
 static const char kAOPageIDKey;
 static const char kAOOpenerIDKey;
 static const char kAOProfileIDKey;
-static const char kAODownloadDirKey;
 static const char kAODownloadIDKey;
 static const char kAODownloadPageKey;
 static const char kAODownloadProfileKey;
@@ -732,7 +732,7 @@ static id ao_download_delegate(void) {
 
 static uint64_t ao_download_seq = 0;
 
-// ao_attach_download stamps the four facts the download delegate needs onto the
+// ao_attach_download stamps the three facts the download delegate needs onto the
 // download itself: WKDownload exposes no route back to the store or the page,
 // and its -webView is nil for a resumed one.
 static void ao_attach_download(WKWebView *view, WKDownload *download) {
@@ -742,9 +742,6 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   objc_setAssociatedObject(download, &kAODownloadPageKey, @(ao_view_page_id(view)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(download, &kAODownloadProfileKey, @(ao_view_profile_id(view)),
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(download, &kAODownloadDirKey,
-                           objc_getAssociatedObject(view, &kAODownloadDirKey),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   // Held until the Go side releases it, so a cancel arriving after the page
   // closed cannot reach a freed object.
@@ -851,9 +848,6 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   objc_setAssociatedObject(popup, &kAOOpenerIDKey, @(ao_view_policy_page_id(webView)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(popup, &kAOProfileIDKey, @(ao_view_profile_id(webView)),
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(popup, &kAODownloadDirKey,
-                           objc_getAssociatedObject(webView, &kAODownloadDirKey),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   [popup setNavigationDelegate:ao_delegate()];
   NSURL *url = [[navigationAction request] URL];
@@ -1024,24 +1018,22 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
     decideDestinationUsingResponse:(NSURLResponse *)response
                  suggestedFilename:(NSString *)suggestedFilename
                  completionHandler:(void (^)(NSURL *))completionHandler {
-  NSString *dir = objc_getAssociatedObject(download, &kAODownloadDirKey);
-  if (dir == nil || [dir length] == 0) {
-    // A nil destination cancels the download, which is the only right answer
-    // for a profile with no AO artifact directory to write into.
-    completionHandler(nil);
-    return;
-  }
   uint64_t identifier = ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey));
-  // The handle IS the on-disk name. The Manager renames the finished file to a
-  // sanitized unique name inside the same directory; giving it a handle-named
-  // file also lets it clean up a download it had to cancel mid-flight.
-  NSString *path =
-      [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"dl-%llu",
-                                                                    (unsigned long long)identifier]];
-  // WebKit refuses a destination that already exists.
-  [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-  objc_setAssociatedObject(download, &kAODownloadPathKey, path, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  completionHandler([NSURL fileURLWithPath:path]);
+  // The download is written to the staged file the Go side names for it (the
+  // app's staging directory in the user's Downloads folder) and nowhere else;
+  // with none, a nil destination cancels it before a byte is written. The Go
+  // side reports why when the start below arrives.
+  char *staged =
+      aoWKVDownloadDestination(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
+                               identifier);
+  if (staged == NULL) {
+    completionHandler(nil);
+  } else {
+    NSString *path = [NSString stringWithUTF8String:staged];
+    free(staged);
+    objc_setAssociatedObject(download, &kAODownloadPathKey, path, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    completionHandler([NSURL fileURLWithPath:path]);
+  }
   NSURL *url = [[download originalRequest] URL];
   aoWKVDownloadStarted(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
                        ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
@@ -1197,15 +1189,10 @@ void ao_wkv_clear_data(uint64_t call_id) {
 // ---------------------------------------------------------------------------
 
 static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_id,
-                            const char *user_script, const char *console_handler,
-                            const char *download_dir) {
+                            const char *user_script, const char *console_handler) {
   objc_setAssociatedObject(view, &kAOPageIDKey, @(page_id), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(view, &kAOProfileIDKey, @(profile_id),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(
-      view, &kAODownloadDirKey,
-      download_dir == NULL ? nil : [NSString stringWithUTF8String:download_dir],
-      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
   WKUserContentController *controller = [[view configuration] userContentController];
   if (controller != nil && console_handler != NULL) {
@@ -1255,8 +1242,7 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
 }
 
 void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
-                      const char *user_script, const char *console_handler,
-                      const char *download_dir) {
+                      const char *user_script, const char *console_handler) {
   @autoreleasepool {
     WKWebViewConfiguration *configuration = [[[WKWebViewConfiguration alloc] init] autorelease];
     if (store != NULL) {
@@ -1270,18 +1256,17 @@ void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
     if (view == nil) {
       return NULL;
     }
-    ao_connect_view(view, page_id, profile_id, user_script, console_handler, download_dir);
+    ao_connect_view(view, page_id, profile_id, user_script, console_handler);
     return view;
   }
 }
 
 void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
-                       const char *user_script, const char *console_handler,
-                       const char *download_dir) {
+                       const char *user_script, const char *console_handler) {
   @autoreleasepool {
     if (view != NULL) {
       WKWebView *v = (WKWebView *)view;
-      ao_connect_view(v, page_id, profile_id, user_script, console_handler, download_dir);
+      ao_connect_view(v, page_id, profile_id, user_script, console_handler);
       // The popup's URL and title changed unobserved until now: report them
       // as they are, so its tab starts from them.
       aoWKVPageInfo(page_id, ao_dup([[v URL] absoluteString]), ao_dup([v title]));

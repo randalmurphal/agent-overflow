@@ -33,11 +33,52 @@ func (m *Manager) downloadsToArtifacts() bool {
 	return m.engine.DownloadSaving() == downloadsAsArtifacts
 }
 
-// downloadsWritten is whether this Manager's engine writes downloads into
-// AO's directories (downloadsAsArtifacts, downloadsStaged), which then need
-// a jar directory and pruning.
-func (m *Manager) downloadsWritten() bool {
-	return m.engine.DownloadSaving() != downloadsSavedByEngine
+// downloadsStagedHere is whether this Manager's engine writes downloads into
+// the staging directory in the user's Downloads folder (downloadsStaged).
+func (m *Manager) downloadsStagedHere() bool {
+	return m.engine.DownloadSaving() == downloadsStaged
+}
+
+// stageDownload is profileOptions.StageDownload: the staged file the
+// engine writes download id into (stageDownload in download_staging.go),
+// kept until the download settles (releaseStagedDownload).
+func (m *Manager) stageDownload(id string) (string, error) {
+	path, err := stageDownload()
+	if err != nil {
+		return "", err
+	}
+	m.stagedMu.Lock()
+	if m.staged == nil {
+		m.staged = make(map[string]string)
+	}
+	if previous := m.staged[id]; previous != "" {
+		// An engine id is not reused while its download runs; one that is
+		// takes the new file, and the old one goes.
+		defer releaseStaged(previous)
+	}
+	m.staged[id] = path
+	m.stagedMu.Unlock()
+	return path, nil
+}
+
+// stagedPath answers the staged file of download id, "" for none.
+func (m *Manager) stagedPath(id string) string {
+	m.stagedMu.Lock()
+	defer m.stagedMu.Unlock()
+	return m.staged[id]
+}
+
+// releaseStagedDownload ends download id's staged file: it goes if it is
+// still there, and the staging directory with it once empty
+// (releaseStaged).
+func (m *Manager) releaseStagedDownload(id string) {
+	m.stagedMu.Lock()
+	path := m.staged[id]
+	delete(m.staged, id)
+	m.stagedMu.Unlock()
+	if path != "" {
+		releaseStaged(path)
+	}
 }
 
 // downloadStarted admits a download into the log of the page whose frame
@@ -46,8 +87,16 @@ func (m *Manager) downloadsWritten() bool {
 // the download is over quota: whether it may consume workspace and artifact
 // bytes is policy, and so is the sanitized name it will eventually be
 // renamed to. The quota is the page's workspace's (workspaceAuthority),
-// whichever jar the page is in.
+// whichever jar the page is in. A refused staged download's file goes.
 func (m *Manager) downloadStarted(event downloadStart) bool {
+	admitted := m.admitDownload(event)
+	if !admitted && m.downloadsStagedHere() {
+		m.releaseStagedDownload(event.ID)
+	}
+	return admitted
+}
+
+func (m *Manager) admitDownload(event downloadStart) bool {
 	p, _ := m.pageForFrame(event.Frame)
 	if p == nil {
 		return false
@@ -147,13 +196,16 @@ func (m *Manager) releaseDownloadLocked(p *managedPage, entry *DownloadInfo) {
 	}
 }
 
-// removePartialDownload removes the handle-named file an engine writing
-// into AO's directory was streaming a download into, once AO stopped the
-// download. A scope with no such directory has nothing of AO's to remove:
-// an engine that saves to the user's Downloads folder itself removes its
-// own partial file.
-func removePartialDownload(scope *jarScope, id string) {
-	if scope.downloadDir == "" {
+// removePartialDownload removes the file an engine writing into AO's
+// directories was streaming a download into, once the download stopped:
+// its staged file, or its handle-named artifact. An engine that saves to
+// the user's Downloads folder itself removes its own partial file.
+func (m *Manager) removePartialDownload(scope *jarScope, id string) {
+	if m.downloadsStagedHere() {
+		m.releaseStagedDownload(id)
+		return
+	}
+	if scope == nil || scope.downloadDir == "" {
 		return
 	}
 	if err := os.Remove(filepath.Join(scope.downloadDir, filepath.Base(id))); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -193,13 +245,13 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 				if err := scope.profile.CancelDownload(event.ID); err != nil {
 					log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
 				}
-				removePartialDownload(scope, event.ID)
+				m.removePartialDownload(scope, event.ID)
 			}()
 		}
 		return
 	}
 	if event.State == downloadCompleted && saving == downloadsStaged {
-		m.publishFinishedDownload(p, scope, entry, event)
+		m.publishFinishedDownload(p, entry, event)
 		return
 	}
 	removePartial := false
@@ -268,61 +320,110 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 			}
 		}
 		m.releaseDownloadLocked(p, entry)
+		// A staged download that stopped, canceled or failed, leaves nothing
+		// but its staged file, which goes.
+		removePartial = removePartial || saving == downloadsStaged
 	}
 	note := m.noteDownloadLocked(p, entry, "")
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
-	if removePartial && scope != nil {
-		// The engine took the user's cancel; what it wrote is a partial file.
-		removePartialDownload(scope, event.ID)
+	if removePartial {
+		// What the engine wrote is a partial file.
+		m.removePartialDownload(scope, event.ID)
 	}
 	m.publishDownloads(note)
 }
 
 // publishFinishedDownload settles a staged download the engine finished:
-// its file moves from the jar's directory into the user's Downloads folder
-// (publishDownload) and the row completes with the published path, or fails
-// with the reason, the staged file removed either way. The row stays
-// running while the file moves, outside the page's lock: a page that leaves
-// meanwhile (pageLeftLocked) and a cancel (CancelThreadDownload) leave it to
-// this, its one settlement. The caller holds p.downloadMu, which this
+// its file moves from the staging directory into the Downloads folder
+// beside it (publishDownload) and the row completes with the published
+// path, or fails with the reason, the staged file released either way. The
+// row stays running while the file moves, outside the page's lock: a page
+// that leaves meanwhile (pageLeftLocked) and a cancel
+// (CancelThreadDownload) leave it to this, its one settlement, and Close
+// waits for it (waitPublishes). The caller holds p.downloadMu, which this
 // releases.
-func (m *Manager) publishFinishedDownload(p *managedPage, scope *jarScope, entry *DownloadInfo, event downloadProgress) {
-	source := event.FilePath
-	if source == "" && scope != nil {
-		source = filepath.Join(scope.downloadDir, filepath.Base(event.ID))
+func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, event downloadProgress) {
+	source := m.stagedPath(event.ID)
+	failure := ""
+	switch {
+	case source == "":
+		failure = "browser: the download has no staged file to save"
+	case event.FilePath != "" && filepath.Clean(event.FilePath) != source:
+		failure = "browser returned a download path other than the staged file it was given"
 	}
-	if scope == nil || scope.downloadDir == "" || !pathInside(scope.downloadDir, source) {
-		entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its download directory"
+	if failure != "" {
+		entry.State, entry.Error = downloadStateFailed, failure
 		note := m.noteDownloadLocked(p, entry, "")
 		p.signalDownloadLocked()
 		p.downloadMu.Unlock()
+		m.releaseStagedDownload(event.ID)
 		m.publishDownloads(note)
 		return
 	}
 	entry.publishing = true
 	name := entry.SuggestedName
+	m.beginPublish()
 	p.downloadMu.Unlock()
 
 	path, file, err := publishDownload(source, name)
+	m.releaseStagedDownload(event.ID)
 
 	p.downloadMu.Lock()
 	// A running entry is never trimmed, so it is still there.
 	entry = p.downloadLocked(event.ID)
-	if entry == nil {
-		p.downloadMu.Unlock()
+	if entry != nil {
+		entry.publishing = false
+		if err != nil {
+			entry.State, entry.Error = downloadStateFailed, err.Error()
+		} else {
+			entry.State, entry.Path, entry.file = downloadStateCompleted, path, file
+		}
+	}
+	var note downloadNote
+	if entry != nil {
+		note = m.noteDownloadLocked(p, entry, "")
+		p.signalDownloadLocked()
+	}
+	p.downloadMu.Unlock()
+	m.endPublish()
+	if entry != nil {
+		m.publishDownloads(note)
+	}
+}
+
+// beginPublish and endPublish count the publishes in flight, which Close
+// waits for (waitPublishes): a finished download is in the Downloads folder
+// and its row settled before Close returns.
+func (m *Manager) beginPublish() {
+	m.publishMu.Lock()
+	m.publishing++
+	m.publishMu.Unlock()
+}
+
+func (m *Manager) endPublish() {
+	m.publishMu.Lock()
+	m.publishing--
+	if m.publishing == 0 && m.publishIdle != nil {
+		close(m.publishIdle)
+		m.publishIdle = nil
+	}
+	m.publishMu.Unlock()
+}
+
+// waitPublishes returns once no publish is in flight.
+func (m *Manager) waitPublishes() {
+	m.publishMu.Lock()
+	if m.publishing == 0 {
+		m.publishMu.Unlock()
 		return
 	}
-	entry.publishing = false
-	if err != nil {
-		entry.State, entry.Error = downloadStateFailed, err.Error()
-	} else {
-		entry.State, entry.Path, entry.file = downloadStateCompleted, path, file
+	if m.publishIdle == nil {
+		m.publishIdle = make(chan struct{})
 	}
-	note := m.noteDownloadLocked(p, entry, "")
-	p.signalDownloadLocked()
-	p.downloadMu.Unlock()
-	m.publishDownloads(note)
+	idle := m.publishIdle
+	m.publishMu.Unlock()
+	<-idle
 }
 
 func pathInside(root, path string) bool {
@@ -418,7 +519,7 @@ func (m *Manager) stopEndedDownloads(ended endedDownloads) {
 		if err := ended.scope.profile.CancelDownload(id); err != nil && !errors.Is(err, errDownloadEnded) {
 			log.Printf("browser: cancel download %s of a page that went: %v", id, err)
 		}
-		removePartialDownload(ended.scope, id)
+		m.removePartialDownload(ended.scope, id)
 	}
 }
 

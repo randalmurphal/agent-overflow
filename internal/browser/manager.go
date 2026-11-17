@@ -167,6 +167,18 @@ type Manager struct {
 	downloadsMu     sync.Mutex
 	threadDownloads map[string]*threadDownloadList
 	downloadKeys    atomic.Uint64
+	// staged is each running staged download's file by engine id
+	// (stageDownload in downloads.go). Guarded by stagedMu, which is taken
+	// alone.
+	stagedMu sync.Mutex
+	staged   map[string]string
+	// publishing counts the finished downloads being moved into the
+	// Downloads folder; publishIdle, when set, closes as it reaches zero.
+	// Close waits for them (waitPublishes). Guarded by publishMu, taken
+	// alone.
+	publishMu   sync.Mutex
+	publishing  int
+	publishIdle chan struct{}
 	// downloadPushInterval overrides downloadPushInterval when set (tests).
 	downloadPushInterval time.Duration
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.

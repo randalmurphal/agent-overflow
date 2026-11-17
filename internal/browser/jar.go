@@ -85,10 +85,9 @@ type jarScope struct {
 	// (lifecycle.go). They are out of pages, so nothing finds or presents
 	// them as live, and still count toward every cap. Guarded by m.mu.
 	closing map[string]*pageClose
-	// downloadDir is where an engine writing into AO's directories writes
-	// this jar's downloads before they move to their workspace's directory
-	// or the user's Downloads folder; empty for an engine that saves them
-	// itself (downloadSaving).
+	// downloadDir is where an engine keeping downloads as artifacts writes
+	// this jar's downloads before they move to their workspace's directory;
+	// empty for every other engine (downloadSaving).
 	downloadDir string
 }
 

@@ -20,11 +20,12 @@ import (
 //	https://download.invalid/<name>?bytes=<n>[&hold][&fail]
 //
 // It saves where the engine it stands in for does (fakeEngine.saving): the
-// profile's directory under the download's id, as WebKitGTK and headless
-// Chromium do, or the user's Downloads folder under a free name, as WebView2
-// does, removing its own partial file there on a cancel or a failure. It
-// reports the start, writes half the bytes and reports them, then the
-// finish. hold leaves it running at half until it is canceled; fail ends it
+// staged file the Manager names, as WebKitGTK does, canceling before a
+// write when there is none; the profile's directory under the download's
+// id, as headless Chromium does; or the user's Downloads folder under a
+// free name, as WebView2 does, removing its own partial file there on a
+// cancel or a failure. It reports the start, writes half the bytes and
+// reports them, then the finish. hold leaves it running at half until it is canceled; fail ends it
 // as a failure the engine reports on its own. Reports are synchronous,
 // inside the navigation.
 
@@ -70,6 +71,14 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 	id := fmt.Sprintf("fake-dl-%d", p.engine.seq.Add(1))
 	selfSaved := p.engine.saving == downloadsSavedByEngine
 	file, name, destinationErr := filepath.Join(p.downloadDir, id), request.name, error(nil)
+	if p.engine.saving == downloadsStaged {
+		if p.stage == nil {
+			return errors.New("browser: this fake profile stages downloads and was given nowhere to stage them")
+		}
+		// Named before the start is reported, as WebKit asks for the
+		// destination first.
+		file, destinationErr = p.stage(id)
+	}
 	if selfSaved {
 		file, destinationErr = fakeSaveInDownloads(request.name)
 		if destinationErr == nil {

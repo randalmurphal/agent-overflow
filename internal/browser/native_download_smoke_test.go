@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,18 +20,27 @@ import (
 )
 
 // smokeStagingDir is the directory the engine writes the run's downloads
-// into before the Manager publishes them.
-func smokeStagingDir(t *testing.T, manager *Manager) string {
+// into before the Manager publishes them: the app's staging directory in
+// the run's Downloads folder.
+func smokeStagingDir() string {
+	return filepath.Join(os.Getenv("HOME"), "Downloads", stagingDirName)
+}
+
+// smokeStagedNames lists the staging directory, empty while it is absent.
+func smokeStagedNames(t *testing.T) []string {
 	t.Helper()
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	for _, scope := range manager.scopes {
-		if scope.downloadDir != "" {
-			return scope.downloadDir
-		}
+	entries, err := os.ReadDir(smokeStagingDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	t.Fatal("no jar writes downloads")
-	return ""
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 // smokePNG is a 1x1 PNG.
@@ -41,11 +52,13 @@ const smokePDF = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<
 // TestNativeEngineRealDownloads drives this engine's downloads through the
 // pane's list: the size the response announced, a finished file published
 // into the Downloads folder of the run's temporary home under a name that
-// replaces nothing, the user's cancel of a running one and an engine
-// failure, each leaving Downloads as it was, a cancel after the user put a
-// file at the download's name, a staged file swapped for a link while its
-// finish waits in the engine's queue, a name taken while the download
-// runs, a missing Downloads folder, and a finished file opened in a tab and
+// replaces nothing, staged files an earlier run left behind, a running
+// download showing nothing in Downloads but the staging folder, the user's
+// cancel of a running one and an engine failure, each leaving Downloads as
+// it was, a cancel after the user put a file at the download's name, a
+// staged file swapped for a link while its finish waits in the engine's
+// queue, a name taken while the download runs, a staging folder that is a
+// link, a missing Downloads folder, and a finished file opened in a tab and
 // by browser_open_file.
 func TestNativeEngineRealDownloads(t *testing.T) {
 	window := nativeSmokeWindow.Load()
@@ -218,12 +231,61 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("staged files an earlier run left never fail a download, and old ones go", func(t *testing.T) {
+		staging := smokeStagingDir()
+		if names := smokeStagedNames(t); len(names) != 0 {
+			t.Fatalf("with no download running the staging folder holds %q", names)
+		}
+		if err := os.Mkdir(staging, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// dl-1 is the name the first download of a run took before staged
+		// names carried their process's token.
+		recent, stale := filepath.Join(staging, "dl-1"), filepath.Join(staging, "dl-2")
+		for _, path := range []string{recent, stale} {
+			if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		old := time.Now().Add(-2 * stagedLeftoverAge)
+		if err := os.Chtimes(stale, old, old); err != nil {
+			t.Fatal(err)
+		}
+		item := settled(download("/file.bin").ID, notRunning)
+		if item.State != downloadStateCompleted || item.Name != "file (2).bin" {
+			t.Fatalf("the download after the leftovers settled as %+v", item)
+		}
+		if names := smokeStagedNames(t); !slices.Equal(names, []string{"dl-1"}) {
+			t.Fatalf("the staging folder holds %q, want only the recent leftover", names)
+		}
+		if err := os.Remove(recent); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(staging); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("the user's cancel stops a running download", func(t *testing.T) {
 		before := folder()
 		item := settled(download("/slow.bin").ID, func(item ThreadDownload) bool { return item.ReceivedBytes > 0 })
 		if item.TotalBytes != 10_000_000 {
 			t.Errorf("a running download reports a total of %d, want the announced 10000000", item.TotalBytes)
 		}
+		// Nothing but finished files is ever directly in Downloads: the
+		// running download is in the staging folder.
+		during := slices.Sorted(slices.Values(append(slices.Clone(before), stagingDirName)))
+		if got := folder(); !slices.Equal(got, during) {
+			t.Fatalf("while the download runs the Downloads folder holds %q, want %q", got, during)
+		}
+		// WebKitGTK writes "<staged>.wkdownload" beside the staged file
+		// until the download finishes.
+		names := smokeStagedNames(t)
+		if len(names) == 0 || slices.ContainsFunc(names, func(name string) bool {
+			return stagedFileOf(name) != stagedFileOf(names[0]) || !strings.HasPrefix(name, "dl-")
+		}) {
+			t.Fatalf("while the download runs the staging folder holds %q", names)
+		}
+		t.Logf("while the download runs the staging folder holds %q", names)
 		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
@@ -250,7 +312,8 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			_ = os.Remove(name)
 			_ = os.Remove(name + ".original")
 		}()
-		before := folder()
+		// The staging folder goes with the canceled download's staged file.
+		before := slices.DeleteFunc(folder(), func(name string) bool { return name == stagingDirName })
 		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
@@ -268,11 +331,8 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := folder()
-		staging := smokeStagingDir(t, manager)
-		known, err := os.ReadDir(staging)
-		if err != nil {
-			t.Fatal(err)
-		}
+		staging := smokeStagingDir()
+		known := smokeStagedNames(t)
 		release := holdDownloadEvents(t, manager)
 		released := false
 		defer func() {
@@ -286,14 +346,10 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		}
 		staged := ""
 		for staged == "" {
-			entries, err := os.ReadDir(staging)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, entry := range entries {
-				info, err := entry.Info()
-				if err == nil && !slices.ContainsFunc(known, func(k os.DirEntry) bool { return k.Name() == entry.Name() }) && info.Size() == int64(len(payload)) && !strings.Contains(entry.Name(), ".") {
-					staged = filepath.Join(staging, entry.Name())
+			for _, name := range smokeStagedNames(t) {
+				info, err := os.Lstat(filepath.Join(staging, name))
+				if err == nil && !slices.Contains(known, name) && info.Size() == int64(len(payload)) && !strings.Contains(name, ".") {
+					staged = filepath.Join(staging, name)
 				}
 			}
 			select {
@@ -374,6 +430,30 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		}
 		if got := settled(item.ID, notRunning); got.State != downloadStateCanceled {
 			t.Fatalf("the download settled as %+v", got)
+		}
+		unchanged(before)
+	})
+	t.Run("a staging folder that is a link fails the download before the engine writes", func(t *testing.T) {
+		staging := smokeStagingDir()
+		if err := os.Remove(staging); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("with no download running the staging folder is not empty: %v", err)
+		}
+		target := t.TempDir()
+		if err := os.Symlink(target, staging); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := os.Remove(staging); err != nil {
+				t.Error(err)
+			}
+		}()
+		before := folder()
+		item := settled(download("/chart.png").ID, notRunning)
+		if item.State != downloadStateFailed || !strings.Contains(item.Error, "is not a folder") {
+			t.Fatalf("a download through a linked staging folder settled as %+v", item)
+		}
+		if names, err := os.ReadDir(target); err != nil || len(names) != 0 {
+			t.Fatalf("the link's target holds %d entries, %v", len(names), err)
 		}
 		unchanged(before)
 	})

@@ -123,8 +123,7 @@ void ao_wkv_clear_data(uint64_t call_id);
 // ao_wkv_view_new creates a hidden page view bound to a store, with the console
 // capture script installed and every delegate connected.
 void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
-                      const char *user_script, const char *console_handler,
-                      const char *download_dir);
+                      const char *user_script, const char *console_handler);
 
 // ao_wkv_view_adopt connects the delegates to a view the engine created itself
 // (a popup) once the Manager has decided to keep it. The popup's navigation
@@ -133,8 +132,7 @@ void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
 // the opener's user content controller, so the user script is added only when
 // that controller carries none.
 void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
-                       const char *user_script, const char *console_handler,
-                       const char *download_dir);
+                       const char *user_script, const char *console_handler);
 
 // ao_wkv_view_close closes the view, handing keyboard focus it held to the
 // SPA's webview, and answers as ao_wkv_host_hide does.

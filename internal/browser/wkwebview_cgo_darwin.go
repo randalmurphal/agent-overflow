@@ -342,6 +342,26 @@ func aoWKVPagePresented(pageID C.uint64_t) C.int {
 	return C.ao_wkv_host_presented(page.view)
 }
 
+//export aoWKVDownloadDestination
+func aoWKVDownloadDestination(profileID, downloadID C.uint64_t) *C.char {
+	// On the main thread inside the download delegate: the Manager's staging
+	// takes no lock a main-thread dispatch waits on and dispatches nothing.
+	profile := wkLookupProfile(uint64(profileID))
+	if profile == nil || profile.stage == nil {
+		return nil
+	}
+	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	path, err := profile.stage(handle)
+	if err != nil {
+		profile.mu.Lock()
+		profile.stageFailures[handle] = err
+		profile.mu.Unlock()
+		return nil
+	}
+	// Freed by the Objective-C side.
+	return C.CString(path)
+}
+
 //export aoWKVDownloadStarted
 func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := wkTakeString(uri), wkTakeString(suggested)
@@ -356,13 +376,25 @@ func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download uns
 	if page != nil {
 		frame = page.handle
 	}
-	// The handle IS the on-disk name the Objective-C side gave the file, which
-	// is what lets the Manager find and rename a finished download.
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
-	profile.registerDownload(handle, download)
+	profile.mu.Lock()
+	stageErr := profile.stageFailures[handle]
+	delete(profile.stageFailures, handle)
+	profile.mu.Unlock()
 	if name == "" {
 		name = handle
 	}
+	if stageErr != nil {
+		// The delegate canceled it before a byte was written; the row says why.
+		profile.engine.downloadEvents.Go(func() {
+			if profile.engine.events.DownloadStarted(downloadStart{Frame: frame, ID: handle, URL: target, SuggestedName: name}) {
+				profile.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
+			}
+			wkReleaseDownload(download)
+		})
+		return
+	}
+	profile.registerDownload(handle, download)
 	profile.engine.downloadEvents.Go(func() {
 		if !profile.engine.events.DownloadStarted(downloadStart{
 			Frame: frame, ID: handle, URL: target, SuggestedName: name,
@@ -574,15 +606,13 @@ func wkClearSiteData(ctx context.Context) error {
 	}
 }
 
-func wkNewView(store unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler, downloadDir string) (unsafe.Pointer, error) {
+func wkNewView(store unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
 	if !wkDo(func() {
 		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
-		cDownload := C.CString(downloadDir)
-		view = C.ao_wkv_view_new(store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler, cDownload)
+		view = C.ao_wkv_view_new(store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
 		C.free(unsafe.Pointer(cScript))
 		C.free(unsafe.Pointer(cHandler))
-		C.free(unsafe.Pointer(cDownload))
 	}) {
 		return nil, errWKUnavailable
 	}
@@ -592,14 +622,12 @@ func wkNewView(store unsafe.Pointer, pageID, profileID uint64, userScript, conso
 	return view, nil
 }
 
-func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler, downloadDir string) error {
+func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler string) error {
 	if !wkDo(func() {
 		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
-		cDownload := C.CString(downloadDir)
-		C.ao_wkv_view_adopt(view, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler, cDownload)
+		C.ao_wkv_view_adopt(view, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
 		C.free(unsafe.Pointer(cScript))
 		C.free(unsafe.Pointer(cHandler))
-		C.free(unsafe.Pointer(cDownload))
 	}) {
 		return errWKUnavailable
 	}

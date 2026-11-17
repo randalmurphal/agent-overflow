@@ -92,19 +92,20 @@ func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineP
 	}
 	return &fakeProfile{
 		engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow,
-		downloadDir: opts.DownloadDir,
+		downloadDir: opts.DownloadDir, stage: opts.StageDownload,
 	}, nil
 }
 
 type fakeProfile struct {
 	engine *fakeEngine
 	handle string
-	// jar, ephemeral, allow and downloadDir are what the profile was
-	// created with.
+	// jar, ephemeral, allow, downloadDir and stage are what the profile
+	// was created with.
 	jar         string
 	ephemeral   bool
 	allow       func(owners []string, rawURL string) bool
 	downloadDir string
+	stage       func(id string) (string, error)
 
 	mu       sync.Mutex
 	disposed bool

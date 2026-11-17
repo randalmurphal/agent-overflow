@@ -614,7 +614,8 @@ and anti-changes that live only here:
   page's engine, as in any browser there; there is no setting (2026-11-17).
   AO applies no quota, cap or pruning there and deletes or replaces no
   file it did not put there; an engine in AO's process downloads into AO's
-  own directory and AO moves the finished file into Downloads. A missing
+  private staging folder inside Downloads and AO moves the finished file
+  beside it without copying or replacing. A missing
   Downloads folder is created; one that cannot be created or written fails
   the download with its reason rather than falling back.
   Headless Chromium in serve mode alone keeps AO's artifact directories,

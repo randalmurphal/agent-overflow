@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -230,72 +231,318 @@ func TestPublishingMovesTheStagedFile(t *testing.T) {
 	}
 }
 
-// Across filesystems the publish copies through a file it creates
-// exclusively, skipping a name that is taken, and answers that file's
-// identity; a copy that fails leaves nothing in Downloads.
-func TestPublishingAcrossFilesystemsCopies(t *testing.T) {
+// A filesystem that refuses hard links gets the rename that refuses to
+// replace: the download still takes a free name, and a file that appears at
+// a name as it is taken stays as it is.
+func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
 	linkDownload = func(staged, candidate string) error {
-		return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: syscall.EXDEV}
+		return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: syscall.EPERM}
 	}
-	t.Cleanup(func() { linkDownload = os.Link })
-	if err := os.WriteFile(filepath.Join(downloads, "copy.bin"), []byte("mine"), 0o600); err != nil {
-		t.Fatal(err)
+	var theirs string
+	renameDownload = func(staged, candidate string) error {
+		if theirs == "" {
+			theirs = candidate
+			if err := os.WriteFile(candidate, []byte("theirs"), 0o600); err != nil {
+				t.Errorf("take %s: %v", candidate, err)
+			}
+		}
+		return renameNoReplace(staged, candidate)
 	}
+	t.Cleanup(func() { linkDownload, renameDownload = os.Link, renameNoReplace })
 	var staged string
 	manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
-	startDownload(t, manager, access, page, "copy.bin", 10)
+	startDownload(t, manager, access, page, "moved.bin", 10)
 	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
-	if item.State != downloadStateCompleted || item.Name != "copy (1).bin" {
-		t.Fatalf("the copied download lists as %+v", item.ThreadDownload)
+	if item.State != downloadStateCompleted || item.Name != "moved (1).bin" {
+		t.Fatalf("the renamed download lists as %+v", item.ThreadDownload)
 	}
-	if got, err := os.ReadFile(item.path); err != nil || !bytes.Equal(got, make([]byte, 10)) {
-		t.Fatalf("the copy reads %q, %v", got, err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(downloads, "copy.bin")); string(got) != "mine" {
-		t.Fatalf("the user's file reads %q", got)
+	if got, _ := os.ReadFile(filepath.Join(downloads, "moved.bin")); string(got) != "theirs" || theirs != filepath.Join(downloads, "moved.bin") {
+		t.Fatalf("the file put at the name reads %q (taken %q)", got, theirs)
 	}
 	current, err := os.Stat(item.path)
 	if err != nil || !sameDownloadedFile(item.file, current) {
-		t.Fatalf("the row's identity is not the copy's: %v", err)
+		t.Fatalf("the row's identity is not the published file's: %v", err)
 	}
 	if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the staged file is still there: %v", err)
 	}
 }
 
-// A partial copy is removed only while it is still the file AO created.
-func TestRemoveOwnFileLeavesAReplacement(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "partial.bin")
-	if err := os.WriteFile(path, []byte("ours"), 0o600); err != nil {
+// With neither hard links nor a no-replace rename, or a staging directory
+// on another filesystem, the download fails on its row with the reason:
+// nothing is copied, nothing appears in Downloads, and the staged file goes.
+func TestAPublishThatCannotMoveFailsTheRow(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		link   error
+		rename error
+		reason string
+	}{
+		{"neither", syscall.EPERM, syscall.EINVAL, "supports neither hard links nor renames"},
+		{"no rename on the platform", syscall.EOPNOTSUPP, errNoReplaceRename, "supports neither hard links nor renames"},
+		{"another filesystem", syscall.EXDEV, nil, "cross-device"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, access, page := newDownloadManager(t)
+			downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
+			linkDownload = func(staged, candidate string) error {
+				return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: tc.link}
+			}
+			renameDownload = func(string, string) error { return tc.rename }
+			t.Cleanup(func() { linkDownload, renameDownload = os.Link, renameNoReplace })
+			var staged string
+			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
+			startDownload(t, manager, access, page, "stuck.bin", 10)
+			got := threadDownloads(manager, access)[0]
+			if got.State != downloadStateFailed || !strings.Contains(got.Error, tc.reason) {
+				t.Fatalf("the download lists as %+v, want a failure saying %q", got, tc.reason)
+			}
+			if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the staged file is still there: %v", err)
+			}
+			if names := folderNames(t, downloads); len(names) != 0 {
+				t.Fatalf("the Downloads folder holds %q", names)
+			}
+		})
+	}
+}
+
+// Close waits for a publish in flight: when it returns, the file is in the
+// Downloads folder and its row says so.
+func TestCloseWaitsForAPublishInFlight(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	linking, release := make(chan struct{}), make(chan struct{})
+	linkDownload = func(staged, candidate string) error {
+		close(linking)
+		<-release
+		return os.Link(staged, candidate)
+	}
+	t.Cleanup(func() { linkDownload = os.Link })
+	startDownload(t, manager, access, page, "last.txt", 10, "hold")
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	profile := fakeProfileOf(t, manager)
+	finished := make(chan error, 1)
+	go func() { finished <- profile.finishHeld(item.engineID) }()
+	<-linking
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned during the publish: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
-	created, err := os.Stat(path)
+	got, _ := manager.threadDownload(access.ThreadID, item.ID)
+	if got.State != downloadStateCompleted {
+		t.Fatalf("after Close the download lists as %+v", got.ThreadDownload)
+	}
+	if data, err := os.ReadFile(got.path); err != nil || len(data) != 10 {
+		t.Fatalf("after Close the published file reads %d bytes, %v", len(data), err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The staging directory is the app's own, private, in the Downloads
+// folder: created with a missing Downloads folder, a real directory (a link
+// put in its place is refused, and the download fails on its row with
+// nothing written through it), and gone once no download stages in it.
+func TestTheStagingDirectoryIsPrivateAndGoesWhenEmpty(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
+	if err := os.Remove(downloads); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "held.bin", 10, "hold")
+	staging := filepath.Join(downloads, stagingDirName)
+	info, err := os.Lstat(staging)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("the staging directory: %v, %v", info, err)
+	}
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if err := fakeProfileOf(t, manager).finishHeld(item.engineID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(staging); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the empty staging directory stayed: %v", err)
+	}
+	if names := folderNames(t, downloads); !slices.Equal(names, []string{"held.bin"}) {
+		t.Fatalf("the Downloads folder holds %q", names)
+	}
+
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, staging); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "linked.bin", 10)
+	got := threadDownloads(manager, access)[0]
+	if got.State != downloadStateFailed || !strings.Contains(got.Error, "is not a folder") {
+		t.Fatalf("a download through a linked staging directory lists as %+v", got)
+	}
+	if names := folderNames(t, elsewhere); len(names) != 0 {
+		t.Fatalf("the link's target holds %q", names)
+	}
+}
+
+// A staged file another run left behind never collides with a new
+// download's (staged names carry a token of their process), an old one is
+// removed when the first download of the process uses the directory, a
+// recent one stays, and a running download's file is never removed.
+func TestStagedLeftoversNeverCollideAndOldOnesGo(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	staging := filepath.Join(os.Getenv("HOME"), "Downloads", stagingDirName)
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * stagedLeftoverAge)
+	stale, recent := filepath.Join(staging, "dl-2"), filepath.Join(staging, "dl-1")
+	for _, path := range []string{stale, recent} {
+		if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "first.bin", 10)
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCompleted {
+		t.Fatalf("the first download after a leftover lists as %+v", got)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the old leftover is still there: %v", err)
+	}
+	if got, err := os.ReadFile(recent); err != nil || string(got) != "partial" {
+		t.Fatalf("the recent leftover reads %q, %v", got, err)
+	}
+
+	// The prune spares a file a running download owns, however old.
+	startDownload(t, manager, access, page, "running.bin", 10, "hold")
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	running := manager.stagedPath(item.engineID)
+	// WebKitGTK writes beside the staged file until the download finishes.
+	companion := running + ".wkdownload"
+	if err := os.WriteFile(companion, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{running, companion} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stagingPrune(t, filepath.Dir(running))
+	for _, path := range []string{running, companion} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("the running download's file was pruned: %v", err)
+		}
+	}
+	// Its cancel takes the companion with the staged file.
+	if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{running, companion} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("after the cancel %s is still there: %v", path, err)
+		}
+	}
+	if got, _ := os.ReadFile(recent); string(got) != "partial" {
+		t.Fatal("the recent leftover was pruned")
+	}
+}
+
+// A staged download the Manager refuses gives up its staged file, and the
+// staging folder goes once no download stages in it, even one whose engine
+// has not created its file yet; a staged name carries its process's token.
+func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
+	manager, _, _, _ := newDownloadManager(t)
+	downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
+	if _, err := manager.stageDownload("unwritten"); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := manager.stageDownload("refused")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Made before the partial copy goes, so it cannot reuse its inode.
-	theirs := filepath.Join(dir, "theirs.bin")
-	if err := os.WriteFile(theirs, []byte("theirs"), 0o600); err != nil {
+	if !regexp.MustCompile(`^dl-[0-9a-f]{12}-[0-9]+$`).MatchString(filepath.Base(staged)) {
+		t.Fatalf("the staged name %s carries no process token", staged)
+	}
+	if err := os.WriteFile(staged, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(theirs, path); err != nil {
+	if manager.downloadStarted(downloadStart{Frame: "no such frame", ID: "refused", SuggestedName: "r.bin"}) {
+		t.Fatal("a download from no page was admitted")
+	}
+	if names := folderNames(t, downloads); !slices.Equal(names, []string{stagingDirName}) {
+		t.Fatalf("with a download still staging the Downloads folder holds %q", names)
+	}
+	if names := folderNames(t, filepath.Join(downloads, stagingDirName)); len(names) != 0 {
+		t.Fatalf("after the refusal the staging folder holds %q", names)
+	}
+	manager.releaseStagedDownload("unwritten")
+	if names := folderNames(t, downloads); len(names) != 0 {
+		t.Fatalf("after the refusal the Downloads folder holds %q", names)
+	}
+}
+
+// stagingPrune runs the staging directory's prune as its first use does.
+func stagingPrune(t *testing.T, dir string) {
+	t.Helper()
+	staging.mu.Lock()
+	defer staging.mu.Unlock()
+	pruneStagingLocked(dir, time.Now())
+}
+
+// A Downloads folder relocated while a profile lives takes the next
+// download; one removed while a download runs fails that download on its
+// row, and nothing is written anywhere else.
+func TestADownloadsFolderThatMovesOrGoesNeverRedirectsAWrite(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the user folders file is Linux's")
+	}
+	manager, _, access, page := newDownloadManager(t)
+	home := os.Getenv("HOME")
+	relocated := filepath.Join(home, "Elsewhere")
+	if err := os.Mkdir(relocated, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnFile(path, created); err == nil {
-		t.Fatal("removing a replaced partial copy answered no error")
-	}
-	if got, _ := os.ReadFile(path); string(got) != "theirs" {
-		t.Fatalf("the replacement reads %q", got)
-	}
-	current, _ := os.Stat(path)
-	if err := removeOwnFile(path, current); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("its own partial copy is still there: %v", err)
+	if err := os.WriteFile(filepath.Join(home, "config", "user-dirs.dirs"), []byte(`XDG_DOWNLOAD_DIR="$HOME/Elsewhere"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "moved.bin", 10)
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if item.State != downloadStateCompleted || filepath.Dir(item.path) != relocated {
+		t.Fatalf("after the move the download lists as %+v at %s", item.ThreadDownload, item.path)
+	}
+
+	// The folder goes after the engine wrote the file and before its finish
+	// is handled; WebKit writes through the file it opened.
+	manager.engine.(*fakeEngine).beforeFinishReport = func(string) {
+		if err := os.RemoveAll(relocated); err != nil {
+			t.Error(err)
+		}
+	}
+	startDownload(t, manager, access, page, "orphan.bin", 10, "hold")
+	held, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if err := fakeProfileOf(t, manager).finishHeld(held.engineID); err != nil {
+		t.Fatal(err)
+	}
+	got := threadDownloads(manager, access)[0]
+	if got.State != downloadStateFailed || !strings.Contains(got.Error, "is gone from") {
+		t.Fatalf("a download whose folder went lists as %+v", got)
+	}
+	if _, err := os.Stat(relocated); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the removed folder was recreated: %v", err)
+	}
+	if names := folderNames(t, filepath.Join(home, "Downloads")); len(names) != 0 {
+		t.Fatalf("the old Downloads folder holds %q", names)
 	}
 }
 
@@ -407,8 +654,9 @@ func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {
 }
 
 // A canceled or failed download leaves the Downloads folder as it was: an
-// engine in this process never wrote there, and one that saves there
-// itself takes its own partial file with it and nothing beside it.
+// engine in this process wrote only into the staging folder, which goes
+// with its staged file, and one that saves there itself takes its own
+// partial file with it and nothing beside it.
 func TestACanceledOrFailedDownloadLeavesDownloadsAsItWas(t *testing.T) {
 	for _, mode := range []struct {
 		name   string
@@ -425,8 +673,16 @@ func TestACanceledOrFailedDownloadLeavesDownloadsAsItWas(t *testing.T) {
 			held := threadDownloads(manager, access)[0]
 			item, _ := manager.threadDownload(access.ThreadID, held.ID)
 			partial := heldFile(t, manager, item.engineID)
-			if inDownloads := filepath.Dir(partial) == downloads; inDownloads != (mode.saving == downloadsSavedByEngine) {
+			// While it runs, only the staging folder is new in Downloads, or
+			// the engine's own file where it saves there itself.
+			want := []string{stagingDirName, "neighbor.bin"}
+			if mode.saving == downloadsSavedByEngine {
+				want = []string{"held.bin", "neighbor.bin"}
+			} else if filepath.Dir(partial) != filepath.Join(downloads, stagingDirName) {
 				t.Fatalf("the running download writes %s", partial)
+			}
+			if names := folderNames(t, downloads); !slices.Equal(names, want) {
+				t.Fatalf("during the download the Downloads folder holds %q, want %q", names, want)
 			}
 			if err := manager.CancelThreadDownload(access, held.ID); err != nil {
 				t.Fatal(err)
@@ -461,8 +717,7 @@ func folderNames(t *testing.T, dir string) []string {
 
 // No quota, per-download cap or pruning applies to a download that ends up
 // in the Downloads folder; all three bound downloads AO keeps as
-// artifacts. A file staged and left behind (a crash mid-download) is
-// pruned from AO's directory.
+// artifacts.
 func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 	for _, mode := range downloadModes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -496,16 +751,6 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			if err := os.Chtimes(item.path, old, old); err != nil {
 				t.Fatal(err)
 			}
-			var leftover string
-			if mode.saving == downloadsStaged {
-				leftover = filepath.Join(fakeProfileOf(t, manager).downloadDir, "dl-crashed")
-				if err := os.WriteFile(leftover, []byte("partial"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chtimes(leftover, old, old); err != nil {
-					t.Fatal(err)
-				}
-			}
 			manager.artifactInitMu.Lock()
 			manager.artifactReady = false
 			manager.artifactInitMu.Unlock()
@@ -514,52 +759,13 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			if pruned := errors.Is(statErr, os.ErrNotExist); pruned != artifacts {
 				t.Fatalf("an old download was pruned: %v (%v)", pruned, statErr)
 			}
-			if leftover != "" {
-				if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("an old staged file was kept: %v", err)
-				}
-			}
 		})
 	}
 }
 
-// A file staged by an earlier run that ended mid-download is pruned once
-// the first page opens; one younger than artifactMaxAge stays.
-func TestOpeningAPagePrunesStaleStagedFiles(t *testing.T) {
-	testDownloadsFolder(t)
-	configDir := t.TempDir()
-	staging := filepath.Join(configDir, "browser-artifacts", "downloads", "jar")
-	if err := os.MkdirAll(staging, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	stale, recent := filepath.Join(staging, "dl-1"), filepath.Join(staging, "dl-2")
-	for _, path := range []string{stale, recent} {
-		if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	old := time.Now().Add(-2 * artifactMaxAge)
-	if err := os.Chtimes(stale, old, old); err != nil {
-		t.Fatal(err)
-	}
-	manager := NewManager(configDir, Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() {
-		if err := manager.Close(); err != nil {
-			t.Errorf("close manager: %v", err)
-		}
-	})
-	mustOpen(t, manager, Access{ThreadID: "thread", Workspace: t.TempDir()}, "https://example.test/")
-	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the stale staged file is still there: %v", err)
-	}
-	if _, err := os.Stat(recent); err != nil {
-		t.Fatalf("a recent staged file was pruned: %v", err)
-	}
-}
-
 // A Downloads folder that cannot be used fails the download on its row
-// with the reason, removes the staged file and leaves nothing in
-// Downloads; nothing falls back elsewhere. A missing folder is created.
+// with the reason as it starts, before the engine writes anything; nothing
+// falls back elsewhere. A missing folder is created.
 func TestAnUnusableDownloadsFolderFailsTheRow(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -605,15 +811,10 @@ func TestAnUnusableDownloadsFolderFailsTheRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, log, access, page := newDownloadManager(t)
 			downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
-			var staged string
-			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 			tc.break_(t, downloads)
 			log.take()
 			startDownload(t, manager, access, page, "a.bin", 10)
 			listed := threadDownloads(manager, access)
-			if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("the staged file is still there: %v", err)
-			}
 			if n := countKind(log.take(), "download"); n != 1 {
 				t.Fatalf("the download was announced %d times, want once", n)
 			}
@@ -833,16 +1034,23 @@ func (m *Manager) closeAllPages(t *testing.T, access Access) {
 	}
 }
 
-// A scope with no artifact directory has no partial file of AO's to remove:
-// the engine id is never taken as a path.
-func TestRemovePartialDownloadNeedsAnArtifactDirectory(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("dl-1", []byte("not AO's"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	removePartialDownload(&jarScope{}, "dl-1")
-	if _, err := os.Stat("dl-1"); err != nil {
-		t.Fatalf("a scope with no artifact directory removed a file: %v", err)
+// A scope with no artifact directory, and a download with no staged file,
+// has no partial file of AO's to remove: the engine id is never taken as a
+// path.
+func TestRemovePartialDownloadNeedsAFileOfAOs(t *testing.T) {
+	for _, mode := range downloadModes {
+		t.Run(mode.name, func(t *testing.T) {
+			manager, _, _, _ := newDownloadManagerFor(t, mode.saving)
+			t.Chdir(t.TempDir())
+			if err := os.WriteFile("dl-1", []byte("not AO's"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manager.removePartialDownload(&jarScope{}, "dl-1")
+			manager.removePartialDownload(nil, "dl-1")
+			if _, err := os.Stat("dl-1"); err != nil {
+				t.Fatalf("a download with no file of AO's removed one: %v", err)
+			}
+		})
 	}
 }
 

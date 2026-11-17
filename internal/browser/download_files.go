@@ -20,6 +20,11 @@ import (
 // with its folder's links resolved, the form authorizeFile compares, and the
 // file's identity, taken without following a link, which is what makes it
 // openable.
+//
+// The limit: WebView2 reports only a path, so a regular file of the same
+// size that replaced the saved one before the launcher's completion report
+// was handled is taken as the download. Making that swap needs write access
+// to the user's Downloads folder.
 func engineSavedDownload(path string, size int64) (string, os.FileInfo, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return "", nil, fmt.Errorf("browser: the browser reported the download saved at %q, which is not a file path", path)

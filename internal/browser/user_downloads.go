@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,10 +15,10 @@ import (
 // A pane download on a desktop engine ends up where any browser on this
 // machine puts it: the user's Downloads folder (downloadSaving). The hosted
 // engine's WebView2 saves there itself. The engines in this process write
-// into AO's own directory, which nothing else touches, and the Manager
-// publishes each finished file here (publishDownload), so an engine's
-// writes, cancel and failure cleanup only ever reach the download's own
-// file.
+// into the app's private staging directory there (download_staging.go),
+// and the Manager publishes each finished file beside it
+// (publishDownload), so an engine's writes, cancel and failure cleanup
+// only ever reach the download's own staged file.
 
 // userDownloadsDir is the Downloads folder of the user this process runs
 // as, created when it does not exist, as browsers do. On Linux it is
@@ -158,69 +156,72 @@ func userDirsValue(value, home string) (string, error) {
 // maxDownloadNameCollisions bounds the " (N)" walk.
 const maxDownloadNameCollisions = 1000
 
-// linkDownload is os.Link, a test seam for a Downloads folder on another
-// filesystem.
-var linkDownload = os.Link
+// linkDownload is os.Link and renameDownload renameNoReplace: test seams
+// for a file appearing at a name as it is taken, and for a filesystem
+// without hard links.
+var (
+	linkDownload   = os.Link
+	renameDownload = renameNoReplace
+)
 
-// publishDownload moves a finished download from AO's staging directory
-// into the user's Downloads folder under the first free name of the
-// suggested one and its " (1)", " (2)" variants, as browsers name them,
-// without ever replacing a file: it hard-links the staged file to the
-// candidate name, taking the next on EEXIST, so the published file is the
-// staged inode whose identity it answers. Across filesystems (EXDEV) it
-// creates the candidate exclusively, copies through that descriptor, and
-// answers the descriptor's identity. The staged name is removed whatever
-// happens, and a failed copy removes its file only while it is still the
-// one it created, so nothing partial stays in Downloads.
+// errNoReplaceRename is renameNoReplace's answer where the platform has no
+// rename that refuses to replace.
+var errNoReplaceRename = errors.New("this platform has no rename that refuses to replace a file")
+
+// publishDownload moves a finished download from its staged file into the
+// Downloads folder its staging directory is in, under the first free name
+// of the suggested one and its " (1)", " (2)" variants, as browsers name
+// them, and answers the published path and file. It never replaces a file:
+// it hard-links the staged file to a candidate, or, on a filesystem that
+// refuses hard links, renames it with a rename that refuses to replace;
+// either way a name that is taken (EEXIST) moves on to the next. Both stay
+// within one directory tree, so nothing is ever copied and nothing partial
+// ever has a public name. The caller's release of the staged file
+// (releaseStaged) removes a linked file's staged name. Where the filesystem
+// has neither, the download fails with the reason.
 func publishDownload(staged, suggested string) (path string, file os.FileInfo, err error) {
-	defer func() {
-		if removeErr := os.Remove(staged); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			log.Printf("browser: remove the staged download %s: %v", staged, removeErr)
-		}
-	}()
-	source, info, err := openStagedDownload(staged)
+	stagingDir, err := stagingDirOf(staged)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil, fmt.Errorf("browser: the downloaded file is gone from %s, which was moved or removed: %w", filepath.Dir(staged), err)
+	}
 	if err != nil {
 		return "", nil, err
 	}
-	defer func() { _ = source.Close() }()
-	dir, err := userDownloadsDir()
+	info, err := os.Lstat(staged)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("browser: the downloaded file is gone from %s: %w", stagingDir, err)
 	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("browser: the download's file %s is not a regular file", staged)
+	}
+	dir := filepath.Dir(stagingDir)
 	name := safeArtifactName(suggested, "download")
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	copying := false
+	move := linkDownload
+	linking := true
 	for i := 0; i < maxDownloadNameCollisions; i++ {
 		candidate := filepath.Join(dir, name)
 		if i > 0 {
 			candidate = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
 		}
-		if copying {
-			file, taken, err := copyDownload(source, info, candidate)
-			if err != nil {
-				return "", nil, fmt.Errorf("browser: save in the Downloads folder: %w", err)
-			}
-			if taken {
-				return candidate, file, nil
-			}
-			continue
-		}
-		err := linkDownload(staged, candidate)
+		err := move(staged, candidate)
 		switch {
 		case err == nil:
-			linked, err := os.Lstat(candidate)
+			moved, err := os.Lstat(candidate)
 			if err != nil {
 				return "", nil, fmt.Errorf("browser: save in the Downloads folder: %w", err)
 			}
-			if !os.SameFile(linked, info) {
+			if !os.SameFile(moved, info) {
 				return "", nil, fmt.Errorf("browser: %s changed while the download was saved there", candidate)
 			}
-			return candidate, linked, nil
+			return candidate, moved, nil
 		case errors.Is(err, fs.ErrExist):
-		case errors.Is(err, syscall.EXDEV):
-			copying = true
+		case linking && linksRefused(err):
+			move, linking = renameDownload, false
 			i--
+		case !linking && noReplaceRenameRefused(err):
+			return "", nil, fmt.Errorf("browser: the Downloads folder %s supports neither hard links nor renames that refuse to replace a file, so the download is not saved there: %w", dir, err)
 		default:
 			return "", nil, fmt.Errorf("browser: save in the Downloads folder: %w", err)
 		}
@@ -228,80 +229,14 @@ func publishDownload(staged, suggested string) (path string, file os.FileInfo, e
 	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxDownloadNameCollisions, name, dir)
 }
 
-// openStagedDownload opens the staged file, which must be a regular file and
-// not a link to one.
-func openStagedDownload(staged string) (*os.File, os.FileInfo, error) {
-	linked, err := os.Lstat(staged)
-	if err != nil {
-		return nil, nil, fmt.Errorf("browser: the downloaded file: %w", err)
-	}
-	if !linked.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("browser: the download's file %s is not a regular file", staged)
-	}
-	source, err := os.Open(staged)
-	if err != nil {
-		return nil, nil, fmt.Errorf("browser: the downloaded file: %w", err)
-	}
-	info, err := source.Stat()
-	if err == nil && !os.SameFile(info, linked) {
-		err = fmt.Errorf("browser: the download's file %s changed as it was opened", staged)
-	}
-	if err != nil {
-		_ = source.Close()
-		return nil, nil, err
-	}
-	return source, info, nil
+// linksRefused reports whether a link failed because the filesystem does
+// not make hard links.
+func linksRefused(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS)
 }
 
-// copyDownload creates path exclusively and copies source into it. taken
-// is false when something is already at path. A failed copy removes the
-// file it created, and only that file.
-func copyDownload(source *os.File, info os.FileInfo, path string) (file os.FileInfo, taken bool, err error) {
-	target, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-	if errors.Is(err, fs.ErrExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	created, err := target.Stat()
-	if err != nil {
-		_ = target.Close()
-		return nil, true, err
-	}
-	if _, err = source.Seek(0, io.SeekStart); err == nil {
-		_, err = io.Copy(target, source)
-	}
-	if err == nil {
-		file, err = target.Stat()
-	}
-	if closeErr := target.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		if removeErr := removeOwnFile(path, created); removeErr != nil {
-			err = fmt.Errorf("%w; %v", err, removeErr)
-		}
-		return nil, true, err
-	}
-	return file, true, nil
-}
-
-// removeOwnFile removes path while it is still created, the file AO made
-// there; a file someone put in its place stays.
-func removeOwnFile(path string, created os.FileInfo) error {
-	current, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("browser: check the partial copy %s: %w", path, err)
-	}
-	if !os.SameFile(current, created) {
-		return fmt.Errorf("browser: the partial copy %s was replaced and is left there", path)
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("browser: remove the partial copy %s: %w", path, err)
-	}
-	return nil
+// noReplaceRenameRefused reports whether a no-replace rename failed because
+// the filesystem or platform does not offer it.
+func noReplaceRenameRefused(err error) bool {
+	return errors.Is(err, errNoReplaceRename) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS)
 }

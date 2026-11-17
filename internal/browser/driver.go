@@ -64,6 +64,13 @@ type engineUIThread interface {
 	OnUIThread() bool
 }
 
+// engineDownloadEvents is implemented by an engine that delivers download
+// reports on a queue of its own: WaitDownloadEvents returns once every
+// report submitted so far has been delivered (Manager.Close).
+type engineDownloadEvents interface {
+	WaitDownloadEvents()
+}
+
 // engineAppFocus is implemented by an engine whose page views share the
 // app's window and its one keyboard focus (WebKitGTK, WKWebView). FocusApp
 // gives that focus to the app's own webview. The Manager calls it for every
@@ -191,9 +198,16 @@ type profileOptions struct {
 	// else, so one jar is one profile across restarts.
 	Jar string
 	// DownloadDir is the AO artifact directory downloads must land in, for
-	// an engine that writes them there (downloadsAsArtifacts,
-	// downloadsStaged); empty for one that saves them itself.
+	// an engine that keeps them there (downloadsAsArtifacts); empty
+	// otherwise.
 	DownloadDir string
+	// StageDownload answers the staged file an engine that stages
+	// (downloadsStaged) writes download id into, resolved as the download
+	// starts (download_staging.go); with an error the engine cancels the
+	// download before writing and reports the error as its end. Nil for
+	// other engines. Called on the engine's UI thread; it takes no lock a
+	// UI-thread dispatch waits on.
+	StageDownload func(id string) (string, error)
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
@@ -347,10 +361,11 @@ type pageDriver interface {
 type downloadSaving int
 
 const (
-	// downloadsStaged: the engine writes into profileOptions.DownloadDir
-	// under engine ids, a directory nothing but AO touches, and the Manager
-	// publishes each finished file into the user's Downloads folder
-	// (publishDownload). The engines in this process: WebKitGTK, WKWebView.
+	// downloadsStaged: the engine writes each download into the staged file
+	// profileOptions.StageDownload names, in the app's private staging
+	// directory in the user's Downloads folder, and the Manager publishes
+	// each finished file beside it (publishDownload). The engines in this
+	// process: WebKitGTK, WKWebView.
 	downloadsStaged downloadSaving = iota
 	// downloadsAsArtifacts: the engine writes into profileOptions.DownloadDir
 	// under engine ids, the Manager moves each finished file to its
