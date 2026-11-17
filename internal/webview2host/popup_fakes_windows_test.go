@@ -376,6 +376,9 @@ type popupRig struct {
 	mu      sync.Mutex
 	reports []rigReport
 	queue   []func()
+	// sink, when set, sees each report as the launcher's report queue
+	// would, inside Report, after it is recorded.
+	sink func(rigReport)
 }
 
 func newPopupRig(t *testing.T) *popupRig {
@@ -408,7 +411,11 @@ func newPopupRig(t *testing.T) *popupRig {
 			Report: func(pageID string, kind ReportKind, detail string) {
 				r.mu.Lock()
 				r.reports = append(r.reports, rigReport{pageID, kind, detail})
+				sink := r.sink
 				r.mu.Unlock()
+				if sink != nil {
+					sink(rigReport{pageID, kind, detail})
+				}
 			},
 		},
 	}

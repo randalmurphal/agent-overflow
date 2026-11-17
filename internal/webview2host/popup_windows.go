@@ -295,6 +295,28 @@ func (h *Host) reportPopup(page *hostPage) error {
 	return nil
 }
 
+// ReportUndelivered tells the host that a report it made did not reach the
+// backend: the bridge was down, or the call failed, timed out or was
+// refused. A popup whose popup report went so is closed with its popups
+// not announced yet, since the backend may never adopt it and it would
+// stay a hidden controller; a call that timed out may still have landed,
+// and the closed report that follows settles the backend's adoption, which
+// ignores closed for a page it never heard of. Any other report is the
+// backend's to re-derive. Safe from any goroutine, Config.Report included.
+func (h *Host) ReportUndelivered(pageID string, kind ReportKind) {
+	if kind != ReportPopup {
+		return
+	}
+	h.config.Post(func() {
+		page := h.pages[pageID]
+		if page == nil || page.popup == nil {
+			return
+		}
+		h.config.Logf("browser host: popup %s: its report did not reach the backend; it closes", page.id)
+		h.closeTaken(h.take(func(p *hostPage) bool { return p == page }), nil)
+	})
+}
+
 // departPopup is how every popup goes, by its page's close, its opener's,
 // the host's, a failed create or the backend's close, once it is out of the
 // registry. Its window request is answered if still open, which frees its
