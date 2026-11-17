@@ -48,6 +48,19 @@ func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *
 	return nil, nil, errPageNotFound
 }
 
+// pageByHandleLocked resolves an engine handle to the page it drives. Caller
+// holds m.mu.
+func (m *Manager) pageByHandleLocked(handle string) *managedPage {
+	for _, scope := range m.scopes {
+		for _, p := range scope.pages {
+			if p.driver.Handle() == handle {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
 func (m *Manager) workspaceForPage(pageID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

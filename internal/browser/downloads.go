@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -220,6 +221,40 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		removePartialDownload(scope, event.ID)
 	}
 	m.publishDownloads(note)
+}
+
+// downloadPolicyChanged tells the threads with a page in the profile, live
+// or being created, its current download warning, once per change.
+func (m *Manager) downloadPolicyChanged(handle string) {
+	m.mu.Lock()
+	var threads []string
+	warn := ""
+	for _, scope := range m.scopes {
+		policy, ok := scope.profile.(downloadPolicy)
+		if !ok || scope.profile.Handle() != handle {
+			continue
+		}
+		warn = policy.downloadsWarning()
+		if warn == scope.downloadsWarned {
+			break
+		}
+		scope.downloadsWarned = warn
+		for _, p := range scope.pages {
+			threads = append(threads, p.owner)
+		}
+		for p := range scope.creating {
+			threads = append(threads, p.owner)
+		}
+		break
+	}
+	m.mu.Unlock()
+	if warn == "" {
+		return
+	}
+	slices.Sort(threads)
+	for _, thread := range slices.Compact(threads) {
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: thread, Error: warn})
+	}
 }
 
 func pathInside(root, path string) bool {
