@@ -123,6 +123,11 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.scheduleIdleClose()
 		return nil, err
 	}
+	if m.downloadsWritten() {
+		// Once per Manager: what a download staged or kept before a crash
+		// goes after artifactMaxAge.
+		m.prepareArtifacts()
+	}
 	authorityDir := ""
 	if m.downloadsToArtifacts() {
 		authorityDir = m.workspaceDownloadDir(workspace)
@@ -267,7 +272,7 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 // to, or its opener's (jarAllows).
 func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := ""
-	if m.downloadsToArtifacts() {
+	if m.downloadsWritten() {
 		downloadDir = filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
 		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 			return nil, fmt.Errorf("browser: create download directory: %w", err)

@@ -90,7 +90,9 @@
             </div>
             {#if downloadRunning(download)}
               <IconButton label="Cancel download of {download.name}" title="Cancel" size="sm" testId="browser-download-cancel" onClick={() => void cancelBrowserDownload(threadId, download.id)}><Icon icon={X} size={14} /></IconButton>
-            {:else if download.state === 'completed'}
+            {:else if download.state === 'completed' && !download.error}
+              <!-- A completed download with an error saved a file AO does
+                   not open or show; its status says why. -->
               {#if download.openable}
                 <IconButton label="Open {download.name} in a tab" title="Open in a tab" size="sm" testId="browser-download-open" onClick={() => { open = false; void openBrowserDownload(threadId, download.id); }}><Icon icon={SquareArrowOutUpRight} size={14} /></IconButton>
               {/if}

@@ -19,15 +19,14 @@ import (
 //
 //	https://download.invalid/<name>?bytes=<n>[&hold][&fail]
 //
-// It saves where the engine it stands in for does: the user's Downloads
-// folder under a name that overwrites nothing, as the desktop engines do,
-// or the profile's artifact directory under the download's id, as headless
-// Chromium does (fakeEngine.artifactDownloads). It reports the start, writes
-// half the bytes and reports them, then the finish. hold leaves it running
-// at half until it is canceled; fail ends it as a failure the engine reports
-// on its own. In the Downloads folder a cancel or a failure removes the
-// partial file the download wrote, as an engine does there. Reports are
-// synchronous, inside the navigation.
+// It saves where the engine it stands in for does (fakeEngine.saving): the
+// profile's directory under the download's id, as WebKitGTK and headless
+// Chromium do, or the user's Downloads folder under a free name, as WebView2
+// does, removing its own partial file there on a cancel or a failure. It
+// reports the start, writes half the bytes and reports them, then the
+// finish. hold leaves it running at half until it is canceled; fail ends it
+// as a failure the engine reports on its own. Reports are synchronous,
+// inside the navigation.
 
 const fakeDownloadHost = "download.invalid"
 
@@ -69,25 +68,17 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 		return errors.New("browser: this fake engine was built without engine events and cannot download")
 	}
 	id := fmt.Sprintf("fake-dl-%d", p.engine.seq.Add(1))
-	inDownloads := !p.engine.artifactDownloads
+	selfSaved := p.engine.saving == downloadsSavedByEngine
 	file, name, destinationErr := filepath.Join(p.downloadDir, id), request.name, error(nil)
-	held := false
-	if inDownloads {
-		// Claimed, as WebKitGTK's is: the file is the download's from here.
-		file, destinationErr = reserveDownloadPath(request.name, claimDownloadFile)
+	if selfSaved {
+		file, destinationErr = fakeSaveInDownloads(request.name)
 		if destinationErr == nil {
 			name = filepath.Base(file)
-			defer func() {
-				// A held download keeps its path until it ends.
-				if !held {
-					releaseDownloadPath(file)
-				}
-			}()
 		}
 	}
 	// discard removes the download's own file in the Downloads folder.
 	discard := func() error {
-		if !inDownloads || destinationErr != nil {
+		if !selfSaved || destinationErr != nil {
 			return nil
 		}
 		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -118,7 +109,6 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 		}
 		p.held[id] = fakeDownload{total: request.bytes, file: file}
 		p.mu.Unlock()
-		held = true
 		return nil
 	case request.fail:
 		if err := os.Remove(file); err != nil {
@@ -130,14 +120,49 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 	if err := os.WriteFile(file, make([]byte, request.bytes), 0o600); err != nil {
 		return fail(err)
 	}
-	events.DownloadProgress(downloadProgress{ID: id, Received: float64(request.bytes), Total: float64(request.bytes), State: downloadCompleted, FilePath: file})
+	p.reportFinish(id, request.bytes, file)
 	return nil
+}
+
+// fakeSaveInDownloads creates the file of a download saved into the user's
+// Downloads folder under the first free name, as WebView2 names one.
+func fakeSaveInDownloads(suggested string) (string, error) {
+	dir, err := userDownloadsDir()
+	if err != nil {
+		return "", err
+	}
+	name := safeArtifactName(suggested, "download")
+	ext := filepath.Ext(name)
+	for i := 0; i < maxDownloadNameCollisions; i++ {
+		candidate := filepath.Join(dir, name)
+		if i > 0 {
+			candidate = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), i, ext))
+		}
+		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return candidate, file.Close()
+	}
+	return "", fmt.Errorf("browser: no free name for %q", name)
+}
+
+// reportFinish reports a finished download whose file is complete, after
+// the beforeFinishReport seam.
+func (p *fakeProfile) reportFinish(id string, total int64, file string) {
+	if hook := p.engine.beforeFinishReport; hook != nil {
+		hook(file)
+	}
+	p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(total), Total: float64(total), State: downloadCompleted, FilePath: file})
 }
 
 // CancelDownload ends a held download and reports it canceled, as an engine
 // reports the cancel it was asked for, releasing its record first as the
 // native engines do. In the Downloads folder it first removes the partial
-// file, as an engine does there. Any other id has already been let go, and
+// file, as WebView2 does there. Any other id has already been let go, and
 // its terminal report is out or on the way.
 func (p *fakeProfile) CancelDownload(id string) error {
 	p.mu.Lock()
@@ -147,10 +172,8 @@ func (p *fakeProfile) CancelDownload(id string) error {
 	if !ok {
 		return errDownloadEnded
 	}
-	if !p.engine.artifactDownloads {
-		err := os.Remove(held.file)
-		releaseDownloadPath(held.file)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if p.engine.saving == downloadsSavedByEngine {
+		if err := os.Remove(held.file); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("browser: remove the canceled fake download: %w", err)
 		}
 	}
@@ -174,16 +197,12 @@ func (p *fakeProfile) finishHeld(id string) error {
 	if !ok {
 		return fmt.Errorf("browser: %s is not a held fake download", id)
 	}
-	err := os.WriteFile(held.file, make([]byte, held.total), 0o600)
-	if !p.engine.artifactDownloads {
-		releaseDownloadPath(held.file)
-	}
-	if err != nil {
+	if err := os.WriteFile(held.file, make([]byte, held.total), 0o600); err != nil {
 		return err
 	}
 	if released := p.engine.downloadReleased; released != nil {
 		released(id)
 	}
-	p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(held.total), Total: float64(held.total), State: downloadCompleted, FilePath: held.file})
+	p.reportFinish(id, held.total, held.file)
 	return nil
 }

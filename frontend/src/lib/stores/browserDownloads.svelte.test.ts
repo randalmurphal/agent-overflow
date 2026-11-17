@@ -47,6 +47,7 @@ describe('browser downloads', () => {
     expect(downloadStatus(download({ receivedBytes: 1500, totalBytes: 3_000_000 }))).toBe('2 KB of 3.0 MB');
     expect(downloadStatus(download({ receivedBytes: 1500 }))).toBe('2 KB');
     expect(downloadStatus(download({ state: 'completed', receivedBytes: 912 }))).toBe('912 B');
+    expect(downloadStatus(download({ state: 'completed', receivedBytes: 912, error: 'the saved file is a link' }))).toBe('912 B · the saved file is a link');
     expect(downloadStatus(download({ state: 'failed', error: 'net::ERR_FAILED' }))).toBe('Failed: net::ERR_FAILED');
     expect(downloadStatus(download({ state: 'canceled' }))).toBe('Canceled');
     expect(downloadStatus(download({ state: 'canceled', error: 'page closed' }))).toBe('Canceled: page closed');
@@ -66,6 +67,14 @@ describe('browser downloads', () => {
     await vi.waitFor(() => expect(act).toHaveBeenCalledTimes(1));
     expect(act.mock.calls[0][0]).toBe(THREAD);
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'download-reveal', downloadId: 'd1' });
+  });
+
+  it('announces a saved file AO does not open with its reason and no action', () => {
+    announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed', error: 'the saved file is a link' }) } as never);
+    const toasts = getToasts();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ type: 'info', message: 'Downloaded report.pdf; the saved file is a link' });
+    expect(toasts[0].action).toBeUndefined();
   });
 
   it('puts a refused Show in folder from the toast in a toast when no pane is open', async () => {

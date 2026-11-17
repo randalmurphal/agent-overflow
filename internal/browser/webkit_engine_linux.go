@@ -61,7 +61,7 @@ type webkitEngine struct {
 	pageCount int
 
 	// downloadEvents carries every download report to the Manager off the
-	// GTK thread, one at a time in the order WebKit made them, so a fast
+	// GTK thread, one at a time in the order they were made, so a fast
 	// download's finish never reaches the Manager before its start.
 	downloadEvents serialqueue.Queue
 }
@@ -136,6 +136,10 @@ func (e *webkitEngine) takePopup(handle string) unsafe.Pointer {
 	return view
 }
 
+// DownloadSaving: WebKit writes into AO's directory and the Manager
+// publishes each finished file to the user's Downloads folder.
+func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
+
 func (e *webkitEngine) DiscardPage(handle string) {
 	if view := e.takePopup(handle); view != nil {
 		webkitCloseView(view)
@@ -164,13 +168,13 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	// An ephemeral session keeps everything in memory and touches no path at
 	// all, which is what the site-data setting being off has to mean for an
 	// engine whose storage is its own.
-	session, err := webkitNewSession(dataDir, cacheDir, cookieFile, opts.Ephemeral, id)
+	session, err := webkitNewSession(dataDir, cacheDir, cookieFile, opts.DownloadDir, opts.Ephemeral, id)
 	if err != nil {
 		return nil, err
 	}
 	profile := &webkitProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session,
-		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]webkitDownload),
+		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
 	}
 	webkitProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -182,10 +186,9 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	return profile, nil
 }
 
-// webkitProfile is one jar's WebKitNetworkSession: its own cookie jar and
-// cache, never the process-wide default session (which would write into the
-// user's ~/.local/share/webkitgtk). Its downloads go to the user's
-// Downloads folder (aoWebKitDownloadStarted).
+// webkitProfile is one jar's WebKitNetworkSession: its own cookie jar,
+// cache, and download destination, never the process-wide default session
+// (which would write into the user's ~/.local/share/webkitgtk).
 type webkitProfile struct {
 	engine  *webkitEngine
 	id      uint64
@@ -195,7 +198,7 @@ type webkitProfile struct {
 	mu        sync.Mutex
 	disposed  bool
 	pages     map[*webkitPage]struct{}
-	downloads map[string]webkitDownload
+	downloads map[string]unsafe.Pointer
 }
 
 func (p *webkitProfile) Handle() string { return p.handle }
@@ -278,35 +281,27 @@ func (p *webkitProfile) parkNew(page *webkitPage) {
 	webkitParkView(page.view)
 }
 
-// webkitDownload is one live download: the referenced WebKitDownload and the
-// Downloads path reserved for it (reserveDownloadPath).
-type webkitDownload struct {
-	ptr  unsafe.Pointer
-	path string
-}
-
-func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer, path string) {
+func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) {
 	p.mu.Lock()
-	p.downloads[handle] = webkitDownload{ptr: download, path: path}
+	p.downloads[handle] = download
 	p.mu.Unlock()
 	webkitDownloadOwners.Store(handle, p)
 }
 
 func (p *webkitProfile) releaseDownload(handle string) {
 	p.mu.Lock()
-	download, ok := p.downloads[handle]
+	download := p.downloads[handle]
 	delete(p.downloads, handle)
 	p.mu.Unlock()
 	webkitDownloadOwners.Delete(handle)
-	if ok {
-		releaseDownloadPath(download.path)
-		webkitReleaseDownload(download.ptr)
+	if download != nil {
+		webkitReleaseDownload(download)
 	}
 }
 
 func (p *webkitProfile) CancelDownload(id string) error {
 	p.mu.Lock()
-	download := p.downloads[id].ptr
+	download := p.downloads[id]
 	p.mu.Unlock()
 	if download == nil {
 		// Released: WebKit finished or failed it, and that report is on its

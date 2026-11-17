@@ -1,115 +1,88 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-// The files pane downloads saved into the user's Downloads folder, which a
-// page of the workspace they downloaded in may open (authorizeFile): those
-// files alone, never the folder, and each only while it is still the file
-// the download wrote (sameDownloadedFile). The record is in memory, bounded
-// per workspace and in workspaces, and outlives the pages and the threads'
-// lists so a closed tab or a cleared list does not take the allowance with
-// it. It never deletes a file.
+// A page of a workspace may open that workspace's finished downloads in the
+// user's Downloads folder (authorizeFile): exactly the files of the finished
+// rows the Manager still lists, in any thread's pane list or any live page's
+// browser_downloads log, each only while it is still the file the download
+// wrote (sameDownloadedFile), and never the folder. The rows are the one
+// record: a row that is listed is openable, and one that is gone is not.
 
-const (
-	// maxRecordedDownloads bounds one workspace's record; the oldest go first.
-	maxRecordedDownloads = 100
-	// maxRecordedWorkspaces bounds the workspaces with a record; the one
-	// whose newest download is oldest goes first.
-	maxRecordedWorkspaces = 32
-)
-
-type recordedDownload struct {
-	path string
-	file os.FileInfo
-}
-
-type workspaceDownloads struct {
-	// files is oldest first.
-	files []recordedDownload
-	// latest orders the workspaces by their newest record.
-	latest uint64
-}
-
-// savedDownload checks the file an engine reports it saved a download to:
-// an absolute path to a regular file. It answers the path with its links
-// resolved, the form authorizeFile compares, and the file as it is now.
-func savedDownload(path string) (string, os.FileInfo, error) {
+// engineSavedDownload checks the file an engine that saves downloads itself
+// reports it saved: an absolute path naming a regular file, not a link, and
+// of the size the engine reported when it reported one. It answers the path
+// with its folder's links resolved, the form authorizeFile compares, and the
+// file's identity, taken without following a link, which is what makes it
+// openable.
+func engineSavedDownload(path string, size int64) (string, os.FileInfo, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return "", nil, fmt.Errorf("browser: the browser reported the download saved at %q, which is not a file path", path)
 	}
-	resolved, err := filepath.EvalSymlinks(path)
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", nil, fmt.Errorf("browser: the downloaded file's folder: %w", err)
+	}
+	path = filepath.Join(dir, filepath.Base(path))
+	file, err := os.Lstat(path)
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
 	}
-	file, err := os.Stat(resolved)
-	if err != nil {
-		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
+	if file.Mode()&os.ModeSymlink != 0 {
+		return path, nil, errors.New("the saved file is a link, not the file the download wrote, so it is not opened from here")
 	}
 	if !file.Mode().IsRegular() {
-		return "", nil, fmt.Errorf("browser: the download saved %s, which is not a regular file", resolved)
+		return path, nil, errors.New("the saved file is not a regular file, so it is not opened from here")
 	}
-	return resolved, file, nil
+	if size > 0 && file.Size() != size {
+		return path, nil, fmt.Errorf("the saved file holds %d bytes, not the %d the download wrote, so it is not opened from here", file.Size(), size)
+	}
+	return path, file, nil
 }
 
-// recordFinishedDownload adds a finished download's file to its canonical
-// workspace's record. Takes m.downloadsMu.
-func (m *Manager) recordFinishedDownload(workspace, path string, file os.FileInfo) {
-	if workspace == "" {
-		return
-	}
+// listedDownloadAllows reports whether path, links resolved, is the file of
+// a finished download of the canonical workspace that the Manager still
+// lists, and is still that file.
+func (m *Manager) listedDownloadAllows(workspace, path string) bool {
+	var listed []os.FileInfo
 	m.downloadsMu.Lock()
-	defer m.downloadsMu.Unlock()
-	if m.finishedDownloads == nil {
-		m.finishedDownloads = make(map[string]*workspaceDownloads)
-	}
-	record := m.finishedDownloads[workspace]
-	if record == nil {
-		if len(m.finishedDownloads) >= maxRecordedWorkspaces {
-			oldest := ""
-			for key, other := range m.finishedDownloads {
-				if oldest == "" || other.latest < m.finishedDownloads[oldest].latest {
-					oldest = key
-				}
-			}
-			delete(m.finishedDownloads, oldest)
-		}
-		record = &workspaceDownloads{}
-		m.finishedDownloads[workspace] = record
-	}
-	m.recordSeq++
-	record.latest = m.recordSeq
-	record.files = append(record.files, recordedDownload{path: path, file: file})
-	if excess := len(record.files) - maxRecordedDownloads; excess > 0 {
-		record.files = append(record.files[:0:0], record.files[excess:]...)
-	}
-}
-
-// recordedDownloadAllows reports whether path, links resolved, is a file
-// one of the canonical workspace's pane downloads saved and is still that
-// file.
-func (m *Manager) recordedDownloadAllows(workspace, path string) bool {
-	var recorded []os.FileInfo
-	m.downloadsMu.Lock()
-	if record := m.finishedDownloads[workspace]; record != nil {
-		for _, entry := range record.files {
-			if entry.path == path {
-				recorded = append(recorded, entry.file)
+	for _, list := range m.threadDownloads {
+		for _, item := range list.items {
+			if item.State == downloadStateCompleted && item.workspace == workspace && item.path == path && item.file != nil {
+				listed = append(listed, item.file)
 			}
 		}
 	}
 	m.downloadsMu.Unlock()
-	if len(recorded) == 0 {
+	m.mu.Lock()
+	for _, scope := range m.scopes {
+		for _, p := range scope.pages {
+			if p.access.Workspace != workspace {
+				continue
+			}
+			p.downloadMu.Lock()
+			for _, entry := range p.downloads {
+				if entry.State == downloadStateCompleted && entry.Path == path && entry.file != nil {
+					listed = append(listed, entry.file)
+				}
+			}
+			p.downloadMu.Unlock()
+		}
+	}
+	m.mu.Unlock()
+	if len(listed) == 0 {
 		return false
 	}
 	current, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	for _, file := range recorded {
+	for _, file := range listed {
 		if sameDownloadedFile(file, current) {
 			return true
 		}

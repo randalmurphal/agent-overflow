@@ -123,9 +123,9 @@ func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, e
 	}, nil
 }
 
-// DownloadsToArtifacts is artifactDownloadEngine: a serve host's downloads
-// are AO's, kept in its artifact directories under its quotas.
-func (e *headlessEngine) DownloadsToArtifacts() bool { return true }
+// DownloadSaving: a serve host's downloads are AO's, kept in its artifact
+// directories under its quotas.
+func (e *headlessEngine) DownloadSaving() downloadSaving { return downloadsAsArtifacts }
 
 // Start validates the binary and does nothing else, which is the design
 // rather than a gap: a process belongs to a profile here, and the first

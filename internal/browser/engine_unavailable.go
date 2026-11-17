@@ -27,6 +27,9 @@ func (unavailableEngine) Interrupt()                  {}
 func (unavailableEngine) Stop()                       {}
 func (unavailableEngine) DiscardPage(string)          {}
 
+// DownloadSaving is never consulted: this engine makes no page.
+func (unavailableEngine) DownloadSaving() downloadSaving { return downloadsStaged }
+
 func (unavailableEngine) NewProfile(context.Context, profileOptions) (engineProfile, error) {
 	return nil, errNoBrowserEngine
 }

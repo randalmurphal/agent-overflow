@@ -54,7 +54,8 @@ export function downloadStatus(download: BrowserDownload): string {
         ? `${formatBytes(download.receivedBytes)} of ${formatBytes(download.totalBytes)}`
         : formatBytes(download.receivedBytes);
     case 'completed':
-      return formatBytes(download.receivedBytes);
+      // A completed download with an error saved a file AO does not open.
+      return download.error ? `${formatBytes(download.receivedBytes)} · ${download.error}` : formatBytes(download.receivedBytes);
     case 'failed':
       return `Failed: ${download.error || 'unknown error'}`;
     default:
@@ -119,6 +120,11 @@ export function announceBrowserDownload(event: BrowserCompanionEvent): void {
   const download = event.download;
   if (!download) return;
   const threadId = event.threadId;
+  if (download.state === 'completed' && download.error) {
+    // Saved, but not a file AO opens or shows.
+    addToast('info', `Downloaded ${download.name}; ${download.error}`, FINISHED_TOAST_MS);
+    return;
+  }
   if (download.state === 'completed') {
     addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {
       label: 'Show in folder',

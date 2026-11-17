@@ -24,13 +24,20 @@ const (
 // maxPageDownloads bounds one page's download log.
 const maxPageDownloads = 100
 
-// downloadsToArtifacts is where this Manager's downloads go: true when its
-// engine's downloads are AO's (artifactDownloadEngine), which quotas, a
-// per-download cap and artifact pruning bound; false when they go to the
-// user's Downloads folder, where AO bounds, moves and deletes nothing.
+// downloadsToArtifacts is whether this Manager's finished downloads stay
+// AO's (downloadsAsArtifacts), which quotas, a per-download cap and
+// artifact pruning bound. Every other engine's end up in the user's
+// Downloads folder, where AO bounds, moves and deletes nothing it did not
+// put there.
 func (m *Manager) downloadsToArtifacts() bool {
-	engine, ok := m.engine.(artifactDownloadEngine)
-	return ok && engine.DownloadsToArtifacts()
+	return m.engine.DownloadSaving() == downloadsAsArtifacts
+}
+
+// downloadsWritten is whether this Manager's engine writes downloads into
+// AO's directories (downloadsAsArtifacts, downloadsStaged), which then need
+// a jar directory and pruning.
+func (m *Manager) downloadsWritten() bool {
+	return m.engine.DownloadSaving() != downloadsSavedByEngine
 }
 
 // downloadStarted admits a download into the log of the page whose frame
@@ -140,10 +147,10 @@ func (m *Manager) releaseDownloadLocked(p *managedPage, entry *DownloadInfo) {
 	}
 }
 
-// removePartialDownload removes the handle-named file an engine whose
-// downloads are AO's was streaming a download into, once AO stopped the
-// download. A scope with no artifact directory has nothing of AO's to
-// remove: an engine that saves to the user's Downloads folder removes its
+// removePartialDownload removes the handle-named file an engine writing
+// into AO's directory was streaming a download into, once AO stopped the
+// download. A scope with no such directory has nothing of AO's to remove:
+// an engine that saves to the user's Downloads folder itself removes its
 // own partial file.
 func removePartialDownload(scope *jarScope, id string) {
 	if scope.downloadDir == "" {
@@ -163,7 +170,8 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 	entry := p.downloadLocked(event.ID)
 	// A settled download takes no further report: AO stopped it (a quota,
 	// its size, the user, its page closing) or the engine already ended it.
-	if entry == nil || entry.State != downloadStateRunning {
+	// One being published has had its finish.
+	if entry == nil || entry.State != downloadStateRunning || entry.publishing {
 		p.downloadMu.Unlock()
 		return
 	}
@@ -171,8 +179,8 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 	if event.Total > 0 {
 		entry.TotalBytes = int64(event.Total)
 	}
-	artifacts := m.downloadsToArtifacts()
-	if artifacts && entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
+	saving := m.engine.DownloadSaving()
+	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		m.releaseDownloadLocked(p, entry)
@@ -190,6 +198,10 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		}
 		return
 	}
+	if event.State == downloadCompleted && saving == downloadsStaged {
+		m.publishFinishedDownload(p, scope, entry, event)
+		return
+	}
 	removePartial := false
 	switch event.State {
 	case downloadCompleted:
@@ -199,16 +211,19 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
 			entry.reservedBytes = 0
 		}
-		if !artifacts {
+		if saving == downloadsSavedByEngine {
 			// The engine saved it in the user's Downloads folder, where it
-			// stays.
-			path, file, err := savedDownload(event.FilePath)
-			if err != nil {
-				entry.State, entry.Error = downloadStateFailed, err.Error()
-				break
+			// stays. Only the regular file the engine reported, as it is
+			// now, is openable; anything else completes with the reason.
+			size := int64(event.Total)
+			if size <= 0 {
+				size = int64(event.Received)
 			}
+			path, file, err := engineSavedDownload(event.FilePath, size)
 			entry.Path, entry.file = path, file
-			m.recordFinishedDownload(p.access.Workspace, path, file)
+			if err != nil {
+				entry.Error = err.Error()
+			}
 		} else if scope != nil && p.authority != nil {
 			// The engine writes into its jar's directory; the finished file
 			// moves to the page's workspace's.
@@ -256,6 +271,52 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		// The engine took the user's cancel; what it wrote is a partial file.
 		removePartialDownload(scope, event.ID)
 	}
+	m.publishDownloads(note)
+}
+
+// publishFinishedDownload settles a staged download the engine finished:
+// its file moves from the jar's directory into the user's Downloads folder
+// (publishDownload) and the row completes with the published path, or fails
+// with the reason, the staged file removed either way. The row stays
+// running while the file moves, outside the page's lock: a page that leaves
+// meanwhile (pageLeftLocked) and a cancel (CancelThreadDownload) leave it to
+// this, its one settlement. The caller holds p.downloadMu, which this
+// releases.
+func (m *Manager) publishFinishedDownload(p *managedPage, scope *jarScope, entry *DownloadInfo, event downloadProgress) {
+	source := event.FilePath
+	if source == "" && scope != nil {
+		source = filepath.Join(scope.downloadDir, filepath.Base(event.ID))
+	}
+	if scope == nil || scope.downloadDir == "" || !pathInside(scope.downloadDir, source) {
+		entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its download directory"
+		note := m.noteDownloadLocked(p, entry, "")
+		p.signalDownloadLocked()
+		p.downloadMu.Unlock()
+		m.publishDownloads(note)
+		return
+	}
+	entry.publishing = true
+	name := entry.SuggestedName
+	p.downloadMu.Unlock()
+
+	path, file, err := publishDownload(source, name)
+
+	p.downloadMu.Lock()
+	// A running entry is never trimmed, so it is still there.
+	entry = p.downloadLocked(event.ID)
+	if entry == nil {
+		p.downloadMu.Unlock()
+		return
+	}
+	entry.publishing = false
+	if err != nil {
+		entry.State, entry.Error = downloadStateFailed, err.Error()
+	} else {
+		entry.State, entry.Path, entry.file = downloadStateCompleted, path, file
+	}
+	note := m.noteDownloadLocked(p, entry, "")
+	p.signalDownloadLocked()
+	p.downloadMu.Unlock()
 	m.publishDownloads(note)
 }
 
@@ -324,7 +385,9 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 	p.downloadsEnded = true
 	for i := range p.downloads {
 		entry := &p.downloads[i]
-		if entry.State != downloadStateRunning {
+		// One being published settles when its file is in place
+		// (publishFinishedDownload).
+		if entry.State != downloadStateRunning || entry.publishing {
 			continue
 		}
 		entry.State, entry.Error = downloadStateCanceled, reason
@@ -340,11 +403,11 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 }
 
 // stopEndedDownloads asks the engine to stop the downloads a page left
-// running. On an engine whose downloads are AO's it removes what they
+// running. On an engine writing into AO's directory it removes what they
 // wrote: their entries already say canceled, so a file that finished
 // meanwhile goes too. An engine saving to the user's Downloads folder
-// removes its own partial file on the cancel, and a file that finished
-// first stays there.
+// itself removes its own partial file on the cancel, and a file that
+// finished first stays there.
 func (m *Manager) stopEndedDownloads(ended endedDownloads) {
 	for _, id := range ended.ids {
 		if err := ended.scope.profile.CancelDownload(id); err != nil && !errors.Is(err, errDownloadEnded) {

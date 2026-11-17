@@ -17,6 +17,21 @@ import (
 	"time"
 )
 
+// smokeStagingDir is the directory the engine writes the run's downloads
+// into before the Manager publishes them.
+func smokeStagingDir(t *testing.T, manager *Manager) string {
+	t.Helper()
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, scope := range manager.scopes {
+		if scope.downloadDir != "" {
+			return scope.downloadDir
+		}
+	}
+	t.Fatal("no jar writes downloads")
+	return ""
+}
+
 // smokePNG is a 1x1 PNG.
 var smokePNG, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
@@ -24,18 +39,20 @@ var smokePNG, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAA
 const smokePDF = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
 
 // TestNativeEngineRealDownloads drives this engine's downloads through the
-// pane's list: the size the response announced, a finished file saved in the
-// Downloads folder of the run's temporary home under a name that overwrites
-// nothing, the user's cancel of a running one and an engine failure, each
-// leaving no partial file, a name taken before the engine writes, a missing
-// Downloads folder, and a finished file opened in a tab and by
-// browser_open_file.
+// pane's list: the size the response announced, a finished file published
+// into the Downloads folder of the run's temporary home under a name that
+// replaces nothing, the user's cancel of a running one and an engine
+// failure, each leaving Downloads as it was, a cancel after the user put a
+// file at the download's name, a staged file swapped for a link while its
+// finish waits in the engine's queue, a name taken while the download
+// runs, a missing Downloads folder, and a finished file opened in a tab and
+// by browser_open_file.
 func TestNativeEngineRealDownloads(t *testing.T) {
 	window := nativeSmokeWindow.Load()
 	if window == nil {
 		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
 	}
-	release := make(chan struct{})
+	release, gate := make(chan struct{}), make(chan struct{})
 	payload := bytes.Repeat([]byte("a"), 300_000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attach := func(name, kind string, size int) {
@@ -53,6 +70,15 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		case "/doc.pdf":
 			attach("doc.pdf", "application/pdf", len(smokePDF))
 			_, _ = w.Write([]byte(smokePDF))
+		case "/gated.bin":
+			attach("gated.bin", "application/octet-stream", len(payload))
+			_, _ = w.Write(payload[:65536])
+			w.(http.Flusher).Flush()
+			select {
+			case <-gate:
+				_, _ = w.Write(payload[65536:])
+			case <-r.Context().Done():
+			}
 		case "/slow.bin", "/broken.bin":
 			attach(strings.TrimPrefix(r.URL.Path, "/"), "application/octet-stream", 10_000_000)
 			_, _ = w.Write(payload[:65536])
@@ -206,6 +232,109 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		}
 		unchanged(before)
 	})
+	t.Run("a cancel never removes a file put at the download's name", func(t *testing.T) {
+		item := settled(download("/slow.bin").ID, func(item ThreadDownload) bool { return item.ReceivedBytes > 0 })
+		// The user renames the download's file and saves an unrelated one
+		// under its name. A running download writes nothing in Downloads,
+		// so there is nothing to rename.
+		name := filepath.Join(downloads, "slow.bin")
+		if _, err := os.Lstat(name); err == nil {
+			if err := os.Rename(name, name+".original"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(name, []byte("unrelated"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Remove(name)
+			_ = os.Remove(name + ".original")
+		}()
+		before := folder()
+		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		if got := settled(item.ID, notRunning); got.State != downloadStateCanceled {
+			t.Fatalf("a canceled download settled as %+v", got)
+		}
+		unchanged(before)
+		if got, err := os.ReadFile(name); err != nil || string(got) != "unrelated" {
+			t.Fatalf("the unrelated file reads %q, %v", got, err)
+		}
+	})
+	t.Run("a staged file swapped for a link before its finish is handled grants nothing", func(t *testing.T) {
+		private := filepath.Join(t.TempDir(), "private.txt")
+		if err := os.WriteFile(private, []byte("private"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := folder()
+		staging := smokeStagingDir(t, manager)
+		known, err := os.ReadDir(staging)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release := holdDownloadEvents(t, manager)
+		released := false
+		defer func() {
+			if !released {
+				release()
+			}
+		}()
+		count := len(manager.CompanionState(access).Downloads)
+		if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/file.bin"), nil); err != nil {
+			t.Fatal(err)
+		}
+		staged := ""
+		for staged == "" {
+			entries, err := os.ReadDir(staging)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				info, err := entry.Info()
+				if err == nil && !slices.ContainsFunc(known, func(k os.DirEntry) bool { return k.Name() == entry.Name() }) && info.Size() == int64(len(payload)) && !strings.Contains(entry.Name(), ".") {
+					staged = filepath.Join(staging, entry.Name())
+				}
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("the engine never finished writing into %s", staging)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		// The engine's finish is now behind the held queue.
+		time.Sleep(time.Second)
+		if err := os.Remove(staged); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(private, staged); err != nil {
+			t.Fatal(err)
+		}
+		release()
+		released = true
+		var item ThreadDownload
+		for item.ID == "" {
+			if listed := manager.CompanionState(access).Downloads; len(listed) > count {
+				item = listed[0]
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal("the held download never listed")
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		item = settled(item.ID, notRunning)
+		if item.State != downloadStateFailed || !strings.Contains(item.Error, "not a regular file") {
+			t.Fatalf("the swapped download settled as %+v, want failed", item)
+		}
+		if _, err := manager.authorizeFile(access, private); err == nil {
+			t.Fatal("the link's target is openable")
+		}
+		unchanged(before)
+		if got, _ := os.ReadFile(private); string(got) != "private" {
+			t.Fatalf("the link's target reads %q", got)
+		}
+	})
 	t.Run("a dropped connection is a failure", func(t *testing.T) {
 		before := folder()
 		item := settled(download("/broken.bin").ID, notRunning)
@@ -217,18 +346,24 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		t.Logf("the engine's reason: %s", item.Error)
 		unchanged(before)
 	})
-	t.Run("a name taken as the download starts keeps that file and takes the next", func(t *testing.T) {
-		theirs := takeCheckedDownloadPath(t)
-		item := settled(download("/file.bin").ID, notRunning)
-		if item.State != downloadStateCompleted || item.Name != "file (3).bin" {
-			t.Fatalf("the download settled as %+v, want file (3).bin", item)
-		}
-		got, err := os.ReadFile(*theirs)
-		if err != nil || string(got) != "theirs" || filepath.Base(*theirs) != "file (2).bin" {
-			t.Fatalf("the other program's file %s reads %q, %v", *theirs, got, err)
-		}
-		if err := os.Remove(*theirs); err != nil {
+	t.Run("a name taken while the download runs keeps that file and takes the next", func(t *testing.T) {
+		item := settled(download("/gated.bin").ID, func(item ThreadDownload) bool { return item.ReceivedBytes > 0 })
+		theirs := filepath.Join(downloads, "gated.bin")
+		if err := os.WriteFile(theirs, []byte("theirs"), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		close(gate)
+		item = settled(item.ID, notRunning)
+		if item.State != downloadStateCompleted || item.Name != "gated (1).bin" {
+			t.Fatalf("the download settled as %+v, want gated (1).bin", item)
+		}
+		if got, err := os.ReadFile(theirs); err != nil || string(got) != "theirs" {
+			t.Fatalf("the other program's file reads %q, %v", got, err)
+		}
+		for _, name := range []string{theirs, filepath.Join(downloads, "gated (1).bin")} {
+			if err := os.Remove(name); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 	t.Run("a cancel as soon as the download starts leaves no file", func(t *testing.T) {
@@ -242,22 +377,25 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		}
 		unchanged(before)
 	})
-	t.Run("a missing Downloads folder fails the download", func(t *testing.T) {
+	t.Run("a missing Downloads folder is created", func(t *testing.T) {
 		parked := downloads + ".parked"
 		if err := os.Rename(downloads, parked); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
+			if err := os.RemoveAll(downloads); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.Rename(parked, downloads); err != nil {
 				t.Fatal(err)
 			}
 		}()
 		item := settled(download("/chart.png").ID, notRunning)
-		if item.State != downloadStateFailed || !strings.Contains(item.Error, "does not exist") {
-			t.Fatalf("the download settled as %+v, want failed for the missing folder", item)
+		if item.State != downloadStateCompleted {
+			t.Fatalf("the download settled as %+v, want completed in a created folder", item)
 		}
-		if _, err := os.Stat(downloads); err == nil {
-			t.Fatal("the download created the Downloads folder")
+		if got := folder(); !slices.Equal(got, []string{"chart.png"}) {
+			t.Fatalf("the created Downloads folder holds %q", got)
 		}
 	})
 	for _, file := range []struct{ path, contentType string }{{"/chart.png", "image/png"}, {"/doc.pdf", "application/pdf"}} {

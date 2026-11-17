@@ -72,7 +72,8 @@ int ao_wk_view_focus_presented(void *view);
 // an AO-owned data directory, or an ephemeral one. Never touches the default
 // session, which would write into ~/.local/share/webkitgtk/.
 void *ao_wk_session_new(const char *data_dir, const char *cache_dir,
-                        const char *cookie_file, int ephemeral, uint64_t profile_id);
+                        const char *cookie_file, const char *download_dir,
+                        int ephemeral, uint64_t profile_id);
 void ao_wk_session_free(void *session);
 
 // ---- view ----------------------------------------------------------------

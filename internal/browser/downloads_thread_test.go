@@ -44,24 +44,26 @@ func countKind(events []CompanionEvent, kind string) int {
 	return n
 }
 
-// downloadModes are the two destinations a download can have: the user's
-// Downloads folder (the desktop engines) and AO's artifact directories
-// (headless Chromium).
+// downloadModes are the three ways an engine's downloads are saved
+// (downloadSaving): staged in AO's directory and published to the user's
+// Downloads folder (WebKitGTK, WKWebView), saved there by the engine
+// (WebView2), and kept as AO's artifacts (headless Chromium).
 var downloadModes = []struct {
-	name      string
-	artifacts bool
-}{{"downloads folder", false}, {"artifacts", true}}
+	name   string
+	saving downloadSaving
+}{{"staged", downloadsStaged}, {"saved by the engine", downloadsSavedByEngine}, {"artifacts", downloadsAsArtifacts}}
 
-// newDownloadManager opens a page on a fake engine standing in for a
-// desktop engine, which saves to a Downloads folder of the test's own.
+// newDownloadManager opens a page on a fake engine standing in for an
+// engine in this process, whose downloads are published to a Downloads
+// folder of the test's own.
 func newDownloadManager(t *testing.T) (*Manager, *downloadEventLog, Access, PageInfo) {
 	t.Helper()
-	return newDownloadManagerFor(t, false)
+	return newDownloadManagerFor(t, downloadsStaged)
 }
 
-// newDownloadManagerFor is newDownloadManager, standing in for headless
-// Chromium with artifacts.
-func newDownloadManagerFor(t *testing.T, artifacts bool) (*Manager, *downloadEventLog, Access, PageInfo) {
+// newDownloadManagerFor is newDownloadManager, standing in for an engine
+// that saves as saving says.
+func newDownloadManagerFor(t *testing.T, saving downloadSaving) (*Manager, *downloadEventLog, Access, PageInfo) {
 	t.Helper()
 	testDownloadsFolder(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
@@ -70,7 +72,7 @@ func newDownloadManagerFor(t *testing.T, artifacts bool) (*Manager, *downloadEve
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	manager.engine.(*fakeEngine).artifactDownloads = artifacts
+	manager.engine.(*fakeEngine).saving = saving
 	log := &downloadEventLog{}
 	manager.SetEventSink(log.sink)
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -83,10 +85,13 @@ func newDownloadManagerFor(t *testing.T, artifacts bool) (*Manager, *downloadEve
 }
 
 // testDownloadsFolder gives the test a home of its own with an empty
-// Downloads folder, and answers that folder.
+// Downloads folder, and answers that folder, links resolved.
 func testDownloadsFolder(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	downloads := filepath.Join(home, "Downloads")
@@ -147,13 +152,13 @@ func authorityOf(t *testing.T, manager *Manager, access Access) *workspaceAuthor
 func TestAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T) {
 	for _, mode := range downloadModes {
 		t.Run(mode.name, func(t *testing.T) {
-			testAFinishedDownloadIsListedAndAnnouncedOnce(t, mode.artifacts)
+			testAFinishedDownloadIsListedAndAnnouncedOnce(t, mode.saving)
 		})
 	}
 }
 
-func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, artifacts bool) {
-	manager, log, access, page := newDownloadManagerFor(t, artifacts)
+func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, saving downloadSaving) {
+	manager, log, access, page := newDownloadManagerFor(t, saving)
 	startDownload(t, manager, access, page, "report.pdf", 2048)
 
 	listed := threadDownloads(manager, access)
@@ -170,7 +175,7 @@ func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, artifacts bool)
 		t.Fatal(err)
 	}
 	wantDir := filepath.Join(os.Getenv("HOME"), "Downloads")
-	if artifacts {
+	if saving == downloadsAsArtifacts {
 		wantDir = authorityOf(t, manager, access).downloadDir
 	}
 	if filepath.Dir(item.path) != wantDir {
@@ -258,13 +263,13 @@ func TestDownloadProgressCoalescesIntoOneStatePush(t *testing.T) {
 func TestCancelingADownloadSettlesItAsCanceled(t *testing.T) {
 	for _, mode := range downloadModes {
 		t.Run(mode.name, func(t *testing.T) {
-			testCancelingADownloadSettlesItAsCanceled(t, mode.artifacts)
+			testCancelingADownloadSettlesItAsCanceled(t, mode.saving)
 		})
 	}
 }
 
-func testCancelingADownloadSettlesItAsCanceled(t *testing.T, artifacts bool) {
-	manager, log, access, page := newDownloadManagerFor(t, artifacts)
+func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSaving) {
+	manager, log, access, page := newDownloadManagerFor(t, saving)
 	startDownload(t, manager, access, page, "big.zip", 4096, "hold")
 	listed := threadDownloads(manager, access)
 	if len(listed) != 1 || listed[0].State != downloadStateRunning || listed[0].ReceivedBytes != 2048 || listed[0].TotalBytes != 4096 {
@@ -415,7 +420,7 @@ func TestARefusedCancelReachesTheUserAndTheDownloadRuns(t *testing.T) {
 // A download refused for quota, and one stopped by its page closing, are
 // listed with the reason and announced.
 func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
-	manager, log, access, page := newDownloadManagerFor(t, true)
+	manager, log, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	frame := paneHandle(manager, access, page.ID)
 	authorityOf(t, manager, access).downloadBytes.Store(maxWorkspaceDownloadBytes)
 	if manager.downloadStarted(downloadStart{Frame: frame, ID: "over", SuggestedName: "over.bin"}) {
@@ -520,16 +525,16 @@ func TestRevealingADownloadShowsItsFile(t *testing.T) {
 	for _, mode := range downloadModes {
 		t.Run(mode.name, func(t *testing.T) {
 			gone := "notes.txt is no longer at"
-			if mode.artifacts {
+			if mode.saving == downloadsAsArtifacts {
 				gone = "notes.txt is gone; downloads are removed after 7 days"
 			}
-			testRevealingADownloadShowsItsFile(t, mode.artifacts, gone)
+			testRevealingADownloadShowsItsFile(t, mode.saving, gone)
 		})
 	}
 }
 
-func testRevealingADownloadShowsItsFile(t *testing.T, artifacts bool, gone string) {
-	manager, _, access, page := newDownloadManagerFor(t, artifacts)
+func testRevealingADownloadShowsItsFile(t *testing.T, saving downloadSaving, gone string) {
+	manager, _, access, page := newDownloadManagerFor(t, saving)
 	var revealed []string
 	manager.revealFileInFileManager = func(_ context.Context, path string) error {
 		revealed = append(revealed, path)
@@ -829,17 +834,17 @@ func TestClosingTheThreadForgetsItsDownloads(t *testing.T) {
 
 // However a page stops being the Manager's, a download it left running
 // settles, its reservations are released, the engine is asked to stop it,
-// its partial file goes (the engine's in the Downloads folder, AO's among
-// its artifacts), and its row can be cleared.
+// its partial file goes (the engine's in the Downloads folder, AO's in its
+// own directory), and its row can be cleared.
 func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
 	for _, mode := range downloadModes {
 		t.Run(mode.name, func(t *testing.T) {
-			testEveryPageTeardownSettlesItsRunningDownloads(t, mode.artifacts)
+			testEveryPageTeardownSettlesItsRunningDownloads(t, mode.saving)
 		})
 	}
 }
 
-func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, artifacts bool) {
+func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downloadSaving) {
 	for _, tc := range []struct {
 		name     string
 		teardown func(t *testing.T, manager *Manager, access Access, page PageInfo)
@@ -884,7 +889,7 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, artifacts boo
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			manager, _, access, page := newDownloadManagerFor(t, artifacts)
+			manager, _, access, page := newDownloadManagerFor(t, saving)
 			baseline := manager.artifactBytes.Load()
 			startDownload(t, manager, access, page, "held.bin", 4096, "hold")
 			authority := authorityOf(t, manager, access)

@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -326,50 +325,36 @@ func aoWebKitPagePresented(pageID C.uint64_t) C.int {
 	return C.ao_wk_host_presented(page.view)
 }
 
-// aoWebKitDownloadStarted reports a download and answers the path in the
-// user's Downloads folder WebKit writes it to, malloc'd for the C side to
-// free. When there is no such path it cancels and lets go of the download,
-// answers NULL, and the download's row fails with the reason.
-//
 //export aoWebKitDownloadStarted
-func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) *C.char {
+func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := webkitTakeString(uri), webkitTakeString(suggested)
 	profile := webkitLookupProfile(uint64(profileID))
 	if profile == nil {
 		C.ao_wk_download_cancel(download)
 		C.ao_wk_download_unref(download)
-		return nil
+		return
 	}
 	page := webkitLookupPage(uint64(pageID))
 	frame := ""
 	if page != nil {
 		frame = page.handle
 	}
+	// The handle IS the on-disk name the C side gave the file, which is what
+	// lets the Manager find and rename a finished download.
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
-	events := profile.engine.events
-	start := downloadStart{Frame: frame, ID: handle, URL: target, SuggestedName: name}
-	path, err := reserveDownloadPath(name, claimDownloadFile)
-	if err != nil {
-		// Its cancel's "failed" finds no owner and reports nothing.
-		C.ao_wk_download_cancel(download)
-		C.ao_wk_download_unref(download)
-		profile.engine.downloadEvents.Go(func() {
-			if events.DownloadStarted(start) {
-				events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: err.Error()})
-			}
-		})
-		return nil
+	profile.registerDownload(handle, download)
+	if name == "" {
+		name = handle
 	}
-	start.SuggestedName = filepath.Base(path)
-	profile.registerDownload(handle, download, path)
 	profile.engine.downloadEvents.Go(func() {
-		if !events.DownloadStarted(start) {
+		if !profile.engine.events.DownloadStarted(downloadStart{
+			Frame: frame, ID: handle, URL: target, SuggestedName: name,
+		}) {
 			if err := profile.CancelDownload(handle); err != nil {
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}
 		}
 	})
-	return C.CString(path)
 }
 
 //export aoWebKitDownloadProgress
@@ -487,18 +472,20 @@ func webkitHideView(view webkitView) error {
 // Every C string below is allocated INSIDE its dispatch closure and freed
 // there. A dispatch that misses its deadline still runs afterwards, so a
 // string allocated out here and freed on return would be read after free.
-func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
+func webkitNewSession(dataDir, cacheDir, cookieFile, downloadDir string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
 	var session unsafe.Pointer
 	flag := C.int(0)
 	if ephemeral {
 		flag = 1
 	}
 	if !gtkDo(func() {
-		cData, cCache, cCookie := C.CString(dataDir), C.CString(cacheDir), C.CString(cookieFile)
-		session = C.ao_wk_session_new(cData, cCache, cCookie, flag, C.uint64_t(profileID))
+		cData, cCache := C.CString(dataDir), C.CString(cacheDir)
+		cCookie, cDownload := C.CString(cookieFile), C.CString(downloadDir)
+		session = C.ao_wk_session_new(cData, cCache, cCookie, cDownload, flag, C.uint64_t(profileID))
 		C.free(unsafe.Pointer(cData))
 		C.free(unsafe.Pointer(cCache))
 		C.free(unsafe.Pointer(cCookie))
+		C.free(unsafe.Pointer(cDownload))
 	}) {
 		return nil, errGTKUnavailable
 	}

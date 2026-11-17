@@ -393,7 +393,7 @@ behave as a desktop browser's:
   download that starts on a page already leaving is refused to the engine
   and never listed; an end the engine reports on its own is `failed`, with
   the engine's reason when it gives one, and so is a download whose
-  Downloads folder is missing or cannot be written. Where the file goes is
+  Downloads folder cannot be created or written. Where the file goes is
   in [Browser hardening](#browser-hardening).
   On Windows through WSL the launcher takes every download a pane page
   starts (WebView2's `DownloadStarting`, handled, so WebView2's own
@@ -764,11 +764,13 @@ JavaScript therefore does not inherit the MCP caller's file authority.
 `browser_open_file` resolves symlinks and permits files inside the thread's
 workspace or project root, and the workspace's own finished downloads, which
 the pane's downloads list opens from: under headless Chromium its AO-owned
-download directory; on every other engine each file a pane download of the
-workspace saved, recorded when it finished and still that file (device,
-inode, size and modification time), never the Downloads folder around it.
-The record is in memory (`internal/browser/download_files.go`), so a
-download of an earlier run of the app is an outside file. Outside files
+download directory; on every other engine the file of each finished
+download of the workspace that AO still lists, in any thread's pane list
+or a live page's `browser_downloads`, while it is still the file the
+download wrote (device, inode, size and modification time), never the
+Downloads folder around it (`internal/browser/download_files.go`). A row
+that is listed is openable and one that is gone is not, so a download of
+an earlier run of the app is an outside file. Outside files
 require
 `browserAllowOutsideWorkspace`, an explicit off-by-default setting. This gate
 exists because the MCP server runs outside provider process sandboxes; OS-user
@@ -792,30 +794,43 @@ blocks dangerous navigation schemes, and never exposes a debugging
 endpoint outside the local controller process. Asset bundles go only to
 AO-owned directories with file/count/byte caps.
 
-A download goes where any browser on the machine that runs the page's engine
-puts it: that user's Downloads folder (`artifactDownloadEngine` in
+A finished download ends up where any browser on the machine that runs the
+page's engine puts it: that user's Downloads folder (`downloadSaving` in
 `internal/browser/driver.go`). There is no setting.
 
 - Launcher-hosted WebView2: WebView2's default, the Windows user's
   Downloads folder, under the name WebView2 gives (`name (1).ext` on a
-  collision). WebView2 keeps the mark of the web.
-- WebKitGTK and WKWebView: the backend resolves the folder for each
-  download (`internal/browser/user_downloads.go`). On Linux it is
-  `XDG_DOWNLOAD_DIR` from `$XDG_CONFIG_HOME/user-dirs.dirs`
-  (`$HOME/.config` when unset), else `$HOME/Downloads`; on macOS
-  `$HOME/Downloads`. The file takes the sanitized suggested name, or
-  that name with ` (1)`, ` (2)` and on. WebKitGTK writes into a file the
-  backend created empty and exclusively, because it deletes its
-  destination when a download fails whoever made it; WKWebView refuses
-  a destination that exists, so a file another program puts there first
-  fails the download.
-- A Downloads folder that is missing or cannot be written fails the
-  download on its row with the reason; nothing falls back elsewhere.
+  collision). WebView2 keeps the mark of the web. The finished file is
+  openable from AO only while the path WebView2 reported is a regular
+  file, not a link, of the size it reported; otherwise the row completes
+  with the reason and opens nothing.
+- WebKitGTK and WKWebView write each download under its id into the
+  jar's AO directory, which nothing else touches, so the engine's writes,
+  cancel and failure cleanup reach only the download's own file. The
+  Manager publishes a finished one into the Downloads folder
+  (`internal/browser/user_downloads.go`): it hard-links the staged file
+  to the sanitized suggested name, or that name with ` (1)`, ` (2)` and
+  on, taking the next on a name that exists, so it replaces nothing and
+  the published file is the staged one; across filesystems it creates the
+  name exclusively and copies into it. The row stays running until the
+  file is in place and completes with its path; a publish that fails is
+  the row's error, removes the staged file and leaves nothing partial in
+  Downloads. On Linux the folder is `XDG_DOWNLOAD_DIR` from
+  `$XDG_CONFIG_HOME/user-dirs.dirs` (`$HOME/.config` when unset), read as
+  xdg-user-dirs writes it (double-quoted, backslash escapes, a leading
+  `$HOME`), else `$HOME/Downloads`; on macOS `$HOME/Downloads`.
+- A Downloads folder that does not exist is created when a download is
+  published there. A path that is not a folder, or a folder that cannot
+  be created or written, fails the download on its row with the reason;
+  nothing falls back elsewhere.
 - In the Downloads folder AO applies no quota, per-download cap or
-  pruning, never deletes or overwrites a file it did not create, and a
-  canceled or failed download removes only its own partial file (the
-  engine does). Nothing that deletes a thread, clears site data, turns
-  the browser off or prunes artifacts deletes a file there.
+  pruning and never deletes or replaces a file it did not put there. A
+  canceled or failed download leaves the folder as it was: WebView2
+  removes its own partial file, and the other desktop engines never wrote
+  there. A file staged and left behind by a run that ended mid-download
+  is pruned from the AO directory after seven days. Nothing that deletes
+  a thread, clears site data, turns the browser off or prunes artifacts
+  deletes a file in the Downloads folder.
 - Headless Chromium in serve mode alone keeps downloads as AO artifacts:
   under the download's id in the jar's AO directory, moved on finishing
   to the workspace's under a sanitized unique name, capped at 512 MiB

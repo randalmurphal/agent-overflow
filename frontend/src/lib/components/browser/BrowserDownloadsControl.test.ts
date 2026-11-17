@@ -66,12 +66,17 @@ describe('<BrowserDownloadsControl>', () => {
       download('img', { name: 'chart.png', openable: true }),
       download('zip', { name: 'pack.zip' }),
       download('bad', { state: 'failed', error: 'net::ERR_FAILED' }),
+      download('link', { name: 'notes.txt', error: 'the saved file is a link' }),
     ]);
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     await fireEvent.click(view.getByTestId('browser-downloads'));
     const list = await view.findByTestId('browser-downloads-list');
     const rows = within(list).getAllByTestId('browser-download');
-    expect(rows.map((row) => row.dataset.state)).toEqual(['in_progress', 'completed', 'completed', 'failed']);
+    expect(rows.map((row) => row.dataset.state)).toEqual(['in_progress', 'completed', 'completed', 'failed', 'completed']);
+    // A completed download whose file AO does not open says why and offers
+    // nothing.
+    expect(within(rows[4]).getByTestId('browser-download-status').textContent).toBe('1 KB · the saved file is a link');
+    expect(within(rows[4]).queryByRole('button')).toBeNull();
     expect(within(rows[0]).getByTestId('browser-download-status').textContent).toBe('500 B of 1 KB · files.test');
     expect(within(rows[0]).queryByTestId('browser-download-cancel')).not.toBeNull();
     expect(within(rows[0]).queryByTestId('browser-download-reveal')).toBeNull();

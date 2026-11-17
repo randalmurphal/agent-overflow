@@ -37,6 +37,9 @@ type browserEngine interface {
 	NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error)
 	// DiscardPage closes an engine page the Manager declined to adopt.
 	DiscardPage(handle string)
+	// DownloadSaving is where the engine's downloads go; constant for an
+	// engine.
+	DownloadSaving() downloadSaving
 }
 
 // engineSiteData is the engine half of ClearSiteData (spec §4), implemented by
@@ -188,8 +191,8 @@ type profileOptions struct {
 	// else, so one jar is one profile across restarts.
 	Jar string
 	// DownloadDir is the AO artifact directory downloads must land in, for
-	// an engine whose downloads AO keeps (artifactDownloadEngine); empty
-	// for the others.
+	// an engine that writes them there (downloadsAsArtifacts,
+	// downloadsStaged); empty for one that saves them itself.
 	DownloadDir string
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
@@ -339,17 +342,27 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
-// artifactDownloadEngine is an engine whose downloads AO keeps: they land
-// in profileOptions.DownloadDir under engine ids, the Manager moves each
-// finished one to its workspace's artifact directory, and quotas, the
-// per-download cap and artifact pruning apply (downloads.go). Only headless
-// Chromium in serve mode answers true; it runs on a server, where no user
-// has a Downloads folder to look in. Every other engine saves into the
-// Downloads folder of the machine its pages run on, as any browser there
-// does, and AO bounds, moves and deletes none of those files.
-type artifactDownloadEngine interface {
-	DownloadsToArtifacts() bool
-}
+// downloadSaving is where an engine's downloads are written and where a
+// finished one ends up (browserEngine.DownloadSaving, downloads.go).
+type downloadSaving int
+
+const (
+	// downloadsStaged: the engine writes into profileOptions.DownloadDir
+	// under engine ids, a directory nothing but AO touches, and the Manager
+	// publishes each finished file into the user's Downloads folder
+	// (publishDownload). The engines in this process: WebKitGTK, WKWebView.
+	downloadsStaged downloadSaving = iota
+	// downloadsAsArtifacts: the engine writes into profileOptions.DownloadDir
+	// under engine ids, the Manager moves each finished file to its
+	// workspace's artifact directory, and quotas, the per-download cap and
+	// artifact pruning apply. Headless Chromium in serve mode alone: it runs
+	// on a server, where no user has a Downloads folder to look in.
+	downloadsAsArtifacts
+	// downloadsSavedByEngine: the engine saves into the Downloads folder of
+	// the machine its pages run on and reports the path. The launcher-hosted
+	// WebView2.
+	downloadsSavedByEngine
+)
 
 // pageFind is the optional find-in-page half of a page driver: the engine's
 // own text search, never one AO runs in the document. A driver without it

@@ -181,6 +181,10 @@ func (e *wkEngine) takePopup(handle string) unsafe.Pointer {
 	return view
 }
 
+// DownloadSaving: WebKit writes into AO's directory and the Manager
+// publishes each finished file to the user's Downloads folder.
+func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
+
 func (e *wkEngine) DiscardPage(handle string) {
 	if view := e.takePopup(handle); view != nil {
 		wkCloseView(view)
@@ -217,7 +221,8 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	}
 	profile := &wkProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
-		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		downloadDir: opts.DownloadDir,
+		pages:       make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -229,9 +234,9 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	return profile, nil
 }
 
-// wkProfile is one workspace's WKWebsiteDataStore: its own cookie jar and
-// cache, never the default store (which is the SPA webview's own site data).
-// Its downloads go to the user's Downloads folder (aoWKVDownloadStarted).
+// wkProfile is one workspace's WKWebsiteDataStore: its own cookie jar, cache,
+// and download destination, never the default store (which is the SPA webview's
+// own site data).
 type wkProfile struct {
 	engine *wkEngine
 	id     uint64
@@ -240,7 +245,8 @@ type wkProfile struct {
 	// on macOS 14+ with the site-data setting on: WebKit offers no
 	// per-identifier persistent store below that, and an in-memory one is the
 	// only honest answer there.
-	store unsafe.Pointer
+	store       unsafe.Pointer
+	downloadDir string
 
 	mu        sync.Mutex
 	disposed  bool
@@ -248,13 +254,11 @@ type wkProfile struct {
 	downloads map[string]*wkDownload
 }
 
-// wkDownload is one live download: the retained WKDownload, the Downloads
-// path reserved for it (reserveDownloadPath) and the sampler that reports its
-// progress until it settles.
+// wkDownload is one live download: the retained WKDownload and the sampler that
+// reports its progress until it settles.
 type wkDownload struct {
 	handle string
 	ptr    unsafe.Pointer
-	path   string
 	stop   chan struct{}
 }
 
@@ -275,7 +279,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	if err != nil {
 		return nil, err
 	}
-	view, err := wkNewView(p.store, page.id, p.id, script, webkitConsoleHandler)
+	view, err := wkNewView(p.store, page.id, p.id, script, webkitConsoleHandler, p.downloadDir)
 	if err != nil {
 		page.discard()
 		return nil, err
@@ -301,7 +305,7 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 	// is gone: the injected script applies from its next document on. That is
 	// the same trade CDP's addScriptToEvaluateOnNewDocument makes for an adopted
 	// target.
-	if err := wkAdoptView(view, page.id, p.id, script, webkitConsoleHandler); err != nil {
+	if err := wkAdoptView(view, page.id, p.id, script, webkitConsoleHandler, p.downloadDir); err != nil {
 		page.discard()
 		wkCloseView(view)
 		return nil, err
@@ -342,8 +346,8 @@ func (p *wkProfile) parkNew(page *wkPage) {
 	wkParkView(page.view, page.slot)
 }
 
-func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer, path string) {
-	entry := &wkDownload{handle: handle, ptr: ptr, path: path, stop: make(chan struct{})}
+func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {
+	entry := &wkDownload{handle: handle, ptr: ptr, stop: make(chan struct{})}
 	p.mu.Lock()
 	closed := p.disposed
 	if !closed {
@@ -358,7 +362,6 @@ func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer, path str
 		go func() {
 			wkCancelDownload(ptr)
 			wkReleaseDownload(ptr)
-			releaseDownloadPath(path)
 		}()
 		return
 	}
@@ -402,18 +405,7 @@ func (p *wkProfile) releaseDownload(handle string) {
 	}
 	// Deleting under the lock is what makes exactly one caller reach the close.
 	close(entry.stop)
-	releaseDownloadPath(entry.path)
 	wkReleaseDownload(entry.ptr)
-}
-
-// downloadPath is the Downloads path of a live download, "" for none.
-func (p *wkProfile) downloadPath(handle string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if entry := p.downloads[handle]; entry != nil {
-		return entry.path
-	}
-	return ""
 }
 
 func (p *wkProfile) CancelDownload(id string) error {

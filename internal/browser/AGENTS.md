@@ -130,22 +130,27 @@ profile directory. Unsupported platform capabilities return a clear refusal.
 `browser_open_file` resolves symlinks and accepts regular files within the
 thread workspace or project root, or the workspace's own finished downloads
 (`authorizeFile`), unless the explicit outside-workspace setting widens
-access. Use direct `file://` navigation.
+access. The download rows the Manager still lists are the one record of
+which files in the Downloads folder are openable (`listedDownloadAllows`);
+keep no second one. Use direct `file://` navigation.
 
-Where a download goes is the engine's kind, decided once in the Manager
-(`downloadsToArtifacts`); the rule is browser-tools.md's Browser hardening.
-Every desktop engine saves to the user's Downloads folder: AO bounds, moves
-and deletes nothing there, and an engine in this process takes its path
-from `reserveDownloadPath` (`user_downloads.go`). Headless Chromium alone
-keeps downloads as artifacts with quota reservation, the per-download cap
-and pruning; keep those bounds on that path only. Every change to a page's
-download entry goes through `noteDownloadLocked` and `publishDownloads`
-(`downloads_thread.go`), which keep the thread's list the pane shows and
-coalesce byte progress; an engine reports one terminal event per download,
-after its start, and that report alone settles the user's cancel. Every
-removal of a live page goes through `pageLeftLocked`, which settles the
-page's running downloads and, under the page's `downloadMu`, ends its
-admission of new ones. The hosted engine's downloads are the launcher's
+Where a download goes is the engine's `DownloadSaving`; the rule is
+browser-tools.md's Browser hardening. An engine never writes into the
+user's Downloads folder by a path AO chose: an engine in this process
+writes into the jar's AO directory and the Manager publishes the finished
+file (`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
+which never replaces a file; WebView2 saves there itself and only a
+regular file of the reported size is openable (`engineSavedDownload`).
+Headless Chromium alone keeps downloads as artifacts with quota
+reservation, the per-download cap and pruning; keep those bounds on that
+path only. Every change to a page's download entry goes through
+`noteDownloadLocked` and `publishDownloads` (`downloads_thread.go`), which
+keep the thread's list the pane shows and coalesce byte progress; an engine
+reports one terminal event per download, after its start, and that report
+alone settles the user's cancel. Every removal of a live page goes through
+`pageLeftLocked`, which settles the page's running downloads, except one
+whose file is being published, which its publish settles, and, under the
+page's `downloadMu`, ends its admission of new ones. The hosted engine's downloads are the launcher's
 reports (`hosted_downloads.go`); headless Chromium's arrive over CDP
 (`headless_downloads.go`). Preserve the denial of sensitive website
 permissions.

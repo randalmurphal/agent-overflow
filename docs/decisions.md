@@ -612,9 +612,11 @@ and anti-changes that live only here:
   no file. Downloads never open with the system's default app.
 - A pane download goes to the Downloads folder of the machine that runs the
   page's engine, as in any browser there; there is no setting (2026-11-17).
-  AO applies no quota, cap or pruning there and deletes or overwrites no
-  file it did not create; a Downloads folder that is missing or cannot be
-  written fails the download with its reason rather than falling back.
+  AO applies no quota, cap or pruning there and deletes or replaces no
+  file it did not put there; an engine in AO's process downloads into AO's
+  own directory and AO moves the finished file into Downloads. A missing
+  Downloads folder is created; one that cannot be created or written fails
+  the download with its reason rather than falling back.
   Headless Chromium in serve mode alone keeps AO's artifact directories,
   quotas, caps and pruning. An agent may open a finished download of its
   workspace's, never the folder around it. On WebView2 the mark of the web

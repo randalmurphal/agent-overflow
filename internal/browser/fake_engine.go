@@ -44,15 +44,20 @@ type fakeEngine struct {
 	// release and its terminal report (finishHeld, CancelDownload), where a
 	// native engine releases its record. Nil outside tests.
 	downloadReleased func(id string)
-	// artifactDownloads has the engine keep its downloads in AO's artifact
-	// directory, as headless Chromium does (artifactDownloadEngine); left
-	// false it saves them to the user's Downloads folder, as the desktop
-	// engines do. Set by tests before the first profile.
-	artifactDownloads bool
+	// saving is the engine this fake stands in for: downloadsStaged, the
+	// zero value, writes into the profile's directory for the Manager to
+	// publish, as WebKitGTK does; downloadsAsArtifacts as headless Chromium
+	// does; downloadsSavedByEngine saves into the user's Downloads folder
+	// itself, as WebView2 does. Set by tests before the first profile.
+	saving downloadSaving
+	// beforeFinishReport is a test seam run after a download's file is
+	// complete and before its finish is reported, with that file's path:
+	// where an engine's report waits in its queue. Nil outside tests.
+	beforeFinishReport func(file string)
 }
 
-// DownloadsToArtifacts is artifactDownloadEngine.
-func (e *fakeEngine) DownloadsToArtifacts() bool { return e.artifactDownloads }
+// DownloadSaving is the engine the fake stands in for (saving).
+func (e *fakeEngine) DownloadSaving() downloadSaving { return e.saving }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{} }
 

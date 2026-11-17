@@ -76,6 +76,10 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
 
+// DownloadSaving: WebView2 saves to the Windows user's Downloads folder
+// (hosted_downloads.go).
+func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedByEngine }
+
 // DiscardPage closes a controller the Manager declined to adopt. The handle
 // is this engine's page id, because that is what pageDriver.Handle answers.
 func (e *hostedEngine) DiscardPage(handle string) {
