@@ -65,6 +65,8 @@
     onEndSession?: () => void;
     /** Whether the thread has a provider session (End Session's gate). */
     sessionLive?: boolean;
+    /** This device lacks `threads:operate` there: the session menu is inert. */
+    sessionUngranted?: boolean;
     hideSendButton?: boolean;
     /** The composer's dictation, when this layout puts the mic here (the
      * desktop: an outlined circle immediately left of Send, in its grid). */
@@ -88,6 +90,7 @@
     onInterrupt,
     onEndSession,
     sessionLive,
+    sessionUngranted,
     hideSendButton = false,
     dictation = null,
   }: Props = $props();
@@ -264,6 +267,7 @@
         {onInterrupt}
         {onEndSession}
         {sessionLive}
+        {sessionUngranted}
       />
     {/if}
   </div>

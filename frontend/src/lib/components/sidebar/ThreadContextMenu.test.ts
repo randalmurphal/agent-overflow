@@ -348,7 +348,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await primeSettings({ confirmDelete: false });
     let deletedId: string | null = null;
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
-    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; });
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; return {}; });
 
     const { getByRole, queryByRole } = renderMenu(makeThread({ id: 'ctx-off' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
@@ -364,7 +364,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await primeSettings({ confirmDelete: true });
     let deletedId: string | null = null;
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
-    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; });
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; return {}; });
 
     const { getByRole } = renderMenu(makeThread({ id: 'ctx-on' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
@@ -411,7 +411,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await primeSettings({ confirmDelete: false });
     let deleted = false;
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
-    setBindingMock('DeleteThreads', async () => { deleted = true; });
+    setBindingMock('DeleteThreads', async () => { deleted = true; return {}; });
 
     // Two selected threads (one is the right-clicked row) flips the menu
     // into bulk mode. Bulk delete deliberately ignores confirmDelete — a
@@ -1212,7 +1212,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     setBindingMock('StopSession', async () => {});
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 0 }));
-    const remove = setBindingMock('DeleteThreads', async () => {});
+    const remove = setBindingMock('DeleteThreads', async () => ({}));
     const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Delete'));
     await tick();

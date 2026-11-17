@@ -366,7 +366,7 @@ export async function deleteThreadsAction(
   for (const [backend, group] of byBackend) {
     const ids = group.map((thread) => thread.id);
     try {
-      const result = (await withBackendTarget(backend, () => DeleteThreads(ids))) ?? {};
+      const result = await withBackendTarget(backend, () => DeleteThreads(ids));
       for (const id of ids) {
         removeThread(id);
         closePanesShowingThread(id);
@@ -406,7 +406,7 @@ export async function deleteThread(
 ): Promise<{ backend: BackendKey; result: DeleteThreadResult }> {
   const backend = requireEntityBackend(threadOwner(thread.id));
   const result = await withBackendTarget(backend, () => DeleteThreads([thread.id]));
-  return { backend, result: result ?? {} };
+  return { backend, result };
 }
 
 /**
@@ -438,7 +438,7 @@ export function reportDeleteLeftovers(
 
 async function deleteAgain(backend: BackendKey, title: string, seeds: readonly string[]): Promise<void> {
   try {
-    const result = (await withBackendTarget(backend, () => DeleteThreads([...seeds]))) ?? {};
+    const result = await withBackendTarget(backend, () => DeleteThreads([...seeds]));
     reportDeleteLeftovers(backend, title, result, seeds);
   } catch (err) {
     console.error('Failed to delete again:', err);

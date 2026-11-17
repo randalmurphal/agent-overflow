@@ -1337,6 +1337,7 @@
       onInterrupt={interrupt}
       onEndSession={pane.thread?.agentId ? endSession : undefined}
       sessionLive={threadSessionLive(pane.threadId)}
+      sessionUngranted={sendUngranted}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

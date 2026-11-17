@@ -38,6 +38,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { activityRailIconActionClasses, activityRailRevealClasses } from './activityRailClasses';
+  import { TRAY_WRITE_UNGRANTED, trayWriteGranted } from './trayWrites';
   import type { AgentController, IncomingAgentMessage } from './activityRailAgents.svelte';
 
   interface Props {
@@ -242,6 +243,11 @@
   }
 
   let canStopAll = $derived(agents.count > 0);
+  let stopGranted = $derived(!!threadId && trayWriteGranted({ threadId, projectId: pane.thread?.projectId }));
+  const placeGranted = (row: ThreadAgentRow) => {
+    const backend = placementBackend(row);
+    return backend !== null && trayWriteGranted({ computer: backend });
+  };
 </script>
 
 {#snippet readError(testId: string, msg: string, retryLabel: string, onRetry: () => void)}
@@ -274,7 +280,8 @@
         type="button"
         class="ml-auto rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-2 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:select-none"
         onclick={onStopAll}
-        disabled={stopAllInFlight}
+        disabled={stopAllInFlight || !stopGranted}
+        title={stopGranted ? undefined : TRAY_WRITE_UNGRANTED}
         data-testid="activity-rail-agents-stop-all"
         aria-label="Stop All Agents"
       >
@@ -296,6 +303,8 @@
           expanded={expanded.has(row.token)}
           isPlacing={!!row.threadId && placing.has(row.threadId)}
           canPlace={placementBackend(row) !== null}
+          {stopGranted}
+          placeGranted={placeGranted(row)}
           {onToggleExpanded}
           {onActivate}
           {onOpenPane}
@@ -316,6 +325,7 @@
           {viewer}
           {now}
           isStopping={stopping.has(message.item.sendId ?? '') || stopAllInFlight}
+          {stopGranted}
           onStop={onStopIncoming}
           place={placeInCompanion}
         />
@@ -351,6 +361,8 @@
                 expanded={expanded.has(pastKey(row))}
                 isPlacing={!!row.threadId && placing.has(row.threadId)}
                 canPlace={placementBackend(row) !== null}
+                {stopGranted}
+                placeGranted={placeGranted(row)}
                 onToggleExpanded={onTogglePastExpanded}
                 onActivate={onActivatePast}
                 {onOpenPane}

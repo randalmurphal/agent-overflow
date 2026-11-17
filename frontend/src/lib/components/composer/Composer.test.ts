@@ -4241,6 +4241,32 @@ describe('<Composer>', () => {
       expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
     });
 
+    for (const compact of [false, true]) {
+      it(`${compact ? 'under compact, ' : ''}keeps an assistant thread's Interrupt and End Session inert, saying why`, async () => {
+        setCompactLayoutForTest(compact);
+        try {
+          const interrupt = setBindingMock('InterruptTurn', vi.fn(async () => {}));
+          const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+          const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+          pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+          await pairViewOnly();
+          const view = render(Composer, { props: { pane, draft: await buildDraft() } });
+          await fireEvent.click(view.getByTestId('composer-session-menu'));
+          for (const name of ['Interrupt', 'End Session']) {
+            const item = await view.findByRole('menuitem', { name });
+            expect(item, name).toHaveAttribute('aria-disabled', 'true');
+            expect(item, name).toHaveAttribute('title', 'Not granted to this device');
+            await fireEvent.click(item);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(interrupt).not.toHaveBeenCalled();
+          expect(stop).not.toHaveBeenCalled();
+        } finally {
+          setCompactLayoutForTest(false);
+        }
+      });
+    }
+
     it('refuses a pasted image without a toast', async () => {
       const pane = await buildPane(makeTestThread({ provider: 'claude' }));
       const draft = await buildDraft();

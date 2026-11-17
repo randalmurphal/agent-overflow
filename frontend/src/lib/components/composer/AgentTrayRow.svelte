@@ -39,6 +39,7 @@
   import AgentTrayRowDigest from './AgentTrayRowDigest.svelte';
   import AgentMetrics from './AgentMetrics.svelte';
   import { activityRailIconActionClasses } from './activityRailClasses';
+  import { TRAY_WRITE_UNGRANTED } from './trayWrites';
 
   interface Props {
     row: ThreadAgentRow;
@@ -59,6 +60,10 @@
      * so Show in Sidebar can place it there.
      */
     canPlace: boolean;
+    /** This device may stop the row (trayWrites.ts). */
+    stopGranted: boolean;
+    /** This device may place the row's thread on its computer (trayWrites.ts). */
+    placeGranted: boolean;
     onToggleExpanded: (row: ThreadAgentRow) => void;
     onActivate: (row: ThreadAgentRow) => void;
     onOpenPane: (row: ThreadAgentRow) => void;
@@ -67,7 +72,7 @@
   }
 
   let {
-    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false, canPlace,
+    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false, canPlace, stopGranted, placeGranted,
     onToggleExpanded, onActivate, onOpenPane, onShowInSidebar, onStop,
   }: Props = $props();
 
@@ -190,8 +195,8 @@
         type="button"
         class={activityRailIconActionClasses}
         onclick={() => onShowInSidebar(row)}
-        disabled={isPlacing}
-        title="Show in sidebar"
+        disabled={isPlacing || !placeGranted}
+        title={placeGranted ? 'Show in sidebar' : TRAY_WRITE_UNGRANTED}
         aria-label="Show in Sidebar"
         data-testid="agent-tray-row-show-in-sidebar"
       >
@@ -216,8 +221,8 @@
         type="button"
         class={actionClasses}
         onclick={() => onStop(row)}
-        disabled={isStopping}
-        title={degraded || undefined}
+        disabled={isStopping || !stopGranted}
+        title={stopGranted ? degraded || undefined : TRAY_WRITE_UNGRANTED}
         aria-label={`Stop: ${row.title}`}
         data-testid="agent-tray-row-stop"
       >{isStopping ? 'Stopping…' : 'Stop'}</button>

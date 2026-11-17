@@ -1,7 +1,7 @@
 <script lang="ts">
   // Home (UI-SPEC §3): project-grouped, single column at every width. A
-  // project renders only if it has workflow definitions or runs — a quiet
-  // system is one footer row (§9).
+  // project renders only if it has workflow definitions or runs; with none,
+  // the controls sit above a line saying there are no workflows yet.
 
   import WorkflowsHomeControls from './WorkflowsHomeControls.svelte';
   import WorkflowProjectGroup from './WorkflowProjectGroup.svelte';

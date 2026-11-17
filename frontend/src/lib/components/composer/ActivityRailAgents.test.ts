@@ -15,8 +15,22 @@ import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { OBSERVE_SCOPES, grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
+import { SCOPES } from '../../transport/scopes';
 
 const BENCH_UUID = '11111111-2222-4333-8444-555555555555';
+const UNGRANTED = 'Not granted to this device';
+const FULL_SCOPES = SCOPES.filter((scope) => scope !== 'session' && scope !== 'host');
+
+// An attached computer, with the grant its paired session carries.
+async function stagePaired(id: string, backendId: string, name: string, scopes: readonly string[] = FULL_SCOPES) {
+  stageBackend({ id, backendId, name });
+  await grantBackendScopes(id, scopes);
+}
+function unstagePaired() {
+  for (const id of ['studio', 'bench']) revokeBackendScopes(id);
+  resetStagedBackends();
+}
 
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
@@ -583,8 +597,8 @@ describe('the Agents segment', () => {
   for (const compact of [false, true]) {
     it(`${compact ? 'under compact, ' : ''}offers Show in Sidebar on an owned worker on a paired computer this window is attached to, and places it there`, async () => {
       setCompactLayoutForTest(compact);
-      stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
-      stageBackend({ id: 'bench', backendId: BENCH_UUID, name: 'Bench' });
+      await stagePaired('studio', REMOTE_BACKEND_UUID, 'Studio');
+      await stagePaired('bench', BENCH_UUID, 'Bench');
       try {
         const { view, toggle } = await openTray((caller) => [
           row('studio', { callerThreadId: caller, placement: 'owned', computerId: REMOTE_BACKEND_UUID, computer: 'Studio' }),
@@ -610,7 +624,7 @@ describe('the Agents segment', () => {
         await waitFor(() => expect(within(rows[0]).queryByTestId('agent-tray-row-show-in-sidebar')).toBeNull());
         expect(toastTexts()).toEqual([]);
       } finally {
-        resetStagedBackends();
+        unstagePaired();
       }
     });
   }
@@ -623,7 +637,7 @@ describe('the Agents segment', () => {
   for (const compact of [false, true]) {
     it(`${compact ? 'under compact, ' : ''}keeps the placement the worker's computer said over a cached answer from before it`, async () => {
       setCompactLayoutForTest(compact);
-      stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+      await stagePaired('studio', REMOTE_BACKEND_UUID, 'Studio');
       try {
         // This computer's cache of Studio's rows.
         let cached: 'owned' | 'standalone' = 'owned';
@@ -674,7 +688,7 @@ describe('the Agents segment', () => {
         expect(await offered()).toBe(false);
         expect(toastTexts()).toEqual([]);
       } finally {
-        resetStagedBackends();
+        unstagePaired();
       }
     });
   }
@@ -682,8 +696,74 @@ describe('the Agents segment', () => {
   // The computer sends a write's frame ahead of its reply, so a frame that
   // arrived after Show in Sidebar was sent is a newer write: Remove from
   // Sidebar in another window, here before the reply.
+  // Stop, Stop All and a withdrawal ride `threads:operate` on this thread's
+  // computer, Show in Sidebar on the worker's. A device without it keeps
+  // them, inert and saying why.
+  for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}in a view-only session keeps every write inert, saying why, and sends none`, async () => {
+      setCompactLayoutForTest(compact);
+      await pairViewOnly();
+      try {
+        const stop = setBindingMock('StopThreadAgentRow', vi.fn(async () => ({}) as ThreadAgentStop));
+        const stopAll = setBindingMock('StopThreadAgentRows', vi.fn(async () => []));
+        const withdraw = setBindingMock('StopThreadAgentIncoming', vi.fn(async () => ({}) as ThreadAgentStop));
+        const place = setBindingMock('SetThreadPlacement', vi.fn(async () => []));
+        const { view, toggle, pane } = await openTray((caller) => [row('w', { callerThreadId: caller, placement: 'owned' })]);
+        replaceQueueForThread(pane.threadId!, [{
+          id: 'q1', sendId: 'thread-request:tok', threadId: pane.threadId!, message: 'Check the changelog.',
+          attachmentIds: [], enqueuedAt: Date.now(), agentMessage: true,
+          originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok', kind: 'send' },
+        } as QueueItem]);
+        await fireEvent.click(toggle);
+        const r = await view.findByTestId('agent-tray-row');
+        const writes = [
+          view.getByTestId('activity-rail-agents-stop-all'),
+          within(r).getByTestId('agent-tray-row-stop'),
+          within(r).getByTestId('agent-tray-row-show-in-sidebar'),
+          within(await view.findByTestId('agent-incoming-row')).getByTestId('agent-incoming-row-stop'),
+        ] as HTMLButtonElement[];
+        for (const write of writes) {
+          expect(write.disabled, write.dataset.testid).toBe(true);
+          expect(write.title, write.dataset.testid).toBe(UNGRANTED);
+          await fireEvent.click(write);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        for (const call of [stop, stopAll, withdraw, place]) expect(call).not.toHaveBeenCalled();
+        expect(within(r).getByTestId('agent-tray-row-open-pane').hasAttribute('disabled')).toBe(false);
+      } finally {
+        resetToLocalPage();
+      }
+    });
+  }
+
+  it('judges Show in Sidebar by the worker\'s computer and Stop by this thread\'s', async () => {
+    await stagePaired('studio', REMOTE_BACKEND_UUID, 'Studio', OBSERVE_SCOPES);
+    await stagePaired('bench', BENCH_UUID, 'Bench');
+    try {
+      const { view, toggle } = await openTray((caller) => [
+        row('studio', { callerThreadId: caller, placement: 'owned', computerId: REMOTE_BACKEND_UUID, computer: 'Studio' }),
+        row('bench', { callerThreadId: caller, placement: 'owned', computerId: BENCH_UUID, computer: 'Bench' }),
+      ]);
+      await fireEvent.click(toggle);
+      const [studio, bench] = await view.findAllByTestId('agent-tray-row');
+      const show = (r: HTMLElement) => within(r).getByTestId('agent-tray-row-show-in-sidebar') as HTMLButtonElement;
+      expect(show(studio).disabled).toBe(true);
+      expect(show(studio).title).toBe(UNGRANTED);
+      expect(show(bench).disabled).toBe(false);
+      for (const r of [studio, bench]) expect((within(r).getByTestId('agent-tray-row-stop') as HTMLButtonElement).disabled).toBe(false);
+
+      // A view-only device here can still place a worker on a computer that granted it.
+      await pairViewOnly();
+      await waitFor(() => expect((within(studio).getByTestId('agent-tray-row-stop') as HTMLButtonElement).disabled).toBe(true));
+      expect(show(bench).disabled).toBe(false);
+    } finally {
+      resetToLocalPage();
+      unstagePaired();
+    }
+  });
+
   it('keeps a placement the worker\'s computer announced after Show in Sidebar was sent over its reply', async () => {
-    stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+    await stagePaired('studio', REMOTE_BACKEND_UUID, 'Studio');
     try {
       const { view, toggle } = await openTray((caller) => [
         row('studio', { callerThreadId: caller, placement: 'owned', computerId: REMOTE_BACKEND_UUID, computer: 'Studio' }),
@@ -704,7 +784,7 @@ describe('the Agents segment', () => {
       await waitFor(() => expect(within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-show-in-sidebar').hasAttribute('disabled')).toBe(false));
       expect(within(view.getByTestId('agent-tray-row')).queryByTestId('agent-tray-row-show-in-sidebar')).not.toBeNull();
     } finally {
-      resetStagedBackends();
+      unstagePaired();
     }
   });
 

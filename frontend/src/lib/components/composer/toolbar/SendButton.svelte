@@ -62,6 +62,8 @@
      * without one. Undefined when the computer does not say.
      */
     sessionLive?: boolean;
+    /** This device lacks `threads:operate` there: both items are inert, saying why. */
+    sessionUngranted?: boolean;
   }
 
   let {
@@ -80,6 +82,7 @@
     interruptLabel = 'Interrupt current turn',
     onEndSession,
     sessionLive,
+    sessionUngranted = false,
   }: Props = $props();
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
@@ -323,11 +326,16 @@
   >
     {#snippet children()}
       <Menu ariaLabel="Session" onClose={closeMenu}>
-        <MenuItem label="Interrupt" disabled={!turnRunning} onSelect={handleMenuInterrupt} />
+        <MenuItem
+          label="Interrupt"
+          disabled={!turnRunning || sessionUngranted}
+          title={sessionUngranted ? 'Not granted to this device' : undefined}
+          onSelect={handleMenuInterrupt}
+        />
         <MenuItem
           label="End Session"
-          disabled={sessionLive === false}
-          title={sessionLive === false ? 'No session is running' : undefined}
+          disabled={sessionLive === false || sessionUngranted}
+          title={sessionUngranted ? 'Not granted to this device' : sessionLive === false ? 'No session is running' : undefined}
           onSelect={handleEndSession}
         />
       </Menu>

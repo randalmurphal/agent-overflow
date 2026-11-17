@@ -270,4 +270,3 @@ export async function captureAgentMessageInView(page: Page, name: string, ...tar
   for (const target of targets) await target.scrollIntoViewIfNeeded();
   await captureAgentMessage(page, name, ...targets);
 }
-

@@ -11,6 +11,7 @@ import { noteThread } from '../../transport/entityIndex';
 import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadWakeRow } from '../../stores/bindings';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function row(id: string, over: Partial<ThreadWakeRow> = {}): ThreadWakeRow {
   return { id, kind: 'loop', label: id, state: 'armed', nextAt: Date.now() + 12 * 60_000 + 30_000, ...over } as ThreadWakeRow;
@@ -81,6 +82,32 @@ describe('wake rows in the background tray', () => {
     expect(r.querySelector('[data-testid="wake-tray-row-label"]')?.classList.contains('truncate')).toBe(true);
     expect(r.querySelectorAll('[data-testid="wake-tray-row-cancel"]').length).toBe(1);
   });
+
+  // Wake now and Cancel ride `threads:operate` on the thread's computer.
+  for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}in a view-only session keeps Wake now and Cancel inert, saying why, and sends neither`, async () => {
+      setCompactLayoutForTest(compact);
+      await pairViewOnly();
+      try {
+        const wake = setBindingMock('WakeThreadWakeNow', vi.fn(async () => {}));
+        const cancel = setBindingMock('CancelThreadWake', vi.fn(async () => {}));
+        const { view, toggle } = await openTray([loop]);
+        await fireEvent.click(toggle);
+        const r = await view.findByTestId('wake-tray-row');
+        for (const id of ['wake-tray-row-wake-now', 'wake-tray-row-cancel']) {
+          const button = r.querySelector(`[data-testid="${id}"]`) as HTMLButtonElement;
+          expect(button.disabled, id).toBe(true);
+          expect(button.title, id).toBe('Not granted to this device');
+          await fireEvent.click(button);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(wake).not.toHaveBeenCalled();
+        expect(cancel).not.toHaveBeenCalled();
+      } finally {
+        resetToLocalPage();
+      }
+    });
+  }
 
   it('says running for a row in flight and refuses Wake now there with the reason', async () => {
     const { view, toggle } = await openTray([
