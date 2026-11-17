@@ -5,6 +5,7 @@ package webview2host
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -301,6 +302,102 @@ func TestAPopupGoneWithADownloadingPopupOfItsOwnIsAnnounced(t *testing.T) {
 	r.done()
 	closed(t, parentController)
 	closed(t, childController)
+}
+
+// A popup's process failures before its announcement all reach the
+// backend after it, each kind once in the order it first came, whatever
+// else it held: a crash is never replaced by a later failure of another
+// kind.
+func TestAPopupHoldsEveryKindOfProcessFailure(t *testing.T) {
+	r := newPopupRig(t)
+	_, opener := r.createPage("opener", "prof", false)
+	popup, controller := r.openPopup(opener, newFakeWindowArgs(popupURL))
+	popup.popup.held.findUnavailable = false
+	for i := range maxHeldPopupDownloads {
+		r.startDownload(popup, fmt.Sprintf("dl-%d", i))
+	}
+	for _, kind := range []string{"render-process-exited", "render-process-unresponsive", "render-process-unresponsive", "render-process-exited"} {
+		r.host.pageReport(popup, ReportProcessFailed, kind)
+	}
+	answerTarget(t, controller, "T")
+	var failures []string
+	for _, report := range r.takeReports() {
+		if report.kind == ReportProcessFailed {
+			failures = append(failures, report.detail)
+		}
+	}
+	sameReports(t, "a popup's held process failures", failures, "render-process-exited", "render-process-unresponsive")
+	r.done()
+}
+
+// A popup keeps a bounded address from its request, and none once it is
+// announced.
+func TestAPopupKeepsABoundedAddressUntilItsAnnouncement(t *testing.T) {
+	r := newPopupRig(t)
+	_, opener := r.createPage("opener", "prof", false)
+	long := popupURL + "?" + strings.Repeat("a", 64<<10)
+	popup, controller := r.openPopup(opener, newFakeWindowArgs(long))
+	if n := len(popup.popup.uri); n > MaxPopupURLBytes || !strings.HasPrefix(long, popup.popup.uri) {
+		t.Fatalf("a popup keeps %d bytes of its address, want a prefix of at most %d", n, MaxPopupURLBytes)
+	}
+	answerTarget(t, controller, "T")
+	got := r.takeReports()
+	parsed, err := ParsePopupReport(got[0].detail)
+	if err != nil || !strings.HasPrefix(long, parsed.URL) || parsed.URL == "" {
+		t.Fatalf("the popup report's address %.80q: %v", parsed.URL, err)
+	}
+	if popup.popup.uri != "" {
+		t.Fatal("an announced popup still keeps its address")
+	}
+	r.done()
+}
+
+// A popup whose controller is not up within popupCreateBound has its
+// request answered with no window, which frees its place, and goes
+// unheard; its late completion closes what it created. A bound that passes
+// once the popup is up does nothing.
+func TestAPendingPopupHasADeadline(t *testing.T) {
+	r := newPopupRig(t)
+	var timers []func()
+	r.host.afterFunc = func(wait time.Duration, fn func()) {
+		if wait != popupCreateBound {
+			t.Errorf("a bound of %v, want %v", wait, popupCreateBound)
+		}
+		timers = append(timers, fn)
+	}
+	_, opener := r.createPage("opener", "prof", false)
+	args := newFakeWindowArgs(popupURL)
+	opener.view.requestWindow(args)
+	if len(timers) != 1 {
+		t.Fatalf("%d bounds started for one pending popup", len(timers))
+	}
+	go timers[0]()
+	r.awaitQueued()
+	r.pump()
+	settled(t, args, nil)
+	if r.host.pendingPopups != 0 || len(r.host.pages) != 1 {
+		t.Fatalf("%d requests pending and %d pages after the bound passed", r.host.pendingPopups, len(r.host.pages))
+	}
+	late := newFakeController()
+	r.env.complete(t, 0, late)
+	closed(t, late)
+	if got := r.takeReports(); len(got) != 0 {
+		t.Fatalf("a popup past its bound reported %v", kinds(t, got))
+	}
+
+	// One that came up in time is left alone.
+	args = newFakeWindowArgs(popupURL)
+	popup, controller := r.openPopup(opener, args)
+	go timers[1]()
+	r.awaitQueued()
+	r.pump()
+	settled(t, args, controller.view)
+	if r.page(popup.id) != popup || controller.closed != 0 {
+		t.Fatal("a bound closed a popup that came up in time")
+	}
+	r.done()
+	closed(t, controller)
+	closed(t, opener)
 }
 
 // A popup starts at most maxHeldPopupDownloads downloads before it is

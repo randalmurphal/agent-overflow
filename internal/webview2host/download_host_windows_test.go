@@ -193,7 +193,7 @@ func newDownloadRig(t *testing.T) *downloadRig {
 	r.page = &hostPage{id: "p"}
 	r.page.downloadStarting = newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { r.host.downloadStarting(r.page, args) })
 	r.host.pages = map[string]*hostPage{"p": r.page}
-	r.host.cancelTimer = func(wait time.Duration, fn func()) {
+	r.host.afterFunc = func(wait time.Duration, fn func()) {
 		if wait != downloadCancelBound {
 			t.Errorf("a cancel bound of %v, want %v", wait, downloadCancelBound)
 		}

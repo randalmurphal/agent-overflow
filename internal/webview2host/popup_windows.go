@@ -5,6 +5,9 @@ package webview2host
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"time"
 )
 
 // The launcher's half of a page's popups (popup.go). Every function here
@@ -62,8 +65,9 @@ type popupRequest struct {
 }
 
 // popupState is a popup page's link to the window request it answers and,
-// until the backend hears of it, the reports it made. The opener is kept
-// by id, so a popup keeps no page that went alive.
+// until the backend hears of it, its address, bounded as it is taken, and
+// the reports it made. The opener is kept by id, so a popup keeps no page
+// that went alive.
 type popupState struct {
 	openerID string
 	stage    popupStage
@@ -74,20 +78,35 @@ type popupState struct {
 }
 
 // heldReports are a popup's reports before its announcement: whether its
-// runtime has no find API, its newest process failure, and the newest
-// snapshot of each download, in the order the downloads started. Each kind
-// is whole in its newest report, so nothing older is kept.
+// runtime has no find API, each kind of process failure it had, in the
+// order each first came, and the newest snapshot of each download, in the
+// order the downloads started. A download snapshot is whole in its newest;
+// a process failure is an event, and the backend treats its kinds apart (a
+// crash ends the tab, an unresponsive renderer does not), so no kind
+// replaces another.
 type heldReports struct {
 	findUnavailable bool
-	processFailed   string
+	processFailed   []string
 	downloads       []DownloadReport
 }
+
+// maxHeldProcessFailures bounds the kinds of process failure a popup holds.
+// WebView2 defines seven (COREWEBVIEW2_PROCESS_FAILED_KIND), so every kind
+// a runtime reports is held.
+const maxHeldProcessFailures = 16
 
 // maxHeldPopupDownloads bounds the downloads a popup starts before its
 // announcement, one target-info round trip after its view is up. A download
 // past it is canceled as it starts, so nothing is saved that the backend
 // would not hear of.
 const maxHeldPopupDownloads = 16
+
+// popupCreateBound bounds how long a window request stays open while its
+// popup's controller is created, the opener's script waiting in
+// window.open meanwhile. Past it the request is answered with no window
+// (popupExpired). A controller create takes well under a second once the
+// environment is up.
+const popupCreateBound = 10 * time.Second
 
 // unannounced reports whether page is a popup the backend has not heard of.
 func (p *hostPage) unannounced() bool {
@@ -143,7 +162,10 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 	h.popupSeq++
 	page := &hostPage{
 		id: popupPageID(h.downloadToken, h.popupSeq), profileID: opener.profileID, ephemeral: opener.ephemeral,
-		popup: &popupState{openerID: opener.id, request: popupRequest{args: args, deferral: deferral}, uri: args.uri()},
+		popup: &popupState{
+			openerID: opener.id, request: popupRequest{args: args, deferral: deferral},
+			uri: truncateUTF8(strings.ToValidUTF8(args.uri(), "\uFFFD"), MaxPopupURLBytes),
+		},
 	}
 	h.pendingPopups++
 	why := "its page is closing"
@@ -158,6 +180,22 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 		return
 	}
 	h.startController(page, env.env10, h.config.HostWindow())
+	id := page.id
+	h.after(popupCreateBound, func() { h.config.Post(func() { h.popupExpired(id) }) })
+}
+
+// popupExpired answers the window request of a popup whose controller is
+// not up by popupCreateBound with no window, which frees its place; the
+// popup goes unheard, and the create's late completion closes what it
+// made. A popup that came up meanwhile, or went, is left alone. The bound
+// keeps the popup's id, never the page, so a page that went is not kept
+// until it passes; a popup id is never reused.
+func (h *Host) popupExpired(id string) {
+	page := h.pages[id]
+	if page == nil || page.popup == nil || page.popup.stage != popupRequested {
+		return
+	}
+	h.discardCreated(page, fmt.Sprintf("its controller was not up within %v", popupCreateBound))
 }
 
 // settlePopup answers page's window request once: with view as the new
@@ -281,7 +319,7 @@ func (h *Host) reportPopup(page *hostPage) error {
 	}
 	page.popup.stage = popupAnnounced
 	held := page.popup.held
-	page.popup.held = heldReports{}
+	page.popup.held, page.popup.uri = heldReports{}, ""
 	h.config.Report(page.id, ReportPopup, detail)
 	if held.findUnavailable {
 		h.config.Report(page.id, ReportFindUnavailable, "")
@@ -289,8 +327,8 @@ func (h *Host) reportPopup(page *hostPage) error {
 	for _, download := range held.downloads {
 		h.report(page, download)
 	}
-	if held.processFailed != "" {
-		h.config.Report(page.id, ReportProcessFailed, held.processFailed)
+	for _, kind := range held.processFailed {
+		h.config.Report(page.id, ReportProcessFailed, kind)
 	}
 	return nil
 }
@@ -358,7 +396,14 @@ func (h *Host) holdReport(page *hostPage, kind ReportKind, detail string) bool {
 	case ReportFindUnavailable:
 		page.popup.held.findUnavailable = true
 	case ReportProcessFailed:
-		page.popup.held.processFailed = detail
+		held := &page.popup.held
+		switch {
+		case slices.Contains(held.processFailed, detail):
+		case len(held.processFailed) < maxHeldProcessFailures:
+			held.processFailed = append(held.processFailed, detail)
+		default:
+			h.config.Logf("browser host: page %s: drop a %s failure past %d kinds held", page.id, detail, maxHeldProcessFailures)
+		}
 	default:
 		// A key chord is the only other: a popup is hidden until the
 		// backend shows it, and a chord is not worth keeping.

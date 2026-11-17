@@ -62,9 +62,9 @@ type Host struct {
 	// (MaxPendingPopups). UI thread only.
 	popupSeq      uint64
 	pendingPopups int
-	// cancelTimer runs fn after wait, on a goroutine of its own
-	// (settleCancelAfter); nil is time.AfterFunc. A test stands in its own.
-	cancelTimer func(wait time.Duration, fn func())
+	// afterFunc runs fn after wait, on a goroutine of its own (after); nil
+	// is time.AfterFunc. A test stands in its own.
+	afterFunc func(wait time.Duration, fn func())
 	// foreground answers whether the launcher window is the foreground
 	// window (isForeground). A smoke stands in its answer so it never takes
 	// the user's foreground.
@@ -174,6 +174,15 @@ type hostPage struct {
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
 	shown paneView
+}
+
+// after runs fn after wait, on a goroutine of its own.
+func (h *Host) after(wait time.Duration, fn func()) {
+	if h.afterFunc != nil {
+		h.afterFunc(wait, fn)
+		return
+	}
+	time.AfterFunc(wait, fn)
 }
 
 // raiseTarget is the window that must sit on top of the host's child

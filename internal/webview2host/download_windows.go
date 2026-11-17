@@ -373,11 +373,7 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 // settleCancelAfter ends a canceled download as canceled once
 // downloadCancelBound passes with no end from WebView2 (settleCancel).
 func (h *Host) settleCancelAfter(d *hostDownload) {
-	after := h.cancelTimer
-	if after == nil {
-		after = func(wait time.Duration, fn func()) { time.AfterFunc(wait, fn) }
-	}
-	after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d) }) })
+	h.after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d) }) })
 }
 
 // settleCancel ends a download the backend canceled that WebView2 has not
