@@ -2876,7 +2876,6 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"spawn_level":              "the level a paired computer's spawn or ask carried (v154), set at creation and ended only by endCarriedLevelTx when the thread is placed in the sidebar; a stale struct must not restore a delegation that ended",
 	"deleting":                 "the committed-delete mark (v122), set by CommitDeleteClaim or DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete went ahead",
 	"delete_claim":             "a delete's claim (v154), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
-	"delete_worktrees":         "a committed delete's worktree policy (v154), written only with its commit; a stale struct must not change how the boot finishes it",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six
