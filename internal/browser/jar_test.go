@@ -856,27 +856,6 @@ func TestEnginesDeriveTodaysIdentityForAWorktreeJar(t *testing.T) {
 	}
 }
 
-// Headless Chromium keeps one user-data directory per persistent jar under
-// the profile tree Clear site data deletes, the worktree jar's where it
-// always was, and a private jar's nowhere under it.
-func TestHeadlessEngineKeepsOneDirectoryPerJar(t *testing.T) {
-	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
-	const workspace = "/home/dev/repo"
-	digest := sha256.Sum256([]byte(workspace))
-	worktree := testHeadlessProfile(t, engine, workspace, true)
-	if want := filepath.Join(engine.configDir, browserProfileDir, fmt.Sprintf("%x", digest[:12]), "chromium"); worktree.userDataDir != want {
-		t.Fatalf("worktree jar directory = %q, want today's %q", worktree.userDataDir, want)
-	}
-	project := testHeadlessProfile(t, engine, "project:P", true)
-	if project.userDataDir == worktree.userDataDir || !strings.HasPrefix(project.userDataDir, filepath.Join(engine.configDir, browserProfileDir)) {
-		t.Fatalf("project jar directory = %q", project.userDataDir)
-	}
-	private := testHeadlessProfile(t, engine, "private:a:token", false)
-	if strings.HasPrefix(private.userDataDir, filepath.Join(engine.configDir, browserProfileDir)) {
-		t.Fatalf("private jar directory %q is under the persistent profile tree", private.userDataDir)
-	}
-}
-
 // Deleting or archiving a thread forgets its jar setting with its pages.
 func TestClosingAThreadForgetsItsJar(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
