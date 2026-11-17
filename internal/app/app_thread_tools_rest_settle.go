@@ -385,11 +385,29 @@ func (a *App) heldReceipts() []heldReceipt {
 // thread's rest is read fresh (threadRest), once a pass: what liveWorkers
 // records only draws rows, so a change it missed cannot hold a request. A
 // read that fails leaves the request held for the next pass.
+//
+// A thread under a paused assistant holds no request for its rest: the
+// requests on it settle as the pause settles them
+// (stopPausedAssistantRequests), whichever path left one held. The boot's
+// first pass settles one a quit left held before the pause reached it.
 func (a *App) settleRestedReceipts() {
 	holds := a.heldReceipts()
 	rested := map[string]bool{}
+	paused := map[string]bool{}
 	works := make([]threadSettlementWork, 0, len(holds))
 	for _, hold := range holds {
+		pausedHere, known := paused[hold.thread]
+		if !known {
+			var err error
+			if pausedHere, err = a.pausedAssistantThread(hold.thread); err != nil {
+				log.Printf("thread tools: read whether %s is under a paused assistant for request %s: %v", hold.thread, hold.token, err)
+				continue
+			}
+			paused[hold.thread] = pausedHere
+		}
+		if pausedHere {
+			continue
+		}
 		atRest, read := rested[hold.thread]
 		if !read {
 			var err error
@@ -409,6 +427,16 @@ func (a *App) settleRestedReceipts() {
 		works = append(works, work)
 	}
 	a.runThreadSettlementWorks(works)
+	for thread, pausedHere := range paused {
+		if !pausedHere {
+			continue
+		}
+		result := &ThreadAgentStop{}
+		if a.stopPausedAssistantRequests(thread, result); len(result.Failures) > 0 {
+			log.Printf("thread tools: settle the requests on %s at the assistants pause: %v", thread, result.Failures)
+			a.emitErrorToThread(thread, "Assistants are turned off, but the requests on this thread could not be settled: "+strings.Join(result.Failures, "; "))
+		}
+	}
 }
 
 // settleHeldReceipt is settleHeldReceiptLocked for a held request named by

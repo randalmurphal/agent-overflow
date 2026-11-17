@@ -1545,7 +1545,10 @@ settles as a Stop of it does, saying "Assistants were turned off in
 Settings before it answered."; a running turn is cut ("Stopped:
 assistants were turned off") and the session ends, with the messages
 queued behind it back in the composer. A thread that could not be
-stopped completely says so in its pane.
+stopped completely says so in its pane. While the pause holds, no
+request on such a thread waits for its rest: a rest pass settles one
+still held the same way, so a boot that finds the setting off settles
+what a quit left held before the pause reached it.
 
 Turning it on first recovers, while the pause still holds, what a quit
 left running: a run with no live process is settled, and a run still

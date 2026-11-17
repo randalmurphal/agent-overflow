@@ -260,13 +260,23 @@ func (a *App) pauseAssistantThread(threadID string) []string {
 	if err := a.pauseAgentWakeRuns(threadID); err != nil {
 		result.Failures = append(result.Failures, "stop its loops and watches: "+err.Error())
 	}
-	a.stopRequestsOnRestingThread(a.lifeCtx(), threadID, assistantsOffStop(), result)
+	a.stopPausedAssistantRequests(threadID, result)
 	if err := a.endPausedAssistantSession(threadID); err != nil {
 		result.Failures = append(result.Failures, "end its session: "+err.Error())
 	}
 	// A prompt its workers routed to it goes to the user now.
 	a.reroutePromptsFrom(threadID)
 	return result.Failures
+}
+
+// stopPausedAssistantRequests settles every request open on threadID, a
+// thread under a paused assistant, as turning assistants off settles it: as
+// a Stop of the thread does, with the pause's answer. The pause runs it for
+// each thread it stops, and a rest pass for a thread whose request is still
+// held for its rest (settleRestedReceipts): its loops do not fire while
+// assistants are off, so that rest would not come.
+func (a *App) stopPausedAssistantRequests(threadID string, result *ThreadAgentStop) {
+	a.stopRequestsOnRestingThread(a.lifeCtx(), threadID, assistantsOffStop(), result)
 }
 
 // pauseAgentWakeRuns stops a thread's watch scripts and processes and its

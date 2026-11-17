@@ -305,3 +305,63 @@ func TestAHeldSpawnOfAPausedAssistantsHelperSettlesAtThePause(t *testing.T) {
 		t.Fatalf("after assistants came back %+v; want it as the pause settled it, %+v", after, settled)
 	}
 }
+
+// Off saved and the app ended before the pause reached a helper whose
+// spawn is held for its rest with a loop armed: the boot settles the spawn
+// as the pause does, keeps the loop armed with its schedule, and turning
+// assistants on replays the loop's missed fires once and settles nothing
+// again.
+func TestAHeldSpawnOfAPausedAssistantsHelperSettlesAtTheBoot(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	f.holdCallerSession()
+	testAssistant(t, f.app, f.caller.ID)
+	gate := filepath.Join(t.TempDir(), "turn")
+	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Looping on the board.")})
+	ack := f.spawnWorker(t, "keep an eye on the board")
+	f.awaitTurnRunning(t, ack.Token)
+	loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: ack.ThreadID, Kind: store.AgentWakeLoop, Label: "board", Note: "n",
+		IntervalSeconds: 3600, NextAt: time.Now().Add(-150 * time.Minute).UnixMilli()})
+	release(t, gate)
+	f.awaitRestHold(t, ack)
+	// Off is saved; the convergence never runs.
+	f.app.settings.SetChangeObserver(nil)
+	switchAssistants(t, f.app, false)
+
+	after := f.restart(t)
+	after.watchAgentRows()
+	after.app.initAssistantsPause(after.app.store)
+	after.app.sweepThreadRequestsAtBoot()
+	if !after.app.restHeld(ack.ThreadID, ack.Token) {
+		t.Fatal("the boot sweep did not hold the request again")
+	}
+	after.app.recoverAgentWakesAtBoot()
+	after.app.recoverRestAtBoot()
+	after.app.threadRequestsWG.Wait()
+	settled := after.request(t, ack.Token)
+	if settled.State != store.ThreadRequestCancelled || !strings.Contains(string(settled.Answer), "Assistants were turned off") {
+		t.Fatalf("request after the boot %+v; want it settled as the pause settles it", settled)
+	}
+	if after.app.restHeld(ack.ThreadID, ack.Token) {
+		t.Fatal("the settled request is still held")
+	}
+	if row := agentWake(t, after.app, loop.ID); row.State != store.AgentWakeArmed || row.LastRunAt != 0 {
+		t.Fatalf("the helper's loop after the boot %+v; want it armed and not fired", row)
+	}
+
+	after.app.configureTriageQueueCallbacks()
+	after.app.registerSettingsBroadcast()
+	installMockClaudeTurns(t, after.app, [][]string{{mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-board","role":"assistant","content":[{"type":"text","text":"Checked."}]}}`,
+		mockClaudeResultLine}})
+	setAssistants(t, after.app, true)
+	after.app.fireDueAgentWakes(time.Now())
+	if row := agentWake(t, after.app, loop.ID); row.LastRunAt == 0 || row.Missed != 2 {
+		t.Fatalf("the loop after assistants came back = %+v; want it fired once standing in for 2", row)
+	}
+	after.app.threadRequestsWG.Wait()
+	if row := after.request(t, ack.Token); row.State != settled.State || row.Revision != settled.Revision {
+		t.Fatalf("after assistants came back %+v; want it as the boot settled it, %+v", row, settled)
+	}
+}
