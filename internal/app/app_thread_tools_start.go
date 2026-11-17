@@ -249,19 +249,23 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 // and for one a paired computer forwarded. Only the origin differs, and
 // the source row it advances exists only on the computer that made the
 // request.
+//
+// A refusal before acceptRequest settles nothing, here and in acceptSend
+// and acceptAsk: this attempt has written no row, and a receipt already
+// under the token is another attempt's, which may be making its thread.
 func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SpawnCall) (string, error) {
 	placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group)
 	if err != nil {
-		return "", t.failRequest(token, err)
+		return "", threadRequestRefusal(err, "")
 	}
 	call.Placement = placement
 	call.Level = carriedLevel(origin, call.Level)
 	if err := t.refuseCarriedLevelPastLimit(call.Level); err != nil {
-		return "", t.failRequest(token, err)
+		return "", threadRequestRefusal(err, "")
 	}
 	create, err := t.spawnThreadOptions(ctx, origin, call)
 	if err != nil {
-		return "", t.failRequest(token, err)
+		return "", threadRequestRefusal(err, "")
 	}
 	// A paired computer's owned spawn is owned here through its receipt, the
 	// link, when it carries its level: a computer that sends no level
@@ -357,14 +361,13 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SendCall) (string, error) {
 	target, err := t.sendTarget(call.ThreadID)
 	if err != nil {
-		return "", t.failRequest(token, err)
+		return "", threadRequestRefusal(err, "")
 	}
 	if origin.foreign && target.ID == origin.caller.ThreadID {
 		// A thread id that names the caller can only mean two threads with
 		// the same id on two computers, which the ids rule out; refuse it
 		// rather than queue a message a thread would answer for itself.
-		return "", t.failRequest(token, errorsx.Public(threadtools.CodeSelfSend,
-			"A thread cannot send to itself.", nil))
+		return "", errorsx.Public(threadtools.CodeSelfSend, "A thread cannot send to itself.", nil)
 	}
 	ctx = acceptedRequestContext(ctx)
 	_, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
@@ -453,7 +456,7 @@ func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call
 func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.AskCall) (string, error) {
 	source, err := t.localThread(call.ThreadID)
 	if err != nil {
-		return "", t.failRequest(token, err)
+		return "", threadRequestRefusal(err, "")
 	}
 	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
@@ -521,9 +524,12 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 //
 // The receipt is the record of record: a retry with the same token returns
 // the existing acceptance and `create` never runs again, which is what makes
-// a lost reply safe to retry with no second spawn, fork or message. `fresh`
-// is false for exactly that retry, so the dispatch does not run twice
-// either. A local token is fresh, so it is never a retry. own places the
+// a lost reply safe to retry with no second spawn, fork or message. A retry
+// never settles the receipt either, even one whose thread is not named yet:
+// the attempt that wrote it is making that thread in this process, since
+// the boot sweep settles every receipt a previous process left open.
+// `fresh` is false for exactly that retry, so the dispatch does not run
+// twice either. A local token is fresh, so it is never a retry. own places the
 // thread owned by the naming write: a local spawn's through its request, a
 // paired computer's through its receipt, which is then its link.
 func (t threadToolsApp) acceptRequest(
@@ -548,25 +554,15 @@ func (t threadToolsApp) acceptRequest(
 		return "", false, err
 	}
 	target = receipt.TargetThreadID
+	if !created {
+		// Another attempt with this token accepted it, and owns it: its
+		// thread may still be being made, and that attempt names it or
+		// settles the receipt. This one reports the acceptance as it stands.
+		return target, false, nil
+	}
 	made := false
 	listing := store.ListingUnchanged
 	if target == "" && create != nil {
-		if !created {
-			// The receipt exists with no thread: the attempt that accepted
-			// it died between the two writes. Settle it here rather than
-			// leave it for the next boot sweep, which is the only other
-			// thing that would ever look at it; a second thread now would be
-			// a second piece of work nobody asked for.
-			if err := t.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-				State:      store.ThreadReceiptInterrupted,
-				Answer:     []byte(threadReceiptNeverStarted),
-				AnswerKind: store.ThreadAnswerError,
-			}); err != nil {
-				return "", false, err
-			}
-			return "", false, errorsx.Public(threadtools.CodeInvalidRequest,
-				threadReceiptNeverStarted+" It is settled as interrupted; make the request again.", nil)
-		}
 		thread, err := create()
 		if err != nil {
 			return "", false, err
@@ -579,8 +575,8 @@ func (t threadToolsApp) acceptRequest(
 			var named bool
 			named, listing, err = t.app.store.SetThreadReceiptTarget(token, target, own)
 			if err == nil && !named {
-				// Settled while its thread was being made: a retry found it
-				// unnamed.
+				// Settled while its thread was being made: cancelled, or
+				// its pairing ended.
 				err = errorsx.Public(threadtools.CodeInvalidRequest,
 					"That request was settled before its thread could be recorded, so the thread made for it was removed and nothing ran under it.", nil)
 			}
@@ -614,7 +610,7 @@ func (t threadToolsApp) acceptRequest(
 		// the thread tools whether or not this computer's own switch is on.
 		t.app.refreshThreadToolsAdmission(target)
 	}
-	return target, created, nil
+	return target, true, nil
 }
 
 // discardUnnamedThread takes back a thread its request could not name, and
@@ -649,11 +645,6 @@ func threadReceiptFor(origin threadRequestOrigin, token, kind, targetThreadID st
 		TargetThreadID:     targetThreadID,
 	}
 }
-
-// threadReceiptNeverStarted is what a receipt accepted without its thread
-// says on both ends: the answer stored on the settled receipt, and the
-// refusal the retry that found it reads.
-const threadReceiptNeverStarted = threadtools.InterruptNeverStarted
 
 // failRequest settles a source row on this computer whose acceptance or
 // dispatch failed before the destination ever ran it, and returns the

@@ -463,7 +463,9 @@ func (a *App) settleHeldReceipt(hold heldReceipt, end heldEnd) (threadSettlement
 // of its thread ended other than `finished`, whose end then settles it.
 // held is false for any other receipt, which the boot settles as
 // interrupted by the restart; settlement is what one that is no longer
-// held settles with, InterruptRestart for a turn the restart cut. Its first
+// held settles with, InterruptRestart for a turn the restart cut. A receipt
+// that names no thread is the one place a request is settled as never
+// started: the attempt making its thread was in the last run. Its first
 // pass runs once the boot recovered what the thread may wait on
 // (recoverRestAtBoot).
 func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.ThreadRequestSettlement, bool, error) {
@@ -471,6 +473,10 @@ func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.Threa
 		State:      store.ThreadReceiptInterrupted,
 		Answer:     []byte(threadtools.InterruptRestart),
 		AnswerKind: store.ThreadAnswerError,
+	}
+	if receipt.TargetThreadID == "" {
+		restart.Answer = []byte(threadtools.InterruptNeverStarted)
+		return restart, false, nil
 	}
 	if receipt.State != store.ThreadReceiptRunning || receipt.TurnID == "" {
 		return restart, false, nil

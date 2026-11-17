@@ -1253,14 +1253,21 @@ from its receipt when that settled without it, otherwise as
 
 Across computers the destination stores its own row for the request
 (token, owning device, source computer, source thread, target thread,
-state, answer) and deduplicates on it: a retry with the same token
-returns the existing acceptance, and the source retries a lost reply
-itself, with the same token, a bounded number of times. A spawn or ask
-whose acceptance is still unknown after that returns
-`thread_request_unconfirmed` with the token; the watcher (below)
-reconciles it against the destination, and a destination holding no row
-for it settles the request `refused` so the caller is never left
-waiting for something that never started.
+state, answer) and deduplicates on it: a retry with the same token is
+answered from that row as it stands, and nothing is checked or started
+again. While the attempt that wrote the row is still making its thread
+(a worktree add, a fork), a retry is answered `accepted` with no thread
+yet and the source collects the thread from a later poll; a retry never
+settles the row. Only the destination's boot settles a row that names no
+thread, as never started, since the attempt making it ended with the
+last run. The source retries a lost reply itself, with the same token, a
+bounded number of times. When any attempt of a spawn, send or ask may
+have reached the destination, the request stays `unconfirmed` and the
+call returns its token, never only an error, even when a later attempt
+was refused, because the lost reply may have been an acceptance. The
+watcher (below) reconciles it against the destination, and a destination
+holding no row for it settles the request `refused` so the caller is
+never left waiting for something that never started.
 
 A request that cannot be started is answered by its own call. A spawn
 whose worktree git refuses, a send whose message the target's queue
@@ -1278,11 +1285,12 @@ was created before its prompt failed to reach it keeps the thread and
 names it in the refusal, which tells the caller to `thread_send` the
 prompt there instead of spawning again. The record keeps
 exactly what the call returned, which for another computer names that
-computer. Across computers this holds for a refusal that answers the
-first attempt, whether that computer's handler wrote it or its
-transport refused the pairing's credentials or scope. One that answers a retry after a lost reply settles nothing,
-because the lost reply may have been an acceptance: the request stays
-`unconfirmed` and the poller settles it from the destination's record.
+computer. Across computers this holds when no attempt could have started
+the request: each was refused by that computer's handler or its
+transport (the pairing's credentials or scope), or never left this
+computer because the pairing could not be loaded or no connection
+opened, which the refusal says ("nothing was sent"). A computer that is
+asleep is refused that way at once.
 
 `ParentThreadID` is not reused for lineage, since it means "Codex
 subagent child" and would mark the caller busy while its spawns run.

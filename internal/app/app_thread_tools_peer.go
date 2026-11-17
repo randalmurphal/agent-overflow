@@ -493,9 +493,28 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 	if call.Tool == "thread_cancel" {
 		return a.cancelPeerThreadRequest(ctx, origin, token, call)
 	}
-	if err := a.refuseForeignToken(token, owner); err != nil {
+	held, err := a.refuseForeignToken(token, owner)
+	if err != nil {
 		return ThreadPeerReply{}, err
 	}
+	if !held {
+		if err := a.acceptPeerThreadRequest(ctx, origin, token, call); err != nil {
+			return ThreadPeerReply{}, a.publicThreadToolError(call.Tool, call.Source.ThreadID, err)
+		}
+	}
+	// A retry of a request this device already made here is answered from
+	// its receipt as it stands, never checked or started again: the attempt
+	// that wrote it owns it, and may still be making its thread.
+	state, err := a.threadPeerRequestState(ctx, owner, token)
+	if err != nil {
+		return ThreadPeerReply{}, err
+	}
+	return ThreadPeerReply{Request: &state}, nil
+}
+
+// acceptPeerThreadRequest decodes one forwarded spawn, send or ask and runs
+// its destination half.
+func (a *App) acceptPeerThreadRequest(ctx context.Context, origin threadRequestOrigin, token string, call ThreadPeerCall) error {
 	adapter := a.threadTools()
 	var err error
 	switch call.Tool {
@@ -522,27 +541,21 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 			_, err = adapter.acceptAsk(ctx, origin, token, ask)
 		}
 	}
-	if err != nil {
-		return ThreadPeerReply{}, a.publicThreadToolError(call.Tool, call.Source.ThreadID, err)
-	}
-	state, err := a.threadPeerRequestState(ctx, owner, token)
-	if err != nil {
-		return ThreadPeerReply{}, err
-	}
-	return ThreadPeerReply{Request: &state}, nil
+	return err
 }
 
 // refuseForeignToken rejects a token this device does not own before any
-// work starts. A receipt belongs to the authenticated device that created
-// it: another device of the same computer holds no claim on it, and
-// reusing its token would hand that device another device's answer.
-func (a *App) refuseForeignToken(token, owner string) error {
+// work starts, and reports whether this device already holds a receipt
+// under it. A receipt belongs to the authenticated device that created it:
+// another device of the same computer holds no claim on it, and reusing its
+// token would hand that device another device's answer.
+func (a *App) refuseForeignToken(token, owner string) (bool, error) {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if found && receipt.OwnerDeviceID != owner {
-		return errorsx.Public(threadtools.CodeRequestNotYours,
+		return false, errorsx.Public(threadtools.CodeRequestNotYours,
 			"That token belongs to a request another device made.", nil)
 	}
 	// A token that already names a SOURCE row here belongs to a request one
@@ -550,12 +563,12 @@ func (a *App) refuseForeignToken(token, owner string) error {
 	// source's token, so its token is never one of ours: accepting it would
 	// let a paired computer answer, or refuse, this computer's own request.
 	if _, exists, err := a.store.GetThreadRequest(token); err != nil {
-		return err
+		return false, err
 	} else if exists {
-		return errorsx.Public(threadtools.CodeRequestNotYours,
+		return false, errorsx.Public(threadtools.CodeRequestNotYours,
 			"That token belongs to a request this computer made.", nil)
 	}
-	return nil
+	return found, nil
 }
 
 // cancelPeerThreadRequest is the destination half of thread_cancel: stop
@@ -576,7 +589,7 @@ func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestO
 		}
 		return ThreadPeerReply{Effect: report}, nil
 	}
-	if err := a.refuseForeignToken(token, origin.ownerDevice); err != nil {
+	if _, err := a.refuseForeignToken(token, origin.ownerDevice); err != nil {
 		return ThreadPeerReply{}, err
 	}
 	answer := threadRequestSenderCancel

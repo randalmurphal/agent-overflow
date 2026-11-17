@@ -312,10 +312,12 @@ func (t threadToolsApp) startRemoteRequest(
 // unownedSpawnNotice says when an owned spawn's thread was not owned on the
 // computer that accepted it: one that predates ownership across computers
 // reports no placement, ignores the level that makes the spawn its
-// caller's worker there, and gives the thread a sidebar row.
+// caller's worker there, and gives the thread a sidebar row. An acceptance
+// whose thread is still being made there names no thread, and so no
+// placement, yet.
 func (t threadToolsApp) unownedSpawnNotice(call any, reply ThreadPeerRequest, computerID string) string {
 	spawn, ok := call.(threadtools.SpawnCall)
-	if !ok || spawn.Level < 1 || reply.Placement != "" {
+	if !ok || spawn.Level < 1 || reply.TargetThreadID == "" || reply.Placement != "" {
 		return ""
 	}
 	name, _ := t.threadToolsBackendName(computerID)
