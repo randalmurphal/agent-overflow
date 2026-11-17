@@ -455,3 +455,72 @@ func TestPopupFatesAreBounded(t *testing.T) {
 		t.Fatalf("%d fates kept", n)
 	}
 }
+
+// A refused popup lets go of the address and title held for it, and one
+// reported after its refusal is not held: however many popups a thread
+// has refused, another popup's held report survives to its listing.
+func TestARefusedPopupHoldsNoReport(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	manager.updatePageInfo("keep", "https://example.test/kept", "Kept", 1)
+	for i := range 2 * orderSlack {
+		handle := fmt.Sprintf("refused-%d", i)
+		engine.failing[handle] = true
+		manager.updatePageInfo(handle, "https://example.test/refused", "", uint64(2+i))
+		manager.adoptPopup(engine.popup(opener, handle))
+		manager.updatePageInfo(handle, "https://example.test/late", "", uint64(2+i))
+	}
+	manager.mu.Lock()
+	held := manager.heldInfo.len()
+	manager.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("%d reports held, want the pending popup's alone", held)
+	}
+	manager.adoptPopup(engine.popup(opener, "keep"))
+	if info := pageInfoOf(manager, access, "keep"); info.URL != "https://example.test/kept" || info.Title != "Kept" {
+		t.Fatalf("the popup lists %+v, want its held report", info)
+	}
+}
+
+// A popup listed with a report held for it is pushed once, with that
+// report.
+func TestAPopupListedWithAHeldReportIsPushedOnce(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	var mu sync.Mutex
+	var pushed []CompanionEvent
+	manager.SetEventSink(func(event CompanionEvent) {
+		if event.ThreadID == access.ThreadID && event.Kind == "state" {
+			mu.Lock()
+			pushed = append(pushed, event)
+			mu.Unlock()
+		}
+	})
+	manager.updatePageInfo("popup", "https://example.test/held", "Held", 1)
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pushed) != 1 {
+		t.Fatalf("listing the popup pushed %d states, want 1", len(pushed))
+	}
+	for _, page := range pushed[0].Pages {
+		if page.URL == "https://example.test/held" && page.Title == "Held" {
+			return
+		}
+	}
+	t.Fatalf("the push lists %+v, without the popup's held report", pushed[0].Pages)
+}
+
+// pageInfoOf answers the info of the tab whose driver has handle.
+func pageInfoOf(m *Manager, access Access, handle string) PageInfo {
+	m.mu.Lock()
+	p := m.listedPageLocked(handle)
+	m.mu.Unlock()
+	if p == nil {
+		return PageInfo{}
+	}
+	for _, page := range m.CompanionState(access).Pages {
+		if page.ID == p.id {
+			return page
+		}
+	}
+	return PageInfo{}
+}

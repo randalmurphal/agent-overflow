@@ -89,12 +89,14 @@ func (m *Manager) startAdoption(handle string) bool {
 
 // finishAdoption ends the adoption of handle, opened by opener, listed as p
 // or not at all, wakes the popups it opened (awaitOpener), and lists the
-// downloads it started meanwhile.
+// downloads it started meanwhile. A popup not listed lets go of the report
+// held for it, and none is held for it after (updatePageInfo).
 func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
 	m.mu.Lock()
 	delete(m.adopting, handle)
 	if p == nil {
 		m.unlistedLocked().put(handle, struct{}{})
+		m.heldInfo.delete(handle)
 	}
 	if m.adoptionsChanged != nil {
 		close(m.adoptionsChanged)

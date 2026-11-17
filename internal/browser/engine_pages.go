@@ -69,11 +69,12 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	scope.pages[p.id] = p
 	listed = p
-	held, hasHeld := m.takeHeldInfoLocked(popup.Handle)
+	// A report made while the popup was adopted joins the listing, whose
+	// push carries it.
+	m.commitHeldInfoLocked(p, popup.Handle)
 	m.mu.Unlock()
-	// A report made while the popup was adopted, and its downloads, before
-	// anything the engine held for the listing can close it.
-	m.applyHeldInfo(p, held, hasHeld)
+	// Its downloads, before anything the engine held for the listing can
+	// close it.
 	m.resolveParked(popup.Handle, p, popup.Opener)
 	// A new tab.
 	m.pageAdded(p)
