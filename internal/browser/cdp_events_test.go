@@ -339,7 +339,7 @@ func (r *popupRecorder) events() engineEvents {
 			r.mu.Unlock()
 			r.changed <- struct{}{}
 		},
-		PageInfoChanged: func(handle, url, title string) {
+		PageInfoChanged: func(handle, url, title string, _ uint64) {
 			r.mu.Lock()
 			r.infos[handle] = append(r.infos[handle], url)
 			r.mu.Unlock()
@@ -513,13 +513,15 @@ func TestHeadlessTargetsDeliverHeldInfoFirst(t *testing.T) {
 	inHeld, releaseHeld := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	var urls []string
-	events := engineEvents{PageInfoChanged: func(handle, url, title string) {
+	var orders []uint64
+	events := engineEvents{PageInfoChanged: func(handle, url, title string, order uint64) {
 		if url == "https://held.test/" {
 			close(inHeld)
 			<-releaseHeld
 		}
 		mu.Lock()
 		urls = append(urls, url)
+		orders = append(orders, order)
 		mu.Unlock()
 	}}
 	p := newTargetTestProfile(t, events)
@@ -553,6 +555,10 @@ func TestHeadlessTargetsDeliverHeldInfoFirst(t *testing.T) {
 	defer mu.Unlock()
 	if len(urls) != 2 || urls[1] != "https://newer.test/" {
 		t.Fatalf("the Manager saw %q, want the held info then the newer one", urls)
+	}
+	// The Manager keeps the highest order (engineEvents.PageInfoChanged).
+	if orders[0] == 0 || orders[1] <= orders[0] {
+		t.Fatalf("the reports were numbered %v, want growing from 1", orders)
 	}
 }
 

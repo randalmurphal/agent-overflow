@@ -346,7 +346,7 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	again := f.find(t, "start", "beta")
 	f.wantCall(t, "start beta")
 	f.fake.SameDocumentNavigation("https://example.test/beta/next")
-	f.manager.updatePageInfo(f.fake.Handle(), "https://example.test/beta/next", "renamed")
+	f.manager.updatePageInfo(f.fake.Handle(), "https://example.test/beta/next", "renamed", 1)
 	f.noEvent(t)
 	if state := f.find(t, "next", ""); !state.Active || state.Session != again.Session {
 		t.Fatalf("a same-document navigation ended the find: %+v", state)

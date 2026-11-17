@@ -56,7 +56,7 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 
 	// A symlinked address resolves to the real file: the file manager must
 	// select the file itself, not a link that may not survive a drag.
-	p.setInfo(PageInfo{ID: p.id, URL: "file://" + filepath.ToSlash(link)})
+	p.setInfo(pageUpdate{URL: "file://" + filepath.ToSlash(link)})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err != nil {
 		t.Fatalf("reveal = %v", err)
 	}
@@ -65,11 +65,11 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 	}
 
 	revealed = ""
-	p.setInfo(PageInfo{ID: p.id, URL: "https://example.test/report.pdf"})
+	p.setInfo(pageUpdate{URL: "https://example.test/report.pdf"})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err == nil {
 		t.Fatal("a remote page was revealed")
 	}
-	p.setInfo(PageInfo{ID: p.id, URL: "file://" + filepath.ToSlash(filepath.Join(dir, "missing.pdf"))})
+	p.setInfo(pageUpdate{URL: "file://" + filepath.ToSlash(filepath.Join(dir, "missing.pdf"))})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err == nil {
 		t.Fatal("a missing file was revealed")
 	}
@@ -121,7 +121,7 @@ func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
 		},
 	}
 	access := Access{ThreadID: "thread", Workspace: "/repo"}
-	p.setInfo(PageInfo{ID: p.id, URL: "file://renderer.host/report.pdf"})
+	p.setInfo(pageUpdate{URL: "file://renderer.host/report.pdf"})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err != nil {
 		t.Fatalf("reveal = %v", err)
 	}

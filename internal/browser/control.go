@@ -29,14 +29,13 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 		return PageInfo{}, err
 	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	info, infoErr := m.pageInfo(opCtx, p)
+	info, _, infoErr := m.refreshInfo(opCtx, p)
 	cancel()
 	p.mu.Unlock()
 	if infoErr != nil {
 		return PageInfo{}, infoErr
 	}
-	p.setInfo(info)
-	return p.cachedInfo(), nil
+	return info, nil
 }
 
 // selectTab makes one of the thread's tabs, in any state, the active one and

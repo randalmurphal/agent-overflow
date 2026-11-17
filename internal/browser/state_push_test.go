@@ -98,17 +98,53 @@ func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	handle := p.driver.Handle()
 	pushes := countStatePushes(manager)
 
-	manager.updatePageInfo(handle, "https://example.test/next", "https://example.test/next")
-	manager.updatePageInfo(handle, "https://example.test/next", "Next")
+	manager.updatePageInfo(handle, "https://example.test/next", "https://example.test/next", 1)
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 2)
 	if n := pushes.take(); n != 2 {
 		t.Fatalf("a commit and a title pushed %d states, want 2", n)
 	}
-	manager.updatePageInfo(handle, "https://example.test/next", "Next")
-	manager.updatePageInfo(handle, "https://example.test/next", "Next")
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 3)
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 4)
 	if n := pushes.take(); n != 0 {
 		t.Fatalf("2 reports of the address and title already shown pushed %d states", n)
 	}
 	if tab, _ := findTab(manager, access, page.ID); tab.URL != "https://example.test/next" || tab.Title != "Next" {
 		t.Fatalf("tab shows %q %q", tab.URL, tab.Title)
+	}
+}
+
+// An engine numbers its info reports where it orders them, and a native
+// engine delivers each on its own goroutine, so an older report can reach
+// the Manager after a newer one: the tab settles on the newest, and the
+// older one pushes nothing.
+func TestAnEngineInfoReportOlderThanTheShownOneIsDropped(t *testing.T) {
+	manager, _ := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page := mustOpen(t, manager, access, "https://example.test/")
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := p.driver.Handle()
+	pushes := countStatePushes(manager)
+
+	// The commit's report, before the title was parsed, lands after the
+	// title's.
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 2)
+	manager.updatePageInfo(handle, "https://example.test/next", "", 1)
+	if n := pushes.take(); n != 1 {
+		t.Fatalf("a newer report and a late older one pushed %d states, want 1", n)
+	}
+	if tab, _ := findTab(manager, access, page.ID); tab.URL != "https://example.test/next" || tab.Title != "Next" {
+		t.Fatalf("tab shows %q %q, want the newer report", tab.URL, tab.Title)
+	}
+	// A repeat of the newest order is the same report.
+	manager.updatePageInfo(handle, "https://example.test/other", "Other", 2)
+	if tab, _ := findTab(manager, access, page.ID); tab.Title != "Next" {
+		t.Fatalf("a repeated order replaced the title with %q", tab.Title)
+	}
+	manager.updatePageInfo(handle, "https://example.test/third", "Third", 3)
+	if tab, _ := findTab(manager, access, page.ID); tab.URL != "https://example.test/third" || tab.Title != "Third" {
+		t.Fatalf("tab shows %q %q after a newer report", tab.URL, tab.Title)
 	}
 }

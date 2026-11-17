@@ -133,22 +133,20 @@ func operationContext(caller, pageCtx context.Context, timeout time.Duration) (c
 	return ctx, func() { stop(); cancel() }
 }
 
-// pageInfo reads and bounds one page's live URL, title, and history state.
-func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error) {
+// refreshInfo reads one page's live URL, title, and history state and
+// records them (setInfo). It answers the info the tab now shows and whether
+// that changed.
+func (m *Manager) refreshInfo(ctx context.Context, p *managedPage) (PageInfo, bool, error) {
 	location, title, err := p.driver.Info(ctx)
 	if err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, false, err
 	}
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, false, err
 	}
-	return PageInfo{
-		ID:        p.id,
-		URL:       truncateUTF8(location, maxBrowserURLBytes),
-		Title:     truncateUTF8(title, maxBrowserTitleBytes),
-		CanGoBack: back, CanGoForward: forward,
-	}, nil
+	info, changed := p.setInfo(pageUpdate{URL: location, Title: title, History: &pageHistory{CanGoBack: back, CanGoForward: forward}})
+	return info, changed, nil
 }
 
 // truncateUTF8 bounds value to limit bytes at a rune boundary. A truncated

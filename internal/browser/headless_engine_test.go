@@ -1389,7 +1389,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}, engineEvents{
 		PopupOpened:      func(enginePopup) {},
 		PageClosed:       func(string) {},
-		PageInfoChanged:  func(string, string, string) {},
+		PageInfoChanged:  func(string, string, string, uint64) {},
 		DownloadStarted:  func(downloadStart) bool { return true },
 		DownloadProgress: func(downloadProgress) {},
 	})

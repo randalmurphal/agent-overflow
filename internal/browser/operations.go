@@ -24,11 +24,14 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.ID = p.id
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
-	m.pageChanged(p, p.setInfo(snapshot.PageInfo))
+	// The snapshot script reads the address and title, not the session
+	// history; the tab keeps its back/forward state, which the agent sees.
+	info, changed := p.setInfo(pageUpdate{URL: snapshot.URL, Title: snapshot.Title})
+	snapshot.PageInfo = info
+	m.pageChanged(p, changed)
 	return snapshot, nil
 }
 
@@ -351,19 +354,16 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 }
 
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
-	info, err := m.pageInfo(ctx, p)
-	changed := false
-	if err == nil {
-		changed = p.setInfo(info)
-		info = p.cachedInfo()
-	}
+	info, changed, err := m.refreshInfo(ctx, p)
 	m.pageChanged(p, changed)
 	return info, err
 }
 
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
-	info, err := m.pageInfo(ctx, p)
-	m.pageChanged(p, err == nil && p.setInfo(info))
+	// A failed read leaves the tab as it was; the operation's own result
+	// reports its outcome.
+	_, changed, _ := m.refreshInfo(ctx, p)
+	m.pageChanged(p, changed)
 }
 
 // lookupOrSelectPage answers the live page a page-scoped call acts on: the

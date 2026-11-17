@@ -518,6 +518,9 @@ type headlessTargets struct {
 	heldInfo *boundedMap[target.ID, *target.Info]
 
 	deliver sync.Mutex
+	// infoOrder numbers the info changes delivered, in delivery order
+	// (engineEvents.PageInfoChanged). Guarded by deliver.
+	infoOrder uint64
 }
 
 func newHeadlessTargets(p *headlessProfile) *headlessTargets {
@@ -561,7 +564,8 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 		h.deliver.Lock()
 		h.mu.Unlock()
 		defer h.deliver.Unlock()
-		p.engine.events.PageInfoChanged(handle, url, title)
+		h.infoOrder++
+		p.engine.events.PageInfoChanged(handle, url, title, h.infoOrder)
 		return
 	}
 	defer h.mu.Unlock()
@@ -598,7 +602,8 @@ func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
 	h.deliver.Lock()
 	h.mu.Unlock()
 	defer h.deliver.Unlock()
-	p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title)
+	h.infoOrder++
+	p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title, h.infoOrder)
 }
 
 func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {

@@ -404,9 +404,14 @@ const (
 // engineEvents are the engine-originated notifications the Manager subscribes
 // to. The engine reports; the Manager alone routes and decides.
 type engineEvents struct {
-	PopupOpened     func(enginePopup)
-	PageClosed      func(handle string)
-	PageInfoChanged func(handle, url, title string)
+	PopupOpened func(enginePopup)
+	PageClosed  func(handle string)
+	// PageInfoChanged reports a page's address and title. order is the
+	// engine's count of the reports it has made, stamped where the engine
+	// orders them (its UI thread or its event stream), which only grows for
+	// a page: the Manager keeps the report with the highest order, so
+	// reports delivered out of order settle on the engine's latest.
+	PageInfoChanged func(handle, url, title string, order uint64)
 	// DownloadStarted reports whether the download may continue. The engine
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool

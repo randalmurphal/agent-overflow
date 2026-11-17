@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -399,15 +400,22 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	// closure it lands in has to be synchronized like the real one.
 	closed := make(chan string, 4)
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageClosed:      func(handle string) { closed <- handle },
-		PageInfoChanged: func(handle, url, title string) { infos = append(infos, handle+" "+url+" "+title) },
+		PageClosed: func(handle string) { closed <- handle },
+		PageInfoChanged: func(handle, url, title string, order uint64) {
+			infos = append(infos, fmt.Sprintf("%s %s %s %d", handle, url, title, order))
+		},
 	})
 	engine.bind("page1", "TARGET-1")
 
 	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
 	}})
-	if len(infos) != 1 || infos[0] != "page1 https://example.test/ Example" {
+	// The reports are numbered in the browser's order, which the Manager
+	// keeps the highest of.
+	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Retitled",
+	}})
+	if len(infos) != 2 || infos[0] != "page1 https://example.test/ Example 1" || infos[1] != "page1 https://example.test/ Retitled 2" {
 		t.Fatalf("PageInfoChanged saw %v", infos)
 	}
 	// A target this engine never created is dropped rather than reported
@@ -415,7 +423,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-9", Type: "page", URL: "https://elsewhere.test/",
 	}})
-	if len(infos) != 1 {
+	if len(infos) != 2 {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
@@ -879,7 +887,7 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	infos := make(chan string, 1)
 	closed := make(chan string, 1)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		PageInfoChanged: func(handle, url, title string) { infos <- handle + " " + url + " " + title },
+		PageInfoChanged: func(handle, url, title string, _ uint64) { infos <- handle + " " + url + " " + title },
 		PageClosed:      func(handle string) { closed <- handle },
 	})
 	engine.attachTimeout = 5 * time.Second

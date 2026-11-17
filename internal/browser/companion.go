@@ -150,15 +150,54 @@ type paneMount struct {
 	focus *mountFocus
 }
 
-// setInfo replaces the page's info, keeping its label, and reports whether
-// anything the tab shows changed, so a caller pushes state only then.
-func (p *managedPage) setInfo(info PageInfo) bool {
+// pageUpdate is what one read or report tells of a page. History is nil when
+// its source does not know the page's back/forward state (an engine info
+// report, a snapshot script): the tab keeps the state it shows rather than
+// turn its buttons off.
+type pageUpdate struct {
+	URL, Title string
+	History    *pageHistory
+}
+
+type pageHistory struct{ CanGoBack, CanGoForward bool }
+
+// setInfo records u, bounded, keeping the page's label and, when u has none,
+// its history state. It answers the info the tab now shows and whether that
+// changed, so a caller pushes state only then.
+func (p *managedPage) setInfo(u pageUpdate) (PageInfo, bool) {
 	p.metaMu.Lock()
-	info.Label = p.info.Label
+	defer p.metaMu.Unlock()
+	return p.setInfoLocked(u)
+}
+
+// setReportedInfo records an engine info report, numbered order by the
+// engine (engineEvents.PageInfoChanged). A report older than the newest one
+// recorded is dropped, so reports that reach the Manager out of order settle
+// on the engine's latest.
+func (p *managedPage) setReportedInfo(order uint64, url, title string) bool {
+	p.metaMu.Lock()
+	defer p.metaMu.Unlock()
+	if order <= p.infoOrder {
+		return false
+	}
+	p.infoOrder = order
+	_, changed := p.setInfoLocked(pageUpdate{URL: url, Title: title})
+	return changed
+}
+
+func (p *managedPage) setInfoLocked(u pageUpdate) (PageInfo, bool) {
+	info := PageInfo{
+		ID: p.id, Label: p.info.Label,
+		URL:       truncateUTF8(u.URL, maxBrowserURLBytes),
+		Title:     truncateUTF8(u.Title, maxBrowserTitleBytes),
+		CanGoBack: p.info.CanGoBack, CanGoForward: p.info.CanGoForward,
+	}
+	if u.History != nil {
+		info.CanGoBack, info.CanGoForward = u.History.CanGoBack, u.History.CanGoForward
+	}
 	changed := info != p.info
 	p.info = info
-	p.metaMu.Unlock()
-	return changed
+	return info, changed
 }
 
 // setHistoryState updates only the back/forward flags and reports whether
@@ -350,24 +389,18 @@ func (m *Manager) AcceleratorsChanged() {
 	}
 }
 
-func (m *Manager) updatePageInfo(handle, url, title string) {
+// updatePageInfo is engineEvents.PageInfoChanged.
+func (m *Manager) updatePageInfo(handle, url, title string, order uint64) {
 	m.mu.Lock()
 	found := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
 	if found == nil {
 		return
 	}
-	previous := found.cachedInfo()
 	// An engine reports the same address and title again (a target info
-	// change that touched neither); that pushes nothing.
-	if found.setInfo(PageInfo{
-		ID:    found.id,
-		URL:   truncateUTF8(url, maxBrowserURLBytes),
-		Title: truncateUTF8(title, maxBrowserTitleBytes),
-		// The engine event carries no history state; keep what is shown
-		// and let the async refresh below correct it.
-		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
-	}) {
+	// change that touched neither); that pushes nothing. The report carries
+	// no history state: the tab keeps what it shows until the refresh below.
+	if found.setReportedInfo(order, url, title) {
 		m.emitThreadState(found.owner)
 	}
 	go m.refreshHistoryState(found)

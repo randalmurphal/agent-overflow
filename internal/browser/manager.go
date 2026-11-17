@@ -278,7 +278,12 @@ type managedPage struct {
 	// sorts run outside m.mu.
 	tabOrder atomic.Int64
 	metaMu   sync.RWMutex
-	info     PageInfo
+	// info is what the page's tab shows. After creation only setInfo,
+	// setReportedInfo, setHistoryState and setLabel change it.
+	info PageInfo
+	// infoOrder is the order of the newest engine info report applied
+	// (setReportedInfo), guarded by metaMu.
+	infoOrder uint64
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load         pageLoad
@@ -475,10 +480,8 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
-	info, err := m.pageInfo(opCtx, p)
+	info, changed, err := m.refreshInfo(opCtx, p)
 	if err == nil {
-		changed := p.setInfo(info)
-		info = p.cachedInfo()
 		m.pageChanged(p, changed)
 	}
 	return info, err
@@ -517,11 +520,8 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 		return PageInfo{}, err
 	}
 	p.touch()
-	info, err := m.pageInfo(opCtx, p)
-	changed := false
+	info, changed, err := m.refreshInfo(opCtx, p)
 	if err == nil {
-		changed = p.setInfo(info)
-		info = p.cachedInfo()
 		m.recordRecentAddress(p, info)
 	}
 	m.pageChanged(p, changed)
@@ -547,14 +547,12 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-		info, err := m.pageInfo(opCtx, p)
+		info, _, err := m.refreshInfo(opCtx, p)
 		cancel()
 		p.mu.Unlock()
 		if err == nil {
 			info.Selected = p.id == activePageID
 			info.LastOpened = time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
-			p.setInfo(info)
-			info = p.cachedInfo()
 			out = append(out, info)
 		}
 	}

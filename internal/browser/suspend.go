@@ -390,14 +390,11 @@ func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage
 	if err != nil || target == "" {
 		return scope, err
 	}
-	p.setInfo(PageInfo{ID: p.id, URL: target, Title: title})
+	p.setInfo(pageUpdate{URL: target, Title: title})
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	err = p.driver.Navigate(opCtx, target)
 	if err == nil {
-		var info PageInfo
-		if info, err = m.pageInfo(opCtx, p); err == nil {
-			p.setInfo(info)
-		}
+		_, _, err = m.refreshInfo(opCtx, p)
 	}
 	cancel()
 	if err != nil {
@@ -457,13 +454,11 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	cleared := m.recordsCleared
 	m.mu.Unlock()
 	p.mu.Lock()
-	info := p.cachedInfo()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	current, err := m.pageInfo(opCtx, p)
+	_, _, err := m.refreshInfo(opCtx, p)
 	cancel()
-	if err == nil {
-		info.URL, info.Title = current.URL, current.Title
-	} else if p.ctx.Err() == nil {
+	info := p.cachedInfo()
+	if err != nil && p.ctx.Err() == nil {
 		log.Printf("browser: suspend page %s: read its address: %v; keeping %s", p.id, err, info.URL)
 	}
 	m.mu.Lock()
