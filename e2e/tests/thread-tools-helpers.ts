@@ -396,6 +396,7 @@ export interface ThreadRow {
   runtimeMode: string;
   reasoningEffort: string;
   forkedFromThreadId?: string;
+  placement: string;
 }
 
 /** Every non-archived thread row the backend holds, drafts included. */

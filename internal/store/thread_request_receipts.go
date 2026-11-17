@@ -302,11 +302,19 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 	return listingChange(listedBefore, listedAfter), nil
 }
 
+// insertThreadReceiptSQL writes a receipt. A link is written only while its
+// owner's device can reach this computer, in the insert itself: a worker is
+// owned only while that device holds an unrevoked session here
+// (endSessionsTx), so a revocation that committed after the request was
+// authenticated and before this insert leaves a plain receipt, and its
+// thread a sidebar row, as the release would. A revocation after the insert
+// releases the link it finds (endSessionsTx), named or not.
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
     token, owner_device_id, source_computer_id, source_computer_name,
     source_thread_id, source_thread_title, kind, target_thread_id,
     message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at
- ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+ ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+    ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15)`
 
 // insertArgs writes a link as seen by its owner when it was made.
 func (r ThreadRequestReceipt) insertArgs() []any {
@@ -617,11 +625,30 @@ type LocalSettlement struct {
 	// computer sent to another one: the receipt was minted elsewhere and
 	// its answer is not that request's.
 	Outbound bool
-	// AnsweredBySpawned is whether the thread that answered was spawned on
-	// this computer by the thread that asked, as Thread.SpawnedByThreadID
-	// reads it, so the answer may mark it read
-	// (docs/specs/standing-agents.md ruling 30).
+	// AnsweredBySpawned is whether the thread that answered was spawned by
+	// the thread that asked, so the answer may mark it read
+	// (docs/specs/standing-agents.md ruling 30): on this computer as
+	// Thread.SpawnedByThreadID reads it, set only with Collected; or, for a
+	// request a paired computer made, through the link that names the same
+	// device and source thread as the request's receipt.
 	AnsweredBySpawned bool
+}
+
+// answeredByLinkedTx reports whether a paired computer's receipt comes from
+// the thread whose link owns its target: the link (spawn_link, at most one
+// per thread) names the receipt's device and source thread.
+func answeredByLinkedTx(tx *sql.Tx, receipt ThreadRequestReceipt) (bool, error) {
+	if receipt.TargetThreadID == "" || receipt.OwnerDeviceID == localReceiptOwner {
+		return false, nil
+	}
+	var linked bool
+	err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_request_receipts
+		 WHERE target_thread_id = ? AND spawn_link = 1 AND owner_device_id = ? AND source_thread_id = ?)`,
+		receipt.TargetThreadID, receipt.OwnerDeviceID, receipt.SourceThreadID).Scan(&linked)
+	if err != nil {
+		return false, fmt.Errorf("read whether %s answered its owner's link: %w", receipt.TargetThreadID, err)
+	}
+	return linked, nil
 }
 
 // SettleLocalThreadRequest settles a receipt and, when the request was made
@@ -669,6 +696,12 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		Scan(&targetComputer, &notify, &answeredBySpawned)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		// A paired computer's request, which its poller collects. It was
+		// made by the thread that owns the target when it comes from that
+		// thread's link: the same device and source thread.
+		if out.AnsweredBySpawned, err = answeredByLinkedTx(tx, receipt); err != nil {
+			return LocalSettlement{}, fmt.Errorf("%s: %w", action, err)
+		}
 	case err != nil:
 		return LocalSettlement{}, fmt.Errorf("%s: read the source row: %w", action, err)
 	case targetComputer != "":

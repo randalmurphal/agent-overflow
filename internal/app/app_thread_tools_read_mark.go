@@ -10,7 +10,8 @@ import (
 
 // Agent-to-agent work raises no unread dot (docs/specs/standing-agents.md
 // ruling 30). When a spawned thread's turn answers a request from the thread
-// that spawned it, and the answer reached that caller on this computer, the
+// that spawned it, and the answer reached that caller on this computer or
+// waits for a paired computer's spawner whose link owns the thread here, the
 // spawned thread is marked read through that turn's completion. A pinned
 // thread keeps its dot.
 //
@@ -23,7 +24,8 @@ import (
 
 // markAnsweredRead stamps, or holds for its turn's end, the read mark a
 // settled receipt earned. The settlement read that its target was spawned
-// by its source (LocalSettlement.AnsweredBySpawned). Only an answer the
+// by its source (LocalSettlement.AnsweredBySpawned), here or through a
+// paired computer's link. Only an answer the
 // target's own turn gave counts: a reply, that turn's final message, or its
 // error or interruption. A cancel, and a settlement for a message the
 // target never read, carry no turn and mark nothing.

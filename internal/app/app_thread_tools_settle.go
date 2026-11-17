@@ -809,10 +809,12 @@ func (a *App) settleReadReceiptLocked(
 	}
 	if result.Collected {
 		work.wake = a.collectionWakeOwed(token, result.Notify)
-		if result.AnsweredBySpawned {
-			answered := result.Receipt
-			work.answered = &answered
-		}
+	}
+	if result.AnsweredBySpawned {
+		// Collected here, or a paired computer's request from the thread
+		// whose link owns the target, which that computer's poller collects.
+		answered := result.Receipt
+		work.answered = &answered
 	}
 	return work, true, nil
 }

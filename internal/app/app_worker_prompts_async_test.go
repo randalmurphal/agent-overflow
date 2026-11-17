@@ -331,8 +331,8 @@ func TestAWorkersAsyncQuestionGoesToThePersonWhenItsSpawnerLeaves(t *testing.T) 
 			if route, open := f.app.asyncQuestionRoute(ref); !open || route != nil {
 				t.Fatalf("the question is routed %+v (open %v), want it open and the person's", route, open)
 			}
-			if detail, routedTo, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || routedTo != "" {
-				t.Fatalf("the worker asks %q of %q (%v), want the person", detail, routedTo, asking)
+			if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || promptRouteTitle(route) != "" {
+				t.Fatalf("the worker asks %q of %q (%v), want the person", detail, promptRouteTitle(route), asking)
 			}
 			for _, send := range f.questionSends("question:ask") {
 				if !send.Retract {
@@ -972,8 +972,8 @@ func TestAForkOpensTheAsyncQuestionsItCarries(t *testing.T) {
 		t.Fatalf("ForkThread: %v", err)
 	}
 	f.drain(t)
-	if detail, routedTo, asking := f.app.asyncQuestionBlocked(fork.ID); !asking || detail != "Which scope?" || routedTo != "" {
-		t.Fatalf("the fork asks %q of %q (%v), want its question open and the person's", detail, routedTo, asking)
+	if detail, route, asking := f.app.asyncQuestionBlocked(fork.ID); !asking || detail != "Which scope?" || promptRouteTitle(route) != "" {
+		t.Fatalf("the fork asks %q of %q (%v), want its question open and the person's", detail, promptRouteTitle(route), asking)
 	}
 }
 
@@ -1006,8 +1006,8 @@ func TestAForkFromAMessageOpensTheAsyncQuestionsItCarries(t *testing.T) {
 	if err := app.drainWorkerPrompts(context.Background(), 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if detail, routedTo, asking := app.asyncQuestionBlocked(fork.ID); !asking || detail != "Which scope?" || routedTo != "" {
-		t.Fatalf("the fork asks %q of %q (%v), want its question open and the person's", detail, routedTo, asking)
+	if detail, route, asking := app.asyncQuestionBlocked(fork.ID); !asking || detail != "Which scope?" || promptRouteTitle(route) != "" {
+		t.Fatalf("the fork asks %q of %q (%v), want its question open and the person's", detail, promptRouteTitle(route), asking)
 	}
 }
 
@@ -1038,8 +1038,8 @@ func TestASpawnedForkPutsTheAsyncQuestionsItCarriesToItsSpawner(t *testing.T) {
 				}
 				f.app.threadRequestsWG.Wait()
 			}
-			if detail, routedTo, asking := f.app.asyncQuestionBlocked(made[1]); !asking || detail != "Which scope?" || routedTo != f.caller.Title {
-				t.Fatalf("the spawned fork asks %q of %q (%v), want its question open and its spawner's", detail, routedTo, asking)
+			if detail, route, asking := f.app.asyncQuestionBlocked(made[1]); !asking || detail != "Which scope?" || promptRouteTitle(route) != f.caller.Title {
+				t.Fatalf("the spawned fork asks %q of %q (%v), want its question open and its spawner's", detail, promptRouteTitle(route), asking)
 			}
 		})
 	}

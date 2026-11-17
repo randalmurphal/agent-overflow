@@ -115,6 +115,10 @@ type threadRequestState struct {
 type remoteBlocked struct {
 	blocked  bool
 	routedTo string
+	// routedToCaller is that computer saying the prompt came back here, to
+	// the thread whose spawn owns its target
+	// (ThreadPeerRequest.BlockedRoutedToCaller).
+	routedToCaller bool
 	// waitingOn is what the target waits on while its request waits for
 	// its rest (ThreadPeerRequest.WaitingOn).
 	waitingOn string
@@ -555,7 +559,7 @@ func (a *App) noteRemoteRequestBlocked(token string, reading remoteBlocked) {
 		return
 	}
 	if !reading.blocked {
-		reading.routedTo = ""
+		reading.routedTo, reading.routedToCaller = "", false
 	}
 	a.threadRequests.mu.Lock()
 	previous := a.threadRequests.blocked[token]

@@ -38,8 +38,8 @@ func TestTheBootRoutesAnAsyncQuestionTheRestartLeftOpen(t *testing.T) {
 	// empties: poll the queue instead of waiting on it.
 	after.app.startThreadRequestSweeps()
 	waitUntil(t, 10*time.Second, func() bool { return len(workerPromptTokens(t, after.app, f.caller.ID)) == 1 })
-	if detail, routedTo, asking := after.app.asyncQuestionBlocked(worker.ID); !asking || detail != "Which scope?" || routedTo != f.caller.Title {
-		t.Fatalf("after the boot the worker asks %q of %q (%v), want its spawner", detail, routedTo, asking)
+	if detail, route, asking := after.app.asyncQuestionBlocked(worker.ID); !asking || detail != "Which scope?" || promptRouteTitle(route) != f.caller.Title {
+		t.Fatalf("after the boot the worker asks %q of %q (%v), want its spawner", detail, promptRouteTitle(route), asking)
 	}
 }
 

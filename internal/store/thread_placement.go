@@ -212,13 +212,6 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("store: set placement of %s: %w", threadID, err)
 	}
-	// Standalone files the thread in the sidebar, which ends a delegation a
-	// paired computer carried to it even when it already had a row.
-	if placement == PlacementStandalone {
-		if err := endCarriedLevelTx(tx, threadID); err != nil {
-			return false, err
-		}
-	}
 	return rowsChanged(result, "store: set placement of "+threadID)
 }
 

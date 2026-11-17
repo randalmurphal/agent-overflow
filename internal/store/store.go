@@ -649,8 +649,10 @@ type Thread struct {
 	// carried here (migration v154): how far below a thread the person
 	// talks to the thread is. Zero for every thread a local spawn, a local
 	// ask or the person made, whose level its links answer
-	// (SubThreadLevel), and zero again once the thread is placed in the
-	// sidebar or transferred, which ends that delegation.
+	// (SubThreadLevel), and zero again once the thread is transferred. It
+	// counts only while the thread is owned or an ask copy
+	// (carriedLevelSQL), so a sidebar row ends it and Remove from Sidebar
+	// restores it.
 	SpawnLevel int `json:"spawnLevel,omitempty"`
 	// AskCopy marks the hidden copy a thread_ask runs in (a scratch thread
 	// its request owns, scratch_threads.request_token): it takes no

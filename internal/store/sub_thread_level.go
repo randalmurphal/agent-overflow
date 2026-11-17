@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 )
 
@@ -24,21 +23,31 @@ func delegatorOfSQL(t string) string {
 	                 AND ask.target_computer_id = '') END`
 }
 
+// carriedLevelSQL is the level a paired computer's delegation carried to
+// the threads alias t that still counts: the stored level
+// (threads.spawn_level) while t is owned, through that computer's link,
+// or is an ask copy, and none once it has a sidebar row or a group. The
+// level is the link's, so the placement that ends a delegation ends it,
+// and the placement that restores one restores it.
+func carriedLevelSQL(t string) string {
+	return `CASE WHEN ` + t + `.placement = '` + PlacementOwned + `' OR ` + t + `.mode = 'scratch' THEN ` + t + `.spawn_level ELSE 0 END`
+}
+
 // delegationWalkSQL walks from ?1 up its delegation chain, at most ?2
 // links: each row a thread, its distance from ?1 and the level a paired
-// computer's delegation carried to it (threads.spawn_level).
+// computer's delegation carried to it that counts (carriedLevelSQL).
 var delegationWalkSQL = `WITH RECURSIVE up(id, level, delegator, carried) AS (
-	  SELECT id, 0, ` + delegatorOfSQL("threads") + `, spawn_level FROM threads WHERE id = ?1
+	  SELECT id, 0, ` + delegatorOfSQL("threads") + `, ` + carriedLevelSQL("threads") + ` FROM threads WHERE id = ?1
 	  UNION ALL
-	  SELECT threads.id, up.level + 1, ` + delegatorOfSQL("threads") + `, threads.spawn_level
+	  SELECT threads.id, up.level + 1, ` + delegatorOfSQL("threads") + `, ` + carriedLevelSQL("threads") + `
 	    FROM up JOIN threads ON threads.id = up.delegator
 	   WHERE up.level < ?2)`
 
 // SubThreadLevel is threadID's sub-thread level: the number of delegation
 // links between it and the top of its chain on this computer, plus the
-// level a paired computer's spawn or ask carried to that top
-// (threads.spawn_level, which ends where that delegation ends:
-// endCarriedLevelTx). A link is an owned worker's spawn or an agent's ask
+// level a paired computer's spawn or ask carried to that top while it
+// still counts (carriedLevelSQL: while the thread is owned through that
+// computer's link, or is an ask copy). A link is an owned worker's spawn or an agent's ask
 // copy's ask (delegatorOfSQL). A thread the person talks to, one in the
 // sidebar, an assistant's own thread and a person's side chat are level 0;
 // a helper is level 1 under its assistant, as any owned worker is under
@@ -79,18 +88,4 @@ func (s *Store) DelegationChain(threadID string) ([]string, error) {
 		return nil, fmt.Errorf("store: delegation chain of %s: %w", threadID, err)
 	}
 	return chain, nil
-}
-
-// endCarriedLevelTx ends the delegation a paired computer's spawn or ask
-// carried to threadID: placing the thread in the sidebar, in a group or
-// standalone, and keeping an ask copy make it a thread of its own here,
-// as the same moves do to a local worker, whose link stops counting when it
-// is no longer owned. Nothing restores the carried level: putting a thread
-// back under ownership needs a local spawn link, and that link is what
-// counts then.
-func endCarriedLevelTx(tx *sql.Tx, threadID string) error {
-	if _, err := tx.Exec(`UPDATE threads SET spawn_level = 0 WHERE id = ? AND spawn_level <> 0`, threadID); err != nil {
-		return fmt.Errorf("store: end the carried level of %s: %w", threadID, err)
-	}
-	return nil
 }

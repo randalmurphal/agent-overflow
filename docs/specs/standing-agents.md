@@ -681,8 +681,16 @@ Ruling 36, as built:
   created standalone, or grouped with its group; the write that names a
   local spawn's thread (`NameLocalThreadRequestTarget`) makes it owned
   in the same transaction unless the spawn asked for `standalone` or a
-  `group` (`threadtools.ResolveSpawnPlacement`). A remote spawn has no
-  local spawner on its destination, so its thread is standalone there.
+  `group` (`threadtools.ResolveSpawnPlacement`). A paired computer's
+  owned spawn that carries its level is owned on its destination the
+  same way, through its receipt, marked as the link
+  (`thread_request_receipts.spawn_link`, `SetThreadReceiptTarget`); its
+  thread names that computer (`Thread.spawnedByComputerId`). One that
+  arrives without a level, from a computer that predates this, is
+  standalone there, and a destination that predates it reports no
+  placement, so the spawn's reply says the thread has a sidebar row
+  there. A request from the link's device and source thread marks the
+  worker read when it answers, as a local spawner's does (ruling 30).
   A spawn's fresh thread, and a fork it will own, are created without a
   frame; the spawn announces the thread once that write has named and
   placed it (`AnnouncePlaced`), so a thread that will be owned is never
@@ -897,7 +905,10 @@ Ruling 36, as built:
   otherwise. A paired computer's `agent_rows` answer carries why the
   spawn's thread there is not at rest, and whether it is open: not at
   rest, or with open work at any depth below it, read there as a spawn of
-  it would read it, whatever rows the answer has room for. The sweep keeps
+  it would read it, whatever rows the answer has room for. It carries the
+  thread's placement and archive state there and the prompt it waits on
+  (`blockedOn`, `blockedDetail`, `blockedRoutedTo`), with `routedToAsker`
+  when that prompt went to the asking device's thread whose link owns it. The sweep keeps
   asking while it is (`thread_requests.nested_open`). A remote spawn at
   the listing's last level asks for that state alone, which lists no rows
   and asks no computer further on, so a chain of computers is asked no
@@ -936,7 +947,9 @@ Ruling 36, as built:
   deep (1 to 4, default 2). The level is counted along the owned spawn
   links (`Store.SubThreadLevel`): an assistant's own thread is 0 and its
   helper 1, and a worker the person gives a sidebar row is 0, with its
-  own workers counted from it. A session at the limit starts without
+  own workers counted from it. A paired computer's owned worker counts
+  the level its spawn carried while it is owned: Show in Sidebar ends it
+  and Remove from Sidebar restores it. A session at the limit starts without
   `thread_spawn` and without native subagents
   ([Sub-thread depth](agent-thread-tools.md#sub-thread-depth)). The limit
   applies to owned workers and an agent's ask copies: a thread that is
@@ -1693,9 +1706,11 @@ closes up their spacing so the row holds at a phone width.
   settled spawn's waiting worker), how long
   since the request, and what a blocked row waits on: the approval with
   its tool and detail, or the question, and who it was routed to; a
-  paired computer's target reports only that it waits, and on which of
-  that computer's threads when its prompt went to one rather than the
-  person. A
+  paired computer's target reports the same in its `agent_rows` answer,
+  and its request's poll only that it waits and on which thread. A
+  prompt that computer routed back to the spawner here names the spawner
+  as this computer does (`blockedRoutedHere`) and does not count as
+  needing the person. A
   spawn's row says what its thread did as a subagent's row says what its
   agent did, from the one formatter both use (`AgentMetrics.svelte`),
   read with the thread's name (`store.ThreadTally`, one probe per
@@ -1933,11 +1948,13 @@ closes up their spacing so the row holds at a phone width.
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the
   echo confirms the wake), not by a send-id lookup. A tool row's state
   read (`GetThreadRequestStates`) is one statement for all its tokens.
-  A spawn row whose thread is on this computer carries that thread's
-  stored `placement`, empty for a thread that takes none (outside every
-  project, or a standing agent's own), and whether it is `archived`;
-  every other row carries neither, a row a paired computer listed
-  included.
+  A spawn row carries its thread's `placement`, empty for a thread that
+  takes none (outside every project, or a standing agent's own), and
+  whether it is `archived`, as the computer that holds the thread
+  reported it: this computer's store, or a paired computer's
+  `agent_rows` answer, for the rows nested under it too. Every other row
+  carries neither, nor does a spawn on a computer that does not report
+  them.
 - **Past.** Below the open and incoming rows, one Past row with the
   count of the thread's settled rows, less spawns whose workers are not
   at rest; expanding it lists them newest

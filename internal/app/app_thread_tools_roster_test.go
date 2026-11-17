@@ -580,7 +580,11 @@ func TestASpawnWhoseThreadIsDeletedDuringItsWaitStillRecordsItsInstructions(t *t
 
 // A paired computer's spawn carries its thread's level: the destination
 // stores it with the thread, counts that thread's own workers from it,
-// and refuses a spawn whose thread would sit past its own limit. A spawn's
+// and refuses a spawn whose thread would sit past its own limit. Every
+// owned spawn and fork it forwards carries a level, which is what makes
+// it owned there (design call 6.3): a spawn arriving without one is a
+// plain row. The level counts while the thread is owned: Show in Sidebar
+// and a group end it, Remove from Sidebar restores it. A spawn's
 // instructions travel with it and are stored there.
 func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 	remotetest.Require(t)
@@ -599,8 +603,8 @@ func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if thread.SpawnLevel != 2 || thread.SpawnInstructions != "Answer in one line." {
-		t.Fatalf("the destination's thread carries level %d and instructions %q", thread.SpawnLevel, thread.SpawnInstructions)
+	if thread.SpawnLevel != 2 || thread.Placement != store.PlacementOwned || thread.SpawnInstructions != "Answer in one line." {
+		t.Fatalf("the destination's thread is %s and carries level %d and instructions %q", thread.Placement, thread.SpawnLevel, thread.SpawnInstructions)
 	}
 	if ack.Instructions != "Answer in one line." {
 		t.Fatalf("the spawn's reply records instructions %q", ack.Instructions)
@@ -615,6 +619,10 @@ func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 	})
 	if err != nil || forked.Instructions != "Review only.\n\nBe brief." {
 		t.Fatalf("a fork there replies %+v, %v", forked, err)
+	}
+	fork, err := pair.dest.store.GetThread(pair.receipt(t, forked.Token).TargetThreadID)
+	if err != nil || fork.SpawnLevel != 2 || fork.Placement != store.PlacementOwned {
+		t.Fatalf("the fork there is %s at carried level %d, %v; want owned at 2", fork.Placement, fork.SpawnLevel, err)
 	}
 	if level, err := pair.dest.store.SubThreadLevel(child); err != nil || level != 2 {
 		t.Fatalf("SubThreadLevel there = %d, %v", level, err)
@@ -638,8 +646,23 @@ func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 		t.Fatalf("the ask copy there is at level %d, %v; want 2", level, err)
 	}
 
-	// The person filing the worker in a group there ends the delegation it
-	// came with, and its next session can spawn again.
+	// The person giving the worker a sidebar row there, or filing it in a
+	// group, ends the delegation it came with, and its next session can
+	// spawn again; taking it out of the sidebar gives it back.
+	requireLevelThere := func(what string, want int) {
+		t.Helper()
+		if place, err := pair.dest.subThreadPlaceOf(child); err != nil || place.level != want {
+			t.Fatalf("the worker %s there: %+v, %v; want level %d", what, place, err, want)
+		}
+	}
+	if _, err := pair.dest.SetThreadPlacement([]string{child}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	requireLevelThere("shown in the sidebar", 0)
+	if _, err := pair.dest.SetThreadPlacement([]string{child}, store.PlacementOwned); err != nil {
+		t.Fatal(err)
+	}
+	requireLevelThere("removed from the sidebar", 2)
 	group, err := pair.dest.store.CreateThreadGroup(thread.ProjectID, "Taken over")
 	if err != nil {
 		t.Fatal(err)

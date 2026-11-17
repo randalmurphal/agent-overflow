@@ -83,8 +83,8 @@ func TestATransferredConversationOpensItsUnansweredQuestion(t *testing.T) {
 	if err := destination.drainWorkerPrompts(ctx, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if detail, routedTo, asking := destination.asyncQuestionBlocked(intent.TargetThreadID); !asking || detail != "Which scope?" || routedTo != "" {
-		t.Fatalf("the copy asks %q of %q (%v), want its question open and the person's", detail, routedTo, asking)
+	if detail, route, asking := destination.asyncQuestionBlocked(intent.TargetThreadID); !asking || detail != "Which scope?" || route != nil {
+		t.Fatalf("the copy asks %q of %q (%v), want its question open and the person's", detail, promptRouteTitle(route), asking)
 	}
 	state, err := (threadToolsApp{app: destination}).threadStateNow(ctx, intent.TargetThreadID)
 	if err != nil || state.State != threadtools.StateAwaitingInput {
@@ -329,8 +329,8 @@ func TestAReconcileOlderThanAWithdrawalLeavesTheQuestionsThePersons(t *testing.T
 	if err != nil || len(questions) != 2 || questions[0].State != "unanswered" || questions[1].State != "unanswered" {
 		t.Fatalf("the questions = %+v, %v; want both unanswered", questions, err)
 	}
-	if detail, routedTo, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || routedTo != "" {
-		t.Fatalf("the worker asks %q of %q (%v), want both questions the person's", detail, routedTo, asking)
+	if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || route != nil {
+		t.Fatalf("the worker asks %q of %q (%v), want both questions the person's", detail, promptRouteTitle(route), asking)
 	}
 	if open := openWorkerRegistrations(f.app, f.worker.ID); len(open) != 0 {
 		t.Fatalf("the withdrawn questions are registered with the spawner under %q", open)

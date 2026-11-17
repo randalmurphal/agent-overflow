@@ -352,12 +352,16 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
     aoMessageOpening(`the agent in thread "Remote spawn caller" (${caller.threadIds[0]}) on "Laptop computer"`),
   );
 
-  // The thread lives there, not here.
+  // The thread lives there, not here, owned by its spawner: no sidebar row
+  // there either.
   const remoteRows = await threadRows(remote);
   const spawnedRow = remoteRows.find((row) => row.id === spawned.thread_id)!;
   expect(spawnedRow).toBeDefined();
   expect(spawnedRow.title).toBe('Kernel build');
   expect(spawnedRow.projectId).toBe(there.projectId);
+  expect(spawnedRow.placement).toBe('owned');
+  const listed = await remote.rpc<{ id: string }[]>('ListThreads');
+  expect(listed.some((row) => row.id === spawned.thread_id)).toBe(false);
   expect((await threadRows(home)).some((row) => row.id === spawned.thread_id)).toBe(false);
 
   // The source-side poller collects the settlement and wakes the caller.
@@ -1561,6 +1565,8 @@ test('the origin chip names the other computer on both ends of a spawn', async (
                   title: 'Chip work',
                   computer_id: remoteID,
                   project_id: there.projectId,
+                  // A sidebar row there, which the person opens below.
+                  placement: 'standalone',
                   runtime_mode: 'read-only',
                   notify: true,
                 },

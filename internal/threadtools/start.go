@@ -415,6 +415,9 @@ func (c *session) ack(receipt RequestAck, kind string) ackResult {
 		Instructions: receipt.Instructions,
 	}
 	result.Note = ackNote(result)
+	if receipt.Notice != "" {
+		result.Note = receipt.Notice + " " + result.Note
+	}
 	return result
 }
 

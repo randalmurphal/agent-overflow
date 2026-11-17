@@ -48,23 +48,41 @@ type agentChain struct {
 
 // countedAgentsPeer is a computer that counts the agent_rows calls it is
 // sent, and those of them that ask for the thread's state alone, and can
-// act as a computer from before sub-thread levels.
+// act as a computer from before sub-thread levels, or one from before
+// agent_rows reported placement and archive state (unplaced).
 type countedAgentsPeer struct {
 	*App
 	calls     atomic.Int32
 	stateOnly atomic.Int32
 	levelless atomic.Bool
+	unplaced  atomic.Bool
 }
 
 func (p *countedAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	if call.Tool == threadAgentPeerRows {
-		p.calls.Add(1)
-		var args map[string]any
-		if err := json.Unmarshal(call.Args, &args); err == nil && args["state_only"] == true {
-			p.stateOnly.Add(1)
-		}
+	if call.Tool != threadAgentPeerRows {
+		return p.App.ThreadToolQuery(ctx, call)
 	}
-	return p.App.ThreadToolQuery(ctx, call)
+	p.calls.Add(1)
+	var args map[string]any
+	if err := json.Unmarshal(call.Args, &args); err == nil && args["state_only"] == true {
+		p.stateOnly.Add(1)
+	}
+	reply, err := p.App.ThreadToolQuery(ctx, call)
+	if err != nil || !p.unplaced.Load() {
+		return reply, err
+	}
+	var listing ThreadAgentRows
+	if err := json.Unmarshal(reply.Result, &listing); err != nil {
+		return ThreadPeerReply{}, err
+	}
+	listing.Placement, listing.Archived = "", false
+	for i := range listing.Rows {
+		listing.Rows[i].Placement, listing.Rows[i].Archived = "", false
+	}
+	if reply.Result, err = json.Marshal(listing); err != nil {
+		return ThreadPeerReply{}, err
+	}
+	return reply, nil
 }
 
 // ThreadToolCall drops the sub-thread level a spawn carries when the

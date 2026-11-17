@@ -328,7 +328,25 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	done()
-	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	ack, err := t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	if err == nil {
+		ack.Notice = t.unownedSpawnNotice(call, reply, computerID)
+	}
+	return ack, err
+}
+
+// unownedSpawnNotice says when an owned spawn's thread was not owned on the
+// computer that accepted it: one that predates ownership across computers
+// reports no placement, ignores the level that makes the spawn its
+// caller's worker there, and gives the thread a sidebar row.
+func (t threadToolsApp) unownedSpawnNotice(call any, reply ThreadPeerRequest, computerID string) string {
+	spawn, ok := call.(threadtools.SpawnCall)
+	if !ok || spawn.Level < 1 || reply.Placement != "" {
+		return ""
+	}
+	name, _ := t.threadToolsBackendName(computerID)
+	return threadtools.NameOfComputer(threadtools.Computer{ID: computerID, Name: name}) +
+		" runs an older version, so the thread has a sidebar row there."
 }
 
 // threadPeerAdmissionAttempts is how many times one request-minting call is

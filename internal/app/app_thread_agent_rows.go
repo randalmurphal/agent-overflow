@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -94,8 +95,11 @@ type ThreadAgentRow struct {
 	ComputerID string `json:"computerId,omitempty"`
 	Computer   string `json:"computer,omitempty"`
 	Title      string `json:"title"`
-	// Placement and Archived are the stored placement and archive state of
-	// the thread a local spawn made; empty and false for every other row.
+	// Placement and Archived are the placement and archive state of the
+	// thread a spawn made, as the computer that holds the thread reported
+	// it: this one's store for a local spawn, the agent_rows answer of a
+	// paired computer for one there, nested rows included. Empty and false
+	// for every other row and from a computer that does not report them.
 	// Placement is empty too for a thread that takes none (an assistant's
 	// helper, outside every project), so no sidebar row is offered for it.
 	Placement string `json:"placement,omitempty"`
@@ -116,13 +120,17 @@ type ThreadAgentRow struct {
 	// rest is open: one that replied and keeps working shows its reply and
 	// this.
 	Worker string `json:"worker,omitempty"`
-	// BlockedOn is approval or question for a local target waiting on a
-	// prompt, person for a paired computer's target that reports it is
-	// blocked; BlockedDetail says what it asks and BlockedRoutedTo names
-	// the spawner its prompt went to (ruling 19).
-	BlockedOn       string `json:"blockedOn,omitempty"`
-	BlockedDetail   string `json:"blockedDetail,omitempty"`
-	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
+	// BlockedOn is approval or question for a target waiting on a prompt,
+	// here or as a paired computer's agent_rows answer reports it, and
+	// person for a paired computer's target known only to be blocked;
+	// BlockedDetail says what it asks and BlockedRoutedTo names the
+	// spawner its prompt went to (ruling 19). BlockedRoutedHere marks a
+	// paired computer's prompt routed back to the spawner here, which
+	// BlockedRoutedTo then names as this computer does.
+	BlockedOn         string `json:"blockedOn,omitempty"`
+	BlockedDetail     string `json:"blockedDetail,omitempty"`
+	BlockedRoutedTo   string `json:"blockedRoutedTo,omitempty"`
+	BlockedRoutedHere bool   `json:"blockedRoutedHere,omitempty"`
 	// Activity is what a running target did last: its latest top-level
 	// tool call, while the request runs or its worker is not at rest; a
 	// waiting worker's is what it waits on. A paired computer reports its
@@ -202,6 +210,20 @@ type ThreadAgentRows struct {
 	RuntimeMs     int64  `json:"runtimeMs,omitempty"`
 	TurnOpen      bool   `json:"turnOpen,omitempty"`
 	TurnStartedAt int64  `json:"turnStartedAt,omitempty"`
+	// Placement and Archived are the listed thread's own, answered by
+	// agent_rows for the spawn row on the computer that asked
+	// (ThreadAgentRow.Placement).
+	Placement string `json:"placement,omitempty"`
+	Archived  bool   `json:"archived,omitempty"`
+	// BlockedOn, BlockedDetail and BlockedRoutedTo are the prompt the
+	// listed thread waits on, as its own Agents row here reads it
+	// (threadWaitingOn). RoutedToAsker says that prompt went to the thread
+	// on the asking computer whose link owns the listed thread
+	// (routedToAsker), which that computer names itself.
+	BlockedOn       string `json:"blockedOn,omitempty"`
+	BlockedDetail   string `json:"blockedDetail,omitempty"`
+	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
+	RoutedToAsker   bool   `json:"routedToAsker,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -643,18 +665,18 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	// open; one with only open work below it there waits on it, as its
 	// row's nested_open says once recorded. A failed call is no news of
 	// rest: the last answer stands, which a refusal clears
-	// (noteAnswerLocked). A spawn whose request settled waits on a person
-	// there when it is blocked, as nothing routes a remote worker's prompts.
+	// (noteAnswerLocked). It says where the thread is placed and what it
+	// waits on there too.
 	switch open := answer.listing.Open; {
 	case answer.listing.Worker != "":
 		parent.Worker = answer.listing.Worker
 	case open != nil && *open && parent.Worker == "":
 		parent.Worker = workerWaiting
 	}
-	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
-		parent.BlockedOn = "person"
+	peerSpawnReport(parent, answer)
+	if parent.Worker == workerBlocked || parent.State == threadtools.RequestBlocked {
+		a.peerSpawnBlocked(parent, answer.listing)
 	}
-	peerSpawnCounts(parent, answer)
 	if parent.open() && parent.BlockedOn == "" {
 		parent.Activity = answer.listing.Activity
 	}
@@ -687,10 +709,10 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 			continue
 		}
 		row.OwnerComputerID = slot.spawn.TargetComputerID
-		// A placement is the sidebar's of the computer that holds the
-		// thread; this one offers none for a thread another computer
-		// listed.
-		row.Placement, row.Archived = "", false
+		// The placement stays the one the computer that holds the thread
+		// reported. A prompt routed back to that computer's spawner is
+		// routed to a thread there, not here.
+		row.BlockedRoutedHere = false
 		switch row.ComputerID {
 		case "":
 			// A thread on that computer.
@@ -707,12 +729,42 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	return rows, entries
 }
 
-// peerSpawnCounts sets what a paired computer's spawn did, as that
-// computer's last answer reported it: the one projection of a paired
-// spawn's counts, for its open row and its Past row alike.
-func peerSpawnCounts(row *ThreadAgentRow, answer threadAgentPeerAnswer) {
+// peerSpawnReport sets what a paired computer's spawn did and where its
+// thread is placed there, as that computer's last answer reported it: the
+// one projection of a paired spawn's counts, placement and archive state,
+// for its open row and its Past row alike.
+func peerSpawnReport(row *ThreadAgentRow, answer threadAgentPeerAnswer) {
 	row.ToolCalls, row.Tokens = answer.listing.ToolCalls, answer.listing.Tokens
 	row.RuntimeMs, row.TurnOpen, row.TurnStartedAt = answer.listing.RuntimeMs, answer.listing.TurnOpen, answer.listing.TurnStartedAt
+	row.Placement, row.Archived = answer.listing.Placement, answer.listing.Archived
+}
+
+// peerSpawnBlocked sets what a blocked paired spawn's thread waits on, as
+// that computer's answer reports it; a row the answer says nothing for
+// keeps what the request's poll said. A prompt that computer routed back
+// to this spawn's holder is named as this computer names the holder.
+func (a *App) peerSpawnBlocked(row *ThreadAgentRow, listing ThreadAgentRows) {
+	if listing.BlockedOn == "" {
+		return
+	}
+	row.BlockedOn, row.BlockedDetail, row.BlockedRoutedTo = listing.BlockedOn, listing.BlockedDetail, listing.BlockedRoutedTo
+	row.BlockedRoutedHere = listing.RoutedToAsker
+	if listing.RoutedToAsker {
+		row.BlockedRoutedTo = a.routedHereTitle(row.CallerThreadID, listing.BlockedRoutedTo)
+	}
+}
+
+// routedHereTitle names the thread here a paired computer routed a prompt
+// back to: the spawn's holder, callerThreadID, by its title here, or by
+// the name that computer gave when the title cannot be read, so the row
+// still reads as routed rather than the person's.
+func (a *App) routedHereTitle(callerThreadID, reported string) string {
+	thread, err := a.store.GetThread(callerThreadID)
+	if err != nil {
+		log.Printf("agent rows: read the title of %s, whose worker's prompt came back to it: %v", callerThreadID, err)
+		return cmp.Or(reported, callerThreadID)
+	}
+	return cmp.Or(thread.Title, reported, callerThreadID)
 }
 
 // pastPeerSpawnCounts sets the counts of the paired spawns on a page of
@@ -736,7 +788,7 @@ func (a *App) pastPeerSpawnCounts(rows []ThreadAgentRow, requests []store.Thread
 		}
 		answer, ok := a.cachedPeerAgentRows(spawn)
 		if ok {
-			peerSpawnCounts(&rows[i], answer)
+			peerSpawnReport(&rows[i], answer)
 			if answer.err != nil {
 				rows[i].NestedUnavailable = threadAgentPeerUnavailable(rows[i].Computer, answer.err)
 			}
@@ -919,13 +971,17 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	case !live:
 	case row.TargetComputerID != "":
 		// That computer reads its target's prompts; it says whether one is
-		// routed to a thread there rather than the person.
+		// routed to a thread there rather than the person, or back to the
+		// spawner here.
 		if state.State == threadtools.RequestBlocked {
 			out.BlockedOn, out.BlockedRoutedTo = "person", remote.routedTo
+			if remote.routedToCaller {
+				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(row.CallerThreadID, remote.routedTo), true
+			}
 		}
 		out.Activity = rest.detail
 	case row.TargetThreadID != "":
-		out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = waiting.on, waiting.detail, waiting.routedTo
+		out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = waiting.on, waiting.detail, waiting.routedTo()
 		out.Activity = v.app.threadAgentActivity(row.TargetThreadID)
 		if out.Activity == "" {
 			// A waiting worker's line is what it waits on.
@@ -966,8 +1022,9 @@ func (v threadAgentView) attachLastMessages(rows []ThreadAgentRow) {
 }
 
 // threadAgentBlockedOn says what a target is waiting on a person for: its
-// first approval, else its first question.
-func threadAgentBlockedOn(snapshot triage.LiveStateSnapshot) (on, detail, routedTo string) {
+// first approval, else its first question, with the route that prompt took
+// (nil while the person owns it).
+func threadAgentBlockedOn(snapshot triage.LiveStateSnapshot) (on, detail string, route *provider.PromptRoute) {
 	if approvals := snapshot.Interactive.Approvals; len(approvals) > 0 {
 		request := approvals[0]
 		detail = request.ToolName
@@ -979,10 +1036,7 @@ func threadAgentBlockedOn(snapshot triage.LiveStateSnapshot) (on, detail, routed
 		if text := firstNonEmpty(title, request.Description); text != "" {
 			detail = request.ToolName + ": " + text
 		}
-		if request.RoutedTo != nil {
-			routedTo = request.RoutedTo.Title
-		}
-		return "approval", clipLine(detail), routedTo
+		return "approval", clipLine(detail), request.RoutedTo
 	}
 	if questions := snapshot.Interactive.UserInputs; len(questions) > 0 {
 		request := questions[0]
@@ -990,12 +1044,9 @@ func threadAgentBlockedOn(snapshot triage.LiveStateSnapshot) (on, detail, routed
 		if len(request.Questions) > 0 {
 			detail = firstNonEmpty(request.Questions[0].Question, request.Questions[0].Header, detail)
 		}
-		if request.RoutedTo != nil {
-			routedTo = request.RoutedTo.Title
-		}
-		return "question", clipLine(detail), routedTo
+		return "question", clipLine(detail), request.RoutedTo
 	}
-	return "", "", ""
+	return "", "", nil
 }
 
 func firstNonEmpty(values ...string) string {

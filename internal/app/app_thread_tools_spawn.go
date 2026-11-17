@@ -27,9 +27,9 @@ import (
 // made if missing, in the NEW thread's project (a fork's source project, or
 // the destination's) before the thread exists; with none, a fork is made in
 // no group rather than in its source's. Creation is not a move: the thread
-// never passes through a group or placement it then leaves, so nothing
-// here is the person's act that ends a delegation (store.endCarriedLevelTx),
-// and a level a paired computer's spawn carried stays with the thread.
+// never passes through a group or placement it then leaves. A level a
+// paired computer's spawn carried is stored with the thread and counts
+// while the thread is owned (store.SubThreadLevel).
 //
 // Nothing here announces a fresh thread or an owned fork: the spawn's
 // request names and places the thread first, and acceptRequest announces
@@ -90,7 +90,7 @@ type spawnOptions struct {
 	CreateThreadOptions
 	worktree *threadapp.WorktreeCut
 	// owned says the naming write will own the thread: a local spawn
-	// placed owned. A paired computer's spawn has no spawn row here.
+	// placed owned, or a paired computer's owned spawn through its link.
 	owned bool
 }
 

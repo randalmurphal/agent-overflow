@@ -216,11 +216,25 @@ func (t threadToolsApp) LiveState(_ context.Context, threadID string) (threadtoo
 // threadWaiting is what a thread waits on now, from what the app holds in
 // memory, no store read: the triage snapshot, its live state, and what
 // blocks it on someone, "approval" or "question", with its first line and
-// the thread it is routed to, empty when that is the person.
+// the route its prompt took, nil when that is the person.
 type threadWaiting struct {
-	snapshot             triage.LiveStateSnapshot
-	live                 threadtools.LiveState
-	on, detail, routedTo string
+	snapshot   triage.LiveStateSnapshot
+	live       threadtools.LiveState
+	on, detail string
+	route      *provider.PromptRoute
+}
+
+// routedTo names the thread the prompt it waits on went to, empty when the
+// person owns it.
+func (w threadWaiting) routedTo() string { return promptRouteTitle(w.route) }
+
+// promptRouteTitle is the title of the thread a prompt is routed to, empty
+// for the person's.
+func promptRouteTitle(route *provider.PromptRoute) string {
+	if route == nil {
+		return ""
+	}
+	return route.Title
 }
 
 // threadWaitingOn is the one answer to what a thread waits on, which its
@@ -241,15 +255,31 @@ func (a *App) threadWaitingOn(threadID string) threadWaiting {
 	if !waiting.live.PendingSends && a.flushQueueHolds(threadID) {
 		waiting.live.PendingSends = true
 	}
-	waiting.on, waiting.detail, waiting.routedTo = threadAgentBlockedOn(waiting.snapshot)
+	waiting.on, waiting.detail, waiting.route = threadAgentBlockedOn(waiting.snapshot)
 	if waiting.on != "" || waiting.live.ActiveTurn || waiting.live.PendingSends {
 		return waiting
 	}
-	if detail, routedTo, asking := a.asyncQuestionBlocked(threadID); asking {
+	if detail, route, asking := a.asyncQuestionBlocked(threadID); asking {
 		waiting.live.PendingUserInputs = 1
-		waiting.on, waiting.detail, waiting.routedTo = "question", clipLine(detail), routedTo
+		waiting.on, waiting.detail, waiting.route = "question", clipLine(detail), route
 	}
 	return waiting
+}
+
+// routedToAsker reports whether the prompt threadID waits on went to the
+// thread on a paired computer that owns it, and device is that computer's:
+// the thread's link (store.SpawnOwnerOf) names device, and the route names
+// the link's source thread. A route to a thread here, and a prompt the
+// person owns, are not.
+func (a *App) routedToAsker(threadID string, route *provider.PromptRoute, device string) (bool, error) {
+	if route == nil || device == "" {
+		return false, nil
+	}
+	owner, found, err := a.store.SpawnOwnerOf(threadID)
+	if err != nil {
+		return false, fmt.Errorf("read the owner of thread %s: %w", threadID, err)
+	}
+	return found && owner.ComputerID != "" && owner.DeviceID == device && owner.ThreadID == route.ThreadID, nil
 }
 
 // threadToolsLiveState projects one live snapshot, for a reader that also
