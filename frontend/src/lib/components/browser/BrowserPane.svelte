@@ -25,6 +25,7 @@
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import BrowserTabStrip from './BrowserTabStrip.svelte';
+  import Button from '../primitives/Button.svelte';
   import { createBrowserPaneGeometry } from './browserPaneGeometry.svelte';
   import { provideBrowserPaneThread } from './browserPaneThread';
 
@@ -45,6 +46,7 @@
   let pages = $derived(view?.state.pages ?? []);
   let sessionName = $derived(view?.state.sessionName ?? '');
   let activePageId = $derived(view?.state.activePageId ?? '');
+  let closedTabs = $derived(view?.state.closedTabs ?? 0);
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
   // Boolean, not the view object: the geometry's re-report effect must fire
   // on attach, never on every page-state push.
@@ -123,11 +125,12 @@
   // A suspended page (its session went idle, or the app restarted) has no
   // native view. Presenting it restores it: the pane asks once each time the
   // active page is found suspended, so a refusal stays in the banner until
-  // the user acts on the page.
+  // the user acts on the page. A page that crashed (suspended, with its
+  // error) waits for its Reload instead, so it is not loaded again unasked.
   let restoreAsked = '';
   $effect(() => {
     const page = attached ? activePage : null;
-    if (!page?.suspended) {
+    if (!page?.suspended || page.error) {
       restoreAsked = '';
       return;
     }
@@ -189,13 +192,16 @@
     const threadId = ctx.threadId;
     if (!threadId) return;
     const page = activePage;
-    if (page && !page.creating && !page.error) void act('navigate', page.id, path);
+    if (page && !page.creating && !(page.error && !page.suspended)) void act('navigate', page.id, path);
     else void openBrowserTab(threadId, { address: path });
   }
 
   // What the host rect says while the active tab has no page to present.
+  let crashed = $derived(activePage?.suspended === true && !!activePage.error && !activePage.restoring);
   let pendingNote = $derived(
-    activePage?.error
+    crashed
+      ? `This page stopped: ${activePage?.error}`
+      : activePage?.error && !activePage.suspended
       ? `This tab could not be opened: ${activePage.error}`
       : activePage?.creating
         ? 'Opening…'
@@ -217,7 +223,7 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
-  <BrowserTabStrip {sessionName} {pages} {activePageId} onAct={act} onNewTab={openNewTab} onEmptyDoubleClick={togglePromotion} />
+  <BrowserTabStrip {sessionName} {pages} {activePageId} {closedTabs} onAct={act} onNewTab={openNewTab} onEmptyDoubleClick={togglePromotion} />
 
   <BrowserAddressBar
     bind:this={addressBar}
@@ -266,9 +272,14 @@
       <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>
     {:else if pendingNote}
       <div
-        class="flex h-full items-center justify-center px-4 text-sm {activePage?.error ? 'text-error' : 'text-fg-muted'}"
+        class="flex h-full flex-col items-center justify-center gap-3 px-4 text-sm {activePage?.error ? 'text-error' : 'text-fg-muted'}"
         data-testid="browser-pane-pending"
-      >{pendingNote}</div>
+      ><span data-testid="browser-pane-pending-note">{pendingNote}</span>{#if crashed && activePage}<Button
+            variant="secondary"
+            size="sm"
+            testId="browser-pane-crash-reload"
+            onclick={() => void act('reload', activePage.id)}
+          >Reload</Button>{/if}</div>
     {/if}
   </div>
 </div>

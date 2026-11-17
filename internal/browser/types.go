@@ -67,6 +67,9 @@ type CompanionEvent struct {
 	// A Kind "teardown" event names ThreadID, PageID and Error: a page that
 	// already left the tab set failed to close or to release its profile.
 	Find *FindState `json:"find,omitempty"`
+	// ClosedTabs rides a Kind "state" event: how many tabs the thread can
+	// reopen (companion_tabs.go).
+	ClosedTabs int `json:"closedTabs,omitempty"`
 	// Downloads rides a Kind "state" event: the thread's downloads, newest
 	// first (downloads_thread.go). Download rides a Kind "download" event:
 	// one download settled other than by the user's cancel, announced once.
@@ -161,11 +164,15 @@ type PageInfo struct {
 	//
 	// Creating marks a tab whose engine page is still being created, and
 	// Restoring a suspended tab whose reload is in flight. Error is why a
-	// tab the user opened could not be created; the tab stays until it is
-	// closed. None of the three has a page to present.
+	// tab the user opened could not be created, or, on a Suspended tab, why
+	// its page stopped (crash.go); either tab stays until it is closed. None
+	// of these has a page to present.
 	Creating  bool   `json:"creating,omitempty"`
 	Restoring bool   `json:"restoring,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Agent is whether an agent's tool call is acting on the page
+	// (activity.go).
+	Agent bool `json:"agent,omitempty"`
 	// Loading is whether the page's main frame is loading, as its engine
 	// reports it (pagestate.go).
 	Loading bool `json:"loading,omitempty"`

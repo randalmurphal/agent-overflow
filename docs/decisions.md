@@ -576,7 +576,14 @@ and anti-changes that live only here:
   and a closed one leaves at once while the engine finishes in the
   background. A failure of that teardown is shown, never only logged. A new
   tab the user opened focuses the address bar; an agent's never takes focus.
-  `docs/architecture/browser-tools.md`.
+  A tab whose page process died stays, failed with the reason, until the
+  user reloads it at its address; selecting it does not reload it. A tab
+  marks the time an agent tool works on its page, and the user's own
+  actions on that page are never blocked. A tab the user closed can be
+  reopened at its place for the life of the app (the last 10 per thread);
+  an agent's close is not reopenable. Clearing site
+  data, a jar switch or the thread's deletion forgets them, and a private
+  jar keeps none. `docs/architecture/browser-tools.md`.
 - The browser pane's chrome behaves like a desktop browser's (tab sizing,
   select-all address, stop, the usual chords while the pane is focused). A
   Windows or `\\wsl` path typed into it opens the file it names or fails

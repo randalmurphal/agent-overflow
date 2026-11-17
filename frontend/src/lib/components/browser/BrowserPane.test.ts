@@ -352,6 +352,29 @@ describe('<BrowserPane> tab lifecycle', () => {
     await waitFor(() => expect(view.getByTestId('browser-pane-pending').textContent).toBe('This tab could not be opened: profile is locked'));
   });
 
+  it('shows a crashed page with its reason and a Reload, and restores it only from the Reload', async () => {
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => undefined));
+    const crashed = { ...page('a', true), error: "the page's process ended (crashed)" };
+    const view = mount([crashed, page('b', false)]);
+    await waitFor(() => expect(view.getByTestId('browser-pane-pending').textContent).toContain('This page stopped'));
+    expect(view.getByTestId('browser-pane-pending-note').textContent).toBe("This page stopped: the page's process ended (crashed)");
+    expect(view.getAllByTestId('browser-tab')[0].dataset.tabState).toBe('error');
+    expect(view.getAllByTestId('browser-tab')[0].closest('[data-tab-id]')?.getAttribute('title')).toContain('This page stopped');
+    // Presenting it asks for no restore, and the address still takes one.
+    await tick();
+    expect(act).not.toHaveBeenCalled();
+    expect((view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).disabled).toBe(false);
+    expect((view.getByTestId('browser-reload') as HTMLButtonElement).disabled).toBe(false);
+
+    await fireEvent.click(view.getByTestId('browser-pane-crash-reload'));
+    expect(act).toHaveBeenCalledTimes(1);
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'reload', pageId: 'a' });
+    // While it restores the pane says so, with no second Reload.
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, seq: 99, activePageId: 'a', visible: true, pages: [{ ...crashed, restoring: true }, page('b', false)] } as never);
+    await waitFor(() => expect(view.getByTestId('browser-pane-pending-note').textContent).toBe('Restoring…'));
+    expect(view.queryByTestId('browser-pane-crash-reload')).toBeNull();
+  });
+
   it('focuses the address with its text selected for the tab the user opened, once it is ready', async () => {
     let answer!: () => void;
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string }) => {

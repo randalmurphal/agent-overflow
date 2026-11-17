@@ -181,8 +181,11 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	switch strings.ToLower(strings.TrimSpace(action.Kind)) {
 	case "navigate":
 		_, err = a.browser.manager.NavigateCompanion(ctx, access, action.PageID, action.Address)
-	case "back", "forward", "reload":
+	case "back", "forward":
 		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
+	case "reload":
+		// A suspended or crashed tab is restored at its address.
+		err = a.browser.manager.ReloadCompanionPage(ctx, access, action.PageID)
 	case "stop":
 		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
 	case "activate":
@@ -206,6 +209,15 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		// Answers once the tab is gone; a teardown failure after it is a
 		// "teardown" event.
 		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
+	case "close-others":
+		err = a.browser.manager.CloseCompanionTabs(ctx, access, action.PageID, appbrowser.CloseOtherTabs)
+	case "close-right":
+		err = a.browser.manager.CloseCompanionTabs(ctx, access, action.PageID, appbrowser.CloseTabsRight)
+	case "reopen":
+		// The most recently closed tab, at its place; nothing with none.
+		err = a.browser.manager.ReopenClosedTab(ctx, access)
+	case "duplicate":
+		err = a.browser.manager.DuplicateCompanionPage(ctx, access, action.PageID)
 	case "devtools":
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
 	case "jar":

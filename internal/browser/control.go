@@ -82,6 +82,22 @@ func (m *Manager) selectTabWhere(access Access, pick func(tabs []threadTab, acti
 	return pageID, nil
 }
 
+// labelHolderLocked answers the thread's other tab (not pageID) whose label
+// equals label, ignoring case, or "" when none does: a thread's labels are
+// unique, and every label write checks here in the m.mu hold that commits
+// it. An empty label is never held. The caller holds m.mu.
+func (m *Manager) labelHolderLocked(threadID, pageID, label string) string {
+	if label == "" {
+		return ""
+	}
+	for _, tab := range m.threadTabsLocked(threadID) {
+		if tab.id != pageID && strings.EqualFold(tab.info.Label, label) {
+			return tab.id
+		}
+	}
+	return ""
+}
+
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label string) (PageInfo, error) {
 	label = strings.TrimSpace(label)
 	if utf8.RuneCountInString(label) > maxPageLabelRunes {
@@ -95,11 +111,9 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label st
 		return PageInfo{}, err
 	}
 	m.mu.Lock()
-	for _, tab := range m.threadTabsLocked(access.ThreadID) {
-		if tab.id != p.id && label != "" && strings.EqualFold(tab.info.Label, label) {
-			m.mu.Unlock()
-			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, tab.id)
-		}
+	if holder := m.labelHolderLocked(access.ThreadID, p.id, label); holder != "" {
+		m.mu.Unlock()
+		return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
 	}
 	info, _ := p.commitInfo(pageUpdate{Label: &label})
 	m.mu.Unlock()

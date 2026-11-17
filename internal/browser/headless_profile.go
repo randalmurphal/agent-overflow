@@ -125,7 +125,7 @@ func (p *headlessProfile) AttachPage(_ context.Context, handle string, hooks pag
 // browser is still the profile's and still connected. The check and the
 // bind share p.mu with the step that takes a lost browser's pages
 // (watchBrowser or retireLostBrowser), so a page is either bound before
-// that step and reported closed by it, or refused.
+// that step and reported lost by it, or refused.
 func (p *headlessProfile) bindPage(browserCtx context.Context, handle string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -349,10 +349,11 @@ func (p *headlessProfile) adopt(launched *launchedBrowser) error {
 // so two Chromiums never share the user-data directory. It is the relaunch's
 // side of the race with watchBrowser: both wake when the connection is lost,
 // and whichever takes p.mu first takes the lost browser's pages and reports
-// them closed. The other finds nothing to report.
+// them lost (reportLost). The other finds nothing to report.
 //
 // The caller holds launchMu, and the report runs on its own goroutine:
-// PageClosed can reach Dispose, which waits on launchMu.
+// PageCrashed closes the page, which can reach Dispose, which waits on
+// launchMu.
 func (p *headlessProfile) retireLostBrowser() {
 	p.mu.Lock()
 	lost := p.current
@@ -368,7 +369,7 @@ func (p *headlessProfile) retireLostBrowser() {
 		p.engine.logf("browser: profile %s did not stop the browser it lost: %v", p.handle, err)
 	}
 	if len(pages) > 0 {
-		go p.reportClosed(pages)
+		go p.reportLost(pages)
 	}
 }
 
@@ -383,7 +384,7 @@ func (p *headlessProfile) retireLostBrowser() {
 // said the page had gone.
 //
 // Its own goroutine, deliberately not the CDP listener: the teardown blocks
-// until Chromium is reaped, and PageClosed is the Manager's page teardown.
+// until Chromium is reaped, and PageCrashed is the Manager's page teardown.
 func (p *headlessProfile) watchBrowser(browserCtx context.Context) {
 	<-browserCtx.Done()
 
@@ -408,13 +409,19 @@ func (p *headlessProfile) watchBrowser(browserCtx context.Context) {
 	if err := p.tearDown(current, launchCancel); err != nil {
 		p.engine.logf("browser: profile %s did not clean up after its browser died: %v", p.handle, err)
 	}
-	p.reportClosed(pages)
+	p.reportLost(pages)
 }
 
-// reportClosed tells the Manager each of pages has closed, in order.
-func (p *headlessProfile) reportClosed(pages []string) {
+// browserLostReason is the crash reason of a page whose whole browser ended
+// without the profile ending it (a crash, an OOM kill, a kill by hand).
+const browserLostReason = "browser process exited"
+
+// reportLost tells the Manager each of pages crashed with its browser, in
+// order: the page was not closed by anyone, so its tab stays, failed at its
+// address, and a tool call or its Reload restores it in a new browser.
+func (p *headlessProfile) reportLost(pages []string) {
 	for _, handle := range pages {
-		p.engine.events.PageClosed(handle)
+		p.engine.events.PageCrashed(handle, browserLostReason)
 	}
 }
 
@@ -481,7 +488,21 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	if err := onBrowserEvent(browserCtx, target.TargetInfoChanged, logf, targets.infoChanged); err != nil {
 		return err
 	}
+	if err := onBrowserEvent(browserCtx, target.TargetCrashed, logf, p.targetCrashed); err != nil {
+		return err
+	}
 	return onBrowserEvent(browserCtx, target.TargetDestroyed, logf, targets.destroyed)
+}
+
+// targetCrashed reports a page of this profile whose renderer died; the
+// Manager closes the target and keeps its tab as a crashed one.
+func (p *headlessProfile) targetCrashed(event target.EventTargetCrashed) {
+	handle := string(event.TargetID)
+	if owner, ok := p.engine.profileForPage(handle); !ok || owner != p {
+		return
+	}
+	// Off the event reader: the Manager closes the page's driver.
+	go p.engine.events.PageCrashed(handle, cdpCrashReason(event))
 }
 
 // headlessTargets handles the target events of one browser connection.

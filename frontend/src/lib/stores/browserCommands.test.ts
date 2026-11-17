@@ -18,7 +18,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeThread } from '../../test/helpers/chat';
 
 const THREAD = 'thread-browser';
-const COMMANDS = ['browser.newTab', 'browser.focusAddress', 'browser.reload', 'browser.nextTab', 'browser.prevTab'];
+const COMMANDS = ['browser.newTab', 'browser.focusAddress', 'browser.reload', 'browser.nextTab', 'browser.prevTab', 'browser.reopenTab'];
 
 function page(id: string) {
   return { id, url: `https://example.test/${id}`, title: `Page ${id}`, canGoBack: false, canGoForward: false };
@@ -93,6 +93,7 @@ describe('browser commands', () => {
       ['browser.reload', 'f5', 'browserPaneFocused'],
       ['browser.nextTab', 'ctrl+tab', 'browserPaneFocused'],
       ['browser.prevTab', 'ctrl+shift+tab', 'browserPaneFocused'],
+      ['browser.reopenTab', 'mod+shift+t', 'browserPaneFocused'],
     ]);
   });
 
@@ -112,6 +113,19 @@ describe('browser commands', () => {
     focusPane('browser-main');
     runCommand('browser.reload', ctx());
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+  });
+
+  it('reopen asks the backend for the last closed tab, from the chord too', () => {
+    focusPane('browser-main');
+    runCommand('browser.reopenTab', ctx());
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reopen' }));
+    act.mockClear();
+    expect(dispatchKey(key({ key: 'T', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(true);
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reopen' }));
+    focusPane('main');
+    act.mockClear();
+    expect(dispatchKey(key({ key: 'T', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(false);
+    expect(act).not.toHaveBeenCalled();
   });
 
   it('new tab opens a tab the user asked for, which takes the address bar', () => {

@@ -87,6 +87,12 @@ export class CompanionEvent {
     "find"?: FindState | null;
 
     /**
+     * ClosedTabs rides a Kind "state" event: how many tabs the thread can
+     * reopen (companion_tabs.go).
+     */
+    "closedTabs"?: number;
+
+    /**
      * Downloads rides a Kind "state" event: the thread's downloads, newest
      * first (downloads_thread.go). Download rides a Kind "download" event:
      * one download settled other than by the user's cancel, announced once.
@@ -121,8 +127,8 @@ export class CompanionEvent {
         const $$createField2_0 = $$createType1;
         const $$createField13_0 = $$createType3;
         const $$createField17_0 = $$createType5;
-        const $$createField18_0 = $$createType7;
-        const $$createField19_0 = $$createType8;
+        const $$createField19_0 = $$createType7;
+        const $$createField20_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
@@ -134,10 +140,10 @@ export class CompanionEvent {
             $$parsedSource["find"] = $$createField17_0($$parsedSource["find"]);
         }
         if ("downloads" in $$parsedSource) {
-            $$parsedSource["downloads"] = $$createField18_0($$parsedSource["downloads"]);
+            $$parsedSource["downloads"] = $$createField19_0($$parsedSource["downloads"]);
         }
         if ("download" in $$parsedSource) {
-            $$parsedSource["download"] = $$createField19_0($$parsedSource["download"]);
+            $$parsedSource["download"] = $$createField20_0($$parsedSource["download"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
@@ -321,12 +327,19 @@ export class PageInfo {
      * 
      * Creating marks a tab whose engine page is still being created, and
      * Restoring a suspended tab whose reload is in flight. Error is why a
-     * tab the user opened could not be created; the tab stays until it is
-     * closed. None of the three has a page to present.
+     * tab the user opened could not be created, or, on a Suspended tab, why
+     * its page stopped (crash.go); either tab stays until it is closed. None
+     * of these has a page to present.
      */
     "creating"?: boolean;
     "restoring"?: boolean;
     "error"?: string;
+
+    /**
+     * Agent is whether an agent's tool call is acting on the page
+     * (activity.go).
+     */
+    "agent"?: boolean;
 
     /**
      * Loading is whether the page's main frame is loading, as its engine

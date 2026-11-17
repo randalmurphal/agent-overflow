@@ -1,6 +1,8 @@
-import { fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import BrowserTabStrip, { TAB_MAX_WIDTH, TAB_MIN_WIDTH } from './BrowserTabStrip.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 function page(id: string, extra: Record<string, unknown> = {}) {
   return { id, url: `https://example.test/${id}`, title: `Page ${id}`, canGoBack: false, canGoForward: false, ...extra };
@@ -106,6 +108,101 @@ describe('<BrowserTabStrip>', () => {
     await fireEvent.dblClick(view.getByTestId('browser-tab-strip-space'));
     await fireEvent.dblClick(view.getByTestId('browser-tab-strip'));
     expect(onEmptyDoubleClick).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks a tab an agent is using, in its tooltip too, and only that tab', () => {
+    const { view } = mount([page('a', { agent: true }), page('b')]);
+    expect(tabOf(view, 'a').querySelector('[data-testid="browser-tab-agent"]')).not.toBeNull();
+    expect(tabOf(view, 'a').title).toBe('Page a\nhttps://example.test/a\nAn agent is using this page');
+    expect(tabOf(view, 'b').querySelector('[data-testid="browser-tab-agent"]')).toBeNull();
+  });
+
+  it('says a crashed tab stopped, apart from one that could not be opened', () => {
+    const { view } = mount([page('a', { suspended: true, error: 'the page\'s process ended (crashed)' })]);
+    expect(tabOf(view, 'a').title).toBe('This page stopped: the page\'s process ended (crashed)');
+  });
+
+  describe('tab menu', () => {
+    function openMenu(view: { container: HTMLElement }, id: string): void {
+      void fireEvent.contextMenu(tabOf(view, id), { clientX: 40, clientY: 20 });
+    }
+    function item(testId: string): HTMLElement {
+      const el = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+      if (!el) throw new Error(`no menu item ${testId}`);
+      return el;
+    }
+    function disabled(testId: string): boolean {
+      const el = item(testId);
+      return el.getAttribute('aria-disabled') === 'true' || (el as HTMLButtonElement).disabled === true;
+    }
+
+    it('opens on a right-click and runs each tab action on that tab', async () => {
+      const { view, onAct } = mount([page('a'), page('b'), page('c')], 'a');
+      for (const [testId, kind] of [
+        ['browser-tab-menu-reload', 'reload'],
+        ['browser-tab-menu-duplicate', 'duplicate'],
+        ['browser-tab-menu-close', 'close'],
+        ['browser-tab-menu-close-others', 'close-others'],
+        ['browser-tab-menu-close-right', 'close-right'],
+      ] as const) {
+        openMenu(view, 'b');
+        await tick();
+        item(testId).click();
+        await tick();
+        expect(onAct).toHaveBeenLastCalledWith(kind, 'b');
+        expect(document.querySelector('[data-testid="browser-tab-menu-reload"]')).toBeNull();
+      }
+    });
+
+    it('offers only what applies to the tab', async () => {
+      const { view } = mount([page('a'), page('new', { creating: true, url: 'about:blank', title: '' }), page('f', { url: 'file:///repo/a.html' })]);
+      openMenu(view, 'f');
+      await tick();
+      expect(disabled('browser-tab-menu-close-right')).toBe(true);
+      expect(disabled('browser-tab-menu-reopen')).toBe(true);
+      expect(disabled('browser-tab-menu-external')).toBe(true);
+      expect(disabled('browser-tab-menu-copy')).toBe(false);
+      await fireEvent.keyDown(document, { key: 'Escape' });
+      openMenu(view, 'new');
+      await tick();
+      for (const testId of ['browser-tab-menu-reload', 'browser-tab-menu-duplicate', 'browser-tab-menu-copy', 'browser-tab-menu-external']) {
+        expect(disabled(testId), testId).toBe(true);
+      }
+      expect(disabled('browser-tab-menu-close-others')).toBe(false);
+    });
+
+    it('reopens a closed tab when the thread has one', async () => {
+      const onAct = vi.fn(async () => {});
+      const view = render(BrowserTabStrip, { sessionName: '', pages: [page('a')] as never, activePageId: 'a', closedTabs: 2, onAct, onNewTab: vi.fn() });
+      openMenu(view, 'a');
+      await tick();
+      expect(disabled('browser-tab-menu-reopen')).toBe(false);
+      item('browser-tab-menu-reopen').click();
+      expect(onAct).toHaveBeenLastCalledWith('reopen');
+    });
+
+    it('copies the address and opens it in the system browser', async () => {
+      const writeText = vi.fn(async () => {});
+      vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+      const open = vi.fn((_url: string) => null);
+      vi.stubGlobal('open', open);
+      const external = setBindingMock('OpenExternalURL', vi.fn(async (_url: string) => undefined));
+      try {
+        const { view } = mount([page('a')]);
+        openMenu(view, 'a');
+        await tick();
+        item('browser-tab-menu-copy').click();
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://example.test/a'));
+        openMenu(view, 'a');
+        await tick();
+        item('browser-tab-menu-external').click();
+        await waitFor(() => expect(external.mock.calls.length + open.mock.calls.length).toBe(1));
+        const opened = external.mock.calls[0]?.[0] ?? open.mock.calls[0]?.[0];
+        expect(opened).toBe('https://example.test/a');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   it('marks the insertion point while a tab is dragged and moves it on drop', async () => {

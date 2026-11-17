@@ -132,6 +132,12 @@ func (m *Manager) goLife(fn func()) bool {
 // engine is asked, and a failure stays on the tab. A tab closed meanwhile
 // answers errClosedWhileCreating.
 func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*managedPage, error) {
+	return m.createPageAt(ctx, access, user, -1)
+}
+
+// createPageAt is createPage with the new tab placed at index in the
+// thread's tab order from the start; a negative index appends it.
+func (m *Manager) createPageAt(ctx context.Context, access Access, user bool, index int) (*managedPage, error) {
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
 	createCtx, cancel := context.WithCancel(ctx)
@@ -149,6 +155,10 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 		m.pending = make(map[string]*pendingPage)
 	}
 	m.pending[p.id] = pending
+	savedMoved := false
+	if index >= 0 {
+		savedMoved, _ = m.placeTabLocked(owner, p.id, index)
+	}
 	if user {
 		info := m.sessionLocked(owner)
 		info.ActivePageID, info.Visible = p.id, true
@@ -157,6 +167,13 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 	}
 	m.mu.Unlock()
 	m.emitThreadState(owner)
+	if savedMoved {
+		if err := m.persistThreads([]string{owner}); err != nil {
+			// The suspended tabs keep their new places in memory; only a
+			// restart before the next save puts them back.
+			log.Printf("browser: place a new tab of thread %s: save the thread's pages: %v", owner, err)
+		}
+	}
 	if user {
 		// The page shown before is hidden while the new tab is created.
 		m.syncPanePresentation(owner)
@@ -310,21 +327,16 @@ func closingHint(closing int) string {
 // finish with it, answering a failure of that teardown. A suspended page has
 // no engine page to close; closing it forgets its record.
 func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) error {
-	return m.closePage(ctx, access, pageID, true)
-}
-
-// CloseCompanionPage is the user closing a tab: it returns once the tab is
-// gone from the state, and a failure of the teardown after it arrives as a
-// "teardown" event.
-func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID string) error {
-	return m.closePage(ctx, access, pageID, false)
+	return m.closePage(ctx, access, pageID, true, false)
 }
 
 // closePage closes a live, closing, pending or suspended page. A page whose
 // close is already running answers that close, so repeated closes agree.
-func (m *Manager) closePage(ctx context.Context, access Access, pageID string, wait bool) error {
+// byUser is the user's close, which the close that takes the tab out of the
+// tab set records for reopening (recordUserCloseLocked).
+func (m *Manager) closePage(ctx context.Context, access Access, pageID string, wait, byUser bool) error {
 	pageID = strings.TrimSpace(pageID)
-	c, err := m.beginCloseLive(access, pageID)
+	c, err := m.beginCloseLive(access, pageID, byUser)
 	if err == nil {
 		if !wait {
 			return nil
@@ -340,13 +352,13 @@ func (m *Manager) closePage(ctx context.Context, access Access, pageID string, w
 		}
 		return pending.wait(ctx)
 	}
-	return m.forgetRecord(access.ThreadID, pageID)
+	return m.forgetRecord(access.ThreadID, pageID, byUser)
 }
 
 // closeLivePage closes a live page and waits for its teardown. It answers
 // errPageNotFound when the page is not live or closing.
 func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID string) error {
-	c, err := m.beginCloseLive(access, pageID)
+	c, err := m.beginCloseLive(access, pageID, false)
 	if err != nil {
 		return err
 	}
@@ -355,8 +367,9 @@ func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID strin
 
 // beginCloseLive starts the close of the caller's live page, or answers the
 // close already running for it. Finding the page and moving it to closing is
-// one m.mu hold, so concurrent closes agree on one teardown.
-func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, error) {
+// one m.mu hold, so concurrent closes agree on one teardown, and only the
+// one that moved it records a user's close.
+func (m *Manager) beginCloseLive(access Access, pageID string, byUser bool) (*pageClose, error) {
 	m.mu.Lock()
 	if m.suspended[pageID] != nil {
 		// A jar switch's record: the tab is the record, and its page closing
@@ -376,6 +389,9 @@ func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, erro
 			if p.owner != access.ThreadID {
 				m.mu.Unlock()
 				return nil, errPageNotFound
+			}
+			if byUser {
+				m.recordUserCloseLocked(p.owner, pageID)
 			}
 			c := m.markClosingLocked(p, scope)
 			m.mu.Unlock()

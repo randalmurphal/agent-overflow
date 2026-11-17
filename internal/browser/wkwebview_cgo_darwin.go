@@ -304,6 +304,14 @@ func aoWKVPageClosed(pageID C.uint64_t) {
 	}
 }
 
+//export aoWKVPageCrashed
+func aoWKVPageCrashed(pageID C.uint64_t) {
+	if page := wkLookupPage(uint64(pageID)); page != nil {
+		// Off the main thread: the Manager closes the view through wkDo.
+		go page.engine.events.PageCrashed(page.handle, "web content process terminated")
+	}
+}
+
 //export aoWKVPopup
 func aoWKVPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) {
 	target := wkTakeString(uri)

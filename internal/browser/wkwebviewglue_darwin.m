@@ -21,6 +21,7 @@ extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWKVDocumentCommitted(uint64_t page_id);
 extern void aoWKVPageLoading(uint64_t page_id, int loading);
 extern void aoWKVPageClosed(uint64_t page_id);
+extern void aoWKVPageCrashed(uint64_t page_id);
 extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
 extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t download_id,
@@ -859,6 +860,12 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
 
 - (void)webViewDidClose:(WKWebView *)webView {
   aoWKVPageClosed(ao_view_page_id(webView));
+}
+
+// WKNavigationDelegate.h: the view's web content process ended while the
+// view lives on, showing nothing.
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+  aoWKVPageCrashed(ao_view_page_id(webView));
 }
 
 // ---- dialogs ----

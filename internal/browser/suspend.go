@@ -38,6 +38,12 @@ type suspendedPage struct {
 	// restoring is the restore in flight, which concurrent touches wait for
 	// rather than loading the page twice.
 	restoring *restoreCall
+	// failure is why the page stopped when its process ended (crash.go),
+	// "" for a page suspended on purpose. Such a tab is restored only when
+	// asked to (ReloadCompanionPage) or used by a tool, never by selecting
+	// it. It is not saved: after a restart the tab is an ordinary suspended
+	// one.
+	failure string
 }
 
 func (r *suspendedPage) info() PageInfo {
@@ -119,6 +125,7 @@ func (m *Manager) listTabsLocked(threadID string, companion bool) []threadTab {
 				info := p.cachedInfo()
 				if companion {
 					info.Loading, info.Favicon = p.loadState()
+					info.Agent = p.agentActive()
 				}
 				tabs = append(tabs, threadTab{
 					id: p.id, info: info, order: p.tabOrder.Load(), created: p.createdAt,
@@ -130,7 +137,9 @@ func (m *Manager) listTabsLocked(threadID string, companion bool) []threadTab {
 	for _, rec := range m.suspended {
 		if rec.owner == threadID {
 			info := rec.info()
-			info.Restoring = companion && rec.restoring != nil
+			if companion {
+				info.Restoring, info.Error = rec.restoring != nil, rec.failure
+			}
 			tabs = append(tabs, threadTab{
 				id: rec.id, info: info, order: rec.tabOrder, created: rec.createdAt,
 				lastUse: rec.lastUse, rec: rec,
@@ -530,11 +539,14 @@ func (m *Manager) saveOpenPages() error {
 }
 
 // forgetRecord closes one suspended page: its record and its saved copy go.
-func (m *Manager) forgetRecord(threadID, pageID string) error {
+func (m *Manager) forgetRecord(threadID, pageID string, byUser bool) error {
 	m.mu.Lock()
 	rec := m.suspended[strings.TrimSpace(pageID)]
 	found := rec != nil && rec.owner == threadID
 	if found {
+		if byUser {
+			m.recordUserCloseLocked(threadID, rec.id)
+		}
 		m.dropRecordLocked(rec)
 	}
 	m.mu.Unlock()

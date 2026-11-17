@@ -64,9 +64,10 @@ func (m *Manager) SetJar(access Access, kind string) error {
 	}
 	info.Jar, info.jarGen, info.privateJar = kind, info.jarGen+1, ""
 	info.UpdatedAt = time.Now()
-	// The recent addresses were the old jar's browsing; an open still
-	// running in it records nothing (recordRecentAddress).
-	m.forgetRecentLocked(threadID)
+	// The recent addresses and closed tabs were the old jar's browsing; an
+	// open still running in it records nothing (recordRecentAddress). The
+	// push below carries both.
+	m.forgetBrowsingLocked(threadID)
 	var closes []switchClose
 	for _, tab := range m.threadTabsLocked(threadID) {
 		old := tab.live

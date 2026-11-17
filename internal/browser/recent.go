@@ -17,8 +17,9 @@ import (
 // offer. Nothing is kept for a private jar. A jar switch, closing every page
 // (Clear site data, turning the browser off, changing whether site data
 // persists: forgetAllPages) and closing the thread (delete, archive) forget
-// the list, and every forget goes through forgetRecentLocked or
-// forgetAllRecentLocked, which advance the Manager's forget generation.
+// the list, and every forget goes through forgetBrowsingLocked or
+// forgetAllBrowsingLocked, which forget the closed tabs with it and advance
+// the Manager's forget generation.
 //
 // The generation rides each thread's state push (CompanionEvent.RecentGen):
 // a client that cached a list drops it when the number moves, which a round
@@ -97,22 +98,33 @@ func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
 	m.recent[p.owner] = next
 }
 
-// forgetRecentLocked forgets threadID's recent addresses and advances the
-// forget generation. The caller holds m.mu.
-func (m *Manager) forgetRecentLocked(threadID string) {
+// forgetBrowsingLocked forgets threadID's browsing history, its recent
+// addresses and its closed tabs (companion_tabs.go), and advances the forget
+// generation. It answers whether closed tabs were forgotten, which the
+// thread's state shows. The caller holds m.mu.
+func (m *Manager) forgetBrowsingLocked(threadID string) bool {
+	_, hadClosed := m.closedTabs[threadID]
 	delete(m.recent, threadID)
+	delete(m.closedTabs, threadID)
 	m.recentGen++
+	return hadClosed
 }
 
-// forgetAllRecentLocked forgets every thread's recent addresses and advances
-// the forget generation, answering the threads that had a list. The caller
-// holds m.mu.
-func (m *Manager) forgetAllRecentLocked() []string {
-	threads := make([]string, 0, len(m.recent))
+// forgetAllBrowsingLocked forgets every thread's browsing history and
+// advances the forget generation, answering the threads that had any. The
+// caller holds m.mu.
+func (m *Manager) forgetAllBrowsingLocked() []string {
+	threads := make([]string, 0, len(m.recent)+len(m.closedTabs))
 	for threadID := range m.recent {
 		threads = append(threads, threadID)
 	}
+	for threadID := range m.closedTabs {
+		if m.recent[threadID] == nil {
+			threads = append(threads, threadID)
+		}
+	}
 	m.recent = nil
+	clear(m.closedTabs)
 	m.recentGen++
 	return threads
 }

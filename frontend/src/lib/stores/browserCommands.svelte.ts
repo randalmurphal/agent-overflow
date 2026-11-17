@@ -1,5 +1,5 @@
 // The browser pane's chrome commands: new tab, focus the address, reload,
-// next and previous tab. Each acts on the focused browser pane's thread and
+// next and previous tab, reopen the last closed tab. Each acts on the focused browser pane's thread and
 // is live only while that pane is focused (`browserPaneFocused`), so the
 // chords keep their meaning elsewhere. A chord pressed in the native page
 // arrives as a replay after the pane was focused (browserCompanion.svelte.ts
@@ -80,5 +80,18 @@ export function registerBrowserCommands(): void {
     when: WHEN,
     editableReachable: true,
     run: () => stepTab(-1),
+  });
+
+  registerCommand({
+    id: 'browser.reopenTab',
+    label: 'Browser: Reopen Closed Tab',
+    description: 'Reopen the tab most recently closed in the focused browser pane, where it was.',
+    icon: '↺',
+    when: WHEN,
+    editableReachable: true,
+    run: () => {
+      const focused = focusedBrowser();
+      if (focused) void browserCompanionAct(focused.threadId, { kind: 'reopen' });
+    },
   });
 }

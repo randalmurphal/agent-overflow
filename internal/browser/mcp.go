@@ -56,6 +56,9 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
+	// The tabs of the pages the call acts on show it while it runs.
+	ctx, endCall := withAgentCall(ctx)
+	defer endCall()
 	var result any
 	// note is a qualifier a tool's result carries beside its JSON payload, such
 	// as an engine capability caveat; never instead of it, so the payload's

@@ -285,6 +285,14 @@ func aoWebKitPageClosed(pageID C.uint64_t) {
 	}
 }
 
+//export aoWebKitPageCrashed
+func aoWebKitPageCrashed(pageID C.uint64_t, reason *C.char) {
+	if page := webkitLookupPage(uint64(pageID)); page != nil {
+		// Off the GTK thread: the Manager closes the view through gtkDo.
+		go page.engine.events.PageCrashed(page.handle, C.GoString(reason))
+	}
+}
+
 //export aoWebKitPopup
 func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) {
 	target := webkitTakeString(uri)
@@ -669,6 +677,12 @@ func (p *webkitPage) offerEscapes(offers []escapeOffer) ([]bool, error) {
 		stopped[i] = h == 1
 	}
 	return stopped, nil
+}
+
+// terminateWebProcess ends the page's web process, as a crash would
+// (ao_wk_view_terminate_web_process). For the native smoke.
+func (p *webkitPage) terminateWebProcess() error {
+	return p.liveView().do(func(view unsafe.Pointer) { C.ao_wk_view_terminate_web_process(view) })
 }
 
 // onKeyPress has every KeyChord question of the page's engine reported to

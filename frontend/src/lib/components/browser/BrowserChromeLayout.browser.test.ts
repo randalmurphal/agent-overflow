@@ -208,6 +208,18 @@ describe('browser tab strip layout', () => {
       expect(host.querySelector('[data-tab-id="p3"] [data-icon="spinner"]')).not.toBeNull();
       expect(measure).not.toHaveBeenCalled();
 
+      // The agent marker and a crash flip on a tab.
+      const marked = pages(8).map((page, i) =>
+        i === 2 ? { ...page, agent: true } : i === 4 ? { ...page, suspended: true, error: 'crashed' } : page,
+      );
+      props.pages = marked as never;
+      flushSync();
+      expect(host.querySelector('[data-tab-id="p2"] [data-testid="browser-tab-agent"]')).not.toBeNull();
+      props.pages = pages(8) as never;
+      flushSync();
+      expect(host.querySelector('[data-testid="browser-tab-agent"]')).toBeNull();
+      expect(measure).not.toHaveBeenCalled();
+
       props.pages = pages(9) as never;
       flushSync();
       expect(measure).toHaveBeenCalled();

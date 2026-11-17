@@ -614,6 +614,12 @@ func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
 			manager.mu.Unlock()
 			manager.engine.(*fakeEngine).events.PageClosed(p.driver.Handle())
 		}, false},
+		{"page crashed", func(t *testing.T, manager *Manager, _ Access, page PageInfo) {
+			manager.mu.Lock()
+			p, _ := manager.livePageLocked(page.ID)
+			manager.mu.Unlock()
+			manager.engine.(*fakeEngine).events.PageCrashed(p.driver.Handle(), "killed")
+		}, false},
 		{"close the page", func(t *testing.T, manager *Manager, access Access, page PageInfo) {
 			if err := manager.closeLivePage(t.Context(), access, page.ID); err != nil {
 				t.Fatal(err)

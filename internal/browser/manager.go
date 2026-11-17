@@ -150,6 +150,12 @@ type Manager struct {
 	// apply lays it out first (applyViewportLocked) asks for the pass that
 	// shows it. Guarded by mu.
 	awaitingLayout map[string]string
+	// closedTabs is, per thread, the tabs the user closed that can be
+	// reopened, most recent last (companion_tabs.go). Guarded by mu.
+	closedTabs map[string][]closedTab
+	// agentLinger is how long a page keeps showing agent activity after the
+	// last tool call on it ends (activity.go); a test shortens it.
+	agentLinger    time.Duration
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -177,6 +183,10 @@ type Manager struct {
 	// infoRead is a test seam: called between a read of a page's info (or
 	// history state) and its commit. Production leaves it nil.
 	infoRead func(p *managedPage)
+	// reopenRefused is a test seam: called between a reopen's refused open
+	// and its putting the closed tab back (ReopenClosedTab). Production
+	// leaves it nil.
+	reopenRefused func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -339,6 +349,8 @@ type managedPage struct {
 	// viewport until it is about to be shown or operated on.
 	viewport       atomic.Uint64
 	viewportFailed atomic.Uint64
+	// activity is the agent tool calls acting on the page (activity.go).
+	activity pageActivity
 }
 
 // pageIncarnations numbers every page the process creates or restores.
@@ -378,12 +390,15 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:   findActionTimeout,
+		closedTabs:    make(map[string][]closedTab),
+		agentLinger:   agentActivityLinger,
 		recentGen:     uint64(time.Now().UnixNano()),
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
 		PopupOpened:       m.adoptPopup,
 		PageClosed:        m.removeClosedPage,
+		PageCrashed:       m.pageCrashed,
 		PageInfoChanged:   m.updatePageInfo,
 		DownloadStarted:   m.downloadStarted,
 		DownloadProgress:  m.downloadProgress,
@@ -461,12 +476,13 @@ func (m *Manager) Reconfigure(config Config) error {
 
 // forgetAllPages closes every page, suspended ones and their saved copies
 // included, stops the engine, and then forgets every thread's recent
-// addresses: an open still running then has no live page to record on
-// (recordRecentAddress). keepJars keeps the threads' jar settings.
+// addresses and closed tabs: an open still running then has no live page to
+// record on (recordRecentAddress), and a close the user made meanwhile is
+// forgotten too. keepJars keeps the threads' jar settings.
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
 	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
 	m.mu.Lock()
-	threads := m.forgetAllRecentLocked()
+	threads := m.forgetAllBrowsingLocked()
 	m.mu.Unlock()
 	// The closes pushed state before the forget; these carry its generation.
 	for _, threadID := range threads {
@@ -604,9 +620,13 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 		m.sessions[threadID] = info
 	}
 	// Forgotten here for a close that stops early, and again with the
-	// session below, after any open the closing pages were running.
-	m.forgetRecentLocked(threadID)
+	// session below, after any open or user close the closing pages were
+	// running.
+	hadClosed := m.forgetBrowsingLocked(threadID)
 	m.mu.Unlock()
+	if hadClosed {
+		m.emitThreadState(threadID)
+	}
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
@@ -625,7 +645,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
-	m.forgetRecentLocked(threadID)
+	m.forgetBrowsingLocked(threadID)
 	m.mu.Unlock()
 	m.forgetThreadDownloads(threadID)
 	return errors.Join(errs...)
@@ -641,7 +661,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // user-data folder, WebKit's own macOS data-store directory — implements
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
-// The recent addresses go with the pages (forgetAllPages).
+// The recent addresses and closed tabs go with the pages (forgetAllPages).
 func (m *Manager) ClearSiteData(ctx context.Context) error {
 	if err := m.forgetAllPages(ctx, true); err != nil {
 		return err

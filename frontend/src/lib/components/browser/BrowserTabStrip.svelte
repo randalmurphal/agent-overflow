@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import Bot from '@lucide/svelte/icons/bot';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import Globe from '@lucide/svelte/icons/globe';
   import Plus from '@lucide/svelte/icons/plus';
@@ -13,6 +14,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
+  import BrowserTabMenu from './BrowserTabMenu.svelte';
 
   // The browser's tab strip, drawn the way a desktop browser draws one:
   // tabs share the strip evenly between TAB_MAX_WIDTH and TAB_MIN_WIDTH, and
@@ -26,6 +28,7 @@
     sessionName,
     pages,
     activePageId,
+    closedTabs = 0,
     onAct,
     onNewTab,
     onEmptyDoubleClick,
@@ -33,6 +36,8 @@
     sessionName: string;
     pages: BrowserPageInfo[];
     activePageId: string;
+    /** How many closed tabs the thread can reopen. */
+    closedTabs?: number;
     /** Runs a chrome action; an omitted pageId means the active page. */
     onAct: (kind: string, pageId?: string, address?: string, index?: number) => Promise<void>;
     /** Opens a new tab the user asked for. */
@@ -58,11 +63,26 @@
   }
 
   function tabTooltip(page: BrowserPageInfo, state: string): string {
-    if (page.error) return `Could not open this tab: ${page.error}`;
+    // A suspended tab with an error is a page that crashed (it reloads); any
+    // other error is a tab that could not be opened.
+    if (page.error) return page.suspended ? `This page stopped: ${page.error}` : `Could not open this tab: ${page.error}`;
     const title = tabTitle(page, state);
     const url = page.url && page.url !== 'about:blank' ? page.url : '';
     const name = page.label && page.title ? `${page.label} — ${page.title}` : title;
-    return url && url !== name ? `${name}\n${url}` : name;
+    const text = url && url !== name ? `${name}\n${url}` : name;
+    return page.agent ? `${text}\nAn agent is using this page` : text;
+  }
+
+  // ─── The tab menu ───────────────────────────────────────────────────────
+  // Held by page id, so a tab closed while the menu is open closes the menu
+  // rather than pointing it at another tab.
+  let menu: { x: number; y: number; pageId: string } | null = $state(null);
+  let menuIndex = $derived(menu ? pages.findIndex((page) => page.id === menu?.pageId) : -1);
+
+  function openMenu(event: MouseEvent, pageId: string): void {
+    event.preventDefault();
+    event.stopPropagation();
+    menu = { x: event.clientX, y: event.clientY, pageId };
   }
 
   // ─── Keeping the active tab in view ────────────────────────────────────
@@ -232,6 +252,7 @@
           event.preventDefault();
           void onAct('close', page.id);
         }}
+        oncontextmenu={(event) => openMenu(event, page.id)}
       >
         {#if !active}
           <!-- Hover fill, inset from the strip's edges like a browser's. -->
@@ -271,6 +292,9 @@
             {/if}
           </span>
           <span class="min-w-0 flex-1 truncate @max-[5.5rem]:hidden" data-testid="browser-tab-title">{tabTitle(page, status)}</span>
+          {#if page.agent}
+            <span class="flex shrink-0 animate-pulse text-accent" aria-label="An agent is using this page" data-testid="browser-tab-agent"><Icon icon={Bot} size={12} /></span>
+          {/if}
         </button>
         <button
           type="button"
@@ -297,3 +321,16 @@
   <!-- The strip's empty space: drop target for the end slot, double-click target. -->
   <div class="h-full min-w-2 flex-1" data-testid="browser-tab-strip-space"></div>
 </div>
+
+{#if menu && menuIndex >= 0}
+  <BrowserTabMenu
+    x={menu.x}
+    y={menu.y}
+    page={pages[menuIndex]}
+    index={menuIndex}
+    tabCount={pages.length}
+    {closedTabs}
+    {onAct}
+    onDismiss={() => (menu = null)}
+  />
+{/if}

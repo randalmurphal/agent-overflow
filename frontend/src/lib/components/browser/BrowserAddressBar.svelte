@@ -81,9 +81,12 @@
   let addressFocused = $state(false);
   let input: HTMLInputElement | undefined = $state(undefined);
   let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
-  // A tab with no page to navigate yet (being created, or failed) takes no
-  // address.
-  let addressDisabled = $derived(!activePage || activePage.creating === true || !!activePage.error);
+  // A tab with no page to navigate yet (being created, or failed to open)
+  // takes no address. A crashed tab (suspended, with its error) does: it
+  // reloads or goes elsewhere.
+  let addressDisabled = $derived(
+    !activePage || activePage.creating === true || (!!activePage.error && !activePage.suspended),
+  );
   let loading = $derived(activePage?.loading === true);
 
   /** The page's address as the field shows it: a blank page reads as empty. */

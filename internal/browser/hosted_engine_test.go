@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -323,7 +324,8 @@ func TestHostedEngineInterruptReleasesAPendingCreate(t *testing.T) {
 }
 
 func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
-	for _, kind := range []webview2host.ReportKind{webview2host.ReportClosed, webview2host.ReportProcessFailed} {
+	// A process failure is a crash, not a close (crash_test.go).
+	for _, kind := range []webview2host.ReportKind{webview2host.ReportClosed} {
 		t.Run(string(kind), func(t *testing.T) {
 			var closed []string
 			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
@@ -897,15 +899,17 @@ func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T)
 }
 
 // The browser connection's events reach the Manager only through the
-// subscriptions the dial makes: a page's title and its target's destruction
-// arrive on that connection and nowhere else.
+// subscriptions the dial makes: a page's title, its renderer's crash and its
+// target's destruction arrive on that connection and nowhere else.
 func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	endpoint := startFakeCDPEndpoint(t, nil, nil)
 	infos := make(chan string, 1)
 	closed := make(chan string, 1)
+	crashed := make(chan string, 1)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
 		PageInfoChanged: func(handle, url, title string, _ uint64) { infos <- handle + " " + url + " " + title },
 		PageClosed:      func(handle string) { closed <- handle },
+		PageCrashed:     func(handle, reason string) { crashed <- handle + " " + reason },
 	})
 	engine.attachTimeout = 5 * time.Second
 	engine.bind("page1", "TARGET-1")
@@ -926,6 +930,15 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	case <-time.After(hostedTestDeadline):
 		t.Fatal("targetInfoChanged on the browser connection never reached the Manager")
 	}
+	endpoint.send(map[string]any{"method": "Target.targetCrashed", "params": map[string]any{"targetId": "TARGET-1", "status": "crashed", "errorCode": 11}})
+	select {
+	case got := <-crashed:
+		if got != "page1 crashed, code 11" {
+			t.Fatalf("PageCrashed saw %q", got)
+		}
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("targetCrashed on the browser connection never reached the Manager")
+	}
 	endpoint.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "TARGET-1"}})
 	select {
 	case got := <-closed:
@@ -934,6 +947,51 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 		}
 	case <-time.After(hostedTestDeadline):
 		t.Fatal("targetDestroyed on the browser connection never retired the page")
+	}
+}
+
+// A browser connection that ends on its own takes every page's session with
+// it: each bound page is reported crashed, none closed, and the next use
+// attaches again. A connection Stop ends reports nothing.
+func TestHostedEngineReportsItsPagesCrashedWhenTheConnectionIsLost(t *testing.T) {
+	endpoint := startFakeCDPEndpoint(t, nil, nil)
+	crashed := make(chan string, 4)
+	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
+		PageClosed:  func(handle string) { t.Errorf("page %s was reported closed", handle) },
+		PageCrashed: func(handle, reason string) { crashed <- handle + ": " + reason },
+	})
+	engine.attachTimeout = 5 * time.Second
+	engine.bind("page1", "TARGET-1")
+	engine.bind("page2", "TARGET-2")
+	if _, err := engine.ensureBrowser(); err != nil {
+		t.Fatalf("ensureBrowser: %v", err)
+	}
+	endpoint.hangUp()
+	var got []string
+	for range 2 {
+		select {
+		case report := <-crashed:
+			got = append(got, report)
+		case <-time.After(hostedTestDeadline):
+			t.Fatalf("the lost connection's pages were reported %v, want both", got)
+		}
+	}
+	slices.Sort(got)
+	if want := []string{"page1: " + connectionLostReason, "page2: " + connectionLostReason}; !slices.Equal(got, want) {
+		t.Fatalf("PageCrashed saw %v, want %v", got, want)
+	}
+	if _, ok := engine.browser(); ok {
+		t.Fatal("the engine still holds the lost connection")
+	}
+
+	if _, err := engine.ensureBrowser(); err != nil {
+		t.Fatalf("attach again after the loss: %v", err)
+	}
+	engine.Stop()
+	select {
+	case report := <-crashed:
+		t.Fatalf("Stop reported %s", report)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

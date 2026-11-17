@@ -17,6 +17,7 @@ extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWebKitDocumentCommitted(uint64_t page_id);
 extern void aoWebKitPageLoading(uint64_t page_id, int loading);
 extern void aoWebKitPageClosed(uint64_t page_id);
+extern void aoWebKitPageCrashed(uint64_t page_id, const char *reason);
 extern void aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
                           void *view, char *uri);
 extern int aoWebKitPagePresented(uint64_t page_id);
@@ -686,6 +687,27 @@ static void ao_view_closed(WebKitWebView *view, gpointer data) {
   aoWebKitPageClosed(ao_view_page_id(view));
 }
 
+// WebKitWebView::web-process-terminated (WebKit-6.0.gir): the view's web
+// process ended while the view lives on, showing nothing. AO never calls
+// webkit_web_view_terminate_web_process, so every reason is reported.
+static void ao_web_process_terminated(WebKitWebView *view, WebKitWebProcessTerminationReason reason,
+                                      gpointer data) {
+  (void)data;
+  const char *name = "unknown";
+  switch (reason) {
+  case WEBKIT_WEB_PROCESS_CRASHED:
+    name = "crashed";
+    break;
+  case WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT:
+    name = "exceeded memory limit";
+    break;
+  case WEBKIT_WEB_PROCESS_TERMINATED_BY_API:
+    name = "terminated";
+    break;
+  }
+  aoWebKitPageCrashed(ao_view_page_id(view), name);
+}
+
 // ao_script_dialog answers JavaScript dialogs the way the CDP driver does:
 // dismissed, except beforeunload which is accepted so a requested navigation
 // can continue. A PRESENTED page gets the engine's own dialog instead, because
@@ -899,6 +921,10 @@ int ao_wk_view_offer_ctrl_key(void *view, unsigned int unicode) {
   return handled ? 1 : 0;
 }
 
+void ao_wk_view_terminate_web_process(void *view) {
+  webkit_web_view_terminate_web_process(WEBKIT_WEB_VIEW(view));
+}
+
 int ao_wk_view_offer_escape(void *view, int ctrl, int release) {
   GtkEventController *keys = g_object_get_data(G_OBJECT(view), "ao-key-controller");
   if (keys == NULL) {
@@ -1037,6 +1063,7 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "load-changed", G_CALLBACK(ao_load_changed), NULL);
   g_signal_connect(view, "notify::is-loading", G_CALLBACK(ao_notify_loading), NULL);
   g_signal_connect(view, "close", G_CALLBACK(ao_view_closed), NULL);
+  g_signal_connect(view, "web-process-terminated", G_CALLBACK(ao_web_process_terminated), NULL);
   g_signal_connect(view, "script-dialog", G_CALLBACK(ao_script_dialog), NULL);
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);
   g_signal_connect(view, "context-menu", G_CALLBACK(ao_context_menu), NULL);

@@ -431,6 +431,12 @@ const (
 type engineEvents struct {
 	PopupOpened func(enginePopup)
 	PageClosed  func(handle string)
+	// PageCrashed reports that the page's renderer or web content process
+	// ended while the page was open; reason is the engine's name for how.
+	// The engine page still exists and the Manager closes it (crash.go).
+	// Never called on a UI thread (it takes Manager locks and closes the
+	// page's driver).
+	PageCrashed func(handle, reason string)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
 	// native engine reports through the page's own hook (pageHooks.Info).
