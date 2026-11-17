@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"slices"
 )
 
 type ownQuery interface {
@@ -68,12 +67,12 @@ func writeOwnDevice(tx *sql.Tx, m owndevices.Member) error {
 
 // MergeOwnDevices commits membership and revokes obsolete group sessions together.
 // Returned IDs must be invalidated in the identity cache after the transaction.
-// A member the merge removes loses, in the same transaction, the spawn links
-// owned by the devices its sessions were opened under, and a merge that
-// withdraws this computer from the group releases the links of the devices
-// of every personal session it revokes: a worker is owned only while its
-// owner can reach it. released names the threads they named
-// (spawn_links.go).
+// In the same transaction it releases the spawn links owned by the devices
+// of the sessions opened for the members it removes and, when it withdraws
+// this computer from the group, of every personal session it revokes, once
+// no live session of the device remains: a worker is owned only while its
+// owner's device can reach this computer. released names the threads they
+// named (spawn_links.go).
 func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (changed bool, ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
@@ -92,9 +91,6 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 		if e = writeOwnDevice(tx, m); e != nil {
 			return false, nil, nil, e
 		}
-	}
-	if released, e = releaseRemovedMembersLinksTx(tx, old, next); e != nil {
-		return false, nil, nil, e
 	}
 	// Withdrawing this serving host withdraws every personal inbound grant.
 	// Ordinary shares are not group-derived and remain independent.
@@ -139,10 +135,12 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 	if e != nil {
 		return false, nil, nil, e
 	}
-	if hostingRemoved && len(ids) > 0 {
-		if released, e = releaseRevokedSessionsLinksTx(tx, ids, released); e != nil {
-			return false, nil, nil, e
-		}
+	withdrawn := []string{}
+	if hostingRemoved {
+		withdrawn = ids
+	}
+	if released, e = releaseUnreachableOwnersLinksTx(tx, newlyRemovedKeys(old, next), withdrawn); e != nil {
+		return false, nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
 		return false, nil, nil, e
@@ -150,32 +148,37 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 	return true, ids, released, nil
 }
 
-// releaseRevokedSessionsLinksTx releases the spawn links owned by the devices
-// the sessions ids were opened under, and returns them with the threads
-// already released, sorted.
-func releaseRevokedSessionsLinksTx(tx *sql.Tx, ids, released []string) ([]string, error) {
-	encoded, err := json.Marshal(ids)
+// unreachableOwnerSQL selects, over thread_request_receipts, the links owned
+// by the devices of the sessions opened for the members whose keys the first
+// argument lists (own_device_sessions) or named by the second, once no live
+// session of the device remains here.
+const unreachableOwnerSQL = `owner_device_id IN (SELECT s.device_id FROM sessions s
+	  WHERE s.id IN (SELECT session_id FROM own_device_sessions
+	                  WHERE key_thumbprint IN (SELECT value FROM json_each(?)))
+	     OR s.id IN (SELECT value FROM json_each(?)))
+	AND NOT EXISTS (SELECT 1 FROM sessions live
+	  WHERE live.device_id = thread_request_receipts.owner_device_id AND live.revoked_at IS NULL)`
+
+// releaseUnreachableOwnersLinksTx releases, after the merge's revocations,
+// the links of the devices of the removed members' sessions and of the
+// withdrawn sessions that no live session still pairs with this computer.
+func releaseUnreachableOwnersLinksTx(tx *sql.Tx, removedKeys, withdrawn []string) ([]string, error) {
+	if len(removedKeys) == 0 && len(withdrawn) == 0 {
+		return nil, nil
+	}
+	keys, err := json.Marshal(removedKeys)
 	if err != nil {
 		return nil, err
 	}
-	more, err := releaseSpawnLinksTx(tx, `owner_device_id IN (SELECT device_id FROM sessions
-		  WHERE id IN (SELECT value FROM json_each(?)))`, string(encoded))
+	sessions, err := json.Marshal(withdrawn)
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range more {
-		if !slices.Contains(released, id) {
-			released = append(released, id)
-		}
-	}
-	slices.Sort(released)
-	return released, nil
+	return releaseSpawnLinksTx(tx, unreachableOwnerSQL, string(keys), string(sessions))
 }
 
-// releaseRemovedMembersLinksTx releases the spawn links owned by the devices
-// whose sessions the members next removes, and old did not, were opened
-// under (own_device_sessions).
-func releaseRemovedMembersLinksTx(tx *sql.Tx, old, next []owndevices.Member) ([]string, error) {
+// newlyRemovedKeys lists the members next removes and old did not.
+func newlyRemovedKeys(old, next []owndevices.Member) []string {
 	wasRemoved := make(map[string]bool, len(old))
 	for _, m := range old {
 		wasRemoved[m.KeyThumbprint] = m.Removed
@@ -186,15 +189,7 @@ func releaseRemovedMembersLinksTx(tx *sql.Tx, old, next []owndevices.Member) ([]
 			removed = append(removed, m.KeyThumbprint)
 		}
 	}
-	if len(removed) == 0 {
-		return nil, nil
-	}
-	keys, err := json.Marshal(removed)
-	if err != nil {
-		return nil, err
-	}
-	return releaseSpawnLinksTx(tx, `owner_device_id IN (SELECT s.device_id FROM own_device_sessions o
-		  JOIN sessions s ON s.id = o.session_id WHERE o.key_thumbprint IN (SELECT value FROM json_each(?)))`, string(keys))
+	return removed
 }
 
 // RegisterOwnDevice changes metadata only, never membership or removal state.

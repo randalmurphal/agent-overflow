@@ -344,6 +344,69 @@ func TestANewGenerationKeepsTheMembersLinks(t *testing.T) {
 	}
 }
 
+// A merge that revokes a device's personal session releases the device's
+// links only when no live session of the device remains here: a device
+// still paired with this computer outside the group can still reach it.
+// Both the merge that withdraws this computer and the one that removes the
+// member read the sessions left after their own revocation.
+func TestAMergeKeepsTheLinksOfADeviceStillPairedHere(t *testing.T) {
+	const backendID = "93fd7522-831e-4401-8aa0-6dca4e65bcb0"
+	for _, merge := range []string{"leave", "remove"} {
+		for _, ordinary := range []string{"none", "revoked", "live"} {
+			t.Run(merge+"/"+ordinary, func(t *testing.T) {
+				s, link := approvedOwnPair(t)
+				if e := s.AdmitOwnPairing(link); e != nil {
+					t.Fatal(e)
+				}
+				session, err := s.GetSession(link.SessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ordinary != "none" {
+					extra := newTestSession("ordinary-session", User{ID: session.UserID}, Device{ID: session.DeviceID}, SigningKey{ID: session.SigningKeyID}, 9000)
+					if err := s.CreateSession(extra); err != nil {
+						t.Fatal(err)
+					}
+					if ordinary == "revoked" {
+						if moved, err := s.RevokeSession(extra.ID, 1500); err != nil || !moved {
+							t.Fatalf("revoke the ordinary session: %v, %v", moved, err)
+						}
+					}
+				}
+				mustCreateThread(t, s, "member-worker")
+				acceptLink(t, s, "tok-member", session.DeviceID, "member-worker", 1000)
+
+				var in owndevices.Member
+				if merge == "leave" {
+					key := make([]byte, 32)
+					key[0] = 2
+					in = owndevices.Member{KeyThumbprint: base64.RawURLEncoding.EncodeToString(key), BackendID: backendID, Generation: 1}
+					if _, _, _, err := s.MergeOwnDevices([]owndevices.Member{in}, 2100, backendID); err != nil {
+						t.Fatal(err)
+					}
+				} else if in, err = s.OwnDeviceForSession(link.SessionID); err != nil {
+					t.Fatal(err)
+				}
+				in.Removed = true
+				changed, revoked, released, err := s.MergeOwnDevices([]owndevices.Member{in}, 2200, backendID)
+				if err != nil || !changed || !slices.Equal(revoked, []string{link.SessionID}) {
+					t.Fatalf("merge = changed %v revoked %v, %v; want the personal session revoked", changed, revoked, err)
+				}
+				want, placement := []string{"member-worker"}, PlacementStandalone
+				if ordinary == "live" {
+					want, placement = nil, PlacementOwned
+				}
+				if !slices.Equal(released, want) {
+					t.Fatalf("released %v, want %v", released, want)
+				}
+				if got, _ := placementOf(t, s, "member-worker"); got != placement {
+					t.Fatalf("member-worker = %s, want %s", got, placement)
+				}
+			})
+		}
+	}
+}
+
 // A revocation or a removal that cannot release its device's links changes
 // nothing: the release is part of its transaction.
 func TestAnAccessLossThatCannotReleaseItsLinksChangesNothing(t *testing.T) {
