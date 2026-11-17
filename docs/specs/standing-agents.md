@@ -744,7 +744,11 @@ Ruling 36, as built:
   The sidebar's archive says so in a toast that archives them again.
   The archive's flip marks it unfinished in the same transaction, the
   walk's end clears the mark, and each boot finishes the archives still
-  marked through the same path (`startPendingArchives`): what the thread
+  marked through the same path (`startPendingArchives`). A walk that
+  could not read the workers it goes on to archive keeps the mark, and
+  its result says the thread's sub-threads could not be read
+  (`cleanupError`); a paired computer's archive answers `unfinished`,
+  naming the worker, so it stays owed. At the boot, what the thread
   still has of the work an archive stops is stopped, a remote command's
   cancel owed when its computer does not take it, and its workers are
   archived. A thread reopened before the resume reaches it is left alone.
@@ -870,7 +874,10 @@ Ruling 36, as built:
   no worker can appear for it: an operation for a spawn it has no
   receipt for yet writes the receipt settled, cancelled under that
   sequence (`FenceSpawn`), so the spawn, if it still arrives, creates
-  nothing, and a receipt settled before its thread was named names none
+  nothing. A supersede fences too: one is sent only in place of an
+  archive already sent, so a spawn that computer had not accepted when
+  its spawner was archived is cancelled whatever order the archive, the
+  supersede and the spawn arrive in. A receipt settled before its thread was named names none
   (`SetThreadReceiptTarget`), and its creation deletes the thread it
   made. A local spawn on its way when its spawner is archived or deleted
   holds that archive or delete until its thread exists, which the
@@ -1762,12 +1769,14 @@ closes up their spacing so the row holds at a phone width.
   its tool and detail, or the question, and who it was routed to; a
   paired computer's target reports the same in its `agent_rows` answer,
   and its request's poll only that it waits and on which thread. A
-  prompt that computer routed back to the spawner here names the spawner
-  as this computer does (`blockedRoutedHere`) and does not count as
-  needing the person, whichever thread's row it is: a send from another
-  thread here names the spawner its prompt went to
-  (`blockedRoutedToThread`), and the poll picks the prompt up through
-  that spawner's spawn. A
+  prompt that computer routed back to the spawner here names the thread
+  here that holds it now, the one its wake goes to: the spawn's caller,
+  which a handoff moves (`RemotePromptHolder`), by its title here
+  (`blockedRoutedHere`), and does not count as needing the person,
+  whichever thread's row it is: a send from another thread here names
+  the holder its prompt went to though that computer names the spawner
+  the link came from (`blockedRoutedToThread`), and the poll picks the
+  prompt up through that spawner's spawn. A
   spawn's row says what its thread did as a subagent's row says what its
   agent did, from the one formatter both use (`AgentMetrics.svelte`),
   read with the thread's name (`store.ThreadTally`, one probe per
