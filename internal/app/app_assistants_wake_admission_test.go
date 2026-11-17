@@ -41,11 +41,18 @@ func markerRuns(t *testing.T, marker string) int {
 	return runs
 }
 
-// awaitNoAgentWakeRun waits until nothing of the row runs.
+// awaitNoAgentWakeRun waits until nothing of the row runs and the run that
+// ended has published the row it left: a run retires by unregistering and
+// then writing its row in one hold of the wake lifecycle lock
+// (retireAgentWakeRun), so taking that lock once the run is gone waits out
+// the write.
 func awaitNoAgentWakeRun(t *testing.T, a *App, id string) {
 	t.Helper()
 	waitUntil(t, 10*time.Second, func() bool { return !agentWakeRunning(a, id) })
-	if agentWakeRunning(a, id) {
+	a.agentWakes.lifecycle.Lock()
+	running := agentWakeRunning(a, id)
+	a.agentWakes.lifecycle.Unlock()
+	if running {
 		t.Fatalf("%s still runs", id)
 	}
 }
