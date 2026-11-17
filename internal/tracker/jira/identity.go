@@ -43,18 +43,31 @@ type identity struct {
 	joined func(*signInCheck)
 }
 
-// signInCheck is one GET of myself and the 404s waiting on it.
+// signInCheck is one GET of myself and the 404s waiting on it. mark is
+// the credential read its answer was drawn under, set when it succeeded.
 type signInCheck struct {
 	done chan struct{}
 	err  error
+	mark trackerapi.CredentialMark
 }
 
 func newCheck() *signInCheck { return &signInCheck{done: make(chan struct{})} }
 
-// end settles f with err.
-func (f *signInCheck) end(err error) {
-	f.err = err
+// end settles f with err, or with the mark of its successful answer.
+func (f *signInCheck) end(mark trackerapi.CredentialMark, err error) {
+	f.mark, f.err = mark, err
 	close(f.done)
+}
+
+// errCredentialReplaced is a sign-in check drawn under another credential
+// read than the 404 it was to decide: it says nothing about that 404, and
+// the call runs again under the current credential.
+var errCredentialReplaced = errors.New("jira: the credential was read again between the 404 and the sign-in check, so the check does not speak for the 404; run the call again")
+
+// sameRead reports two answers drawn under the same read of the
+// credential; answers that carried none are never the same.
+func sameRead(a, b trackerapi.CredentialMark) bool {
+	return a == b && a != (trackerapi.CredentialMark{})
 }
 
 // forget detaches the checks, so the next 404 starts a check of its own.
@@ -63,7 +76,7 @@ func (id *identity) forget() {
 	defer id.mu.Unlock()
 	id.cur = nil
 	if id.next != nil {
-		id.next.end(errCheckDropped)
+		id.next.end(trackerapi.CredentialMark{}, errCheckDropped)
 		id.next = nil
 	}
 }
@@ -74,7 +87,7 @@ func (id *identity) close() {
 	id.mu.Lock()
 	id.closed = true
 	if id.next != nil {
-		id.next.end(errCheckDropped)
+		id.next.end(trackerapi.CredentialMark{}, errCheckDropped)
 		id.next = nil
 	}
 	id.mu.Unlock()
@@ -123,30 +136,35 @@ func (e *UnconfirmedError) As(target any) bool {
 	return true
 }
 
-// checkNotFound decides notFound, a 404: the same error when the
-// credential is good, an error holding the *trackerapi.AuthError when it
-// is refused, and an *UnconfirmedError when the check fails otherwise.
+// checkNotFound decides notFound, a 404: the same error when a check
+// drawn under the same credential read succeeds, an error holding the
+// *trackerapi.AuthError when that credential is refused, and an
+// *UnconfirmedError otherwise: the check failed, or its answer was drawn
+// under another read of the credential than the 404 was.
 func (c *Client) checkNotFound(ctx context.Context, notFound error) error {
-	err := c.confirmSignedIn(ctx)
+	status, _ := errors.AsType[*trackerapi.StatusError](notFound)
+	mark, err := c.confirmSignedIn(ctx)
 	if err == nil {
-		return notFound
+		if sameRead(status.CredentialMark(), mark) {
+			return notFound
+		}
+		return &UnconfirmedError{NotFound: status, Err: errCredentialReplaced}
 	}
-	if _, ok := errors.AsType[*trackerapi.AuthError](err); ok {
+	if ae, ok := errors.AsType[*trackerapi.AuthError](err); ok && sameRead(status.CredentialMark(), ae.CredentialMark()) {
 		return fmt.Errorf("jira: the answer was 404 because the credential was refused: %w", err)
 	}
-	status, _ := errors.AsType[*trackerapi.StatusError](notFound)
 	return &UnconfirmedError{NotFound: status, Err: err}
 }
 
-// confirmSignedIn reports nil when a sign-in check that starts after
-// this call succeeds: a new one when none runs, else the one queued
-// behind the one running.
-func (c *Client) confirmSignedIn(ctx context.Context) error {
+// confirmSignedIn returns the credential mark of a sign-in check that
+// starts after this call and succeeds: a new one when none runs, else
+// the one queued behind the one running.
+func (c *Client) confirmSignedIn(ctx context.Context) (trackerapi.CredentialMark, error) {
 	id := &c.id
 	id.mu.Lock()
 	if id.closed {
 		id.mu.Unlock()
-		return notSent("the client is closed")
+		return trackerapi.CredentialMark{}, notSent("the client is closed")
 	}
 	var f *signInCheck
 	switch {
@@ -166,9 +184,9 @@ func (c *Client) confirmSignedIn(ctx context.Context) error {
 	id.mu.Unlock()
 	select {
 	case <-f.done:
-		return f.err
+		return f.mark, f.err
 	case <-ctx.Done():
-		return ctx.Err()
+		return trackerapi.CredentialMark{}, ctx.Err()
 	}
 }
 
@@ -181,7 +199,11 @@ func (c *Client) startCheck(ctx context.Context, f *signInCheck) {
 }
 
 func (c *Client) runSignInCheck(ctx context.Context, f *signInCheck) {
-	_, err := c.api.Do(ctx, trackerapi.Request{Path: myselfPath})
+	resp, err := c.api.Do(ctx, trackerapi.Request{Path: myselfPath})
+	var mark trackerapi.CredentialMark
+	if err == nil {
+		mark = resp.CredentialMark()
+	}
 	if errors.Is(err, trackerapi.ErrNotFound) {
 		// Not a missing user: the base URL is not a Jira site, or the
 		// site's API moved. The error must not read as "not found".
@@ -190,7 +212,7 @@ func (c *Client) runSignInCheck(ctx context.Context, f *signInCheck) {
 	id := &c.id
 	id.mu.Lock()
 	defer id.mu.Unlock()
-	f.end(err)
+	f.end(mark, err)
 	if id.cur != f {
 		return // detached
 	}

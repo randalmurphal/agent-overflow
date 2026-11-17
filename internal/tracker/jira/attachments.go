@@ -111,7 +111,7 @@ func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Att
 		return nil, notSentErr(fmt.Errorf("jira: attach to %s: %w", issue, err))
 	}
 	var stored []attachmentJSON
-	_, err = c.call(ctx, trackerapi.Request{
+	w, err := c.write(ctx, trackerapi.Request{
 		Method: http.MethodPost, Path: apiPath + path + "/attachments",
 		// Jira blocks an upload without it, as a cross-site request.
 		Header:   http.Header{"X-Atlassian-Token": {"no-check"}},
@@ -119,7 +119,12 @@ func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Att
 		Transfer: true, ContentType: contentType,
 	}, &stored)
 	if err != nil {
-		return nil, fmt.Errorf("jira: attach to %s: %w", issue, err)
+		// What was stored is known by ID even when the rest is not read.
+		var known []Attachment
+		for _, id := range w.ids {
+			known = append(known, Attachment{ID: id})
+		}
+		return known, fmt.Errorf("jira: attach to %s: %w", issue, err)
 	}
 	out := make([]Attachment, len(stored))
 	for i, a := range stored {
@@ -192,11 +197,13 @@ func (c *Client) mediaID(ctx context.Context, id string) (string, error) {
 	return mediaID, nil
 }
 
-// mediaIDRE is a media file ID: a UUID or a similar token.
-var mediaIDRE = regexp.MustCompile(`^[0-9A-Za-z-]+$`)
+// mediaIDRE is a media file ID in the one form measured: a canonical
+// UUID. Anything else is refused, so no other text of a response header
+// reaches a document or a caller.
+var mediaIDRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // mediaIDOf reads the media ID from a media service URL's path: the
-// segment after "file".
+// segment after "file". Its errors quote nothing of the URL.
 func mediaIDOf(loc string) (string, error) {
 	u, err := url.Parse(loc)
 	if err != nil {

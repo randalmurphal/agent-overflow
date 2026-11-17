@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // CreateResult is how far a create got: the issue once it exists, and
@@ -32,10 +33,13 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	if err := c.admit(ctx); err != nil {
 		return res, err
 	}
+	if p == nil {
+		return res, notSent("no plan")
+	}
 	if err := p.claim(c); err != nil {
 		return res, err
 	}
-	held, err := p.stage.hold(ctx, p.images)
+	held, err := p.state.stage.hold(ctx, p.images)
 	if err != nil {
 		return res, &StepError{Step: StepCheck, Err: err}
 	}
@@ -59,21 +63,23 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	if len(update) > 0 {
 		body["update"] = update
 	}
-	var created struct {
-		ID  string `json:"id"`
-		Key string `json:"key"`
+	created, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + "issue", Body: body}, nil)
+	if numericRE.MatchString(created.id) {
+		res.ID = created.id
 	}
-	if err := c.send(ctx, http.MethodPost, "issue", nil, body, &created); err != nil {
+	if issueKeyRE.MatchString(created.key) {
+		res.Key = created.key
+	}
+	if err != nil {
 		return res, &StepError{Step: StepCreate, Err: fmt.Errorf("jira: create in %s: %w", p.project, err)}
 	}
-	if !numericRE.MatchString(created.ID) {
-		return res, &StepError{Step: StepCreate, Err: &AnswerError{Message: "the create's answer names no issue ID"}}
+	if res.ID == "" || res.Key == "" {
+		return res, &StepError{Step: StepCreate, Err: &AnswerError{Message: "the create's answer does not name the issue's ID and key"}}
 	}
-	res.ID, res.Key = created.ID, created.Key
 	if len(p.images) == 0 {
 		return res, nil
 	}
-	ids, err := c.uploadImages(ctx, created.ID, p.images, held, &res.Uploaded)
+	ids, err := c.uploadImages(ctx, res.ID, p.images, held, &res.Uploaded)
 	if err != nil {
 		return res, &StepError{Step: StepUpload, Err: err}
 	}
@@ -81,8 +87,8 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	if err != nil {
 		return res, &StepError{Step: StepFinish, Err: notSentErr(err)}
 	}
-	if err := c.send(ctx, http.MethodPut, "issue/"+url.PathEscape(created.ID), nil, map[string]any{"fields": finish}, nil); err != nil {
-		return res, &StepError{Step: StepFinish, Err: fmt.Errorf("jira: write the images into %s: %w", created.Key, err)}
+	if err := c.send(ctx, http.MethodPut, "issue/"+url.PathEscape(res.ID), nil, map[string]any{"fields": finish}, nil); err != nil {
+		return res, &StepError{Step: StepFinish, Err: fmt.Errorf("jira: write the images into %s: %w", firstNonEmpty(res.Key, res.ID), err)}
 	}
 	return res, nil
 }
@@ -176,6 +182,9 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 	if err := c.admit(ctx); err != nil {
 		return res, err
 	}
+	if p == nil {
+		return res, notSent("no plan")
+	}
 	if err := p.claim(c); err != nil {
 		return res, err
 	}
@@ -183,9 +192,9 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 		return res, nil
 	}
 	if err := c.recheck(ctx, p); err != nil {
-		return res, &StepError{Step: StepCheck, Err: err}
+		return res, &StepError{Step: StepCheck, Err: notSentErr(err)}
 	}
-	held, err := p.stage.hold(ctx, p.images)
+	held, err := p.state.stage.hold(ctx, p.images)
 	if err != nil {
 		var se *StaleError
 		if errors.As(err, &se) {

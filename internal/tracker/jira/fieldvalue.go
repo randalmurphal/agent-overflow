@@ -132,8 +132,8 @@ func (v FieldValue) DateTime() (time.Time, error) {
 type Sprint struct {
 	ID      int64
 	Name    string
-	State   string // future, active or closed
-	BoardID int64
+	State   SprintState
+	BoardID int64 // the board the sprint was created on
 	Goal    string
 	Start   time.Time
 	End     time.Time
@@ -157,7 +157,7 @@ func (v FieldValue) Sprints() ([]Sprint, error) {
 	}
 	out := make([]Sprint, len(ss))
 	for i, s := range ss {
-		out[i] = Sprint{ID: s.ID, Name: s.Name, State: s.State, BoardID: s.BoardID, Goal: s.Goal}
+		out[i] = Sprint{ID: s.ID, Name: s.Name, State: SprintState(s.State), BoardID: s.BoardID, Goal: s.Goal}
 		for _, t := range []struct {
 			text string
 			dst  *time.Time

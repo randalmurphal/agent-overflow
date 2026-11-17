@@ -154,7 +154,7 @@ func (s *imageStage) hold(ctx context.Context, imgs []*Image) (map[*Image][]byte
 		content, err := readImage(ctx, root, img.path, img.Size)
 		switch {
 		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-			return nil, err
+			return nil, notSentErr(err)
 		case err != nil || sha256.Sum256(content) != img.sum:
 			return nil, notSentErr(&StaleError{What: "image " + img.Ref})
 		}

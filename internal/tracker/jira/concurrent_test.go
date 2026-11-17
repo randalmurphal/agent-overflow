@@ -75,6 +75,7 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 	for _, cl := range []*Client{c, closed} {
 		cl.users.put(cl.users.epoch(), "acc-user1", User{AccountID: "acc-user1", DisplayName: "User 1", Active: true})
 		cl.catalog.put(cl.catalog.epoch(), struct{}{}, []Field{{ID: "summary"}})
+		cl.configs.put(cl.configs.epoch(), 3, BoardConfig{BoardID: 3})
 	}
 	closed.Close()
 	// Calls a cache could answer.
@@ -82,8 +83,12 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 		"User":     func(c *Client, ctx context.Context) error { _, err := c.User(ctx, "acc-user1"); return err },
 		"FindUser": func(c *Client, ctx context.Context) error { _, err := c.FindUser(ctx, "acc-user1"); return err },
 		"Fields":   func(c *Client, ctx context.Context) error { _, err := c.Fields(ctx); return err },
+		"BoardConfig": func(c *Client, ctx context.Context) error {
+			_, err := c.BoardConfig(ctx, 3)
+			return err
+		},
 	} {
-		if err := call(c, ended); !errors.Is(err, context.Canceled) {
+		if err := call(c, ended); !errors.Is(err, context.Canceled) || !trackerapi.WriteNotApplied(err) {
 			t.Errorf("%s from the cache with an ended context: %v", name, err)
 		}
 		if err := call(closed, t.Context()); err == nil || err != closed.closedErr {
@@ -96,8 +101,10 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 		ctx  context.Context
 		want func(error) bool
 	}{
-		{c, ended, func(err error) bool { return errors.Is(err, context.Canceled) }},
-		{closed, t.Context(), func(err error) bool { _, ok := errors.AsType[*trackerapi.NotSentError](err); return ok }},
+		// Known not sent, so a write the guard stops reads as not applied.
+		{c, ended, func(err error) bool { return errors.Is(err, context.Canceled) && trackerapi.WriteNotApplied(err) }},
+		// The client's own refusal, not a check of the zero arguments.
+		{closed, t.Context(), func(err error) bool { return err != nil && errors.Is(err, closed.closedErr) }},
 	} {
 		v := reflect.ValueOf(tc.c)
 		for i := range v.NumMethod() {
@@ -124,6 +131,46 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 	}
 	if n := len(f.requests()); n != 0 {
 		t.Errorf("%d requests reached the site: %v", n, f.requests())
+	}
+}
+
+// TestConcurrentAgileCalls runs board configuration reads, drops, sprint
+// listings and ranks together under the race detector.
+func TestConcurrentAgileCalls(t *testing.T) {
+	f := newFake(t)
+	c := newTestClient(t, f)
+	f.on("GET", boardConfigURL, reply(200, boardConfigBody))
+	f.on("GET", "/rest/agile/1.0/board/3/sprint", reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"active"}]}`))
+	f.on("PUT", rankURL, func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(http.StatusNoContent) })
+	var wg sync.WaitGroup
+	errs := make(chan error, 200)
+	for i := range 40 {
+		wg.Go(func() {
+			cfg, err := c.BoardConfig(t.Context(), 3)
+			if err != nil {
+				errs <- err
+			} else {
+				cfg.Columns[0].StatusIDs[0] = "mine" // the caller's own copy
+			}
+			if _, err := c.Sprints(t.Context(), SprintQuery{Board: 3}); err != nil {
+				errs <- err
+			}
+			issues := webIssues(i*2+1, i*2+2)
+			if _, err := c.Rank(t.Context(), RankInput{Issues: issues, Position: RankAfter("WEB-500")}); err != nil {
+				errs <- err
+			}
+			if i%5 == 0 {
+				c.ForgetBoards()
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if cfg, err := c.BoardConfig(t.Context(), 3); err != nil || cfg.Columns[0].StatusIDs[0] != "1" {
+		t.Errorf("a cached configuration changed: %v", err)
 	}
 }
 

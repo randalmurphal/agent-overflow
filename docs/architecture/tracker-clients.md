@@ -247,22 +247,33 @@ to read and write each one.
   answers carry the same `CredentialMark`; otherwise the 404 is
   unconfirmed and the caller runs the call again. Concurrent 404s share
   checks; nothing is reused over time.
-- **Boards.** Boards of a project, a board's configuration (columns and
-  their statuses, the estimation field, the rank field), its sprints, and
-  the issues of a board, a backlog and a sprint on the
-  `/rest/software/1.0` paths with token paging.
+- **Boards.** Boards by project, type and name, a board's configuration
+  (columns and their statuses, the done column, the estimation field, the
+  rank field), its sprints, and the issues of a board, a backlog, a sprint
+  or an epic on the `/rest/software/1.0` paths with token paging. Jira
+  counts only a board's issues and its backlog. An estimate is read and
+  set through the board's estimation field.
 - **Ranking and sprints.** Rank before or after an issue, move into a
-  sprint and to the backlog, each sent in groups of at most 50 with a 207's
-  per-issue results returned. Create a sprint, start it, and complete it;
-  completing moves the issues that are not done to the sprint or backlog
-  the caller names, then closes the sprint.
-- **History.** An issue's changelog as typed entries, and the bulk fetch of
-  changelogs for up to 1000 issues and 10 fields.
+  future or active sprint, and move to the backlog, with a position only
+  on a board's backlog. Each is sent in groups of 50 chained after the
+  last issue ranked, stops at the first group not answered in full, and
+  reports every issue as done, refused, unknown or not sent. Create,
+  update, start and delete a sprint. Completing reads the sprint, the
+  target and every issue first, moves the issues outside the board's done
+  column to the sprint or backlog the caller names, and closes the sprint
+  only when every move succeeded. A sprint is named for a field value
+  among the active and future sprints of the project's scrum boards.
+- **History.** An issue's changelog as typed entries, and the bulk fetch
+  split across 1000 issues and 10 fields with entries joined again. Sprint
+  changes parse to sprint IDs.
 - **Search.** `search/jql` with token paging, the approximate count, and
   the bulk fetch of issues by key or ID. Reading a search to its end
   returns its warnings and whether it is complete; a bulk fetch and a
   project listing say the same.
-- **Worklogs.** Jira's own worklogs: list, add, change, delete.
+- **Worklogs.** Jira's own worklogs: list, read by ID, add, change (edited
+  from the stored comment, with the loss and stale checks), delete, with
+  the remaining-estimate adjustments each write allows, and the updated
+  and deleted feeds for sync.
 - **People.** Who the token belongs to, a user by account ID, a user found
   by account ID, exact name or email (active and not an app; a name that
   cannot be proven unique within Jira's search window is an error), and

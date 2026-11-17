@@ -122,7 +122,7 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 	}
 	tp, err := c.checkTransition(ctx, in)
 	if err != nil {
-		return res, err
+		return res, notSentErr(err)
 	}
 	var ids map[string]string
 	if len(tp.imgs) > 0 {

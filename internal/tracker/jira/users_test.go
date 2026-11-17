@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -219,24 +220,61 @@ func TestFindUserByIDIsEligibleOnly(t *testing.T) {
 	}
 }
 
+// assignableSearch answers user/assignable/search as the spec says:
+// 400 without one of issueKey, issueId or project, and 400 unless exactly
+// one of query and accountId is sent. assignable holds the users who can
+// be assigned, by account ID; a query matches the start of their names.
+func assignableSearch(t *testing.T, assignable map[string]string, names map[string]string) handler {
+	return func(w http.ResponseWriter, r *http.Request, b []byte) {
+		q := r.URL.Query()
+		scopes := 0
+		for _, k := range []string{"issueKey", "issueId", "project"} {
+			if q.Has(k) {
+				scopes++
+			}
+		}
+		if scopes == 0 || q.Has("query") == q.Has("accountId") {
+			t.Errorf("a request the spec refuses: %s", r.URL.RawQuery)
+			reply(400, `{"errorMessages":["query or accountId is missing"]}`)(w, r, b)
+			return
+		}
+		var out []string
+		for id, js := range assignable {
+			if id == q.Get("accountId") || (q.Has("query") && strings.HasPrefix(names[id], q.Get("query"))) {
+				out = append(out, js)
+			}
+		}
+		slices.Sort(out)
+		reply(200, "["+strings.Join(out, ",")+"]")(w, r, b)
+	}
+}
+
 func TestAssignableUsers(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
+	search := assignableSearch(t, map[string]string{"acc-user1": userOneJSON}, map[string]string{"acc-user1": "User 1"})
 	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "project", "WEB")
-		wantQuery(t, r, "query", "User")
 		wantQuery(t, r, "startAt", "50")
 		wantQuery(t, r, "maxResults", "50")
-		reply(200, `[`+userOneJSON+`]`)(w, r, b)
+		search(w, r, b)
 	})
-	us, err := c.AssignableUsers(t.Context(), AssignableQuery{Project: "WEB", Query: "User", StartAt: 50})
-	if err != nil || len(us) != 1 {
-		t.Fatalf("got %v %v", us, err)
+	for _, q := range []AssignableQuery{{Project: "WEB", Query: "User", StartAt: 50}, {Project: "WEB", AccountID: "acc-user1", StartAt: 50}} {
+		us, err := c.AssignableUsers(t.Context(), q)
+		if err != nil || len(us) != 1 || us[0].AccountID != "acc-user1" {
+			t.Fatalf("%+v: got %v %v", q, us, err)
+		}
 	}
-	for _, q := range []AssignableQuery{{}, {Issue: "WEB-1", Project: "WEB"}, {Issue: "../x"}, {Issue: "WEB-1", Query: "a", AccountID: "b"}} {
+	for _, q := range []AssignableQuery{
+		{}, {Issue: "WEB-1", Project: "WEB", Query: "a"}, {Issue: "../x", Query: "a"},
+		{Issue: "WEB-1", Query: "a", AccountID: "b"}, {Issue: "WEB-1"}, {Project: "WEB"},
+	} {
 		if _, err := c.AssignableUsers(t.Context(), q); !trackerapi.WriteNotApplied(err) {
 			t.Errorf("%+v: want a refusal before sending, got %v", q, err)
 		}
+	}
+	if n := f.count("GET", "/rest/api/3/user/assignable/search"); n != 2 {
+		t.Errorf("%d requests, want 2", n)
 	}
 }
 
@@ -251,7 +289,7 @@ func TestAssignableUsersNamesTheIssueRightly(t *testing.T) {
 		reply(200, `[]`)(w, r, b)
 	})
 	for _, ref := range []string{"10001", "WEB-1"} {
-		if _, err := c.AssignableUsers(t.Context(), AssignableQuery{Issue: ref}); err != nil {
+		if _, err := c.AssignableUsers(t.Context(), AssignableQuery{Issue: ref, Query: "User"}); err != nil {
 			t.Fatal(err)
 		}
 	}

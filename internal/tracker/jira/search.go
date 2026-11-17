@@ -86,13 +86,26 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) 
 	for i, is := range v.Issues {
 		page.Issues[i] = is.decode()
 	}
-	if !v.IsLast {
-		page.NextPageToken = v.NextPageToken
+	if page.NextPageToken, err = nextToken(v.IsLast, v.NextPageToken); err != nil {
+		return SearchPage{}, fmt.Errorf("jira: search: %w", err)
 	}
 	for _, w := range v.Warnings {
 		page.Warnings = append(page.Warnings, SearchWarning(w))
 	}
 	return page, nil
+}
+
+// nextToken is the token of the page after a token-paged one: none
+// after the last, and an error for a page that is not the last but names
+// no next one, which would otherwise read as the end.
+func nextToken(isLast bool, token string) (string, error) {
+	switch {
+	case isLast:
+		return "", nil
+	case token == "":
+		return "", &AnswerError{Message: "a page that is not the last names no next page"}
+	}
+	return token, nil
 }
 
 // SearchResult is what a search run to its end returned. Complete is
@@ -107,15 +120,33 @@ type SearchResult struct {
 // SearchAll runs q from its first page (or q.PageToken) to the last, at
 // most limit issues when limit is above zero. A failure after some pages
 // returns their issues and warnings with the error; a token Jira hands
-// out twice fails the search instead of looping.
+// out twice, or an empty page that names a next one, fails the search
+// instead of looping.
 func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) (SearchResult, error) {
+	size := pageSize(q.MaxResults, 100, maxSearchPage)
+	return tokenPages("search", q.PageToken, limit, func(token string, room int) (SearchPage, error) {
+		q.PageToken, q.MaxResults = token, size
+		if room > 0 {
+			q.MaxResults = min(size, room)
+		}
+		return c.Search(ctx, q)
+	})
+}
+
+// tokenPages reads the pages next returns, each continuing from the
+// token of the one before and starting from first, until a page names no
+// next one, or limit issues when limit is above zero; room is how many
+// issues the limit leaves, zero for none. It is the one walk of every
+// token-paged issue list.
+func tokenPages(what, first string, limit int, next func(token string, room int) (SearchPage, error)) (SearchResult, error) {
 	var out SearchResult
 	seen := map[string]bool{}
-	for {
+	for token := first; ; {
+		room := 0
 		if limit > 0 {
-			q.MaxResults = min(pageSize(q.MaxResults, 100, maxSearchPage), limit-len(out.Issues))
+			room = limit - len(out.Issues)
 		}
-		page, err := c.Search(ctx, q)
+		page, err := next(token, room)
 		if err != nil {
 			return out, err
 		}
@@ -125,18 +156,19 @@ func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) (Searc
 		if cut {
 			out.Issues = out.Issues[:limit]
 		}
-		if page.NextPageToken == "" {
+		switch {
+		case page.NextPageToken == "":
 			out.Complete = !cut && len(out.Warnings) == 0
 			return out, nil
-		}
-		if limit > 0 && len(out.Issues) >= limit {
+		case limit > 0 && len(out.Issues) >= limit:
 			return out, nil
-		}
-		if seen[page.NextPageToken] {
-			return out, fmt.Errorf("jira: search: the page token repeated after %d issues", len(out.Issues))
+		case len(page.Issues) == 0:
+			return out, fmt.Errorf("jira: %s: an empty page names a next page after %d issues", what, len(out.Issues))
+		case seen[page.NextPageToken]:
+			return out, fmt.Errorf("jira: %s: the page token repeated after %d issues", what, len(out.Issues))
 		}
 		seen[page.NextPageToken] = true
-		q.PageToken = page.NextPageToken
+		token = page.NextPageToken
 	}
 }
 
@@ -162,11 +194,12 @@ func (c *Client) CountIssues(ctx context.Context, jql string) (int64, error) {
 	return v.Count, nil
 }
 
-// BulkResult is what a bulk fetch returned: the issues, and the ones Jira
-// could not return with its reason. An issue the user cannot see, or
-// that does not exist, is in neither; Complete reports that every issue
-// named came back, so it is false when one is missing, failed, or was
-// named twice.
+// BulkResult is what a bulk fetch returned: the issues, each once, and
+// the ones Jira could not return with its reason. An issue the user
+// cannot see, or that does not exist, is in neither. Complete reports
+// that nothing failed and each distinct reference brought back an issue
+// of its own, so it is false when one is missing or failed, and when two
+// references (an ID and a key) name the same issue.
 type BulkResult struct {
 	Issues   []*Issue
 	Failed   []BulkFailure
@@ -180,17 +213,26 @@ type BulkFailure struct {
 }
 
 // BulkFetch reads the issues named by key or ID with the fields named
-// (none means Jira's navigable fields), 100 per request. A failure after
-// some requests returns their issues with the error.
+// (none means Jira's navigable fields), 100 per request. A reference
+// named again, a key in any case, is sent once. A failure after some
+// requests returns their issues with the error.
 func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string) (BulkResult, error) {
 	if err := c.admit(ctx); err != nil {
 		return BulkResult{}, err
 	}
+	named := make(map[string]bool, len(refs))
+	distinct := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		if err := checkIssue(ref); err != nil {
 			return BulkResult{}, err
 		}
+		if k := strings.ToUpper(ref); !named[k] {
+			named[k] = true
+			distinct = append(distinct, ref)
+		}
 	}
+	refs = distinct
+	returned := make(map[string]bool, len(refs))
 	var out BulkResult
 	for start := 0; start < len(refs); start += bulkFetchBatch {
 		batch := refs[start:min(start+bulkFetchBatch, len(refs))]
@@ -212,7 +254,11 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 			return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
 		}
 		for _, is := range v.Issues {
-			out.Issues = append(out.Issues, is.decode())
+			got := is.decode()
+			if got.ID == "" || !returned[got.ID] {
+				returned[got.ID] = true
+				out.Issues = append(out.Issues, got)
+			}
 		}
 		for _, e := range v.Errors {
 			out.Failed = append(out.Failed, BulkFailure(e))

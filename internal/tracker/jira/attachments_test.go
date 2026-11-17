@@ -42,6 +42,19 @@ func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 	}
 }
 
+// TestAttachUnreadableAnswerKeepsTheIDs proves an upload Jira stored
+// whose answer does not decode still names what was stored, by ID.
+func TestAttachUnreadableAnswerKeepsTheIDs(t *testing.T) {
+	f := newFake(t)
+	c := newTestClient(t, f)
+	f.on("POST", "/rest/api/3/issue/WEB-1/attachments", reply(200, `[{"id":"501","size":"big"},{"id":502,"size":"big"}]`))
+	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("a")})
+	se, ok := errors.AsType[*StepError](err)
+	if !ok || !se.Applied() || len(got) != 2 || got[0].ID != "501" || got[1].ID != "502" {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}
+
 func TestAttachmentsListAndDelete(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
@@ -85,13 +98,26 @@ func TestDownloadAttachmentIsBounded(t *testing.T) {
 func TestAttachmentMediaID(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
+	const media = "0f1e2d3c-4b5a-4c6d-8e7f-a0b1c2d3e4f5"
 	f.on("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, _ []byte) {
-		w.Header().Set("Location", "https://api.media.example.com/file/0f1e2d3c-media/binary?token=signed&client=x")
+		w.Header().Set("Location", "https://api.media.example.com/file/"+media+"/binary?token=signed&client=x")
 		w.WriteHeader(http.StatusSeeOther)
 	})
 	id, err := c.AttachmentMediaID(t.Context(), "501")
-	if err != nil || id != "0f1e2d3c-media" {
+	if err != nil || id != media {
 		t.Fatalf("got %q %v", id, err)
+	}
+	// Only a canonical UUID is a media ID, so a segment that carries the
+	// credential, or any other text, is neither returned nor quoted.
+	for _, seg := range []string{testToken, "0f1e2d3c-media", media + "x", "0f1e2d3c4b5a4c6d8e7fa0b1c2d3e4f5"} {
+		f.on("GET", "/rest/api/3/attachment/content/504", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			w.Header().Set("Location", "https://api.media.example.com/file/"+seg+"/binary")
+			w.WriteHeader(http.StatusSeeOther)
+		})
+		got, err := c.AttachmentMediaID(t.Context(), "504")
+		if err == nil || got != "" || strings.Contains(err.Error(), seg) {
+			t.Errorf("%s: got %q %v", seg, got, err)
+		}
 	}
 	f.on("GET", "/rest/api/3/attachment/content/502", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		w.Header().Set("Location", "https://api.media.example.com/elsewhere")

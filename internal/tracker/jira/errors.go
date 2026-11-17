@@ -136,6 +136,16 @@ const (
 	StepComment Step = "comment"
 	// StepRemoteLink adds a remote link.
 	StepRemoteLink Step = "remote link"
+	// StepRank ranks a group of issues.
+	StepRank Step = "rank"
+	// StepMove moves a group of issues into a sprint or to the backlog.
+	StepMove Step = "move"
+	// StepSprint creates, changes, starts, closes or deletes a sprint.
+	StepSprint Step = "sprint"
+	// StepEstimate sets an issue's estimate through a board.
+	StepEstimate Step = "estimate"
+	// StepWorklog adds, updates or deletes a worklog.
+	StepWorklog Step = "worklog"
 )
 
 // StepError is the failure of one step of a write: a step of a
@@ -155,7 +165,7 @@ func (e *StepError) Unwrap() error { return e.Err }
 // of its answer decoded.
 func (e *StepError) Applied() bool {
 	_, ok := errors.AsType[*AnswerError](e.Err)
-	return ok && e.Step != StepCheck
+	return ok && e.Step != StepCheck && !trackerapi.WriteNotApplied(e.Err)
 }
 
 // OutcomeUnknown reports whether the failed step may have been applied:

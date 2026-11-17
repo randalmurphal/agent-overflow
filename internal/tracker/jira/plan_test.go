@@ -76,18 +76,82 @@ func TestApplyCreateAnswerUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A create's answer must name the issue's numeric ID; one that is
-	// not JSON, or names none, is read as stored all the same.
-	for _, body := range []string{`<html>stored</html>`, `{"key":"WEB-1"}`, `{"id":"10001/x","key":"WEB-1"}`} {
+	// A create's answer must name the issue's numeric ID and key; one
+	// that is not JSON, or names neither, is read as stored all the same,
+	// and the result keeps whichever the answer does name.
+	for body, want := range map[string]CreateResult{
+		`<html>stored</html>`:               {},
+		`{"key":"WEB-1"}`:                   {Key: "WEB-1"},
+		`{"id":"10001/x","key":"WEB-1"}`:    {Key: "WEB-1"},
+		`{"id":"10001","key":5}`:            {ID: "10001"},
+		`{"id":10001,"key":"WEB-1","x":[}`:  {},
+		`{"id":"10001","fields":"not one"}`: {ID: "10001"},
+	} {
 		f.on("POST", "/rest/api/3/issue", reply(201, body))
-		_, err = c.ApplyCreate(t.Context(), plan)
+		res, err := c.ApplyCreate(t.Context(), plan)
 		se, ok := errors.AsType[*StepError](err)
 		if !ok || se.Step != StepCreate || !se.Applied() || se.OutcomeUnknown() || trackerapi.WriteNotApplied(err) {
 			t.Errorf("%s: %v", body, err)
 		}
+		if res.ID != want.ID || res.Key != want.Key {
+			t.Errorf("%s: the result %+v, want %+v", body, res, want)
+		}
 		if plan, err = c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestPlanCopyIsTheSamePlan proves a copy of a plan, made before or
+// after the first apply, is the same plan: a write whose outcome is
+// unknown is not sent again through the copy, for a create and an edit.
+func TestPlanCopyIsTheSamePlan(t *testing.T) {
+	f, c := createSite(t)
+	f.on("POST", "/rest/api/3/issue", reply(500, `{"errorMessages":["down"]}`))
+	in := CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}
+	for range 2 {
+		plan, err := c.PlanCreate(t.Context(), in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := *plan
+		if _, err := c.ApplyCreate(t.Context(), plan); trackerapi.WriteNotApplied(err) {
+			t.Fatalf("the first apply: %v", err)
+		}
+		after := *plan
+		for _, cp := range []*CreatePlan{&before, &after} {
+			if _, err := c.ApplyCreate(t.Context(), cp); !trackerapi.WriteNotApplied(err) {
+				t.Errorf("a copy applied again: %v", err)
+			}
+		}
+	}
+	if n := f.count("POST", "/rest/api/3/issue"); n != 2 {
+		t.Errorf("%d creates sent for two plans", n)
+	}
+
+	desc := storedDesc(t, adf.Doc(para("old")))
+	ef, ec := editSite(t, desc)
+	ef.on("PUT", "/rest/api/3/issue/10001", reply(500, `{}`))
+	plan, err := ec.PlanEdit(t.Context(), EditInput{Issue: "WEB-1", Fields: []FieldInput{{Field: "Summary", Value: Text("New")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := *plan
+	if _, err := ec.ApplyEdit(t.Context(), &before); trackerapi.WriteNotApplied(err) {
+		t.Fatalf("the first apply, through a copy: %v", err)
+	}
+	after := *plan
+	for _, cp := range []*EditPlan{plan, &after} {
+		if _, err := ec.ApplyEdit(t.Context(), cp); !trackerapi.WriteNotApplied(err) {
+			t.Errorf("an edit applied again: %v", err)
+		}
+	}
+	if n := ef.count("PUT", "/rest/api/3/issue/10001"); n != 1 {
+		t.Errorf("%d edits sent for one plan", n)
+	}
+	var zero CreatePlan
+	if _, err := c.ApplyCreate(t.Context(), &zero); !trackerapi.WriteNotApplied(err) {
+		t.Errorf("a plan no PlanCreate made: %v", err)
 	}
 }
 
@@ -142,7 +206,7 @@ func imageRoutes(t *testing.T, f *fakeJira, issue string, uploads *atomic.Int32)
 func mediaRoutes(f *fakeJira) {
 	for _, id := range []string{"501", "502"} {
 		f.on("GET", "/rest/api/3/attachment/content/"+id, func(w http.ResponseWriter, r *http.Request, b []byte) {
-			w.Header().Set("Location", "https://api.media.example.com/file/media-"+id+"/binary?token=signed")
+			w.Header().Set("Location", "https://api.media.example.com/file/0f1e2d3c-0000-4000-8000-000000000"+id+"/binary?token=signed")
 			w.WriteHeader(http.StatusSeeOther)
 		})
 	}

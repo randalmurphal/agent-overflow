@@ -11,9 +11,18 @@ import (
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
-// escapedToken is testToken written with a JSON escape, which only a
-// decoder turns back into the credential.
-var escapedToken = strings.Replace(testToken, "k", `k`, 1)
+// escapedToken is testToken written with a JSON escape for its "k",
+// which only a decoder turns back into the credential. The backslash is
+// built at run time, so no edit of this source can turn the escape into
+// the letter it stands for.
+var escapedToken = strings.Replace(testToken, "k", string(rune(0x5c))+"u006b", 1)
+
+func TestEscapedTokenIsEscaped(t *testing.T) {
+	var decoded string
+	if err := json.Unmarshal([]byte(`"`+escapedToken+`"`), &decoded); err != nil || decoded != testToken || strings.Contains(escapedToken, testToken) {
+		t.Fatalf("escapedToken %q decodes to %q (%v): not an escape of the credential", escapedToken, decoded, err)
+	}
+}
 
 // noToken fails when text holds the credential.
 func noToken(t *testing.T, what, text string) {
@@ -116,6 +125,11 @@ func TestWrittenCommentWithUnreadableAnswer(t *testing.T) {
 	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", reply(200, bad))
 	eres, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: "y"})
 	check("EditComment", eres.Comment, err)
+
+	// An answer whose shape fails before the body is read keeps its ID.
+	f.on("POST", "/rest/api/3/issue/WEB-1/comment", reply(201, `{"id":"900","author":5,"body":{"type":"doc","version":1,"content":[]}}`))
+	res, err = c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "x", Audience: AudiencePublic})
+	check("AddComment with a malformed author", res.Comment, err)
 }
 
 func TestOtherWritesWithUnreadableAnswers(t *testing.T) {

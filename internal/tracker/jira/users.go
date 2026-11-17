@@ -148,9 +148,9 @@ func (c *Client) userSearch(ctx context.Context, q url.Values, startAt, max int)
 type AssignableQuery struct {
 	Issue   string
 	Project string
-	// Query matches the start of a display name or email; empty lists
-	// everyone in the window. AccountID asks about one user instead, who
-	// is returned only when assignable. At most one is set.
+	// Query matches the start of a display name or email. AccountID asks
+	// about one user instead, who is returned only when assignable.
+	// Exactly one is set: Jira refuses a request with neither or both.
 	Query     string
 	AccountID string
 	// StartAt and MaxResults select the window of users Jira checks;
@@ -182,11 +182,11 @@ func (c *Client) AssignableUsers(ctx context.Context, q AssignableQuery) ([]User
 	switch {
 	case q.StartAt < 0 || q.MaxResults < 0:
 		return nil, notSent("assignable users: a negative window")
-	case q.Query != "" && q.AccountID != "":
-		return nil, notSent("assignable users: a query or an account ID, not both")
+	case (q.Query == "") == (q.AccountID == ""):
+		return nil, notSent("assignable users need exactly one of a query or an account ID")
 	case q.Query != "":
 		v.Set("query", q.Query)
-	case q.AccountID != "":
+	default:
 		v.Set("accountId", q.AccountID)
 	}
 	v.Set("startAt", strconv.Itoa(q.StartAt))

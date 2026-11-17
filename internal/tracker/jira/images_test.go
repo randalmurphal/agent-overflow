@@ -47,7 +47,7 @@ func TestApplyCreateWithImage(t *testing.T) {
 			Fields map[string]json.RawMessage `json:"fields"`
 		}
 		_ = json.Unmarshal(b, &body)
-		if len(body.Fields) != 1 || strings.Count(string(body.Fields["description"]), `"id":"media-501"`) != 3 {
+		if len(body.Fields) != 1 || strings.Count(string(body.Fields["description"]), `"id":"0f1e2d3c-0000-4000-8000-000000000501"`) != 3 {
 			t.Errorf("finish %s", b)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -56,7 +56,7 @@ func TestApplyCreateWithImage(t *testing.T) {
 	if err != nil || res.Key != "WEB-1" || len(res.Uploaded) != 1 || uploads.Load() != 1 {
 		t.Fatalf("got %+v %v", res, err)
 	}
-	if strings.Contains(string(plan.values[1].Fields), "media-501") {
+	if strings.Contains(string(plan.values[1].Fields), "0f1e2d3c-0000-4000-8000-000000000501") {
 		t.Error("applying changed the plan")
 	}
 }

@@ -86,7 +86,7 @@ func TestAddCommentWithImageAndMention(t *testing.T) {
 	var uploads atomic.Int32
 	imageRoutes(t, f, "WEB-1", &uploads)
 	f.on("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if !strings.Contains(string(b), `"id":"media-501"`) || !strings.Contains(string(b), `"id":"acc-user2"`) {
+		if !strings.Contains(string(b), `"id":"0f1e2d3c-0000-4000-8000-000000000501"`) || !strings.Contains(string(b), `"id":"acc-user2"`) {
 			t.Errorf("comment %s", b)
 		}
 		var body struct {

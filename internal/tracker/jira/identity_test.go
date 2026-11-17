@@ -372,7 +372,11 @@ func TestForgetEndsQueuedNotFounds(t *testing.T) {
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
+	// The running check's request is on the wire before the credential
+	// is dropped, so it was drawn under the same read as the 404s.
+	sent := make(chan struct{}, 1)
 	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		sent <- struct{}{}
 		<-release
 		reply(200, userOneJSON)(w, r, b)
 	})
@@ -388,6 +392,7 @@ func TestForgetEndsQueuedNotFounds(t *testing.T) {
 	if joins.distinct() != 2 {
 		t.Fatal("the second 404 did not queue for a check of its own")
 	}
+	<-sent
 	c.ForgetCredential()
 	if !ended(joins.check(1)) || ended(joins.check(0)) {
 		t.Fatal("ForgetCredential must end the queued check and leave the running one")

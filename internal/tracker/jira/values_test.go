@@ -199,14 +199,15 @@ func TestValueAssigneeMustBeAssignable(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-user1": userOneJSON}, map[string][]string{"User 2": {userTwoJSON}}))
+	// Only User 2 can be assigned. The check must ask by account ID: the
+	// fake refuses a request without one, as Jira does.
+	search := assignableSearch(t, map[string]string{"acc-user2": userTwoJSON}, nil)
 	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "issueKey", "WEB-1")
-		if r.URL.Query().Get("query") != "" {
-			t.Error("the scoped check asks by name")
+		if !r.URL.Query().Has("accountId") {
+			t.Error("the scoped check does not ask by account ID")
 		}
-		// Only the user asked about vouches: an answer naming someone
-		// else, as one that ignored accountId would, does not.
-		reply(200, `[`+userTwoJSON+`]`)(w, r, b)
+		search(w, r, b)
 	})
 	assignee := meta("assignee", "Assignee", Schema{Type: "user", System: "assignee"})
 	v, err := c.Value(t.Context(), assignee, Text("User 2"), ValueOptions{Issue: "WEB-1"})

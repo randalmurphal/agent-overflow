@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Project is a Jira project. IssueTypes is filled by Project, not by
@@ -144,7 +146,7 @@ func (c *Client) Projects(ctx context.Context, q ProjectQuery) (ProjectList, err
 	if q.Query != "" {
 		v.Set("query", q.Query)
 	}
-	found, complete, err := offsetPages[projectJSON](ctx, c, "project/search", v, 100, q.Limit)
+	found, complete, err := offsetPages[projectJSON](ctx, c, apiPath+"project/search", v, 100, q.Limit)
 	out := ProjectList{Projects: make([]Project, len(found)), Complete: complete}
 	for i, p := range found {
 		out.Projects[i] = p.project()
@@ -206,7 +208,7 @@ func (c *Client) Priorities(ctx context.Context) ([]Priority, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
-	found, _, err := offsetPages[priorityJSON](ctx, c, "priority/search", url.Values{}, 100, 0)
+	found, _, err := offsetPages[priorityJSON](ctx, c, apiPath+"priority/search", url.Values{}, 100, 0)
 	out := make([]Priority, len(found))
 	for i, p := range found {
 		out[i] = Priority(p)
@@ -240,7 +242,8 @@ func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
 	return out, nil
 }
 
-// offsetPages reads path's pages, the platform's offset paging, of size from the start until the last
+// offsetPages reads path's pages (a path from the site root, under any
+// of the APIs that page by offset) of size from the start until the last
 // one, or until limit items when limit is above zero; complete reports
 // that the last page was read with every item kept. A failure returns
 // the items read before it.
@@ -253,7 +256,7 @@ func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Value
 			IsLast bool  `json:"isLast"`
 			Total  int64 `json:"total"`
 		}
-		if err := c.get(ctx, path, q, &page); err != nil {
+		if _, err := c.call(ctx, trackerapi.Request{Path: path, Query: q}, &page); err != nil {
 			return out, false, err
 		}
 		next := start + len(page.Values)

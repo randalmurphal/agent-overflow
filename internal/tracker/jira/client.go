@@ -1,15 +1,18 @@
 // Package jira is the typed client for the Jira Cloud platform REST API
-// (rest/api/3) that the Issues pane drives: issues and search, fields and
-// their metadata, values built from field names and Markdown, create and
-// edit planned then applied, transitions, comments, links, attachments,
-// watchers and people. The contract is docs/architecture/tracker-clients.md.
+// (rest/api/3) and the Jira Software APIs (rest/agile/1.0,
+// rest/software/1.0) that the Issues pane drives: issues and search,
+// fields and their metadata, values built from field names and Markdown,
+// create and edit planned then applied, transitions, comments, links,
+// attachments, watchers and people; boards, sprints, ranking and issue
+// lists (agile.go); changelogs (history.go) and Jira's own worklogs
+// (worklogs.go). The contract is docs/architecture/tracker-clients.md.
 //
 // A Client is built by its caller, one per site, and is safe for
 // concurrent use. It sends every request through its own
 // trackerapi.Client and imports nothing of the app but trackerapi and
-// adf. It caches users by account ID and the field catalog, both in
-// memory, bounded and droppable (cache.go); nothing is written to disk
-// and nothing prints. Every exported call passes one admission guard
+// adf. It caches users by account ID, the field catalog and board
+// configurations, all in memory, bounded and droppable (cache.go);
+// nothing is written to disk and nothing prints. Every exported call passes one admission guard
 // first (admit), so a closed client or an ended context fails it even
 // when a cache holds the answer.
 //
@@ -81,6 +84,7 @@ type Client struct {
 	id      identity
 	users   *cache[string, User]
 	catalog *cache[struct{}, []Field]
+	configs *cache[int64, BoardConfig]
 }
 
 // New builds a Client and the trackerapi.Client under it. Nothing is
@@ -106,6 +110,7 @@ func New(opts Options) (*Client, error) {
 		api: api, maxUpload: opts.MaxUploadBytes,
 		users:   newCache[string, User](userCacheSize, nil),
 		catalog: newCache[struct{}, []Field](1, cloneFields),
+		configs: newCache[int64, BoardConfig](boardConfigCacheSize, cloneBoardConfig),
 	}
 	if c.maxUpload == 0 {
 		c.maxUpload = defaultMaxUpload
@@ -133,12 +138,17 @@ func (c *Client) Close() {
 }
 
 // admit is the guard every exported call passes before any work, a cache
-// hit included: a closed client and an ended context fail it.
+// hit included: a closed client and an ended context fail it, each with
+// a *trackerapi.NotSentError, so a write it stops is known not sent and
+// the context's error still matches errors.Is.
 func (c *Client) admit(ctx context.Context) error {
 	if c.closed.Load() {
 		return c.closedErr
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return &trackerapi.NotSentError{Err: err}
+	}
+	return nil
 }
 
 // ForgetCredential drops the credential, so the next call reads the
@@ -194,38 +204,19 @@ func notSent(format string, args ...any) error {
 	return &trackerapi.NotSentError{Err: fmt.Errorf("jira: "+format, args...)}
 }
 
-// notSentErr wraps err as a *trackerapi.NotSentError when it is the
-// client's own refusal, and returns it as it is when it says what
-// happened to a request: a transport error, an answer, or a call that
-// ended.
+// notSentErr marks err, a failure before a write was sent (the client's
+// own refusal, a read the write depends on, a local step, an ended
+// context), as a *trackerapi.NotSentError, so the write reads as not
+// applied while errors.As still finds the cause. An error already marked
+// is returned as it is.
 func notSentErr(err error) error {
-	if err == nil || fromRequest(err) {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*trackerapi.NotSentError); ok {
 		return err
 	}
 	return &trackerapi.NotSentError{Err: err}
-}
-
-// fromRequest reports an error that came from sending a request, or
-// already says it was not sent.
-func fromRequest(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	for _, is := range []func(error) bool{
-		func(e error) bool { _, ok := errors.AsType[*trackerapi.NotSentError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*trackerapi.StatusError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*trackerapi.AuthError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*trackerapi.TransientError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*trackerapi.RateLimitedError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*trackerapi.BodyTooLargeError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*UnconfirmedError](e); return ok },
-		func(e error) bool { _, ok := errors.AsType[*AnswerError](e); return ok },
-	} {
-		if is(err) {
-			return true
-		}
-	}
-	return false
 }
 
 var (

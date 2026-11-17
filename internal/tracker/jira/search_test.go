@@ -121,6 +121,41 @@ func TestSearchAllRefusesARepeatedToken(t *testing.T) {
 	}
 }
 
+// TestSearchPageEnds proves only isLast ends a search: a page that is not
+// the last and names no next page fails, and so does an empty page that
+// names one, since either would read as a finished search.
+func TestSearchPageEnds(t *testing.T) {
+	q := SearchQuery{JQL: `project = "WEB"`}
+	for name, body := range map[string]string{
+		"no token":      `{"issues":[{"id":"1","key":"WEB-1"}],"isLast":false}`,
+		"null token":    `{"issues":[{"id":"1","key":"WEB-1"}],"nextPageToken":null,"isLast":false}`,
+		"no isLast":     `{"issues":[{"id":"1","key":"WEB-1"}]}`,
+		"empty, a next": `{"issues":[],"nextPageToken":"t1","isLast":false}`,
+	} {
+		f := newFake(t)
+		c := newTestClient(t, f)
+		f.on("POST", "/rest/api/3/search/jql", reply(200, body))
+		all, err := c.SearchAll(t.Context(), q, 0)
+		if err == nil || all.Complete {
+			t.Errorf("%s: got %+v %v", name, all, err)
+		}
+		if n := f.count("POST", "/rest/api/3/search/jql"); n != 1 {
+			t.Errorf("%s: %d pages", name, n)
+		}
+		if name == "empty, a next" {
+			continue
+		}
+		if _, err := c.Search(t.Context(), q); !isAnswerErr(err) {
+			t.Errorf("%s: one page: %v", name, err)
+		}
+	}
+}
+
+func isAnswerErr(err error) bool {
+	_, ok := errors.AsType[*AnswerError](err)
+	return ok
+}
+
 func TestSearchCancellation(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
@@ -190,6 +225,57 @@ func TestBulkFetchBatches(t *testing.T) {
 	}
 	if _, err := c.BulkFetch(t.Context(), []string{"WEB-1", "x/y"}); err == nil {
 		t.Error("a bad ref was sent")
+	}
+}
+
+// TestBulkFetchRepeatedReference proves a reference named again, in a
+// later batch or another case, is sent once, so the issues returned
+// cannot stand in for one that is missing.
+func TestBulkFetchRepeatedReference(t *testing.T) {
+	f := newFake(t)
+	c := newTestClient(t, f)
+	var refs []string
+	for i := range 100 {
+		refs = append(refs, fmt.Sprintf("WEB-%d", i+1))
+	}
+	// WEB-1 again in the second batch, beside WEB-101, which is missing.
+	refs = append(refs, "web-1", "WEB-101")
+	sent := map[string]int{}
+	f.on("POST", "/rest/api/3/issue/bulkfetch", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		var req struct {
+			Refs []string `json:"issueIdsOrKeys"`
+		}
+		if err := json.Unmarshal(b, &req); err != nil {
+			t.Fatal(err)
+		}
+		var issues []string
+		for _, ref := range req.Refs {
+			sent[strings.ToUpper(ref)]++
+			// Every issue answers but WEB-101; WEB-n has ID n.
+			if id := strings.TrimPrefix(strings.ToUpper(ref), "WEB-"); id != "101" {
+				issues = append(issues, fmt.Sprintf(`{"id":"%s","key":"WEB-%s"}`, id, id))
+			}
+		}
+		reply(200, `{"issues":[`+strings.Join(issues, ",")+`]}`)(w, r, b)
+	})
+	res, err := c.BulkFetch(t.Context(), refs)
+	if err != nil || res.Complete || len(res.Issues) != 100 {
+		t.Fatalf("got %d issues, complete %v, %v", len(res.Issues), res.Complete, err)
+	}
+	if sent["WEB-1"] != 1 || sent["WEB-101"] != 1 || len(sent) != 101 {
+		t.Errorf("WEB-1 sent %d times, WEB-101 %d, %d references", sent["WEB-1"], sent["WEB-101"], len(sent))
+	}
+	// An ID and a key naming one issue return it once, and read as
+	// incomplete: one reference brought back nothing of its own.
+	// Issue 3 by ID in the first batch and by key in the second.
+	refs = []string{"3"}
+	for i := range 99 {
+		refs = append(refs, fmt.Sprintf("WEB-%d", 200+i))
+	}
+	refs = append(refs, "WEB-3")
+	res, err = c.BulkFetch(t.Context(), refs)
+	if err != nil || res.Complete || len(res.Issues) != 100 {
+		t.Errorf("an issue named twice: %d issues, complete %v, %v", len(res.Issues), res.Complete, err)
 	}
 }
 

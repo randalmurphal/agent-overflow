@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // LinkInput links two issues: Outward relates to Inward by the type's
@@ -33,7 +35,7 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 	}
 	types, err := c.IssueLinkTypes(ctx)
 	if err != nil {
-		return err
+		return notSentErr(err)
 	}
 	cands := make([]Candidate, len(types))
 	for i, t := range types {
@@ -173,17 +175,14 @@ func (c *Client) AddRemoteLink(ctx context.Context, issue string, in RemoteLinkI
 	if in.GlobalID != "" {
 		body["globalId"] = in.GlobalID
 	}
-	var stored struct {
-		ID json.RawMessage `json:"id"`
-	}
-	err = c.send(ctx, http.MethodPost, path+"/remotelink", nil, body, &stored)
+	stored, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + path + "/remotelink", Body: body}, nil)
 	if _, ok := errors.AsType[*AnswerError](err); ok {
 		err = &StepError{Step: StepRemoteLink, Err: err}
 	}
 	if err != nil {
 		return "", fmt.Errorf("jira: add remote link on %s: %w", issue, err)
 	}
-	id := idText(stored.ID)
+	id := stored.id
 	if !numericRE.MatchString(id) {
 		return "", &StepError{Step: StepRemoteLink, Err: &AnswerError{Message: "the remote link's answer names no link ID"}}
 	}

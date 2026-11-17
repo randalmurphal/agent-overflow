@@ -50,9 +50,12 @@ Boards, backlog and sprints:
   near-identical names.
 - Ranking is `PUT /rest/agile/1.0/issue/rank` with `rankBeforeIssue` or
   `rankAfterIssue`, at most 50 issues, returning 204 or a 207 with per-issue
-  results. Moving into a sprint (`POST /sprint/{id}/issue`) and to the
-  backlog (`POST /backlog/issue`) take the same rank fields and the same 50
-  issue cap.
+  results. Moving into a sprint (`POST /sprint/{id}/issue`, future and
+  active sprints only) and to a board's backlog
+  (`POST /backlog/{boardId}/issue`) take the same rank fields and the same
+  50 issue cap; `POST /backlog/issue` takes the issues alone. The spec
+  documents a 207 for ranking and the board backlog move, and only a 204
+  for the sprint move.
 - A sprint is created with `POST /rest/agile/1.0/sprint`, started by setting
   `state` from `future` to `active` (start and end dates required) and
   completed by setting `active` to `closed`. No other state change is

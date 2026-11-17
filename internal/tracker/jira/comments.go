@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Comment is a comment on an issue.
@@ -222,7 +223,7 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	}
 	props, _, err := c.commentAudience(ctx, in.Issue, in.Audience)
 	if err != nil {
-		return res, fmt.Errorf("jira: comment on %s: %w", in.Issue, err)
+		return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
 	}
 	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
 	doc, _, err := b.markdown(ctx, in.Markdown, nil)
@@ -254,8 +255,12 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 // decoded (its ID at least, when the answer named one) returned.
 func (c *Client) writeComment(ctx context.Context, method, path string, body any) (*Comment, error) {
 	var stored commentJSON
-	if err := c.send(ctx, method, path, nil, body, &stored); err != nil {
-		return nil, &StepError{Step: StepComment, Err: err}
+	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Body: body}, &stored)
+	if err != nil {
+		if w.id == "" {
+			return nil, &StepError{Step: StepComment, Err: err}
+		}
+		return &Comment{ID: w.id}, &StepError{Step: StepComment, Err: err}
 	}
 	cm, err := stored.comment()
 	if err != nil {
@@ -314,7 +319,7 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	}
 	cur, err := c.comment(ctx, in.Issue, in.ID)
 	if err != nil {
-		return res, err
+		return res, notSentErr(err)
 	}
 	if in.From != nil && !adf.Equal(in.From, cur.Body) {
 		return res, notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})

@@ -239,9 +239,8 @@ func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 	return map[string]string{"key": is.Key}, nil
 }
 
-// buildSprint takes a sprint's numeric ID. Naming a sprint needs the
-// board calls that list a project's sprints; sprintByName is where they
-// plug in.
+// buildSprint takes a sprint's numeric ID, or the name of an open sprint
+// on the boards of the issue's project (sprintByName).
 func buildSprint(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	text := strings.TrimSpace(in.texts[0])
 	id, err := strconv.ParseInt(text, 10, 64)
@@ -252,10 +251,30 @@ func buildSprint(ctx context.Context, b *builder, f FieldMeta, in Input, v *Valu
 	return id, nil
 }
 
-// sprintByName resolves a sprint named by text. No board calls exist yet,
-// so it refuses every name and says how to name the sprint instead.
-func (b *builder) sprintByName(_ context.Context, f FieldMeta, text string, _ *Value) (any, error) {
-	return nil, fmt.Errorf("jira: %s takes a sprint's numeric ID; %q is not one, and sprints cannot be found by name yet", f.Name, text)
+// sprintByName resolves text among the active and future sprints of the
+// scrum boards of the project the value is for: the issue's project on
+// an edit, ValueOptions.Project on a create.
+func (b *builder) sprintByName(ctx context.Context, f FieldMeta, text string, v *Value) (any, error) {
+	project := b.opts.Project
+	if b.opts.Issue != "" {
+		is, err := b.c.GetIssue(ctx, b.opts.Issue, "project")
+		if err != nil {
+			return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+		}
+		if is.Project == nil {
+			return nil, fmt.Errorf("jira: %s: cannot tell which project %s is in, so not which sprints it can join", f.Name, b.opts.Issue)
+		}
+		project = is.Project.Key
+	}
+	if project == "" {
+		return nil, fmt.Errorf("jira: %s: a sprint named %q needs the issue or project it is for", f.Name, text)
+	}
+	s, err := b.c.openSprintNamed(ctx, project, text)
+	if err != nil {
+		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
+	}
+	v.Display = s.Name + " (sprint " + strconv.FormatInt(s.ID, 10) + ")"
+	return s.ID, nil
 }
 
 // buildTeam takes an Atlassian team's ID, which Jira checks.

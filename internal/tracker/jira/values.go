@@ -38,7 +38,8 @@ func Clear() Input { return Input{kind: inputClear} }
 // component or version by name or ID; a user by account ID, exact name
 // or email; a parent issue by key or ID; a number; an ISO 8601 date; an
 // RFC 3339 date-time; a label; plain text; Markdown for rich text; a
-// sprint or team ID.
+// sprint by ID or by the name of an open sprint on the project's scrum
+// boards; a team ID.
 func Text(s string) Input { return Input{kind: inputText, texts: []string{s}} }
 
 // Texts is several values for a multi-value field (options, labels,
@@ -84,17 +85,58 @@ type Value struct {
 	// there.
 	Unchanged bool
 
-	rich  bool          // a rich text field's value, a clear included
-	doc   *adf.Node     // a rich text value's document; nil for a clear
-	base  *adf.Node     // the stored document a rich text value replaces
-	imgs  []*Image      // the staged images doc embeds
-	edits []adf.Warning // the conversion's warnings, for CheckLoss
+	rich     bool          // a rich text field's value, a clear included
+	replaces bool          // a raw value replacing a stored document with content
+	doc      *adf.Node     // a rich text value's document; nil for a clear
+	base     *adf.Node     // the stored document a rich text value replaces
+	imgs     []*Image      // the staged images doc embeds
+	edits    []adf.Warning // the conversion's warnings, for CheckLoss
 }
 
 // CheckLoss reports whether a rich text edit may be written: a
-// *adf.LossError when it would lose content Markdown cannot show and the
+// *adf.LossError when it would lose content Markdown cannot show, or
+// replaces a stored document that has content with a raw one, and the
 // user has not accepted that.
-func (v Value) CheckLoss(accepted bool) error { return adf.CheckLoss(v.edits, accepted) }
+func (v Value) CheckLoss(accepted bool) error {
+	if v.replaces && !accepted {
+		return &adf.LossError{Lost: []adf.Warning{{
+			Msg: v.Name + ": a raw document replaces the stored one whole, and nothing shows what it drops",
+		}}}
+	}
+	return adf.CheckLoss(v.edits, accepted)
+}
+
+// rawRich builds a raw value for a rich text field: a full replacement
+// document, with the protections of any rich text write. It must be a
+// valid document (null is a clear); the value records the stored
+// document it replaces, which a plan rechecks; and replacing a stored
+// document that has content needs the caller's loss acceptance.
+func (b *builder) rawRich(f FieldMeta, raw json.RawMessage, v Value) (Value, error) {
+	v.rich, v.base = true, b.opts.Base
+	if isNull(raw) {
+		if f.Required {
+			return v, fmt.Errorf("jira: %s is required and cannot be cleared", f.Name)
+		}
+		v.Fields, v.Display = json.RawMessage(`null`), "(none)"
+		v.Unchanged = v.base == nil
+		v.replaces = !adf.Blank(v.base)
+		return v, nil
+	}
+	var doc *adf.Node
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return v, fmt.Errorf("jira: %s: the raw value is not a document: %w", f.Name, err)
+	}
+	if err := adf.Validate(doc); err != nil {
+		return v, fmt.Errorf("jira: %s: the raw value is not a valid document: %w", f.Name, err)
+	}
+	v.doc, v.Fields, v.Display = doc, raw, adf.ToMarkdown(doc)
+	v.Unchanged = v.base != nil && adf.Equal(doc, v.base)
+	v.replaces = !v.Unchanged && !adf.Blank(v.base)
+	if v.replaces {
+		v.Warnings = append(v.Warnings, f.Name+": the raw document replaces the stored one whole")
+	}
+	return v, nil
+}
 
 // ValueOptions says what a value is built for.
 type ValueOptions struct {
@@ -162,6 +204,12 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 	case inputRaw:
 		if !json.Valid(in.raw) {
 			return v, fmt.Errorf("jira: %s: the raw value is not JSON", f.Name)
+		}
+		if k == kindRich {
+			return b.rawRich(f, in.raw, v)
+		}
+		if f.Required && emptyValue(in.raw) {
+			return v, fmt.Errorf("jira: %s is required and cannot be cleared", f.Name)
 		}
 		v.Fields, v.Display = in.raw, string(in.raw)
 		return v, nil

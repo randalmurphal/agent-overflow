@@ -77,19 +77,30 @@ func fieldPreviews(vs []Value) []FieldPreview {
 }
 
 // owned ties a plan to the Client that made it and lets it be applied
-// once: a write whose outcome is unknown is never sent again.
+// once: a write whose outcome is unknown is never sent again. It points
+// at the plan's state, so a copy of a plan is the same plan, and
+// applying either uses both up.
 type owned struct {
+	state *planState
+}
+
+type planState struct {
 	client *Client
 	stage  *imageStage
 	used   atomic.Bool
 }
 
-// claim refuses a plan made by another Client, or applied already.
-func (o *owned) claim(c *Client) error {
+func newOwned(c *Client, imageDir string) owned {
+	return owned{state: &planState{client: c, stage: newImageStage(imageDir, c.maxUpload)}}
+}
+
+// claim refuses a plan made by another Client or by no PlanCreate or
+// PlanEdit, or applied already.
+func (o owned) claim(c *Client) error {
 	switch {
-	case o.client != c:
-		return notSent("the plan was made by another client")
-	case !o.used.CompareAndSwap(false, true):
+	case o.state == nil || o.state.client != c:
+		return notSent("the plan was not made by this client")
+	case !o.state.used.CompareAndSwap(false, true):
 		return notSent("the plan was applied already; plan again after reading the issue")
 	}
 	return nil
@@ -125,8 +136,8 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	if err != nil {
 		return nil, err
 	}
-	p.client, p.stage = c, newImageStage(in.ImageDir, c.maxUpload)
-	b := &builder{c: c, opts: ValueOptions{Project: in.Project, ImageDir: in.ImageDir}, stage: p.stage}
+	p.owned = newOwned(c, in.ImageDir)
+	b := &builder{c: c, opts: ValueOptions{Project: in.Project, ImageDir: in.ImageDir}, stage: p.state.stage}
 	set := map[string]bool{}
 	for _, fi := range in.Fields {
 		f, err := screen.Field(fi.Field)
@@ -258,7 +269,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 		return nil, err
 	}
 	p := &EditPlan{issueID: is.ID, issueKey: is.Key}
-	p.client, p.stage = c, newImageStage(in.ImageDir, c.maxUpload)
+	p.owned = newOwned(c, in.ImageDir)
 	for i, fi := range in.Fields {
 		f := metas[i]
 		opts := ValueOptions{Issue: is.Key, ImageDir: in.ImageDir}
@@ -267,7 +278,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 				return nil, notSentErr(err)
 			}
 		}
-		b := &builder{c: c, opts: opts, stage: p.stage}
+		b := &builder{c: c, opts: opts, stage: p.state.stage}
 		v, err := b.build(ctx, f, fi.Value)
 		if err != nil {
 			return nil, notSentErr(err)

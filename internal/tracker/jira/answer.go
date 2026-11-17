@@ -2,6 +2,7 @@ package jira
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -33,14 +34,54 @@ var errCredentialChanged = &AnswerError{Message: "the credential changed while t
 // text written with JSON escapes is checked as it decodes, not as sent.
 // A decode error is an *AnswerError whose text is scrubbed too.
 func decodeAnswer(resp *trackerapi.Response, out any) error {
+	_, err := decodeWritten(resp, out)
+	return err
+}
+
+// written is what a write's answer names as written: the id and key of
+// an object, or the id of each object of a list.
+type written struct {
+	id, key string
+	ids     []string
+}
+
+// decodeWritten decodes a write's answer into out (nil skips it) as
+// decodeAnswer does, reading first the identity of what was written on
+// its own and leniently (a string or a number), so it survives an answer
+// whose other fields do not decode. It is the one place a write's
+// identity is read.
+func decodeWritten(resp *trackerapi.Response, out any) (written, error) {
 	body, err := scrubbedBody(resp)
 	if err != nil {
-		return err
+		return written{}, err
+	}
+	var w written
+	var top map[string]json.RawMessage
+	var list []map[string]json.RawMessage
+	switch {
+	case json.Unmarshal(body, &top) == nil:
+		w.id, w.key = idText(top["id"]), idText(top["key"])
+	case json.Unmarshal(body, &list) == nil:
+		for _, item := range list {
+			w.ids = append(w.ids, idText(item["id"]))
+		}
+	}
+	if out == nil {
+		return w, nil
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return &AnswerError{Message: "the answer did not decode: " + resp.Scrub(err.Error())}
+		return w, &AnswerError{Message: "the answer did not decode: " + resp.Scrub(err.Error())}
 	}
-	return nil
+	return w, nil
+}
+
+// write sends r, a write, and decodes its answer through decodeWritten.
+func (c *Client) write(ctx context.Context, r trackerapi.Request, out any) (written, error) {
+	resp, err := c.call(ctx, r, nil)
+	if err != nil {
+		return written{}, err
+	}
+	return decodeWritten(resp, out)
 }
 
 // scrubbedBody is resp's body with every string scrubbed: the body itself
