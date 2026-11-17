@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,17 +22,17 @@ import (
 type hostedRefusals struct {
 	browserBehavior string
 	// allowAndName and deny refuse Page.setDownloadBehavior with that
-	// behavior; denyFrom, when set, lets deny calls before that one (1 is
-	// the first) through.
-	allowAndName, deny string
-	denyFrom           int64
+	// behavior; allowFrom and denyFrom, when set, let the calls with that
+	// behavior before that one (1 is the first) through.
+	allowAndName, deny  string
+	allowFrom, denyFrom int64
 }
 
 // hostedPageResponder answers what attaching launcher-created pages asks of
 // the browser: target TARGET-n attaches as session S-n, whose main frame is
 // TARGET-n, as WebView2 numbers a page's main frame by its target.
 func hostedPageResponder(refuse hostedRefusals) func(call fakeCDPCall) any {
-	var denies atomic.Int64
+	var allows, denies atomic.Int64
 	return func(call fakeCDPCall) any {
 		switch call.Method {
 		case "Target.attachToTarget":
@@ -61,7 +62,7 @@ func hostedPageResponder(refuse hostedRefusals) func(call fakeCDPCall) any {
 				Behavior string `json:"behavior"`
 			}
 			_ = json.Unmarshal(call.Params, &params)
-			if params.Behavior == "deny" && denies.Add(1) < refuse.denyFrom {
+			if (params.Behavior == "deny" && denies.Add(1) < refuse.denyFrom) || (params.Behavior == "allowAndName" && allows.Add(1) < refuse.allowFrom) {
 				return nil
 			}
 			if refusal := map[string]string{"allowAndName": refuse.allowAndName, "deny": refuse.deny}[params.Behavior]; refusal != "" {
@@ -170,7 +171,7 @@ func TestHostedPageKeepsItsDownloadsBeforeItIsHandedOver(t *testing.T) {
 	if len(cdpCalls(calls, "Page.navigate", "S-1")) != 0 {
 		t.Fatal("the page navigated before its downloads were kept")
 	}
-	if reason := page.(*hostedPage).downloadsUnmanaged(); reason != "" {
+	if reason := profile.downloadsWarning(); reason != "" {
 		t.Fatalf("a kept profile reports its downloads unmanaged: %s", reason)
 	}
 }
@@ -202,7 +203,7 @@ func TestHostedPageOpensWhenTheBrowserRefusesItsDownloadDirectory(t *testing.T) 
 	if got := pageBehaviors(t, endpoint, "S-1"); strings.Join(got, ",") != "allowAndName,deny" {
 		t.Fatalf("the page set %v, want allowAndName then deny", got)
 	}
-	warning := page.(*hostedPage).downloadsUnmanaged()
+	warning := profile.downloadsWarning()
 	if !strings.HasPrefix(warning, "Downloads are off in this browser profile: ") || !strings.Contains(warning, refusal) {
 		t.Fatalf("the page reports %q, want downloads off with the browser's refusal", warning)
 	}
@@ -228,7 +229,7 @@ func TestHostedPageSaysDownloadsGoToTheSystemFolderWhenDenyIsRefused(t *testing.
 	if got := pageBehaviors(t, endpoint, "S-1"); strings.Join(got, ",") != "allowAndName,deny" {
 		t.Fatalf("the page set %v, want allowAndName then deny", got)
 	}
-	warning := page.(*hostedPage).downloadsUnmanaged()
+	warning := profile.downloadsWarning()
 	if !strings.Contains(warning, "go to the system Downloads folder") || !strings.Contains(warning, refusal) || !strings.Contains(warning, denyRefusal) {
 		t.Fatalf("the page reports %q, want the system Downloads folder with both refusals", warning)
 	}
@@ -254,7 +255,7 @@ func TestHostedPagesTurnDownloadsOffWithoutDownloadEvents(t *testing.T) {
 	if len(pageLevel) != 1 || behaviorOf(t, pageLevel[0]).Behavior != "deny" {
 		t.Fatalf("Page.setDownloadBehavior calls %+v, want one deny", pageLevel)
 	}
-	if reason := page.(*hostedPage).downloadsUnmanaged(); !strings.HasPrefix(reason, "Downloads are off") || !strings.Contains(reason, refusal) {
+	if reason := profile.downloadsWarning(); !strings.HasPrefix(reason, "Downloads are off") || !strings.Contains(reason, refusal) {
 		t.Fatalf("the page reports %q, want downloads off with the browser's refusal", reason)
 	}
 	if !logs.contains(refusal) {
@@ -610,20 +611,45 @@ func TestAHostedDownloadWrittenElsewhereFails(t *testing.T) {
 	}
 }
 
+// awaitWarnings collects downloads-unmanaged events until enough answers
+// true, then for a while longer so a repeat would show.
+func awaitWarnings(t *testing.T, log *downloadEventLog, enough func([]CompanionEvent) bool) []CompanionEvent {
+	t.Helper()
+	var warnings []CompanionEvent
+	collect := func() {
+		for _, event := range log.take() {
+			if event.Kind == "downloads-unmanaged" {
+				warnings = append(warnings, event)
+			}
+		}
+	}
+	deadline := time.Now().Add(hostedTestDeadline)
+	for collect(); !enough(warnings); collect() {
+		if time.Now().After(deadline) {
+			t.Fatalf("warnings %+v", warnings)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	collect()
+	return warnings
+}
+
+func warnedWith(text string) func([]CompanionEvent) bool {
+	return func(warnings []CompanionEvent) bool {
+		return slices.ContainsFunc(warnings, func(event CompanionEvent) bool { return strings.Contains(event.Error, text) })
+	}
+}
+
 // unmanagedWarnings opens a second page of the thread's profile and
-// answers the downloads-unmanaged events the two pages raised.
-func unmanagedWarnings(t *testing.T, manager *Manager, log *downloadEventLog, access Access) []CompanionEvent {
+// answers the downloads-unmanaged events the two pages raised by the time
+// one says text.
+func unmanagedWarnings(t *testing.T, manager *Manager, log *downloadEventLog, access Access, text string) []CompanionEvent {
 	t.Helper()
 	if _, err := manager.NewCompanionPage(t.Context(), access, ""); err != nil {
 		t.Fatalf("a second page of the profile: %v", err)
 	}
-	var warnings []CompanionEvent
-	for _, event := range log.take() {
-		if event.Kind == "downloads-unmanaged" {
-			warnings = append(warnings, event)
-		}
-	}
-	return warnings
+	return awaitWarnings(t, log, warnedWith(text))
 }
 
 // When the browser refuses AO's download directory the pages still open,
@@ -632,10 +658,21 @@ func unmanagedWarnings(t *testing.T, manager *Manager, log *downloadEventLog, ac
 func TestADeniedHostedProfileIsToldOnceAndListsItsDeniedDownloads(t *testing.T) {
 	const refusal = "Failed to find browser context"
 	manager, endpoint, log, access, _ := newHostedDownloadManager(t, hostedRefusals{allowAndName: refusal})
-	warnings := unmanagedWarnings(t, manager, log, access)
+	warnings := unmanagedWarnings(t, manager, log, access, "Downloads are off")
 	if len(warnings) != 1 || warnings[0].ThreadID != access.ThreadID ||
 		!strings.HasPrefix(warnings[0].Error, "Downloads are off in this browser profile: ") || !strings.Contains(warnings[0].Error, refusal) {
 		t.Fatalf("warnings %+v, want one for the thread saying downloads are off, with the refusal", warnings)
+	}
+	// Two reports in flight read the same state; the second is not told.
+	manager.mu.Lock()
+	var handle string
+	for _, scope := range manager.scopes {
+		handle = scope.profile.Handle()
+	}
+	manager.mu.Unlock()
+	manager.downloadPolicyChanged(handle)
+	if n := countKind(log.take(), "downloads-unmanaged"); n != 0 {
+		t.Fatalf("an unchanged profile was told again %d times", n)
 	}
 
 	// What WebView2 reports for a download under deny (TestDownloadSmoke).
@@ -658,7 +695,7 @@ func TestADeniedHostedProfileIsToldOnceAndListsItsDeniedDownloads(t *testing.T) 
 func TestAnUncontainedHostedProfileSaysWhereDownloadsGo(t *testing.T) {
 	const refusal, denyRefusal = "Failed to find browser context", "Download behavior is locked"
 	manager, endpoint, log, access, _ := newHostedDownloadManager(t, hostedRefusals{allowAndName: refusal, deny: denyRefusal})
-	warnings := unmanagedWarnings(t, manager, log, access)
+	warnings := unmanagedWarnings(t, manager, log, access, "system Downloads folder")
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Error, "go to the system Downloads folder") || !strings.Contains(warnings[0].Error, denyRefusal) {
 		t.Fatalf("warnings %+v, want one saying downloads go to the system Downloads folder", warnings)
 	}
@@ -682,15 +719,56 @@ func assertUncontainedDownload(t *testing.T, manager *Manager, endpoint *fakeCDP
 	}
 }
 
-// A profile whose downloads were off and then could not be turned off tells
-// the user again, with where downloads now go.
+// A profile whose downloads were off and then could not be turned off when
+// a page was created tells the user again, with where downloads now go.
 func TestAHostedProfileWarnsAgainWhenItsDownloadsLeaveAO(t *testing.T) {
 	const refusal, denyRefusal = "Failed to find browser context", "Download behavior is locked"
 	manager, endpoint, log, access, _ := newHostedDownloadManager(t, hostedRefusals{allowAndName: refusal, deny: denyRefusal, denyFrom: 2})
-	warnings := unmanagedWarnings(t, manager, log, access)
-	if len(warnings) != 2 || !strings.HasPrefix(warnings[0].Error, "Downloads are off") || !strings.Contains(warnings[1].Error, "go to the system Downloads folder") {
-		t.Fatalf("warnings %+v, want downloads off and then the system Downloads folder", warnings)
+	awaitWarnings(t, log, warnedWith("Downloads are off"))
+	warnings := unmanagedWarnings(t, manager, log, access, "system Downloads folder")
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Error, "go to the system Downloads folder") {
+		t.Fatalf("warnings %+v, want the system Downloads folder once", warnings)
 	}
 	beginDownload(endpoint, "G-7", "loose.bin")
 	assertUncontainedDownload(t, manager, endpoint, access)
+}
+
+// A tab's close that makes the surviving tab re-set the profile's download
+// behavior, and has that refused, tells the user the profile's new state.
+func TestAHostedProfileWarnsWhenAReassertOnASurvivingTabIsRefused(t *testing.T) {
+	const refusal, denyRefusal = "Failed to find browser context", "Download behavior is locked"
+	for _, tc := range []struct {
+		name   string
+		refuse hostedRefusals
+		before string
+		after  string
+	}{
+		// Two pages set AO's directory; the third call, the re-set, is refused.
+		{"managed to off", hostedRefusals{allowAndName: refusal, allowFrom: 3}, "", "Downloads are off"},
+		// Two pages deny; the third deny, the re-set, is refused.
+		{"off to the system folder", hostedRefusals{allowAndName: refusal, deny: denyRefusal, denyFrom: 3}, "Downloads are off", "system Downloads folder"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, log, access, _ := newHostedDownloadManager(t, tc.refuse)
+			if _, err := manager.NewCompanionPage(t.Context(), access, ""); err != nil {
+				t.Fatal(err)
+			}
+			if tc.before != "" {
+				awaitWarnings(t, log, warnedWith(tc.before))
+			} else if warnings := awaitWarnings(t, log, func([]CompanionEvent) bool { return true }); len(warnings) != 0 {
+				t.Fatalf("a managed profile warned %+v", warnings)
+			}
+			pages := manager.CompanionState(access).Pages
+			if len(pages) != 2 {
+				t.Fatalf("pages %+v", pages)
+			}
+			if err := manager.closeLivePage(t.Context(), access, pages[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			warnings := awaitWarnings(t, log, warnedWith(tc.after))
+			if len(warnings) != 1 || warnings[0].ThreadID != access.ThreadID {
+				t.Fatalf("warnings %+v, want one for the thread saying %q", warnings, tc.after)
+			}
+		})
+	}
 }

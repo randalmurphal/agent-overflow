@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -169,6 +170,9 @@ type Manager struct {
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
+	// downloadAdmitting is a test seam run between a download start's page
+	// lookup and its admission. Production leaves it nil.
+	downloadAdmitting func()
 }
 
 type ManagerOptions struct {
@@ -282,21 +286,25 @@ type managedPage struct {
 	info     PageInfo
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
-	load         pageLoad
-	logMu        sync.Mutex
-	logs         []ConsoleLog
-	clipboardMu  sync.Mutex
-	clipboard    []ClipboardItem
-	downloadMu   sync.Mutex
-	downloadSeq  uint64
-	downloads    []DownloadInfo
-	downloadWait chan struct{}
-	assetMu      sync.Mutex
-	inventories  map[string]AssetInventory
-	assetOrder   []string
-	nodeMu       sync.Mutex
-	nodeRefs     map[string]nodeReference
-	nodeOrder    []string
+	load        pageLoad
+	logMu       sync.Mutex
+	logs        []ConsoleLog
+	clipboardMu sync.Mutex
+	clipboard   []ClipboardItem
+	downloadMu  sync.Mutex
+	// downloadsEnded is set when the page stops being the Manager's
+	// (pageLeftLocked); no download is admitted on it after. Guarded by
+	// downloadMu.
+	downloadsEnded bool
+	downloadSeq    uint64
+	downloads      []DownloadInfo
+	downloadWait   chan struct{}
+	assetMu        sync.Mutex
+	inventories    map[string]AssetInventory
+	assetOrder     []string
+	nodeMu         sync.Mutex
+	nodeRefs       map[string]nodeReference
+	nodeOrder      []string
 	// find is written only by a find transition, which holds mu (find.go);
 	// findMu guards it for readers. findMu may be held around the Manager's
 	// mu, never taken inside it. ends are the find ends submitted and not
@@ -369,6 +377,8 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		DownloadProgress:  m.downloadProgress,
 		KeyChord:          m.keyChord,
 		PageFocusReported: m.pageFocusReported,
+
+		DownloadPolicyChanged: m.downloadPolicyChanged,
 	})
 	pruneEncryptedCheckpoints(configDir)
 	m.loadPageRecords(opts.KeepThread)
@@ -791,27 +801,11 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	if err != nil {
 		return err
 	}
-	warn := ""
-	if unmanaged, ok := driver.(downloadsUnmanaged); ok {
-		warn = unmanaged.downloadsUnmanaged()
-	}
 	// Under m.mu: the jar's policy resolves a request to the page being
 	// created (jarAllows) while it loads, before it is registered.
 	m.mu.Lock()
 	p.attach(driver)
-	if warn != "" {
-		// Once per profile: every page of it says the same until the
-		// profile's state changes.
-		if scope.downloadsWarned == warn {
-			warn = ""
-		} else {
-			scope.downloadsWarned = warn
-		}
-	}
 	m.mu.Unlock()
-	if warn != "" {
-		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: warn})
-	}
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return err
@@ -819,6 +813,40 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	m.pageAttached(p)
 	p.touch()
 	return nil
+}
+
+// downloadPolicyChanged tells the threads with a page in the profile, live
+// or being created, its current download warning, once per change.
+func (m *Manager) downloadPolicyChanged(handle string) {
+	m.mu.Lock()
+	var threads []string
+	warn := ""
+	for _, scope := range m.scopes {
+		policy, ok := scope.profile.(downloadPolicy)
+		if !ok || scope.profile.Handle() != handle {
+			continue
+		}
+		warn = policy.downloadsWarning()
+		if warn == scope.downloadsWarned {
+			break
+		}
+		scope.downloadsWarned = warn
+		for _, p := range scope.pages {
+			threads = append(threads, p.owner)
+		}
+		for p := range scope.creating {
+			threads = append(threads, p.owner)
+		}
+		break
+	}
+	m.mu.Unlock()
+	if warn == "" {
+		return
+	}
+	slices.Sort(threads)
+	for _, thread := range slices.Compact(threads) {
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: thread, Error: warn})
+	}
 }
 
 // pageHooks binds one page's AO-owned state to the engine events its driver

@@ -41,8 +41,8 @@ type fakeEngine struct {
 	seq     atomic.Uint64
 	events  engineEvents
 	// downloadReleased is a test seam run between a held download's
-	// release and its finish report (finishHeld), where a native engine
-	// releases its record. Nil outside tests.
+	// release and its terminal report (finishHeld, CancelDownload), where a
+	// native engine releases its record. Nil outside tests.
 	downloadReleased func(id string)
 }
 

@@ -116,11 +116,14 @@ change to a page's download entry goes through `noteDownloadLocked` and
 pane shows and coalesce byte progress; an engine reports one terminal event
 per download, and that report alone settles the user's cancel. Every
 removal of a live page goes through `pageLeftLocked`, which settles the
-page's running downloads. The hosted engine sets each page's download
+page's running downloads and, under the page's `downloadMu`, ends its
+admission of new ones. The hosted engine sets each page's download
 behavior from the page's own session before handing the page over, has the
 profile's other live pages set it again, one profile-serialized walk per
 leaving page, before that page's session goes, and on a refusal leaves the
-page open and denies the profile's downloads (`hosted_downloads.go`).
+page open and denies the profile's downloads (`hosted_downloads.go`). A
+profile's download-policy change, whenever it happens, reaches the user
+only through `engineEvents.DownloadPolicyChanged`.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and
 ephemeral profiles must remain distinct; a private jar is always ephemeral.

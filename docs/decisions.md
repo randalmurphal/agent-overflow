@@ -600,9 +600,12 @@ and anti-changes that live only here:
   seven-day pruning. Downloads never open with the system's default app.
   A browser that refuses AO's download directory still opens its pages:
   the profile's downloads are turned off, the user is told once per
-  browser profile, and each refused download is listed as failed with the
-  reason. Only when turning them off is refused too is the user told that
-  the profile's downloads go to the system Downloads folder.
+  browser profile and state change, and each refused download is listed as
+  failed with the reason. Only when turning them off is refused too is the
+  user told that the profile's downloads go to the system Downloads folder.
+  Such a profile keeps its pages rather than failing them: real WebView2
+  accepts both calls, so this needs an engine change, and losing the
+  browser to it is worse than the visible warning.
   `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A

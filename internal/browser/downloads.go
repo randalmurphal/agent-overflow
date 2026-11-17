@@ -40,7 +40,15 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 	if source == "" || source == "about:blank" {
 		source = event.URL
 	}
+	if m.downloadAdmitting != nil {
+		m.downloadAdmitting()
+	}
 	p.downloadMu.Lock()
+	if p.downloadsEnded {
+		// The page left after it was looked up; nothing would settle this.
+		p.downloadMu.Unlock()
+		return false
+	}
 	p.downloadSeq++
 	entry := DownloadInfo{
 		Sequence: p.downloadSeq, ID: event.ID, URL: event.URL,
@@ -268,13 +276,15 @@ type endedDownloads struct {
 // being the Manager's goes through it (a close, a jar switch, a suspend, the
 // engine's own close, the browser's close), so none can leave the page's
 // downloads running with nothing to settle them: they settle here as
-// canceled with reason. The caller holds m.mu, publishes the answer once it
-// is released (publishDownloads), and stops it (stopEndedDownloads) before
-// the profile is disposed.
+// canceled with reason, and the page admits none after (downloadStarted).
+// The caller holds m.mu, publishes the answer once it is released
+// (publishDownloads), and stops it (stopEndedDownloads) before the profile
+// is disposed.
 func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string) endedDownloads {
 	delete(scope.pages, p.id)
 	ended := endedDownloads{scope: scope}
 	p.downloadMu.Lock()
+	p.downloadsEnded = true
 	for i := range p.downloads {
 		entry := &p.downloads[i]
 		if entry.State != downloadStateRunning {

@@ -231,9 +231,11 @@ behave as a desktop browser's:
   (the reveal hand-off of Show in folder) and, for a type every engine shows
   in a tab (PDF, PNG, JPEG, GIF, WebP, BMP, text, JSON), opens in a new tab.
   Script-capable types (HTML, SVG, XML) are never opened from the list. A
-  row acts only on the file its download wrote (`os.SameFile` against the
-  file as it finished): one moved away or replaced since, including by a
-  later download given the freed name, is refused with that reason. There
+  row acts only on the file its download wrote (device, inode, size and
+  modification time against the file as it finished, which a rename keeps
+  and a later download on a reused inode cannot match): one moved away,
+  changed or replaced since, including by a later download given the freed
+  name, is refused with that reason. There
   is no "open with the system's default app": the OS opener refuses `file:`
   URLs (`internal/externalurl`). Clear list drops the settled downloads and
   deletes no file. The list is in memory and goes with the thread; the page's
@@ -244,9 +246,11 @@ behave as a desktop browser's:
   (a Kind `download` event): a toast with Show in folder when it finished,
   an error toast with the reason otherwise. `canceled` means AO stopped it:
   the user (settled by the engine's own report, so a finish that beats the
-  cancel keeps its file), a quota, its size, or its page leaving by any
-  path (a close, a suspend, the engine's close, Clear site data, disabling
-  the browser), which settles it at once and releases its reservation; an
+  cancel keeps its file; a repeated cancel never withdraws the first), a
+  quota, its size, or its page leaving by any path (a close, a suspend, the
+  engine's close, Clear site data, disabling the browser), which settles it
+  at once and releases its reservation; a download that starts on a page
+  already leaving is refused to the engine and never listed; an
   end the engine reports on its own is `failed`, with the engine's reason
   when it gives one.
   On Windows through WSL the pane's WebView2 writes into the jar's AO
@@ -254,8 +258,10 @@ behave as a desktop browser's:
   which records the protocol real WebView2 accepts; `TestDownloadSmoke` in
   `internal/webview2host` runs it on the real runtime). A refusal does not
   fail the page: it is logged with the engine's message and the user gets
-  one error toast per browser profile (a Kind `downloads-unmanaged` event,
-  repeated only if the profile's state changes). A refused directory or
+  one error toast per browser profile (a Kind `downloads-unmanaged` event)
+  for each change of the profile's state, whether a new tab or a re-set on
+  a surviving tab after a close made it, sent to every thread with a tab in
+  the profile. A refused directory or
   refused download events turn the profile's downloads off (`deny`), and
   each download the browser then cancels is listed as failed with the
   reason. If turning them off is refused too, the toast says downloads in

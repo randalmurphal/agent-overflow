@@ -278,12 +278,14 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
-// downloadsUnmanaged is the optional half of a page driver whose engine can
-// fail to keep the page's downloads in AO's directory without failing the
-// page: it answers the user-facing warning, empty when downloads are
-// managed. The Manager shows each distinct warning once per jar profile.
-type downloadsUnmanaged interface {
-	downloadsUnmanaged() string
+// downloadPolicy is the optional half of an engine profile that can fail to
+// keep its downloads in AO's directory without failing its pages:
+// downloadsWarning answers the user-facing warning, empty while downloads
+// are managed. The engine reports each change, at page creation or any
+// later time, through engineEvents.DownloadPolicyChanged; the Manager shows
+// each distinct warning once per jar profile.
+type downloadPolicy interface {
+	downloadsWarning() string
 }
 
 // pageFind is the optional find-in-page half of a page driver: the engine's
@@ -428,6 +430,11 @@ type engineEvents struct {
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool
 	DownloadProgress func(downloadProgress)
+	// DownloadPolicyChanged reports that the profile with this handle
+	// changed what it does with downloads (downloadPolicy). It carries no
+	// state: the Manager reads the current warning, so reports may arrive
+	// in any order, and an engine may report from any goroutine.
+	DownloadPolicyChanged func(profile string)
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held
 	// keyboard focus — does AO own it? True means the engine swallows the
