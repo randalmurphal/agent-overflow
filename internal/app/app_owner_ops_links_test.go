@@ -196,7 +196,9 @@ func TestASpawnNotYetAcceptedWhenItsSpawnerWasArchivedIsCancelledInAnyOrder(t *t
 			}()
 			call := within(t, "the spawn on its way", arrived)
 			cancel()
-			within(t, "the source giving up on the spawn", spawned)
+			// An uncertain ack or the cancellation's error: either way the
+			// source stopped waiting, and the call is still on its way.
+			_ = within(t, "the source giving up on the spawn", spawned)
 
 			// The archive is sent and not answered; the reopen supersedes it.
 			p.peer.asleep.Store(true)
