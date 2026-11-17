@@ -72,6 +72,27 @@ type jarIdentity struct {
 	private string
 }
 
+// jarScope is one open cookie jar: its engine profile and the pages in it,
+// which may belong to several workspaces' authority (jar.go).
+type jarScope struct {
+	jar     jarIdentity
+	profile engineProfile
+	pages   map[string]*managedPage
+	// creating holds the pages being created in this scope, reserving it.
+	// Guarded by m.mu.
+	creating map[*managedPage]struct{}
+	// closing holds the pages closed and not yet disposed, by page id
+	// (lifecycle.go). They are out of pages, so nothing finds or presents
+	// them as live, and still count toward every cap. Guarded by m.mu.
+	closing map[string]*pageClose
+	// downloadDir is where the engine writes this jar's downloads before
+	// they move to their workspace's directory.
+	downloadDir string
+	// downloadsWarned is what the user was last told about downloads in
+	// this jar's profile not being managed. Guarded by m.mu.
+	downloadsWarned string
+}
+
 // jarForLocked maps a thread's access and a jar kind to the jar its pages
 // open in. access.Workspace is canonical. A private jar without a live
 // instance takes a new token here. The caller holds m.mu.

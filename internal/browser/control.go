@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -187,6 +188,40 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 		m.syncPanePresentation(access.ThreadID)
 	}
 	return info, nil
+}
+
+// Pages lists the thread's pages, suspended ones included as they were saved:
+// listing is not a touch, so it restores nothing.
+func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
+	tabs := m.threadTabs(access.ThreadID)
+	m.mu.Lock()
+	activePageID := m.sessionLocked(access.ThreadID).ActivePageID
+	m.mu.Unlock()
+	out := make([]PageInfo, 0, len(tabs))
+	for _, tab := range tabs {
+		p := tab.live
+		if p == nil {
+			info := tab.info
+			info.Selected = info.ID == activePageID
+			info.LastOpened = time.Unix(0, tab.lastUse).UTC().Format(time.RFC3339Nano)
+			out = append(out, info)
+			continue
+		}
+		p.mu.Lock()
+		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
+		listing := pageListing{Selected: p.id == activePageID, LastOpened: time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)}
+		info, _, err := m.readInfo(opCtx, p, listing)
+		cancel()
+		p.mu.Unlock()
+		if err == nil {
+			info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
+			out = append(out, info)
+		}
+	}
+	// What the reads found, the tabs show.
+	m.publishPages(access.ThreadID)
+	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
+	return out, nil
 }
 
 func (m *Manager) sessionLocked(threadID string) SessionInfo {
