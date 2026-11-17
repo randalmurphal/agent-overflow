@@ -744,11 +744,7 @@ Ruling 36, as built:
   The sidebar's archive says so in a toast that archives them again.
   The archive's flip marks it unfinished in the same transaction, the
   walk's end clears the mark, and each boot finishes the archives still
-  marked through the same path (`startPendingArchives`). A walk that
-  could not read the workers it goes on to archive keeps the mark, and
-  its result says the thread's sub-threads could not be read
-  (`cleanupError`); a paired computer's archive answers `unfinished`,
-  naming the worker, so it stays owed. At the boot, what the thread
+  marked through the same path (`startPendingArchives`): what the thread
   still has of the work an archive stops is stopped, a remote command's
   cancel owed when its computer does not take it, and its workers are
   archived. A thread reopened before the resume reaches it is left alone.
@@ -870,16 +866,9 @@ Ruling 36, as built:
   operation owed here (`unfinished`), named pending with its computer,
   and the same operation sent again walks again: an archive while the
   worker is still archived under that sequence, a delete through its
-  committed claim. That computer answers that a spawn is gone only when
-  no worker can appear for it: an operation for a spawn it has no
-  receipt for yet writes the receipt settled, cancelled under that
-  sequence (`FenceSpawn`), so the spawn, if it still arrives, creates
-  nothing. A supersede fences too: one is sent only in place of an
-  archive already sent, so a spawn that computer had not accepted when
-  its spawner was archived is cancelled whatever order the archive, the
-  supersede and the spawn arrive in. A receipt settled before its thread was named names none
-  (`SetThreadReceiptTarget`), and its creation deletes the thread it
-  made. A local spawn on its way when its spawner is archived or deleted
+  committed claim. A receipt settled before its thread was named names
+  none (`SetThreadReceiptTarget`), and its creation deletes the thread
+  it made. A local spawn on its way when its spawner is archived or deleted
   holds that archive or delete until its thread exists, which the
   archive or delete then takes with the rest. Every write that ends links
   announces the workers it released and hands back the prompts their
