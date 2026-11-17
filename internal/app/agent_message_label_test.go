@@ -230,6 +230,8 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a wake whose attribution did not decode", text, meta)
 	text, meta = appWake(builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: worker, ThreadID: "t-worker"}, &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}})))
 	add("a worker's approval request", text, meta)
+	text, meta = appWake(builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: worker, ThreadID: "t-worker", Computer: "desk", ComputerID: "c-desk"}, &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}})))
+	add("a worker's approval request on a paired computer", text, meta)
 	text, meta = appWake(builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: "", ThreadID: "t-worker"}, &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}})))
 	add("an untitled worker's question", text, meta)
 	watch := store.RemoteWatch{ComputerID: "c-desk", RequestID: "r-1", Label: "make test", Receipt: store.RemoteJob{Workspace: "/w", State: "finished", ExitCode: 0}}

@@ -38,7 +38,7 @@ import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
-import { userFacingError } from '../../utils/userFacingError';
+import { asSentence, userFacingError } from '../../utils/userFacingError';
 import { isAssistantNameTaken } from '../../stores/assistants.svelte';
 import type { ArchiveThreadResult, DeleteThreadResult, Thread, WorkerFailure } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
@@ -186,12 +186,74 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
 }
 
 /**
+ * A worker failure split by where the worker is: here, on a paired computer
+ * that has not taken the archive or delete yet (`pending`: it is sent again
+ * until that computer does), or on a paired computer too old to take it.
+ * Only a worker here is this computer's to archive or delete again.
+ */
+function splitWorkerFailures(workers: readonly WorkerFailure[]) {
+  const here: WorkerFailure[] = [];
+  const pending = new Map<string, WorkerFailure[]>();
+  const older = new Map<string, WorkerFailure[]>();
+  for (const worker of workers) {
+    if (!worker.computer) {
+      here.push(worker);
+      continue;
+    }
+    const byComputer = worker.pending ? pending : older;
+    byComputer.set(worker.computer, [...(byComputer.get(worker.computer) ?? []), worker]);
+  }
+  return { here, pending, older };
+}
+
+/**
+ * "its worker "A"" or "its workers "A", "B"", for workers on a paired
+ * computer; a worker whose spawn there has not named a thread yet may have
+ * no title.
+ */
+function remoteWorkersPhrase(owner: string, workers: readonly WorkerFailure[]): { subject: string; plural: boolean } {
+  const names = workers.map((worker) => worker.title || worker.threadId).filter(Boolean).map((name) => `"${name}"`);
+  const plural = workers.length > 1;
+  return { subject: `${owner} ${plural ? 'workers' : 'worker'}${names.length > 0 ? ` ${names.join(', ')}` : ''}`, plural };
+}
+
+/**
+ * What an archive or delete left owed on paired computers, one toast per
+ * computer: workers it is on its way to (`pending`), said as such and not
+ * as a failure, and workers on a computer too old to take it, said once.
+ * Neither offers a retry: the other computer's half is sent again on its
+ * own, and an older computer never takes it. That computer's reason is a
+ * sentence written for a person and is shown whole. `done` is "Archived"
+ * or "Deleted"; `owner` names the threads' workers ("its" or "their").
+ */
+function reportRemoteLeftovers(
+  done: 'Archived' | 'Deleted',
+  title: string,
+  owner: string,
+  pending: ReadonlyMap<string, WorkerFailure[]>,
+  older: ReadonlyMap<string, WorkerFailure[]>,
+): void {
+  for (const [computer, workers] of pending) {
+    const { subject, plural } = remoteWorkersPhrase(owner, workers);
+    const capitalized = subject.charAt(0).toUpperCase() + subject.slice(1);
+    addToast('info', `${done} "${title}". ${capitalized} ${plural ? 'are' : 'is'} pending on ${computer}. ${asSentence(workers[0].error)}`, 10000);
+  }
+  for (const [computer, workers] of older) {
+    const { subject, plural } = remoteWorkersPhrase(owner, workers);
+    const stays = done === 'Archived' ? `${plural ? 'are' : 'is'} still open` : `${plural ? 'stay' : 'stays'}`;
+    addToast('warning', `${done} "${title}", but ${subject} on ${computer} ${stays}: ${asSentence(workers[0].error)}`, 10000);
+  }
+}
+
+/**
  * An archive that committed can still leave work undone: workers it owns
- * whose archive was refused stay open, and the toast archives them again;
- * work it could not stop is said once.
+ * here whose archive was refused stay open, and the toast archives them
+ * again; workers on paired computers are named as pending there or as on
+ * an older computer (reportRemoteLeftovers); work it could not stop is said
+ * once.
  */
 function reportArchiveLeftovers(backend: BackendKey, title: string, result: ArchiveThreadResult): void {
-  const workers = result.workersNotArchived ?? [];
+  const { here: workers, pending, older } = splitWorkerFailures(result.workersNotArchived ?? []);
   if (workers.length > 0) {
     const names = workers.map((worker) => `"${worker.title || worker.threadId}"`).join(', ');
     const which = workers.length === 1 ? `its worker ${names} is` : `its workers ${names} are`;
@@ -200,6 +262,7 @@ function reportArchiveLeftovers(backend: BackendKey, title: string, result: Arch
       run: () => void archiveWorkersAgain(backend, workers),
     });
   }
+  reportRemoteLeftovers('Archived', title, 'its', pending, older);
   if (result.cleanupError) {
     addToast('warning', `Archived "${title}", but some of its work could not be stopped: ${userFacingError(result.cleanupError)}`);
   }
@@ -312,7 +375,8 @@ export async function deleteThread(
  * What a delete that went through left undone. A thread under the deleted
  * ones whose delete failed keeps itself and the threads above it hidden
  * and unfinished; the toast deletes `seeds`, what the delete named, again,
- * which finishes them.
+ * which finishes them. Workers on paired computers are named as pending
+ * there or as on an older computer (reportRemoteLeftovers).
  */
 export function reportDeleteLeftovers(
   backend: BackendKey,
@@ -320,7 +384,7 @@ export function reportDeleteLeftovers(
   result: Pick<DeleteThreadResult, 'workersNotDeleted'>,
   seeds: readonly string[],
 ): void {
-  const workers = result.workersNotDeleted ?? [];
+  const { here: workers, pending, older } = splitWorkerFailures(result.workersNotDeleted ?? []);
   if (workers.length > 0) {
     const names = workers.map((worker) => `"${worker.title || worker.threadId}"`).join(', ');
     const which = workers.length === 1 ? `the thread ${names} under it was` : `the threads ${names} under it were`;
@@ -329,6 +393,7 @@ export function reportDeleteLeftovers(
       run: () => void deleteAgain(backend, title, seeds),
     });
   }
+  reportRemoteLeftovers('Deleted', title, seeds.length === 1 ? 'its' : 'their', pending, older);
 }
 
 async function deleteAgain(backend: BackendKey, title: string, seeds: readonly string[]): Promise<void> {

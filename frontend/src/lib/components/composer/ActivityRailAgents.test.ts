@@ -12,6 +12,11 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadAgentRow, ThreadAgentStop } from '../../stores/bindings';
 import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
 import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
+import { getPinnedBackend } from '../../transport/backends';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+
+const BENCH_UUID = '11111111-2222-4333-8444-555555555555';
 
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
@@ -575,17 +580,57 @@ describe('the Agents segment', () => {
     expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-origin' });
   });
 
-  it('offers Show in Sidebar on an owned worker of this computer only, and drops it once the worker has a row', async () => {
+  for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}offers Show in Sidebar on an owned worker on a paired computer this window is attached to, and places it there`, async () => {
+      setCompactLayoutForTest(compact);
+      stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+      stageBackend({ id: 'bench', backendId: BENCH_UUID, name: 'Bench' });
+      try {
+        const { view, toggle } = await openTray((caller) => [
+          row('studio', { callerThreadId: caller, placement: 'owned', computerId: REMOTE_BACKEND_UUID, computer: 'Studio' }),
+          // Its own worker on a third computer, nested under it.
+          row('bench', { callerThreadId: 't-studio', depth: 1, placement: 'owned', computerId: BENCH_UUID, computer: 'Bench' }),
+          // A computer this window is not attached to: it cannot place it.
+          row('away', { callerThreadId: caller, placement: 'owned', computerId: 'unpaired-uuid', computer: 'Old laptop' }),
+          row('away-listed', { callerThreadId: caller, placement: 'standalone', computerId: REMOTE_BACKEND_UUID, computer: 'Studio' }),
+        ]);
+        const targets: (string | null)[] = [];
+        const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => {
+          targets.push(getPinnedBackend());
+          return ids.map((id) => ({ id, placement }));
+        }));
+        await fireEvent.click(toggle);
+        const rows = await view.findAllByTestId('agent-tray-row');
+        expect(rows.map((r) => Boolean(within(r).queryByTestId('agent-tray-row-show-in-sidebar')))).toEqual([true, true, false, false]);
+        await fireEvent.click(within(rows[0]).getByTestId('agent-tray-row-show-in-sidebar'));
+        await waitFor(() => expect(place).toHaveBeenCalledWith(['t-studio'], 'standalone'));
+        await fireEvent.click(within(rows[1]).getByTestId('agent-tray-row-show-in-sidebar'));
+        await waitFor(() => expect(place).toHaveBeenCalledWith(['t-bench'], 'standalone'));
+        expect(targets).toEqual(['studio', 'bench']);
+        await waitFor(() => expect(within(rows[0]).queryByTestId('agent-tray-row-show-in-sidebar')).toBeNull());
+        expect(toastTexts()).toEqual([]);
+      } finally {
+        resetStagedBackends();
+      }
+    });
+  }
+
+  it('offers Show in Sidebar on an owned worker of this computer, and drops it once the worker has a row', async () => {
     const { view, toggle } = await openTray((caller) => [
       row('owned', { callerThreadId: caller, placement: 'owned' }),
       row('listed', { callerThreadId: caller, placement: 'standalone' }),
       row('archived', { callerThreadId: caller, placement: 'owned', archived: true }),
+      // A paired computer this window is not attached to.
       row('remote', { callerThreadId: caller, placement: 'owned', computerId: 'peer', computer: 'Laptop' }),
       row('send', { callerThreadId: caller, kind: 'send', placement: 'owned' }),
       // An assistant's helper is outside every project: no placement to give.
       row('helper', { callerThreadId: caller }),
     ]);
-    const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => ids.map((id) => ({ id, placement }))));
+    const targets: (string | null)[] = [];
+    const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => {
+      targets.push(getPinnedBackend());
+      return ids.map((id) => ({ id, placement }));
+    }));
     await fireEvent.click(toggle);
     const rows = await view.findAllByTestId('agent-tray-row');
     expect(rows.map((r) => Boolean(within(r).queryByTestId('agent-tray-row-show-in-sidebar')))).toEqual([true, false, false, false, false, false]);
@@ -595,6 +640,7 @@ describe('the Agents segment', () => {
     expect(show.getAttribute('aria-label')).toBe('Show in Sidebar');
     await fireEvent.click(show);
     await waitFor(() => expect(place).toHaveBeenCalledWith(['t-owned'], 'standalone'));
+    expect(targets).toEqual([HOME_BACKEND]);
     await waitFor(() => expect(within(rows[0]).queryByTestId('agent-tray-row-show-in-sidebar')).toBeNull());
     expect(toastTexts()).toEqual([]);
   });

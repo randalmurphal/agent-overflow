@@ -174,6 +174,33 @@ describe('archiveThreadAction', () => {
     expect(getToasts()).toHaveLength(1);
   });
 
+  // docs/specs/standing-agents.md, "Owned workers": an archive a paired
+  // computer has not taken yet stands here and is sent again until it lands;
+  // one that computer is too old for is said once. Neither is archived again
+  // from here: the worker is not this computer's to archive.
+  it('names a worker on another computer as pending there, and one on an older computer once, archiving neither again', async () => {
+    const archive = vi.fn(async (id: string) => (id === 'thread-1'
+      ? { workersNotArchived: [
+          { threadId: 'worker-1', title: 'Parser review', error: 'thread is preparing a fork' },
+          { threadId: 'remote-1', title: 'Kernel build', computer: 'Laptop', pending: true, error: 'Laptop did not answer in time; it is archived there once that computer answers' },
+          { threadId: 'remote-2', title: 'Soak run', computer: 'Laptop', pending: true, error: 'Laptop: its thread there is still being made; it is archived there once that computer takes it' },
+          { threadId: '', title: '', computer: 'Desk', error: 'Desk runs an older version, so the worker there was not archived' },
+        ] }
+      : {}));
+    setBindingMock('ArchiveThread', archive);
+    const ctx = makeCtx({});
+    await archiveThreadAction(ctx);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getToasts().map((toast) => [toast.type, toast.message, toast.action?.label ?? null])).toEqual([
+      ['warning', 'Archived "Source thread", but its worker "Parser review" is still open: Thread is preparing a fork.', 'Archive again'],
+      ['info', 'Archived "Source thread". Its workers "Kernel build", "Soak run" are pending on Laptop. Laptop did not answer in time; it is archived there once that computer answers.', null],
+      ['warning', 'Archived "Source thread", but its worker on Desk is still open: Desk runs an older version, so the worker there was not archived.', null],
+    ]);
+    getToasts()[0].action?.run();
+    await vi.waitFor(() => expect(archive).toHaveBeenCalledWith('worker-1'));
+    expect(archive.mock.calls.map(([id]) => id)).toEqual(['thread-1', 'worker-1']);
+  });
+
   it('says what the archive could not stop', async () => {
     setBindingMock('ArchiveThread', vi.fn(async () => ({ cleanupError: 'cancel remote command: peer unreachable' })));
     const ctx = makeCtx({});
@@ -251,6 +278,24 @@ describe('deleteThreadAction', () => {
     await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
     expect(remove.mock.calls[1]).toEqual([['thread-1']]);
     expect(getToasts()).toHaveLength(1);
+  });
+
+  // A delete a paired computer has not taken yet stands here and is sent
+  // again until it lands; deleting again here has nothing left to delete.
+  it('names a worker on another computer as pending there, and one on an older computer once, offering no delete again', async () => {
+    const remove = vi.fn(async () => ({ workersNotDeleted: [
+      { threadId: 'remote-1', title: 'Kernel build', computer: 'Laptop', pending: true, error: 'Laptop: refused for now: it is being transferred to another computer; it is deleted there once that computer takes it' },
+      { threadId: 'remote-2', title: 'Soak run', computer: 'Desk', error: 'Desk runs an older version, so the worker there was not deleted' },
+    ] }));
+    setBindingMock('DeleteThreads', remove);
+    const ctx = makeCtx({});
+    await deleteThreadAction(ctx);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getToasts().map((toast) => [toast.type, toast.message, toast.action?.label ?? null])).toEqual([
+      ['info', 'Deleted "Source thread". Its worker "Kernel build" is pending on Laptop. Laptop: refused for now: it is being transferred to another computer; it is deleted there once that computer takes it.', null],
+      ['warning', 'Deleted "Source thread", but its worker "Soak run" on Desk stays: Desk runs an older version, so the worker there was not deleted.', null],
+    ]);
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 
   // Threads selected together are one delete per computer they are on.

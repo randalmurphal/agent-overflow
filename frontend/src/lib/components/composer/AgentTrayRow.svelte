@@ -54,6 +54,11 @@
     viewer?: BackendKey;
     /** Show in Sidebar is in flight. */
     isPlacing?: boolean;
+    /**
+     * This window is attached to the computer that holds the row's thread,
+     * so Show in Sidebar can place it there.
+     */
+    canPlace: boolean;
     onToggleExpanded: (row: ThreadAgentRow) => void;
     onActivate: (row: ThreadAgentRow) => void;
     onOpenPane: (row: ThreadAgentRow) => void;
@@ -62,7 +67,7 @@
   }
 
   let {
-    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false,
+    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false, canPlace,
     onToggleExpanded, onActivate, onOpenPane, onShowInSidebar, onStop,
   }: Props = $props();
 
@@ -101,8 +106,8 @@
     void now;
     return relativeTime(row.settledAt, 'locale', viewer);
   });
-  // A worker this computer spawned that has no sidebar row.
-  let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && !row.computerId && Boolean(row.threadId));
+  // A worker with no sidebar row, on a computer this window can place it on.
+  let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && canPlace && Boolean(row.threadId));
   let activity = $derived(open && !blockedLabel ? (row.activity ?? '') : '');
   // What the spawned thread did, live while it works and final once it
   // rests; unknown from a computer that does not report it.

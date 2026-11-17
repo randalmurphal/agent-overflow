@@ -332,8 +332,9 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
   const wake = userMessageOriginWake(meta);
   if (!wake) return sourced(UNREADABLE_REPORT, firstLineOf(text), [{ body: text, footer: null, wake: null }]);
   const { report } = wake;
+  // A worker's prompt opens the worker, on the paired computer that holds it.
   const senderThread = report.opens
-    ? { computerId: '', computerName: '', threadId: report.opens, title: wake.label, token: '', kind: '' }
+    ? { computerId: wake.computerId, computerName: wake.computerId ? wake.computer : '', threadId: report.opens, title: wake.label, token: '', kind: '' }
     : null;
   const reporter: AgentMessageSource = {
     kind: report.category, kindLabel: report.label, kindTitle: report.title, sender: report.sender, senderThread, senderRole: '',

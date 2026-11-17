@@ -209,6 +209,17 @@ export function workersDeleteSentence(workers: number, threads: number): string 
 }
 
 /**
+ * The sentence for the workers the threads spawned on other computers,
+ * which their delete deletes there too (`DeleteDependents.remoteWorkers`),
+ * or '' for none. Not counted: only that computer knows which still belong
+ * to them.
+ */
+export function remoteWorkersDeleteSentence(remote: boolean, threads: number): string {
+  if (!remote) return '';
+  return `Workers ${threads === 1 ? 'it' : 'they'} spawned on other computers are deleted there too.`;
+}
+
+/**
  * What deleting the threads, all on one computer, deletes with them as one
  * delete, read on that computer. A call that fails as it is made is a
  * rejection, as one that fails later is.
@@ -245,10 +256,16 @@ export class ThreadDeleteNote {
       .filter((thread) => Boolean(thread.agentId))
       .map((thread) => assistantDeleteSentence(thread.title, this.#homes.get(thread.id), this.#dependents.get(thread.id)));
     let workers = 0;
+    let remote = false;
     for (const [key, counts] of this.#dependents) {
       if (key.startsWith(WORKERS_KEY)) workers += counts?.workers ?? 0;
+      remote ||= counts?.remoteWorkers === true;
     }
-    return [...sentences, workersDeleteSentence(workers, this.#threads.length)].filter(Boolean).join(' ');
+    return [
+      ...sentences,
+      workersDeleteSentence(workers, this.#threads.length),
+      remoteWorkersDeleteSentence(remote, this.#threads.length),
+    ].filter(Boolean).join(' ');
   }
 
   load(threads: readonly Thread[]): void {

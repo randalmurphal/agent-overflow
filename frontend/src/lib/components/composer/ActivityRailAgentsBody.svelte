@@ -7,7 +7,8 @@
   // an incoming row's StopThreadAgentIncoming, and Stop All one
   // StopThreadAgentRows call for both. Each Stop's report, every layer of
   // its cascade folded in, is one toast. Show in Sidebar is
-  // SetThreadPlacement standalone on the computer listing the row.
+  // SetThreadPlacement standalone on the computer that holds the row's
+  // thread.
   import { onDestroy } from 'svelte';
   import {
     SetThreadPlacement,
@@ -27,7 +28,7 @@
   import { errString } from '../../utils/errors';
   import { agentRowHasDigest, agentRowOpenTarget, isOpenAgentRow } from '../../utils/agentTray';
   import { agentStopReport, agentStopAllReport } from '../../utils/agentTrayStops';
-  import { agentThreadOpener } from '../chat/agentThreadOrigin';
+  import { agentThreadBackend, agentThreadOpener } from '../chat/agentThreadOrigin';
   import { agentThreadCompanionPlacer } from '../../stores/agentThreadCompanion';
   import AgentTrayRow from './AgentTrayRow.svelte';
   import AgentIncomingTrayRow from './AgentIncomingTrayRow.svelte';
@@ -151,12 +152,18 @@
     opener.open();
   }
 
+  // The computer that holds a row's thread, which Show in Sidebar places it
+  // on: this pane's for a row with no computer, else that paired one; null
+  // when this window is not attached to it, which then offers no placement.
+  const placementBackend = (row: ThreadAgentRow) => agentThreadBackend(row.computerId ?? '', viewer);
+
   async function onShowInSidebar(row: ThreadAgentRow): Promise<void> {
     const id = row.threadId;
-    if (!id || placing.has(id)) return;
+    const backend = placementBackend(row);
+    if (!id || backend === null || placing.has(id)) return;
     placing = new Set([...placing, id]);
     try {
-      const rows = (await withBackendTarget(viewer, () => SetThreadPlacement([id], 'standalone'))) as Thread[] | null;
+      const rows = (await withBackendTarget(backend, () => SetThreadPlacement([id], 'standalone'))) as Thread[] | null;
       agents.placed(id, rows?.find((thread) => thread.id === id)?.placement ?? 'standalone');
     } catch (err) {
       addErrorToast(`Could not show ${row.title} in the sidebar: ${errString(err)}`, err);
@@ -283,6 +290,7 @@
           stopError={stopErrors.get(row.token)}
           expanded={expanded.has(row.token)}
           isPlacing={!!row.threadId && placing.has(row.threadId)}
+          canPlace={placementBackend(row) !== null}
           {onToggleExpanded}
           {onActivate}
           {onOpenPane}
@@ -337,6 +345,7 @@
                 isStopping={false}
                 expanded={expanded.has(pastKey(row))}
                 isPlacing={!!row.threadId && placing.has(row.threadId)}
+                canPlace={placementBackend(row) !== null}
                 onToggleExpanded={onTogglePastExpanded}
                 onActivate={onActivatePast}
                 {onOpenPane}

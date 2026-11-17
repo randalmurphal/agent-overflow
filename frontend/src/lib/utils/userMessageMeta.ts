@@ -268,8 +268,13 @@ export interface UserMessageOriginWake {
   label: string;
   /** The worker of a worker's prompt; empty otherwise. */
   threadId: string;
-  /** The computer a remote job ran on; empty otherwise. */
+  /**
+   * The computer a remote job ran on, or the paired computer that holds a
+   * worker's prompt's worker; empty otherwise.
+   */
   computer: string;
+  /** That paired computer's id, which opens the worker there; empty for this one. */
+  computerId: string;
   report: ReportDescriptor;
 }
 
@@ -284,6 +289,7 @@ export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginW
     label: stringField(record.label),
     threadId: stringField(record.threadId),
     computer: stringField(record.computer),
+    computerId: stringField(record.computerId),
     report: ReportDescriptor.createFrom({ ...report, opens: stringField(report.opens) }),
   };
 }

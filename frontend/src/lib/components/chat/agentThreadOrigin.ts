@@ -55,6 +55,17 @@ function originBackend(computerId: string) {
 }
 
 /**
+ * The attached computer that holds a thread a row shown by `viewer` names
+ * with `computerId`: `viewer` itself for no computer, null when this
+ * client is not attached to that computer, which can then neither open
+ * the thread nor act on it.
+ */
+export function agentThreadBackend(computerId: string, viewer: BackendKey): BackendKey | null {
+  if (computerId === '') return viewer;
+  return originBackend(computerId)?.id ?? null;
+}
+
+/**
  * The chip for one origin, as rendered on a row shown by `viewer`.
  *
  * An origin with no computer, or one that resolves to the computer showing
@@ -118,9 +129,8 @@ export function agentThreadOpener(
   const entry = originBackend(origin.computerId);
   const elsewhere = origin.computerId !== '' && entry?.id !== viewer;
   const computer = elsewhere ? (entry ? backendDisplayName(entry) : origin.computerName) : '';
-  if (!entry && origin.computerId !== '') return { computer, open: null };
-  const backend = entry?.id ?? viewer;
-  if (!backendReachable(backend)) return { computer, open: null };
+  const backend = agentThreadBackend(origin.computerId, viewer);
+  if (backend === null || !backendReachable(backend)) return { computer, open: null };
   return { computer, open: () => { void openAgentThreadOrigin(origin, backend, place?.()); } };
 }
 

@@ -97,6 +97,12 @@ describe('agentRowBlockedLabel', () => {
     expect(agentRowBlockedLabel({ blockedOn: 'person', computer: 'Studio' })).toBe('Waiting on a person on Studio');
     expect(agentRowBlockedLabel({ blockedOn: 'approval', blockedDetail: 'Bash', blockedRoutedTo: 'Lead' })).toBe('Needs approval for Bash, waiting on Lead');
   });
+
+  it('names a prompt a paired computer routed back to the spawner here by its title alone', () => {
+    expect(agentRowBlockedLabel({ blockedOn: 'person', computer: 'Studio', blockedRoutedTo: 'Lead', blockedRoutedHere: true })).toBe('Waiting on Lead');
+    expect(agentRowBlockedLabel({ blockedOn: 'question', blockedDetail: 'Which branch?', computer: 'Studio', blockedRoutedTo: 'Lead', blockedRoutedHere: true }))
+      .toBe('Asks: Which branch?, waiting on Lead');
+  });
 });
 
 describe('agentRowOpenTarget', () => {

@@ -162,7 +162,8 @@ const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
 // A prompt routed to the standing agent that spawned its thread (ruling 19),
-// by request id: the agent's title. Entries leave with approvalThreadByID's.
+// by request id: the agent's title, and its computer when that is a paired
+// one. Entries leave with approvalThreadByID's.
 const routedPromptAgents = new Map<string, string>();
 // The agent a thread is waiting on: set while every open prompt of the
 // thread was routed, so the thread is not waiting on the user.
@@ -172,6 +173,9 @@ const waitingOnAgents = createKeyedSignalRegistry<string>('');
 export interface PromptRouteLike {
   threadId: string;
   title: string;
+  /** The paired computer that holds the spawner; empty for this one. */
+  computerId?: string;
+  computerName?: string;
 }
 
 function forgetRequestOwner(requestId: string): void {
@@ -181,7 +185,8 @@ function forgetRequestOwner(requestId: string): void {
 
 function rememberRequestRoute(requestId: string, routedTo: PromptRouteLike | null | undefined): void {
   if (routedTo?.threadId) {
-    routedPromptAgents.set(requestId, routedTo.title || 'its agent');
+    const agent = routedTo.title || 'its agent';
+    routedPromptAgents.set(requestId, routedTo.computerName ? `${agent} on ${routedTo.computerName}` : agent);
   } else {
     routedPromptAgents.delete(requestId);
   }

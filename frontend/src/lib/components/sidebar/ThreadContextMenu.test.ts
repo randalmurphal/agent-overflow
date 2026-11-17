@@ -383,6 +383,44 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     }
   });
 
+  // Workers on other computers are not counted: only that computer knows
+  // which still belong to the thread.
+  it('says workers spawned on other computers are deleted there too, only when it spawned any', async () => {
+    await primeSettings({ confirmDelete: true });
+    for (const [dependents, sentence] of [
+      [{ workers: 0, remoteWorkers: true }, 'Workers it spawned on other computers are deleted there too.'],
+      [{ workers: 2, remoteWorkers: true }, 'Its 2 workers are deleted with it. Workers it spawned on other computers are deleted there too.'],
+    ] as const) {
+      setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, ...dependents }));
+      const view = renderMenu(makeThread({ id: `remote-owner-${dependents.workers}` }));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+      const dialog = () => view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+      await waitFor(() => expect(dialog()?.textContent).toContain(
+        `This will permanently delete this thread and all its messages. This action cannot be undone. ${sentence}`,
+      ));
+      view.unmount();
+    }
+    const counted = setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 1, remoteWorkers: false }));
+    const view = renderMenu(makeThread({ id: 'local-owner' }));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain('Its worker is deleted with it.'));
+    expect(counted).toHaveBeenCalledWith(['local-owner']);
+    expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('other computers');
+    view.unmount();
+  });
+
+  it('says workers the selection spawned on other computers are deleted there too in the bulk delete confirm', async () => {
+    await primeSettings({ confirmDelete: false });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, remoteWorkers: true }));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'This will permanently delete 2 threads and all their messages. This action cannot be undone. Workers they spawned on other computers are deleted there too.',
+    ));
+  });
+
   it('says nothing of workers when the thread has none or they could not be counted', async () => {
     await primeSettings({ confirmDelete: true });
     for (const read of [
@@ -932,6 +970,13 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(labels.some((label) => label.startsWith('Nest Under'))).toBe(false);
   });
 
+  // A thread a paired computer's thread spawned here is that thread's worker
+  // too; Show in Sidebar gave it its row here.
+  it('offers a thread a thread on another computer spawned Remove from Sidebar', () => {
+    const { baseElement } = renderAgentMenu(makeThread({ projectId: 'project-1', spawnedByComputerId: 'computer-laptop', placement: 'standalone' }));
+    expect(labelsOf(baseElement)).toContain('Remove from Sidebar');
+  });
+
   it.each([
     ['a thread nobody spawned', makeThread({ projectId: 'project-1', placement: 'standalone' })],
     ['a thread outside every project', makeThread({ projectId: '', spawnedByThreadId: 'spawner', placement: 'standalone' })],
@@ -1061,6 +1106,16 @@ describe('<ThreadContextMenu> standing agent', () => {
     await fireEvent.click(item(baseElement, 'Delete'));
     await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
       'The assistant "Ops" is deleted too, with its 2 past threads, 1 helper and 3 workers, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
+  });
+
+  it("says an assistant's workers on other computers are deleted there too", async () => {
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 1, helpers: 0, workers: 0, remoteWorkers: true }));
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with its 1 past thread, and its home folder /config/agents/agent-1 is removed with everything in it. Workers it spawned on other computers are deleted there too.',
     ));
   });
 

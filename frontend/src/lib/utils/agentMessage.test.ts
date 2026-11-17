@@ -242,6 +242,9 @@ describe('agentMessageFromItem', () => {
     }
     // A worker's prompt opens the worker.
     expect(agentMessageFromItem(servedReport("a worker's approval request"))?.senderThread?.threadId).toBe('t-worker');
+    // A worker on a paired computer is opened there.
+    expect(agentMessageFromItem(servedReport("a worker's approval request on a paired computer"))?.senderThread)
+      .toMatchObject({ threadId: 't-worker', computerId: 'c-desk', computerName: 'desk' });
   });
 
   it('shows a report its data without the notice, decoded when Go says it is quoted data', () => {

@@ -186,8 +186,14 @@ export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'worker' 
   }
 }
 
-/** What a blocked row is waiting on, in a few words. */
-export function agentRowBlockedLabel(row: Pick<ThreadAgentRow, 'blockedOn' | 'blockedDetail' | 'blockedRoutedTo' | 'computer'>): string {
+/**
+ * What a blocked row is waiting on, in a few words. A paired computer's
+ * prompt routed back to the spawner here (`blockedRoutedHere`) names that
+ * thread as this computer does, with no computer beside it.
+ */
+export function agentRowBlockedLabel(
+  row: Pick<ThreadAgentRow, 'blockedOn' | 'blockedDetail' | 'blockedRoutedTo' | 'blockedRoutedHere' | 'computer'>,
+): string {
   const routed = row.blockedRoutedTo ? `, waiting on ${row.blockedRoutedTo}` : '';
   switch (row.blockedOn) {
     case 'approval':
@@ -195,7 +201,7 @@ export function agentRowBlockedLabel(row: Pick<ThreadAgentRow, 'blockedOn' | 'bl
     case 'question':
       return `Asks${row.blockedDetail ? `: ${row.blockedDetail}` : ' a question'}${routed}`;
     case 'person':
-      return `Waiting on ${row.blockedRoutedTo || 'a person'}${row.computer ? ` on ${row.computer}` : ''}`;
+      return `Waiting on ${row.blockedRoutedTo || 'a person'}${row.computer && !row.blockedRoutedHere ? ` on ${row.computer}` : ''}`;
     default:
       return '';
   }

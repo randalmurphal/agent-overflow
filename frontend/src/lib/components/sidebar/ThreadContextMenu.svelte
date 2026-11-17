@@ -363,13 +363,14 @@
 
   // ── Placement ────────────────────────────────────────────────────────────
   //
-  // A thread another thread on this computer spawned into a project is that
-  // thread's worker; it has a row here because it was placed standalone or
-  // in a group (docs/specs/standing-agents.md ruling 36). Remove from
-  // Sidebar makes it owned again, out of any group. The backend refuses a
-  // thread no local thread spawned and one outside every project.
+  // A thread another thread spawned into a project, on this computer or a
+  // paired one, is that thread's worker; it has a row here because it was
+  // placed standalone or in a group (docs/specs/standing-agents.md ruling
+  // 36). Remove from Sidebar makes it owned again, out of any group. The
+  // backend refuses a thread no thread spawned as its worker and one
+  // outside every project.
   let canRemoveFromSidebar = $derived(
-    !isAgent && Boolean(thread.spawnedByThreadId) && Boolean(thread.projectId),
+    !isAgent && Boolean(thread.spawnedByThreadId || thread.spawnedByComputerId) && Boolean(thread.projectId),
   );
 
   // The project is expanded first for the same reason the project header

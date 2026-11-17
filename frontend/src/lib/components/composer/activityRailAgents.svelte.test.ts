@@ -378,7 +378,7 @@ describe('agents controller', () => {
     const thread = (kind: string, threadId = 'sender') => ({ computerId: '', computerName: '', threadId, title: 'Sender', token: 'tok', kind });
     // A queued report's attribution as Go serves it; the kind names it here.
     const wake = (kind: string, label: string): UserMessageOriginWake => ({
-      kind, label, threadId: '', computer: '', report: ReportDescriptor.createFrom({ badge: `${kind} · ${label}` }),
+      kind, label, threadId: '', computer: '', computerId: '', report: ReportDescriptor.createFrom({ badge: `${kind} · ${label}` }),
     });
     replaceQueueForThread(pane.threadId!, [
       queued('spawn', { agentMessage: true, originThread: thread('spawn') }),
