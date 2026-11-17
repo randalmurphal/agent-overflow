@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/remote"
@@ -76,7 +77,13 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// tears the connection down rather than leaving a half-built browser
 	// behind.
 	attached := make(chan error, 1)
-	go func() { attached <- dialCDPBrowser(browserCtx, func() error { return e.subscribe(browserCtx) }) }()
+	go func() {
+		err := dialCDPBrowser(browserCtx, func() error { return e.subscribe(browserCtx) })
+		if err == nil {
+			err = enableBrowserPolicy(browserCtx)
+		}
+		attached <- err
+	}()
 	select {
 	case err := <-attached:
 		if err != nil {
@@ -144,7 +151,7 @@ func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
 // reportLost reports pages, claimed from a lost connection, crashed.
 func (e *hostedEngine) reportLost(pages []string) {
 	for _, pageID := range pages {
-		e.events.PageCrashed(pageID, connectionLostReason)
+		e.pageCrashed(pageID, connectionLostReason)
 	}
 }
 
@@ -164,9 +171,22 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 //
 // Lifecycle is the launcher's to report (`closed` / `process-failed`), and
 // targetDestroyed is the backstop for a controller that dies without one.
-// Popups are not wired: the launcher does not surface WebView2's
-// NewWindowRequested, so no page can be created behind the Manager's back.
+// A popup is the launcher's to report too (hosted_popups.go); the target
+// events only name its opener, for the browser-wide navigation policy,
+// whose paused requests this connection answers.
 func (e *hostedEngine) subscribe(browserCtx context.Context) error {
+	// The first subscription connects the browser (dialCDPBrowser), so the
+	// session is read after it.
+	if err := onBrowserEvent(browserCtx, target.TargetCreated, e.logf, e.targetCreated); err != nil {
+		return err
+	}
+	session := chromedp.FromContext(browserCtx).Browser
+	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, e.logf, func(event fetch.EventRequestPaused) {
+		frame := string(event.FrameID)
+		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return e.allowRequest(frame, rawURL) })
+	}); err != nil {
+		return err
+	}
 	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
 		return err
 	}
@@ -183,11 +203,15 @@ func (e *hostedEngine) subscribe(browserCtx context.Context) error {
 func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
 		// Off the event reader: the Manager closes the page's driver.
-		go e.events.PageCrashed(pageID, cdpCrashReason(event))
+		go e.pageCrashed(pageID, cdpCrashReason(event))
 	}
 }
 
 func (e *hostedEngine) targetDestroyed(event target.EventTargetDestroyed) {
+	e.mu.Lock()
+	e.heldInfo.delete(string(event.TargetID))
+	delete(e.targetOpeners, string(event.TargetID))
+	e.mu.Unlock()
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
 		// On its own goroutine, as both CDP engines report a closed page:
 		// retirePage ends in the Manager's teardown, which must not hold
@@ -200,9 +224,20 @@ func (e *hostedEngine) targetInfoChanged(event target.EventTargetInfoChanged) {
 	if event.TargetInfo == nil || event.TargetInfo.Type != "page" {
 		return
 	}
-	if pageID, ok := e.pageForTarget(string(event.TargetInfo.TargetID)); ok {
-		// The method's events arrive one at a time in the browser's order
-		// (consumeEvents), so numbering them here keeps that order.
-		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title, e.infoOrder.Add(1))
+	// The method's events arrive one at a time in the browser's order
+	// (consumeEvents), so numbering them here keeps that order.
+	order := e.infoOrder.Add(1)
+	targetID := string(event.TargetInfo.TargetID)
+	e.mu.Lock()
+	pageID, ok := e.targetPageLocked(targetID)
+	if !ok {
+		// A target no page answers to yet: a page being created before it
+		// is bound, or a popup before the launcher's report of it. The page
+		// takes the newest as it is bound or reported.
+		e.heldInfo.put(targetID, heldTargetInfo{url: event.TargetInfo.URL, title: event.TargetInfo.Title, order: order})
+	}
+	e.mu.Unlock()
+	if ok {
+		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title, order)
 	}
 }

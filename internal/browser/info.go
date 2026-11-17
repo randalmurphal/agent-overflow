@@ -151,13 +151,6 @@ func (p *managedPage) cachedInfo() PageInfo {
 	return info
 }
 
-// hasUnpushed reports whether a write to p is not in a push yet.
-func (p *managedPage) hasUnpushed() bool {
-	p.metaMu.RLock()
-	defer p.metaMu.RUnlock()
-	return p.load.unpushed
-}
-
 // updatePageInfo is engineEvents.PageInfoChanged, a CDP engine's report of
 // a page by its handle. A report for a handle no page answers to yet (an
 // engine page the Manager has not attached or adopted) is held, the newest

@@ -390,6 +390,10 @@ const (
 	// sent at each change and in answer to a directive naming it. Its
 	// detail is a DownloadReport (download.go).
 	ReportDownload ReportKind = "download"
+	// ReportPopup is a window a page opened, now a page of the launcher's
+	// under the report's page id, which the launcher minted. Its detail is
+	// a PopupReport (popup.go). It precedes every other report of the page.
+	ReportPopup ReportKind = "popup"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over
@@ -411,7 +415,7 @@ func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
 		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
-		ReportFocused, ReportFocusFailed, ReportDownload:
+		ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup:
 		return true
 	default:
 		return false

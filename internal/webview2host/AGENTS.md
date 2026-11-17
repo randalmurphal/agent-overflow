@@ -73,8 +73,19 @@ reference after the hand-off call, success or failure; a page detaches its
 callbacks when it goes, except controller-completed, whose completion closes
 a controller that outlived its page.
 
+Every window a page opens is a page of the launcher's, never a window of
+WebView2's own (`popup_windows.go`). `NewWindowRequested` is answered
+exactly once (`settlePopup`) on every path: with the new controller's view
+once it is up, or with no window when a bound (`MaxPendingPopups`,
+`MaxHostPages`), the opener's close, a failed create or the host's close
+comes first. A popup reaches the backend as `ReportPopup` under a page id
+the launcher mints, paired with the CDP target its view has after the
+deferral completes; its other reports wait for that one (`pageReport`).
+A handler detached from its page still refuses a late request. A page's
+`WindowCloseRequested` closes it, once its downloads end if any run.
+
 A page's downloads are the launcher's (`download_windows.go`): it handles
-each `DownloadStarting`, so WebView2's dialog never opens, keeps the
+each `DownloadStarting`, so WebView2's dialog does not open for it, keeps the
 `DownloadOperation` and reports every change as the download's whole
 snapshot (`ReportDownload`, `download.go`), progress throttled, each
 numbered (`Seq`) in the order taken so the backend applies only newer
@@ -98,13 +109,16 @@ ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
 (`retireDownloads`), which cancels it and reports nothing. What the real
 runtime does on a drop is recorded at `downloadStateChanged`,
-`settleCancel` and in `download_smoke_windows_test.go`.
+`settleCancel` and in `download_smoke_windows_test.go`. WebView2 opens the
+dialog by itself over a popup's opener when the popup's first navigation
+is a download; every page closes its dialog as it opens
+(`download_dialog_windows.go`).
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
 `crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
-`background_smoke_windows_test.go`),
+`background_smoke_windows_test.go`, `popup_smoke_windows_test.go`),
 which need an installed runtime. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the

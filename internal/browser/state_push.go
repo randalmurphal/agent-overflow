@@ -7,8 +7,9 @@ import "strings"
 // record (pageLoad.unpushed, under metaMu), and only a push to every client
 // clears it (buildThreadState), taking it before it reads the tabs, so a
 // write that lands in between sets it again. publishPages pushes a thread
-// whose pages hold one: a write is never lost whoever publishes next, and an
-// operation that changed nothing pushes nothing.
+// whose pages hold one, checked and taken in one hold, so two publishers of
+// one write push it once: a write is never lost whoever publishes next, and
+// an operation that changed nothing pushes nothing.
 
 // threadPagesLocked answers the thread's pages that have a managedPage: the
 // ones being created and the live ones. The caller holds m.mu.
@@ -32,17 +33,8 @@ func (m *Manager) threadPagesLocked(threadID string) []*managedPage {
 // publishPages pushes the thread's state when a write to one of its pages
 // is not in a push yet.
 func (m *Manager) publishPages(threadID string) {
-	m.mu.Lock()
-	unpushed := false
-	for _, p := range m.threadPagesLocked(threadID) {
-		if p.hasUnpushed() {
-			unpushed = true
-			break
-		}
-	}
-	m.mu.Unlock()
-	if unpushed {
-		m.emitThreadState(threadID)
+	if event, ok := m.buildThreadState(threadID, true, true); ok {
+		m.emit(event)
 	}
 }
 
@@ -72,18 +64,26 @@ func (m *Manager) pageUsed(p *managedPage) {
 // threadState is the thread's state for one client's read (an attach, a
 // call's answer). It leaves the unpushed records for the next push.
 func (m *Manager) threadState(threadID string) CompanionEvent {
-	return m.buildThreadState(threadID, false)
+	event, _ := m.buildThreadState(threadID, false, false)
+	return event
 }
 
 // buildThreadState builds the thread's state. For a push to every client
-// (push) it first takes the unpushed records of the thread's pages.
-func (m *Manager) buildThreadState(threadID string, push bool) CompanionEvent {
+// (push) it first takes the unpushed records of the thread's pages; with
+// ifUnpushed it builds nothing, answering false, when none holds one.
+func (m *Manager) buildThreadState(threadID string, push, ifUnpushed bool) (CompanionEvent, bool) {
 	m.mu.Lock()
 	if push {
+		unpushed := false
 		for _, p := range m.threadPagesLocked(threadID) {
 			p.metaMu.Lock()
+			unpushed = unpushed || p.load.unpushed
 			p.load.unpushed = false
 			p.metaMu.Unlock()
+		}
+		if ifUnpushed && !unpushed {
+			m.mu.Unlock()
+			return CompanionEvent{}, false
 		}
 	}
 	tabs := m.companionTabsLocked(threadID)
@@ -116,7 +116,7 @@ func (m *Manager) buildThreadState(threadID string, push bool) CompanionEvent {
 	event.ViewportSet = session.ViewportSet
 	event.Jar = jarKindOf(session)
 	event.RecentGen = recentGen
-	return event
+	return event, true
 }
 
 func (m *Manager) emit(event CompanionEvent) {
@@ -131,7 +131,8 @@ func (m *Manager) emit(event CompanionEvent) {
 // emitThreadState pushes the thread's state to every client.
 func (m *Manager) emitThreadState(threadID string) {
 	if strings.TrimSpace(threadID) != "" {
-		m.emit(m.buildThreadState(threadID, true))
+		event, _ := m.buildThreadState(threadID, true, false)
+		m.emit(event)
 	}
 }
 

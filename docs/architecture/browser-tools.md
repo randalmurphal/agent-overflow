@@ -73,7 +73,7 @@ per-platform no-op.
   the record of finished downloads, and headless Chromium's download
   directory and quota stay per canonical workspace, whichever jar a page
   is in. A request the jar's own policy
-  sees (headless Chromium's browser-wide interception) has the authority of
+  sees (the CDP engines' browser-wide interception) has the authority of
   the page its frame belongs to, or for a popup not yet adopted, of its
   opener chain; one whose owner is not resolved may open no workspace's
   files.
@@ -397,7 +397,7 @@ behave as a desktop browser's:
   in [Browser hardening](#browser-hardening).
   On Windows through WSL the launcher takes every download a pane page
   starts (WebView2's `DownloadStarting`, handled, so WebView2's own
-  download dialog never opens), WebView2 saves it, and the launcher reports
+  download dialog does not open for it), WebView2 saves it, and the launcher reports
   it to the backend as whole snapshots (`internal/webview2host/download.go`,
   `internal/browser/hosted_downloads.go`); no download crosses CDP. The
   launcher numbers each download's snapshots, and the backend applies a
@@ -428,9 +428,13 @@ behave as a desktop browser's:
   stays in the Downloads folder, listed nowhere. A second download a
   script starts with no user gesture gets WebView2's own "download
   multiple files" prompt in
-  the page and has no row until it is allowed. A window WebView2 opened
-  itself rather than as an AO tab keeps WebView2's own handling: its
-  dialog, the file in the Downloads folder, no row.
+  the page and has no row until it is allowed. A popup's downloads are
+  taken the same way, and one it starts before the Manager lists its tab
+  gets its row once the tab is listed. When a popup's first navigation is
+  a download, WebView2 asks to close the popup, which closes when the
+  download ends, and opens its own download dialog over the opener, which
+  nothing a host sets prevents; the launcher closes it as it opens, so it
+  shows for about 0.2 s and nothing on it can be used.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
@@ -880,9 +884,7 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   quota. Files older than seven days are pruned on the next artifact
   use, while newer files are never silently evicted to make quota room.
 
-A download that begins in a page no thread owns is cancelled, except on
-WebView2, where a window WebView2 opened itself (a popup the Manager did
-not adopt as a tab) keeps WebView2's own download handling.
+A download that begins in a page no thread owns is cancelled.
 
 ## Codex browser parity boundary
 
@@ -971,6 +973,25 @@ launcher positions over the pane's fitted rect, with the page's viewport and
 presentation scale set through the CDP device-metrics override. Hidden pages
 keep a visible controller inside a hidden container window so they keep
 producing frames.
+
+A window a page opens (`window.open` with or without a user gesture, a
+`target=_blank` link or form, a middle or modified click) becomes a tab on
+every engine: the Manager adopts it into the opener's thread, workspace
+authority and jar, within the thread, workspace and process caps, or closes
+it. Window features change nothing; `noopener`, and a link or form, leave
+the popup no `window.opener`. A page whose `window.close()` the engine
+honors (on WebView2, a popup or a page with one history entry) closes its
+tab. On
+WebView2 the launcher answers the page's `NewWindowRequested` with a hidden
+controller of its own in the opener's profile, starting at the opener's
+bounds, so no window of WebView2's own opens and `window.opener` and
+`postMessage` work as in a browser; the opener's script waits in
+`window.open` until the controller is up. A request the launcher cannot take
+(four already being created, its 64 pages, or its opener closing) opens
+nothing, and `window.open` answers null. The popup reaches the backend as a
+report naming its opener and CDP target (`internal/webview2host/popup.go`,
+`internal/browser/hosted_popups.go`), and its requests before its adoption
+pass the browser-wide policy with its opener chain's authority.
 
 **Serve mode drives a headless Chromium** (`docs/specs/remote-access.md` §7,
 and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A

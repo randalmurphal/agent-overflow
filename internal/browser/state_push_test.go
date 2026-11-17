@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // statePushes counts the thread state pushes a Manager publishes and keeps
@@ -48,6 +49,22 @@ func (c *statePushes) take() int {
 	n := c.n
 	c.n = 0
 	return n
+}
+
+// settle answers the pushes counted since the last take once want have
+// arrived, or the deadline passed, and a moment more has brought no other:
+// a push can come from a goroutine of the Manager's (refreshHistoryState).
+func (c *statePushes) settle(want int) int {
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		c.mu.Lock()
+		n := c.n
+		c.mu.Unlock()
+		if n >= want {
+			break
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	return c.take()
 }
 
 // A push carries every tab with its favicon, up to about 44 KB each, so a
@@ -118,12 +135,12 @@ func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 
 	manager.updatePageInfo(handle, "https://example.test/next", "https://example.test/next", 1)
 	manager.updatePageInfo(handle, "https://example.test/next", "Next", 2)
-	if n := pushes.take(); n != 2 {
+	if n := pushes.settle(2); n != 2 {
 		t.Fatalf("a commit and a title pushed %d states, want 2", n)
 	}
 	manager.updatePageInfo(handle, "https://example.test/next", "Next", 3)
 	manager.updatePageInfo(handle, "https://example.test/next", "Next", 4)
-	if n := pushes.take(); n != 0 {
+	if n := pushes.settle(0); n != 0 {
 		t.Fatalf("2 reports of the address and title already shown pushed %d states", n)
 	}
 	if tab, _ := findTab(manager, access, page.ID); tab.URL != "https://example.test/next" || tab.Title != "Next" {

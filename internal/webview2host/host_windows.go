@@ -45,6 +45,11 @@ type Host struct {
 	// (download.go); downloadSeq is UI thread only.
 	downloadToken string
 	downloadSeq   uint64
+	// popupSeq numbers the popups' page ids (popupPageID), and
+	// pendingPopups counts the window requests whose deferral is open
+	// (MaxPendingPopups). UI thread only.
+	popupSeq      uint64
+	pendingPopups int
 	// cancelTimer runs fn after wait, on a goroutine of its own
 	// (settleCancelAfter); nil is time.AfterFunc. A test stands in its own.
 	cancelTimer func(wait time.Duration, fn func())
@@ -90,6 +95,10 @@ type Config struct {
 type hostPage struct {
 	id        string
 	profileID string
+	ephemeral bool
+	// popup links a page a window request opened to that request
+	// (popup_windows.go); nil for a page the backend created.
+	popup *popupState
 	// beforeChildren is the host's child-window list captured
 	// immediately before CreateCoreWebView2ControllerWithOptions, so the
 	// completion handler can diff out this controller's own child HWND.
@@ -124,6 +133,15 @@ type hostPage struct {
 	failHandler *iProcessFailedHandler
 	keyHandler  *iAcceleratorKeyPressedHandler
 	targetInfo  *iDevToolsCompletedHandler
+	// newWindow and closeRequested take the windows the page opens and its
+	// own close (popup_windows.go); dialogOpened closes WebView2's download
+	// dialog (download_dialog_windows.go).
+	newWindow      *iNewWindowRequestedHandler
+	closeRequested *iViewEventHandler
+	dialogOpened   *iViewEventHandler
+	// closeAfterDownloads is set when the page asked to close while a
+	// download ran; it closes when the last one ends. UI thread only.
+	closeAfterDownloads bool
 	// findStarted is the page's one Start completion handler, made on the
 	// first find (find_windows.go). The page holds its constructor's
 	// reference until retireHandlers.
@@ -475,8 +493,15 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 	if len(closing) == 0 {
 		return
 	}
+	var reported []*hostPage
 	h.config.OnMain(func() {
 		for _, page := range closing {
+			// A popup still being created answers its window request with no
+			// window. The backend hears of a close only for a page it knows.
+			h.answerNoWindow(page)
+			if page.popup == nil || page.popup.announced {
+				reported = append(reported, page)
+			}
 			h.retireHandlers(page)
 			if page.view != nil {
 				page.view.release()
@@ -504,7 +529,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 			// destroying the parent now destabilizes the WebView2 create itself.
 		}
 	})
-	for _, page := range closing {
+	for _, page := range reported {
 		h.config.Report(page.id, ReportClosed, "")
 	}
 }
@@ -697,7 +722,7 @@ func (h *Host) create(directive Directive) {
 		h.config.Report(directive.PageID, ReportCreateFailed, "page id already exists")
 		return
 	}
-	page := &hostPage{id: directive.PageID, profileID: directive.ProfileID}
+	page := &hostPage{id: directive.PageID, profileID: directive.ProfileID, ephemeral: directive.Ephemeral}
 	h.pages[directive.PageID] = page
 	h.mu.Unlock()
 
@@ -714,50 +739,60 @@ func (h *Host) create(directive Directive) {
 		if !h.pageRegistered(page) {
 			return
 		}
-		options, err := env10.createControllerOptions()
-		if err != nil {
-			h.failUncreated(page, "controller options: "+err.Error())
-			return
-		}
-		defer options.release()
-		if err := options.putProfileName(directive.ProfileID); err != nil {
-			h.failUncreated(page, "profile name: "+err.Error())
-			return
-		}
-		if err := options.putInPrivate(directive.Ephemeral); err != nil {
-			h.failUncreated(page, "inprivate: "+err.Error())
-			return
-		}
-
-		// Create the final parent BEFORE the controller. Reparenting a live
-		// windowed WebView2 controller can leave its compositor presenting
-		// stale/blank strips while the document scrolls. Passing the clip
-		// container to controller creation gives Chromium one stable parent
-		// for the controller's whole lifetime.
-		parent := hwnd
-		container, err := createClipContainer(hwnd)
-		if err != nil {
-			// Clipping is a presentation refinement, not a precondition. Keep
-			// the older direct-parent path and identify its child so it can be
-			// raised over the SPA controller.
-			h.config.Logf("browser host: page %s clip container: %v; pane will not clip", page.id, err)
-			page.beforeChildren = childWindows(hwnd)
-		} else {
-			page.container = container
-			parent = container
-		}
-
-		handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
-			h.controllerCompleted(page, hwnd, hr, controller)
-		})
-		// WebView2 holds its own reference until it calls back; this is the
-		// constructor's. The handler is not detached when the page closes:
-		// its completion closes a controller that outlived the page.
-		defer handler.ref.release()
-		if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
-			h.failUncreated(page, "create controller: "+err.Error())
-		}
+		h.startController(page, env10, hwnd)
 	})
+}
+
+// startController starts the asynchronous create of page's controller in
+// its profile, under hwnd. Runs on the UI thread.
+func (h *Host) startController(page *hostPage, env10 *iCoreWebView2Environment10, hwnd uintptr) {
+	if hwnd == 0 {
+		h.failUncreated(page, "launcher window is not available")
+		return
+	}
+	options, err := env10.createControllerOptions()
+	if err != nil {
+		h.failUncreated(page, "controller options: "+err.Error())
+		return
+	}
+	defer options.release()
+	if err := options.putProfileName(page.profileID); err != nil {
+		h.failUncreated(page, "profile name: "+err.Error())
+		return
+	}
+	if err := options.putInPrivate(page.ephemeral); err != nil {
+		h.failUncreated(page, "inprivate: "+err.Error())
+		return
+	}
+
+	// Create the final parent BEFORE the controller. Reparenting a live
+	// windowed WebView2 controller can leave its compositor presenting
+	// stale/blank strips while the document scrolls. Passing the clip
+	// container to controller creation gives Chromium one stable parent
+	// for the controller's whole lifetime.
+	parent := hwnd
+	container, err := createClipContainer(hwnd)
+	if err != nil {
+		// Clipping is a presentation refinement, not a precondition. Keep
+		// the older direct-parent path and identify its child so it can be
+		// raised over the SPA controller.
+		h.config.Logf("browser host: page %s clip container: %v; pane will not clip", page.id, err)
+		page.beforeChildren = childWindows(hwnd)
+	} else {
+		page.container = container
+		parent = container
+	}
+
+	handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
+		h.controllerCompleted(page, hwnd, hr, controller)
+	})
+	// WebView2 holds its own reference until it calls back; this is the
+	// constructor's. The handler is not detached when the page closes:
+	// its completion closes a controller that outlived the page.
+	defer handler.ref.release()
+	if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
+		h.failUncreated(page, "create controller: "+err.Error())
+	}
 }
 
 // controllerCompleted runs on the UI thread from the message pump.
@@ -830,7 +865,7 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	page.view = view
 
 	failHandler := newProcessFailedHandler(func(kind uint32) {
-		h.config.Report(page.id, ReportProcessFailed, processFailedKindName(kind))
+		h.pageReport(page, ReportProcessFailed, processFailedKindName(kind))
 	})
 	page.failHandler = failHandler
 	if _, err := view.addProcessFailed(failHandler); err != nil {
@@ -846,11 +881,18 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	}
 	keyHandler.ref.release()
 	h.watchDownloads(page, view)
+	h.watchDownloadDialog(page, view)
+	h.watchWindows(page, view)
 
 	// A runtime without the find API has to be known before the page is
-	// used, so its report precedes created.
+	// used, so its report precedes created; a popup's follows its popup
+	// report at once.
 	if !h.findSupported(view) {
-		h.config.Report(page.id, ReportFindUnavailable, "")
+		h.pageReport(page, ReportFindUnavailable, "")
+	}
+	if page.popup != nil {
+		h.popupReady(page, view)
+		return
 	}
 
 	// Target.getTargetInfo through the controller's own DevTools session
@@ -895,6 +937,13 @@ func (h *Host) failUncreated(page *hostPage, detail string) {
 	h.mu.Unlock()
 	destroyWindow(page.container)
 	page.container = 0
+	if page.popup != nil {
+		// The backend never heard of the popup: its window request is
+		// answered with no window.
+		h.answerNoWindow(page)
+		h.config.Logf("browser host: popup %s of page %s: %s", page.id, page.popup.opener.id, detail)
+		return
+	}
 	if mine {
 		h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
 	}
@@ -929,6 +978,8 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 		// the controller and their closed report is the final word.
 		return
 	}
+	// A popup's window request is answered before its view goes.
+	h.answerNoWindow(page)
 	h.retireHandlers(page)
 	if page.view != nil {
 		page.view.release()
@@ -947,6 +998,11 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 	}
 	destroyWindow(page.container)
 	page.container = 0
+	if page.popup != nil {
+		// Reached before the popup report: the backend never heard of it.
+		h.config.Logf("browser host: popup %s of page %s: %s", page.id, page.popup.opener.id, detail)
+		return
+	}
 	h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
 }
 
@@ -964,6 +1020,15 @@ func (h *Host) retireHandlers(page *hostPage) {
 	}
 	if page.targetInfo != nil {
 		page.targetInfo.done.detach()
+	}
+	if page.newWindow != nil {
+		page.newWindow.requested.detach()
+	}
+	if page.closeRequested != nil {
+		page.closeRequested.event.detach()
+	}
+	if page.dialogOpened != nil {
+		page.dialogOpened.event.detach()
 	}
 	if page.findStarted != nil {
 		page.findStarted.done.detach()

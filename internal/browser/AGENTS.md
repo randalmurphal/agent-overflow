@@ -96,6 +96,15 @@ headless engine starts one Chromium process per profile with an isolated user
 data directory. Headless mode is selected explicitly by serve boot and must not
 become a fallback for an ordinary windowless process.
 
+Every engine reports a page it opened by itself as `PopupOpened`, and the
+Manager alone adopts or discards it (`adoptPopup`). On the hosted engine a
+popup is the launcher's report (`hosted_popups.go`); until the Manager lists
+its tab, the engine holds the popup's downloads, crash and close and
+delivers them at the listing (`adoptedPage`), since the Manager acts on them
+only for a listed page. Both CDP engines answer the navigation policy
+browser-wide as well as per page, so a popup's requests before its
+adoption have its opener chain's authority.
+
 The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes
 only the title path; never observe a document's whole subtree from it.

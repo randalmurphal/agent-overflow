@@ -167,6 +167,22 @@ Spike-verified recipes, all load-bearing:
   port); verify cross-profile cookie isolation at implementation
   start, falling back to environment-per-workspace (one port each,
   same relay) if profiles leak.
+- **Popups**: every window a page opens raises `NewWindowRequested`
+  (`IsUserInitiated` false only for a script's call with no gesture).
+  The launcher takes the deferral, creates a hidden controller in the
+  opener's profile, hands its view over with `put_NewWindow`, sets
+  `Handled` and completes the deferral; no window of WebView2's own
+  opens, and `window.opener` and `postMessage` work. The view gets a new
+  CDP target at the completion, naming the opener, which the launcher
+  reports (`ReportPopup`) under a page id it mints before any other
+  report of the page; the backend adopts or closes it like any page.
+  `Handled` with no new window opens nothing (`window.open` answers
+  null). `window.close()` raises `WindowCloseRequested`. A popup's
+  downloads reach its own `DownloadStarting`. A popup whose first
+  navigation is a download asks to close, and WebView2 then opens the
+  opener's default download dialog whatever the host does; the launcher
+  closes it on `IsDefaultDownloadDialogOpenChanged`, about 0.2 s later.
+  Measured by `popup_smoke_windows_test.go`.
 - The spike patched two real go-webview2 bugs the launcher-side
   implementation must not reinherit: `int64(res) < 0` never detects a
   failed HRESULT on 64-bit, and `environmentOptions` was hard-wired

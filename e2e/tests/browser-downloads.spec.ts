@@ -89,6 +89,8 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
 
   // The same name again is saved beside the first, never over it.
   await pane.getByTestId('browser-tab').first().click();
+  // The selection is a round trip; the address shows the tab once it lands.
+  await expect(address).toHaveValue('https://example.test/files');
   await address.fill('https://download.invalid/report.pdf?bytes=2048');
   await address.press('Enter');
   await expect.poll(async () => {

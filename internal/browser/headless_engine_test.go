@@ -714,40 +714,6 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 	}
 }
 
-// pausedRequest is the Fetch.requestPaused event Chromium sends on the
-// session whose interception matched a document request of frame.
-func pausedRequest(id, frame, url string) map[string]any {
-	return map[string]any{"method": "Fetch.requestPaused", "params": map[string]any{
-		"requestId": id, "frameId": frame, "resourceType": "Document",
-		"request": map[string]any{"url": url, "method": "GET", "headers": map[string]any{}},
-	}}
-}
-
-// browserCallParams decodes the parameters of every command of method the
-// fake answered on the browser session.
-func browserCallParams[T any](t *testing.T, calls []fakeCDPCall, method string) []T {
-	t.Helper()
-	var out []T
-	for _, call := range calls {
-		if call.Method != method || call.SessionID != "" {
-			continue
-		}
-		var params T
-		if err := json.Unmarshal(call.Params, &params); err != nil {
-			t.Fatalf("decode %s %s: %v", method, call.Params, err)
-		}
-		out = append(out, params)
-	}
-	return out
-}
-
-// requestAnswer is the part of Fetch.continueRequest and Fetch.failRequest
-// a test reads.
-type requestAnswer struct {
-	RequestID   string `json:"requestId"`
-	ErrorReason string `json:"errorReason"`
-}
-
 // Chromium runs a page it opened by itself before the Manager can adopt it
 // and AttachPage can install the page's own policy, so the profile enables
 // the jar's policy on the browser session at launch, for every request the

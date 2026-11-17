@@ -10,9 +10,9 @@ import (
 )
 
 // Downloads on the hosted engine are the launcher's: it takes every download
-// a pane page starts, so WebView2's own dialog never opens, lets WebView2
-// save it to the Windows user's Downloads folder, and reports each one as
-// whole snapshots (ReportDownload, internal/webview2host/download.go),
+// a pane page starts, so WebView2's dialog does not open for it, lets
+// WebView2 save it to the Windows user's Downloads folder, and reports each
+// one as whole snapshots (ReportDownload, internal/webview2host/download.go),
 // each numbered in the order the launcher took it. Reports arrive on RPC
 // goroutines of their own, so they can overtake each other; this engine
 // applies one download's snapshots one at a time (hostedDownload.apply,
@@ -26,9 +26,8 @@ import (
 // answered with a snapshot marked as an answer, which settles or advances a
 // row and never creates one; DownloadUnknown, the answer for an id the
 // launcher has no record of, ends only a row still running. Nothing about
-// downloads crosses CDP. A download started in a window the launcher does
-// not own (a popup WebView2 opened itself) is never reported and keeps
-// WebView2's own handling.
+// downloads crosses CDP. A popup is a pane page too: what it reports before
+// the Manager lists its tab is held until then (hosted_popups.go).
 
 const (
 	// hostedPathTimeout bounds the `wslpath -u` of a finished download's
@@ -112,6 +111,11 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		return
 	}
 	e.mu.Lock()
+	if e.holdPopupDownloadLocked(pageID, detail) {
+		// A popup the Manager has not listed: its listing delivers it.
+		e.mu.Unlock()
+		return
+	}
 	if e.downloads.endedIn(pageID, report.ID) {
 		e.mu.Unlock()
 		return

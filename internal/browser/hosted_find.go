@@ -8,17 +8,20 @@ import (
 )
 
 // noteFindUnavailable records a page the launcher says has no find API. It
-// arrives while the page's create waits or after it is bound; any other page
-// id is not one this engine holds.
+// arrives while the page's create waits, while a popup waits for the
+// Manager, or after the page is bound; any other page id is not one this
+// engine holds.
 func (e *hostedEngine) noteFindUnavailable(pageID string) {
 	e.mu.Lock()
 	_, creating := e.pending[pageID]
+	_, popup := e.popups[pageID]
 	_, bound := e.targetByPage[pageID]
-	if creating || bound {
+	known := creating || popup || bound
+	if known {
 		e.noFind[pageID] = true
 	}
 	e.mu.Unlock()
-	if !creating && !bound {
+	if !known {
 		e.logf("browser: pane host reported no find for unknown page %s", pageID)
 	}
 }

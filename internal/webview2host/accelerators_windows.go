@@ -59,7 +59,7 @@ func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEv
 	if err != nil {
 		return
 	}
-	h.config.Report(page.id, ReportAccelerator, string(detail))
+	h.pageReport(page, ReportAccelerator, string(detail))
 }
 
 // releaseFocus ends a page's hold on keyboard focus when it stops being

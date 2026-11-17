@@ -933,41 +933,19 @@ func (s *downloadSmoke) permissionKinds() []uint32 {
 	return kinds
 }
 
-// ---------------------------------------------------------------------
-// ICoreWebView2_9 (the default download dialog), for the smoke alone
-// ---------------------------------------------------------------------
-
-// smokeWebView9Vtbl is the flattened chain through ICoreWebView2_9: 61-87
-// are ICoreWebView2_2 through ICoreWebView2_8 (7+5+4+2+1+1+7), and 90 is
-// get_IsDefaultDownloadDialogOpen.
-type smokeWebView9Vtbl struct {
-	iCoreWebView2Vtbl
-	_                              [27]comProc
-	AddDialogOpenChanged           comProc
-	RemoveDialogOpenChanged        comProc
-	GetIsDefaultDownloadDialogOpen comProc
-}
-
-type smokeWebView9 struct {
-	vtbl *smokeWebView9Vtbl
-}
-
-// smokeIIDWebView2_9 is IID_ICoreWebView2_9, {4d7b2eab-9fdc-468d-b998-a9260b5ed651}.
-var smokeIIDWebView2_9 = windows.GUID{
-	Data1: 0x4d7b2eab, Data2: 0x9fdc, Data3: 0x468d,
-	Data4: [8]byte{0xb9, 0x98, 0xa9, 0x26, 0x0b, 0x5e, 0xd6, 0x51},
-}
-
+// smokeDownloadDialogOpen answers whether the view's default download
+// dialog is open. UI thread.
 func smokeDownloadDialogOpen(view *iCoreWebView2) (int32, error) {
-	var view9 *smokeWebView9
-	_, _, _ = view.vtbl.QueryInterface.Call(uintptr(unsafe.Pointer(view)), uintptr(unsafe.Pointer(&smokeIIDWebView2_9)), uintptr(unsafe.Pointer(&view9)))
+	view9 := view.queryWebView9()
 	if view9 == nil {
 		return 0, fmt.Errorf("the runtime has no ICoreWebView2_9")
 	}
-	defer func() { _, _, _ = view9.vtbl.Release.Call(uintptr(unsafe.Pointer(view9))) }()
-	var open int32
-	hr, _, _ := view9.vtbl.GetIsDefaultDownloadDialogOpen.Call(uintptr(unsafe.Pointer(view9)), uintptr(unsafe.Pointer(&open)))
-	return open, hresult(hr)
+	defer view9.release()
+	open, err := view9.downloadDialogOpen()
+	if open {
+		return 1, err
+	}
+	return 0, err
 }
 
 // ---------------------------------------------------------------------

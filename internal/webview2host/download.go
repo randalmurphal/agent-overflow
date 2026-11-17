@@ -119,9 +119,9 @@ func (r DownloadReport) Encode() (string, error) {
 	}
 }
 
-// encodeReport is the report's JSON without HTML escaping, which would
+// encodeReport is a report's JSON without HTML escaping, which would
 // grow every & < > in an address sixfold.
-func encodeReport(r DownloadReport) ([]byte, error) {
+func encodeReport(r any) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
 	encoder.SetEscapeHTML(false)

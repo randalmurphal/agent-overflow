@@ -621,8 +621,10 @@ and anti-changes that live only here:
   Headless Chromium in serve mode alone keeps AO's artifact directories,
   quotas, caps and pruning. An agent may open a finished download of its
   workspace's, never the folder around it. On WebView2 the mark of the web
-  stays, and a window WebView2 opened itself keeps WebView2's own download
-  handling. `docs/architecture/browser-tools.md`.
+  stays. A popup is a tab on every engine, so its downloads are listed like
+  any other; the download dialog WebView2 opens by itself for a popup whose
+  first navigation is a download is closed as it opens.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

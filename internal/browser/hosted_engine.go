@@ -135,6 +135,19 @@ type hostedEngine struct {
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
 	noFind map[string]bool
+	// pageProfile is each page's profile id, created or popup, and policies
+	// each live profile's navigation policy (profileOptions.Allow), for a
+	// popup's profile and the browser-wide policy (hosted_popups.go).
+	pageProfile map[string]string
+	policies    map[string]func(owners []string, rawURL string) bool
+	// popups are the popups the launcher reported that the Manager has not
+	// listed, popupByTarget their pages by CDP target, heldInfo the newest
+	// info of a target no page answers to yet, and targetOpeners the page
+	// target that opened each popup target, as the browser reports it.
+	popups        map[string]*hostedPopup
+	popupByTarget map[string]string
+	heldInfo      *boundedMap[string, heldTargetInfo]
+	targetOpeners map[string]string
 	// downloads is the record of the launcher's downloads
 	// (hosted_downloads.go).
 	downloads hostedDownloads
@@ -176,6 +189,13 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		scales:       make(map[string]*viewScaleState),
 		noFind:       make(map[string]bool),
 		downloads:    newHostedDownloads(),
+
+		pageProfile:   make(map[string]string),
+		policies:      make(map[string]func([]string, string) bool),
+		popups:        make(map[string]*hostedPopup),
+		popupByTarget: make(map[string]string),
+		heldInfo:      newBoundedMap[string, heldTargetInfo](orderSlack),
+		targetOpeners: make(map[string]string),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
@@ -263,6 +283,11 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
+	e.pageProfile = make(map[string]string)
+	e.popups = make(map[string]*hostedPopup)
+	e.popupByTarget = make(map[string]string)
+	e.heldInfo = newBoundedMap[string, heldTargetInfo](orderSlack)
+	e.targetOpeners = make(map[string]string)
 	e.stopDownloadsLocked()
 	e.mu.Unlock()
 	if browserCancel != nil {
@@ -284,6 +309,11 @@ func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (eng
 	// Site data is the engine's own (spec §4): a hosted profile is a real
 	// browser profile on disk and WebView2 persists it, so AO seeds nothing
 	// into it and reads nothing out of it.
+	if opts.Allow != nil {
+		e.mu.Lock()
+		e.policies[id] = opts.Allow
+		e.mu.Unlock()
+	}
 	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral}, nil
 }
 
@@ -426,17 +456,17 @@ func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDrive
 	return p.engine.createPage(ctx, p, hooks)
 }
 
-// AttachPage would adopt a page the engine opened by itself. The launcher
-// does not surface WebView2's NewWindowRequested, so no popup is ever
-// reported and this is unreachable; failing loudly beats returning a
-// driver for a controller nobody created.
-func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriver, error) {
-	return nil, errors.New("browser: the pane host does not report engine-opened popups")
+// AttachPage adopts a popup the launcher reported (hosted_popups.go).
+func (p *hostedProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+	return p.engine.attachPopup(p, handle, hooks)
 }
 
 func (p *hostedProfile) CancelDownload(id string) error { return p.engine.cancelDownload(id) }
 
 func (p *hostedProfile) Dispose(context.Context) error {
+	p.engine.mu.Lock()
+	delete(p.engine.policies, p.id)
+	p.engine.mu.Unlock()
 	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: p.id, Ephemeral: p.ephemeral})
 	return nil
 }

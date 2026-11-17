@@ -468,6 +468,15 @@ type pageAssets struct {
 	InlineSVGs []InlineSVG `json:"inlineSvgs"`
 }
 
+// adoptedPage is implemented by a page driver whose engine holds what a
+// popup reports while the Manager adopts it (the hosted engine:
+// hosted_popups.go). The Manager calls Adopted once the popup is in its
+// thread's tabs, so a download, crash or close it held reaches a listed
+// page.
+type adoptedPage interface {
+	Adopted()
+}
+
 // enginePopup is a page the engine opened on its own behalf. Nothing about
 // ownership is decided here: the Manager matches the opener and applies its
 // own per-thread and per-workspace limits before adopting it.

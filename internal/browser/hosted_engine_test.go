@@ -503,12 +503,24 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	}
 }
 
-func TestHostedProfileReportsNoPopups(t *testing.T) {
+// A profile attaches only a popup the launcher reported in it, and not
+// once the popup closed (hosted_popups_test.go covers the adoption).
+func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	profile := testProfile(t, engine)
+	engine.mu.Lock()
+	engine.popups["popup-other"] = &hostedPopup{target: "T-other", profile: "another-profile"}
+	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id, closed: true}
+	engine.mu.Unlock()
 
-	if _, err := profile.AttachPage(context.Background(), "TARGET-1", pageHooks{}); err == nil {
-		t.Fatal("the pane host adopted a popup it can never report")
+	for handle, why := range map[string]string{
+		"TARGET-1":     "reported no popup",
+		"popup-other":  "reported no popup",
+		"popup-closed": "closed before it was adopted",
+	} {
+		if _, err := profile.AttachPage(context.Background(), handle, pageHooks{}); err == nil || !strings.Contains(err.Error(), why) {
+			t.Errorf("attach %s: %v, want %q", handle, err, why)
+		}
 	}
 }
 
@@ -888,6 +900,40 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 			}
 		},
 	}
+}
+
+// pausedRequest is the Fetch.requestPaused event Chromium sends on the
+// session whose interception matched a document request of frame.
+func pausedRequest(id, frame, url string) map[string]any {
+	return map[string]any{"method": "Fetch.requestPaused", "params": map[string]any{
+		"requestId": id, "frameId": frame, "resourceType": "Document",
+		"request": map[string]any{"url": url, "method": "GET", "headers": map[string]any{}},
+	}}
+}
+
+// browserCallParams decodes the parameters of every command of method the
+// fake answered on the browser session.
+func browserCallParams[T any](t *testing.T, calls []fakeCDPCall, method string) []T {
+	t.Helper()
+	var out []T
+	for _, call := range calls {
+		if call.Method != method || call.SessionID != "" {
+			continue
+		}
+		var params T
+		if err := json.Unmarshal(call.Params, &params); err != nil {
+			t.Fatalf("decode %s %s: %v", method, call.Params, err)
+		}
+		out = append(out, params)
+	}
+	return out
+}
+
+// requestAnswer is the part of Fetch.continueRequest and Fetch.failRequest
+// a test reads.
+type requestAnswer struct {
+	RequestID   string `json:"requestId"`
+	ErrorReason string `json:"errorReason"`
 }
 
 // fakeCDPBrowser is what the launcher's WebView2 debugging endpoint looks

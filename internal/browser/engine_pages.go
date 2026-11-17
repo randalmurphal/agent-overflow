@@ -60,6 +60,9 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	m.applyHeldInfo(p, held, hasHeld)
 	// A new tab.
 	m.pageAdded(p)
+	if adopted, ok := driver.(adoptedPage); ok {
+		adopted.Adopted()
+	}
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}

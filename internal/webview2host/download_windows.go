@@ -301,7 +301,7 @@ func (h *Host) report(page *hostPage, r DownloadReport) {
 		h.config.Logf("browser host: download %s: %v", r.ID, err)
 		return
 	}
-	h.config.Report(page.id, ReportDownload, detail)
+	h.pageReport(page, ReportDownload, detail)
 }
 
 // endDownload ends a download with its terminal snapshot: every operation
@@ -312,6 +312,10 @@ func (h *Host) endDownload(d *hostDownload, terminal DownloadReport) {
 	delete(d.page.downloads, d.id)
 	d.page.ended.add(terminal)
 	h.report(d.page, terminal)
+	if d.page.closeAfterDownloads && len(d.page.downloads) == 0 {
+		// The page asked to close while this ran (windowCloseRequested).
+		h.closeAsked(d.page)
+	}
 }
 
 // releaseOperations lets go of every operation d had.

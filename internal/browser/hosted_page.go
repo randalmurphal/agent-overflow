@@ -68,10 +68,16 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.closePage(pageID)
 		return nil, err
 	}
+	e.mu.Lock()
 	if cdp, ok := driver.(*cdpPage); ok {
-		e.mu.Lock()
 		e.drivers[pageID] = cdp
-		e.mu.Unlock()
+	}
+	e.pageProfile[pageID] = profile.id
+	held, hasHeld := e.heldInfo.take(targetID)
+	e.mu.Unlock()
+	if hasHeld {
+		// An info change that reached the engine before the page was bound.
+		e.events.PageInfoChanged(pageID, held.url, held.title, held.order)
 	}
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
@@ -113,7 +119,7 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		}
 		// Inline, as retirePage reports a close: this is the launcher's
 		// report path, an RPC goroutine of its own.
-		e.events.PageCrashed(pageID, detail)
+		e.pageCrashed(pageID, detail)
 	case webview2host.ReportClosed:
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			e.retirePage(pageID)
@@ -142,6 +148,8 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		e.events.PageFocusReported(pageID, report.Mount, report.Intent, failure)
 	case webview2host.ReportDownload:
 		e.downloadReport(pageID, detail)
+	case webview2host.ReportPopup:
+		e.popupReported(pageID, detail)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData
@@ -172,6 +180,12 @@ func processFailureCrashes(detail string) bool {
 // (targetDestroyed above).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
+	if e.retirePendingLocked(pageID) {
+		// A popup the Manager has not listed: its close waits for its
+		// listing (popupListed), or goes with its discard.
+		e.mu.Unlock()
+		return
+	}
 	targetID, known := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
@@ -182,6 +196,7 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
+	delete(e.pageProfile, pageID)
 	e.forgetDownloadsLocked(pageID)
 	e.mu.Unlock()
 	if !known {
@@ -243,7 +258,16 @@ func (e *hostedEngine) bind(pageID, targetID string, conn context.Context) error
 func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	pageID, ok := e.pageByTarget[targetID]
+	return e.targetPageLocked(targetID)
+}
+
+// targetPageLocked answers the page whose CDP target targetID is: a bound
+// page's, or a popup's the Manager has not listed. The caller holds e.mu.
+func (e *hostedEngine) targetPageLocked(targetID string) (string, bool) {
+	if pageID, ok := e.pageByTarget[targetID]; ok {
+		return pageID, true
+	}
+	pageID, ok := e.popupByTarget[targetID]
 	return pageID, ok
 }
 
@@ -263,6 +287,8 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
+	delete(e.pageProfile, pageID)
+	e.forgetPopupLocked(pageID)
 	e.forgetDownloadsLocked(pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
@@ -311,6 +337,10 @@ func (p *hostedPage) Handle() string { return p.id }
 func (p *hostedPage) OwnsFrame(frame string) bool {
 	return frame == p.id || p.pageDriver.OwnsFrame(frame)
 }
+
+// Adopted is adoptedPage: a popup's tab is listed, so what it reported
+// meanwhile is delivered (popupListed).
+func (p *hostedPage) Adopted() { p.engine.popupListed(p.id) }
 
 func (p *hostedPage) Close() {
 	p.pageDriver.Close()
