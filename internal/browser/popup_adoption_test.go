@@ -20,6 +20,8 @@ type adoptionEngine struct {
 	gates     map[string]chan struct{}
 	reached   chan string
 	failing   map[string]bool
+	// histories is each popup's history as its attach finds it, newest last.
+	histories map[string][]string
 	discarded []string
 	canceled  []string
 	profile   string
@@ -31,7 +33,7 @@ func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, string
 	t.Cleanup(func() { _ = manager.Close() })
 	engine := &adoptionEngine{
 		fakeEngine: newFakeEngine(), gates: map[string]chan struct{}{},
-		reached: make(chan string, 16), failing: map[string]bool{},
+		reached: make(chan string, 16), failing: map[string]bool{}, histories: map[string][]string{},
 	}
 	engine.saving = downloadsSavedByEngine
 	manager.engine = engine
@@ -119,6 +121,14 @@ func (p *adoptionProfile) AttachPage(ctx context.Context, handle string, hooks p
 	driver, err := p.NewPage(ctx, hooks)
 	if err != nil {
 		return nil, err
+	}
+	p.engine.mu.Lock()
+	history := p.engine.histories[handle]
+	p.engine.mu.Unlock()
+	if page, ok := driver.(*fakePage); ok && len(history) > 0 {
+		page.mu.Lock()
+		page.history, page.index = history, len(history)-1
+		page.mu.Unlock()
 	}
 	return &handledPage{pageDriver: driver, handle: handle}, nil
 }
@@ -696,6 +706,38 @@ func TestAPopupListedWithAHeldReportIsPushedOnce(t *testing.T) {
 		}
 	}
 	t.Fatalf("the push lists %+v, without the popup's held report", pushed[0].Pages)
+}
+
+// A popup that navigated before its listing is listed, in its one push,
+// with Back as its history has it.
+func TestAPopupIsListedWithItsHistory(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	engine.histories["popup"] = []string{"https://example.test/first", "https://example.test/second"}
+	var mu sync.Mutex
+	var pushed []CompanionEvent
+	manager.SetEventSink(func(event CompanionEvent) {
+		if event.ThreadID == access.ThreadID && event.Kind == "state" {
+			mu.Lock()
+			pushed = append(pushed, event)
+			mu.Unlock()
+		}
+	})
+	manager.updatePageInfo("popup", "https://example.test/second", "Second", 1)
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pushed) != 1 {
+		t.Fatalf("listing the popup pushed %d states, want 1", len(pushed))
+	}
+	for _, page := range pushed[0].Pages {
+		if page.URL == "https://example.test/second" {
+			if !page.CanGoBack || page.CanGoForward {
+				t.Fatalf("the popup is listed with back %v, forward %v", page.CanGoBack, page.CanGoForward)
+			}
+			return
+		}
+	}
+	t.Fatalf("the push lists %+v, without the popup", pushed[0].Pages)
 }
 
 // pageInfoOf answers the info of the tab whose driver has handle.

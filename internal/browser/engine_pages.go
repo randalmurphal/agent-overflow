@@ -57,6 +57,9 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		return
 	}
 	m.pageAttached(p)
+	// The popup may have navigated before its listing, which reads no
+	// history of its own: its Back and Forward go in the listing's push.
+	m.readAdoptedHistory(p)
 	// The tab and the downloads the popup started are listed in one
 	// m.parkMu hold, which a page's close takes too (removeClosedPage), so
 	// a close never takes the tab before its downloads are in it.
@@ -94,6 +97,21 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}
+}
+
+// readAdoptedHistory reads an adopted popup's back and forward availability
+// before its listing, under a stamp taken first, so a later report's own
+// read stands. A failed read leaves both off until the next navigation's.
+func (m *Manager) readAdoptedHistory(p *managedPage) {
+	stamp := p.readStamp()
+	ctx, cancel := operationContext(context.Background(), p.driver.Lifetime(), operationTimeout)
+	defer cancel()
+	back, forward, err := p.driver.HistoryState(ctx)
+	if err != nil {
+		log.Printf("browser: read the history of popup %s: %v", p.driver.Handle(), err)
+		return
+	}
+	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, stamp)
 }
 
 // popupRefusedLocked reports whether a popup of p's thread, workspace and jar
