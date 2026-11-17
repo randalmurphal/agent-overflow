@@ -7,8 +7,6 @@ package app
 // so the asking stops at the bound however long the chain of computers.
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"testing"
@@ -244,73 +242,4 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		t.Fatalf("after a later answer the rows = %+v; want each still open", listing.Rows)
 	}
 	expectBoundedAsking()
-}
-
-// olderOpenAgentsPeer is a computer from before agent_rows answered its
-// thread's open state: it lists the levels it is asked for whatever else
-// the call asks, and its answer says nothing of the state.
-type olderOpenAgentsPeer struct{ *App }
-
-func (p *olderOpenAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	if call.Tool != threadAgentPeerRows {
-		return p.App.ThreadToolQuery(ctx, call)
-	}
-	var args map[string]any
-	if err := json.Unmarshal(call.Args, &args); err != nil {
-		return ThreadPeerReply{}, err
-	}
-	delete(args, "state_only")
-	encoded, err := json.Marshal(args)
-	if err != nil {
-		return ThreadPeerReply{}, err
-	}
-	call.Args = encoded
-	reply, err := p.App.ThreadToolQuery(ctx, call)
-	if err != nil {
-		return reply, err
-	}
-	var answer map[string]any
-	if err := json.Unmarshal(reply.Result, &answer); err != nil {
-		return ThreadPeerReply{}, err
-	}
-	delete(answer, "open")
-	reply.Result, err = json.Marshal(answer)
-	return reply, err
-}
-
-// An older computer's answer says nothing of its thread's state: the
-// source reads it from the rows the answer lists, as before, at the
-// listing's last level too, and says nothing is wrong.
-func TestAnOlderComputersOpenStateIsReadFromItsRows(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
-		return serveAppAs(t, app, &olderOpenAgentsPeer{App: app})
-	})
-	spawn, child := remoteRestedWorker(t, pair)
-	late := remoteWorkerStartsOneOfItsOwn(t, pair, child)
-	row := paneShowsTheRemoteSpawnOpen(t, pair, spawn.Token, func(listing ThreadAgentRows) bool {
-		_, nested := agentRowByToken(listing.Rows, late)
-		return nested
-	})
-	if row.NestedUnavailable != "" || !row.open() {
-		t.Fatalf("the spawn row = %+v; want it open and nothing wrong", row)
-	}
-	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
-		t.Fatalf("past = %+v, %v; want the remote worker kept out", past, err)
-	}
-
-	// A listing one level deep, as this computer reads it to answer for the
-	// spawn's caller, has the spawn at its last level.
-	bounded, _, err := pair.source.threadAgentTreeDepth(t.Context(), newThreadAgentView(pair.source), pair.caller.ID, 1, threadAgentPeersLive)
-	if err != nil {
-		t.Fatal(err)
-	}
-	row, _ = agentRowByToken(bounded.Rows, spawn.Token)
-	if !row.open() || row.Worker != workerWaiting || !row.NestedHidden || row.NestedUnavailable != "" || len(bounded.Rows) != 1 {
-		t.Fatalf("at the last level the rows = %+v; want the spawn open, waiting, saying more nests below and nothing wrong", bounded.Rows)
-	}
-	if !pair.request(t, spawn.Token).NestedOpen {
-		t.Fatal("the older computer's answer at the last level cleared the spawn's open work")
-	}
 }

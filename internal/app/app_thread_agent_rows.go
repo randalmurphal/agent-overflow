@@ -193,8 +193,8 @@ type ThreadAgentRows struct {
 	Worker string `json:"worker,omitempty"`
 	// Open is whether the listed thread is not at rest or has open work at
 	// any depth below it, answered by agent_rows whatever rows it has room
-	// for (answerThreadAgentRows). Nil from a computer that predates it,
-	// whose rows say what they can (peerListingOpen).
+	// for (answerThreadAgentRows); nil only in a listing of this computer's
+	// own rows, which no agent_rows answer carries.
 	Open *bool `json:"open,omitempty"`
 	// Activity, ToolCalls, Tokens, RuntimeMs, TurnOpen and TurnStartedAt are the listed
 	// thread's own, answered by agent_rows for the spawn row on the

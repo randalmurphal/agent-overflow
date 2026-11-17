@@ -410,33 +410,27 @@ func (a *App) applyPeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentR
 // again, so it records none, and a spawn past the retention floor, kept
 // here only as that thread's link, is deleted.
 func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentRows, err error) {
-	if threadAgentPeerRefused(err) {
+	open := false
+	switch {
+	case threadAgentPeerRefused(err):
 		if _, delErr := a.store.DeleteRemoteSpawnLineage(spawn.Token); delErr != nil {
 			log.Printf("agent rows: delete the lineage of %s: %v", spawn.Token, delErr)
 		}
-		err, listing = nil, ThreadAgentRows{}
-	}
-	if err != nil {
+	case err != nil:
 		return
+	default:
+		open = peerListingOpen(listing)
 	}
-	if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, peerListingOpen(listing)); setErr != nil {
+	if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, open); setErr != nil {
 		log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)
 	}
 }
 
 // peerListingOpen reports whether an agent_rows answer says the spawn's
-// thread is open: not at rest, or with open work at any depth below it. A
-// computer that predates saying so is read from the rows it returned, as
-// far as they reach.
+// thread is open: not at rest, or with open work at any depth below it.
+// Every computer that answers agent_rows says so.
 func peerListingOpen(listing ThreadAgentRows) bool {
-	if listing.Open != nil {
-		return *listing.Open
-	}
-	open := listing.Worker != ""
-	for _, row := range listing.Rows {
-		open = open || row.SettledAt == 0 || row.Worker != ""
-	}
-	return open
+	return listing.Open != nil && *listing.Open
 }
 
 // threadAgentPeerRefused reports whether an agent_rows call was refused as
