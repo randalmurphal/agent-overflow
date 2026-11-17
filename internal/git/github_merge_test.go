@@ -64,8 +64,14 @@ func githubRollup(contexts ...map[string]any) map[string]any {
 	}}}}}
 }
 
+// githubRun is a check run; an empty conclusion is null, as GitHub
+// answers a run that has not finished.
 func githubRun(name, status, conclusion string, required bool) map[string]any {
-	return map[string]any{"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion, "isRequired": required,
+	var concluded any
+	if conclusion != "" {
+		concluded = conclusion
+	}
+	return map[string]any{"__typename": "CheckRun", "name": name, "status": status, "conclusion": concluded, "isRequired": required,
 		"detailsUrl": "https://github.com/o/r/runs/" + name, "databaseId": 1}
 }
 
@@ -597,7 +603,7 @@ const githubTimelineNodes = `[
 {"__typename":"AutoRebaseEnabledEvent","id":"ARE_1","createdAt":"2026-10-01T00:00:16Z","actor":{"login":"ann"}},
 {"__typename":"MergedEvent","id":"ME_1","createdAt":"2026-10-01T00:00:17Z","actor":{"login":"ann","name":"Ann"},"commit":{"oid":"ddd"}},
 {"__typename":"ClosedEvent","id":"CE_2","createdAt":"2026-10-01T00:00:17Z","actor":{"login":"ann"}},
-{"__typename":"LabeledEvent","id":"LE_1","createdAt":"2026-10-01T00:00:18Z"}
+{"__typename":"LabeledEvent"}
 ]`
 
 // Every timeline item type the tick selects maps to its event kind, in

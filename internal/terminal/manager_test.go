@@ -203,9 +203,6 @@ func TestManagerMissingTerminalErrors(t *testing.T) {
 	if _, err := m.Replay("x"); !errors.Is(err, ErrTerminalNotFound) {
 		t.Fatalf("Replay: expected ErrTerminalNotFound, got %v", err)
 	}
-	if _, err := m.Restart("x"); !errors.Is(err, ErrTerminalNotFound) {
-		t.Fatalf("Restart: expected ErrTerminalNotFound, got %v", err)
-	}
 }
 
 func TestManagerCloseThreadClosesAll(t *testing.T) {
@@ -283,35 +280,6 @@ func TestManagerMoveThreadRekeysLiveSessions(t *testing.T) {
 		case <-deadline:
 			t.Fatal("did not observe output after terminal move")
 		}
-	}
-}
-
-func TestManagerRestartReplacesSession(t *testing.T) {
-	m := NewManager(nil, nil)
-	summary, err := m.Open("thread-x", SessionOptions{
-		Reaper: procutiltest.Reaper(),
-		Shell:  "/bin/sh",
-		Args:   []string{"-c", "sleep 10"},
-		Cwd:    t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = m.CloseThread("thread-x") })
-
-	newSummary, err := m.Restart(summary.TerminalID)
-	if err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-	if newSummary.TerminalID == summary.TerminalID {
-		t.Fatal("restart must produce a new terminal ID")
-	}
-	list := m.List("thread-x")
-	if len(list) != 1 {
-		t.Fatalf("expected 1 session after restart, got %d", len(list))
-	}
-	if list[0].TerminalID != newSummary.TerminalID {
-		t.Fatalf("list ID mismatch: %s vs %s", list[0].TerminalID, newSummary.TerminalID)
 	}
 }
 

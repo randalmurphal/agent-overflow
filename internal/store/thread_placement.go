@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Where the sidebar shows a thread (migration v153,
+// Where the sidebar shows a thread (migration v154,
 // docs/specs/standing-agents.md, "Owned workers"). The schema makes a row
 // grouped exactly when it has a group, so a group move is the one writer of
 // grouped (SetThreadGroup) and this file writes the other two. An owned
@@ -16,7 +16,7 @@ import (
 // link receipt. A thread outside every project (an assistant's own, past or
 // helper thread) takes no placement: a helper is owned from its spawn and
 // stays so. A row is inserted standalone or grouped, the write that names a
-// spawn's thread makes it owned, and the triggers of v154 and v157 return
+// spawn's thread makes it owned, and the triggers of v155 and v158 return
 // an owned row of a project to standalone when its last link ends.
 
 const (
@@ -116,7 +116,7 @@ func threadMovesTx(tx *sql.Tx, ids []string, before map[string]bool) ([]ThreadMo
 // starts unpinned in the place it moves to. One transaction; any refusal
 // rolls the whole call back.
 func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]ThreadMove, error) {
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin thread placement: %w", err)
 	}

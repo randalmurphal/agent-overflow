@@ -90,20 +90,26 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 				continue
 			}
 			results[slot].Updated, results[slot].Error, results[slot].ErrorCode = row.Updated, row.Error, row.ErrorCode
-			results[slot].WorkersNotArchived, results[slot].Warning = row.WorkersNotArchived, row.Warning
+			results[slot].WorkersNotArchived = row.WorkersNotArchived
 			if row.Title != "" {
 				results[slot].Title = row.Title
 			}
 		}
 	}
 
-	result := updateResult{Results: results}
+	return updateResult{Results: results, Note: updateNote(results)}, nil
+}
+
+// updateNote explains the errors and workers in results. An error on a row
+// that was not updated is a refusal; on an updated row it is an archive
+// whose cleanup did not finish, which the user should hear about.
+func updateNote(results []ThreadUpdateResult) string {
 	var notes []string
-	for _, row := range results {
-		if row.Error != "" {
-			notes = append(notes, "One or more threads were refused and left untouched; each says why. The others were updated.")
-			break
-		}
+	if slices.ContainsFunc(results, func(row ThreadUpdateResult) bool { return row.Error != "" && !row.Updated }) {
+		notes = append(notes, "One or more threads were refused and left untouched; each says why. The others were updated.")
+	}
+	if slices.ContainsFunc(results, func(row ThreadUpdateResult) bool { return row.Error != "" && row.Updated }) {
+		notes = append(notes, "An updated thread with an error was archived, but something it ran may still be running or open; tell the user what its error says.")
 	}
 	var open, pending bool
 	for _, row := range results {
@@ -118,8 +124,7 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 	if pending {
 		notes = append(notes, "Some workers on other computers, marked pending in workers_not_archived, have not taken the archive yet; it is sent again until they do.")
 	}
-	result.Note = strings.Join(notes, " ")
-	return result, nil
+	return strings.Join(notes, " ")
 }
 
 // updatePatch validates the whole patch once. group and pin may come

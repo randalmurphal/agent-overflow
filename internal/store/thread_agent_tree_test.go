@@ -419,7 +419,7 @@ func TestALiveThreadKeepsItsSpawnAndTheSpawnsAboveIt(t *testing.T) {
 			t.Fatalf("%v live, the candidates %v, %v; want none", other, ids, err)
 		}
 	}
-	// A superseded spawn of child, as migration v154 leaves an older one,
+	// A superseded spawn of child, as migration v155 leaves an older one,
 	// is lineage, not its link.
 	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at, settled_at, superseded, lineage_only)
 		VALUES ('p-c', 'peer', 'spawn', 'child', 'finished', 90, 190, 190, 1, 1)`)

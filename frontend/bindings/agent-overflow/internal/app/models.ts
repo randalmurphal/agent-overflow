@@ -501,8 +501,8 @@ export class ArchiveThreadResult {
     "workersNotArchived"?: WorkerFailure[];
 
     /**
-     * CleanupError says what could not be stopped or withdrawn of the work
-     * the archived threads were waiting on. Their archives stand.
+     * CleanupError says, for a person, what of the archived threads may
+     * still be running or open (threadCleanupError). Their archives stand.
      */
     "cleanupError"?: string;
 
@@ -1887,6 +1887,13 @@ export class DeleteThreadResult {
      * until it does, or runs a version that cannot take it.
      */
     "workersNotDeleted"?: WorkerFailure[];
+
+    /**
+     * CleanupError says, for a person, what the deleted threads started
+     * elsewhere that may keep running (threadCleanupError). The delete
+     * stands.
+     */
+    "cleanupError"?: string;
 
     /** Creates a new DeleteThreadResult instance. */
     constructor($$source: Partial<DeleteThreadResult> = {}) {

@@ -48,6 +48,33 @@ describe('<ArchivedThreads>', () => {
   });
 });
 
+// A delete that happened but could not stop the thread's work elsewhere
+// drops the row like any delete and shows the backend's sentence in place of
+// "Deleted", never "Failed to delete".
+describe('<ArchivedThreads> delete whose cleanup failed', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    resetToastsForTest();
+  });
+
+  it('drops the row and shows the cleanup failure', async () => {
+    const message = 'The thread was deleted, but an ask it sent to another thread could not be stopped and may keep running.';
+    setBindingMock('ListArchivedThreads', async () => [makeThread({ id: 'archived-cleanup', title: 'Old work', archived: true })]);
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async () => ({ cleanupError: message }));
+
+    const { findByLabelText, getByRole, queryByText, findByText } = render(ArchivedThreads);
+    await findByText('Old work');
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(getToasts().map((t) => [t.type, t.message])).toEqual([['error', message]]));
+    expect(queryByText('Old work')).toBeNull();
+  });
+});
+
 describe('<ArchivedThreads> delete of a thread on a worktree', () => {
   beforeEach(() => {
     resetBindingMocks();

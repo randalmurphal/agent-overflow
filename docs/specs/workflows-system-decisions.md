@@ -2862,7 +2862,7 @@ each pinned by an incident-replay test:
   evaluate them (§4); only the automation condition that also used them is
   gone.
 
-  **Existing rows.** Migration v153 drops both tables and the partial index
+  **Existing rows.** Migration v154 drops both tables and the partial index
   `idx_work_items_automation_source_ref`, and rebuilds `work_items` so its
   `source` CHECK admits only `manual`, `agent` and `call`, rewriting every
   run an automation started as `source = 'manual'` with `source_ref`

@@ -290,9 +290,8 @@ export function ArchiveProject(id: string): $CancellablePromise<void> {
  * The row flip commits first and the rest follows. Once the flip has
  * committed the call succeeds: the archive itself has succeeded durably,
  * and failing the call would tell the caller otherwise. What it could not
- * finish afterwards, a worker whose archive was refused or work that could
- * not be stopped, is reported in the result. A failed session close is
- * logged.
+ * finish afterwards, a worker whose archive was refused or work that may
+ * still be running or open, is reported in the result.
  */
 export function ArchiveThread(id: string): $CancellablePromise<app$0.ArchiveThreadResult> {
     return $Call.ByID(3655608409, id).then(($result: any) => {
@@ -2187,7 +2186,7 @@ export function GetServiceUpdateStatus(): $CancellablePromise<app$0.ServiceUpdat
 
 /**
  * GetSettings returns the current persisted settings merged over defaults,
- * with every secret redacted (see redactedSettings).
+ * projected for the caller (see settingsForCaller).
  * 
  * Resolved PER CALLER. The host and user tiers are global to this backend;
  * the device tier comes out of the calling connection's own ui_state bucket
@@ -5206,16 +5205,6 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
 }
 
 /**
- * RestartTerminal kills the given terminal and spawns a fresh replacement
- * with the same configuration.
- */
-export function RestartTerminal(terminalID: string): $CancellablePromise<app$0.TerminalHandle> {
-    return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType212($result);
-    });
-}
-
-/**
  * RestartToUpdate swaps in the staged update and relaunches. It spawns the
  * detached swap helper and asks Wails to begin its normal shutdown, so the
  * transport drains and stores flush before the process exits; the helper then
@@ -5930,7 +5919,7 @@ export function SetProviderAccountAutoSwitch(providerName: string, accountID: st
 
 /**
  * SetProviderCustomEnvVar adds or replaces one custom environment variable for
- * a provider and returns the redacted settings snapshot the frontend store
+ * a provider and returns the projected settings snapshot the frontend store
  * re-seeds from. Reserved names, malformed names, oversize values, and
  * duplicates are rejected here — never dropped silently at spawn time.
  */
@@ -6818,7 +6807,7 @@ export function UpdateProposedPlanComment(threadID: string, commentID: string, i
  * lowPowerMode to false is a change from the true its class resolves to, so
  * it persists a row and outranks the table from then on.
  * 
- * The returned snapshot is redacted like GetSettings': the frontend store
+ * The returned snapshot is projected like GetSettings': the frontend store
  * re-seeds from it, and the two read paths must not disagree about whether the
  * store holds a plaintext secret. (Nothing consumes the secrets from here:
  * sensitive environment values have no read path at all.)

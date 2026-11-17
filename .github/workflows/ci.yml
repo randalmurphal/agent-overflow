@@ -96,6 +96,10 @@ jobs:
           frontend-dist: "true"
           cache-name: build-macos
       - run: make go-build
+      # The orphan reaper is a script macOS's own /bin/sh runs; no other job
+      # executes it there.
+      - name: Run the orphan reaper under macOS sh
+        run: make go-test GO_TEST_PKGS=./internal/orphanreaper GO_TEST_FLAGS='-count=1 -run Sidecar'
 
   go-lint:
     name: golangci-lint (new issues) and govulncheck

@@ -86,7 +86,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 	if threadID == "" {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: organize thread: thread id is required")
 	}
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: begin organize thread %s: %w", threadID, err)
 	}

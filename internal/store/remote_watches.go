@@ -54,8 +54,8 @@ type RemoteWatch struct {
 	StoppedAt int64 `json:"-"`
 }
 
-// remoteWatchesV91SQL is the table as v91 made it. v153 rebuilt it with
-// thread_id cascading from its thread (migration_v153_retire_features.go).
+// remoteWatchesV91SQL is the table as v91 made it. v154 rebuilt it with
+// thread_id cascading from its thread (migration_v154_retire_features.go).
 const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
  computer_id TEXT NOT NULL, request_id TEXT NOT NULL, thread_id TEXT NOT NULL,
  fingerprint TEXT NOT NULL, label TEXT NOT NULL, receipt TEXT NOT NULL DEFAULT '{}',

@@ -223,8 +223,8 @@ func (a *App) admitLinkedArchive(worker, owner string, args threadOwnerOpArgs) t
 		return ownerOpRefusal("archive", worker, err)
 	}
 	outcome := a.finishArchive(work, reachLater)
-	if outcome.cleanup != nil {
-		log.Printf("thread tools: archive %s for its spawner on another computer: %v", worker, outcome.cleanup)
+	if cause := outcome.cleanup.Unwrap(); cause != nil {
+		log.Printf("thread tools: archive %s for its spawner on another computer: %v", worker, cause)
 	}
 	if len(outcome.workers) > 0 {
 		return threadOwnerOpAnswer{Outcome: ownerOpUnfinished, Failures: a.workerFailures(outcome.workers)}

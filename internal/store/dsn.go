@@ -41,13 +41,15 @@ func (p connPragma) dsnToken() string {
 
 // writerConnPragmas are the settings every writer connection must carry.
 //
-//   - busy_timeout=5000 lets SQLite poll a held lock for up to 5s before
-//     surfacing SQLITE_BUSY. WAL allows concurrent readers plus one
-//     writer, but UI threads, the checkpoint capture, the replay writer,
-//     and the triage flusher all write — without the timeout the rare
-//     contention window surfaces as "database is locked" toasts. Five
-//     seconds is the canonical SQLite recommendation for a UI-attached
-//     database; longer windows would just mask a real deadlock.
+//   - busy_timeout=5000 is how long the writer waits for a lock another
+//     connection holds before it fails with SQLITE_BUSY. No other
+//     connection in the process writes the file: the read pool is
+//     query_only, the checkpointer's PASSIVE checkpoint on it takes the
+//     checkpoint lock and never the write lock, and the conversion's
+//     snapshot connection only reads it (VACUUM INTO). What the writer
+//     waits for is another process writing the same file, at BEGIN since
+//     its transactions begin IMMEDIATE (writerDSN), and readers leaving
+//     the WAL during its TRUNCATE checkpoint (TruncateCheckpoint).
 //   - foreign_keys=ON enforces the schema's cascades. A connection that
 //     lost it writes orphans that no later connection can explain.
 //   - synchronous=NORMAL is the WAL-recommended desktop config. With WAL
@@ -133,6 +135,20 @@ func poolDSN(dbPath string, pragmas []connPragma) string {
 		tokens = append(tokens, p.dsnToken())
 	}
 	return "file:" + dsnEscaper.Replace(dbPath) + "?" + strings.Join(tokens, "&")
+}
+
+// writerDSN is poolDSN for the writer pool, whose transactions begin
+// IMMEDIATE (_txlock): each takes the write lock at BEGIN, where
+// busy_timeout waits out another connection's write. A deferred
+// transaction that reads first holds a snapshot, and SQLite fails its
+// later write at once, without the busy handler, when another connection
+// holds the write lock (SQLITE_BUSY) or committed since the read
+// (SQLITE_BUSY_SNAPSHOT). The pool's one connection already serializes
+// the process's transactions, so taking the lock at BEGIN excludes only
+// other processes' writers; WAL readers never wait for it. A transaction
+// begun with sql.TxOptions.ReadOnly stays deferred.
+func writerDSN(dbPath string, pragmas []connPragma) string {
+	return poolDSN(dbPath, pragmas) + "&_txlock=immediate"
 }
 
 // verifyConnPragmas reads each pragma back and fails when it did not

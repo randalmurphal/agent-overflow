@@ -26,7 +26,7 @@ import (
 // its own ($wantTeams). The viewerCan* flags are the forge's own answer
 // per control.
 const githubManageFields = `... @include(if: $wantManage) { viewerCanUpdate viewerCanClose viewerCanReopen viewerCanLabel viewerCanAssign ` +
-	`reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login name } ... on Bot { login } ... on Mannequin { login } ... on Team @include(if: $wantTeams) { combinedSlug name } } } } ` +
+	`reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login name } ... on Bot { login } ... on Mannequin { login } ... on Team @include(if: $wantTeams) { combinedSlug teamName: name } } } } ` +
 	`assignees(first: 100) { nodes { login name } } ` +
 	`labels(first: 100) { nodes { id name color } } }`
 
@@ -49,6 +49,9 @@ type githubPullManageRaw struct {
 				Login        string `json:"login"`
 				Name         string `json:"name"`
 				CombinedSlug string `json:"combinedSlug"`
+				// TeamName is a team's name, aliased because User.name
+				// is nullable and Team.name is not.
+				TeamName string `json:"teamName"`
 			} `json:"requestedReviewer"`
 		} `json:"nodes"`
 	} `json:"reviewRequests"`
@@ -130,7 +133,7 @@ func (in githubMergeInputs) manage() PRManage {
 		}
 		person := PRPerson{Login: reviewer.Login, Name: reviewer.Name}
 		if reviewer.Typename == "Team" {
-			person = PRPerson{Login: reviewer.CombinedSlug, Name: reviewer.Name, Team: true}
+			person = PRPerson{Login: reviewer.CombinedSlug, Name: reviewer.TeamName, Team: true}
 		}
 		if person.Login != "" {
 			add(PRReviewer{PRPerson: person, State: ReviewerPending})
@@ -167,13 +170,13 @@ func (in githubMergeInputs) manage() PRManage {
 	return out
 }
 
-const githubEditTargetQuery = `query PREditTarget($owner: String!, $name: String!, $number: Int!) {
+var githubEditTargetQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PREditTarget($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { pullRequest(number: $number) { id body } }
-}`
+}`)
 
-const githubEditPRMutation = `mutation EditPR($pullRequestID: ID!, $title: String, $body: String) {
+var githubEditPRMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation EditPR($pullRequestID: ID!, $title: String, $body: String) {
   updatePullRequest(input: {pullRequestId: $pullRequestID, title: $title, body: $body}) { pullRequest { id } }
-}`
+}`)
 
 // EditPR reads the PR's node id and body, refuses a description edit
 // whose expected body is no longer the PR's, and updates what the edit
@@ -195,7 +198,7 @@ func (f *githubForge) EditPR(ctx context.Context, ref PRReference, edit PREdit) 
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "PREditTarget", githubEditTargetQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubEditTargetQuery, vars, &raw); err != nil {
 		return err
 	}
 	if raw.Repository == nil || raw.Repository.PullRequest == nil || raw.Repository.PullRequest.ID == "" {
@@ -219,7 +222,7 @@ func (f *githubForge) EditPR(ctx context.Context, ref PRReference, edit PREdit) 
 			} `json:"pullRequest"`
 		} `json:"updatePullRequest"`
 	}
-	if _, err := client.GraphQL(ctx, "EditPR", githubEditPRMutation, update, &answer); err != nil {
+	if _, err := client.GraphQL(ctx, githubEditPRMutation, update, &answer); err != nil {
 		return writeOutcome(err)
 	}
 	if answer.Update == nil || answer.Update.PullRequest == nil {
@@ -253,9 +256,9 @@ func githubPeopleBody(ref PRReference, reviewers bool, people []PRPerson) (map[s
 	return body, nil
 }
 
-const githubAssigneesQuery = `query PRAssignees($owner: String!, $name: String!, $number: Int!) {
+var githubAssigneesQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRAssignees($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { pullRequest(number: $number) { assignees(first: 100) { nodes { login } } } }
-}`
+}`)
 
 // checkAssigneeLimit refuses an assignee change that would leave more
 // than githubAssigneesMax assignees, before any write.
@@ -276,7 +279,7 @@ func checkAssigneeLimit(ctx context.Context, client *forgeapi.Client, ref PRRefe
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "PRAssignees", githubAssigneesQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubAssigneesQuery, vars, &raw); err != nil {
 		return err
 	}
 	if raw.Repository == nil || raw.Repository.PullRequest == nil {
@@ -341,18 +344,18 @@ func (f *githubForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 	return runSteps(steps)
 }
 
-const githubLabelTargetQuery = `query PRLabelTarget($owner: String!, $name: String!, $number: Int!, $ids: [ID!]!) {
+var githubLabelTargetQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRLabelTarget($owner: String!, $name: String!, $number: Int!, $ids: [ID!]!) {
   repository(owner: $owner, name: $name) { id pullRequest(number: $number) { id } }
   nodes(ids: $ids) { __typename ... on Label { id repository { id } } }
-}`
+}`)
 
-const githubAddLabelsMutation = `mutation AddLabels($labelableID: ID!, $labelIDs: [ID!]!) {
+var githubAddLabelsMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation AddLabels($labelableID: ID!, $labelIDs: [ID!]!) {
   addLabelsToLabelable(input: {labelableId: $labelableID, labelIds: $labelIDs}) { clientMutationId }
-}`
+}`)
 
-const githubRemoveLabelsMutation = `mutation RemoveLabels($labelableID: ID!, $labelIDs: [ID!]!) {
+var githubRemoveLabelsMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation RemoveLabels($labelableID: ID!, $labelIDs: [ID!]!) {
   removeLabelsFromLabelable(input: {labelableId: $labelableID, labelIds: $labelIDs}) { clientMutationId }
-}`
+}`)
 
 // SetPRLabels reads the PR's node id and resolves every label to add,
 // which must be one of the repository's, then removes and adds. A removal
@@ -389,7 +392,7 @@ func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 			} `json:"repository"`
 		} `json:"nodes"`
 	}
-	_, err = client.GraphQL(ctx, "PRLabelTarget", githubLabelTargetQuery, vars, &raw)
+	_, err = client.GraphQL(ctx, githubLabelTargetQuery, vars, &raw)
 	var gqlErr *forgeapi.GraphQLError
 	// An id that resolves to nothing is a NOT_FOUND at its nodes index;
 	// the check below refuses it by name.
@@ -405,19 +408,19 @@ func (f *githubForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 		}
 	}
 	pullID := raw.Repository.PullRequest.ID
-	step := func(verb, op, doc string, labels []PRLabel) changeStep {
+	step := func(verb string, doc forgeapi.Document, labels []PRLabel) changeStep {
 		done, next := stepWords(verb, labelNames(labels), "labels")
 		return changeStep{done: done, next: next, run: func() error {
-			_, err := client.GraphQL(ctx, op, doc, map[string]any{"labelableID": pullID, "labelIDs": ids(labels)}, nil)
+			_, err := client.GraphQL(ctx, doc, map[string]any{"labelableID": pullID, "labelIDs": ids(labels)}, nil)
 			return writeOutcome(err)
 		}}
 	}
 	var steps []changeStep
 	if len(change.Remove) > 0 {
-		steps = append(steps, step("remove", "RemoveLabels", githubRemoveLabelsMutation, change.Remove))
+		steps = append(steps, step("remove", githubRemoveLabelsMutation, change.Remove))
 	}
 	if len(change.Add) > 0 {
-		steps = append(steps, step("add", "AddLabels", githubAddLabelsMutation, change.Add))
+		steps = append(steps, step("add", githubAddLabelsMutation, change.Add))
 	}
 	return runSteps(steps)
 }
@@ -435,17 +438,17 @@ func graphQLProblemsUnder(gqlErr *forgeapi.GraphQLError, field string) bool {
 	return true
 }
 
-const githubClosePRMutation = `mutation ClosePR($pullRequestID: ID!) {
+var githubClosePRMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation ClosePR($pullRequestID: ID!) {
   closePullRequest(input: {pullRequestId: $pullRequestID}) { pullRequest { state } }
-}`
+}`)
 
-const githubReopenPRMutation = `mutation ReopenPR($pullRequestID: ID!) {
+var githubReopenPRMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation ReopenPR($pullRequestID: ID!) {
   reopenPullRequest(input: {pullRequestId: $pullRequestID}) { pullRequest { state } }
-}`
+}`)
 
-const githubConvertToDraftMutation = `mutation ConvertPRToDraft($pullRequestID: ID!) {
+var githubConvertToDraftMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation ConvertPRToDraft($pullRequestID: ID!) {
   convertPullRequestToDraft(input: {pullRequestId: $pullRequestID}) { pullRequest { isDraft } }
-}`
+}`)
 
 // SetPRState closes, reopens or converts the PR to a draft by its node
 // id and reads the new state back.
@@ -454,12 +457,12 @@ func (f *githubForge) SetPRState(ctx context.Context, ref PRReference, state str
 	if err != nil {
 		return err
 	}
-	op, doc, field := "ClosePR", githubClosePRMutation, "closePullRequest"
+	doc, field := githubClosePRMutation, "closePullRequest"
 	switch state {
 	case PRStateReopen:
-		op, doc, field = "ReopenPR", githubReopenPRMutation, "reopenPullRequest"
+		doc, field = githubReopenPRMutation, "reopenPullRequest"
 	case PRStateToDraft:
-		op, doc, field = "ConvertPRToDraft", githubConvertToDraftMutation, "convertPullRequestToDraft"
+		doc, field = githubConvertToDraftMutation, "convertPullRequestToDraft"
 	}
 	var raw map[string]*struct {
 		PullRequest *struct {
@@ -467,7 +470,7 @@ func (f *githubForge) SetPRState(ctx context.Context, ref PRReference, state str
 			IsDraft bool   `json:"isDraft"`
 		} `json:"pullRequest"`
 	}
-	if _, err := client.GraphQL(ctx, op, doc, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, doc, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
 		return writeOutcome(err)
 	}
 	answer := raw[field]
@@ -506,7 +509,7 @@ func (f *githubForge) DismissReview(ctx context.Context, ref PRReference, review
 			} `json:"pullRequestReview"`
 		} `json:"dismissPullRequestReview"`
 	}
-	if _, err := client.GraphQL(ctx, "DismissReview", githubDismissReviewMutation, map[string]any{"reviewID": reviewID, "message": message}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubDismissReviewMutation, map[string]any{"reviewID": reviewID, "message": message}, &raw); err != nil {
 		return writeOutcome(err)
 	}
 	if raw.Dismiss == nil || raw.Dismiss.PullRequestReview == nil || !strings.EqualFold(raw.Dismiss.PullRequestReview.State, "DISMISSED") {
@@ -531,7 +534,7 @@ func githubOpinions(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "ViewerApproval", githubViewerApprovalQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubViewerApprovalQuery, vars, &raw); err != nil {
 		return nil, err
 	}
 	if raw.Repository == nil || raw.Repository.PullRequest == nil {
@@ -545,20 +548,20 @@ func (f *githubForge) BypassRequestedChanges(context.Context, PRReference) error
 	return ErrUnsupportedForge
 }
 
-const githubSearchPeopleQuery = `query SearchAssignable($owner: String!, $name: String!, $query: String!) {
+var githubSearchPeopleQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query SearchAssignable($owner: String!, $name: String!, $query: String!) {
   repository(owner: $owner, name: $name) {
     owner { __typename login }
     assignableUsers(first: 20, query: $query) { pageInfo { hasNextPage } nodes { login name } }
   }
-}`
+}`)
 
-const githubSearchTeamsQuery = `query SearchTeams($org: String!, $query: String!) {
+var githubSearchTeamsQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query SearchTeams($org: String!, $query: String!) {
   organization(login: $org) { teams(first: 20, query: $query) { pageInfo { hasNextPage } nodes { combinedSlug name } } }
-}`
+}`)
 
-const githubSearchLabelsQuery = `query SearchLabels($owner: String!, $name: String!, $query: String!) {
+var githubSearchLabelsQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query SearchLabels($owner: String!, $name: String!, $query: String!) {
   repository(owner: $owner, name: $name) { labels(first: 20, query: $query) { pageInfo { hasNextPage } nodes { id name color } } }
-}`
+}`)
 
 // SearchCandidates answers the repository's assignable users (reviewers
 // and assignees alike; GitHub requests reviews from the same set) and,
@@ -585,7 +588,7 @@ func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 				} `json:"labels"`
 			} `json:"repository"`
 		}
-		if _, err := client.GraphQL(ctx, "SearchLabels", githubSearchLabelsQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubSearchLabelsQuery, vars, &raw); err != nil {
 			return PRCandidates{}, err
 		}
 		if raw.Repository == nil {
@@ -609,7 +612,7 @@ func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 			} `json:"assignableUsers"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "SearchAssignable", githubSearchPeopleQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubSearchPeopleQuery, vars, &raw); err != nil {
 		return PRCandidates{}, err
 	}
 	if raw.Repository == nil {
@@ -633,7 +636,7 @@ func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 			} `json:"teams"`
 		} `json:"organization"`
 	}
-	if _, err := client.GraphQL(ctx, "SearchTeams", githubSearchTeamsQuery, map[string]any{"org": raw.Repository.Owner.Login, "query": query}, &teams); err != nil || teams.Organization == nil {
+	if _, err := client.GraphQL(ctx, githubSearchTeamsQuery, map[string]any{"org": raw.Repository.Owner.Login, "query": query}, &teams); err != nil || teams.Organization == nil {
 		return out, nil
 	}
 	for _, team := range teams.Organization.Teams.Nodes {
@@ -643,9 +646,9 @@ func (f *githubForge) SearchCandidates(ctx context.Context, ref PRReference, kin
 	return out, nil
 }
 
-const githubMergeMessageQuery = `query PRMergeMessage($owner: String!, $name: String!, $number: Int!, $method: PullRequestMergeMethod!) {
+var githubMergeMessageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRMergeMessage($owner: String!, $name: String!, $number: Int!, $method: PullRequestMergeMethod!) {
   repository(owner: $owner, name: $name) { pullRequest(number: $number) { viewerMergeHeadlineText(mergeType: $method) viewerMergeBodyText(mergeType: $method) } }
-}`
+}`)
 
 // DefaultMergeMessage is GitHub's default headline and body of a merge
 // with method, as the viewer would see them (the repository's commit
@@ -668,7 +671,7 @@ func (f *githubForge) DefaultMergeMessage(ctx context.Context, ref PRReference, 
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "PRMergeMessage", githubMergeMessageQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubMergeMessageQuery, vars, &raw); err != nil {
 		return MergeMessage{}, err
 	}
 	if raw.Repository == nil || raw.Repository.PullRequest == nil {

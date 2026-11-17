@@ -6,9 +6,11 @@
 // projects from the same functions its renderer shows text by.
 //
 // Find text, by what the row shows by default:
-//   - user_text: the bubble's text (userMessageVisibleText), without image
-//     blocks and the `!command` a shell output's block shows; a message an
-//     agent wrote renders as an agent-message row instead
+//   - user_text: the command line of each shell output's block, as the
+//     row's meta holds it (the rest of a longer command shows only once the
+//     block is read), then the bubble's text (userMessageVisibleText),
+//     without image blocks and the typed `!command` the block stands for; a
+//     message an agent wrote renders as an agent-message row instead
 //     (utils/agentMessage.ts), whose find text is its header's first line,
 //     not its body, which it shows only when expanded;
 //   - assistant_text: the rendered markdown (markdownFindText under the
@@ -36,6 +38,7 @@ import { parseJsonObject } from '../../utils/parseJsonObject';
 import { generatedImageRow } from '../../utils/generatedImageMeta';
 import { agentMessageFromItem } from '../../utils/agentMessage';
 import {
+  isShellOutput,
   parseUserMessageAttachments,
   parseUserMessageMeta,
   userMessageOrigin,
@@ -125,8 +128,10 @@ export function rowFindRuns(item: Item, context: FindTextContext): readonly stri
       const agentMessage = agentMessageFromItem(item);
       if (agentMessage) return agentMessage.firstLine ? [agentMessage.firstLine] : [];
       const origin = userMessageOrigin(parseUserMessageMeta(item.meta));
-      const text = userMessageVisibleText(item.summary, parseUserMessageAttachments(item.meta, item.threadId), origin);
-      return text ? [text] : [];
+      const attachments = parseUserMessageAttachments(item.meta, item.threadId);
+      const commands = attachments.filter(isShellOutput).map((attachment) => attachment.shell.command);
+      const text = userMessageVisibleText(item.summary, attachments, origin);
+      return text ? [...commands, text] : commands;
     }
     case 'assistant_text':
       return assistantFindRuns(item);

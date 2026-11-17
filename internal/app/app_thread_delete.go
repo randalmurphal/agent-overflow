@@ -82,6 +82,10 @@ type DeleteThreadResult struct {
 	// either has not taken the delete yet (Pending), which is sent again
 	// until it does, or runs a version that cannot take it.
 	WorkersNotDeleted []WorkerFailure `json:"workersNotDeleted,omitempty"`
+	// CleanupError says, for a person, what the deleted threads started
+	// elsewhere that may keep running (threadCleanupError). The delete
+	// stands.
+	CleanupError string `json:"cleanupError,omitempty"`
 }
 
 // WorkerFailure is one worker an archive or a delete of the thread above
@@ -226,18 +230,56 @@ type deleteOutcome struct {
 	// remote are the workers on other computers the delete did not reach
 	// yet, or cannot: it stands here, and is delivered there later.
 	remote []workerFailure
+	// cleanup is what the destroyed threads started elsewhere that the
+	// delete could not stop; the ports logged its causes.
+	cleanup threadCleanupError
 }
 
 func (o deleteOutcome) result(a *App) DeleteThreadResult {
-	return DeleteThreadResult{WorkersNotDeleted: a.workerFailures(slices.Concat(o.failed, o.remote))}
+	return DeleteThreadResult{
+		WorkersNotDeleted: a.workerFailures(slices.Concat(o.failed, o.remote)),
+		CleanupError:      o.cleanup.message(),
+	}
 }
 
 // logFailures is the report of a delete no person is waiting on, named by
-// what.
+// what. The work it could not stop is already in the log (threadDeletePorts).
 func (o deleteOutcome) logFailures(what string) {
 	for _, worker := range slices.Concat(o.failed, o.remote) {
 		log.Printf("app: %s: thread %s was not deleted: %v", what, worker.threadID, worker.err)
 	}
+}
+
+// deleteUnstopped gathers what a delete could not stop of the work its
+// threads started elsewhere. Destroy stops each thread's remote work twice:
+// an ask the first pass could not stop is tried again, and the last attempt
+// per thread stands; a command whose cancel was not delivered is dismissed
+// either way and never tried again by the delete, so every pass's count.
+type deleteUnstopped struct {
+	asks     map[string]error
+	order    []string
+	commands error
+}
+
+// note records one pass over threadID.
+func (u *deleteUnstopped) note(threadID string, asks, commands error) {
+	if u.asks == nil {
+		u.asks = make(map[string]error)
+	}
+	if _, seen := u.asks[threadID]; !seen {
+		u.order = append(u.order, threadID)
+	}
+	u.asks[threadID] = asks
+	u.commands = errors.Join(u.commands, commands)
+}
+
+// cleanup is the delete's cleanup error.
+func (u *deleteUnstopped) cleanup() threadCleanupError {
+	cleanup := threadCleanupError{outcome: "deleted", commands: u.commands}
+	for _, id := range u.order {
+		cleanup.asks = errors.Join(cleanup.asks, u.asks[id])
+	}
+	return cleanup
 }
 
 // deleteThreads runs one delete of req.seeds and what lives under them,
@@ -260,6 +302,7 @@ func (a *App) deleteThreads(req deleteRequest) (deleteOutcome, error) {
 		return deleteOutcome{}, op.refuse(err)
 	}
 	outcome, err := op.destroy()
+	outcome.cleanup = op.unstopped.cleanup()
 	outcome.remote = a.deliverOwnerOps(op.owed, op.owedTargets, req.reach)
 	return outcome, err
 }
@@ -290,6 +333,9 @@ type familyDelete struct {
 	// spawns they are for, read before the destroy drops them.
 	owed        []store.OwnerOp
 	owedTargets map[string]store.ThreadRequest
+	// unstopped is what the destroy could not stop of the work its threads
+	// started elsewhere.
+	unstopped deleteUnstopped
 }
 
 func (a *App) newFamilyDelete(req deleteRequest) *familyDelete {
@@ -707,7 +753,7 @@ func (op *familyDelete) destroy() (deleteOutcome, error) {
 
 // destroyMember destroys member under its action lock.
 func (op *familyDelete) destroyMember(member store.DeleteMember) error {
-	ports := op.app.threadDeletePorts()
+	ports := op.app.threadDeletePorts(&op.unstopped)
 	ports.ChunkPause = op.req.pause
 	if hook := op.app.deletePortsForTest; hook != nil {
 		hook(&ports)

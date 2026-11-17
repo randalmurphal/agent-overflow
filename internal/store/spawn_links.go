@@ -8,14 +8,14 @@ import (
 )
 
 // A paired computer's owned spawn links its thread here through the spawn's
-// receipt (thread_request_receipts.spawn_link, migration v157): while the
+// receipt (thread_request_receipts.spawn_link, migration v158): while the
 // link stands and the thread is owned, the thread belongs to the source
 // thread on that computer (SpawnOwnerOf) as a local worker belongs to its
 // spawner. A thread has at most one link
 // (idx_thread_request_receipts_spawn_link). A link ends when its owner's
 // device loses access (RevokeDevice, MergeOwnDevices), when its owner has
 // been silent past the retention floor (DeleteThreadRequestsBefore), or when
-// its owner releases it (ReleaseSpawnLink); the triggers of v157 then
+// its owner releases it (ReleaseSpawnLink); the triggers of v158 then
 // return an owned thread of a project to standalone.
 
 // remoteSpawnLinkSQL is true when the expression target names a thread a

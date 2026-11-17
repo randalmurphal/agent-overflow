@@ -10,7 +10,7 @@ export function terminalFindRegion(terminalID: string): string {
 export interface TerminalTabState {
   /** Wails-issued ID for the underlying PTY session. */
   terminalID: string;
-  /** Pre-output summary from OpenTerminal/RestartTerminal/ListTerminals. */
+  /** Pre-output summary from OpenTerminal/ListTerminals. */
   summary: TerminalSessionSummary;
   /** Incoming output bytes queue while the xterm instance is mounting. */
   pendingOutput: Uint8Array[];

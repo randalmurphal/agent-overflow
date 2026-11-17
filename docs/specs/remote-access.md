@@ -1016,6 +1016,11 @@ admits it on session presence alone, liveness re-read per call.
 floor set, "never a grant", and the event-filter bit are each pinned
 by test. `GetSettings` deliberately stays `settings:read` — it answers
 the merged host+user+device view, more than the caller's own bucket.
+A caller without `access:admin` receives that view without the
+`network` block, whose own read (`GetNetworkSettings`) requires
+`access:admin`, and without `observabilityOtlpEndpoint`; every bound
+method returning `Settings` projects through `settingsForCaller`
+(`internal/app/app_settings.go`).
 Alongside it, §5's per-device narrowing became real at the mint
 surface: `MintDevicePairing(deviceClass, access)` with `full` (empty
 means full — the parameter was appended to an existing call) or

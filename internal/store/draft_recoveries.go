@@ -57,7 +57,7 @@ func (s *Store) CommitThreadDraftRecovery(r ThreadDraftRecovery, expected, merge
 	if r.ThreadID == "" || r.SendID == "" || expected.ThreadID != r.ThreadID || merged.ThreadID != r.ThreadID {
 		return false, DraftWrite{}, fmt.Errorf("draft recovery: matching thread and send IDs required")
 	}
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return false, DraftWrite{}, err
 	}

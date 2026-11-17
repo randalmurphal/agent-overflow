@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -265,16 +266,27 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 }
 
 // threadDeletePorts are the ports of one thread's delete
-// (familyDelete.deleteMember).
-func (a *App) threadDeletePorts() threadapp.DeletePorts {
+// (familyDelete.destroyMember). Work the delete could not stop, an ask or a
+// command on another computer whose cancel was not delivered, does not hold
+// the delete: it is logged, and noted in unstopped when the caller reports
+// it.
+func (a *App) threadDeletePorts(unstopped *deleteUnstopped) threadapp.DeletePorts {
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
-			// Runs twice per delete; both halves are conditional
-			// updates, so the second pass finds nothing to do.
-			if err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID); err != nil {
+			// Runs twice per delete; both halves are conditional updates,
+			// so the second pass finds only what the first could not stop.
+			asks, err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID)
+			if err != nil {
 				return err
 			}
-			return a.cancelThreadRemoteCommands(context.Background(), threadID, false)
+			commands, err := a.cancelThreadRemoteCommands(context.Background(), threadID, false)
+			if asks != nil || commands != nil {
+				log.Printf("app: delete thread %s: %v", threadID, errors.Join(asks, commands))
+			}
+			if unstopped != nil {
+				unstopped.note(threadID, asks, commands)
+			}
+			return err
 		},
 		CleanProviderBackground: a.cleanThreadProviderBackground,
 		StopSession:             a.stopSession,

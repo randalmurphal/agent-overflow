@@ -63,7 +63,8 @@ type restingThreadWork struct {
 	// flip. A repeated archive reads them too, so a worker an earlier one
 	// could not archive is tried again however deep it is.
 	workers []store.OwnedWorker
-	err     error
+	// cleanup gathers what the rest could not do, part by part.
+	cleanup threadCleanupError
 }
 
 // held reports whether sendID was in the thread's queue when it was
@@ -92,25 +93,27 @@ func (a *App) captureRestingThreadWork(id string, cause restCause) restingThread
 	work := restingThreadWork{threadID: id, cause: cause, captured: true}
 	asks, askErr := a.disarmThreadRequests(id)
 	if askErr != nil {
-		askErr = fmt.Errorf("end the requests of %s: %w", id, askErr)
+		work.cleanup.asks = fmt.Errorf("end the requests of %s: %w", id, askErr)
 	}
 	commands, commandErr := a.disarmRemoteCommands(id)
-	var dismissErr error
+	if commandErr != nil {
+		work.cleanup.commandRecords = fmt.Errorf("list the remote commands of %s: %w", id, commandErr)
+	}
 	if !cause.keepFinished {
 		// Under the mutation lock a completion's queue write takes, so the
 		// watcher queues none after this, and one queued or handed to the
 		// provider is not given back to a watch that would deliver it again.
-		dismissErr = a.dismissUndeliveredRemoteCompletions(id)
+		work.cleanup.commandRecords = errors.Join(work.cleanup.commandRecords, a.dismissUndeliveredRemoteCompletions(id))
 	}
-	wakesErr := a.cancelAgentWakesForThread(id, cause.outcome)
+	work.cleanup.schedule = a.cancelAgentWakesForThread(id, cause.outcome)
 	rows, queueErr := a.store.ListFlushQueueItems(id)
 	if queueErr != nil {
-		queueErr = fmt.Errorf("read the queue of %s: %w", id, queueErr)
+		work.cleanup.queue = fmt.Errorf("read the queue of %s: %w", id, queueErr)
 	}
 	for _, row := range rows {
 		work.queued = append(work.queued, row.SendID)
 	}
-	work.asks, work.commands, work.err = asks, commands, errors.Join(askErr, commandErr, dismissErr, wakesErr, queueErr)
+	work.asks, work.commands = asks, commands
 	return work
 }
 
@@ -129,14 +132,17 @@ func (a *App) dismissUndeliveredRemoteCompletions(threadID string) error {
 // thread stopped or archived from any of them is left in the same state. It
 // runs on the app's lifetime, not its caller's, because the rest is already
 // under way, and outside the locks because reaching the other computer may
-// take a while.
-func (a *App) stopRestingThreadWork(work restingThreadWork) error {
+// take a while. It returns what the rest could not do, the capture's and the
+// session stop's part included.
+func (a *App) stopRestingThreadWork(work restingThreadWork) threadCleanupError {
 	if !work.captured {
-		return work.err
+		return work.cleanup
 	}
 	ctx, id := a.lifeCtx(), work.threadID
-	a.cancelOwnedAsks(ctx, id, work.asks)
+	work.cleanup.asks = errors.Join(work.cleanup.asks, a.cancelOwnedAsks(ctx, id, work.asks))
 	undelivered, remoteErr := a.cancelRemoteCommands(ctx, id, work.commands, work.cause.keepFinished)
+	work.cleanup.commands = undelivered
+	work.cleanup.commandRecords = errors.Join(work.cleanup.commandRecords, remoteErr)
 	// What the app had queued for the thread goes back to its owners, live
 	// session or not, so nothing of it reaches the agent when the thread is
 	// next started (withdrawQueuedMessages): a request's answer or reminder
@@ -147,8 +153,8 @@ func (a *App) stopRestingThreadWork(work restingThreadWork) error {
 	// cancel kept, and arrives once the thread is unarchived; one the cause
 	// does not keep was dismissed with the capture, so its queued message is
 	// only taken out.
-	withdrawErr := a.withdrawQueuedMessages(id, work.held, queuedWithdrawal{why: work.cause.why})
-	return errors.Join(work.err, undelivered, remoteErr, withdrawErr)
+	work.cleanup.queue = errors.Join(work.cleanup.queue, a.withdrawQueuedMessages(id, work.held, queuedWithdrawal{why: work.cause.why}))
+	return work.cleanup
 }
 
 // errThreadResting refuses an app-written message for a thread a Stop is
@@ -411,7 +417,8 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 	fail("dismiss its questions", a.dismissRestingAsyncQuestions(threadID))
 	// After the session end, as an archive's: what the teardown dropped went
 	// back to its owners, and what it left is withdrawn here.
-	fail("stop its work", a.stopRestingThreadWork(work))
+	cleanup := a.stopRestingThreadWork(work)
+	fail("stop its work", cleanup.Unwrap())
 	a.stopRequestsOfRestingThread(ctx, threadID, by, visited, result)
 	// A prompt of a worker left running goes back to the user; the workers
 	// brought to rest took theirs with their sessions.

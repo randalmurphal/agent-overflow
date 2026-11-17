@@ -41,6 +41,12 @@ A newer source commit needs its own candidate and testing. An APK icon/native
 change also increments `mobile/shell-build.txt` before building that candidate;
 frontend-only bundle compatibility does not change just for a cosmetic APK edit.
 
+Linux artifacts must start on glibc 2.34 (`GLIBC_FLOOR` in
+`scripts/release-common.sh`); the build fails on one that requires newer. The
+requirement follows the build machine's compiler, so the Linux and WSL job
+names its runner image version. Moving that pin or the floor decides which
+distributions a release supports.
+
 The promotion script requires Node, `gh`, and `unzip` on the Linux workflow runner.
 `node --test scripts/release-candidate.test.mjs` exercises selection, exact-byte
 promotion and failure paths with a fake GitHub API and local archives; it neither

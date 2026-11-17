@@ -406,7 +406,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1887984285: 'home', // ResizeTerminal
 	1919237704: 'thread', // RespondToApproval
 	1071592868: 'thread', // RespondToUserInput
-	4152403588: 'home', // RestartTerminal
 	3141913084: 'home', // RestartToUpdate
 	3386497005: 'home', // RestoreAccessDevice
 	1113976056: 'thread', // ResyncLiveCode

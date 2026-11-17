@@ -3,7 +3,7 @@ package store
 import "fmt"
 
 // A watch's failure notice mark (agent_wakes.failure_noticed_at, migration
-// v154): set when the app raises the notification that a watch keeps
+// v155): set when the app raises the notification that a watch keeps
 // failing, and cleared when it withdraws it. The failure episode itself is
 // the app's in-memory state; the mark outlives a restart because the
 // notification does, so the run that ends the episode after a restart still

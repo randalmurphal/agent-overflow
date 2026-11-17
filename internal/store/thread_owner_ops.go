@@ -9,7 +9,7 @@ import (
 )
 
 // What a spawner's computer owes the paired computers its threads spawned
-// on (migration v157): when an owner is archived, deleted or given to
+// on (migration v158): when an owner is archived, deleted or given to
 // another computer, each remote spawn under it owes that computer one
 // operation on the worker the spawn made there. thread_owner_ops keeps one
 // row per spawn token, written in the transaction that decided it, and it

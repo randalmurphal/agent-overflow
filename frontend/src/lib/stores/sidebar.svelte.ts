@@ -29,7 +29,7 @@
 // persists across refreshes).
 
 import type { ProjectSortMode } from '../types/settings';
-import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import {
   appStorageAdoptLegacyKey,
   appStorageDelete,
@@ -192,11 +192,9 @@ function removeLocalStorageKey(key: string): void {
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
-// How many unpinned members each group (by id) shows before its show-more
-// footer. Page-load state.
-let containerVisibleLimits: Record<string, number> = $state({});
-// How many top-level rows each list shows: a project's by its entry id,
-// and the Assistants section's rows by ASSISTANTS_LIST_KEY.
+// How many rows each list shows: a project's top level by its entry id, a
+// group's members by the group id, and the Assistants section's rows by
+// ASSISTANTS_LIST_KEY.
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -349,23 +347,6 @@ export function toggleSidebarSection(section: SidebarSectionId): void {
   setSidebarSectionExpanded(section, !isSidebarSectionExpanded(section));
 }
 
-/** How many unpinned members a group shows; grows by reveals. */
-export function getContainerVisibleLimit(containerKey: string): number {
-  return containerVisibleLimits[containerKey] ?? THREAD_PREVIEW_LIMIT;
-}
-
-export function setContainerVisibleLimit(containerKey: string, limit: number): void {
-  if (getContainerVisibleLimit(containerKey) === limit) return;
-  containerVisibleLimits = { ...containerVisibleLimits, [containerKey]: limit };
-}
-
-/** Drops a group's paging when the group is deleted. */
-export function forgetContainerVisibleLimit(containerKey: string): void {
-  if (!(containerKey in containerVisibleLimits)) return;
-  const { [containerKey]: _dropped, ...rest } = containerVisibleLimits;
-  containerVisibleLimits = rest;
-}
-
 /**
  * The key the Assistants section's rows page under in the per-list
  * preview sizes below. A project's list pages under its entry id, a UUID,
@@ -374,24 +355,15 @@ export function forgetContainerVisibleLimit(containerKey: string): void {
 export const ASSISTANTS_LIST_KEY = 'assistants';
 
 /**
- * Per-list thread preview size, by a project's entry id or
- * ASSISTANTS_LIST_KEY. Lists start at THREAD_PREVIEW_LIMIT; each "Show
- * more" click adds THREAD_REVEAL_INCREMENT, and "Show less" drops the list
- * back to the default preview.
+ * Thread-list preview size, keyed by the list's owner: a project's entry id
+ * for its top level, a group id for the group's members (both random entity
+ * ids, so they share one map), and ASSISTANTS_LIST_KEY for the Assistants
+ * section's rows. A list starts at THREAD_PREVIEW_LIMIT; each "Show more"
+ * click reveals up to THREAD_REVEAL_INCREMENT hidden rows, and "Show less"
+ * drops it back to the default preview.
  */
-export function isThreadListExpanded(id: string): boolean {
-  return getThreadListVisibleLimit(id) > THREAD_PREVIEW_LIMIT;
-}
-
 export function getThreadListVisibleLimit(id: string): number {
   return threadListVisibleLimits[id] ?? THREAD_PREVIEW_LIMIT;
-}
-
-export function revealMoreThreadList(id: string): void {
-  const current = getThreadListVisibleLimit(id);
-  const next = visibleLimitsWith(id, current + THREAD_REVEAL_INCREMENT);
-  threadListVisibleLimits = next;
-  writeThreadListVisibleLimits(next);
 }
 
 export function setThreadListVisibleLimit(id: string, limit: number): void {
@@ -428,7 +400,6 @@ export function resetSidebarForTest(): void {
   collapsedProjects = new Set();
   collapsedGroups = new Set();
   collapsedSections = new Set();
-  containerVisibleLimits = {};
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);

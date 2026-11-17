@@ -107,7 +107,7 @@ type DraftWrite struct {
 // was, which is the honest answer (nothing was edited) and which nothing
 // reads: the draft's updated_at is not rendered anywhere.
 func (s *Store) UpsertThreadDraft(d ThreadDraft) (DraftWrite, error) {
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
 	}
@@ -206,7 +206,7 @@ func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (Draft
 		args = append(args, e.Content, e.Attachments, e.TerminalChips, plan)
 	}
 
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return DraftWrite{}, fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
 	}

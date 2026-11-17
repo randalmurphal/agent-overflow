@@ -198,7 +198,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// v153 drops channels.
+		// v154 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -399,7 +399,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
-		// v153 drops automations and automation_cursors.
+		// v154 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -635,7 +635,7 @@ CREATE INDEX idx_work_item_units_worktree
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
 		//
-		// v153 drops automations and this index.
+		// v154 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1756,13 +1756,14 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		SQL:     stalePendingFlushV152SQL,
 		Fix:     clearStalePendingFlushMarks,
 	},
-	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV153SQL, Rebuild: true},
-	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV154SQL + threadTalliesV154SQL + threadAnswerDueV154SQL, Fix: fillAssistantLedger},
-	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV155SQL},
+	{Version: findTextShellCommandsMigrationVersion, Name: "find_text_shell_commands", SQL: findTextShellCommandsV153SQL},
+	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV154SQL, Rebuild: true},
+	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV155SQL + threadTalliesV155SQL + threadAnswerDueV155SQL, Fix: fillAssistantLedger},
+	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV156SQL},
 	{
 		Version: userFindTextMigrationVersion,
 		Name:    "user_find_text",
-		SQL:     userFindTextV156SQL,
+		SQL:     userFindTextV157SQL,
 		Deferred: &DeferredMigration{
 			Title: "Find index",
 			Steps: []DeferredStep{
@@ -1770,7 +1771,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 			},
 		},
 	},
-	{Version: remoteOwnershipMigrationVersion, Name: "remote_ownership", SQL: remoteOwnershipV157SQL},
+	{Version: remoteOwnershipMigrationVersion, Name: "remote_ownership", SQL: remoteOwnershipV158SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

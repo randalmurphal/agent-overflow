@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 
@@ -334,13 +335,16 @@ func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnInd
 // this thread, not for this thread, and killing a spawned thread because its
 // caller was archived would destroy work nobody said to stop. An ask is the
 // exception: its scratch thread exists only to answer this caller.
-func (a *App) cancelThreadRequests(ctx context.Context, callerThreadID string) error {
+//
+// It returns, apart, the asks it could not stop (undelivered: each may keep
+// running where it is) and a store failure that left the requests armed
+// (err).
+func (a *App) cancelThreadRequests(ctx context.Context, callerThreadID string) (undelivered, err error) {
 	asks, err := a.disarmThreadRequests(callerThreadID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	a.cancelOwnedAsks(ctx, callerThreadID, asks)
-	return nil
+	return a.cancelOwnedAsks(ctx, callerThreadID, asks), nil
 }
 
 // disarmThreadRequests ends the caller's parked calls, disarms its wakes and
@@ -359,15 +363,17 @@ func (a *App) disarmThreadRequests(callerThreadID string) ([]store.ThreadRequest
 	}), nil
 }
 
-// cancelOwnedAsks stops exactly the asks named, best effort by design: the
-// caller's own operation is what is being served, and a scratch thread left
-// running is swept at the next boot, here or on the computer that holds it.
-func (a *App) cancelOwnedAsks(ctx context.Context, callerThreadID string, asks []store.ThreadRequest) {
+// cancelOwnedAsks stops exactly the asks named and returns the ones it could
+// not stop. One failure does not stop the rest. A scratch thread left running
+// is swept at the next boot, here or on the computer that holds it.
+func (a *App) cancelOwnedAsks(ctx context.Context, callerThreadID string, asks []store.ThreadRequest) error {
+	var errs []error
 	for _, row := range asks {
 		if err := a.cancelOwnedAsk(ctx, row); err != nil {
-			log.Printf("thread tools: cancel ask %s for %s: %v", row.Token, callerThreadID, err)
+			errs = append(errs, fmt.Errorf("cancel ask %s for %s: %w", row.Token, callerThreadID, err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // cancelOwnedAsk stops one ask this caller owns, wherever it is running.
@@ -452,7 +458,7 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 // stopThreadRequestsForDeletedThread is the delete port's whole thread-tools
 // half: the thread is about to stop existing, so it is both a caller whose
 // requests must be cancelled and a target whose receipts must be settled.
-func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID string) error {
+func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID string) (undelivered, err error) {
 	// The delete cascades the rows away whether or not this cancel lands.
 	if err := a.cancelAgentWakesForThread(threadID, "cancelled: the thread was deleted"); err != nil {
 		log.Printf("agent wakes: %v", err)
@@ -465,7 +471,7 @@ func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID s
 // handing to another. The receipts stay here and the caller collects them as
 // usual; nothing is re-addressed, because the request was made of a thread on
 // this computer and that thread is gone from it.
-func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, destination string) error {
+func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, destination string) (undelivered, err error) {
 	reason := threadtools.InterruptMoved(destination)
 	// Loops and watches are this computer's clock and processes; they do
 	// not travel with the conversation.
@@ -474,7 +480,8 @@ func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, de
 	}
 	withdrawErr := a.withdrawCancelledAgentWakes(threadID)
 	a.settleReceiptsForThread(threadID, store.ThreadReceiptInterrupted, reason)
-	return errors.Join(withdrawErr, a.cancelThreadRequests(ctx, threadID))
+	undelivered, err = a.cancelThreadRequests(ctx, threadID)
+	return undelivered, errors.Join(withdrawErr, err)
 }
 
 // threadRequestDestinationName names the computer a moved thread went to, for

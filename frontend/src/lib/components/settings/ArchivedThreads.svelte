@@ -60,7 +60,7 @@
       const { backend, result } = await deleteThread(thread);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);
-      addToast('info', `Deleted "${thread.title || 'thread'}".`);
+      if (!result.cleanupError) addToast('info', `Deleted "${thread.title || 'thread'}".`);
       reportDeleteLeftovers(backend, thread.title || 'thread', result, [thread.id]);
     } catch (err) {
       console.error('Failed to delete archived thread:', err);

@@ -21,6 +21,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import {
+    isShellOutput,
     parseUserMessageAttachments,
     parseUserMessageMeta,
     userMessageCommandRanges,
@@ -149,8 +150,8 @@
   const images = $derived(imageAttachments(attachments));
   // A file that is the output of a composer shell command is a command block,
   // the one file whose content the row shows; every other file is a chip.
-  const shellOutputs = $derived(attachments.filter((attachment) => attachment.kind === 'file' && attachment.shell));
-  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file' && !attachment.shell));
+  const shellOutputs = $derived(attachments.filter(isShellOutput));
+  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file' && !isShellOutput(attachment)));
   // Pane-owned blob cache: blob URLs survive the window's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch
   // attachments from Go or re-allocate object URLs. The IntersectionObserver
@@ -287,7 +288,7 @@
       itemId={item.id}
       threadId={attachment.threadId}
       attachmentId={attachment.id}
-      shell={attachment.shell!}
+      shell={attachment.shell}
       size={attachment.size}
       {pane}
       standalone={commandsOnly}

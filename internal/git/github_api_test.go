@@ -42,6 +42,9 @@ type forgeAPIAnswer struct {
 	Status int
 	Header http.Header
 	Body   string
+	// Unshaped marks a GraphQL answer deliberately not of its document's
+	// shape, which checkGraphQLAnswer leaves alone.
+	Unshaped bool
 }
 
 type forgeAPICalls struct {
@@ -116,6 +119,9 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 		calls.calls = append(calls.calls, call)
 		calls.mu.Unlock()
 		reply := answer(call)
+		if call.Op != "" {
+			checkGraphQLAnswer(t, r.URL.Path, call, reply)
+		}
 		for name, values := range reply.Header {
 			w.Header()[name] = values
 		}
@@ -491,6 +497,8 @@ func TestGitHubThreadControlsFollowGitHub(t *testing.T) {
 	}
 }
 
+// githubCommentsJSON are n review thread comments, each a reply to the
+// thread's first when reply is set.
 func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
 	out := make([]string, 0, n)
 	for i := from; i < from+n; i++ {
@@ -498,7 +506,16 @@ func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
 		if reply {
 			replyTo = `{"id":"root","fullDatabaseId":"1"}`
 		}
-		out = append(out, fmt.Sprintf(`{"id":"%s%d","fullDatabaseId":"%d","author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
+		out = append(out, fmt.Sprintf(`{"id":"%s%d","fullDatabaseId":"%d","author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s}`, prefix, i, i+1, i, replyTo))
+	}
+	return out
+}
+
+// githubConversationCommentsJSON are n conversation comments.
+func githubConversationCommentsJSON(prefix string, from, n int) []string {
+	out := make([]string, 0, n)
+	for i := from; i < from+n; i++ {
+		out = append(out, fmt.Sprintf(`{"id":"%s%d","fullDatabaseId":"%d","author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","isMinimized":false}`, prefix, i, i+1, i))
 	}
 	return out
 }
@@ -526,7 +543,7 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 "latestReviews":{"nodes":[]},
 "commits":{"nodes":[{"commit":{"id":"C_1","statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":true,"endCursor":"ctx-1"},"nodes":[` + strings.Join(githubContextsJSON(0, 100), ",") + `]}}}}]},
 "reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"threads-1"},"nodes":[` + githubThreadJSON("T1", githubCommentsJSON("t1c", 0, 100, false), true) + `]},
-"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"comments-1"},"nodes":[` + strings.Join(githubCommentsJSON("ic", 0, 100, false), ",") + `]}}}}`)
+"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"comments-1"},"nodes":[` + strings.Join(githubConversationCommentsJSON("ic", 0, 100), ",") + `]}}}}`)
 		case "PRThreadsPage":
 			if call.Vars["after"] != "threads-1" || call.Vars["number"] != float64(5) {
 				t.Errorf("PRThreadsPage variables = %v", call.Vars)
@@ -541,7 +558,7 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 			if call.Vars["after"] != "comments-1" {
 				t.Errorf("PRCommentsPage variables = %v", call.Vars)
 			}
-			return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":"y"},"nodes":[` + strings.Join(githubCommentsJSON("ic", 100, 50, false), ",") + `]}}}}`)
+			return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":"y"},"nodes":[` + strings.Join(githubConversationCommentsJSON("ic", 100, 50), ",") + `]}}}}`)
 		case "RollupContextsPage":
 			if call.Vars["commitID"] != "C_1" || call.Vars["after"] != "ctx-1" {
 				t.Errorf("RollupContextsPage variables = %v", call.Vars)
@@ -588,18 +605,19 @@ func TestReadPRStopsAtThePageCap(t *testing.T) {
 				n := page
 				mu.Unlock()
 				comment := githubCommentsJSON("c"+strconv.Itoa(n)+"-", 0, 1, false)
+				conversation := githubConversationCommentsJSON("c"+strconv.Itoa(n)+"-", 0, 1)
 				thread := githubThreadJSON("T"+strconv.Itoa(n), comment, endless == "ThreadCommentsPage")
 				switch call.Op {
 				case "PRTick":
 					return githubData(`{"repository":{"pullRequest":{"number":5,` +
 						`"reviewThreads":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRThreadsPage") + `,"endCursor":"p"},"nodes":[` + thread + `]},` +
-						`"comments":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRCommentsPage") + `,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+						`"comments":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRCommentsPage") + `,"endCursor":"p"},"nodes":[` + conversation[0] + `]}}}}`)
 				case "PRThreadsPage":
 					return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
 				case "ThreadCommentsPage":
 					return githubData(`{"node":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}`)
 				case "PRCommentsPage":
-					return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+					return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + conversation[0] + `]}}}}`)
 				}
 				return forgeUnexpected(t, call)
 			})

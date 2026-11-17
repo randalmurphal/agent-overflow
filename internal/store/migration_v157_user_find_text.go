@@ -1,6 +1,6 @@
 package store
 
-// Migration v156 refills the thread-find candidate text of the top-level
+// Migration v157 refills the thread-find candidate text of the top-level
 // user rows. A user row's candidate text now also holds what its row shows
 // that its summary does not hold as written (find_candidate.go): an agent
 // message's header line, read from the row's meta by the rule the timeline
@@ -14,9 +14,9 @@ package store
 // lists; a find computes it from the row until it is filled
 // (findMatchSQL), and the deferred phase fills it again with v150's
 // backfill, which finds the rows through its pending indexes.
-const userFindTextMigrationVersion = 156
+const userFindTextMigrationVersion = 157
 
-const userFindTextV156SQL = `
+const userFindTextV157SQL = `
 UPDATE items SET find_text = NULL
  WHERE kind = 'user_text' AND parent_id = '' AND find_text IS NOT NULL;
 `

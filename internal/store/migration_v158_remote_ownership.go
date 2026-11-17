@@ -1,6 +1,6 @@
 package store
 
-// Migration v157 makes a worker a paired computer spawned owned by its
+// Migration v158 makes a worker a paired computer spawned owned by its
 // spawner there (docs/specs/standing-agents.md, "Owned workers").
 //
 // On the computer that holds the worker (D), the spawn's receipt is the
@@ -19,9 +19,9 @@ package store
 // `thread_owner_ops` keeps what S still owes D, one row per link, past the
 // spawn row's own delete (no foreign key). idx_thread_requests_remote_spawn_target
 // finds the remote spawn that names a thread there.
-const remoteOwnershipMigrationVersion = 157
+const remoteOwnershipMigrationVersion = 158
 
-const remoteOwnershipV157SQL = `
+const remoteOwnershipV158SQL = `
 ALTER TABLE thread_request_receipts ADD COLUMN spawn_link INTEGER NOT NULL DEFAULT 0 CHECK(spawn_link IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN owner_seen_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_request_receipts ADD COLUMN owner_op_seq INTEGER NOT NULL DEFAULT 0;

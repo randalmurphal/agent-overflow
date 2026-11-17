@@ -120,16 +120,13 @@ func ghReactionTarget(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return graphQLNodeNotFound(id)
 	}
-	typename, comment := "IssueComment", p.Comments
+	comment := p.Comments
 	if thread >= 0 {
-		typename, comment = "PullRequestReviewComment", p.Threads[thread].Comments
+		comment = p.Threads[thread].Comments
 	}
-	return graphQLData(map[string]any{"node": map[string]any{
-		"__typename":     typename,
-		"pullRequest":    map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
-		"viewerCanReact": p.mayReact(),
-		"reactionGroups": e.githubReactionGroups(comment[at]),
-	}})
+	node := githubCommentOwner(r, p, thread >= 0)
+	node["viewerCanReact"], node["reactionGroups"] = p.mayReact(), e.githubReactionGroups(comment[at])
+	return graphQLData(map[string]any{"node": node})
 }
 
 // ghReaction answers AddReaction (add) and RemoveReaction: the viewer's
@@ -310,7 +307,7 @@ func glabNoteReactions(e *Engine, c *call, v graphQLVars) response {
 		for _, reaction := range note.Reactions {
 			awards = append(awards, map[string]any{"name": reaction.Name, "user": map[string]any{"username": reaction.User}})
 		}
-		return map[string]any{"id": fmt.Sprintf("gid://gitlab/%s/%d", kind, note.ID), "awardEmoji": graphQLConnection(awards, 0, githubGraphQLPageSize)}
+		return map[string]any{"id": fmt.Sprintf("gid://gitlab/%s/%d", kind, note.ID), "awardEmoji": glabFirstPage(awards)}
 	}
 	var notes []map[string]any
 	for _, thread := range p.Threads {

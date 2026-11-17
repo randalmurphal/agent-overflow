@@ -16,13 +16,15 @@ import {
   nextSidebarThreadRevealLimit,
   previewSidebarThreads,
   rollupDisplayStatus,
-  sameSidebarVisibleNodes,
+  sameSidebarVisibleRows,
   sameThreadStatusPill,
-  sidebarVisibleNodeId,
+  sidebarVisibleRowKey,
+  type SidebarGroupMoreRow,
   type SidebarTreeVisibleNode,
 } from './sidebarTreeView';
 
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
+import { flattenTreeNodes } from '../../test/helpers/sidebarTree';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -51,8 +53,7 @@ function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup 
 }
 
 /** Node id of either kind — thread nodes and group nodes sort in one list. */
-const nodeId = (node: SidebarTreeNode | SidebarTreeVisibleNode): string =>
-  node.kind === 'container-more' ? sidebarVisibleNodeId(node) : sidebarTreeNodeId(node);
+const nodeId = (node: SidebarTreeNode | SidebarTreeVisibleNode): string => sidebarTreeNodeId(node);
 const nodeIds = (nodes: readonly (SidebarTreeNode | SidebarTreeVisibleNode)[]): string[] => nodes.map(nodeId);
 
 function liveStatusMap(map: Record<string, ThreadLiveStatus>) {
@@ -108,7 +109,7 @@ describe('flattenSidebarThreadTree', () => {
     },
   ])('marks section dividers: $name', ({ threads, groups, want }) => {
     const tree = buildSidebarThreadTree({ threads, groups, liveStatusOf: liveStatusMap({}) });
-    const flat = flattenSidebarThreadTree({ nodes: tree });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual(want);
   });
 
@@ -123,7 +124,7 @@ describe('flattenSidebarThreadTree', () => {
       groups: [mkGroup('g1')],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenSidebarThreadTree({ nodes: tree });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual([
       ['g1', false],
       ['m-front', false],
@@ -336,6 +337,16 @@ describe('rollupDisplayStatus', () => {
     expect(rollup?.pill.label).toBe('Interrupted');
   });
 
+  it('ranks by tier: completed over read, running over completed, needs-attention over running', () => {
+    const completed = mkThread('completed', { latestTurnCompletedAt: 2, lastReadAt: 1 });
+    expect(rollupDisplayStatus(buildAt([mkThread('read'), completed]))?.pill.label).toBe('Completed');
+    expect(rollupDisplayStatus(buildAt([completed, mkThread('run')], { run: 'running' }))?.liveStatus).toBe('running');
+    expect(rollupDisplayStatus(buildAt(
+      [mkThread('run'), mkThread('interrupted', { hasIncompleteTurn: true })],
+      { run: 'running' },
+    ))?.liveStatus).toBe('interrupted');
+  });
+
   it("picks a group's bubbled member status", () => {
     const tree = buildSidebarThreadTree({
       threads: [mkThread('member', { groupId: 'g1' })],
@@ -357,14 +368,14 @@ describe('sameThreadStatusPill', () => {
   });
 });
 
-describe('sameSidebarVisibleNodes', () => {
+describe('sameSidebarVisibleRows', () => {
   // The cutoff that keeps streaming beats away from the animated
   // each-block: equal render content must compare true even though tree
   // builds mint new node and pill objects every run.
   it('is true across an activity-only change (fresh node + pill objects)', () => {
     const t = mkThread('a', { updatedAt: 1000 });
     const build = (activity: number) =>
-      flattenSidebarThreadTree({
+      flattenTreeNodes({
         nodes: buildSidebarThreadTree({
           threads: [t],
           liveStatusOf: () => 'running',
@@ -374,33 +385,33 @@ describe('sameSidebarVisibleNodes', () => {
     const a = build(1000);
     const b = build(99_000);
     expect(a[0]).not.toBe(b[0]);
-    expect(sameSidebarVisibleNodes(a, b)).toBe(true);
+    expect(sameSidebarVisibleRows(a, b)).toBe(true);
   });
 
   it('is false when order, status, or membership changes', () => {
     const t1 = mkThread('a', { updatedAt: 1000 });
     const t2 = mkThread('b', { updatedAt: 2000 });
     const build = (threads: Thread[], status: ThreadLiveStatus) =>
-      flattenSidebarThreadTree({
+      flattenTreeNodes({
         nodes: buildSidebarThreadTree({
           threads,
           liveStatusOf: () => status,
         }),
       });
 
-    expect(sameSidebarVisibleNodes(build([t1, t2], 'idle'), build([t2, t1], 'idle'))).toBe(true);
-    expect(sameSidebarVisibleNodes(build([t1, t2], 'idle'), build([t1], 'idle'))).toBe(false);
-    expect(sameSidebarVisibleNodes(build([t1, t2], 'idle'), build([t1, t2], 'running'))).toBe(false);
+    expect(sameSidebarVisibleRows(build([t1, t2], 'idle'), build([t2, t1], 'idle'))).toBe(true);
+    expect(sameSidebarVisibleRows(build([t1, t2], 'idle'), build([t1], 'idle'))).toBe(false);
+    expect(sameSidebarVisibleRows(build([t1, t2], 'idle'), build([t1, t2], 'running'))).toBe(false);
     // Order flip via activity.
     const byActivity = (order: [number, number]) =>
-      flattenSidebarThreadTree({
+      flattenTreeNodes({
         nodes: buildSidebarThreadTree({
           threads: [t1, t2],
           liveStatusOf: () => 'idle',
           activityOf: (t) => (t.id === 'a' ? order[0] : order[1]),
         }),
       });
-    expect(sameSidebarVisibleNodes(byActivity([1, 2]), byActivity([2, 1]))).toBe(false);
+    expect(sameSidebarVisibleRows(byActivity([1, 2]), byActivity([2, 1]))).toBe(false);
   });
 });
 
@@ -417,14 +428,14 @@ describe('flattenSidebarThreadTree with groups', () => {
   }
 
   it('expands a group by default — the collapsed set is the inverse', () => {
-    const flat = flattenSidebarThreadTree({
+    const flat = flattenTreeNodes({
       nodes: groupTree(),
     });
     expect(nodeIds(flat)).toEqual(['g1', 'm1', 'm2']);
   });
 
   it('hides members when the group id is in collapsedGroupIds', () => {
-    const flat = flattenSidebarThreadTree({
+    const flat = flattenTreeNodes({
       nodes: groupTree(),
       collapsedGroupIds: new Set(['g1']),
     });
@@ -439,7 +450,7 @@ describe('flattenSidebarThreadTree with groups', () => {
       groups: [mkGroup('gb', { updatedAt: 1 })],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenSidebarThreadTree({ nodes: tree });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual([
       ['gb', false],
       ['front', true],
@@ -521,7 +532,7 @@ describe('flattenSidebarThreadTree ownerGroupId', () => {
       groups: [mkGroup('g1')],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenSidebarThreadTree({
+    const flat = flattenTreeNodes({
       nodes: tree,
     });
 
@@ -539,14 +550,14 @@ describe('flattenSidebarThreadTree ownerGroupId', () => {
       groups: [],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenSidebarThreadTree({ nodes: tree });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => node.ownerGroupId)).toEqual([null]);
   });
 });
 
-describe('sameSidebarVisibleNodes with groups', () => {
+describe('sameSidebarVisibleRows with groups', () => {
   function flatten(nodes: readonly SidebarTreeNode[], collapsed?: ReadonlySet<string>) {
-    return flattenSidebarThreadTree({
+    return flattenTreeNodes({
       nodes,
       collapsedGroupIds: collapsed,
     });
@@ -559,7 +570,7 @@ describe('sameSidebarVisibleNodes with groups', () => {
     const groupOnly = flatten(
       buildSidebarThreadTree({ threads: [], groups: [mkGroup('x')], liveStatusOf: liveStatusMap({}) }),
     );
-    expect(sameSidebarVisibleNodes(threadOnly, groupOnly)).toBe(false);
+    expect(sameSidebarVisibleRows(threadOnly, groupOnly)).toBe(false);
   });
 
   it('is false when a collapsed group gains a member (its count renders)', () => {
@@ -575,8 +586,8 @@ describe('sameSidebarVisibleNodes with groups', () => {
         }),
         new Set(['g1']),
       );
-    expect(sameSidebarVisibleNodes(build(['m1']), build(['m1']))).toBe(true);
-    expect(sameSidebarVisibleNodes(build(['m1']), build(['m1', 'm2']))).toBe(false);
+    expect(sameSidebarVisibleRows(build(['m1']), build(['m1']))).toBe(true);
+    expect(sameSidebarVisibleRows(build(['m1']), build(['m1', 'm2']))).toBe(false);
   });
 
   it('is true across an activity-only beat inside a group', () => {
@@ -591,6 +602,113 @@ describe('sameSidebarVisibleNodes with groups', () => {
           activityOf: () => activity,
         }),
       );
-    expect(sameSidebarVisibleNodes(build(1000), build(99_000))).toBe(true);
+    expect(sameSidebarVisibleRows(build(1000), build(99_000))).toBe(true);
+  });
+});
+
+describe('flattenSidebarThreadTree group preview cut', () => {
+  const group = mkGroup('g1');
+  const members = (count: number) =>
+    Array.from({ length: count }, (_, i) => mkThread(`m${i}`, { groupId: 'g1', updatedAt: 1000 - i }));
+
+  function flatten(threads: Thread[], options: {
+    limit?: number;
+    openThreadIds?: ReadonlySet<string>;
+    collapsed?: boolean;
+    liveStatusOf?: (id: string) => ThreadLiveStatus;
+  } = {}) {
+    return flattenSidebarThreadTree({
+      nodes: buildSidebarThreadTree({
+        threads,
+        groups: [group],
+        liveStatusOf: options.liveStatusOf ?? liveStatusMap({}),
+      }),
+      collapsedGroupIds: new Set(options.collapsed ? ['g1'] : []),
+      openThreadIds: options.openThreadIds ?? new Set(),
+      groupVisibleLimit: (id) => (id === 'g1' ? options.limit ?? THREAD_PREVIEW_LIMIT : THREAD_PREVIEW_LIMIT),
+    });
+  }
+  const keys = (rows: ReturnType<typeof flatten>) => rows.map(sidebarVisibleRowKey);
+
+  it('shows the first members up to the limit and ends the group with a footer', () => {
+    const rows = flatten([...members(12), mkThread('loose', { updatedAt: 1 })]);
+    expect(keys(rows)).toEqual([
+      'g1', 'm0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'g1:more', 'loose',
+    ]);
+    expect(rows[9]).toEqual({
+      kind: 'group-more', groupId: 'g1', hiddenCount: 4, hiddenStatus: null, canShowLess: false,
+    });
+  });
+
+  it('emits no footer when every member fits the default preview', () => {
+    expect(keys(flatten(members(8)))).not.toContain('g1:more');
+  });
+
+  it('keeps a footer with only Show Less once a revealed group shows everything', () => {
+    const rows = flatten(members(12), { limit: THREAD_PREVIEW_LIMIT + 20 });
+    expect(rows.filter((row) => row.kind === 'thread')).toHaveLength(12);
+    expect(rows.at(-1)).toMatchObject({ kind: 'group-more', hiddenCount: 0, canShowLess: true });
+  });
+
+  it('emits no footer under a collapsed group', () => {
+    expect(keys(flatten(members(12), { collapsed: true }))).toEqual(['g1']);
+  });
+
+  it('keeps pinned members and open members above the cut', () => {
+    const rows = flatten(
+      [...members(12), mkThread('pinned', { groupId: 'g1', pinnedAt: 1, updatedAt: 0 })],
+      { openThreadIds: new Set(['m11']) },
+    );
+    expect(keys(rows)).toEqual([
+      'g1', 'pinned', 'm0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm11', 'g1:more',
+    ]);
+    expect(rows.at(-1)).toMatchObject({ hiddenCount: 4 });
+  });
+
+  it('rolls up the most important hidden member status onto the footer', () => {
+    // Completed sorts below running, so the cut hides the completed member
+    // behind eight running ones.
+    const rows = flatten(
+      [...members(8), mkThread('done', { groupId: 'g1', updatedAt: 5000, latestTurnCompletedAt: 5000, lastReadAt: 1 })],
+      { liveStatusOf: (id) => (id === 'done' ? 'idle' : 'running') },
+    );
+    const footer = rows.at(-1);
+    expect(footer?.kind).toBe('group-more');
+    expect(footer?.kind === 'group-more' && footer.hiddenStatus?.pill.label).toBe('Completed');
+  });
+
+  it('reveals a group through nextSidebarThreadRevealLimit like a project', () => {
+    const [groupNode] = buildSidebarThreadTree({ threads: members(31), groups: [group], liveStatusOf: liveStatusMap({}) });
+    if (groupNode.kind !== 'group') throw new Error('want the group row first');
+    expect(nextSidebarThreadRevealLimit({
+      nodes: groupNode.children,
+      openThreadIds: new Set(),
+      currentLimit: THREAD_PREVIEW_LIMIT,
+      revealCount: 20,
+    })).toBe(THREAD_PREVIEW_LIMIT + 20);
+  });
+
+  it('compares footers by what they render', () => {
+    const footer = (overrides: Partial<SidebarGroupMoreRow> = {}): SidebarGroupMoreRow => ({
+      kind: 'group-more', groupId: 'g1', hiddenCount: 4, hiddenStatus: null, canShowLess: false, ...overrides,
+    });
+    const failed = {
+      liveStatus: 'error' as const,
+      pill: { label: 'Failed', dotClass: 'bg-error', pulse: false },
+    };
+    const same = (a: SidebarGroupMoreRow, b: SidebarGroupMoreRow) => sameSidebarVisibleRows([a], [b]);
+
+    expect(same(footer(), footer())).toBe(true);
+    expect(same(footer({ hiddenStatus: failed }), footer({ hiddenStatus: { ...failed, pill: { ...failed.pill } } }))).toBe(true);
+    expect(same(footer(), footer({ groupId: 'g2' }))).toBe(false);
+    expect(same(footer(), footer({ hiddenCount: 5 }))).toBe(false);
+    expect(same(footer(), footer({ canShowLess: true }))).toBe(false);
+    expect(same(footer(), footer({ hiddenStatus: failed }))).toBe(false);
+
+    // A footer never equals a node row at the same index, either way round.
+    const rows = flatten(members(12));
+    const node = rows[0];
+    expect(sameSidebarVisibleRows([node], [footer()])).toBe(false);
+    expect(sameSidebarVisibleRows([footer()], [node])).toBe(false);
   });
 });

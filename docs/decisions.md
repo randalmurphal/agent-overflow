@@ -158,6 +158,14 @@ Mechanism in
   never deletes a thread the sidebar lists. The rule is `threadRealClause`
   in `internal/store/threads.go`.
 
+- Sidebar status tiers run needs-attention, running, completed (unread),
+  then read (owner ruling 2026-11-16). Completed sits below running so
+  that opening a completed row, which reads it, never moves it past a
+  running row. A pin orders rows and is never a status: a pinned parent
+  shows and sorts by its busiest child. An expanded group cuts its members
+  with the project's preview rules. The order is in
+  `frontend/src/lib/utils/sidebarTree.ts`.
+
 - Multi-computer ownership and UI follow [Connected computers](specs/connected-computers.md): frontend-local preferences, selectable host configuration, portable conversations, optional peer tools, and machine names in the existing metadata row. No additional sidebar attention feed or artifact dashboard.
 
 - Message nav rail: one position claim at all times (one current tick, the

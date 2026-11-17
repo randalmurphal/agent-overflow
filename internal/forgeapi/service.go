@@ -198,7 +198,8 @@ func (s *Service) hostClient(host string, n HostNetwork) (*http.Client, error) {
 	if n.Proxy != "" {
 		proxy, err := url.Parse(n.Proxy)
 		if err != nil || proxy.Host == "" {
-			return nil, refused(fmt.Errorf("proxy %q is not a URL", n.Proxy))
+			// The value is not quoted: a proxy setting can hold a password.
+			return nil, refused(errors.New("proxy is not a URL with a scheme and a host, such as http://proxy.example:3128"))
 		}
 		transport.Proxy = http.ProxyURL(proxy)
 	}

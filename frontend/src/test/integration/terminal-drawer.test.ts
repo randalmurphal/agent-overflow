@@ -104,7 +104,6 @@ async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Termi
   setBindingMock('WriteTerminal', async () => {});
   setBindingMock('ResizeTerminal', async () => {});
   setBindingMock('GetTerminalReplay', async () => '');
-  setBindingMock('RestartTerminal', async () => openedHandle('tmx-1'));
 
   const rendered = render(App);
   await flush();

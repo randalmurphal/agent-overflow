@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"reflect"
 
@@ -133,13 +134,25 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 			return ThreadTransferIntent{}, errAssistantStays
 		}
 		ctx = context.WithoutCancel(ctx)
-		if err := a.cancelThreadRemoteCommands(ctx, threadID, false); err != nil {
+		// Work whose stop could not be delivered does not hold the move: a
+		// command's cancel is owed to its computer, and an ask's scratch
+		// thread is swept at that computer's next boot. It is logged before a
+		// store failure returns, which may come with it.
+		undelivered, err := a.cancelThreadRemoteCommands(ctx, threadID, false)
+		if undelivered != nil {
+			log.Printf("transfer: move thread %s: %v", threadID, undelivered)
+		}
+		if err != nil {
 			return ThreadTransferIntent{}, err
 		}
 		// The thread stops being answerable here, so open receipts against it
 		// settle and the requests it made are cancelled. The receipts stay on
 		// this computer and their callers collect them as usual.
-		if err := a.stopThreadRequestsForMovedThread(ctx, threadID, a.threadRequestDestinationName(destinationBackendID)); err != nil {
+		undelivered, err = a.stopThreadRequestsForMovedThread(ctx, threadID, a.threadRequestDestinationName(destinationBackendID))
+		if undelivered != nil {
+			log.Printf("transfer: move thread %s: %v", threadID, undelivered)
+		}
+		if err != nil {
 			return ThreadTransferIntent{}, err
 		}
 	}

@@ -43,6 +43,9 @@
   const duration = $derived(formatShellDuration(shell.durationMs));
   const command = $derived(reader.command || shell.command);
   const commandCut = $derived(shell.commandLength !== undefined && !reader.command);
+  // The command as the row's meta holds it is find text (threadFindText.ts);
+  // the rest of a longer one, read when the block opens, is not.
+  const commandRest = $derived(command.startsWith(shell.command) ? command.slice(shell.command.length) : '');
   const preview = $derived(shell.preview ?? '');
   const expandable = $derived(shell.more === true || shell.commandLength !== undefined);
   let localExpanded = $state(false);
@@ -85,7 +88,7 @@
         expandable && !expanded && 'line-clamp-3',
       ]}
       data-testid="shell-command-line"
-    >{command}{#if commandCut}…{/if}</code>
+    ><span data-find-text>{shell.command}</span>{commandRest}{#if commandCut}…{/if}</code>
     <span class="-my-1 shrink-0 opacity-0 transition-opacity duration-150 group-hover/shell:opacity-100 focus-within:opacity-100 compact:opacity-100">
       <CopyButton
         text={() => command}

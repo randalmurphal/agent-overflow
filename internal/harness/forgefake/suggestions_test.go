@@ -237,7 +237,7 @@ func TestGitLabReactionRoutes(t *testing.T) {
 	t.Parallel()
 	e, send := suggestionsEngine(t)
 	read := send("POST", "gitlab.com", "/gitlab/api/graphql", gql(t, "query", "MRNoteReactions", "($fullPath: ID!, $iid: String!, $after: String)", map[string]any{"fullPath": "grp/s", "iid": "3"}), nil).body
-	if !strings.Contains(read, `{"awardEmoji":{"nodes":[{"name":"party_parrot","user":{"username":"someone"}}],"pageInfo":{"endCursor":"cursor:1","hasNextPage":false}},"id":"gid://gitlab/DiffNote/70"}`) ||
+	if !strings.Contains(read, `{"awardEmoji":{"nodes":[{"name":"party_parrot","user":{"username":"someone"}}],"pageInfo":{"hasNextPage":false}},"id":"gid://gitlab/DiffNote/70"}`) ||
 		!strings.Contains(read, `"id":"gid://gitlab/Note/71"`) {
 		t.Fatalf("reactions read = %s", read)
 	}

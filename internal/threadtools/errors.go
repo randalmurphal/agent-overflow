@@ -40,6 +40,11 @@ const (
 	// CodeUnreachable is a paired computer that could not be reached for
 	// a call that names it directly.
 	CodeUnreachable = "thread_computer_unreachable"
+	// CodeCleanupFailed is an archive or delete that happened whose cleanup
+	// did not finish: the thread's provider session, browser pages, asks or
+	// remote commands may still be running or open. The sidebar's
+	// ArchiveThread and DeleteThread answer with it too.
+	CodeCleanupFailed = "thread_cleanup_failed"
 )
 
 func invalidf(format string, args ...any) error {

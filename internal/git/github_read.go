@@ -120,72 +120,72 @@ const (
 // $pageSize is the threads' and comments' page (githubReadLevels), and
 // $wantManage, $wantTeams, $wantCheckRuns and $wantWorkflowRuns the
 // optional parts (githubReadParts).
-const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!, $wantReactions: Boolean!, $pageSize: Int!, $wantManage: Boolean!, $wantTeams: Boolean!, $wantCheckRuns: Boolean!, $wantWorkflowRuns: Boolean!) {
+var githubPRTickQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!, $wantReactions: Boolean!, $pageSize: Int!, $wantManage: Boolean!, $wantTeams: Boolean!, $wantCheckRuns: Boolean!, $wantWorkflowRuns: Boolean!) {
   viewer @include(if: $wantDetail) { login }
   repository(owner: $owner, name: $name) {
     viewerPermission
-    ... @include(if: $wantDetail) { ` + githubRepositoryMergeFields + ` }
+    ... @include(if: $wantDetail) { `+githubRepositoryMergeFields+` }
     pullRequest(number: $number) {
       number headRefName
-      ... @include(if: $wantDetail) { ` + githubDetailFields + ` }
-      commits(last: 1) @include(if: $wantChecks) { nodes { commit { id oid statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
+      ... @include(if: $wantDetail) { `+githubDetailFields+` }
+      commits(last: 1) @include(if: $wantChecks) { nodes { commit { id oid statusCheckRollup { contexts(first: 100) { `+githubPageInfoFields+` nodes { `+githubContextFields+` } } } } } }
       ... @include(if: $wantThreads) { state viewerCanApplySuggestion }
-      reviewThreads(first: $pageSize) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
-      comments(first: $pageSize) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
-      timelineItems(last: 100, itemTypes: [` + githubTimelineItemTypes + `]) @include(if: $wantEvents) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
+      reviewThreads(first: $pageSize) @include(if: $wantThreads) { `+githubPageInfoFields+` nodes { `+githubThreadFields+` } }
+      comments(first: $pageSize) @include(if: $wantThreads) { `+githubPageInfoFields+` nodes { `+githubCommentFields+` } }
+      timelineItems(last: 100, itemTypes: [`+githubTimelineItemTypes+`]) @include(if: $wantEvents) { `+githubTimelinePageInfoFields+` nodes { `+githubTimelineFields+` } }
     }
   }
-}`
+}`)
 
-const githubPRThreadsPageQuery = `query PRThreadsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!, $pageSize: Int!) {
+var githubPRThreadsPageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRThreadsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!, $pageSize: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: $pageSize, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
+      reviewThreads(first: $pageSize, after: $after) { `+githubPageInfoFields+` nodes { `+githubThreadFields+` } }
     }
   }
-}`
+}`)
 
-const githubPRCommentsPageQuery = `query PRCommentsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!, $pageSize: Int!) {
+var githubPRCommentsPageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRCommentsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!, $pageSize: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      comments(first: $pageSize, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
+      comments(first: $pageSize, after: $after) { `+githubPageInfoFields+` nodes { `+githubCommentFields+` } }
     }
   }
-}`
+}`)
 
-const githubThreadCommentsPageQuery = `query ThreadCommentsPage($threadID: ID!, $after: String!, $wantReactions: Boolean!) {
+var githubThreadCommentsPageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query ThreadCommentsPage($threadID: ID!, $after: String!, $wantReactions: Boolean!) {
   node(id: $threadID) {
     ... on PullRequestReviewThread {
-      comments(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }
+      comments(first: 100, after: $after) { `+githubPageInfoFields+` nodes { `+githubThreadCommentFields+` } }
     }
   }
-}`
+}`)
 
-const githubThreadStatesPageQuery = `query PRThreadStatesPage($owner: String!, $name: String!, $number: Int!, $after: String!) {
+var githubThreadStatesPageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRThreadStatesPage($owner: String!, $name: String!, $number: Int!, $after: String!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { isResolved } }
+      reviewThreads(first: 100, after: $after) { `+githubPageInfoFields+` nodes { isResolved } }
     }
   }
-}`
+}`)
 
 // githubPRTimelinePageQuery reads the timeline page before $before: the
 // tick reads the newest items, so older pages are read backwards.
-const githubPRTimelinePageQuery = `query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $before: String!, $wantTeams: Boolean!) {
+var githubPRTimelinePageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $before: String!, $wantTeams: Boolean!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      timelineItems(last: 100, before: $before, itemTypes: [` + githubTimelineItemTypes + `]) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
+      timelineItems(last: 100, before: $before, itemTypes: [`+githubTimelineItemTypes+`]) { `+githubTimelinePageInfoFields+` nodes { `+githubTimelineFields+` } }
     }
   }
-}`
+}`)
 
-const githubRollupContextsPageQuery = `query RollupContextsPage($commitID: ID!, $number: Int!, $after: String!, $wantCheckRuns: Boolean!, $wantWorkflowRuns: Boolean!) {
+var githubRollupContextsPageQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query RollupContextsPage($commitID: ID!, $number: Int!, $after: String!, $wantCheckRuns: Boolean!, $wantWorkflowRuns: Boolean!) {
   node(id: $commitID) {
     ... on Commit {
-      statusCheckRollup { contexts(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } }
+      statusCheckRollup { contexts(first: 100, after: $after) { `+githubPageInfoFields+` nodes { `+githubContextFields+` } } }
     }
   }
-}`
+}`)
 
 type githubPageInfo struct {
 	HasNextPage bool   `json:"hasNextPage"`
@@ -484,7 +484,7 @@ func (f *githubForge) readPR(ctx context.Context, client *forgeapi.Client, ref P
 	vars["pageSize"] = shape.pageSize()
 	shape.setVars(vars, githubReadParts...)
 	var raw githubTickRaw
-	if _, err := client.GraphQL(ctx, "PRTick", githubPRTickQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubPRTickQuery, vars, &raw); err != nil {
 		return PRRead{}, err
 	}
 	pull, err := raw.pull(ref)
@@ -591,7 +591,7 @@ func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.C
 		}
 		vars := map[string]any{"commitID": commit.ID, "number": ref.Number, "after": page.EndCursor}
 		shape.setVars(vars, githubPartCheckRuns, githubPartWorkflowRuns)
-		if _, err := client.GraphQL(ctx, "RollupContextsPage", githubRollupContextsPageQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubRollupContextsPageQuery, vars, &raw); err != nil {
 			return nil, err
 		}
 		if raw.Node == nil || raw.Node.StatusCheckRollup == nil {
@@ -624,7 +624,7 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 	page := pull.ReviewThreads.PageInfo
 	for pages := 1; page.HasNextPage && pages < maxPages; pages++ {
 		var raw githubTickRaw
-		if _, err := client.GraphQL(ctx, "PRThreadsPage", githubPRThreadsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubPRThreadsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
 			return nil, false, err
 		}
 		next, err := raw.pull(ref)
@@ -646,7 +646,7 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 	page = pull.Comments.PageInfo
 	for pages := 1; page.HasNextPage && pages < maxPages; pages++ {
 		var raw githubTickRaw
-		if _, err := client.GraphQL(ctx, "PRCommentsPage", githubPRCommentsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubPRCommentsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
 			return nil, false, err
 		}
 		next, err := raw.pull(ref)
@@ -677,7 +677,7 @@ func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.C
 				Comments *githubThreadCommentsRaw `json:"comments"`
 			} `json:"node"`
 		}
-		if _, err := client.GraphQL(ctx, "ThreadCommentsPage", githubThreadCommentsPageQuery, map[string]any{"threadID": thread.ID, "after": page.EndCursor, "wantReactions": reactions}, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubThreadCommentsPageQuery, map[string]any{"threadID": thread.ID, "after": page.EndCursor, "wantReactions": reactions}, &raw); err != nil {
 			return err
 		}
 		if raw.Node == nil || raw.Node.Comments == nil {
@@ -709,7 +709,7 @@ func (f *githubForge) readThreadStates(ctx context.Context, client *forgeapi.Cli
 				} `json:"pullRequest"`
 			} `json:"repository"`
 		}
-		if _, err := client.GraphQL(ctx, "PRThreadStatesPage", githubThreadStatesPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubThreadStatesPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
 			return err
 		}
 		if raw.Repository == nil || raw.Repository.PullRequest == nil {
@@ -740,7 +740,7 @@ func (f *githubForge) readEvents(ctx context.Context, client *forgeapi.Client, r
 		before := maps.Clone(vars)
 		before["before"] = page.StartCursor
 		var raw githubTickRaw
-		if _, err := client.GraphQL(ctx, "PRTimelinePage", githubPRTimelinePageQuery, before, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubPRTimelinePageQuery, before, &raw); err != nil {
 			return nil, err
 		}
 		next, err := raw.pull(ref)

@@ -116,14 +116,27 @@ func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 			// An open ask the thread owns: the stop settles it before it
 			// cancels the commands, and the settle lock the test holds keeps
 			// the stop there until a later command is running.
+			// Its scratch thread is idle, so the stop finds nothing queued
+			// and nothing running there.
+			caller, err := source.store.GetThread(threadID)
+			if err != nil {
+				t.Fatalf("GetThread: %v", err)
+			}
+			scratch := testThread(uuid.NewString())
+			scratch.ProjectID = caller.ProjectID
+			if err := source.store.CreateThread(scratch); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
 			ask := newThreadRequestToken()
 			if err := source.store.InsertThreadRequest(store.ThreadRequest{
 				Token: ask, CallerThreadID: threadID, Kind: store.ThreadRequestAsk, State: store.ThreadRequestAccepted,
+				TargetThreadID: scratch.ID,
 			}); err != nil {
 				t.Fatalf("InsertThreadRequest: %v", err)
 			}
 			if _, _, err := source.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 				Token: ask, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: threadID, Kind: store.ThreadRequestAsk,
+				TargetThreadID: scratch.ID,
 			}); err != nil {
 				t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 			}
@@ -193,12 +206,21 @@ func waitRemoteJobState(t *testing.T, receiver *remoteAdmissionReceiver, id stri
 	}
 }
 
-// A remote command whose cancel the destination does not take is named in
-// what a Stop or an archive reports, and the cancel stays owed: the watcher
-// sends it again until the destination takes it, which stops the command.
+// A remote command whose cancel the destination does not take is reported
+// by a Stop (named) and an archive (in its cleanup sentence), and the cancel
+// stays owed: the watcher sends it again until the destination takes it,
+// which stops the command.
 func TestARemoteCancelTheDestinationRefusesIsReportedAndSentAgain(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
+	want := map[string]func(string) bool{
+		"stop": func(reported string) bool {
+			return strings.Contains(reported, "cancel remote command") && strings.Contains(reported, "sent again")
+		},
+		"archive": func(reported string) bool {
+			return reported == "The thread was archived, but a command it started on another computer could not be cancelled and may keep running there for up to an hour."
+		},
+	}
 	for name, rest := range map[string]func(*App, string) string{
 		"stop": func(a *App, id string) string {
 			var result ThreadAgentStop
@@ -233,8 +255,8 @@ func TestARemoteCancelTheDestinationRefusesIsReportedAndSentAgain(t *testing.T) 
 			refusal := errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer.", nil)
 			receiver.cancelRefusal.Store(&refusal)
 
-			if reported := rest(source, started.SourceThreadID); !strings.Contains(reported, "cancel remote command") || !strings.Contains(reported, "sent again") {
-				t.Fatalf("reported = %q, want the command whose cancel failed named", reported)
+			if reported := rest(source, started.SourceThreadID); !want[name](reported) {
+				t.Fatalf("reported = %q, want the command whose cancel failed", reported)
 			}
 			watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
 			if err != nil || watch.CancelOwedAt == 0 || watch.Notification != "dismissed" {

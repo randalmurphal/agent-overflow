@@ -1803,7 +1803,7 @@ export class Thread {
     "groupId"?: string;
 
     /**
-     * Placement is where the sidebar shows the row (migration v153):
+     * Placement is where the sidebar shows the row (migration v154):
      * PlacementOwned nowhere, as a worker of the thread that spawned it
      * (SpawnedByThreadID); PlacementGrouped in GroupID's group;
      * PlacementStandalone as a plain row of its project. The schema makes
@@ -1904,7 +1904,7 @@ export class Thread {
     /**
      * SpawnInstructions is the text a thread_spawn appended to this
      * thread's system prompt for its whole life: its profile's
-     * instructions, then the spawn's own (migration v154). Every session
+     * instructions, then the spawn's own (migration v155). Every session
      * start appends it after what the app and the person append. Written
      * at creation and carried by a fork and a transfer; absent from
      * updateThreadSetSQL, so nothing rewrites it.
@@ -1913,7 +1913,7 @@ export class Thread {
 
     /**
      * SpawnLevel is the sub-thread level a paired computer's spawn or ask
-     * carried here (migration v154): how far below a thread the person
+     * carried here (migration v155): how far below a thread the person
      * talks to the thread is. Zero for every thread a local spawn, a local
      * ask or the person made, whose level its links answer
      * (SubThreadLevel), and zero again once the thread is transferred. It

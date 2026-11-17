@@ -218,27 +218,6 @@ func TestMoveThreadTerminalsRequiresDraftSourceAndRealTarget(t *testing.T) {
 	}
 }
 
-func TestRestartTerminalReturnsNewHandle(t *testing.T) {
-	t.Parallel()
-	app := newAppWithTerminals(t, "thread-rs")
-	t.Cleanup(func() { _ = app.terminals.Shutdown() })
-
-	handle, err := app.OpenTerminal("thread-rs", TerminalOpenOptions{
-		Cwd:   t.TempDir(),
-		Shell: "/bin/sh",
-	})
-	if err != nil {
-		t.Fatalf("OpenTerminal: %v", err)
-	}
-	restarted, err := app.RestartTerminal(handle.TerminalID)
-	if err != nil {
-		t.Fatalf("RestartTerminal: %v", err)
-	}
-	if restarted.TerminalID == handle.TerminalID {
-		t.Fatal("expected restart to yield a different terminal ID")
-	}
-}
-
 func TestGetTerminalReplayReturnsBase64(t *testing.T) {
 	t.Parallel()
 	app := newAppWithTerminals(t, "thread-g")
@@ -490,30 +469,6 @@ func TestDrawerTerminalExitKeepsTheChatThread(t *testing.T) {
 	openTestTerminal(t, app, "thread-chat")
 }
 
-// A restart is a close plus an open under the thread's mutation lock, so
-// the old shell's exit finds the new one and the terminal thread stays.
-func TestRestartTerminalKeepsTheTerminalThread(t *testing.T) {
-	t.Parallel()
-	app, exits := newAppWithReportedTerminalExits(t)
-	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
-	handle := openTestTerminal(t, app, "thread-term")
-
-	restarted, err := app.RestartTerminal(handle.TerminalID)
-	if err != nil {
-		t.Fatalf("RestartTerminal: %v", err)
-	}
-	awaitTerminalExit(t, app, exits, handle.TerminalID)
-
-	requireThreadRow(t, app, "thread-term", true)
-	list, err := app.ListTerminals("thread-term")
-	if err != nil {
-		t.Fatalf("ListTerminals: %v", err)
-	}
-	if len(list) != 1 || list[0].TerminalID != restarted.TerminalID {
-		t.Fatalf("terminals = %+v, want the restarted one", list)
-	}
-}
-
 // Shells moved into a terminal thread are its shells: once the last exits,
 // the thread has ended and takes no more.
 func TestMoveThreadTerminalsIntoATerminalThreadFollowsItsLifetime(t *testing.T) {
@@ -631,6 +586,54 @@ func TestOpenTerminalRefusesAnEndedTerminalThread(t *testing.T) {
 		t.Fatalf("OpenTerminal(missing) error = %v, want sql.ErrNoRows", err)
 	}
 	openTestTerminal(t, app, "draft:terminal")
+}
+
+// A shell an open is adding while the last one exits keeps the terminal
+// thread: the end's check waits for the open's mutation lock. The test holds
+// that lock and does what OpenTerminal does under it.
+func TestTerminalThreadEndWaitsForAnOpenInFlight(t *testing.T) {
+	t.Parallel()
+	app, exits := newAppWithReportedTerminalExits(t)
+	createModeThread(t, app, "thread-term", threadmode.ModeTerminal)
+	first := openTestTerminal(t, app, "thread-term")
+
+	unlock, err := app.threadApplication().LockMutable(context.Background(), "thread-term")
+	if err != nil {
+		t.Fatalf("LockMutable: %v", err)
+	}
+	if err := app.CloseTerminal(first.TerminalID); err != nil {
+		unlock()
+		t.Fatalf("CloseTerminal: %v", err)
+	}
+	select {
+	case got := <-exits:
+		if got != first.TerminalID {
+			unlock()
+			t.Fatalf("terminal %s exited, want %s", got, first.TerminalID)
+		}
+	case <-time.After(10 * time.Second):
+		unlock()
+		t.Fatalf("terminal %s never exited", first.TerminalID)
+	}
+	second, err := app.terminals.Open("thread-term", terminal.SessionOptions{
+		Cwd:    t.TempDir(),
+		Shell:  "/bin/sh",
+		Reaper: app.groupReaper("terminal"),
+	})
+	unlock()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	app.terminalThreads.wg.Wait()
+
+	requireThreadRow(t, app, "thread-term", true)
+	list, err := app.ListTerminals("thread-term")
+	if err != nil {
+		t.Fatalf("ListTerminals: %v", err)
+	}
+	if len(list) != 1 || list[0].TerminalID != second.TerminalID {
+		t.Fatalf("terminals = %+v, want the one opened during the exit", list)
+	}
 }
 
 // Every terminal thread the last run left ends at boot, archived or not,

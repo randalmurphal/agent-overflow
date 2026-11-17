@@ -133,6 +133,11 @@ test('an agent launched while the Stop question is open is asked about before it
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'start the first worker', null);
   await waitForGate(harness, 'later');
+  // The mock reports its gate once it has written the launch frames; the
+  // backend refuses a Stop only for agents it has stored by then.
+  const running = async () =>
+    (await harness.rpc<Array<{ description: string }>>('RunningBackgroundAgents', threadId)).map((a) => a.description).sort();
+  await expect.poll(running).toEqual(['first worker']);
 
   const stop = page.getByRole('button', { name: 'Interrupt current turn', exact: true });
   const dialog = page.getByTestId('background-kill-dialog');
@@ -145,9 +150,7 @@ test('an agent launched while the Stop question is open is asked about before it
   // A second agent starts while the person reads the question.
   await advance(harness, mockId, 'later');
   await waitForGate(harness, 'answer');
-  await expect
-    .poll(async () => (await listItems(harness, threadId)).filter((i) => i.toolName === 'Agent' && i.isBackground).length)
-    .toBe(2);
+  await expect.poll(running).toEqual(['first worker', 'later worker']);
 
   // Confirming the listed agent does not stop the unlisted one: the app
   // asks again, naming both, and the turn is still running.

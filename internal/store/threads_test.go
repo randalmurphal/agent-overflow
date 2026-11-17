@@ -2872,10 +2872,10 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"attention_reason":         "the attention flag its agent raised, owned by SetThreadAttention / ClearThreadAttention",
 	"attention_at":             "the attention flag its agent raised, owned by SetThreadAttention / ClearThreadAttention",
 	"newest_turn_error_turn":   "the same aggregate's newest turn (v121), maintained by the same triggers",
-	"spawn_instructions":       "write-once (v154): the role a spawn gave the thread for its whole life, set at creation and copied by fork and transfer",
-	"spawn_level":              "the level a paired computer's spawn or ask carried (v154), written once at creation and zeroed by a transfer's commit; it counts only while the thread is owned or an ask copy (carriedLevelSQL)",
+	"spawn_instructions":       "write-once (v155): the role a spawn gave the thread for its whole life, set at creation and copied by fork and transfer",
+	"spawn_level":              "the level a paired computer's spawn or ask carried (v155), written once at creation and zeroed by a transfer's commit; it counts only while the thread is owned or an ask copy (carriedLevelSQL)",
 	"deleting":                 "the committed-delete mark (v122), set by CommitDeleteClaim or DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete went ahead",
-	"delete_claim":             "a delete's claim (v154), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
+	"delete_claim":             "a delete's claim (v155), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
 	"archived":                 "the archive flag, written only by setThreadArchivedTx, which withdraws the archives a reopen undoes; a stale struct must not archive or reopen a thread around it",
 }
 

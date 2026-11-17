@@ -13,7 +13,7 @@ import (
 // time it spent in turns. Its native subagents are rows of their own with
 // counts of their own, so none of theirs is in it. `thread_tallies` holds
 // them per thread, each kept where the work is first recorded as the
-// thread's own, in that write's transaction (migration v154):
+// thread's own, in that write's transaction (migration v155):
 //
 //   - trg_items_tally_tool_calls counts each top-level `tool_call` row the
 //     thread's own writers insert. Every copy of history into a thread, a
@@ -46,7 +46,7 @@ import (
 // not reported there), and the time since it started. Each read is a probe of the tally,
 // the pending rows and the open turn per thread, whatever the thread's
 // size. The row cascades with its thread.
-var threadTalliesV154SQL = `
+var threadTalliesV155SQL = `
 CREATE TABLE thread_tallies (
     thread_id  TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
     tool_calls INTEGER NOT NULL DEFAULT 0,

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -62,8 +61,8 @@ func TestAnArchiveLeavesSchedulesRegisteredAfterTheThreadCameBack(t *testing.T) 
 				t.Fatal("the re-registered watch has no process")
 			}
 
-			if err := a.stopRestingThreadWork(work); err != nil {
-				t.Fatalf("stopRestingThreadWork: %v", err)
+			if cleanup := a.stopRestingThreadWork(work); cleanup.Unwrap() != nil {
+				t.Fatalf("stopRestingThreadWork: %v", cleanup.Unwrap())
 			}
 
 			for _, want := range []struct {
@@ -176,7 +175,7 @@ func TestAnArchiveReportsSchedulesItCouldNotCancel(t *testing.T) {
 		WHEN NEW.state = 'cancelled' BEGIN SELECT RAISE(ABORT, 'cancel refused'); END`)
 
 	err := archiveThread(a, thread.ID)
-	if err == nil || !strings.Contains(err.Error(), "cancel the loops and watches of "+thread.ID) {
+	if err == nil || err.Error() != "The thread was archived, but its loops, watches and reminders may not all have been cancelled." {
 		t.Fatalf("ArchiveThread: %v, want the failed cancel reported", err)
 	}
 	if row, err := a.store.GetThread(thread.ID); err != nil || !row.Archived {

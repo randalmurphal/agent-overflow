@@ -14,11 +14,12 @@ import {
   type ThreadActionCtx,
 } from './threadRowActions';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
-import { makeThread as makeBaseThread } from '../../../test/helpers/chat';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
 import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
+import { TransportError } from '../../transport/wsClient';
 import type { Draft } from '../../types/draft';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
@@ -153,6 +154,7 @@ describe('forkThreadAction', () => {
 describe('archiveThreadAction', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetPanesForTest();
     clearThreadsForTest();
     for (const toast of getToasts()) removeToast(toast.id);
   });
@@ -204,14 +206,41 @@ describe('archiveThreadAction', () => {
     expect(archive.mock.calls.map(([id]) => id)).toEqual(['thread-1', 'worker-1']);
   });
 
-  it('says what the archive could not stop', async () => {
-    setBindingMock('ArchiveThread', vi.fn(async () => ({ cleanupError: 'cancel remote command: peer unreachable' })));
-    const ctx = makeCtx({});
+  // The archive committed and only the cleanup after it failed: the client
+  // agrees with the backend (row gone, pane closed) and shows the backend's
+  // sentence once, as a toast that outlives the closed pane, never as a
+  // failed archive.
+  it('drops the thread and toasts the cleanup failure of an archive that happened', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-archived');
+    const message = 'The thread was archived, but its browser pages could not all be closed.';
+    setBindingMock('ArchiveThread', async () => ({ cleanupError: message }));
+    const ctx = makeCtx({ id: 'thread-1' });
+
     await archiveThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getPane('pane-archived')).toBeUndefined();
     expect(ctx.reportError).not.toHaveBeenCalled();
-    expect(getToasts().map((toast) => toast.message)).toEqual([
-      'Archived "Source thread", but some of its work could not be stopped: Peer unreachable.',
-    ]);
+    expect(getToasts().map((t) => [t.type, t.message])).toEqual([['error', message]]);
+  });
+
+  it('keeps the thread and reports through the caller when the archive itself failed', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-kept');
+    setBindingMock('ArchiveThread', async () => {
+      throw new TransportError('not_found', 'The requested item no longer exists.');
+    });
+    const ctx = makeCtx({ id: 'thread-1' });
+
+    await archiveThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeDefined();
+    expect(getPane('pane-kept')).toBeDefined();
+    expect(ctx.reportError).toHaveBeenCalledTimes(1);
+    expect(getToasts().filter((t) => t.type === 'error')).toEqual([]);
   });
 });
 
@@ -221,6 +250,23 @@ describe('deleteThreadAction', () => {
     resetPanesForTest();
     clearThreadsForTest();
     for (const toast of getToasts()) removeToast(toast.id);
+  });
+
+  it('drops the thread and toasts work a delete that happened could not stop', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-deleted');
+    for (const toast of getToasts()) removeToast(toast.id);
+    const message = 'The thread was deleted, but a command it started on another computer could not be cancelled and may keep running there for up to an hour.';
+    setBindingMock('DeleteThreads', async () => ({ cleanupError: message }));
+    const ctx = makeCtx({ id: 'thread-1' });
+
+    await deleteThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getPane('pane-deleted')).toBeUndefined();
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getToasts().map((t) => [t.type, t.message])).toEqual([['error', message]]);
   });
 
   // The backend deletes it with what lives under it

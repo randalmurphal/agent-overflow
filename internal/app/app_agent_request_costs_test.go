@@ -251,9 +251,6 @@ func TestALocalSpawnOrAskIsAcceptedInTwoTransactions(t *testing.T) {
 			t.Fatalf("%s: accept = %q %v, %v", kind, target, fresh, err)
 		}
 		// A spawn's naming write also nests its thread, one keyed update.
-		// The naming reads the thread's listing before and after its
-		// writes, so it opens with the no-op write that takes the write
-		// lock first (store.beginListingWrite).
 		maxWrites := uint64(5)
 		if kind == store.ThreadRequestSpawn {
 			maxWrites = 6

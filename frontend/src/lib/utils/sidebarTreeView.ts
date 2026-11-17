@@ -10,11 +10,11 @@ import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { ThreadStatusPill } from './threadStatusPill';
 import {
   sidebarNodeSection,
-  displayRank,
-  type SidebarThreadTreeNode,
+  sidebarTreeNodeId,
+  displayStatusOutranks,
   type SidebarTreeNode,
 } from './sidebarTree';
-import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from './sidebarThreadLimits';
+import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
 interface SidebarVisibleNodePlacement {
   /**
@@ -32,25 +32,29 @@ interface SidebarVisibleNodePlacement {
   ownerGroupId: string | null;
 }
 
+export type SidebarTreeVisibleNode = SidebarTreeNode & SidebarVisibleNodePlacement;
+
 /**
- * The show-more footer under a group's members once they pass the
- * container bound (boundContainerMembers).
+ * The footer under an expanded group whose members were cut: "Show N More"
+ * and "Show Less", the same controls a project's list ends with.
  */
-export interface SidebarContainerMoreNode extends SidebarVisibleNodePlacement {
-  kind: 'container-more';
-  /** The group id: the paging's key. */
-  containerKey: string;
-  /** One deeper than the container row, like its members. */
-  depth: number;
-  /** Members the bound hides. */
+export interface SidebarGroupMoreRow {
+  kind: 'group-more';
+  groupId: string;
+  /** Members behind the cut. */
   hiddenCount: number;
-  /** The hidden members' rolled-up status, as the project footer shows it. */
-  hiddenStatus: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null;
+  /** The most important status among the hidden members. */
+  hiddenStatus: SidebarStatusRollup | null;
+  canShowLess: boolean;
 }
 
-export type SidebarTreeVisibleNode =
-  | (SidebarTreeNode & SidebarVisibleNodePlacement)
-  | SidebarContainerMoreNode;
+/** A row the sidebar renders: a tree node, or a group's show-more footer. */
+export type SidebarTreeVisibleRow = SidebarTreeVisibleNode | SidebarGroupMoreRow;
+
+/** Each-block key; a footer's key cannot collide with a node id. */
+export function sidebarVisibleRowKey(row: SidebarTreeVisibleRow): string {
+  return row.kind === 'group-more' ? `${row.groupId}:more` : sidebarTreeNodeId(row);
+}
 
 export interface FlattenSidebarThreadTreeInput {
   nodes: readonly SidebarTreeNode[];
@@ -61,75 +65,25 @@ export interface FlattenSidebarThreadTreeInput {
   collapsedGroupIds?: ReadonlySet<string>;
   /** A collapsed group shows only this member directly beneath it. */
   activeThreadId?: string | null;
-  /** Threads mounted in any pane: no member open in a pane hides behind a bound. */
-  openThreadIds?: ReadonlySet<string>;
-  /**
-   * How many unpinned members a group (by id) shows before its show-more
-   * footer; THREAD_PREVIEW_LIMIT by default.
-   */
-  memberLimitOf?: (containerKey: string) => number;
-}
-
-export interface BoundContainerResult {
-  /** The members shown, in their sorted order. */
-  shown: SidebarThreadTreeNode[];
-  /** The members the bound hides, in their sorted order. */
-  hidden: SidebarThreadTreeNode[];
-}
-
-/**
- * The container bound of a group's members (ruling 32): pinned members
- * always show and take no slot, the first `limit` unpinned members show,
- * and a member open in a pane past the cut shows too. Members arrive
- * sorted, so pinned ones lead.
- */
-export function boundContainerMembers(
-  members: readonly SidebarThreadTreeNode[],
-  limit: number,
-  openThreadIds: ReadonlySet<string> | undefined,
-): BoundContainerResult {
-  const shown: SidebarThreadTreeNode[] = [];
-  const hidden: SidebarThreadTreeNode[] = [];
-  let unpinned = 0;
-  for (const member of members) {
-    if (member.thread.pinnedAt != null) {
-      shown.push(member);
-      continue;
-    }
-    unpinned += 1;
-    if (unpinned <= limit || openThreadIds?.has(member.thread.id) === true) shown.push(member);
-    else hidden.push(member);
-  }
-  return { shown, hidden };
-}
-
-/**
- * The limit that reveals the next THREAD_REVEAL_INCREMENT hidden members,
- * or all of them when fewer remain: a member open in a pane already shows,
- * so the limit grows past it rather than by a fixed step.
- */
-export function nextContainerRevealLimit(
-  members: readonly SidebarThreadTreeNode[],
-  openThreadIds: ReadonlySet<string> | undefined,
-  currentLimit: number,
-): number {
-  const hidden = boundContainerMembers(members, currentLimit, openThreadIds).hidden.length;
-  const target = Math.max(0, hidden - THREAD_REVEAL_INCREMENT);
-  let next = currentLimit;
-  while (boundContainerMembers(members, next, openThreadIds).hidden.length > target) next += 1;
-  return next;
+  /** Threads mounted in any pane; a group's preview cut never hides these. */
+  openThreadIds: ReadonlySet<string>;
+  /** An expanded group's preview limit, by group id. */
+  groupVisibleLimit: (groupId: string) => number;
 }
 
 /**
  * flattenSidebarThreadTree — emit each top-level row, followed by a group's
  * members when it is expanded, or only its focused member when collapsed.
- * An expanded group shows its members up to its bound, then a show-more
- * footer for the rest.
+ *
+ * An expanded group's members take the project's preview cut
+ * (`previewSidebarThreads`) against the group's own limit, and a
+ * `group-more` footer follows the last member when the cut hid any or the
+ * group can be shown less.
  */
 export function flattenSidebarThreadTree(
   input: FlattenSidebarThreadTreeInput,
-): SidebarTreeVisibleNode[] {
-  const visibleNodes: SidebarTreeVisibleNode[] = [];
+): SidebarTreeVisibleRow[] {
+  const visibleNodes: SidebarTreeVisibleRow[] = [];
   const collapsedGroupIds = input.collapsedGroupIds;
 
   // The top level arrives sorted, so each section is one contiguous run.
@@ -150,33 +104,23 @@ export function flattenSidebarThreadTree(
       }
       continue;
     }
-    pushBounded(visibleNodes, input, node.children, groupId, node.depth + 1);
+    const cut = previewSidebarThreads({
+      nodes: node.children,
+      openThreadIds: input.openThreadIds,
+      limit: input.groupVisibleLimit(groupId),
+    });
+    for (const member of cut.visibleNodes) visibleNodes.push({ ...member, startsSection: false, ownerGroupId: groupId });
+    if (cut.hiddenNodes.length > 0 || cut.canShowLess) {
+      visibleNodes.push({
+        kind: 'group-more',
+        groupId,
+        hiddenCount: cut.hiddenNodes.length,
+        hiddenStatus: rollupDisplayStatus(cut.hiddenNodes),
+        canShowLess: cut.canShowLess,
+      });
+    }
   }
   return visibleNodes;
-}
-
-/** Emit a container's members up to its bound, then its show-more footer. */
-function pushBounded(
-  visibleNodes: SidebarTreeVisibleNode[],
-  input: FlattenSidebarThreadTreeInput,
-  members: readonly SidebarThreadTreeNode[],
-  containerKey: string,
-  depth: number,
-): void {
-  const limit = input.memberLimitOf?.(containerKey) ?? THREAD_PREVIEW_LIMIT;
-  const { shown, hidden } = boundContainerMembers(members, limit, input.openThreadIds);
-  for (const member of shown) visibleNodes.push({ ...member, startsSection: false, ownerGroupId: containerKey });
-  if (hidden.length === 0) return;
-  visibleNodes.push({
-    kind: 'container-more', containerKey, depth, hiddenCount: hidden.length,
-    hiddenStatus: rollupDisplayStatus(hidden), startsSection: false, ownerGroupId: containerKey,
-  });
-}
-
-/** The each-block key of a visible row. */
-export function sidebarVisibleNodeId(node: SidebarTreeVisibleNode): string {
-  if (node.kind === 'container-more') return `more:${node.containerKey}`;
-  return node.kind === 'group' ? node.group.id : node.thread.id;
 }
 
 /**
@@ -197,6 +141,15 @@ export function sameThreadStatusPill(
     && a.glowClass === b.glowClass;
 }
 
+function sameStatusRollup(
+  a: SidebarStatusRollup | null,
+  b: SidebarStatusRollup | null,
+): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.liveStatus === b.liveStatus && sameThreadStatusPill(a.pill, b.pill);
+}
+
 /**
  * Render-content equality for the flattened sidebar list. The
  * SidebarTreeList derived returns its PREVIOUS array when this holds,
@@ -208,25 +161,24 @@ export function sameThreadStatusPill(
  * sort input rather than render input, and comparing it would defeat
  * the cutoff.
  */
-export function sameSidebarVisibleNodes(
-  a: readonly SidebarTreeVisibleNode[],
-  b: readonly SidebarTreeVisibleNode[],
+export function sameSidebarVisibleRows(
+  a: readonly SidebarTreeVisibleRow[],
+  b: readonly SidebarTreeVisibleRow[],
 ): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
+    if (x.kind === 'group-more' || y.kind === 'group-more') {
+      if (x.kind !== 'group-more' || y.kind !== 'group-more') return false;
+      if (x.groupId !== y.groupId || x.hiddenCount !== y.hiddenCount) return false;
+      if (x.canShowLess !== y.canShowLess) return false;
+      if (!sameStatusRollup(x.hiddenStatus, y.hiddenStatus)) return false;
+      continue;
+    }
     if (x.kind !== y.kind) return false;
     if (x.startsSection !== y.startsSection) return false;
     if (x.ownerGroupId !== y.ownerGroupId) return false;
-    if (x.kind === 'container-more' || y.kind === 'container-more') {
-      if (x.kind !== 'container-more' || y.kind !== 'container-more') return false;
-      if (x.containerKey !== y.containerKey || x.hiddenCount !== y.hiddenCount || x.depth !== y.depth) return false;
-      if ((x.hiddenStatus === null) !== (y.hiddenStatus === null)) return false;
-      if (x.hiddenStatus !== null && y.hiddenStatus !== null && (x.hiddenStatus.liveStatus !== y.hiddenStatus.liveStatus
-        || !sameThreadStatusPill(x.hiddenStatus.pill, y.hiddenStatus.pill))) return false;
-      continue;
-    }
     if (x.kind === 'thread' && y.kind === 'thread') {
       if (x.thread !== y.thread) return false;
     }
@@ -257,6 +209,8 @@ function nodeHoldsOpenThread(
 export interface PreviewThreadsResult {
   visibleNodes: SidebarTreeNode[];
   hiddenNodes: SidebarTreeNode[];
+  /** The list was revealed past the default preview and is longer than it. */
+  canShowLess: boolean;
 }
 
 /**
@@ -268,6 +222,9 @@ export interface PreviewThreadsResult {
  * it. Drafts stay visible outside the limit.
  *
  * A group takes one slot. Its members take none.
+ *
+ * The same cut applies to a project's top level and to an expanded
+ * group's members, each against its own limit.
  */
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];
@@ -289,12 +246,13 @@ export function previewSidebarThreads(input: {
     else pinned.push(node);
   }
 
+  const canShowLess = limit > THREAD_PREVIEW_LIMIT && input.nodes.length > THREAD_PREVIEW_LIMIT;
   const unpinnedLimit = Math.max(0, limit - pinned.length);
   const head = rest.slice(0, unpinnedLimit);
   const tail = rest.slice(unpinnedLimit);
 
   if (tail.length === 0) {
-    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [] };
+    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [], canShowLess };
   }
 
   // Open threads in the tail float back into view, in tail order; the rest
@@ -309,6 +267,7 @@ export function previewSidebarThreads(input: {
   return {
     visibleNodes: [...drafts, ...pinned, ...head, ...floated],
     hiddenNodes: hidden,
+    canShowLess,
   };
 }
 
@@ -339,24 +298,29 @@ export function nextSidebarThreadRevealLimit(input: {
   return nextLimit;
 }
 
+export interface SidebarStatusRollup {
+  liveStatus: ThreadLiveStatus;
+  pill: ThreadStatusPill;
+}
+
 /**
  * Roll up the most important display status across a list of nodes, ranked
- * as a container row ranks its members (displayRank), so an unread hidden
- * row shows its dot: the "Show more" hidden-status dot of a project or
- * group, and the per-project status dot when the project is collapsed.
+ * as a group row ranks its members (displayStatusOutranks), so an unread
+ * hidden row shows its dot: the "Show more" hidden-status dot of a project
+ * or group, and the per-project status dot when the project is collapsed.
  */
 export function rollupDisplayStatus(
   nodes: readonly SidebarTreeNode[],
-): { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null {
-  let best: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null = null;
-  let bestRank = -1;
+): SidebarStatusRollup | null {
+  let best: SidebarTreeNode | null = null;
+  let bestPill: ThreadStatusPill | null = null;
   for (const node of nodes) {
-    if (node.displayStatus == null) continue;
-    const rank = displayRank(node);
-    if (rank > bestRank) {
-      best = { liveStatus: node.displayLiveStatus, pill: node.displayStatus };
-      bestRank = rank;
+    if (node.displayStatus === null) continue;
+    if (best === null || displayStatusOutranks(node, best)) {
+      best = node;
+      bestPill = node.displayStatus;
     }
   }
-  return best;
+  if (best === null || bestPill === null) return null;
+  return { liveStatus: best.displayLiveStatus, pill: bestPill };
 }

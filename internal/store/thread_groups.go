@@ -282,7 +282,7 @@ func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 // Each row comes back with how the move took it across the sidebar
 // listing (ThreadMove): an owned worker moved into a group joins it.
 func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]ThreadMove, error) {
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin thread group move: %w", err)
 	}
