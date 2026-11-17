@@ -422,12 +422,13 @@ func TestAPopupClosedPubliclyBeforeItsDownloadsAreListedLeavesThemWithItsOpener(
 
 // A popup whose opener is still being created or restored waits for its
 // opener's listing and goes on as it is listed, or is discarded as its
-// opener's creation closes, not at the opener wait's bound: any page
-// joining the tabs, or a creation that will not, wakes the waiters, not
-// only a finished adoption.
+// opener's creation or restore closes, not at the opener wait's bound: any
+// page joining the tabs, or a creation or restore that will not, wakes the
+// waiters, not only a finished adoption.
 func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
-	for _, name := range []string{"created", "restored", "closed while created"} {
-		restored, closing := name == "restored", name == "closed while created"
+	for _, name := range []string{"created", "restored", "closed while created", "closed while restored"} {
+		restored := name == "restored" || name == "closed while restored"
+		closing := name == "closed while created" || name == "closed while restored"
 		t.Run(name, func(t *testing.T) {
 			manager, engine := newLifecycleManager(t)
 			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -475,7 +476,12 @@ func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
 			listed := make(chan bool, 1)
 			go func() { listed <- manager.awaitOpener(opener) }()
 			time.Sleep(50 * time.Millisecond)
-			if closing {
+			if closing && restored {
+				// The restore finds its record gone and abandons the page.
+				if err := manager.ClosePage(context.Background(), access, pageID); err != nil {
+					t.Fatalf("close the restoring tab: %v", err)
+				}
+			} else if closing {
 				tabs := manager.CompanionState(access).Pages
 				if len(tabs) != 1 {
 					t.Fatalf("tabs %+v", tabs)

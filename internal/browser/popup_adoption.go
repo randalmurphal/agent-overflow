@@ -108,11 +108,10 @@ func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
 }
 
 // listingChangedLocked wakes the popups waiting for an opener
-// (awaitOpener): a page joined the tabs, a page being created will not, or
-// an adoption ended. Every listing (a create, a restore, an adoption) and
-// a creation closed before its listing call it; a listed page's leaving
-// wakes no one, since nothing waits for a listed opener. The caller holds
-// m.mu.
+// (awaitOpener): a page joined the tabs, a page created or restored will
+// not (abandonPage), or an adoption ended. Every listing (a create, a
+// restore, an adoption) calls it; a listed page's leaving wakes no one,
+// since nothing waits for a listed opener. The caller holds m.mu.
 func (m *Manager) listingChangedLocked() {
 	if m.listingChanged != nil {
 		close(m.listingChanged)
