@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	appbrowser "agent-overflow/internal/browser"
@@ -100,6 +101,52 @@ func TestBrowserCompanionNewNamesAShownTabAndCloseRemovesIt(t *testing.T) {
 	}
 	if len(state.Pages) != 1 || state.Pages[0].ID == first || state.PageID != "" {
 		t.Fatalf("after close = %+v", state)
+	}
+}
+
+// The tab menu's actions reach the Manager: duplicate, close to the right,
+// close others, reopen, and reload.
+func TestBrowserCompanionTabMenuActions(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-menu")
+	ctx := t.Context()
+	do := func(action BrowserCompanionAction) appbrowser.CompanionEvent {
+		t.Helper()
+		state, err := app.BrowserCompanionDo(ctx, thread.ID, action)
+		if err != nil {
+			t.Fatalf("%s: %v", action.Kind, err)
+		}
+		return state
+	}
+	urls := func(state appbrowser.CompanionEvent) string {
+		var out []string
+		for _, page := range state.Pages {
+			out = append(out, strings.TrimPrefix(page.URL, "https://example.test/"))
+		}
+		return strings.Join(out, " ")
+	}
+
+	first := do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/a"}).PageID
+	do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"})
+	if got := urls(do(BrowserCompanionAction{Kind: "duplicate", PageID: first})); got != "a a b" {
+		t.Fatalf("after duplicate: %s", got)
+	}
+	if got := urls(do(BrowserCompanionAction{Kind: "close-right", PageID: first})); got != "a" {
+		t.Fatalf("after close to the right: %s", got)
+	}
+	state := do(BrowserCompanionAction{Kind: "reopen"})
+	if got := urls(state); got != "a b" || state.ClosedTabs != 1 {
+		t.Fatalf("after reopen: %s, %d closed", got, state.ClosedTabs)
+	}
+	if got := urls(do(BrowserCompanionAction{Kind: "close-others", PageID: first})); got != "a" {
+		t.Fatalf("after close others: %s", got)
+	}
+	if got := urls(do(BrowserCompanionAction{Kind: "reload", PageID: first})); got != "a" {
+		t.Fatalf("after reload: %s", got)
 	}
 }
 

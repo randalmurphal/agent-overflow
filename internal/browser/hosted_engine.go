@@ -641,7 +641,30 @@ func (e *hostedEngine) subscribe(browserCtx context.Context) error {
 	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
 		return err
 	}
+	if err := onBrowserEvent(browserCtx, target.TargetCrashed, e.logf, e.targetCrashed); err != nil {
+		return err
+	}
 	return onBrowserEvent(browserCtx, target.TargetInfoChanged, e.logf, e.targetInfoChanged)
+}
+
+// targetCrashed reports a page whose renderer died. The launcher's
+// process-failed report says the same for the controller; whichever the
+// Manager handles first turns the tab into a crashed one, and the other then
+// finds no live page.
+func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
+	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
+		// Off the event reader: the Manager closes the page's driver.
+		go e.events.PageCrashed(pageID, cdpCrashReason(event))
+	}
+}
+
+// processFailureCrashes reports whether a WebView2 ProcessFailed kind, as
+// processFailedKindName names it, ended the page: its renderer or the whole
+// browser process exited. The other kinds (an unresponsive renderer, a
+// frame's or a utility, GPU or plug-in process) leave the page running,
+// and WebView2 restarts what it needs.
+func processFailureCrashes(detail string) bool {
+	return detail == "render-process-exited" || detail == "browser-process-exited"
 }
 
 func (e *hostedEngine) targetDestroyed(event target.EventTargetDestroyed) {
@@ -677,11 +700,19 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 	case webview2host.ReportCreateFailed:
 		e.deliver(pageID, hostReport{kind: kind, detail: detail})
 	case webview2host.ReportProcessFailed:
-		// A process death can land on a page still being created OR on a
-		// live one. Whichever it is, the page is gone.
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			e.retirePage(pageID)
+		// A process death can land on a page still being created, which
+		// fails its creation, OR on a live one, whose tab turns crashed
+		// (crash.go) when the page's own process ended.
+		if e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
+			return
 		}
+		if !processFailureCrashes(detail) {
+			e.logf("browser: pane host page %s reported %s; the page keeps running", pageID, detail)
+			return
+		}
+		// Inline, as retirePage reports a close: this is the launcher's
+		// report path, an RPC goroutine of its own.
+		e.events.PageCrashed(pageID, detail)
 	case webview2host.ReportClosed:
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			e.retirePage(pageID)

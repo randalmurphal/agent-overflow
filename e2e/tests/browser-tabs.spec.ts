@@ -10,7 +10,9 @@
 // jar in the same order with the same active tab, which the pane brings back
 // at once; the others come back when used. A file opens
 // through the address row's picker, by search and from the folder view,
-// without typing its path.
+// without typing its path. A tab's menu duplicates it and closes the others
+// or those to its right, and the menu or mod+shift+t reopens the last closed
+// tab where it was.
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -206,4 +208,49 @@ test('a file opens from the picker by search and from the folder view', async ({
   await picker.getByTestId('directory-browser-entry').filter({ hasText: 'index.html' }).click();
   await expect(picker).toHaveCount(0);
   await expect.poll(() => activeURL(harness, threadId)).toMatch(/^file:\/\/.*\/site\/index\.html$/);
+});
+
+async function tabURLs(harness: HarnessApp, threadId: string): Promise<string[]> {
+  const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+  return state.pages?.map((tab) => tab.url) ?? [];
+}
+
+test('the tab menu duplicates and closes tabs, and a closed tab reopens where it was', async ({ harness, page }) => {
+  const threadId = await seedBrowserThread(harness, 'Browser tab menu');
+  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three'];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser tab menu').click();
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(3);
+
+  await tabs.nth(0).click({ button: 'right' });
+  const menu = page.getByRole('menu', { name: 'Tab actions' });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByTestId('browser-tab-menu-reopen')).toBeDisabled();
+  await menu.getByTestId('browser-tab-menu-duplicate').click();
+  await expect(menu).toHaveCount(0);
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual([urls[0], urls[0], urls[1], urls[2]]);
+
+  await tabs.nth(1).click({ button: 'right' });
+  await menu.getByTestId('browser-tab-menu-close-right').click();
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual([urls[0], urls[0]]);
+
+  // Reopen from the menu, then from the chord with the browser pane focused.
+  await tabs.nth(0).click({ button: 'right' });
+  await menu.getByTestId('browser-tab-menu-reopen').click();
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual([urls[0], urls[0], urls[2]]);
+  await pane.getByRole('textbox', { name: 'Address' }).click();
+  await page.keyboard.press('ControlOrMeta+Shift+t');
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual([urls[0], urls[0], urls[1], urls[2]]);
+  await expect(tabs).toHaveCount(4);
+
+  await tabs.nth(2).click({ button: 'right' });
+  await menu.getByTestId('browser-tab-menu-close-others').click();
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual([urls[1]]);
+  await expect.poll(async () => (await harness.rpc<{ closedTabs?: number }>('BrowserCompanionThreadState', threadId)).closedTabs).toBe(3);
 });

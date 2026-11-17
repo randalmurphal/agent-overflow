@@ -195,10 +195,11 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	tabs := m.companionTabsLocked(threadID)
 	session, hasSession := m.sessions[threadID]
 	active, _ := m.livePageLocked(session.ActivePageID)
+	closedTabs := len(m.closedTabs[threadID])
 	m.stateSeq++
 	seq := m.stateSeq
 	m.mu.Unlock()
-	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), Seq: seq}
+	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), ClosedTabs: closedTabs, Seq: seq}
 	if active != nil && active.owner == threadID {
 		event.FindMode = findModeOf(active)
 	}
@@ -344,7 +345,10 @@ func (m *Manager) updatePageInfo(handle, url, title string) {
 	m.mu.Lock()
 	found := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
-	if found == nil {
+	if found == nil || url == "" {
+		// No address is the engine losing its document (WebKitGTK clears
+		// a view's URI when its web process ends), never a navigation: the
+		// tab keeps the page's last address, which a crash restores.
 		return
 	}
 	previous := found.cachedInfo()
@@ -720,14 +724,30 @@ func (m *Manager) presentPanes(threadID string) {
 }
 
 // MoveCompanionPage places one of the thread's tabs, in any state, at
-// index in tab order (clamped). Moving a tab is not a touch. The moved prefix
-// is renumbered 1..n, and a page opened later keeps appending at the end
-// because its creation-time key is always larger. A suspended page's new
-// position is saved with it.
+// index in tab order (clamped). Moving a tab is not a touch. A suspended
+// page's new position is saved with it.
 func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
 	pageID = strings.TrimSpace(pageID)
 	m.mu.Lock()
-	tabs := m.companionTabsLocked(access.ThreadID)
+	savedMoved, found := m.placeTabLocked(access.ThreadID, pageID, index)
+	m.mu.Unlock()
+	if !found {
+		return errPageNotFound
+	}
+	m.emitThreadState(access.ThreadID)
+	if savedMoved {
+		return m.persistThreads([]string{access.ThreadID})
+	}
+	return nil
+}
+
+// placeTabLocked places the thread's tab pageID at index in tab order
+// (clamped), and reports whether a suspended tab's saved position changed
+// and whether the tab exists. The moved prefix is renumbered 1..n, and a
+// page opened later keeps appending at the end because its creation-time
+// key is always larger. The caller holds m.mu.
+func (m *Manager) placeTabLocked(threadID, pageID string, index int) (savedMoved, found bool) {
+	tabs := m.companionTabsLocked(threadID)
 	ordered := make([]threadTab, 0, len(tabs))
 	var moved *threadTab
 	for i := range tabs {
@@ -738,12 +758,10 @@ func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) err
 		}
 	}
 	if moved == nil {
-		m.mu.Unlock()
-		return errPageNotFound
+		return false, false
 	}
 	index = max(0, min(index, len(ordered)))
 	ordered = append(ordered[:index], append([]threadTab{*moved}, ordered[index:]...)...)
-	savedMoved := false
 	for i, tab := range ordered {
 		if tab.live != nil {
 			tab.live.tabOrder.Store(int64(i + 1))
@@ -754,12 +772,7 @@ func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) err
 			savedMoved = true
 		}
 	}
-	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
-	if savedMoved {
-		return m.persistThreads([]string{access.ThreadID})
-	}
-	return nil
+	return savedMoved, true
 }
 
 // NewCompanionPage is the user opening a tab: it is selected and the
@@ -769,16 +782,25 @@ func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) err
 // navigation failed; an empty ID with no error when the tab was closed while
 // it was created or shows why it could not be.
 func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address string) (PageInfo, error) {
+	return m.openUserTab(ctx, access, address, "", -1)
+}
+
+// openUserTab is NewCompanionPage with the tab placed at index in tab order
+// (negative appends it) and given label.
+func (m *Manager) openUserTab(ctx context.Context, access Access, address, label string, index int) (PageInfo, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return PageInfo{}, fmt.Errorf("browser: invalid caller scope")
 	}
-	p, err := m.createPage(ctx, access, true)
+	p, err := m.createPageAt(ctx, access, true, index)
 	var onTab *shownOnTab
 	if errors.Is(err, errClosedWhileCreating) || errors.As(err, &onTab) {
 		return PageInfo{}, nil
 	}
 	if err != nil {
 		return PageInfo{}, err
+	}
+	if label != "" {
+		p.setLabel(label)
 	}
 	if strings.TrimSpace(address) != "" {
 		if _, err := m.NavigateCompanion(ctx, access, p.id, address); err != nil {
@@ -831,12 +853,15 @@ func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int
 }
 
 // restoreSelectedTab restores the selected tab when it is suspended and
-// answers once it is; a tab closed meanwhile is no error.
+// answers once it is; a tab closed meanwhile is no error. A tab whose page
+// crashed comes back by its Reload only (ReloadCompanionPage), so selecting
+// it does not load a page that may crash again.
 func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID string) error {
 	m.mu.Lock()
-	_, suspended := m.suspended[pageID]
+	rec := m.suspended[pageID]
+	crashed := rec != nil && rec.failure != ""
 	m.mu.Unlock()
-	if !suspended {
+	if rec == nil || crashed {
 		return nil
 	}
 	_, _, err := m.resolvePage(ctx, access, pageID, false)

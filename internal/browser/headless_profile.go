@@ -480,7 +480,21 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	if err := onBrowserEvent(browserCtx, target.TargetInfoChanged, logf, targets.infoChanged); err != nil {
 		return err
 	}
+	if err := onBrowserEvent(browserCtx, target.TargetCrashed, logf, p.targetCrashed); err != nil {
+		return err
+	}
 	return onBrowserEvent(browserCtx, target.TargetDestroyed, logf, targets.destroyed)
+}
+
+// targetCrashed reports a page of this profile whose renderer died; the
+// Manager closes the target and keeps its tab as a crashed one.
+func (p *headlessProfile) targetCrashed(event target.EventTargetCrashed) {
+	handle := string(event.TargetID)
+	if owner, ok := p.engine.profileForPage(handle); !ok || owner != p {
+		return
+	}
+	// Off the event reader: the Manager closes the page's driver.
+	go p.engine.events.PageCrashed(handle, cdpCrashReason(event))
 }
 
 // headlessTargets handles the target events of one browser connection.

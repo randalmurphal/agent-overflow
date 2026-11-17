@@ -223,6 +223,13 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "ctrl+shift+tab"
   },
   {
+    "key": "mod+shift+t",
+    "command": "browser.reopenTab",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.reopenTab",
+    "defaultKey": "mod+shift+t"
+  },
+  {
     "key": "mod+shift+g",
     "command": "diff.panel.toggle",
     "when": "hasActiveThread \u0026\u0026 !terminalFocus",

@@ -155,6 +155,10 @@ void ao_wk_view_find_finish(void *view);
 // cannot make a real input event. The native smoke's door into the gate.
 int ao_wk_view_offer_escape(void *view, int ctrl, int release);
 
+// ao_wk_view_terminate_web_process ends the view's web process, which
+// WebKit reports as web-process-terminated. The native smoke's crash.
+void ao_wk_view_terminate_web_process(void *view);
+
 // ao_wk_view_offer_ctrl_key delivers one Control press of the key whose
 // character is unicode to the view's key controller, as
 // ao_wk_view_offer_escape does, and answers the same way.

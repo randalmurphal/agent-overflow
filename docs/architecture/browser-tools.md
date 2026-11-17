@@ -119,6 +119,14 @@ per-platform no-op.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
   the companion closes when its last tab does. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
+- A tab the user closes is kept on the thread's in-memory closed-tab stack
+  (`internal/browser/companion_tabs.go`): its address, label and position,
+  the last 10, for http, https and `file:` addresses of a tab that finished
+  opening; an agent's close is not kept. Reopen pops the newest into a new
+  tab at that position; a reopen that fails before the tab exists puts the
+  entry back. The state carries `closedTabs`, the stack's depth. Clearing
+  site data, a jar switch, the thread's deletion and turning the browser off
+  forget the stack, and a private jar keeps none.
 - A tab's state comes from the Manager alone (`internal/browser/lifecycle.go`).
   A new tab is in the state, `creating`, before the engine page exists; the
   user's own new tab is also selected and shown at once, and a failed creation
@@ -162,6 +170,20 @@ per-platform no-op.
   starts a fresh page: history, console, downloads and clipboard do not
   return. A suspended tab counts toward the thread's page limit but holds no
   workspace or process page slot. Pages are never suspended for being hidden.
+- A page whose process ended becomes a suspended tab with an `error` naming
+  the reason, at its last address (`internal/browser/crash.go`). The signals
+  are CDP `Target.targetCrashed` (hosted and headless), WebView2
+  `ProcessFailed` of kind render or browser process exited (other kinds are
+  logged and the page keeps running), WebKitGTK `web-process-terminated` and
+  WKWebView `webViewWebContentProcessDidTerminate:`. Presenting a failed tab
+  does not reload it; its Reload, or a tool call on it, restores it under the
+  navigation policy like any suspended page. The failure is not saved, so
+  after a restart it is an ordinary suspended tab.
+- While an agent tool call operates on a page, the page's state carries
+  `agent` (`internal/browser/activity.go`); it clears 1.5 s after the last
+  such call ends, and the state is pushed only when it changes. It is
+  presentation only: user actions on the page take no part in it and are
+  never refused because of it.
 - Suspended pages and the thread's jar choice are saved as one JSON file per
   thread under `browser-pages/` in the config directory, written atomically
   (`internal/browser/page_records.go`); a thread with no saved page keeps a
@@ -189,9 +211,17 @@ behave as a desktop browser's:
   tab in view. The new-tab button follows the last tab outside the
   scroller, so it never scrolls away. A tab shows a stepped spinner while
   creating, restoring or loading, its favicon or a globe otherwise, and an
-  alert when it failed. Close shows on the active tab and on hover, always
+  alert when it failed; a crashed tab's tooltip and the page area give the
+  reason, and the page area has its Reload. A pulsing agent icon marks a
+  page an agent tool is using. Close shows on the active tab and on hover, always
   under compact; a middle click closes. A double-click on the strip's empty
   space maximizes or restores the pane, as a pane title does.
+- A tab's context menu (`BrowserTabMenu.svelte`, the shared `ContextMenu`)
+  has Reload, Duplicate, Copy address, Open in system browser, Close, Close
+  other tabs, Close tabs to the right and Reopen closed tab. Each Manager
+  action is a `BrowserCompanionAction` kind. Open in system browser goes
+  through the external URL path, which refuses `file:`, so the item is
+  disabled for a file tab.
 - The address row's buttons never shrink and the address keeps at least
   6rem. Below a 32rem row (36rem under compact) the page's size label, cookie
   jar, open file, show in folder and devtools move into a More menu.
@@ -224,7 +254,7 @@ behave as a desktop browser's:
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
-  beside close tab `mod+w`. A bare `f5` is never claimed from the page.
+  reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
   its own order and selection (`StepCompanionPage`), so presses faster than
   the state push each move one tab.

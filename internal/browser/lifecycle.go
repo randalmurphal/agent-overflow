@@ -130,6 +130,12 @@ func (m *Manager) goLife(fn func()) bool {
 // engine is asked, and a failure stays on the tab. A tab closed meanwhile
 // answers errClosedWhileCreating.
 func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*managedPage, error) {
+	return m.createPageAt(ctx, access, user, -1)
+}
+
+// createPageAt is createPage with the new tab placed at index in the
+// thread's tab order from the start; a negative index appends it.
+func (m *Manager) createPageAt(ctx context.Context, access Access, user bool, index int) (*managedPage, error) {
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
 	createCtx, cancel := context.WithCancel(ctx)
@@ -147,6 +153,10 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 		m.pending = make(map[string]*pendingPage)
 	}
 	m.pending[p.id] = pending
+	savedMoved := false
+	if index >= 0 {
+		savedMoved, _ = m.placeTabLocked(owner, p.id, index)
+	}
 	if user {
 		info := m.sessionLocked(owner)
 		info.ActivePageID, info.Visible = p.id, true
@@ -155,6 +165,13 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 	}
 	m.mu.Unlock()
 	m.emitThreadState(owner)
+	if savedMoved {
+		if err := m.persistThreads([]string{owner}); err != nil {
+			// The suspended tabs keep their new places in memory; only a
+			// restart before the next save puts them back.
+			log.Printf("browser: place a new tab of thread %s: save the thread's pages: %v", owner, err)
+		}
+	}
 	if user {
 		// The page shown before is hidden while the new tab is created.
 		m.syncPanePresentation(owner)
@@ -308,13 +325,6 @@ func closingHint(closing int) string {
 // no engine page to close; closing it forgets its record.
 func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) error {
 	return m.closePage(ctx, access, pageID, true)
-}
-
-// CloseCompanionPage is the user closing a tab: it returns once the tab is
-// gone from the state, and a failure of the teardown after it arrives as a
-// "teardown" event.
-func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID string) error {
-	return m.closePage(ctx, access, pageID, false)
 }
 
 // closePage closes a live, closing, pending or suspended page. A page whose

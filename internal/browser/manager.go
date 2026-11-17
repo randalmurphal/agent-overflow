@@ -146,6 +146,12 @@ type Manager struct {
 	// apply lays it out first (applyViewportLocked) asks for the pass that
 	// shows it. Guarded by mu.
 	awaitingLayout map[string]string
+	// closedTabs is, per thread, the tabs the user closed that can be
+	// reopened, most recent last (companion_tabs.go). Guarded by mu.
+	closedTabs map[string][]closedTab
+	// agentLinger is how long a page keeps showing agent activity after the
+	// last tool call on it ends (activity.go); a test shortens it.
+	agentLinger    time.Duration
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -309,6 +315,8 @@ type managedPage struct {
 	// viewport until it is about to be shown or operated on.
 	viewport       atomic.Uint64
 	viewportFailed atomic.Uint64
+	// activity is the agent tool calls acting on the page (activity.go).
+	activity pageActivity
 }
 
 // pageIncarnations numbers every page the process creates or restores.
@@ -348,11 +356,14 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:   findActionTimeout,
+		closedTabs:    make(map[string][]closedTab),
+		agentLinger:   agentActivityLinger,
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
 		PopupOpened:       m.adoptPopup,
 		PageClosed:        m.removeClosedPage,
+		PageCrashed:       m.pageCrashed,
 		PageInfoChanged:   m.updatePageInfo,
 		DownloadStarted:   m.downloadStarted,
 		DownloadProgress:  m.downloadProgress,
@@ -422,7 +433,9 @@ func (m *Manager) Reconfigure(config Config) error {
 		// The pages close as they always have, suspended ones included: a
 		// disabled browser keeps no browser state, and a page restored into
 		// the other site-data mode would not be the page that was open. The
-		// threads' jar settings stay unless the browser is off.
+		// threads' jar settings stay unless the browser is off. Nothing
+		// closed before can be reopened.
+		m.forgetClosedTabs("")
 		return errors.Join(m.forgetAllRecords(config.Enabled), m.closeBrowser(context.Background()))
 	}
 	return nil
@@ -563,6 +576,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
+	m.forgetClosedTabs(threadID)
 	m.closeThreadPending(threadID)
 	var errs []error
 	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
@@ -593,6 +607,8 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
 func (m *Manager) ClearSiteData(ctx context.Context) error {
+	// A closed tab's address is browsing history the clear removes too.
+	m.forgetClosedTabs("")
 	if err := errors.Join(m.forgetAllRecords(true), m.closeBrowser(ctx)); err != nil {
 		return err
 	}

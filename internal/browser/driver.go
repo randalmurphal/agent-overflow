@@ -398,8 +398,14 @@ const (
 // engineEvents are the engine-originated notifications the Manager subscribes
 // to. The engine reports; the Manager alone routes and decides.
 type engineEvents struct {
-	PopupOpened     func(enginePopup)
-	PageClosed      func(handle string)
+	PopupOpened func(enginePopup)
+	PageClosed  func(handle string)
+	// PageCrashed reports that the page's renderer or web content process
+	// ended while the page was open; reason is the engine's name for how.
+	// The engine page still exists and the Manager closes it (crash.go).
+	// Never called on a UI thread (it takes Manager locks and closes the
+	// page's driver).
+	PageCrashed     func(handle, reason string)
 	PageInfoChanged func(handle, url, title string)
 	// DownloadStarted reports whether the download may continue. The engine
 	// cancels one it answers false for.

@@ -193,6 +193,9 @@ var Defaults = []Keybinding{
 	{Key: "f5", Command: "browser.reload", When: "browserPaneFocused", DefaultID: "browser.reload.f5"},
 	{Key: "ctrl+tab", Command: "browser.nextTab", When: "browserPaneFocused", DefaultID: "browser.nextTab"},
 	{Key: "ctrl+shift+tab", Command: "browser.prevTab", When: "browserPaneFocused", DefaultID: "browser.prevTab"},
+	// Reopen the last closed tab. Shares mod+shift+t with terminal.newTab,
+	// whose terminalFocus gate never holds while the browser pane is focused.
+	{Key: "mod+shift+t", Command: "browser.reopenTab", When: "browserPaneFocused", DefaultID: "browser.reopenTab"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	// mod+f opens the focused pane's find bar, matching the editor convention
 	// where Ctrl+F finds in the current document and Ctrl+Shift+F

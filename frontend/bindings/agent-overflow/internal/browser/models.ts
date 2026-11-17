@@ -80,6 +80,12 @@ export class CompanionEvent {
     "find"?: FindState | null;
 
     /**
+     * ClosedTabs rides a Kind "state" event: how many tabs the thread can
+     * reopen (companion_tabs.go).
+     */
+    "closedTabs"?: number;
+
+    /**
      * Seq rides a Kind "state" event: this process's number for the
      * snapshot, taken under the manager's lock as the snapshot is read.
      * Snapshots are published after that lock is released, and calls answer
@@ -298,12 +304,19 @@ export class PageInfo {
      * 
      * Creating marks a tab whose engine page is still being created, and
      * Restoring a suspended tab whose reload is in flight. Error is why a
-     * tab the user opened could not be created; the tab stays until it is
-     * closed. None of the three has a page to present.
+     * tab the user opened could not be created, or, on a Suspended tab, why
+     * its page stopped (crash.go); either tab stays until it is closed. None
+     * of these has a page to present.
      */
     "creating"?: boolean;
     "restoring"?: boolean;
     "error"?: string;
+
+    /**
+     * Agent is whether an agent's tool call is acting on the page
+     * (activity.go).
+     */
+    "agent"?: boolean;
 
     /**
      * Loading is whether the page's main frame is loading, as its engine
