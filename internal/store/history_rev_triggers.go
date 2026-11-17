@@ -58,7 +58,8 @@ import "strings"
 // insert either moves a row that was already visible into `items`, from
 // imported history (localizeImportedItemTx, UnsealThreadHistory) or from a
 // pointer fork's ancestor (snapshotRowsTx), or rebuilds a thread whose
-// rows the same transaction deleted (a returning transfer), where every row
+// rows the same transaction deleted (a returning transfer) or fills one it
+// created (a transfer's import), where every row
 // it could stamp was inserted at the same frozen revision. A moved row
 // changes no other row's read: the subagent cards read every arm. The
 // movers recompute the stamps a move changes, which only local rows hold

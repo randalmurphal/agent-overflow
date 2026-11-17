@@ -18,10 +18,13 @@ import (
 //   - trg_items_tally_tool_calls counts each top-level `tool_call` row the
 //     thread's own writers insert. Every copy of history into a thread, a
 //     pointer fork's snapshot of a running cut turn, a copy-on-write
-//     localization, a history repair or an import, runs under
-//     threads.history_bulk_load and counts nothing; a restore runs with the
-//     triggers dropped. A row a revert or a retention sweep later removes
-//     stays counted: the count is of what the thread did.
+//     localization, a history repair, a session import or a transfer's
+//     import, runs under threads.history_bulk_load and counts nothing; a
+//     restore runs with the triggers dropped. A moved thread's archive
+//     carries its tallies, which its import installs in place of the
+//     destination's (installTransferTalliesTx); a copy starts at zero. A
+//     row a revert or a retention sweep later removes stays counted: the
+//     count is of what the thread did.
 //   - tokens is the thread's own spend (provider.TokenUsage.Spend), added
 //     by the usage settlement that accounts it (AppendUsageAndReconcile,
 //     OwnSpend), from the figure the provider reports as the thread's own

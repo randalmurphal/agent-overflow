@@ -120,6 +120,10 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if err := source.store.InsertItem(store.Item{ID: "message", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "hello native history", Meta: "{}"}); err != nil {
 		t.Fatal(err)
 	}
+	// The work the thread did here: a move carries it, a copy starts at
+	// zero.
+	transferWork(t, source.store, thread.ID, "call-a", 1, 500, 60_000)
+	sourceTally := store.ThreadTally{ToolCalls: 1, Tokens: 500, RuntimeMs: 60_000}
 	projects, err := source.claudeProjectsDir()
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +217,9 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if copied.WorkspacePath != workspace || copied.ProjectID != destProject.ID {
 		t.Fatalf("wrong execution target: %+v", copied)
 	}
+	if want := map[string]store.ThreadTally{"copy": {}, "move": sourceTally}[kind]; transferTally(t, destination.store, copied.ID) != want {
+		t.Fatalf("%s's tallies %+v; want %+v", kind, transferTally(t, destination.store, copied.ID), want)
+	}
 	if err := source.store.CheckThreadExecutionAccess(thread); (err != nil) != (kind == "move") {
 		t.Fatalf("original blocked after copy: %v", err)
 	}
@@ -273,6 +280,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if err := destination.store.InsertItem(store.Item{ID: "second-message", ThreadID: copied.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "continued on B", Meta: "{}", ItemIndex: 1}); err != nil {
 			t.Fatal(err)
 		}
+		transferWork(t, destination.store, copied.ID, "call-b", 2, 30, 10_000)
 		originalID, _ := source.backendIdentity()
 		returnOp := uuid.NewString()
 		back, err := destination.BeginThreadTransfer(ctx, copied.ID, returnOp, originalID, "move", false)
@@ -297,6 +305,9 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if err := source.store.CheckThreadExecutionAccess(returned); err != nil {
 			t.Fatalf("returned conversation blocked: %v", err)
 		}
+		if got, want := transferTally(t, source.store, thread.ID), (store.ThreadTally{ToolCalls: 2, Tokens: 530, RuntimeMs: 70_000}); got != want {
+			t.Fatalf("returned tallies %+v; want %+v, the work done on both computers once", got, want)
+		}
 		if err := destination.store.CheckThreadExecutionAccess(copied); err == nil {
 			t.Fatal("previous owner remained runnable after return")
 		}
@@ -316,6 +327,35 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if strings.Contains(string(encoded), offer.Grant) || strings.Contains(string(encoded), intent.ActivationHash) {
 		t.Fatal("public status leaked authorization material")
 	}
+}
+
+// transferWork records, as the thread's own writers do, one top-level tool
+// call with id call in turn index, its own spend of tokens, and that turn
+// running ms.
+func transferWork(t *testing.T, s *store.Store, threadID, call string, index int, tokens, ms int64) {
+	t.Helper()
+	turnID := threadID + ":" + call
+	if err := s.InsertTurn(store.Turn{TurnID: turnID, ThreadID: threadID, TurnIndex: index, StartedAt: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertItem(store.Item{ID: call, ThreadID: threadID, TurnIndex: index, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "Ran a command", Meta: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendUsageAndReconcile("transfer-"+call, nil, store.OwnSpend{ThreadID: threadID, Tokens: tokens}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnCompleted(turnID, 1_000+ms, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func transferTally(t *testing.T, s *store.Store, threadID string) store.ThreadTally {
+	t.Helper()
+	got, err := s.ThreadTallies([]string{threadID}, time.UnixMilli(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got[threadID]
 }
 
 // awaitTransferComplete waits for both sides of one transfer to complete.

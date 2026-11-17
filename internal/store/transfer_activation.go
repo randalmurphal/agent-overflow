@@ -95,13 +95,13 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 	}
 	released := false
 	if existed {
-		if released, err = s.replaceTransferredHistoryTx(ctx, tx, target, history); err != nil {
+		if released, err = s.replaceTransferredHistoryTx(ctx, tx, target, history, row.Kind == "move"); err != nil {
 			return ThreadTransfer{}, err
 		}
 		if _, err := tx.Exec(`UPDATE threads SET history_rev = MAX(history_rev, ?), history_epoch = MAX(history_epoch, ?) WHERE id = ?`, stamp.Rev+1, stamp.Epoch+1, target.ID); err != nil {
 			return ThreadTransfer{}, err
 		}
-	} else if err := s.importThreadHistoryTx(ctx, tx, target, history); err != nil {
+	} else if err := s.importThreadHistoryTx(ctx, tx, target, history, row.Kind == "move"); err != nil {
 		return ThreadTransfer{}, err
 	}
 	row.Phase, row.Error, row.UpdatedAt = "complete", "", nextTransferStamp(row.UpdatedAt)
@@ -118,9 +118,10 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 }
 
 // replaceTransferredHistoryTx replaces a returning thread's history with
-// the one it brings back. It reports whether it removed lineage rows,
+// the one it brings back, and its tallies with the ones it carries
+// (installTransferTalliesTx). It reports whether it removed lineage rows,
 // which can release a holder (holdersMayBeReleased).
-func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, history io.Reader) (bool, error) {
+func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, history io.Reader, move bool) (bool, error) {
 	prepared, lastReadAt, err := prepareThreadForCreate(target)
 	if err != nil {
 		return false, err
@@ -182,13 +183,17 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0,delete_claim='',delete_worktrees=0`); err != nil {
 		return false, err
 	}
-	if err := readTransferHistoryTx(ctx, tx, target, history); err != nil {
+	tallies, err := readTransferHistoryTx(ctx, tx, target, history)
+	if err != nil {
 		return false, err
 	}
 	// The rows were loaded with the triggers' aggregate work suspended and
 	// carry whatever stamps the sending computer wrote; rebuild them from
 	// the rows this thread now holds.
 	if err := s.restampSubagentAggregatesTx(tx, target.ID); err != nil {
+		return false, err
+	}
+	if err := installTransferTalliesTx(tx, target.ID, move, tallies); err != nil {
 		return false, err
 	}
 	return unlinked > 0 || w.levelsDropped, setHistoryBulkLoadTx(tx, target.ID, false, "returning transfer")
