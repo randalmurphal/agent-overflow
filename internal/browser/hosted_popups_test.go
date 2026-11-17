@@ -37,7 +37,7 @@ func TestHostedPopupIsAdoptedIntoItsOpenersThread(t *testing.T) {
 
 	// The browser may report a popup's target before the launcher reports
 	// the popup; the tab takes what it said.
-	l.engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	l.engine.targetInfoChanged(l.engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "PT-2", Type: "page", URL: "https://example.test/early", Title: "early",
 	}})
 	second, _ := l.popup(opener, "https://example.test/popup")
@@ -171,7 +171,7 @@ func TestHostedPopupReportValidation(t *testing.T) {
 	engine.pageProfile["opener"] = "prof"
 	engine.mu.Unlock()
 
-	engine.Report("popup-a", webview2host.ReportPopup, `{"opener":"opener"}`)
+	engine.Report("popup-a", webview2host.ReportPopup, `{"target":"T-a"}`)
 	if d := sink.next(t); d.Op != webview2host.OpClose || d.PageID != "popup-a" {
 		t.Fatalf("a malformed report was answered with %+v, want close", d)
 	}
@@ -235,7 +235,7 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 	access := popupTestAccess(t, "thread")
 	_, opener := l.open(access)
 	info := func(targetID, title string) {
-		l.engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+		l.engine.targetInfoChanged(l.engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 			TargetID: target.ID(targetID), Type: "page", URL: "https://example.test/" + title, Title: title,
 		}})
 	}
@@ -335,8 +335,8 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	bindTestPage(t, engine, "page-b", "T-b")
 	engine.pageProfile["page-a"] = "prof-a"
 	engine.pageProfile["page-b"] = "prof-b"
-	engine.targetCreated(target.EventTargetCreated{TargetInfo: &target.Info{TargetID: "T-popup", OpenerID: "T-a"}})
-	engine.targetCreated(target.EventTargetCreated{TargetInfo: &target.Info{TargetID: "T-grand", OpenerID: "T-popup"}})
+	engine.currentTargets().created(&target.Info{TargetID: "T-popup", Type: "page", OpenerID: "T-a"}, nil)
+	engine.currentTargets().created(&target.Info{TargetID: "T-grand", Type: "page", OpenerID: "T-popup"}, nil)
 
 	// want is the policy asked, empty for any, then the owners it is asked
 	// with.
@@ -350,7 +350,7 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		{"T-stranger", []string{"", "T-stranger"}},
 	} {
 		asked = nil
-		allowed := engine.allowRequest(tc.frame, "https://example.test/")
+		allowed := engine.allowRequest(engine.currentTargets().owners(tc.frame), "https://example.test/")
 		if len(asked) != 1 || tc.want[0] != "" && asked[0][0] != tc.want[0] || !slices.Equal(asked[0][1:], tc.want[1:]) {
 			t.Errorf("%s: asked %v, want %v", tc.frame, asked, tc.want)
 		} else if allowed != (asked[0][0] == "a") {
@@ -358,15 +358,15 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		}
 	}
 	// A destroyed target's link to its opener goes with it.
-	engine.targetDestroyed(target.EventTargetDestroyed{TargetID: "T-popup"})
+	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "T-popup"})
 	asked = nil
-	engine.allowRequest("T-grand", "https://example.test/")
+	engine.allowRequest(engine.currentTargets().owners("T-grand"), "https://example.test/")
 	if len(asked) != 1 || !slices.Equal(asked[0][1:], []string{"T-grand", "T-popup"}) {
 		t.Errorf("after the destroy: asked %v", asked)
 	}
 	// With no profile's policy, nothing is allowed.
 	clear(engine.policies)
-	if engine.allowRequest("T-a", "https://example.test/") {
+	if engine.allowRequest(engine.currentTargets().owners("T-a"), "https://example.test/") {
 		t.Error("a request with no policy was allowed")
 	}
 }

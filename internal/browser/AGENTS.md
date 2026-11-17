@@ -97,14 +97,20 @@ data directory. Headless mode is selected explicitly by serve boot and must not
 become a fallback for an ordinary windowless process.
 
 Every engine reports a page it opened by itself as `PopupOpened`, and the
-Manager alone adopts or discards it (`adoptPopup`). On the hosted engine a
-popup is the launcher's report (`hosted_popups.go`); until the Manager lists
-its tab, the engine holds the popup's downloads, crash and close and
-delivers them at the listing (`adoptedPage`), since the Manager acts on them
-only for a listed page. The CDP engines answer the navigation policy only
+Manager alone adopts or discards it (`adoptPopup`). A popup whose opener is
+still being adopted, or not reported yet, waits for it (`awaitOpener`). A
+download a popup starts before its tab is listed names the popup by the
+handle the Manager adopts it under (`downloadStart.Popup`), and the Manager
+parks it, newest progress only, until the popup's fate lists it in the
+popup's tab or its nearest listed opener's (`popup_adoption.go`); an engine
+keeps no download of its own for a popup. On the hosted engine a popup is
+the launcher's report (`hosted_popups.go`); until the Manager lists its
+tab, the engine holds its crash and close and delivers them at the listing
+(`adoptedPage`). The CDP engines answer the navigation policy only
 browser-wide (`profileOptions.Allow`), one pause per request, so a popup's
 requests before its adoption have its opener chain's authority; a CDP page
-installs no interception of its own.
+installs no interception of its own. Each CDP connection keeps one record
+of its targets (`cdp_targets.go`), which goes with the connection.
 
 The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes

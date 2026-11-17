@@ -34,6 +34,9 @@ func (m *Manager) threadPagesLocked(threadID string) []*managedPage {
 // is not in a push yet.
 func (m *Manager) publishPages(threadID string) {
 	if event, ok := m.buildThreadState(threadID, true, true); ok {
+		if m.publishDecided != nil {
+			m.publishDecided()
+		}
 		m.emit(event)
 	}
 }

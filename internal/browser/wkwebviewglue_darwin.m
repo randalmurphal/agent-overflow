@@ -22,11 +22,12 @@ extern void aoWKVDocumentCommitted(uint64_t page_id);
 extern void aoWKVPageLoading(uint64_t page_id, int loading);
 extern void aoWKVPageClosed(uint64_t page_id);
 extern void aoWKVPageCrashed(uint64_t page_id);
-extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
+extern uint64_t aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
 extern char *aoWKVDownloadDestination(uint64_t profile_id, uint64_t download_id);
-extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t download_id,
-                                 void *download, char *uri, char *suggested);
+extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t popup_id,
+                                 uint64_t download_id, void *download, char *uri,
+                                 char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path,
                                   char *error);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
@@ -42,9 +43,11 @@ extern void aoWKVFindDone(uint64_t call_id, int found);
 // Association keys. The address is the key, so each needs storage of its own.
 static const char kAOPageIDKey;
 static const char kAOOpenerIDKey;
+static const char kAOPopupIDKey;
 static const char kAOProfileIDKey;
 static const char kAODownloadIDKey;
 static const char kAODownloadPageKey;
+static const char kAODownloadPopupKey;
 static const char kAODownloadProfileKey;
 static const char kAODownloadPathKey;
 static const char kAOBackgroundKey;
@@ -72,6 +75,13 @@ static uint64_t ao_view_page_id(id view) {
 
 static uint64_t ao_view_profile_id(id view) {
   return ao_number(objc_getAssociatedObject(view, &kAOProfileIDKey));
+}
+
+// ao_view_popup_id is the number the Go side gave the view when WebKit
+// created it as a popup, zero for any other view. It names the popup before
+// and after the Manager adopts it.
+static uint64_t ao_view_popup_id(id view) {
+  return ao_number(objc_getAssociatedObject(view, &kAOPopupIDKey));
 }
 
 // ao_view_policy_page_id names the page whose navigation policy answers for
@@ -741,6 +751,8 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(download, &kAODownloadPageKey, @(ao_view_page_id(view)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  objc_setAssociatedObject(download, &kAODownloadPopupKey, @(ao_view_popup_id(view)),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(download, &kAODownloadProfileKey, @(ao_view_profile_id(view)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   // Held until the Go side releases it, so a cancel arriving after the page
@@ -853,8 +865,10 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   NSURL *url = [[navigationAction request] URL];
   // Held (the +1 from -alloc) until the Manager adopts or discards it. WebKit
   // does not retain the view it is handed back.
-  aoWKVPopup(ao_view_page_id(webView), ao_view_profile_id(webView), popup,
-             ao_dup([url absoluteString]));
+  uint64_t popup_id = aoWKVPopup(ao_view_page_id(webView), ao_view_profile_id(webView), popup,
+                                 ao_dup([url absoluteString]));
+  // A download the popup starts names it by this (ao_attach_download).
+  objc_setAssociatedObject(popup, &kAOPopupIDKey, @(popup_id), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   return popup;
 }
 
@@ -1037,6 +1051,7 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   NSURL *url = [[download originalRequest] URL];
   aoWKVDownloadStarted(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
                        ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
+                       ao_number(objc_getAssociatedObject(download, &kAODownloadPopupKey)),
                        identifier, download, ao_dup([url absoluteString]),
                        ao_dup(suggestedFilename));
 }

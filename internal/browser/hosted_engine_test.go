@@ -456,12 +456,12 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	})
 	bindTestPage(t, engine, "page1", "TARGET-1")
 
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
 	}})
 	// The reports are numbered in the browser's order, which the Manager
 	// keeps the highest of.
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Retitled",
 	}})
 	if len(infos) != 2 || infos[0] != "page1 https://example.test/ Example 1" || infos[1] != "page1 https://example.test/ Retitled 2" {
@@ -469,14 +469,14 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	}
 	// A target this engine never created is dropped rather than reported
 	// under a handle the Manager does not own.
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-9", Type: "page", URL: "https://elsewhere.test/",
 	}})
 	if len(infos) != 2 {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
-	engine.targetDestroyed(target.EventTargetDestroyed{TargetID: "TARGET-1"})
+	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "TARGET-1"})
 	select {
 	case handle := <-closed:
 		if handle != "page1" {

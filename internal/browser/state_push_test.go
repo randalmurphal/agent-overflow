@@ -148,6 +148,32 @@ func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	}
 }
 
+// Two publishers of one write push it once: the second runs between the
+// first's decision to push and its push, and finds nothing unpushed,
+// because the decision took the write's record.
+func TestTwoPublishersOfOneWritePushItOnce(t *testing.T) {
+	manager, _ := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page := mustOpen(t, manager, access, "https://example.test/")
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushes := countStatePushes(manager)
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "https://example.test/next", Title: "Next"}})
+	first := true
+	manager.publishDecided = func() {
+		if first {
+			first = false
+			manager.publishPages(access.ThreadID)
+		}
+	}
+	manager.publishPages(access.ThreadID)
+	if n := pushes.take(); n != 1 {
+		t.Fatalf("one write published twice pushed %d states, want 1", n)
+	}
+}
+
 // retitle changes the fake page's title as the page would, with the engine's
 // report of it still to come.
 func retitle(t *testing.T, m *Manager, access Access, pageID, title string) *managedPage {

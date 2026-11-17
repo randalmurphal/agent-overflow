@@ -13,18 +13,26 @@ import (
 
 // Popups on the hosted engine. A window a pane page opens becomes a page of
 // the launcher's, which reports it (ReportPopup) under a page id the
-// launcher minted, with its opener's page id and its CDP target, before any
-// other report of the page (internal/webview2host/popup.go). The engine
-// hands it to the Manager as PopupOpened, which adopts it through
-// AttachPage or closes it through DiscardPage, as on every engine.
+// launcher minted, with its opener's page id and its CDP target, after its
+// opener and before any other report of the page
+// (internal/webview2host/popup.go). The engine hands it to the Manager as
+// PopupOpened, which adopts it through AttachPage or closes it through
+// DiscardPage, as on every engine.
 //
-// From its report until the Manager lists it the popup is pending, and the
-// engine keeps what the page reports meanwhile: its address and title
-// reach the Manager by handle, which holds them for the page that takes
-// the handle; its downloads, a crash and its close are held here, because
-// the Manager acts on those only for a listed page, and delivered in that
-// order once it is listed (Adopted). A target's info that arrives before
-// its popup report is held by target, the newest per target, bounded.
+// From its report until the Manager lists it the popup is pending. Its
+// address and title reach the Manager by handle, which holds them for the
+// page that takes the handle; a target's info that arrives before the
+// popup report is held by the connection's record of its targets
+// (cdpTargets). Its downloads go to the Manager as they come, naming the
+// popup and its openers, and the Manager lists them in the popup's tab or,
+// if the popup is never listed, in its nearest listed opener's
+// (popup_adoption.go). Its crash and its close are held here, because the
+// Manager acts on those only for a listed page, and delivered in that
+// order once it is listed (Adopted); a close also reaches the Manager at
+// once, so what the popup downloaded is listed while its opener still is.
+// A popup reported with no target (one that went before the launcher read
+// it) is never attached: the Manager discards it, and its downloads go to
+// its opener.
 //
 // The popup navigates as soon as the launcher hands its view over, before
 // the engine has heard of it. The engine answers the navigation policy
@@ -33,29 +41,23 @@ import (
 // adopted, of the pages that opened it, nearest first, as the browser
 // names them (jarAllows).
 
-// maxHeldPopupDownloads bounds the download reports a pending popup keeps.
-// The launcher reports progress at most every DownloadProgressInterval, so
-// a popup adopted in time keeps a handful; past the bound the newest are
-// dropped, and the download's next snapshot starts its row.
-const maxHeldPopupDownloads = 64
+// Why the downloads of a popup the Manager never listed end, when the
+// launcher cancels them with the popup's page and reports nothing.
+const (
+	popupClosedReason    = "the window it began in closed before it opened as a tab"
+	popupDiscardedReason = "the window it began in was not opened as a tab"
+)
 
 // hostedPopup is a popup the launcher reported that the Manager has not
 // listed yet.
 type hostedPopup struct {
 	target  string
 	profile string
-	// downloads are the page's download reports, in arrival order; crashed
-	// is the reason its page crashed, and closed says it closed.
-	downloads []string
-	crashed   string
-	closed    bool
-}
-
-// heldTargetInfo is a target's newest info change before any page answers
-// to it, numbered as it arrived.
-type heldTargetInfo struct {
-	url, title string
-	order      uint64
+	// opener is the page id of the page that opened it.
+	opener string
+	// crashed is the reason its page crashed, and closed says it closed.
+	crashed string
+	closed  bool
 }
 
 // popupReported takes the launcher's report of a popup: the engine knows
@@ -87,13 +89,14 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 		e.closePage(pageID)
 		return
 	}
-	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile}
-	e.popupByTarget[report.Target] = pageID
+	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: report.Opener}
+	if report.Target != "" {
+		e.popupByTarget[report.Target] = pageID
+	}
 	e.pageProfile[pageID] = profile
-	held, hasHeld := e.heldInfo.take(report.Target)
 	e.mu.Unlock()
-	if hasHeld {
-		e.events.PageInfoChanged(pageID, held.url, held.title, held.order)
+	if report.Target != "" {
+		e.takeTargetInfo(pageID, report.Target)
 	}
 	// On its own goroutine, as every engine reports a popup: the Manager
 	// adopts it through AttachPage, a CDP round trip, and the launcher's
@@ -113,7 +116,7 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 	e.mu.Unlock()
 	switch {
 	case targetID == "":
-		return nil, fmt.Errorf("browser: the pane host reported no popup %s in this profile", handle)
+		return nil, fmt.Errorf("browser: the pane host reported no popup %s with a target in this profile", handle)
 	case closed:
 		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
 	}
@@ -139,7 +142,7 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 }
 
 // popupListed delivers what a popup reported while it was pending, once the
-// Manager lists it: its downloads in order, then its crash, then its close.
+// Manager lists it: its crash, then its close.
 func (e *hostedEngine) popupListed(pageID string) {
 	e.mu.Lock()
 	popup := e.popups[pageID]
@@ -151,9 +154,6 @@ func (e *hostedEngine) popupListed(pageID string) {
 	if popup == nil {
 		return
 	}
-	for _, detail := range popup.downloads {
-		e.downloadReport(pageID, detail)
-	}
 	if popup.crashed != "" {
 		e.events.PageCrashed(pageID, popup.crashed)
 	}
@@ -162,19 +162,27 @@ func (e *hostedEngine) popupListed(pageID string) {
 	}
 }
 
-// holdPopupDownloadLocked keeps a download report of a pending popup and
-// reports whether pageID is one. The caller holds e.mu.
-func (e *hostedEngine) holdPopupDownloadLocked(pageID, detail string) bool {
+// popupOwnersLocked answers, for a download of pageID, the download's
+// start naming the popup it began in, that popup's openers, nearest first,
+// and its profile, when pageID is a pending popup; empty otherwise. The
+// caller holds e.mu.
+func (e *hostedEngine) popupOwnersLocked(pageID string) downloadStart {
 	popup := e.popups[pageID]
 	if popup == nil {
-		return false
+		return downloadStart{}
 	}
-	if len(popup.downloads) < maxHeldPopupDownloads {
-		popup.downloads = append(popup.downloads, detail)
-	} else {
-		e.logf("browser: popup %s: drop a download report made before it was adopted", pageID)
+	start := downloadStart{Popup: pageID, Profile: popup.profile}
+	// Each opener is reported before its popups, so the chain ends; the
+	// bound stops a cycle all the same.
+	for opener := popup.opener; opener != "" && len(start.Openers) <= len(e.popups); {
+		start.Openers = append(start.Openers, opener)
+		next := e.popups[opener]
+		if next == nil {
+			break
+		}
+		opener = next.opener
 	}
-	return true
+	return start
 }
 
 // pageCrashed reports a page crashed, or keeps the crash of a pending
@@ -201,6 +209,16 @@ func (e *hostedEngine) retirePendingLocked(pageID string) bool {
 	return true
 }
 
+// pendingClosed settles a pending popup whose page closed: the launcher
+// canceled its running downloads with the page, so they end here, and the
+// Manager hears of the close now, which lists what the popup downloaded
+// while its opener is still listed. The popup's listing, if its adoption
+// is still under way, delivers the close again (popupListed).
+func (e *hostedEngine) pendingClosed(pageID string) {
+	e.endUnlistedDownloads(pageID, popupClosedReason)
+	e.events.PageClosed(pageID)
+}
+
 // forgetPopupLocked drops a popup the Manager discarded. The caller holds
 // e.mu.
 func (e *hostedEngine) forgetPopupLocked(pageID string) {
@@ -210,34 +228,13 @@ func (e *hostedEngine) forgetPopupLocked(pageID string) {
 	}
 }
 
-// targetCreated records the page that opened a target, for the
-// browser-wide navigation policy.
-func (e *hostedEngine) targetCreated(event target.EventTargetCreated) {
-	info := event.TargetInfo
-	if info == nil || info.OpenerID == "" {
-		return
-	}
-	e.mu.Lock()
-	e.targetOpeners[string(info.TargetID)] = string(info.OpenerID)
-	e.mu.Unlock()
-}
-
 // allowRequest is the browser-wide navigation policy: the policy of the
-// profile of the first page the request's owners resolve to, asked with
-// those owners, or with no page's authority when none resolves.
-func (e *hostedEngine) allowRequest(frame, rawURL string) bool {
+// profile of the first page the request's owners (its frame, then the
+// pages that opened its page, as the connection's targets name them)
+// resolve to, asked with those owners, or with no page's authority when
+// none resolves.
+func (e *hostedEngine) allowRequest(owners []string, rawURL string) bool {
 	e.mu.Lock()
-	owners := []string{frame}
-	// A target has one opener, so the chain is at most every target the
-	// engine knows one for.
-	for id := frame; len(owners) <= len(e.targetOpeners); {
-		opener := e.targetOpeners[id]
-		if opener == "" {
-			break
-		}
-		owners = append(owners, opener)
-		id = opener
-	}
 	var allow func([]string, string) bool
 	for _, owner := range owners {
 		if pageID, ok := e.ownerPageLocked(owner); ok {

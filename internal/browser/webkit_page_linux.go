@@ -54,6 +54,10 @@ type webkitPage struct {
 	handle  string
 	hooks   pageHooks
 	view    unsafe.Pointer
+	// popup is the handle the page was adopted under when WebKit opened it
+	// as a popup, and opener the handle of the page that opened it; both
+	// empty otherwise. Set before the view answers to the page.
+	popup, opener string
 
 	ctx    context.Context
 	cancel context.CancelFunc

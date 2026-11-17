@@ -141,13 +141,14 @@ type hostedEngine struct {
 	pageProfile map[string]string
 	policies    map[string]func(owners []string, rawURL string) bool
 	// popups are the popups the launcher reported that the Manager has not
-	// listed, popupByTarget their pages by CDP target, heldInfo the newest
-	// info of a target no page answers to yet, and targetOpeners the page
-	// target that opened each popup target, as the browser reports it.
+	// listed, and popupByTarget their pages by CDP target.
 	popups        map[string]*hostedPopup
 	popupByTarget map[string]string
-	heldInfo      *boundedMap[string, heldTargetInfo]
-	targetOpeners map[string]string
+	// targets is the current connection's record of its targets
+	// (cdp_targets.go): the info of a target no page answers to yet, and
+	// the target that opened each popup target, as the browser reports it.
+	// Each connection has its own, which goes with it.
+	targets *cdpTargets
 	// downloads is the record of the launcher's downloads
 	// (hosted_downloads.go).
 	downloads hostedDownloads
@@ -168,7 +169,7 @@ type hostedEngine struct {
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
-	return &hostedEngine{
+	e := &hostedEngine{
 		relay:         relay,
 		send:          send,
 		events:        events,
@@ -194,13 +195,13 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		policies:      make(map[string]func([]string, string) bool),
 		popups:        make(map[string]*hostedPopup),
 		popupByTarget: make(map[string]string),
-		heldInfo:      newBoundedMap[string, heldTargetInfo](orderSlack),
-		targetOpeners: make(map[string]string),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
+	e.targets = e.newTargets()
+	return e
 }
 
 // Start has nothing to start, and that is the design rather than a gap.
@@ -286,8 +287,7 @@ func (e *hostedEngine) Stop() {
 	e.pageProfile = make(map[string]string)
 	e.popups = make(map[string]*hostedPopup)
 	e.popupByTarget = make(map[string]string)
-	e.heldInfo = newBoundedMap[string, heldTargetInfo](orderSlack)
-	e.targetOpeners = make(map[string]string)
+	e.targets = e.newTargets()
 	e.stopDownloadsLocked()
 	e.mu.Unlock()
 	if browserCancel != nil {

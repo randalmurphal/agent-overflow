@@ -496,6 +496,15 @@ type downloadStart struct {
 	ID            string
 	URL           string
 	SuggestedName string
+	// Popup, set when the frame is a popup's the engine reported
+	// (PopupOpened), is that popup's handle, Openers the pages that opened
+	// it, nearest first, and Profile the handle of its engine profile. The
+	// Manager lists the download in the popup's tab, or in the nearest
+	// listed opener's if the popup is never listed, and cancels it through
+	// the profile when neither is (popup_adoption.go).
+	Popup   string
+	Openers []string
+	Profile string
 }
 
 // errDownloadEnded is CancelDownload's answer when the engine had already
@@ -506,6 +515,9 @@ var errDownloadEnded = errors.New("browser: the download already ended")
 // downloadProgress is an engine download advancing. Total is the size the
 // response announced, zero when unknown. Error is the engine's reason for a
 // download it stopped on its own (a network failure), when it reports one.
+// PageGone marks a cancel the engine made because the page the download
+// began in went before the Manager listed it; the Manager lists it as
+// canceled, with Error, as it does a download of a listed page that goes.
 type downloadProgress struct {
 	ID       string
 	Received float64
@@ -513,6 +525,7 @@ type downloadProgress struct {
 	State    string
 	FilePath string
 	Error    string
+	PageGone bool
 }
 
 // The states downloadProgress.State may carry.

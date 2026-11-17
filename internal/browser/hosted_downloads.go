@@ -26,8 +26,10 @@ import (
 // answered with a snapshot marked as an answer, which settles or advances a
 // row and never creates one; DownloadUnknown, the answer for an id the
 // launcher has no record of, ends only a row still running. Nothing about
-// downloads crosses CDP. A popup is a pane page too: what it reports before
-// the Manager lists its tab is held until then (hosted_popups.go).
+// downloads crosses CDP. A popup is a pane page too: a download it starts
+// before the Manager lists its tab names it and its openers, for the
+// Manager to list (popup_adoption.go), and one still running when such a
+// popup goes ends here (endUnlistedDownloads).
 
 const (
 	// hostedPathTimeout bounds the `wslpath -u` of a finished download's
@@ -111,11 +113,6 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		return
 	}
 	e.mu.Lock()
-	if e.holdPopupDownloadLocked(pageID, detail) {
-		// A popup the Manager has not listed: its listing delivers it.
-		e.mu.Unlock()
-		return
-	}
 	if e.downloads.endedIn(pageID, report.ID) {
 		e.mu.Unlock()
 		return
@@ -129,7 +126,8 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			e.mu.Unlock()
 			return
 		}
-		if _, live := e.targetByPage[pageID]; !live {
+		_, live := e.targetByPage[pageID]
+		if _, pending := e.popups[pageID]; !live && !pending {
 			// No page of the Manager's started it, or that page is leaving;
 			// the launcher cancels a closed page's downloads itself.
 			e.mu.Unlock()
@@ -167,7 +165,11 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		if name == "" {
 			name = windowsBase(report.Path)
 		}
-		if !e.events.DownloadStarted(downloadStart{Frame: pageID, ID: report.ID, URL: report.URI, SuggestedName: name}) {
+		e.mu.Lock()
+		popup := e.popupOwnersLocked(pageID)
+		e.mu.Unlock()
+		popup.Frame, popup.ID, popup.URL, popup.SuggestedName = pageID, report.ID, report.URI, name
+		if !e.events.DownloadStarted(popup) {
 			// The Manager refused it: nothing later reaches a row.
 			e.mu.Lock()
 			e.downloads.noteEnded(pageID, report.ID)
@@ -210,6 +212,7 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		}
 	case webview2host.DownloadInterrupted:
 		progress.State, progress.Error = downloadCanceled, report.Reason
+		progress.PageGone = report.Reason == webview2host.PopupGoneReason
 	}
 	e.events.DownloadProgress(progress)
 }
@@ -301,6 +304,35 @@ func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
 		}
 	}
 	delete(e.downloads.ended, pageID)
+}
+
+// endUnlistedDownloads ends, as canceled for why, the running downloads of
+// pageID, a popup the Manager never listed whose page goes: the launcher
+// cancels a going page's downloads and reports nothing, and only a listed
+// page's leaving settles them in the Manager. Each ends in its apply
+// section, after any snapshot of it being applied.
+func (e *hostedEngine) endUnlistedDownloads(pageID, why string) {
+	e.mu.Lock()
+	running := make(map[string]*hostedDownload)
+	for id, d := range e.downloads.running {
+		if d.page == pageID && d.admitted {
+			running[id] = d
+		}
+	}
+	e.mu.Unlock()
+	for id, d := range running {
+		d.apply.Lock()
+		e.mu.Lock()
+		gone := d.gone
+		if !gone {
+			e.downloads.noteEnded(pageID, id)
+		}
+		e.mu.Unlock()
+		if !gone {
+			e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCanceled, Error: why, PageGone: true})
+		}
+		d.apply.Unlock()
+	}
 }
 
 // stopDownloadsLocked forgets every download and ends the status loop

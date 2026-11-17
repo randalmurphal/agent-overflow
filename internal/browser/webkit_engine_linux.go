@@ -37,7 +37,7 @@ func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents)
 	}
 	return &webkitEngine{
 		configDir: configDir, window: opts.NativeWindow, events: events,
-		popups: make(map[string]unsafe.Pointer),
+		popups: make(map[string]heldPopupView),
 		pane:   make(map[uint64]webkitPaneState),
 	}
 }
@@ -54,7 +54,7 @@ type webkitEngine struct {
 
 	mu        sync.Mutex
 	popupSeq  uint64
-	popups    map[string]unsafe.Pointer
+	popups    map[string]heldPopupView
 	profiles  map[uint64]*webkitProfile
 	pane      map[uint64]webkitPaneState
 	stopped   bool
@@ -103,8 +103,8 @@ func (e *webkitEngine) Stop() {
 	e.startMu.Unlock()
 	e.mu.Lock()
 	orphans := make([]unsafe.Pointer, 0, len(e.popups))
-	for handle, view := range e.popups {
-		orphans = append(orphans, view)
+	for handle, held := range e.popups {
+		orphans = append(orphans, held.view)
 		delete(e.popups, handle)
 	}
 	e.stopped = true
@@ -117,23 +117,57 @@ func (e *webkitEngine) Stop() {
 	}
 }
 
-// holdPopup takes ownership of an engine-created view until the Manager adopts
-// or discards it. The engine never decides which.
-func (e *webkitEngine) holdPopup(view unsafe.Pointer) string {
+// holdPopup takes ownership of an engine-created view, opened by the page
+// with handle opener, until the Manager adopts or discards it. The engine
+// never decides which. It answers the popup's number, which the view keeps
+// for its downloads, and its handle.
+func (e *webkitEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.popupSeq++
-	handle := fmt.Sprintf("popup-%d", e.popupSeq)
-	e.popups[handle] = view
-	return handle
+	handle := popupHandle(e.popupSeq)
+	e.popups[handle] = heldPopupView{view: view, opener: opener}
+	return e.popupSeq, handle
 }
 
-func (e *webkitEngine) takePopup(handle string) unsafe.Pointer {
+func (e *webkitEngine) takePopup(handle string) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	view := e.popups[handle]
+	held := e.popups[handle]
 	delete(e.popups, handle)
-	return view
+	return held
+}
+
+// heldOpener answers the opener of the held popup handle, "" for none.
+func (e *webkitEngine) heldOpener(handle string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.popups[handle].opener
+}
+
+// downloadStart names where a download of this profile began: page, its
+// view's page, or, for a popup not adopted yet, the popup's number. A
+// popup's download names the popup by its handle and its opener, before
+// adoption and after, so the Manager lists it while the popup is not
+// (popup_adoption.go).
+func (p *webkitProfile) downloadStart(page *webkitPage, popup uint64) downloadStart {
+	var start downloadStart
+	switch {
+	case page != nil:
+		start.Frame = page.handle
+		if page.popup != "" {
+			start.Popup, start.Openers = page.popup, []string{page.opener}
+		}
+	case popup != 0:
+		start.Popup = popupHandle(popup)
+		if opener := p.engine.heldOpener(start.Popup); opener != "" {
+			start.Openers = []string{opener}
+		}
+	}
+	if start.Popup != "" {
+		start.Profile = p.Handle()
+	}
+	return start
 }
 
 // DownloadSaving: WebKit writes into AO's directory and the Manager
@@ -141,8 +175,8 @@ func (e *webkitEngine) takePopup(handle string) unsafe.Pointer {
 func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
 func (e *webkitEngine) DiscardPage(handle string) {
-	if view := e.takePopup(handle); view != nil {
-		webkitCloseView(view)
+	if held := e.takePopup(handle); held.view != nil {
+		webkitCloseView(held.view)
 	}
 }
 
@@ -235,7 +269,8 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver,
 }
 
 func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
-	view := p.engine.takePopup(handle)
+	held := p.engine.takePopup(handle)
+	view := held.view
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
 	}
@@ -246,6 +281,7 @@ func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageH
 		return nil, err
 	}
 	page.view = view
+	page.popup, page.opener = handle, held.opener
 	// The popup already exists and may already be loading, so its document
 	// start is gone: the injected script applies from its next document on.
 	// That is the same trade CDP's addScriptToEvaluateOnNewDocument makes for

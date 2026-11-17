@@ -8,7 +8,21 @@ import (
 // adoptPopup takes ownership of a page the engine opened by itself. The opener
 // decides the thread, the workspace authority and the jar; this manager's own
 // limits decide whether it survives.
+//
+// A popup opened by a popup still being adopted waits for that adoption
+// (awaitOpener), and what the popup downloads before its fate is listed at
+// its end (finishAdoption).
 func (m *Manager) adoptPopup(popup enginePopup) {
+	if !m.startAdoption(popup.Handle) {
+		log.Printf("browser: popup %s reported twice", popup.Handle)
+		return
+	}
+	var listed *managedPage
+	defer func() { m.finishAdoption(popup.Handle, popup.Opener, listed) }()
+	if !m.awaitOpener(popup.Opener) {
+		m.engine.DiscardPage(popup.Handle)
+		return
+	}
 	m.mu.Lock()
 	var scope *jarScope
 	var opener *managedPage
@@ -54,10 +68,13 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		return
 	}
 	scope.pages[p.id] = p
+	listed = p
 	held, hasHeld := m.takeHeldInfoLocked(popup.Handle)
 	m.mu.Unlock()
-	// A report made while the popup was adopted.
+	// A report made while the popup was adopted, and its downloads, before
+	// anything the engine held for the listing can close it.
 	m.applyHeldInfo(p, held, hasHeld)
+	m.resolveParked(popup.Handle, p, popup.Opener)
 	// A new tab.
 	m.pageAdded(p)
 	if adopted, ok := driver.(adoptedPage); ok {
@@ -105,6 +122,10 @@ func (m *Manager) removeClosedPage(handle string) {
 		}
 	}
 	m.mu.Unlock()
+	if closed == nil {
+		// A popup never listed: what it downloaded goes to its opener's tab.
+		m.resolveParked(handle, nil)
+	}
 	if closed != nil {
 		m.publishDownloads(ended.notes...)
 		m.endFind(closed)

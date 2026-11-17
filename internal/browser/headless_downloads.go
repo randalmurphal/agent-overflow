@@ -31,6 +31,10 @@ import (
 type downloadTracker struct {
 	events engineEvents
 	cancel func(id string)
+	// popup answers, for a download's frame, the popup the frame is the
+	// main frame of, as downloadStart's Popup, Openers and Profile, or an
+	// empty start. Nil names none.
+	popup func(frame string) downloadStart
 
 	mu        sync.Mutex
 	downloads *boundedMap[string, downloadLifecycle]
@@ -59,10 +63,12 @@ func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	lifecycle, _ := t.downloads.take(event.GUID)
-	if !t.events.DownloadStarted(downloadStart{
-		Frame: string(event.FrameID), ID: event.GUID,
-		URL: event.URL, SuggestedName: event.SuggestedFilename,
-	}) {
+	var start downloadStart
+	if t.popup != nil {
+		start = t.popup(string(event.FrameID))
+	}
+	start.Frame, start.ID, start.URL, start.SuggestedName = string(event.FrameID), event.GUID, event.URL, event.SuggestedFilename
+	if !t.events.DownloadStarted(start) {
 		go t.cancel(event.GUID)
 	}
 	if held := lifecycle.held; held != nil {

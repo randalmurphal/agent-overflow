@@ -99,8 +99,17 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 func (m *Manager) admitDownload(event downloadStart) bool {
 	p, _ := m.pageForFrame(event.Frame)
 	if p == nil {
+		if event.Popup != "" {
+			// A popup not listed yet: its fate lists it (popup_adoption.go).
+			return m.parkDownload(event)
+		}
 		return false
 	}
+	return m.admitTo(p, event)
+}
+
+// admitTo lists a starting download in p.
+func (m *Manager) admitTo(p *managedPage, event downloadStart) bool {
 	authority := p.authority
 	source := p.cachedInfo().URL
 	if source == "" || source == "about:blank" {
@@ -214,6 +223,16 @@ func (m *Manager) removePartialDownload(scope *jarScope, id string) {
 }
 
 func (m *Manager) downloadProgress(event downloadProgress) {
+	m.parkMu.Lock()
+	parked := m.parkProgressLocked(event)
+	m.parkMu.Unlock()
+	if !parked {
+		m.applyDownloadProgress(event)
+	}
+}
+
+// applyDownloadProgress applies a download's progress to its row.
+func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	p, scope := m.pageForDownload(event.ID)
 	if p == nil {
 		return
@@ -232,7 +251,10 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		entry.TotalBytes = int64(event.Total)
 	}
 	saving := m.engine.DownloadSaving()
-	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
+	// Over the cap: running, it is canceled; finished, which a popup's
+	// download listed only at its finish can be (popup_adoption.go), its
+	// file goes all the same.
+	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && event.State != downloadCanceled {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		m.releaseDownloadLocked(p, entry)
@@ -241,9 +263,12 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		p.downloadMu.Unlock()
 		m.publishDownloads(note)
 		if scope != nil {
+			running := event.State == downloadInProgress
 			go func() {
-				if err := scope.profile.CancelDownload(event.ID); err != nil {
-					log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
+				if running {
+					if err := scope.profile.CancelDownload(event.ID); err != nil {
+						log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
+					}
 				}
 				m.removePartialDownload(scope, event.ID)
 			}()
@@ -310,8 +335,11 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		// An engine reports the cancel AO asked for and its own failures (a
 		// dropped connection, a server error) the same way; only the first
 		// is a cancel.
-		if entry.cancelRequested {
+		if entry.cancelRequested || event.PageGone {
 			entry.State = downloadStateCanceled
+			if event.PageGone {
+				entry.Error = event.Error
+			}
 			removePartial = true
 		} else {
 			entry.State, entry.Error = downloadStateFailed, event.Error
@@ -486,6 +514,10 @@ type endedDownloads struct {
 // is disposed.
 func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string) endedDownloads {
 	delete(scope.pages, p.id)
+	if p.driver != nil {
+		// A popup it opened is not adopted (awaitOpener).
+		m.unlistedLocked().put(p.driver.Handle(), struct{}{})
+	}
 	ended := endedDownloads{scope: scope}
 	p.downloadMu.Lock()
 	p.downloadsEnded = true

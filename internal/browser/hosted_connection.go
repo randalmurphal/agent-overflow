@@ -76,9 +76,10 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// the dial forever. So the wait is ours, on attachCtx, and a timeout
 	// tears the connection down rather than leaving a half-built browser
 	// behind.
+	targets := e.newTargets()
 	attached := make(chan error, 1)
 	go func() {
-		err := dialCDPBrowser(browserCtx, func() error { return e.subscribe(browserCtx) })
+		err := dialCDPBrowser(browserCtx, func() error { return e.subscribe(browserCtx, targets) })
 		if err == nil {
 			err = enableBrowserPolicy(browserCtx)
 		}
@@ -98,9 +99,17 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	}
 	e.mu.Lock()
 	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
+	e.targets = targets
 	e.mu.Unlock()
 	go e.watchBrowser(browserCtx)
 	return browserCtx, nil
+}
+
+// newTargets makes a connection's record of its targets, numbering info
+// changes across connections, since a page outlives none but its number
+// must still rise past the last connection's.
+func (e *hostedEngine) newTargets() *cdpTargets {
+	return newCDPTargets(func() uint64 { return e.infoOrder.Add(1) })
 }
 
 // connectionLostReason is the crash reason of a page whose CDP connection
@@ -136,6 +145,8 @@ func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
 		// The allocator is cancelled nowhere else.
 		e.allocCancel()
 		e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
+		// Its targets went with it.
+		e.targets = e.newTargets()
 	}
 	var pages []string
 	for pageID, pageConn := range e.pageConn {
@@ -174,26 +185,34 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 // A popup is the launcher's to report too (hosted_popups.go); the target
 // events only name its opener, for the browser-wide navigation policy,
 // whose paused requests this connection answers.
-func (e *hostedEngine) subscribe(browserCtx context.Context) error {
+func (e *hostedEngine) subscribe(browserCtx context.Context, targets *cdpTargets) error {
 	// The first subscription connects the browser (dialCDPBrowser), so the
 	// session is read after it.
-	if err := onBrowserEvent(browserCtx, target.TargetCreated, e.logf, e.targetCreated); err != nil {
+	if err := onBrowserEvent(browserCtx, target.TargetCreated, e.logf, func(event target.EventTargetCreated) {
+		if event.TargetInfo != nil {
+			targets.created(event.TargetInfo, nil)
+		}
+	}); err != nil {
 		return err
 	}
 	session := chromedp.FromContext(browserCtx).Browser
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, e.logf, func(event fetch.EventRequestPaused) {
-		frame := string(event.FrameID)
-		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return e.allowRequest(frame, rawURL) })
+		owners := targets.owners(string(event.FrameID))
+		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return e.allowRequest(owners, rawURL) })
 	}); err != nil {
 		return err
 	}
-	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
+	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, func(event target.EventTargetDestroyed) {
+		e.targetDestroyed(targets, event)
+	}); err != nil {
 		return err
 	}
 	if err := onBrowserEvent(browserCtx, target.TargetCrashed, e.logf, e.targetCrashed); err != nil {
 		return err
 	}
-	return onBrowserEvent(browserCtx, target.TargetInfoChanged, e.logf, e.targetInfoChanged)
+	return onBrowserEvent(browserCtx, target.TargetInfoChanged, e.logf, func(event target.EventTargetInfoChanged) {
+		e.targetInfoChanged(targets, event)
+	})
 }
 
 // targetCrashed reports a page whose renderer died. The launcher's
@@ -207,11 +226,8 @@ func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
 	}
 }
 
-func (e *hostedEngine) targetDestroyed(event target.EventTargetDestroyed) {
-	e.mu.Lock()
-	e.heldInfo.delete(string(event.TargetID))
-	delete(e.targetOpeners, string(event.TargetID))
-	e.mu.Unlock()
+func (e *hostedEngine) targetDestroyed(targets *cdpTargets, event target.EventTargetDestroyed) {
+	targets.destroyed(event.TargetID, nil)
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
 		// On its own goroutine, as both CDP engines report a closed page:
 		// retirePage ends in the Manager's teardown, which must not hold
@@ -220,24 +236,37 @@ func (e *hostedEngine) targetDestroyed(event target.EventTargetDestroyed) {
 	}
 }
 
-func (e *hostedEngine) targetInfoChanged(event target.EventTargetInfoChanged) {
-	if event.TargetInfo == nil || event.TargetInfo.Type != "page" {
+// targetInfoChanged delivers a page's info change, or holds the change of a
+// target no page answers to yet (a page being created before it is bound,
+// or a popup before the launcher's report of it), which the page takes as
+// it is bound or reported (takeTargetInfo).
+func (e *hostedEngine) targetInfoChanged(targets *cdpTargets, event target.EventTargetInfoChanged) {
+	info := event.TargetInfo
+	if info == nil || info.Type != "page" {
 		return
 	}
-	// The method's events arrive one at a time in the browser's order
-	// (consumeEvents), so numbering them here keeps that order.
-	order := e.infoOrder.Add(1)
-	targetID := string(event.TargetInfo.TargetID)
-	e.mu.Lock()
-	pageID, ok := e.targetPageLocked(targetID)
-	if !ok {
-		// A target no page answers to yet: a page being created before it
-		// is bound, or a popup before the launcher's report of it. The page
-		// takes the newest as it is bound or reported.
-		e.heldInfo.put(targetID, heldTargetInfo{url: event.TargetInfo.URL, title: event.TargetInfo.Title, order: order})
-	}
-	e.mu.Unlock()
+	var pageID string
+	order, ok := targets.changed(info, func() bool {
+		var found bool
+		pageID, found = e.pageForTarget(string(info.TargetID))
+		return found
+	})
 	if ok {
-		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title, order)
+		e.events.PageInfoChanged(pageID, info.URL, info.Title, order)
 	}
+}
+
+// takeTargetInfo delivers the info held for targetID to pageID, a page that
+// has just come to answer to it.
+func (e *hostedEngine) takeTargetInfo(pageID, targetID string) {
+	if info, order, ok := e.currentTargets().takeHeld(target.ID(targetID)); ok {
+		e.events.PageInfoChanged(pageID, info.URL, info.Title, order)
+	}
+}
+
+// currentTargets answers the current connection's record of its targets.
+func (e *hostedEngine) currentTargets() *cdpTargets {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.targets
 }

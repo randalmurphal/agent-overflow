@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -143,7 +144,7 @@ func TestHostedEngineTurnsLauncherSnapshotsIntoDownloadEvents(t *testing.T) {
 	reportDownload(t, engine, "page1", snapshot("dl-a-1", webview2host.DownloadCompleted, 100))
 	starts, progress := recorder.take()
 	wantStart := downloadStart{Frame: "page1", ID: "dl-a-1", URL: "https://example.test/report.pdf", SuggestedName: "report (1).pdf"}
-	if len(starts) != 1 || starts[0] != wantStart {
+	if len(starts) != 1 || !reflect.DeepEqual(starts[0], wantStart) {
 		t.Fatalf("starts %+v, want %+v", starts, wantStart)
 	}
 	wantProgress := []downloadProgress{

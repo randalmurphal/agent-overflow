@@ -73,12 +73,9 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.drivers[pageID] = cdp
 	}
 	e.pageProfile[pageID] = profile.id
-	held, hasHeld := e.heldInfo.take(targetID)
 	e.mu.Unlock()
-	if hasHeld {
-		// An info change that reached the engine before the page was bound.
-		e.events.PageInfoChanged(pageID, held.url, held.title, held.order)
-	}
+	// An info change that reached the engine before the page was bound.
+	e.takeTargetInfo(pageID, targetID)
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
 
@@ -184,6 +181,7 @@ func (e *hostedEngine) retirePage(pageID string) {
 		// A popup the Manager has not listed: its close waits for its
 		// listing (popupListed), or goes with its discard.
 		e.mu.Unlock()
+		e.pendingClosed(pageID)
 		return
 	}
 	targetID, known := e.targetByPage[pageID]
@@ -276,6 +274,14 @@ func (e *hostedEngine) targetPageLocked(targetID string) (string, bool) {
 // the close a page's own Close already accounted for must not be reported
 // to the Manager twice.
 func (e *hostedEngine) closePage(pageID string) {
+	e.mu.Lock()
+	_, pending := e.popups[pageID]
+	e.mu.Unlock()
+	if pending {
+		// The launcher cancels the page's downloads with it and reports
+		// nothing, and the Manager never listed the page to settle them.
+		e.endUnlistedDownloads(pageID, popupDiscardedReason)
+	}
 	e.mu.Lock()
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)

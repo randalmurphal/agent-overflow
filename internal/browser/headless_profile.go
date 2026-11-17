@@ -466,11 +466,23 @@ func (p *headlessProfile) closeTarget(handle string) {
 // bound is dropped rather than reported under a handle nobody owns.
 func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	logf := p.engine.logf
-	if err := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, logf)).subscribe(browserCtx, logf); err != nil {
+	targets := newHeadlessTargets(p)
+	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, logf))
+	// A popup's main frame id is its target id, which is its handle. A
+	// download in a popup whose targetCreated the record has not handled
+	// yet names no popup and is refused; Chromium sends the target's
+	// creation before the navigation that downloads.
+	downloads.popup = func(frame string) downloadStart {
+		owners := targets.owners(frame)
+		if len(owners) < 2 {
+			return downloadStart{}
+		}
+		return downloadStart{Popup: frame, Openers: owners[1:], Profile: p.handle}
+	}
+	if err := downloads.subscribe(browserCtx, logf); err != nil {
 		return err
 	}
 	session := chromedp.FromContext(browserCtx).Browser
-	targets := newHeadlessTargets(p)
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
 		// A page's main frame id is its target id, so a top-level request
 		// names its page, and a popup's is followed by the openers whose
@@ -504,51 +516,25 @@ func (p *headlessProfile) targetCrashed(event target.EventTargetCrashed) {
 	go p.engine.events.PageCrashed(handle, cdpCrashReason(event))
 }
 
-// headlessTargets handles the target events of one browser connection.
+// headlessTargets handles the target events of one browser connection, over
+// its record of the connection's targets (cdpTargets). A created for a gone
+// target neither binds nor reports it: a popup is never reported after it
+// is gone. A created that finds held info reports the popup with that newer
+// info, or delivers it as an info change for a page the Manager created and
+// bound. An info change for a gone target is dropped.
 //
-// targetCreated, targetInfoChanged and targetDestroyed arrive on three
-// subscriptions, so a target id is in one of these states: known (created
-// handled, destroyed not), gone (destroyed handled, whether or not created
-// was), or info held (an info change handled before created: the newest is
-// kept in heldInfo). A created for a gone target neither binds nor reports
-// it: a popup is never reported after it is gone. A created that finds held
-// info reports the popup with that newer info, or delivers it as an info
-// change for a page the Manager created and bound. An info change for a gone
-// target is dropped.
-//
-// known holds every target the browser has, popup or not. The browser's
-// live targets bound it, and it goes with the connection. gone is kept to
-// absorb a gone target's late created and info changes, and it and heldInfo
-// are bounded by orderSlack.
-//
-// Binding and unbinding happen under mu, so a popup cannot be bound after
-// the destroyed handler has looked for it. PageInfoChanged is delivered
-// outside mu, numbered under it in the order mu handled the changes, so the
-// Manager keeps a newer change over a held info delivered after it.
+// Binding and unbinding happen in the record's parts, under its lock, so a
+// popup cannot be bound after the destroyed handler has looked for it.
+// PageInfoChanged is delivered outside the lock, numbered under it in the
+// order the record handled the changes, so the Manager keeps a newer change
+// over a held info delivered after it.
 type headlessTargets struct {
 	profile *headlessProfile
-
-	mu    sync.Mutex
-	known map[target.ID]struct{}
-	// openers maps each known popup to the page that opened it, for the
-	// browser-wide navigation policy.
-	openers  map[target.ID]target.ID
-	gone     *boundedMap[target.ID, struct{}]
-	heldInfo *boundedMap[target.ID, *target.Info]
-
-	// infoOrder numbers the info changes delivered, in the order mu handled
-	// them (engineEvents.PageInfoChanged). Guarded by mu.
-	infoOrder uint64
+	*cdpTargets
 }
 
 func newHeadlessTargets(p *headlessProfile) *headlessTargets {
-	return &headlessTargets{
-		profile:  p,
-		known:    make(map[target.ID]struct{}),
-		openers:  make(map[target.ID]target.ID),
-		gone:     newBoundedMap[target.ID, struct{}](orderSlack),
-		heldInfo: newBoundedMap[target.ID, *target.Info](orderSlack),
-	}
+	return &headlessTargets{profile: p, cdpTargets: newCDPTargets(nil)}
 }
 
 func (h *headlessTargets) created(event target.EventTargetCreated) {
@@ -556,45 +542,33 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 	if info == nil {
 		return
 	}
-	h.mu.Lock()
-	if _, gone := h.gone.get(info.TargetID); gone {
-		h.mu.Unlock()
-		return
-	}
-	h.known[info.TargetID] = struct{}{}
-	url, title := info.URL, info.Title
-	newer, held := h.heldInfo.take(info.TargetID)
-	if held {
-		url, title = newer.URL, newer.Title
-	}
 	p := h.profile
 	handle := string(info.TargetID)
-	// An opener is what makes a target a POPUP: every page the Manager
-	// asked for is created without one, and the workers, iframes and
-	// service workers Chromium also reports are not pages at all.
-	if info.Type != "page" || info.OpenerID == "" {
-		// A page the Manager created is bound before its events arrive, so
-		// an info change held for it is delivered now.
-		if _, bound := p.engine.profileForPage(handle); !held || !bound {
-			h.mu.Unlock()
+	var deliver func()
+	h.cdpTargets.created(info, func(newest *target.Info, held bool, order uint64) {
+		// An opener is what makes a target a POPUP: every page the Manager
+		// asked for is created without one, and the workers, iframes and
+		// service workers Chromium also reports are not pages at all.
+		if info.Type != "page" || info.OpenerID == "" {
+			// A page the Manager created is bound before its events arrive,
+			// so an info change held for it is delivered now.
+			if _, bound := p.engine.profileForPage(handle); held && bound {
+				deliver = func() { p.engine.events.PageInfoChanged(handle, newest.URL, newest.Title, order) }
+			}
 			return
 		}
-		h.infoOrder++
-		order := h.infoOrder
-		h.mu.Unlock()
-		p.engine.events.PageInfoChanged(handle, url, title, order)
-		return
-	}
-	defer h.mu.Unlock()
-	h.openers[info.TargetID] = info.OpenerID
-	p.engine.bindPage(handle, p)
-	// On its own goroutine, as the WebKit engines report popups: the
-	// Manager adopts a popup through AttachPage, a CDP round trip that must
-	// not hold the target events queued behind it.
-	go p.engine.events.PopupOpened(enginePopup{
-		Profile: p.handle, Opener: string(info.OpenerID), Handle: string(info.TargetID),
-		URL: url, Title: title,
+		p.engine.bindPage(handle, p)
+		// On its own goroutine, as the WebKit engines report popups: the
+		// Manager adopts a popup through AttachPage, a CDP round trip that
+		// must not hold the target events queued behind it.
+		go p.engine.events.PopupOpened(enginePopup{
+			Profile: p.handle, Opener: string(info.OpenerID), Handle: handle,
+			URL: newest.URL, Title: newest.Title,
+		})
 	})
+	if deliver != nil {
+		deliver()
+	}
 }
 
 func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
@@ -602,38 +576,29 @@ func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
 	if info == nil || info.Type != "page" {
 		return
 	}
-	h.mu.Lock()
-	_, known := h.known[info.TargetID]
-	if !known {
-		if _, gone := h.gone.get(info.TargetID); !gone {
-			h.heldInfo.put(info.TargetID, info)
-		}
-		h.mu.Unlock()
-		return
-	}
 	p := h.profile
-	if _, bound := p.engine.profileForPage(string(info.TargetID)); !bound {
-		h.mu.Unlock()
-		return
+	handle := string(info.TargetID)
+	order, ok := h.changed(info, func() bool {
+		if !h.isKnownLocked(info.TargetID) {
+			return false
+		}
+		_, bound := p.engine.profileForPage(handle)
+		return bound
+	})
+	if ok {
+		p.engine.events.PageInfoChanged(handle, info.URL, info.Title, order)
 	}
-	h.infoOrder++
-	order := h.infoOrder
-	h.mu.Unlock()
-	p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title, order)
 }
 
 func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
-	h.mu.Lock()
-	delete(h.known, event.TargetID)
-	delete(h.openers, event.TargetID)
-	h.heldInfo.delete(event.TargetID)
-	h.gone.put(event.TargetID, struct{}{})
-	// A page the Manager created is bound before its created event may be
-	// handled, so the unbind does not depend on the state above.
 	p := h.profile
 	handle := string(event.TargetID)
-	bound := p.engine.unbindPage(handle)
-	h.mu.Unlock()
+	var bound bool
+	h.cdpTargets.destroyed(event.TargetID, func() {
+		// A page the Manager created is bound before its created event may
+		// be handled, so the unbind does not depend on the record.
+		bound = p.engine.unbindPage(handle)
+	})
 	if !bound {
 		return
 	}
@@ -642,30 +607,4 @@ func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
 	// teardown, which on the workspace's last page disposes this profile and
 	// blocks until Chromium is reaped.
 	go p.engine.events.PageClosed(handle)
-}
-
-// retained reports how many target ids the handler keeps.
-func (h *headlessTargets) retained() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.known) + len(h.openers) + h.gone.len() + h.heldInfo.len()
-}
-
-// owners answers frame followed by the pages that opened it, nearest first,
-// when frame is a known popup, and frame alone otherwise.
-func (h *headlessTargets) owners(frame string) []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	owners := []string{frame}
-	// A popup has one opener, so the chain is at most every known popup
-	// long; the bound stops a cycle.
-	for id := target.ID(frame); len(owners) <= len(h.openers); {
-		opener := h.openers[id]
-		if opener == "" {
-			break
-		}
-		owners = append(owners, string(opener))
-		id = opener
-	}
-	return owners
 }

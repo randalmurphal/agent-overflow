@@ -898,6 +898,51 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	}
 }
 
+// A download in a popup's main frame names the popup, its openers as the
+// browser reported them, and its profile, so the Manager lists it whatever
+// becomes of the popup; one in any other frame names no popup.
+func TestHeadlessProfileNamesThePopupADownloadBeganIn(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	starts := make(chan downloadStart, 4)
+	engine.events.DownloadStarted = func(start downloadStart) bool {
+		starts <- start
+		return true
+	}
+	engine.events.PopupOpened = func(enginePopup) {}
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	browser.send(popupCreated("P-1", "T-1"))
+	browser.send(popupCreated("P-2", "P-1"))
+	eventually(t, "the popups to be recorded", func() bool {
+		_, first := engine.profileForPage("P-1")
+		_, second := engine.profileForPage("P-2")
+		return first && second
+	})
+	browser.send(downloadWillBegin("G-popup", "P-2"))
+	browser.send(downloadWillBegin("G-page", "F-1"))
+	for range 2 {
+		var start downloadStart
+		select {
+		case start = <-starts:
+		case <-time.After(headlessTestDeadline):
+			t.Fatal("a download was never reported")
+		}
+		switch start.ID {
+		case "G-popup":
+			if start.Frame != "P-2" || start.Popup != "P-2" || !slices.Equal(start.Openers, []string{"P-1", "T-1"}) || start.Profile != profile.Handle() {
+				t.Errorf("the popup's download started as %+v", start)
+			}
+		case "G-page":
+			if start.Popup != "" || start.Openers != nil || start.Profile != "" {
+				t.Errorf("the page's download started as %+v", start)
+			}
+		}
+	}
+}
+
 // A page owns its main frame, whose id is its target id, before it has
 // reported a frame at all: a download can begin in a navigation that never
 // commits, and the Manager finds the download's page by its frame.

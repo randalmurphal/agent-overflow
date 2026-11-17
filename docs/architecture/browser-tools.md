@@ -428,8 +428,13 @@ behave as a desktop browser's:
   script starts with no user gesture gets WebView2's own "download
   multiple files" prompt in
   the page and has no row until it is allowed. A popup's downloads are
-  taken the same way, and one it starts before the Manager lists its tab
-  gets its row once the tab is listed. When a popup's first navigation is
+  taken the same way. One it starts before the Manager lists its tab is
+  listed when the popup's fate is known: in the popup's tab when it is
+  adopted, and otherwise in the tab of its nearest opener still listed, as
+  it is, finished or running, or canceled with the reason when the popup's
+  close ended it (WebView2 cancels a closing page's downloads). With no
+  opener listed it is canceled. Past 16 such downloads of a popup, or 64
+  popups holding some, a download is refused and canceled. When a popup's first navigation is
   a download, WebView2 asks to close the popup, which closes when the
   download ends, and opens its own download dialog over the opener, which
   nothing a host sets prevents; the launcher closes it as it opens, so it
@@ -989,8 +994,11 @@ bounds, so no window of WebView2's own opens and `window.opener` and
 (four already being created, its 64 pages, or its opener closing) opens
 nothing, and `window.open` answers null. The popup reaches the backend as a
 report naming its opener and CDP target (`internal/webview2host/popup.go`,
-`internal/browser/hosted_popups.go`), and its requests before its adoption
-pass the browser-wide policy with its opener chain's authority.
+`internal/browser/hosted_popups.go`), after its opener's, and its requests
+before its adoption pass the browser-wide policy with its opener chain's
+authority. On every engine a popup opened by a popup still being adopted
+waits for that adoption, up to 10 seconds, and is closed with it when that
+popup is not adopted.
 
 **Serve mode drives a headless Chromium** (`docs/specs/remote-access.md` §7,
 and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A

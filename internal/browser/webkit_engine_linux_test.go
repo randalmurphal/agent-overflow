@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,39 @@ func TestWebKitNavigationPolicyIsThePagesOrItsOpeners(t *testing.T) {
 		if got := webkitNavigationAllowed(tc.pageID, tc.url); got != tc.want {
 			t.Errorf("%s: allowed = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A download names the popup it began in by the handle the Manager adopts
+// the popup under: a held popup's by the number its view keeps, with the
+// opener it was held with, and an adopted one's by its page. A download of
+// any other page names none.
+func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
+	engine := newNativeEngine(t.TempDir(), ManagerOptions{
+		NativeWindow: func() unsafe.Pointer { return nil },
+	}, engineEvents{}).(*webkitEngine)
+	profile := &webkitProfile{engine: engine, handle: "profile-1"}
+	view := unsafe.Pointer(new(byte))
+	n, handle := engine.holdPopup(view, "page-1")
+	if handle != popupHandle(n) {
+		t.Fatalf("held as %s, numbered %d", handle, n)
+	}
+	want := downloadStart{Popup: handle, Openers: []string{"page-1"}, Profile: "profile-1"}
+	if got := profile.downloadStart(nil, n); !reflect.DeepEqual(got, want) {
+		t.Errorf("a held popup's download started as %+v, want %+v", got, want)
+	}
+	// Taken for adoption: the number still names it.
+	engine.takePopup(handle)
+	if got := profile.downloadStart(nil, n); got.Popup != handle || got.Profile != "profile-1" {
+		t.Errorf("a popup being adopted's download started as %+v", got)
+	}
+	adopted := &webkitPage{handle: "page-2", popup: handle, opener: "page-1"}
+	want = downloadStart{Frame: "page-2", Popup: handle, Openers: []string{"page-1"}, Profile: "profile-1"}
+	if got := profile.downloadStart(adopted, n); !reflect.DeepEqual(got, want) {
+		t.Errorf("an adopted popup's download started as %+v, want %+v", got, want)
+	}
+	if got := profile.downloadStart(&webkitPage{handle: "page-1"}, 0); !reflect.DeepEqual(got, downloadStart{Frame: "page-1"}) {
+		t.Errorf("a page's download started as %+v", got)
 	}
 }
 
