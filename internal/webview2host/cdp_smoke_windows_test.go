@@ -54,7 +54,7 @@ type smokeCDPMessage struct {
 
 func newSmokeCDP(t *testing.T, conn *websocket.Conn) *smokeCDP {
 	c := &smokeCDP{t: t, conn: conn, next: 100, feed: make(chan smokeCDPMessage, 256)}
-	t.Cleanup(func() { conn.CloseNow() })
+	t.Cleanup(func() { _ = conn.CloseNow() })
 	go func() {
 		defer close(c.feed)
 		for {

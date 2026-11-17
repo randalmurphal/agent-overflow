@@ -1781,3 +1781,13 @@ func TestHeadlessEngineKeepsOneDirectoryPerJar(t *testing.T) {
 		t.Fatalf("private jar directory %q is under the persistent profile tree", private.userDataDir)
 	}
 }
+
+// ownFrame makes the page with handle report frame as one of its subframes.
+func (e *jarEngine) ownFrame(frame, handle string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.frames == nil {
+		e.frames = make(map[string]string)
+	}
+	e.frames[frame] = handle
+}

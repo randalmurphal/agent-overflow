@@ -202,16 +202,6 @@ func (e *jarEngine) holdDispose(t *testing.T) (release func()) {
 	return release
 }
 
-// ownFrame makes the page with handle report frame as one of its subframes.
-func (e *jarEngine) ownFrame(frame, handle string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.frames == nil {
-		e.frames = make(map[string]string)
-	}
-	e.frames[frame] = handle
-}
-
 func (p *jarPage) OwnsFrame(frame string) bool {
 	p.engine.mu.Lock()
 	owner, ok := p.engine.frames[frame]
