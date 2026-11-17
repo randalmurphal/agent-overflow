@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -324,6 +325,150 @@ func TestEveryPairOfSelectionsDeliveredReversed(t *testing.T) {
 	}
 }
 
+// pauseAdmissions holds every selection from mount right after its
+// admission, before its commit, until the test resumes it.
+func pauseAdmissions(m *Manager, mount string) (admitted chan Selection, resume chan struct{}) {
+	admitted, resume = make(chan Selection, 1), make(chan struct{})
+	m.selectionAdmitted = func(sel Selection) {
+		if sel.Mount == mount {
+			admitted <- sel
+			<-resume
+		}
+	}
+	return admitted, resume
+}
+
+// detachAndChooseElsewhere detaches mount and selects d in its replacement,
+// as a pane that reconnected would, and answers what the user then sees.
+func detachAndChooseElsewhere(t *testing.T, m *Manager, access Access, f pairFixture, mount string) (string, int) {
+	t.Helper()
+	m.DetachPane(mount)
+	next, err := m.AttachPane(access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ActivateCompanionPage(numbered(t.Context(), next.ID, 1), access, f.ids[3]); err != nil {
+		t.Fatal(err)
+	}
+	return selectionOutcome(m, access), m.CompanionState(access).ClosedTabs
+}
+
+// A selection admitted before its pane detached commits nothing: the
+// replacement pane's choice stands, no tab opens, and a reopen keeps its
+// closed tab.
+func TestADetachBetweenAdmissionAndCommit(t *testing.T) {
+	for _, kind := range selectionCases {
+		t.Run(kind.name, func(t *testing.T) {
+			m, access, fixture, mount := newPairManager(t)
+			m.mu.Lock()
+			order := m.panes[mount].selection
+			m.mu.Unlock()
+			admitted, resume := pauseAdmissions(m, mount)
+			done := deliver(func() error {
+				return kind.act(numbered(context.Background(), mount, 1), m, access, fixture)
+			})
+			select {
+			case <-admitted:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the selection was never admitted")
+			}
+			want, closed := detachAndChooseElsewhere(t, m, access, fixture, mount)
+			close(resume)
+			mustDeliver(t, done, kind.name)
+			if got := selectionOutcome(m, access); got != want {
+				t.Fatalf("after the old pane's %s: %s, want %s", kind.name, got, want)
+			}
+			if got := m.CompanionState(access).ClosedTabs; got != closed {
+				t.Fatalf("%d closed tabs, want %d", got, closed)
+			}
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if order == nil {
+				order = &mountSelection{}
+			}
+			if len(order.waiting) > 0 || order.taken || len(order.skipped) > 0 {
+				t.Fatalf("the detached mount kept %d waiting, taken %v, %d skipped", len(order.waiting), order.taken, len(order.skipped))
+			}
+		})
+	}
+}
+
+// A reopen whose pane detaches between its pop and its tab's add puts the
+// closed tab back.
+func TestADetachDuringAReopenKeepsTheClosedTab(t *testing.T) {
+	m, access, fixture, mount := newPairManager(t)
+	popped, resume := make(chan struct{}, 1), make(chan struct{})
+	m.reopenPopped = func() {
+		popped <- struct{}{}
+		<-resume
+	}
+	closed := m.CompanionState(access).ClosedTabs
+	done := deliver(func() error { return m.ReopenClosedTab(numbered(context.Background(), mount, 1), access) })
+	receive(t, popped, "the reopen's pop")
+	want, _ := detachAndChooseElsewhere(t, m, access, fixture, mount)
+	close(resume)
+	mustDeliver(t, done, "the reopen")
+	if got := selectionOutcome(m, access); got != want {
+		t.Fatalf("after the reopen: %s, want %s", got, want)
+	}
+	if got := m.CompanionState(access).ClosedTabs; got != closed {
+		t.Fatalf("%d closed tabs, want %d", got, closed)
+	}
+}
+
+// A reopen whose pane detached before its pop leaves the closed tab on the
+// stack the whole time: the hold that would pop it checks the pane first.
+func TestADetachBeforeAReopensPopTakesNothing(t *testing.T) {
+	m, access, fixture, mount := newPairManager(t)
+	var popped atomic.Bool
+	m.reopenPopped = func() { popped.Store(true) }
+	admitted, resume := pauseAdmissions(m, mount)
+	done := deliver(func() error { return m.ReopenClosedTab(numbered(context.Background(), mount, 1), access) })
+	select {
+	case <-admitted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reopen was never admitted")
+	}
+	detachAndChooseElsewhere(t, m, access, fixture, mount)
+	close(resume)
+	mustDeliver(t, done, "the reopen")
+	if popped.Load() {
+		t.Fatal("the reopen popped its closed tab after its pane detached")
+	}
+}
+
+// A detach drops the mount's record of skipped numbers with it.
+func TestADetachDropsTheSkippedRecord(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	clock := installGapClock(m)
+	third := deliver(func() error {
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 3), access, ids[2])
+	})
+	awaitWaiting(t, m, mount, 1)
+	clock.expire(t)
+	mustDeliver(t, third, "number 3")
+	m.mu.Lock()
+	order := m.panes[mount].selection
+	skipped := len(order.skipped)
+	m.mu.Unlock()
+	if skipped != 2 {
+		t.Fatalf("%d numbers skipped, want 2", skipped)
+	}
+	m.DetachPane(mount)
+	m.mu.Lock()
+	skipped = len(order.skipped)
+	m.mu.Unlock()
+	if skipped != 0 {
+		t.Fatalf("the detached mount kept %d skipped numbers", skipped)
+	}
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if got := activeTab(m, access); got != ids[2] {
+		t.Fatalf("a skipped number of a detached pane selected %s", got)
+	}
+}
+
 // 200 next-tab presses held behind one delayed activation all move.
 func TestManyStepsBehindOneDelayedActivation(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
@@ -345,10 +490,10 @@ func TestManyStepsBehindOneDelayedActivation(t *testing.T) {
 	}
 }
 
-// A number never sent holds the next one for one gap wait; the count then
-// moves past it, a later number does not wait, and the missing one arriving
-// late selects nothing.
-func TestAMissingNumberIsGivenUpAfterOneWait(t *testing.T) {
+// A number not yet arrived holds the next one for one gap wait; the count
+// then moves past it and a later number does not wait. The missing one
+// loses its place, not its effect: arriving late, it applies then.
+func TestAMissingNumberLosesItsPlaceAfterOneWait(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
 	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
@@ -373,8 +518,108 @@ func TestAMissingNumberIsGivenUpAfterOneWait(t *testing.T) {
 	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, ids[1]); err != nil {
 		t.Fatal(err)
 	}
-	if got := activeTab(m, access); got != ids[3] {
-		t.Fatalf("the late number 2 selected %s", got)
+	if got := activeTab(m, access); got != ids[1] {
+		t.Fatalf("the late number 2 selected %s, want b (%s)", got, ids[1])
+	}
+	// Admitted once, a second delivery of it does nothing.
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 2), access, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if got := activeTab(m, access); got != ids[1] {
+		t.Fatalf("a repeat of the late number 2 selected %s", got)
+	}
+}
+
+// The review's sequence: the user opens a tab (1) and presses next tab (2);
+// 2 arrives first and applies after the gap wait, and 1, arriving later,
+// still opens its tab and selects it. A late activation and a late step
+// apply the same way.
+func TestALateNumberStillActs(t *testing.T) {
+	t.Run("new tab", func(t *testing.T) {
+		m, access, ids, mount := newSelectionManager(t)
+		clock := installGapClock(m)
+		step := deliver(func() error {
+			return m.StepCompanionPage(numbered(context.Background(), mount, 2), access, 1)
+		})
+		awaitWaiting(t, m, mount, 1)
+		clock.expire(t)
+		mustDeliver(t, step, "the step")
+		if got := activeTab(m, access); got != ids[0] {
+			t.Fatalf("the step from d selected %s, want a", got)
+		}
+		page, err := m.NewCompanionPage(numbered(t.Context(), mount, 1), access, addr("n"))
+		if err != nil || page.ID == "" {
+			t.Fatalf("the late new tab answered %+v, %v", page, err)
+		}
+		if got := activeTab(m, access); got != page.ID || len(tabIDs(m, access)) != 5 {
+			t.Fatalf("active %s of %d tabs, want the new tab of 5", got, len(tabIDs(m, access)))
+		}
+	})
+	for _, late := range []struct {
+		name string
+		act  func(ctx context.Context, m *Manager, access Access, ids []string) error
+		want int
+	}{
+		{"activation", func(ctx context.Context, m *Manager, access Access, ids []string) error {
+			return m.ActivateCompanionPage(ctx, access, ids[0])
+		}, 0},
+		{"step", func(ctx context.Context, m *Manager, access Access, _ []string) error {
+			return m.StepCompanionPage(ctx, access, 1)
+		}, 2},
+	} {
+		t.Run(late.name, func(t *testing.T) {
+			m, access, ids, mount := newSelectionManager(t)
+			clock := installGapClock(m)
+			second := deliver(func() error {
+				return m.ActivateCompanionPage(numbered(context.Background(), mount, 2), access, ids[1])
+			})
+			awaitWaiting(t, m, mount, 1)
+			clock.expire(t)
+			mustDeliver(t, second, "number 2")
+			if err := late.act(numbered(t.Context(), mount, 1), m, access, ids); err != nil {
+				t.Fatal(err)
+			}
+			if got := activeTab(m, access); got != ids[late.want] {
+				t.Fatalf("active %s, want %s", got, ids[late.want])
+			}
+		})
+	}
+}
+
+// The record of skipped numbers is bounded: a number it dropped is refused
+// with an error when it arrives, and one it holds still acts.
+func TestSkippedNumbersAreBounded(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	clock := installGapClock(m)
+	far := uint64(maxSkippedSelections + 44)
+	waiter := deliver(func() error {
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, far), access, ids[2])
+	})
+	awaitWaiting(t, m, mount, 1)
+	clock.expire(t)
+	mustDeliver(t, waiter, "the far number")
+	// 1 to 43 fell past the bound; 44 to far-1 are held.
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 10), access, ids[0]); !errors.Is(err, errSelectionLost) {
+		t.Fatalf("a dropped number answered %v", err)
+	}
+	// With the record full, one more skipped number drops the lowest held
+	// one, 44.
+	next := deliver(func() error {
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, far+2), access, ids[3])
+	})
+	awaitWaiting(t, m, mount, 1)
+	clock.expire(t)
+	mustDeliver(t, next, "far+2")
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 44), access, ids[0]); !errors.Is(err, errSelectionLost) {
+		t.Fatalf("the dropped 44 answered %v", err)
+	}
+	for seq, id := range map[uint64]string{45: ids[1], far - 1: ids[2], far + 1: ids[0]} {
+		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, seq), access, id); err != nil {
+			t.Fatal(err)
+		}
+		if got := activeTab(m, access); got != id {
+			t.Fatalf("the held number %d did not act: active %s", seq, got)
+		}
 	}
 }
 
@@ -395,7 +640,7 @@ func TestAGapWaitDoesNotPassATakenTurn(t *testing.T) {
 	clock.expire(t)
 	// The expired wait was handled with turn 1 still taken: 3 waits again.
 	clock.awaitTimers(t, 2)
-	m.finishSelectionTurn(first)
+	m.releaseSelectionTurn(first)
 	// 2 is now the missing one.
 	clock.expire(t)
 	mustDeliver(t, third, "number 3")
@@ -596,6 +841,74 @@ func TestWaitingSelectionsAreBounded(t *testing.T) {
 	}
 	for _, step := range held {
 		mustDeliver(t, step, "a step")
+	}
+	// The refused number was never admitted: sent again before the count
+	// passes it, it takes its turn.
+	refused := uint64(2 + maxSelectionWaiters)
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if got := activeTab(m, access); got != ids[1] {
+		t.Fatalf("the retried number did not act: active %s", got)
+	}
+}
+
+// A gap of any width is skipped in bounded work: the record keeps the top
+// of it and the rest is refused when it arrives.
+func TestAWideGapIsSkippedInBoundedWork(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	clock := installGapClock(m)
+	far := uint64(1) << 62
+	waiter := deliver(func() error {
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, far), access, ids[2])
+	})
+	awaitWaiting(t, m, mount, 1)
+	clock.expire(t)
+	mustDeliver(t, waiter, "the far number")
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); !errors.Is(err, errSelectionLost) {
+		t.Fatalf("a number below the record answered %v", err)
+	}
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, far-1), access, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if got := activeTab(m, access); got != ids[1] {
+		t.Fatalf("the held far-1 did not act: active %s", got)
+	}
+}
+
+// A number refused at the waiter bound and sent again after the count
+// passed it is a skipped number: it acts on arrival.
+func TestARefusedNumberRetriedLateStillActs(t *testing.T) {
+	m, access, ids, mount := newSelectionManager(t)
+	clock := installGapClock(m)
+	var held []<-chan error
+	for seq := uint64(2); seq < 2+maxSelectionWaiters; seq++ {
+		held = append(held, deliver(func() error {
+			return m.StepCompanionPage(numbered(context.Background(), mount, seq), access, 1)
+		}))
+	}
+	awaitWaiting(t, m, mount, maxSelectionWaiters)
+	refused := uint64(2 + maxSelectionWaiters)
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err == nil {
+		t.Fatal("a selection past the bound was admitted")
+	}
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range held {
+		mustDeliver(t, step, "a step")
+	}
+	after := deliver(func() error {
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, refused+1), access, ids[2])
+	})
+	awaitWaiting(t, m, mount, 1)
+	clock.expire(t)
+	mustDeliver(t, after, "the number after the refused one")
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if got := activeTab(m, access); got != ids[1] {
+		t.Fatalf("the late retry did not act: active %s", got)
 	}
 }
 

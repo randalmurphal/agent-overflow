@@ -68,8 +68,13 @@ func (m *Manager) selectTabWhere(ctx context.Context, access Access, sel Selecti
 	if err != nil || turn.passed {
 		return "", err
 	}
-	defer m.finishSelectionTurn(turn)
+	defer m.releaseSelectionTurn(turn)
 	m.mu.Lock()
+	if !m.commitSelectionLocked(turn) {
+		// The pane it came from detached since it was admitted.
+		m.mu.Unlock()
+		return "", nil
+	}
 	tabs := m.companionTabsLocked(access.ThreadID)
 	info := m.sessionLocked(access.ThreadID)
 	at := pick(tabs, info.ActivePageID)
@@ -82,7 +87,6 @@ func (m *Manager) selectTabWhere(ctx context.Context, access Access, sel Selecti
 	info.ActivePageID = pageID
 	info.UpdatedAt = time.Now()
 	m.sessions[access.ThreadID] = info
-	turn.landedLocked()
 	m.mu.Unlock()
 	if found.live != nil {
 		found.live.touch()

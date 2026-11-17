@@ -200,6 +200,12 @@ type Manager struct {
 	// (awaitSelectionTurn) and answers its expiry and stop. A test seam;
 	// production uses newSelectionGapTimer.
 	selectionGapTimer func() (<-chan time.Time, func() bool)
+	// selectionAdmitted is a test seam run between a selection's admission
+	// and its commit (awaitSelectionTurn). Production leaves it nil.
+	selectionAdmitted func(sel Selection)
+	// reopenPopped is a test seam run between a reopen's pop of its closed
+	// tab and the tab's add (ReopenClosedTab). Production leaves it nil.
+	reopenPopped func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error

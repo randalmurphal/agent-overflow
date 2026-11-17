@@ -71,12 +71,18 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 	if err != nil || turn.passed {
 		return PageInfo{}, err
 	}
-	defer m.finishSelectionTurn(turn)
-	return m.openUserTab(ctx, access, turn, address, "", -1)
+	defer m.releaseSelectionTurn(turn)
+	info, err := m.openUserTab(ctx, access, turn, address, "", -1)
+	if errors.Is(err, errSelectionPassed) {
+		return PageInfo{}, nil
+	}
+	return info, err
 }
 
 // openUserTab is NewCompanionPage, in turn (awaitSelectionTurn), with the
 // tab placed at index in tab order (negative appends it) and given label.
+// It answers errSelectionPassed, opening nothing, when the turn's pane
+// detached before the tab was added.
 func (m *Manager) openUserTab(ctx context.Context, access Access, turn *selectionTurn, address, label string, index int) (PageInfo, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return PageInfo{}, fmt.Errorf("browser: invalid caller scope")

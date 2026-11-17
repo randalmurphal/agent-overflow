@@ -142,7 +142,9 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 // createPageAt is createPage with the new tab placed at index in the
 // thread's tab order from the start; a negative index appends it. A tab the
 // user opens has the turn its selection was admitted in (selection.go),
-// which the hold that adds and selects the tab ends; an agent's has none.
+// which the hold that adds and selects the tab commits; a turn whose pane
+// detached meanwhile opens nothing and answers errSelectionPassed. An
+// agent's tab has no turn.
 func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int) (*managedPage, error) {
 	user := turn != nil
 	p := newManagedPage(access)
@@ -154,6 +156,10 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	owner := access.ThreadID
 
 	m.mu.Lock()
+	if user && !m.commitSelectionLocked(turn) {
+		m.mu.Unlock()
+		return nil, errSelectionPassed
+	}
 	if err := m.admitThreadPageLocked(owner); err != nil {
 		m.mu.Unlock()
 		return nil, err
@@ -171,7 +177,6 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 		info.ActivePageID, info.Visible = p.id, true
 		info.UpdatedAt = time.Now()
 		m.sessions[owner] = info
-		turn.landedLocked()
 	}
 	m.mu.Unlock()
 	m.emitThreadState(owner)

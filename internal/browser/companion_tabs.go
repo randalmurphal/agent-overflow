@@ -105,31 +105,36 @@ func (s *closedTabs) push(tab closedTab) {
 
 // ReopenClosedTab reopens the thread's most recently closed tab at its
 // position, selected, and loads its address as the address bar would. With
-// none to reopen, or with ctx's numbered selection passed (selection.go), it
-// does nothing.
+// none to reopen, or with ctx's numbered selection passed or its pane
+// detached (selection.go), it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
 	if err != nil || turn.passed {
 		return err
 	}
-	defer m.finishSelectionTurn(turn)
+	defer m.releaseSelectionTurn(turn)
 	m.mu.Lock()
 	stack := m.closedTabs[access.ThreadID]
-	if stack == nil || len(stack.tabs) == 0 {
+	if stack == nil || len(stack.tabs) == 0 || !liveSelectionLocked(turn) {
 		m.mu.Unlock()
 		return nil
 	}
 	tab := stack.tabs[len(stack.tabs)-1]
 	stack.tabs = stack.tabs[:len(stack.tabs)-1]
 	m.mu.Unlock()
+	if m.reopenPopped != nil {
+		m.reopenPopped()
+	}
 	info, err := m.openUserTab(ctx, access, turn, tab.url, tab.label, tab.index)
+	passed := errors.Is(err, errSelectionPassed)
 	if err != nil && info.ID == "" {
-		if m.reopenRefused != nil {
+		if m.reopenRefused != nil && !passed {
 			m.reopenRefused()
 		}
-		// No tab opened (the thread's page limit, say): it can be reopened
-		// once the reason is gone, unless a forget of this thread's browsing
-		// history ran since the pop and took the history it came from.
+		// No tab opened (the thread's page limit, or the pane detached
+		// since the pop): it can be reopened, unless a forget of this
+		// thread's browsing history ran since the pop and took the history
+		// it came from.
 		m.mu.Lock()
 		if m.closedTabs[access.ThreadID] == stack {
 			stack.push(tab)
@@ -137,19 +142,23 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 		m.mu.Unlock()
 		m.emitThreadState(access.ThreadID)
 	}
+	if passed {
+		return nil
+	}
 	return err
 }
 
 // DuplicateCompanionPage opens a new tab right after pageID, selected, at
 // pageID's address. A tab with no address yet opens a blank one. With ctx's
-// numbered selection passed (selection.go) it does nothing.
+// numbered selection passed or its pane detached (selection.go) it does
+// nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
 	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
 	if err != nil || turn.passed {
 		return err
 	}
-	defer m.finishSelectionTurn(turn)
+	defer m.releaseSelectionTurn(turn)
 	m.mu.Lock()
 	index, address := -1, ""
 	for i, tab := range m.companionTabsLocked(access.ThreadID) {
@@ -164,7 +173,9 @@ func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pag
 	if index < 0 {
 		return errPageNotFound
 	}
-	_, err = m.openUserTab(ctx, access, turn, address, "", index)
+	if _, err = m.openUserTab(ctx, access, turn, address, "", index); errors.Is(err, errSelectionPassed) {
+		return nil
+	}
 	return err
 }
 

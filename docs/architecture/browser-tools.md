@@ -153,13 +153,18 @@ per-platform no-op.
   mount and starts again at 1. The Manager admits a mount's numbers in
   order: the next one selects at once, a later one waits for its
   predecessors' selection (never their restore or load), and each then
-  does what it says and restores the tab it selected. A number missing for
-  a second with no progress (its request failed in transit) is given up
-  and the count moves past it. A number already passed or repeated, one
-  from a mount the Manager does not have (detached, or another thread's),
-  and a waiter whose mount detaches answer success and select, open and
-  restore nothing. More than 256 waiting in one mount are refused with an
-  error. A selection with no number (an older client) or no mount, an
+  does what it says and restores the tab it selected. When a second passes
+  with no progress the count moves past the numbers not yet arrived: they
+  lose their place, not their effect, and one that arrives later applies
+  then, in arrival order. A mount remembers the last 256 numbers it moved
+  past; an older one arriving is refused with an error. A repeat of a
+  number already admitted, one from a mount the Manager does not have
+  (detached, or another thread's), a waiter whose mount detaches, and a
+  selection admitted before its mount detached answer success and select,
+  open and restore nothing; a reopen keeps its closed tab. More than 256
+  waiting in one mount are refused with an error, and that number, sent
+  again, is treated as never sent. A selection with no number (an older
+  client) or no mount, an
   agent's `browser_select_page` and the chat header's show apply in
   arrival order and never wait. Closing the active tab reselects only when
   that tab is gone.

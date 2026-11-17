@@ -355,7 +355,7 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if err != nil || turn.passed {
 		return PageInfo{}, err
 	}
-	defer m.finishSelectionTurn(turn)
+	defer m.releaseSelectionTurn(turn)
 	item, err := m.finishedDownloadPath(access, id)
 	if err != nil {
 		return PageInfo{}, err
@@ -363,7 +363,11 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if !downloadOpensInPage(item.path) {
 		return PageInfo{}, fmt.Errorf("browser: a browser tab does not show %s; use Show in folder", item.Name)
 	}
-	return m.openUserTab(ctx, access, turn, item.path, "", -1)
+	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1)
+	if errors.Is(err, errSelectionPassed) {
+		return PageInfo{}, nil
+	}
+	return info, err
 }
 
 // downloadOpensInPage is whether every engine shows a file of this name in a
