@@ -99,7 +99,7 @@ func (s *Store) GetThreadGroup(id string) (ThreadGroup, error) {
 // group end up in one group rather than in two rows a reader cannot tell
 // apart.
 func (s *Store) CreateThreadGroup(projectID, name string) (ThreadGroup, error) {
-	group, _, err := ensureThreadGroup(s.db, projectID, name)
+	group, _, err := s.EnsureThreadGroup(projectID, name)
 	return group, err
 }
 
@@ -107,8 +107,19 @@ func (s *Store) CreateThreadGroup(projectID, name string) (ThreadGroup, error) {
 // inserted the group, for a creator that resolves a new thread's group
 // before the thread exists and takes back a group it made when the thread
 // is not made (DropEmptyThreadGroup).
-func (s *Store) EnsureThreadGroup(projectID, name string) (ThreadGroup, bool, error) {
-	return ensureThreadGroup(s.db, projectID, name)
+func (s *Store) EnsureThreadGroup(projectID, name string) (group ThreadGroup, made bool, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ThreadGroup{}, false, fmt.Errorf("store: begin ensure thread group %q: %w", name, err)
+	}
+	defer rollbackTx(tx, "store: ensure thread group", &err)
+	if group, made, err = ensureThreadGroup(tx, projectID, name); err != nil {
+		return ThreadGroup{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ThreadGroup{}, false, fmt.Errorf("store: commit ensure thread group %q: %w", name, err)
+	}
+	return group, made, nil
 }
 
 // DropEmptyThreadGroup deletes the group if no thread is in it and reports
@@ -126,24 +137,13 @@ func (s *Store) DropEmptyThreadGroup(id string) (bool, error) {
 	return dropped > 0, nil
 }
 
-// threadGroupWriter is the pool or a caller's transaction. The
-// resolve-or-insert needs both halves on the same connection, so the
-// decision it makes is the one its transaction commits.
-type threadGroupWriter interface {
-	sqlExecutor
-	sqlQueryer
-}
-
-// ensureThreadGroup is the resolve-or-insert itself, on the pool or on a
-// caller's transaction: a group a thread's organize patch has to create is
-// created inside that patch's transaction, so a later refusal takes it with
-// it, and the read that decides is inside that same transaction. The bool
-// reports whether this call inserted the row, which is what tells a caller
-// to announce a new sidebar group.
-//
-// The store runs one writer connection, so the read and the insert cannot
-// interleave with another writer's.
-func ensureThreadGroup(exec threadGroupWriter, projectID, name string) (ThreadGroup, bool, error) {
+// ensureThreadGroup is the resolve-or-insert itself, inside a transaction so
+// two callers naming one new group cannot both read "none" and both insert:
+// a group a thread's organize patch has to create is created inside that
+// patch's transaction, so a later refusal takes it with it. The bool reports
+// whether this call inserted the row, which is what tells a caller to
+// announce a new sidebar group.
+func ensureThreadGroup(exec *sql.Tx, projectID, name string) (ThreadGroup, bool, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
 		return ThreadGroup{}, false, ErrEmptyThreadGroupName

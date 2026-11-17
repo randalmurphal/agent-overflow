@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -59,6 +60,36 @@ func TestCreateThreadGroupTrimsAndRefusesBlankNames(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].ID != group.ID {
 		t.Fatalf("list = %+v, want exactly the created group", listed)
+	}
+}
+
+// Callers naming one new group at once all get that group, and exactly one
+// of them reports making it.
+func TestConcurrentEnsureThreadGroupMakesOneGroup(t *testing.T) {
+	s := newTestStore(t)
+	const callers = 16
+	groups := make([]ThreadGroup, callers)
+	made := make([]bool, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() { groups[i], made[i], errs[i] = s.EnsureThreadGroup(defaultTestProjectID, "Release sweep") })
+	}
+	wg.Wait()
+	creators := 0
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if groups[i].ID != groups[0].ID {
+			t.Fatalf("caller %d got group %s, caller 0 got %s", i, groups[i].ID, groups[0].ID)
+		}
+		if made[i] {
+			creators++
+		}
+	}
+	if creators != 1 {
+		t.Fatalf("%d callers report making the group, want 1", creators)
 	}
 }
 
