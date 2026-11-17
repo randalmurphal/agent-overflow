@@ -10,7 +10,6 @@ import { defaultSettings, mergeSettingsWithDefaults } from './settingsDefaults';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { isFrontendOnly } from '../transport/runMode';
 import { attachedBackends, backendById, onBackendDetached, withBackendTarget } from '../transport/backends';
-import { hasScope } from '../transport/scopes';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import {
   frontendPreferences, seedFrontendPreferences, updateFrontendPreferences,
@@ -42,8 +41,8 @@ const mirrors = new Map<BackendKey, PreferenceMirror>();
 
 /**
  * Only device-tier keys may cross this seam; user-tier defaults never do. A
- * computer whose settings this window may read is mirrored once its answer
- * says which keys it has, and never a key it lacks (computerHasSetting).
+ * computer is mirrored once its settings answer says which keys it has, and
+ * never a key it lacks (computerHasSetting).
  */
 export function mirrorFrontendPreferences(backend: BackendKey, patch: Partial<Settings> = frontendPreferences()): void {
   if (isFrontendOnly() && backend === HOME_BACKEND) return;
@@ -61,9 +60,8 @@ function flushMirror(backend: BackendKey): void {
   const mirror = mirrors.get(backend);
   if (!target || !mirror || mirror.running) return;
   if (target.status.status !== 'connected' && (!target.home || target.client.getHello?.())) return;
-  // What another computer has is known from its answer; readSettings
-  // flushes again once it lands.
-  if (backend !== HOME_BACKEND && computers.get(backend).named === null && hasScope('settings:read', backend)) return;
+  // readSettings flushes again once the answer lands.
+  if (computers.get(backend).named === null) return;
   const held = mirror;
   held.running = true;
   void (async () => {
@@ -92,13 +90,13 @@ export function hasComputerSettings(backend: BackendKey): boolean {
  * Whether the computer's release has the setting `key`, from its own
  * settings answer: this build's answer names every key in `alwaysNamed`, so
  * an answer without one is from a release without it. True until the
- * computer's settings are read, and for this window's home, which serves
- * this frontend. Nothing writes a key there that this says it lacks
- * (updateSettingsPatch, the preference mirror); a release classes an
- * unknown key host tier, refused without a step-up.
+ * computer's settings are read. Home is no exception: an installed app's
+ * home can run an older release. Nothing writes a key there that this says
+ * it lacks (updateSettingsPatch, the preference mirror); a release classes
+ * an unknown key host tier, refused without a step-up.
  */
 export function computerHasSetting(key: keyof Settings, backend: BackendKey = HOME_BACKEND): boolean {
-  if (backend === HOME_BACKEND || !alwaysNamed.has(key)) return true;
+  if (!alwaysNamed.has(key)) return true;
   const named = computers.get(backend).named;
   return named === null || named.has(key);
 }

@@ -1326,7 +1326,6 @@ import {
   ListThreadWorkerSummaries as ListThreadWorkerSummariesRaw,
   MarkThreadRead as MarkThreadReadRaw,
   MarkThreadsRead as MarkThreadsReadRaw,
-  WorkflowPauseItem as WorkflowPauseItemRaw,
   WorkflowPauseItemAndEndSessions as WorkflowPauseItemAndEndSessionsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
@@ -1443,9 +1442,11 @@ export function MarkThreadsRead(ids: string[]): Promise<StoreThread[]> {
   });
 }
 
-/** Pause and End Sessions; a computer without it pauses the item as its release does. */
+/** Pause and End Sessions; a computer without it says so, and its Pause still pauses. */
 export function WorkflowPauseItemAndEndSessions(itemId: string): Promise<void> {
-  return orOlder(() => WorkflowPauseItemAndEndSessionsRaw(itemId), (same) => same(() => WorkflowPauseItemRaw(itemId)));
+  return orOlder(() => WorkflowPauseItemAndEndSessionsRaw(itemId), () => {
+    throw new Error('That computer runs an older version, which cannot end sessions. Pause still pauses the run.');
+  });
 }
 
 /** Null when the computer cannot check profiles; the save goes ahead and UpdateSettings decides. */

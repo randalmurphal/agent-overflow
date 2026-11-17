@@ -10,12 +10,18 @@ import {
 import { getPinnedBackend } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { setCarriedSessionScopes } from '../transport/scopes';
+import { render } from '@testing-library/svelte';
+import { assistantsOn } from './assistants.svelte';
+import ComputerSettingsPage from '../components/settings/ComputerSettingsPage.svelte';
+import AssistantsSettings from '../components/settings/AssistantsSettings.svelte';
+import AgentProfilesSettings from '../components/settings/AgentProfilesSettings.svelte';
+import MemorySettings from '../components/settings/MemorySettings.svelte';
 import type { TransportHello } from '../transport/wsClient';
 import type { Settings } from '../types/settings';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { makeSettings } from '../../test/helpers/settings';
 import { SETTINGS_AFTER_V0_0_19, settingsAsV0019 } from '../../test/helpers/olderComputer';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 let sent: Array<{ backend: BackendKey; patch: Partial<Settings> }>;
 
@@ -57,9 +63,9 @@ describe('a computer on v0.0.19, by its settings answer', () => {
     delete empty.spinnerCustomVerbs;
     applySettingsSnapshot(empty, 'laptop');
     expect(computerHasSetting('spinnerCustomVerbs', 'laptop')).toBe(true);
-    // This window's home serves this frontend: it has every key.
+    // Home is decided by its own answer too: an installed app's home can be older.
     applySettingsSnapshot(settingsAsV0019());
-    for (const key of SETTINGS_AFTER_V0_0_19) expect(computerHasSetting(key, HOME_BACKEND), key).toBe(true);
+    for (const key of SETTINGS_AFTER_V0_0_19) expect(computerHasSetting(key, HOME_BACKEND), key).toBe(false);
   });
 
   it('writes no key the computer lacks, and the rest of the patch as before', async () => {
@@ -84,11 +90,30 @@ describe('a computer on v0.0.19, by its settings answer', () => {
     expect(sentTo('laptop')).toHaveLength(1);
     expect(sentTo(HOME_BACKEND).at(-1)).toEqual({ notifyThreadAttention: false });
   });
+});
 
-  it('mirrors at once to a computer this window cannot read the settings of', async () => {
-    setCarriedSessionScopes('laptop', ['threads:read']);
-    mirrorFrontendPreferences('laptop');
-    await settle();
-    expect(sentTo('laptop')).toHaveLength(1);
+// The Android app runs its own installed frontend, so its home computer can
+// be on v0.0.19: home's pages and assistants follow home's answer.
+describe('a home computer on v0.0.19', () => {
+  beforeEach(() => {
+    resetSettingsForTest();
+    setBindingMock('GetSettings', async () => settingsAsV0019());
+    setBindingMock('UpdateSettings', async () => settingsAsV0019());
+  });
+
+  afterEach(() => resetSettingsForTest());
+
+  it('reads assistants as off and offers no editor on the pages for keys it lacks', async () => {
+    await loadSettings();
+    expect(assistantsOn(HOME_BACKEND)).toBe(false);
+    for (const [Page, lacks] of [
+      [AssistantsSettings, 'assistants'], [AgentProfilesSettings, 'agent profiles'], [MemorySettings, 'memory settings'],
+    ] as const) {
+      const view = render(ComputerSettingsPage, { props: { backend: HOME_BACKEND, Page, needsComputer: false } });
+      expect((await view.findByTestId('settings-older-computer')).textContent).toBe(`This computer runs an older version: it has no ${lacks}.`);
+      expect(view.container.querySelectorAll('input, textarea, select, button, [role="switch"]'), lacks).toHaveLength(0);
+      view.unmount();
+    }
+    expect(getBindingMock('UpdateSettings')).not.toHaveBeenCalled();
   });
 });

@@ -58,11 +58,11 @@ describe('computer ownership', () => {
     const loadingThere = loadSettings(GPU);
     await updateSetting('fontSize', 17, GPU);
     expect(getSettings(MAC).fontSize).toBe(17);
-    // The other computer is mirrored once its answer says what it has.
-    expect(sent).toEqual([{ backend: MAC, patch: { fontSize: 17 } }]);
+    // Each computer is mirrored once its answer says what it has.
+    expect(sent).toEqual([]);
     // Frontend-only defaults do not overwrite either computer's user settings.
     await updateSetting('defaultThreadEnvMode', 'worktree', GPU);
-    expect(sent).toHaveLength(1);
+    expect(sent).toEqual([]);
     mirror.resolve(makeSettings());
     read.resolve(makeSettings());
     await Promise.all([loading, loadingThere]);

@@ -131,9 +131,12 @@ describe('the other actions v0.0.19 has', () => {
     expect(getBindingMock('MarkThreadRead')).toHaveBeenCalledTimes(2);
   });
 
-  it('pauses a workflow item the way that release pauses one', async () => {
-    await WorkflowPauseItemAndEndSessions('item-1');
-    expect(getBindingMock('WorkflowPauseItem')).toHaveBeenCalledWith('item-1');
+  // That release cannot end sessions; its Pause, on the same row, still pauses.
+  it('refuses Pause and End Sessions, saying the computer cannot end sessions', async () => {
+    await expect(WorkflowPauseItemAndEndSessions('item-1')).rejects.toThrow(
+      'That computer runs an older version, which cannot end sessions. Pause still pauses the run.',
+    );
+    expect(getBindingMock('WorkflowPauseItem')).not.toHaveBeenCalled();
   });
 });
 
