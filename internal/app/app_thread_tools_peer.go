@@ -267,6 +267,8 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 		return a.runThreadPeerRequest(ctx, owner, call)
 	case threadAgentPeerStop:
 		return a.serveThreadAgentPeer(ctx, owner, call)
+	case threadAgentPeerPromptReply, threadAgentPeerPromptReturn:
+		return a.servePeerPrompt(ctx, owner, call)
 	}
 	return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 		fmt.Sprintf("%s is not a thread tools write call.", call.Tool), nil)

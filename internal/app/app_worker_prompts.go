@@ -53,6 +53,13 @@ import (
 // A Codex worker's async questions are its prompts too, and outlive both;
 // app_worker_prompts_async.go keeps where each goes and routes them again
 // at boot.
+//
+// A worker a paired computer's spawn owns (store.SpawnOwnerOf, the spawn's
+// link) routes its prompts to the spawn's thread there. Nothing is queued
+// here for such a prompt: it is registered held for that computer, which
+// picks it up on its own agent_rows calls and answers it through
+// agent_prompt_reply (app_worker_prompts_peer.go). The computer that holds
+// the spawner keeps its side in app_worker_prompts_remote.go.
 
 // workerPromptSendIDRoot names the wake that carries a worker's prompt; the
 // token completes it. It is not a loop or watch wake's root, so the turn it
@@ -100,6 +107,9 @@ type workerPrompt struct {
 	// recognized.
 	answer   string
 	closedAt time.Time
+	// remote holds a prompt routed to a thread on a paired computer, nil
+	// for one routed to a thread here.
+	remote *remotePromptHold
 }
 
 func (p *workerPrompt) sendID() string { return workerPromptSendIDRoot + p.token }
@@ -132,6 +142,8 @@ type workerPrompts struct {
 	closed bool
 	// async is where each open async question prompt goes.
 	async asyncQuestionRoutes
+	// remote is the prompts paired computers' workers put to threads here.
+	remote remoteWorkerPrompts
 }
 
 // run queues job on the prompts' serial queue, unless shutdown closed it:
@@ -145,19 +157,19 @@ func (w *workerPrompts) run(job func()) {
 	}
 }
 
-// routeWorkerPrompt is triage's prompt router: the thread on this computer
-// that owns threadID (store.SpawnOwnerOf), or nil when the prompt is the
-// user's. A worker a paired computer owns asks the user.
+// routeWorkerPrompt is triage's prompt router: the thread that owns
+// threadID (store.SpawnOwnerOf), here or on the paired computer whose
+// spawn's link owns it, or nil when the prompt is the user's.
 func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 	owner, found, err := a.store.SpawnOwnerOf(threadID)
 	if err != nil {
 		log.Printf("worker prompts: %v", err)
 		return nil
 	}
-	if !found || owner.ComputerID != "" {
+	if !found {
 		return nil
 	}
-	return &provider.PromptRoute{ThreadID: owner.ThreadID, Title: owner.Title}
+	return &provider.PromptRoute{ThreadID: owner.ThreadID, Title: owner.Title, ComputerID: owner.ComputerID, ComputerName: owner.ComputerName}
 }
 
 // tapWorkerPrompt is the emit tap: a prompt announced routed is delivered
@@ -238,9 +250,14 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 // deliverWorkerPrompt registers a prompt announced routed to route and
 // queues its wake there. An announcement a later one overtook (the prompt
 // was answered, or moved again) is left to that one; a prompt the agent
-// cannot take moves on (handBackWorkerPrompt).
+// cannot take moves on (handBackWorkerPrompt). A prompt routed to a paired
+// computer is registered held for it (holdPeerWorkerPrompt).
 func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPrompt) {
 	if current, open := a.workerPromptRoute(prompt); !open || current == nil || current.ThreadID != route.ThreadID {
+		return
+	}
+	if route.ComputerID != "" {
+		a.holdPeerWorkerPrompt(route, prompt)
 		return
 	}
 	prompt.agentID = route.ThreadID
@@ -254,7 +271,7 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPromp
 		a.handBackWorkerPrompt(registered.token)
 		return
 	}
-	message, err := workerPromptMessage(worker.Title, prompt.workerID, &registered)
+	message, err := workerPromptMessage(usermessage.Reporter{Label: worker.Title, ThreadID: prompt.workerID}, &registered)
 	if err != nil {
 		log.Printf("worker prompts: put %s to %s: %v", prompt.workerID, route.ThreadID, err)
 		a.handBackWorkerPrompt(registered.token)
@@ -347,8 +364,13 @@ func (a *App) settleEndedWorkerPrompts(workerID string) {
 }
 
 // withdrawWorkerPromptWake takes a closed registration's wake out of its
-// agent's queue, when it is still there.
+// agent's queue, when it is still there. A prompt held for a paired
+// computer has no wake here: that computer withdraws its own once this one
+// stops listing the prompt.
 func (a *App) withdrawWorkerPromptWake(prompt workerPrompt) {
+	if prompt.remote != nil {
+		return
+	}
 	if _, err := a.removeQueuedItem(a.lifeCtx(), prompt.agentID, prompt.sendID()); err != nil {
 		log.Printf("worker prompts: withdraw the wake for %s of %s: %v", prompt.requestID, prompt.workerID, err)
 	}
@@ -384,6 +406,7 @@ func (a *App) handBackWorkerPrompt(token string) {
 // the others go to the assistant's next thread, or to the user when the
 // worker's prompts route to nobody now.
 func (a *App) reroutePromptsFrom(threadID string) {
+	a.rerouteRemotePromptsFrom(threadID)
 	moved := a.rerouteAsyncQuestions(threadID, nil, false)
 	if a.triage != nil {
 		moved += a.triage.ReroutePrompts(threadID)
@@ -393,46 +416,64 @@ func (a *App) reroutePromptsFrom(threadID string) {
 	}
 }
 
-// handBackWorkerPromptWake hands back the prompt a dropped wake carried.
-// False when sendID is not a worker prompt's wake.
+// handBackWorkerPromptWake hands back the prompt a dropped wake carried:
+// one a worker here asked, or one a paired computer's worker asked
+// (handBackRemotePromptWake). False when sendID is not a worker prompt's
+// wake. Every consumer of a dropped, withdrawn or untaken message comes
+// here, so this is the one reader of the wake's send id.
 func (a *App) handBackWorkerPromptWake(sendID string) bool {
-	token, ok := strings.CutPrefix(sendID, workerPromptSendIDRoot)
-	if !ok {
+	wake, ok := parseWorkerPromptWake(sendID)
+	switch {
+	case !ok:
 		return false
+	case wake.delivery != "":
+		a.handBackRemotePromptWake(wake)
+	default:
+		a.handBackWorkerPrompt(wake.token)
 	}
-	a.handBackWorkerPrompt(token)
 	return true
 }
 
-// answerWorkerPrompt is thread_reply on a worker prompt's token. Handled is
-// false for any other token.
+// answerWorkerPrompt is thread_reply on a worker prompt's token: one a
+// worker here asked, or one a paired computer's worker put to this
+// computer's thread (answerRemoteWorkerPrompt). Handled is false for any
+// other token.
 func (a *App) answerWorkerPrompt(ctx context.Context, caller threadtools.Caller, call threadtools.ReplyCall) (ack threadtools.ReplyAck, handled bool, err error) {
 	prompt, found := a.workerPrompts.get(call.Token)
 	if !found {
-		return threadtools.ReplyAck{}, false, nil
+		return a.answerRemoteWorkerPrompt(ctx, caller, call)
 	}
-	ack = threadtools.ReplyAck{Token: call.Token, State: threadtools.RequestReplied, SourceThreadID: prompt.workerID, Prompt: true}
-	if prompt.agentID != caller.ThreadID {
+	if prompt.agentID != caller.ThreadID || prompt.remote != nil {
+		ack = threadtools.ReplyAck{Token: call.Token, State: threadtools.RequestReplied, SourceThreadID: prompt.workerID, Prompt: true}
 		return ack, true, errorsx.Public(threadtools.CodeRequestNotYours,
 			"That token belongs to a prompt sent to another thread. Answer only the prompts that woke this thread.", nil)
 	}
+	ack, err = a.answerRoutedPrompt(ctx, prompt, call)
+	return ack, true, err
+}
+
+// answerRoutedPrompt writes the answer of the thread a prompt is routed to,
+// whose caller its door has checked: thread_reply here, or
+// agent_prompt_reply from the paired computer the prompt is held for.
+func (a *App) answerRoutedPrompt(ctx context.Context, prompt workerPrompt, call threadtools.ReplyCall) (ack threadtools.ReplyAck, err error) {
+	ack = threadtools.ReplyAck{Token: call.Token, State: threadtools.RequestReplied, SourceThreadID: prompt.workerID, Prompt: true}
 	answer := workerPromptAnswerKey(call)
 	approval, question, err := workerPromptResponse(&prompt, call)
 	if err != nil {
-		return ack, true, err
+		return ack, err
 	}
 	if err := a.workerPrompts.beginAnswer(prompt.token, answer); err != nil {
 		if errors.Is(err, errWorkerPromptRepeated) {
-			return ack, true, nil
+			return ack, nil
 		}
-		return ack, true, err
+		return ack, err
 	}
 	// A worker whose session ended took its prompts with it, without a
 	// resolution to settle them by, and a prompt that moved is its new
 	// recipient's.
 	if !a.workerPromptOpenTo(prompt) {
 		a.workerPrompts.endAnswer(prompt.token, workerPromptSettled)
-		return ack, true, errWorkerPromptClosed
+		return ack, errWorkerPromptClosed
 	}
 	// The answer goes to the session that asked, or nowhere; an async
 	// question's goes to the worker's queue, as the person's answers do.
@@ -449,20 +490,20 @@ func (a *App) answerWorkerPrompt(ctx context.Context, caller threadtools.Caller,
 	if err != nil {
 		if errors.Is(err, transport.ErrAlreadyHandled) {
 			a.workerPrompts.endAnswer(prompt.token, workerPromptSettled)
-			return ack, true, errWorkerPromptClosed
+			return ack, errWorkerPromptClosed
 		}
 		a.workerPrompts.endAnswer(prompt.token, workerPromptRouted)
 		log.Printf("worker prompts: answer %s of %s: %v", prompt.requestID, prompt.workerID, err)
 		if errors.Is(err, provider.ErrApprovalDecisionUnavailable) {
-			return ack, true, errorsx.Public(threadtools.CodeInvalidRequest,
+			return ack, errorsx.Public(threadtools.CodeInvalidRequest,
 				"The worker's provider does not offer that decision for this approval. Deny it, or ask the user.", nil)
 		}
-		return ack, true, errorsx.Public(threadtools.CodeInvalidRequest,
+		return ack, errorsx.Public(threadtools.CodeInvalidRequest,
 			"The answer did not reach the worker, and its prompt is still open. Try again, or ask the user.", nil)
 	}
 	a.workerPrompts.endAnswer(prompt.token, workerPromptAnswered)
 	ack.Accepted = true
-	return ack, true, nil
+	return ack, nil
 }
 
 var (
@@ -542,14 +583,19 @@ func workerPromptAnswerKey(call threadtools.ReplyCall) string {
 
 // workerPromptMessage is the wake that puts a worker's prompt to its agent:
 // what the worker asks, quoted as data, and how to answer, headed in its
-// row by the prompt's first line.
-func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) (usermessage.AgentMessage, error) {
+// row by the prompt's first line. from names the worker: its title, its
+// thread and, for a worker on a paired computer, that computer.
+func workerPromptMessage(from usermessage.Reporter, prompt *workerPrompt) (usermessage.AgentMessage, error) {
 	kind := agentmeta.ReportQuestion
 	if prompt.approval != nil {
 		kind = agentmeta.ReportApproval
 	}
-	notice := fmt.Sprintf("Thread %s (%s), which you spawned, is waiting on your answer. %s",
-		untrustedtext.Quote(workerTitle, 0), workerID, agentWakeDataNotice)
+	where := ""
+	if from.Computer != "" {
+		where = " on " + untrustedtext.Quote(from.Computer, 0)
+	}
+	notice := fmt.Sprintf("Thread %s (%s)%s, which you spawned, is waiting on your answer. %s",
+		untrustedtext.Quote(from.Label, 0), from.ThreadID, where, agentWakeDataNotice)
 	var out strings.Builder
 	var data strings.Builder
 	if prompt.approval != nil {
@@ -589,8 +635,7 @@ func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) (us
 		fmt.Fprintf(&out, "Answer with thread_reply, token %s, once: one answer per part in answers, in order, and a summary in text.", prompt.token)
 	}
 	out.WriteString(" If it is not yours to decide, ask the user yourself, as one question with this context. The user can also answer in that thread, which settles this and refuses your reply.")
-	return usermessage.Report(kind, usermessage.Reporter{Label: workerTitle, ThreadID: workerID},
-		notice, out.String(), firstDataLine(data.String()))
+	return usermessage.Report(kind, from, notice, out.String(), firstDataLine(data.String()))
 }
 
 // add registers a prompt under a fresh token as the prompt's current
@@ -753,5 +798,6 @@ func (a *App) closeWorkerPrompts(ctx context.Context, timeout time.Duration) err
 	a.workerPrompts.gate.Lock()
 	a.workerPrompts.closed = true
 	a.workerPrompts.gate.Unlock()
+	a.workerPrompts.stopLeases()
 	return a.drainWorkerPrompts(ctx, timeout)
 }

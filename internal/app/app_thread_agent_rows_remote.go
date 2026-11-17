@@ -283,8 +283,7 @@ func (a *App) startPeerAgentRowsLocked() {
 
 // askPeerAgentRows runs one queued call and records its answer.
 func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
-	listing, err := a.peerThreadAgentRows(a.lifeCtx(), spawn.TargetComputerID, spawn.MadeIn(),
-		spawn.TargetThreadID, threadAgentRowDepth-1)
+	listing, err := a.peerThreadAgentRows(a.lifeCtx(), spawn, threadAgentRowDepth-1)
 	shutdown := errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil
 	c := &a.threadAgentPeers
 	c.recording.Lock()
@@ -296,8 +295,8 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	delete(c.probes, spawn.Token)
 	c.mu.Unlock()
 	record := !shutdown && a.peerStillPaired(spawn.TargetComputerID)
-	if record && !probe {
-		a.recordPeerOpenWork(spawn, listing, err)
+	if record {
+		a.applyPeerAgentRows(spawn, listing, err, probe)
 	}
 	c.mu.Lock()
 	c.inFlight--
@@ -352,7 +351,7 @@ func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRo
 		c.recording.Unlock()
 		return answer
 	}
-	a.recordPeerOpenWork(spawn, listing, err)
+	a.applyPeerAgentRows(spawn, listing, err, false)
 	c.mu.Lock()
 	changed := c.noteAnswerLocked(spawn, listing, err, stateOnly)
 	if err != nil {
@@ -388,6 +387,18 @@ func (a *App) peerPaired(computerID string) (bool, error) {
 	}
 	_, found, err := a.backends.Lookup(computerID)
 	return err == nil && found, err
+}
+
+// applyPeerAgentRows is what every answer recorded here does, whoever
+// asked: it records whether the spawn's thread is open, unless a probe
+// found it still at rest (recordPeerOpenWork), and takes up the prompts its
+// worker routed here (noteRemotePrompts). The caller holds recording, so an
+// answer from a computer forgotten meanwhile does neither.
+func (a *App) applyPeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRows, err error, probe bool) {
+	if !probe {
+		a.recordPeerOpenWork(spawn, listing, err)
+	}
+	a.noteRemotePrompts(spawn, listing, err)
 }
 
 // recordPeerOpenWork writes whether an answer said the spawn's thread is

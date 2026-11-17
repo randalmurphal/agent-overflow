@@ -228,9 +228,9 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a script's message", text, meta)
 	text, meta = message(builtMessage(t)(renderAgentSendWake("unattributed")), false, "agent-wake:w1:1")
 	add("a wake whose attribution did not decode", text, meta)
-	text, meta = appWake(builtMessage(t)(workerPromptMessage(worker, "t-worker", &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}})))
+	text, meta = appWake(builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: worker, ThreadID: "t-worker"}, &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}})))
 	add("a worker's approval request", text, meta)
-	text, meta = appWake(builtMessage(t)(workerPromptMessage("", "t-worker", &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}})))
+	text, meta = appWake(builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: "", ThreadID: "t-worker"}, &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}})))
 	add("an untitled worker's question", text, meta)
 	watch := store.RemoteWatch{ComputerID: "c-desk", RequestID: "r-1", Label: "make test", Receipt: store.RemoteJob{Workspace: "/w", State: "finished", ExitCode: 0}}
 	text, meta = appWake(builtMessage(t)(remoteCompletionMessage(watch, "desk", remoteCompletionOutput{Tail: "ok"})))

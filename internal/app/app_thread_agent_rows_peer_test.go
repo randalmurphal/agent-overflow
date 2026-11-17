@@ -567,7 +567,7 @@ func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing
 	if !pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("the sweep here cleared the spawn's open work")
 	}
-	listing, err := pair.source.peerThreadAgentRows(t.Context(), pair.computer, pair.spawn.MadeIn(), pair.child, threadAgentRowDepth-1)
+	listing, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
 	if err != nil {
 		t.Fatalf("the forwarded listing after both sweeps: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestThreadAgentRowsForgetOpenWorkAComputerRefuses(t *testing.T) {
 	if err := pair.dest.store.DeleteThread(pair.child); err != nil {
 		t.Fatalf("delete the thread there: %v", err)
 	}
-	_, err := pair.source.peerThreadAgentRows(t.Context(), pair.computer, pair.spawn.MadeIn(), pair.child, threadAgentRowDepth-1)
+	_, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
 	if code, _, ok := errorsx.PublicDetails(err); !ok || code != threadtools.CodeNotYours {
 		t.Fatalf("the listing of a thread deleted there = %v, want %s", err, threadtools.CodeNotYours)
 	}

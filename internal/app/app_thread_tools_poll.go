@@ -400,6 +400,23 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 			a.refreshPeerAgentRows(row, 0)
 		}
 	}
+	// A send that woke a worker a spawn from here owns there, which then
+	// asked a prompt it routed back here, holds that prompt on the spawn's
+	// listing: the spawn itself may be at rest here, so its rows are asked
+	// for at the poll's pace too.
+	for _, row := range rows {
+		if row.Kind != store.ThreadRequestSend || row.TargetComputerID == "" || !a.remoteRequestBlocked(row.Token).routedToCaller {
+			continue
+		}
+		spawn, found, err := a.store.RemoteSpawnLinkTo(row.TargetComputerID, row.TargetThreadID)
+		if err != nil {
+			logThreadRequestSweep("read the spawn of "+row.TargetThreadID, err)
+			continue
+		}
+		if found {
+			a.refreshPeerAgentRows(spawn, 0)
+		}
+	}
 }
 
 // pollThreadRequestsOn asks one destination about every token due for it,
@@ -922,10 +939,11 @@ func (a *App) expireThreadRequests(now time.Time) {
 			log.Printf("thread tools: deleted or cleared %d request row(s) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
 		}
 		// A worker whose paired owner went silent past the floor was
-		// released to a sidebar row here.
+		// released to a sidebar row here, and its prompts are the person's.
 		for _, threadID := range released {
 			a.announcePlaced(threadID)
 		}
+		a.handBackLinkPrompts(released)
 	}
 	if swept, err := a.store.DeleteRemoteWatchesBefore(floor); err != nil {
 		logThreadRequestSweep("delete remote job watches past retention", err)

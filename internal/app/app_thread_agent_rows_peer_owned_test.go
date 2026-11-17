@@ -40,23 +40,14 @@ func askOn(t *testing.T, app *App, threadID, requestID string, question bool) {
 	}
 }
 
-// routeBackTo stands in for the routing of a linked worker's prompts to its
-// spawner's computer, which this computer does not deliver yet: the
-// workers named route their prompts to the link's source thread, and the
-// prompt queue that would deliver them here is closed, so they stay routed.
-func routeBackTo(app *App, route provider.PromptRoute, workers ...string) {
+// routeUnheld routes app's prompts as it does, a linked worker's to its
+// spawner's computer, and closes the prompt queue that would hold them for
+// that computer, so they stay routed and the rows read the route alone.
+func routeUnheld(app *App) {
 	app.workerPrompts.gate.Lock()
 	app.workerPrompts.closed = true
 	app.workerPrompts.gate.Unlock()
-	app.triage.SetPromptRouter(func(threadID string) *provider.PromptRoute {
-		for _, worker := range workers {
-			if worker == threadID {
-				routed := route
-				return &routed
-			}
-		}
-		return app.routeWorkerPrompt(threadID)
-	})
+	app.triage.SetPromptRouter(app.routeWorkerPrompt)
 }
 
 func needYouOf(t *testing.T, app *App, threadID string) int {
@@ -78,7 +69,7 @@ func TestARemoteRowReportsWhereItsThreadIsAndWhatItWaitsOn(t *testing.T) {
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
 	second := pair.spawnThere(t, "more over there", map[string]any{"notify": true})
 	routed := pair.receipt(t, second.Token).TargetThreadID
-	routeBackTo(pair.dest, provider.PromptRoute{ThreadID: pair.caller.ID, Title: "the lead as it was"}, routed)
+	routeUnheld(pair.dest)
 
 	rowOf := func(rows ThreadAgentRows, token string) ThreadAgentRow {
 		row, _ := agentRowByToken(rows.Rows, token)
@@ -87,6 +78,11 @@ func TestARemoteRowReportsWhereItsThreadIsAndWhatItWaitsOn(t *testing.T) {
 	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		return rowOf(rows, pair.spawn.Token).Placement == store.PlacementOwned && rowOf(rows, second.Token).Placement == store.PlacementOwned
 	})
+	// Shown in the sidebar there, the first worker's prompts are the
+	// person's there.
+	if _, err := pair.dest.store.SetThreadPlacement([]string{pair.child}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
 
 	askOn(t, pair.dest, pair.child, "approval-1", false)
 	askOn(t, pair.dest, routed, "question-1", true)
@@ -133,7 +129,7 @@ func TestAPolledPromptRoutedBackToTheAskerIsRoutedHere(t *testing.T) {
 	if named, _, err := there.store.SetThreadReceiptTarget(token, worker.ID, true); err != nil || !named {
 		t.Fatalf("name the link: %v, %v", named, err)
 	}
-	routeBackTo(there, provider.PromptRoute{ThreadID: here.caller.ID, Title: "the lead as it was"}, worker.ID)
+	routeUnheld(there)
 	askOn(t, there, worker.ID, "approval-1", false)
 
 	// Routed to the asker only for the link's own device, and only to the
@@ -239,7 +235,7 @@ func TestNestedRowsAcrossThreeComputersKeepTheirPlacement(t *testing.T) {
 
 // A prompt the third computer routes back to the second computer's thread
 // that spawned there is routed here as the second computer reads it, and
-// to a thread on that computer as the first one reads it.
+// to that thread on the second computer as the first one reads it.
 func TestAPromptRoutedBackOneComputerUpIsAThreadsThereFurtherUp(t *testing.T) {
 	t.Parallel()
 	c := newAgentChain(t, 3)
@@ -252,7 +248,7 @@ func TestAPromptRoutedBackOneComputerUpIsAThreadsThereFurtherUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	routeBackTo(c.apps[2], provider.PromptRoute{ThreadID: c.threads[0], Title: "the second's lead as it was"}, c.threads[1])
+	routeUnheld(c.apps[2])
 	askOn(t, c.apps[2], c.threads[1], "question-1", true)
 	rowOn := func(app *App, threadID, token string) ThreadAgentRow {
 		listing, err := app.ListThreadAgentRows(t.Context(), threadID)
@@ -262,16 +258,26 @@ func TestAPromptRoutedBackOneComputerUpIsAThreadsThereFurtherUp(t *testing.T) {
 		row, _ := agentRowByToken(listing.Rows, token)
 		return row
 	}
-	var second, first ThreadAgentRow
+	var second, first, onSecond ThreadAgentRow
 	waitUntil(t, 15*time.Second, func() bool {
 		second = rowOn(c.apps[1], c.threads[0], c.spawns[1])
 		first = rowOn(c.apps[0], c.caller.ID, c.spawns[1])
-		return second.BlockedOn == "question" && first.BlockedOn == "question"
+		onSecond = rowOn(c.apps[0], c.caller.ID, c.spawns[0])
+		return second.BlockedOn == "question" && first.BlockedOn == "question" && onSecond.Computer != ""
 	})
 	if !second.BlockedRoutedHere || second.BlockedRoutedTo != lead.Title {
 		t.Fatalf("the second computer's row = %+v; want routed here, to %q", second, lead.Title)
 	}
-	if first.BlockedRoutedHere || first.BlockedRoutedTo != lead.Title {
-		t.Fatalf("the first computer's row = %+v; want routed to %q on the second computer", first, lead.Title)
+	// The first computer names the second as its own pairing does.
+	if want := lead.Title + " on " + onSecond.Computer; first.BlockedRoutedHere || first.BlockedRoutedTo != want {
+		t.Fatalf("the first computer's row = %+v; want routed to %q", first, want)
+	}
+	// The third computer's own row names the second as the link does.
+	link, found, err := c.apps[2].store.GetThreadRequestReceipt(c.spawns[1])
+	if err != nil || !found {
+		t.Fatalf("the third computer's link: %v, %v", found, err)
+	}
+	if waiting := c.apps[2].threadWaitingOn(c.threads[1]); waiting.routedTo() != link.SourceThreadTitle+" on "+link.SourceComputerName {
+		t.Fatalf("the third computer's row reads routed to %q, want the link's thread on %q", waiting.routedTo(), link.SourceComputerName)
 	}
 }
