@@ -493,7 +493,10 @@ export class ArchiveThreadResult {
     /**
      * WorkersNotArchived names each worker under the thread, at any depth,
      * whose archive was refused. It stays open; archiving it again retries
-     * it, and so does archiving again the thread that owns it.
+     * it, and so does archiving again the thread that owns it. A worker on
+     * another computer named here either has not taken the archive yet
+     * (Pending), which is sent again until it does, or runs a version that
+     * cannot take it.
      */
     "workersNotArchived"?: WorkerFailure[];
 
@@ -1835,6 +1838,14 @@ export class DeleteDependents {
     "helpers": number;
     "workers": number;
 
+    /**
+     * RemoteWorkers is whether any of them spawned a thread on another
+     * computer, which the delete deletes there too: a worker there that
+     * still belongs to its spawner. Not counted, because only that computer
+     * knows which do.
+     */
+    "remoteWorkers": boolean;
+
     /** Creates a new DeleteDependents instance. */
     constructor($$source: Partial<DeleteDependents> = {}) {
         if (!("pastThreads" in $$source)) {
@@ -1845,6 +1856,9 @@ export class DeleteDependents {
         }
         if (!("workers" in $$source)) {
             this["workers"] = 0;
+        }
+        if (!("remoteWorkers" in $$source)) {
+            this["remoteWorkers"] = false;
         }
 
         Object.assign(this, $$source);
@@ -1868,7 +1882,9 @@ export class DeleteThreadResult {
      * WorkersNotDeleted names each thread under the named ones, at any
      * depth, whose destroy failed, and why. It and the threads above it are
      * committed and hidden until deleting the named threads again, or the
-     * next boot, finishes them.
+     * next boot, finishes them. A worker on another computer named here
+     * either has not taken the delete yet (Pending), which is sent again
+     * until it does, or runs a version that cannot take it.
      */
     "workersNotDeleted"?: WorkerFailure[];
 
@@ -9990,6 +10006,19 @@ export class WorkerFailure {
     "threadId": string;
     "title": string;
     "error": string;
+
+    /**
+     * Computer names the paired computer a worker there is on, as this
+     * computer names it; empty for a worker here.
+     */
+    "computer"?: string;
+
+    /**
+     * Pending is a worker on another computer that has not taken the
+     * archive or delete yet: it is sent again until that computer takes
+     * it, and Error says why the last attempt did not land.
+     */
+    "pending"?: boolean;
 
     /** Creates a new WorkerFailure instance. */
     constructor($$source: Partial<WorkerFailure> = {}) {
