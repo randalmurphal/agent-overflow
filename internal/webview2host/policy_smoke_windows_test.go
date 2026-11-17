@@ -36,6 +36,11 @@ import (
 //     a popup whose target names its opener, with or without a gesture and
 //     with noopener;
 //
+//   - a popup a middle or Ctrl click opens has a target that names no
+//     opener, so its first request waits for the launcher's ReportPopup;
+//     that wait is logged and stays inside the backend's bound
+//     (requestOwnerWait in internal/browser cdp_page.go);
+//
 //   - a redirect to an outside file and a renderer navigation to one never
 //     load it.
 //
@@ -71,6 +76,13 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 	}
 	var page strings.Builder
 	page.WriteString(`<!doctype html><title>policy</title><script>window.got = []; addEventListener("message", (e) => window.got.push(String(e.data)));</script>`)
+	for _, link := range []struct{ id, url string }{
+		{"ctrl-out", fileURL(outside, "secret.html") + "?ctrl-out"},
+		{"ctrl-own", fileURL(workspace, "secret.html") + "?ctrl-own"},
+		{"middle-own", fileURL(workspace, "secret.html") + "?middle-own"},
+	} {
+		fmt.Fprintf(&page, `<a id=%q href=%q>%s</a> `, link.id, link.url, link.id)
+	}
 	for _, dir := range []string{workspace, outside} {
 		name := filepath.Base(dir)
 		fmt.Fprintf(&page, `<img src=%q onload="window.got.push('img:%s')">`, fileURL(dir, "img.svg"), name)
@@ -117,6 +129,21 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 		return !strings.HasPrefix(url, "file:") || strings.HasPrefix(strings.ToLower(url), strings.ToLower(fileURL(workspace, "")))
 	}
 	b := newPolicyBackend(t, smokeDialCDP(t, host.CDPPort()), target, allow)
+	go func() {
+		for report := range reports {
+			if report.kind != ReportPopup {
+				continue
+			}
+			popup, err := ParsePopupReport(report.detail)
+			if err != nil {
+				t.Errorf("popup report %q: %v", report.detail, err)
+				continue
+			}
+			if popup.Opener == "page-1" {
+				b.reported(popup.Target)
+			}
+		}
+	}()
 	b.call("Target.setDiscoverTargets", map[string]any{"discover": true}, "")
 	b.call("Fetch.enable", map[string]any{"patterns": []map[string]any{
 		{"resourceType": "Document", "requestStage": "Request"},
@@ -213,6 +240,39 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 			t.Fatalf("the workspace popup was %v", got)
 		}
 	})
+	step("clicked popups", func() {
+		clicks := []struct {
+			id, button string
+			modifiers  int
+		}{{"ctrl-out", "left", 2}, {"ctrl-own", "left", 2}, {"middle-own", "middle", 0}}
+		for _, click := range clicks {
+			var xy []float64
+			if err := json.Unmarshal([]byte(eval(`JSON.stringify((() => { const r = document.getElementById("`+click.id+`").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2] })())`, false)), &xy); err != nil || len(xy) != 2 {
+				t.Fatalf("locate %s: %v", click.id, err)
+			}
+			buttons := map[string]int{"left": 1, "middle": 4}[click.button]
+			for _, kind := range []string{"mousePressed", "mouseReleased"} {
+				b.call("Input.dispatchMouseEvent", map[string]any{
+					"type": kind, "x": xy[0], "y": xy[1], "button": click.button, "buttons": buttons, "clickCount": 1, "modifiers": click.modifiers,
+				}, session)
+			}
+			query := "?" + click.id
+			await("the clicked popup's request "+query, func() bool { return len(b.answered(query)) > 0 })
+			want := "refused by "
+			if strings.HasSuffix(click.id, "-own") {
+				want = "allowed by "
+			}
+			got := b.answered(query)
+			if !strings.HasPrefix(got[0], want) || strings.HasSuffix(got[0], "nobody") {
+				t.Fatalf("the popup %s was %v", query, got)
+			}
+			wait := b.waited(query)
+			t.Logf("the popup %s was %s after waiting %v for its owner (negative: its report came first)", query, got[0], wait)
+			if wait > policySmokeOwnerWait {
+				t.Fatalf("the popup %s waited %v for its owner, past the backend's %v", query, wait, policySmokeOwnerWait)
+			}
+		}
+	})
 	step("documents", func() {
 		for _, url := range []string{fileURL(outside, "secret.html") + "?location", server.URL + "/redirect"} {
 			reload()
@@ -254,9 +314,15 @@ func smokeTempDir(t *testing.T, prefix string) string {
 	return dir
 }
 
+// policySmokeOwnerWait is internal/browser's requestOwnerWait: how long the
+// backend holds a paused request for its owner before refusing it.
+const policySmokeOwnerWait = 2 * time.Second
+
 // policyBackend is the backend's browser-level CDP connection: it answers
 // each Fetch.requestPaused on the browser session as the policy does,
-// attributing its frame from the events it read before it.
+// attributing its frame from the events it read before it, or holding it
+// for up to policySmokeOwnerWait until a target event or the launcher's
+// popup report names its owner.
 type policyBackend struct {
 	t       *testing.T
 	conn    *websocket.Conn
@@ -273,6 +339,19 @@ type policyBackend struct {
 	pageSession int
 	// sent names each answer by its command id.
 	sent map[int64]string
+	// popups are the targets the launcher reported page-1 opened, with
+	// when the report arrived.
+	popups map[string]time.Time
+	// held are the pauses waiting for their owner, by frame.
+	held map[string][]heldPause
+	// waits is how long each paused URL waited for its owner; negative
+	// when its popup's report came that long before the pause.
+	waits map[string]time.Duration
+}
+
+type heldPause struct {
+	requestID, url string
+	at             time.Time
 }
 
 func newPolicyBackend(t *testing.T, conn *websocket.Conn, target string, allow func(string) bool) *policyBackend {
@@ -280,6 +359,7 @@ func newPolicyBackend(t *testing.T, conn *websocket.Conn, target string, allow f
 		t: t, conn: conn, target: target, allow: allow,
 		waiters: map[int64]chan json.RawMessage{}, frames: map[string]bool{},
 		openers: map[string]string{}, answers: map[string][]string{}, sent: map[int64]string{},
+		popups: map[string]time.Time{}, held: map[string][]heldPause{}, waits: map[string]time.Duration{},
 	}
 	b.next.Store(1000)
 	t.Cleanup(func() { _ = conn.CloseNow() })
@@ -394,33 +474,95 @@ func (b *policyBackend) event(method, session string, params json.RawMessage) {
 	switch method {
 	case "Page.frameAttached":
 		b.frames[p.FrameID] = true
+		b.releaseLocked(p.FrameID)
 	case "Target.targetCreated", "Target.targetInfoChanged":
 		if p.TargetInfo.OpenerID != "" {
 			b.openers[p.TargetInfo.TargetID] = p.TargetInfo.OpenerID
+			b.releaseLocked(p.TargetInfo.TargetID)
 		}
 	case "Fetch.requestPaused":
 		if session != "" {
 			b.pageSession++
 			return
 		}
-		owner := "nobody"
-		switch {
-		case p.FrameID == b.target:
-			owner = "main"
-		case b.frames[p.FrameID]:
-			owner = "frame"
-		case b.openers[p.FrameID] == b.target:
-			owner = "opener"
+		pause := heldPause{requestID: p.RequestID, url: p.Request.URL, at: time.Now()}
+		if owner := b.ownerLocked(p.FrameID); owner != "" {
+			if owner == "report" {
+				b.waits[pause.url] = -pause.at.Sub(b.popups[p.FrameID])
+			}
+			b.answerLocked(pause, owner)
+			return
 		}
-		answer := "refused by " + owner
-		if owner != "nobody" && b.allow(p.Request.URL) {
-			answer = "allowed by " + owner
-			b.sent[b.write("Fetch.continueRequest", map[string]any{"requestId": p.RequestID}, "")] = "continue " + p.Request.URL
-		} else {
-			b.sent[b.write("Fetch.failRequest", map[string]any{"requestId": p.RequestID, "errorReason": "BlockedByClient"}, "")] = "fail " + p.Request.URL
-		}
-		b.answers[p.Request.URL] = append(b.answers[p.Request.URL], answer)
+		frame := p.FrameID
+		b.held[frame] = append(b.held[frame], pause)
+		time.AfterFunc(policySmokeOwnerWait, func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			for _, held := range b.held[frame] {
+				b.answerLocked(held, "nobody")
+			}
+			delete(b.held, frame)
+		})
 	}
+}
+
+// reported records that the launcher reported page-1 opened target.
+func (b *policyBackend) reported(target string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.popups[target] = time.Now()
+	b.releaseLocked(target)
+}
+
+// ownerLocked names what attributes frame to page-1, or "" for nothing yet.
+func (b *policyBackend) ownerLocked(frame string) string {
+	switch {
+	case frame == b.target:
+		return "main"
+	case b.frames[frame]:
+		return "frame"
+	case b.openers[frame] == b.target:
+		return "opener"
+	case !b.popups[frame].IsZero():
+		return "report"
+	}
+	return ""
+}
+
+// releaseLocked answers the pauses held for frame once it has an owner.
+func (b *policyBackend) releaseLocked(frame string) {
+	owner := b.ownerLocked(frame)
+	if owner == "" {
+		return
+	}
+	for _, held := range b.held[frame] {
+		b.waits[held.url] = time.Since(held.at)
+		b.answerLocked(held, owner)
+	}
+	delete(b.held, frame)
+}
+
+func (b *policyBackend) answerLocked(pause heldPause, owner string) {
+	answer := "refused by " + owner
+	if owner != "nobody" && b.allow(pause.url) {
+		answer = "allowed by " + owner
+		b.sent[b.write("Fetch.continueRequest", map[string]any{"requestId": pause.requestID}, "")] = "continue " + pause.url
+	} else {
+		b.sent[b.write("Fetch.failRequest", map[string]any{"requestId": pause.requestID, "errorReason": "BlockedByClient"}, "")] = "fail " + pause.url
+	}
+	b.answers[pause.url] = append(b.answers[pause.url], answer)
+}
+
+// waited answers how long the URL ending in suffix waited for its owner.
+func (b *policyBackend) waited(suffix string) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for url, wait := range b.waits {
+		if strings.HasSuffix(url, suffix) {
+			return wait
+		}
+	}
+	return 0
 }
 
 // answered answers the answers given to the URL ending in suffix.
