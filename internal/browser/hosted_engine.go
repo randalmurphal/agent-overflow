@@ -288,14 +288,18 @@ func (e *hostedEngine) Stop() {
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
 	e.pageProfile = make(map[string]string)
+	var cancelAttaches []func()
 	for _, popup := range e.popups {
-		popup.cancelAttachLocked()
+		cancelAttaches = append(cancelAttaches, popup.takeAttachCancelLocked())
 	}
 	e.popups = make(map[string]*hostedPopup)
 	e.popupByTarget = make(map[string]string)
 	e.targets = e.newTargets()
 	e.stopDownloadsLocked()
 	e.mu.Unlock()
+	for _, cancel := range cancelAttaches {
+		cancel()
+	}
 	if browserCancel != nil {
 		browserCancel()
 	}

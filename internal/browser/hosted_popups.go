@@ -71,13 +71,16 @@ type hostedPopup struct {
 	cancelAttach context.CancelFunc
 }
 
-// cancelAttachLocked ends the attach of popup, if one is under way. The
-// caller holds e.mu.
-func (popup *hostedPopup) cancelAttachLocked() {
-	if popup.cancelAttach != nil {
-		popup.cancelAttach()
-		popup.cancelAttach = nil
+// takeAttachCancelLocked takes the cancel of popup's attach, if one is under
+// way, for its caller to call once it releases e.mu: chromedp's cancel waits
+// for the target's cleanup. The caller holds e.mu.
+func (popup *hostedPopup) takeAttachCancelLocked() func() {
+	cancel := popup.cancelAttach
+	popup.cancelAttach = nil
+	if cancel == nil {
+		return func() {}
 	}
+	return cancel
 }
 
 // popupReported takes the launcher's report of a popup: the engine knows
@@ -172,7 +175,7 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
 	// The attach is bounded on its own clock, and the popup's close or
-	// discard cancels it (cancelAttachLocked); its downloads are settled
+	// discard cancels it (takeAttachCancelLocked); its downloads are settled
 	// by that close, not by the attach.
 	e.mu.Lock()
 	if e.popups[handle] != popup || popup.closed {
@@ -266,15 +269,15 @@ func (e *hostedEngine) pageCrashed(pageID, reason string) {
 }
 
 // retirePendingLocked keeps the close of a pending popup for its listing
-// and reports whether pageID is one. The caller holds e.mu.
-func (e *hostedEngine) retirePendingLocked(pageID string) bool {
+// and reports whether pageID is one, with the cancel of its attach for the
+// caller to call once it releases e.mu. The caller holds e.mu.
+func (e *hostedEngine) retirePendingLocked(pageID string) (bool, func()) {
 	popup := e.popups[pageID]
 	if popup == nil {
-		return false
+		return false, nil
 	}
 	popup.closed = true
-	popup.cancelAttachLocked()
-	return true
+	return true, popup.takeAttachCancelLocked()
 }
 
 // pendingClosed settles a pending popup whose page closed: the launcher
@@ -287,14 +290,17 @@ func (e *hostedEngine) pendingClosed(pageID string) {
 	e.events.PageClosed(pageID)
 }
 
-// forgetPopupLocked drops a popup the Manager discarded. The caller holds
-// e.mu.
-func (e *hostedEngine) forgetPopupLocked(pageID string) {
-	if popup := e.popups[pageID]; popup != nil {
-		popup.cancelAttachLocked()
-		delete(e.popupByTarget, popup.target)
-		delete(e.popups, pageID)
+// forgetPopupLocked drops a popup the Manager discarded and answers the
+// cancel of its attach for the caller to call once it releases e.mu. The
+// caller holds e.mu.
+func (e *hostedEngine) forgetPopupLocked(pageID string) func() {
+	popup := e.popups[pageID]
+	if popup == nil {
+		return func() {}
 	}
+	delete(e.popupByTarget, popup.target)
+	delete(e.popups, pageID)
+	return popup.takeAttachCancelLocked()
 }
 
 // allowRequest is the browser-wide navigation policy for a request paused

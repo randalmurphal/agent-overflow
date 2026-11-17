@@ -177,10 +177,11 @@ func processFailureCrashes(detail string) bool {
 // (targetDestroyed above).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
-	if e.retirePendingLocked(pageID) {
+	if pending, cancelAttach := e.retirePendingLocked(pageID); pending {
 		// A popup the Manager has not listed: its close waits for its
 		// listing (popupListed), or goes with its discard.
 		e.mu.Unlock()
+		cancelAttach()
 		e.pendingClosed(pageID)
 		return
 	}
@@ -300,9 +301,10 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
 	delete(e.pageProfile, pageID)
-	e.forgetPopupLocked(pageID)
+	cancelAttach := e.forgetPopupLocked(pageID)
 	e.forgetDownloadsLocked(pageID)
 	e.mu.Unlock()
+	cancelAttach()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
 
