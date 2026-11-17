@@ -186,8 +186,8 @@ type Dialect interface {
 | A body over its bound | `*BodyTooLargeError` |
 
 Jira answers a request with bad credentials with a 404 on some paths. The
-Jira client, not the transport, turns such a 404 into an `*AuthError` by
-asking who it is signed in as.
+Jira client, not the transport, turns such a 404 into an `*AuthError`; see
+Identity under Jira.
 
 ## Converter
 
@@ -217,13 +217,27 @@ to read and write each one.
   text: an option by name, a user by name or email, a sprint by name, a
   date, a number, rich text from Markdown. A value that matches several
   options or none is an error that lists them. A field is named by its
-  exact name or ID; there are no aliases.
+  exact name or ID; an exact ID wins over any name, and there are no
+  aliases.
 - **Writes.** Create, edit, transition (with the fields its screen takes),
   assign, comment (add, edit, delete, with a service desk comment's
   audience), link and unlink issues, remote links, attach and download.
-  A Markdown body may name users to mention and local images to embed; an
-  image is uploaded only after the write has passed every check that can
-  fail before it is sent.
+  A Markdown body may name users to mention and local images to embed.
+  Images are read from an absolute folder the caller names, through a root
+  that refuses a path or symlink leading outside it, and checked when the
+  write is planned. Before the first request of the write they are read
+  again, refused if changed, and uploaded only after every check that can
+  fail first has passed.
+- **Plans.** Create and edit are planned, then applied. A plan is opaque:
+  it shows a preview and is applied once, by the client that made it, to
+  the issue it was checked for. Apply reads the rich text the plan was
+  computed from again and refuses when it changed, a clear included. A
+  write whose answer cannot be read still returns what was written.
+- **Identity.** Jira answers some paths with a 404 when the credential is
+  bad. After a 404 the client asks who it is signed in as, with a check
+  that starts after the 404 arrived, and reports a refused credential as
+  `*trackerapi.AuthError`. Concurrent 404s share checks; nothing is reused
+  over time.
 - **Boards.** Boards of a project, a board's configuration (columns and
   their statuses, the estimation field, the rank field), its sprints, and
   the issues of a board, a backlog and a sprint on the
@@ -236,10 +250,14 @@ to read and write each one.
 - **History.** An issue's changelog as typed entries, and the bulk fetch of
   changelogs for up to 1000 issues and 10 fields.
 - **Search.** `search/jql` with token paging, the approximate count, and
-  the bulk fetch of issues by key or ID.
+  the bulk fetch of issues by key or ID. Reading a search to its end
+  returns its warnings and whether it is complete; a bulk fetch and a
+  project listing say the same.
 - **Worklogs.** Jira's own worklogs: list, add, change, delete.
-- **People.** Who the token belongs to, a user by account ID, and the
-  users who can be assigned to an issue or in a project.
+- **People.** Who the token belongs to, a user by account ID, a user found
+  by account ID, exact name or email (active and not an app; a name that
+  cannot be proven unique within Jira's search window is an error), and
+  the users who can be assigned to an issue or in a project.
 
 ## Tempo
 

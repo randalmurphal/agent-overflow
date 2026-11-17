@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"slices"
 	"sync/atomic"
 
@@ -23,23 +22,58 @@ type CreateInput struct {
 	Project   string // key or ID
 	IssueType string // name or ID
 	Fields    []FieldInput
-	// Images is where Markdown bodies' local images are read.
-	Images fs.FS
+	// ImageDir is the folder Markdown bodies' local images are read from;
+	// see EditInput.
+	ImageDir string
 }
 
 // CreatePlan is a checked create: every field resolved, every Markdown
-// body converted, every image read. It is applied once, by the Client
-// that made it.
+// body converted, every image read. What it sends is fixed when it is
+// made and cannot be changed; Preview shows it. It is applied once, by
+// the Client that made it.
 type CreatePlan struct {
-	Project   string
-	IssueType IssueType
-	Values    []Value
-	// Images are uploaded to the new issue after it is created.
-	Images []*Image
-	// Warnings gathers the values' warnings.
-	Warnings []string
+	project   string
+	issueType IssueType
+	values    []Value
+	images    []*Image
+	warnings  []string
 
 	owned
+}
+
+// FieldPreview is one field a plan writes, as a person reads it.
+type FieldPreview struct {
+	FieldID  string
+	Name     string
+	Display  string
+	Warnings []string
+}
+
+// CreatePreview is what a create plan sends. It is a copy: changing it
+// changes nothing the plan sends.
+type CreatePreview struct {
+	Project   string
+	IssueType IssueType
+	Fields    []FieldPreview
+	// Images are uploaded to the new issue after it is created.
+	Images   []Image
+	Warnings []string
+}
+
+// Preview returns a copy of what p sends.
+func (p *CreatePlan) Preview() CreatePreview {
+	return CreatePreview{
+		Project: p.project, IssueType: p.issueType, Fields: fieldPreviews(p.values),
+		Images: imageCopies(p.images), Warnings: slices.Clone(p.warnings),
+	}
+}
+
+func fieldPreviews(vs []Value) []FieldPreview {
+	out := make([]FieldPreview, len(vs))
+	for i, v := range vs {
+		out[i] = FieldPreview{FieldID: v.FieldID, Name: v.Name, Display: v.Display, Warnings: slices.Clone(v.Warnings)}
+	}
+	return out
 }
 
 // owned ties a plan to the Client that made it and lets it be applied
@@ -67,6 +101,9 @@ var reserved = []string{"project", "issuetype"}
 // PlanCreate resolves and checks a create without writing anything. A
 // required field left unset is a *MissingFieldsError.
 func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	if err := checkProject(in.Project); err != nil {
 		return nil, err
 	}
@@ -82,18 +119,14 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	if err != nil {
 		return nil, notSentErr(err)
 	}
-	p := &CreatePlan{Project: in.Project}
-	for _, t := range types {
-		if t.ID == hit.ID {
-			p.IssueType = t
-		}
-	}
+	p := &CreatePlan{project: in.Project}
+	p.issueType = types[slices.IndexFunc(types, func(t IssueType) bool { return t.ID == hit.ID })]
 	screen, err := c.CreateMeta(ctx, in.Project, hit.ID)
 	if err != nil {
 		return nil, err
 	}
-	p.client, p.stage = c, newImageStage(in.Images, c.maxUpload)
-	b := &builder{c: c, opts: ValueOptions{Project: in.Project, Images: in.Images}, stage: p.stage}
+	p.client, p.stage = c, newImageStage(in.ImageDir, c.maxUpload)
+	b := &builder{c: c, opts: ValueOptions{Project: in.Project, ImageDir: in.ImageDir}, stage: p.stage}
 	set := map[string]bool{}
 	for _, fi := range in.Fields {
 		f, err := screen.Field(fi.Field)
@@ -111,8 +144,8 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 		if err != nil {
 			return nil, notSentErr(err)
 		}
-		p.Values = append(p.Values, v)
-		p.Warnings = append(p.Warnings, v.Warnings...)
+		p.values = append(p.values, v)
+		p.warnings = append(p.warnings, v.Warnings...)
 	}
 	var missing []FieldMeta
 	for _, f := range screen.Fields {
@@ -123,7 +156,7 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	if len(missing) > 0 {
 		return nil, notSentErr(&MissingFieldsError{Fields: missing})
 	}
-	p.Images = imagesOf(p.Values)
+	p.images = imagesOf(p.values)
 	return p, nil
 }
 
@@ -131,7 +164,7 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 func imagesOf(vs []Value) []*Image {
 	var out []*Image
 	for _, v := range vs {
-		for _, img := range v.Images {
+		for _, img := range v.imgs {
 			if !slices.Contains(out, img) {
 				out = append(out, img)
 			}
@@ -144,8 +177,11 @@ func imagesOf(vs []Value) []*Image {
 type EditInput struct {
 	Issue  string // key or ID
 	Fields []FieldInput
-	// Images is where Markdown bodies' local images are read.
-	Images fs.FS
+	// ImageDir is the folder Markdown bodies' local images are read from,
+	// an absolute path; empty refuses local images. A reference is a name
+	// inside it, one leading "/" meaning the folder itself; a name that
+	// leaves it, through ".." or a symbolic link, is refused.
+	ImageDir string
 	// AcceptLoss is the user's explicit acceptance that a rich text edit
 	// loses content Markdown cannot show. Without it such an edit is a
 	// *adf.LossError naming what would be lost.
@@ -153,20 +189,41 @@ type EditInput struct {
 }
 
 // EditPlan is a checked edit of one issue. It records the issue's ID and
-// the stored documents its rich text edits were computed from; applying
-// it reads them again and refuses with a *StaleError when one changed.
+// the stored document every rich text field it writes was planned
+// against, a clear included; applying it reads them again and refuses
+// with a *StaleError when one changed. What it sends is fixed when it is
+// made; Preview shows it.
 type EditPlan struct {
+	issueID   string
+	issueKey  string
+	values    []Value
+	unchanged []string
+	images    []*Image
+	warnings  []string
+
+	owned
+}
+
+// EditPreview is what an edit plan sends. It is a copy: changing it
+// changes nothing the plan sends.
+type EditPreview struct {
 	IssueID  string
 	IssueKey string
-	// Values are the fields the edit changes.
-	Values []Value
+	// Fields are the fields the edit changes.
+	Fields []FieldPreview
 	// Unchanged names the rich text fields whose edit stores what is
 	// there already; they are not sent.
 	Unchanged []string
-	Images    []*Image
+	Images    []Image
 	Warnings  []string
+}
 
-	owned
+// Preview returns a copy of what p sends.
+func (p *EditPlan) Preview() EditPreview {
+	return EditPreview{
+		IssueID: p.issueID, IssueKey: p.issueKey, Fields: fieldPreviews(p.values),
+		Unchanged: slices.Clone(p.unchanged), Images: imageCopies(p.images), Warnings: slices.Clone(p.warnings),
+	}
 }
 
 // PlanEdit resolves and checks an edit without writing anything. A rich
@@ -174,6 +231,9 @@ type EditPlan struct {
 // survives where the Markdown left it unchanged; an edit that would lose
 // such content fails unless in.AcceptLoss.
 func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	if err := checkIssue(in.Issue); err != nil {
 		return nil, err
 	}
@@ -197,11 +257,11 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 	if err != nil {
 		return nil, err
 	}
-	p := &EditPlan{IssueID: is.ID, IssueKey: is.Key}
-	p.client, p.stage = c, newImageStage(in.Images, c.maxUpload)
+	p := &EditPlan{issueID: is.ID, issueKey: is.Key}
+	p.client, p.stage = c, newImageStage(in.ImageDir, c.maxUpload)
 	for i, fi := range in.Fields {
 		f := metas[i]
-		opts := ValueOptions{Issue: is.Key, Images: in.Images}
+		opts := ValueOptions{Issue: is.Key, ImageDir: in.ImageDir}
 		if kindOf(f.Schema) == kindRich {
 			if opts.Base, err = storedDoc(is, f); err != nil {
 				return nil, notSentErr(err)
@@ -216,13 +276,13 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			return nil, notSentErr(fmt.Errorf("jira: %s: %w", f.Name, err))
 		}
 		if v.Unchanged {
-			p.Unchanged = append(p.Unchanged, f.Name)
+			p.unchanged = append(p.unchanged, f.Name)
 			continue
 		}
-		p.Values = append(p.Values, v)
-		p.Warnings = append(p.Warnings, v.Warnings...)
+		p.values = append(p.values, v)
+		p.warnings = append(p.warnings, v.Warnings...)
 	}
-	p.Images = imagesOf(p.Values)
+	p.images = imagesOf(p.values)
 	return p, nil
 }
 

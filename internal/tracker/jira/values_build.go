@@ -73,20 +73,18 @@ func buildUsers(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 	return out, nil
 }
 
-// user resolves who for f: among the users who can be assigned the issue
-// for the assignee, among all users otherwise.
+// user resolves who for f, however it is named, to an active user who is
+// not an app; for the assignee, one Jira says can be assigned the issue
+// (or in the project, when creating).
 func (b *builder) user(ctx context.Context, f FieldMeta, who string) (User, error) {
 	if f.Schema.System != "assignee" || (b.opts.Issue == "" && b.opts.Project == "") {
 		return b.c.findUser(ctx, who, nil)
 	}
-	q := AssignableQuery{Issue: b.opts.Issue, MaxResults: 100}
+	q := AssignableQuery{Issue: b.opts.Issue}
 	if q.Issue == "" {
 		q.Project = b.opts.Project
 	}
-	return b.c.findUser(ctx, who, func(ctx context.Context, text string) ([]User, error) {
-		q.Query = text
-		return b.c.AssignableUsers(ctx, q)
-	})
+	return b.c.findUser(ctx, who, &q)
 }
 
 func buildLabels(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {

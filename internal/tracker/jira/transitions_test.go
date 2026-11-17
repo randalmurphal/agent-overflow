@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"agent-overflow/internal/tracker/adf"
@@ -80,11 +81,13 @@ func TestTransitionOnServiceDesk(t *testing.T) {
 func TestTransitionRefusals(t *testing.T) {
 	f, c := transitionSite(t, "software")
 	for name, in := range map[string]TransitionInput{
-		"unavailable":     {Issue: "WEB-1", Transition: "Reopen"},
-		"unknown":         {Issue: "WEB-1", Transition: "Close"},
-		"bad value":       {Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "Resolution", Value: Text("Duplicate")}}},
-		"off the screen":  {Issue: "WEB-1", Transition: "Start", Fields: []FieldInput{{Field: "Resolution", Value: Text("Fixed")}}},
-		"required clear":  {Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "Resolution", Value: Clear()}}},
+		"unavailable":    {Issue: "WEB-1", Transition: "Reopen"},
+		"unknown":        {Issue: "WEB-1", Transition: "Close"},
+		"bad value":      {Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "Resolution", Value: Text("Duplicate")}}},
+		"off the screen": {Issue: "WEB-1", Transition: "Start", Fields: []FieldInput{{Field: "Resolution", Value: Text("Fixed")}}},
+		"required clear": {Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "Resolution", Value: Clear()}}},
+		"set twice": {Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{
+			{Field: "Resolution", Value: Text("Fixed")}, {Field: "resolution", Value: Text("Won't Do")}}},
 		"blank comment":   {Issue: "WEB-1", Transition: "Start", Comment: "<!-- -->"},
 		"bad issue in id": {Issue: "WEB-1/x", Transition: "Start"},
 	} {
@@ -101,7 +104,7 @@ func TestTransitionRefusals(t *testing.T) {
 // gets the same loss check as an edit.
 func TestTransitionLossCheck(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1/transitions", reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
 		"description":{"key":"description","name":"Description","schema":{"type":"string","system":"description"},"operations":["set"]}}}]}`))
 	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
@@ -124,9 +127,42 @@ func TestTransitionLossCheck(t *testing.T) {
 	}
 }
 
+// TestTransitionRequiredFieldsBeforeUploads proves a required screen
+// field the move leaves provably empty is refused before any image is
+// uploaded, and one the issue already holds is let through.
+func TestTransitionRequiredFieldsBeforeUploads(t *testing.T) {
+	f, c := transitionSite(t, "software")
+	var resolution atomic.Pointer[string]
+	empty, fixed := `null`, `{"id":"1","name":"Fixed"}`
+	resolution.Store(&empty)
+	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if r.URL.Query().Get("fields") == "project" {
+			reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"software"}}}`)(w, r, b)
+			return
+		}
+		wantQuery(t, r, "fields", "resolution")
+		reply(200, `{"id":"10001","key":"WEB-1","fields":{"resolution":`+*resolution.Load()+`}}`)(w, r, b)
+	})
+	var uploads atomic.Int32
+	imageRoutes(t, f, "WEB-1", &uploads)
+	f.on("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	in := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Comment: "![a](a.png)", ImageDir: imageDir(t, map[string][]byte{"a.png": pngBytes})}
+	_, err := c.Transition(t.Context(), in)
+	if mf, ok := errors.AsType[*MissingFieldsError](err); !ok || mf.Fields[0].ID != "resolution" || !trackerapi.WriteNotApplied(err) {
+		t.Fatalf("got %v", err)
+	}
+	if uploads.Load() != 0 {
+		t.Fatal("an image was uploaded before the refusal")
+	}
+	resolution.Store(&fixed)
+	if res, err := c.Transition(t.Context(), in); err != nil || !res.Moved || uploads.Load() != 1 {
+		t.Fatalf("a field the issue holds: %+v %v", res, err)
+	}
+}
+
 func TestAssignAndUnassign(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	var bodies []string
 	f.on("PUT", "/rest/api/3/issue/WEB-1/assignee", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		bodies = append(bodies, string(b))

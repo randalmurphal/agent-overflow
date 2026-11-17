@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,6 +44,9 @@ func (a attachmentJSON) attachment() Attachment {
 
 // Attachments returns an issue's attachments.
 func (c *Client) Attachments(ctx context.Context, issue string) ([]Attachment, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	is, err := c.GetIssue(ctx, issue, "attachment")
 	if err != nil {
 		return nil, err
@@ -71,8 +75,23 @@ type File struct {
 
 // Attach uploads files to an issue in one request and returns the
 // attachments Jira stored. The request is bounded by
-// Options.MaxUploadBytes; Jira refuses more than 60 files at once.
+// Options.MaxUploadBytes; Jira refuses more than 60 files at once. An
+// upload Jira stored whose answer did not decode is a *StepError whose
+// Applied reports it.
 func (c *Client) Attach(ctx context.Context, issue string, files ...File) ([]Attachment, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
+	out, err := c.attach(ctx, issue, files...)
+	if _, ok := errors.AsType[*AnswerError](err); ok {
+		return out, &StepError{Step: StepUpload, Err: err}
+	}
+	return out, err
+}
+
+// attach is Attach without the admission guard and the step error, for
+// the writes that upload images as one of their steps.
+func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Attachment, error) {
 	path, err := issuePath(issue)
 	if err != nil {
 		return nil, err
@@ -113,6 +132,9 @@ func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // DeleteAttachment deletes an attachment.
 func (c *Client) DeleteAttachment(ctx context.Context, id string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	if err := checkID("attachment", id); err != nil {
 		return err
 	}
@@ -126,6 +148,9 @@ func (c *Client) DeleteAttachment(ctx context.Context, id string) error {
 // limit bytes; a larger file fails with *trackerapi.BodyTooLargeError
 // after limit bytes reached dst.
 func (c *Client) DownloadAttachment(ctx context.Context, id string, dst io.Writer, limit int64) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	if err := checkID("attachment", id); err != nil {
 		return err
 	}
@@ -146,6 +171,13 @@ func (c *Client) DownloadAttachment(ctx context.Context, id string, dst io.Write
 // the media service at .../file/<media ID>/binary; the redirect is read,
 // not followed.
 func (c *Client) AttachmentMediaID(ctx context.Context, id string) (string, error) {
+	if err := c.admit(ctx); err != nil {
+		return "", err
+	}
+	return c.mediaID(ctx, id)
+}
+
+func (c *Client) mediaID(ctx context.Context, id string) (string, error) {
 	if err := checkID("attachment", id); err != nil {
 		return "", err
 	}
@@ -160,6 +192,9 @@ func (c *Client) AttachmentMediaID(ctx context.Context, id string) (string, erro
 	return mediaID, nil
 }
 
+// mediaIDRE is a media file ID: a UUID or a similar token.
+var mediaIDRE = regexp.MustCompile(`^[0-9A-Za-z-]+$`)
+
 // mediaIDOf reads the media ID from a media service URL's path: the
 // segment after "file".
 func mediaIDOf(loc string) (string, error) {
@@ -169,9 +204,9 @@ func mediaIDOf(loc string) (string, error) {
 	}
 	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
 	for i, s := range segs {
-		if s == "file" && i+1 < len(segs) && segs[i+1] != "" {
+		if s == "file" && i+1 < len(segs) && mediaIDRE.MatchString(segs[i+1]) {
 			return segs[i+1], nil
 		}
 	}
-	return "", fmt.Errorf("the redirect to %s names no media file", u.Host)
+	return "", errors.New("the redirect names no media file")
 }

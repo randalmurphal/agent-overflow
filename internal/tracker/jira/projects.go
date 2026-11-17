@@ -2,7 +2,6 @@ package jira
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -125,17 +124,30 @@ type ProjectQuery struct {
 	Limit int
 }
 
+// ProjectList is the projects a listing returned. Complete is false when
+// q.Limit stopped it before the last project.
+type ProjectList struct {
+	Projects []Project
+	Complete bool
+}
+
 // Projects returns the projects the user can browse, reading every page
 // up to q.Limit. A failure after some pages returns them with the error.
-func (c *Client) Projects(ctx context.Context, q ProjectQuery) ([]Project, error) {
+func (c *Client) Projects(ctx context.Context, q ProjectQuery) (ProjectList, error) {
+	if err := c.admit(ctx); err != nil {
+		return ProjectList{}, err
+	}
+	if q.Limit < 0 {
+		return ProjectList{}, notSent("list projects: a negative limit")
+	}
 	v := url.Values{"orderBy": {"key"}}
 	if q.Query != "" {
 		v.Set("query", q.Query)
 	}
-	found, err := offsetPages[projectJSON](ctx, c, "project/search", v, 100, q.Limit)
-	out := make([]Project, len(found))
+	found, complete, err := offsetPages[projectJSON](ctx, c, "project/search", v, 100, q.Limit)
+	out := ProjectList{Projects: make([]Project, len(found)), Complete: complete}
 	for i, p := range found {
-		out[i] = p.project()
+		out.Projects[i] = p.project()
 	}
 	if err != nil {
 		return out, fmt.Errorf("jira: list projects: %w", err)
@@ -145,6 +157,9 @@ func (c *Client) Projects(ctx context.Context, q ProjectQuery) ([]Project, error
 
 // Project returns a project by key or ID, with its issue types.
 func (c *Client) Project(ctx context.Context, ref string) (Project, error) {
+	if err := c.admit(ctx); err != nil {
+		return Project{}, err
+	}
 	if err := checkProject(ref); err != nil {
 		return Project{}, err
 	}
@@ -163,6 +178,9 @@ type TypeStatuses struct {
 
 // ProjectStatuses returns a project's statuses for each of its issue types.
 func (c *Client) ProjectStatuses(ctx context.Context, project string) ([]TypeStatuses, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	if err := checkProject(project); err != nil {
 		return nil, err
 	}
@@ -185,7 +203,10 @@ func (c *Client) ProjectStatuses(ctx context.Context, project string) ([]TypeSta
 
 // Priorities returns the site's priorities, reading every page.
 func (c *Client) Priorities(ctx context.Context) ([]Priority, error) {
-	found, err := offsetPages[priorityJSON](ctx, c, "priority/search", url.Values{}, 100, 0)
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
+	found, _, err := offsetPages[priorityJSON](ctx, c, "priority/search", url.Values{}, 100, 0)
 	out := make([]Priority, len(found))
 	for i, p := range found {
 		out[i] = Priority(p)
@@ -198,6 +219,9 @@ func (c *Client) Priorities(ctx context.Context) ([]Priority, error) {
 
 // IssueLinkTypes returns the site's issue link types.
 func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	var v struct {
 		Types []struct {
 			ID      string `json:"id"`
@@ -216,42 +240,38 @@ func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
 	return out, nil
 }
 
-// offsetPage is a page of the platform's offset paging.
-type offsetPage struct {
-	Values  []json.RawMessage `json:"values"`
-	IsLast  bool              `json:"isLast"`
-	StartAt int64             `json:"startAt"`
-	Total   int64             `json:"total"`
-}
-
-// offsetPages reads path's pages of size from the start until the last
-// one, or until limit items when limit is above zero. A failure returns
+// offsetPages reads path's pages, the platform's offset paging, of size from the start until the last
+// one, or until limit items when limit is above zero; complete reports
+// that the last page was read with every item kept. A failure returns
 // the items read before it.
-func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) ([]T, error) {
-	var out []T
+func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, err error) {
 	for start := 0; ; {
 		q.Set("startAt", strconv.Itoa(start))
 		q.Set("maxResults", strconv.Itoa(size))
-		var page offsetPage
-		if err := c.get(ctx, path, q, &page); err != nil {
-			return out, err
+		var page struct {
+			Values []T   `json:"values"`
+			IsLast bool  `json:"isLast"`
+			Total  int64 `json:"total"`
 		}
-		for _, raw := range page.Values {
-			var item T
-			if err := json.Unmarshal(raw, &item); err != nil {
-				return out, fmt.Errorf("decode an item at %d: %w", start, err)
-			}
-			out = append(out, item)
-			if limit > 0 && len(out) == limit {
-				return out, nil
-			}
+		if err := c.get(ctx, path, q, &page); err != nil {
+			return out, false, err
 		}
 		next := start + len(page.Values)
-		if page.IsLast || (page.Total > 0 && int64(next) >= page.Total) {
-			return out, nil
+		last := page.IsLast || (page.Total > 0 && int64(next) >= page.Total)
+		for _, item := range page.Values {
+			if limit > 0 && len(out) == limit {
+				return out, false, nil // items past the limit
+			}
+			out = append(out, item)
+		}
+		switch {
+		case last:
+			return out, true, nil
+		case limit > 0 && len(out) == limit:
+			return out, false, nil
 		}
 		if len(page.Values) == 0 {
-			return out, fmt.Errorf("an empty page at %d that is not the last", start)
+			return out, false, fmt.Errorf("an empty page at %d that is not the last", start)
 		}
 		start = next
 	}

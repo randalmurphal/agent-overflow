@@ -1,21 +1,19 @@
 package jira
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode"
 )
 
 // userCacheSize bounds the users a Client keeps by account ID.
 const userCacheSize = 2000
 
-// maxUserSearch is the most users one search returns; Jira stops at the
-// thousandth user however a search pages.
+// maxUserSearch is the window of a user search: Jira takes the users that
+// match from the first to the thousandth, however a search pages.
 const maxUserSearch = 1000
 
 // User is a Jira account. Email and TimeZone are empty when the user's
@@ -68,69 +66,93 @@ func users(in []userJSON) []User {
 
 // Myself returns the user the credential belongs to.
 func (c *Client) Myself(ctx context.Context) (User, error) {
+	if err := c.admit(ctx); err != nil {
+		return User{}, err
+	}
+	epoch := c.users.epoch()
 	var u userJSON
 	if err := c.get(ctx, "myself", nil, &u); err != nil {
 		return User{}, fmt.Errorf("jira: who the credential belongs to: %w", err)
 	}
-	c.users.put(u.user())
+	c.keepUsers(epoch, u.user())
 	return u.user(), nil
 }
 
 // User returns the user with accountID, from the client's cache when it
 // holds it. A missing user is an error matching trackerapi.ErrNotFound.
 func (c *Client) User(ctx context.Context, accountID string) (User, error) {
+	if err := c.admit(ctx); err != nil {
+		return User{}, err
+	}
 	if accountID == "" {
 		return User{}, notSent("an account ID is required")
 	}
 	if u, ok := c.users.get(accountID); ok {
 		return u, nil
 	}
+	epoch := c.users.epoch()
 	var u userJSON
 	if err := c.get(ctx, "user", url.Values{"accountId": {accountID}}, &u); err != nil {
 		return User{}, fmt.Errorf("jira: user %s: %w", accountID, err)
 	}
-	c.users.put(u.user())
+	c.keepUsers(epoch, u.user())
 	return u.user(), nil
 }
 
-// ForgetUsers drops the cached users.
+// keepUsers caches us under epoch.
+func (c *Client) keepUsers(epoch uint64, us ...User) {
+	for _, u := range us {
+		if u.AccountID != "" {
+			c.users.put(epoch, u.AccountID, u)
+		}
+	}
+}
+
+// ForgetUsers drops the cached users; a read in flight stores nothing.
 func (c *Client) ForgetUsers() { c.users.clear() }
 
-// SearchUsers returns the active users whose display name or email
-// starts with query, at most max (zero means 50, and Jira stops at 1000).
-// Without the Browse users and groups permission Jira returns none.
+// SearchUsers returns the users whose display name or email starts with
+// query, at most max (zero means 50, and Jira stops at 1000). Without the
+// Browse users and groups permission Jira returns none.
 func (c *Client) SearchUsers(ctx context.Context, query string, max int) ([]User, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(query) == "" {
 		return nil, notSent("a user search needs a query")
 	}
-	found, err := c.userSearch(ctx, url.Values{"query": {query}}, max)
+	found, err := c.userSearch(ctx, url.Values{"query": {query}}, 0, pageSize(max, 50, maxUserSearch))
 	if err != nil {
 		return nil, fmt.Errorf("jira: search users for %q: %w", query, err)
 	}
 	return found, nil
 }
 
-func (c *Client) userSearch(ctx context.Context, q url.Values, max int) ([]User, error) {
-	q.Set("maxResults", strconv.Itoa(pageSize(max, 50, maxUserSearch)))
+// userSearch is one page of user/search from startAt.
+func (c *Client) userSearch(ctx context.Context, q url.Values, startAt, max int) ([]User, error) {
+	q.Set("startAt", strconv.Itoa(startAt))
+	q.Set("maxResults", strconv.Itoa(max))
+	epoch := c.users.epoch()
 	var found []userJSON
 	if err := c.get(ctx, "user/search", q, &found); err != nil {
 		return nil, err
 	}
 	out := users(found)
-	for _, u := range out {
-		c.users.put(u)
-	}
+	c.keepUsers(epoch, out...)
 	return out, nil
 }
 
 // AssignableQuery selects users who can be assigned an issue: an existing
-// issue (Issue) or a new one in a project (Project). Exactly one is set.
+// issue (Issue, a key or ID) or a new one in a project (Project). Exactly
+// one is set.
 type AssignableQuery struct {
 	Issue   string
 	Project string
 	// Query matches the start of a display name or email; empty lists
-	// everyone in the window.
-	Query string
+	// everyone in the window. AccountID asks about one user instead, who
+	// is returned only when assignable. At most one is set.
+	Query     string
+	AccountID string
 	// StartAt and MaxResults select the window of users Jira checks;
 	// MaxResults zero means 50. Jira returns only the assignable users in
 	// the window, so a short page does not mean there are no more.
@@ -140,60 +162,99 @@ type AssignableQuery struct {
 
 // AssignableUsers returns the users in q's window who can be assigned.
 func (c *Client) AssignableUsers(ctx context.Context, q AssignableQuery) ([]User, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	v := url.Values{}
 	switch {
 	case (q.Issue == "") == (q.Project == ""):
 		return nil, notSent("assignable users need exactly one of an issue or a project")
 	case q.Issue != "":
-		if err := checkIssue(q.Issue); err != nil {
+		if err := issueParam(v, q.Issue); err != nil {
 			return nil, err
 		}
-		v.Set("issueKey", q.Issue)
 	default:
 		if err := checkProject(q.Project); err != nil {
 			return nil, err
 		}
 		v.Set("project", q.Project)
 	}
-	if q.StartAt < 0 || q.MaxResults < 0 {
+	switch {
+	case q.StartAt < 0 || q.MaxResults < 0:
 		return nil, notSent("assignable users: a negative window")
-	}
-	if q.Query != "" {
+	case q.Query != "" && q.AccountID != "":
+		return nil, notSent("assignable users: a query or an account ID, not both")
+	case q.Query != "":
 		v.Set("query", q.Query)
+	case q.AccountID != "":
+		v.Set("accountId", q.AccountID)
 	}
 	v.Set("startAt", strconv.Itoa(q.StartAt))
 	v.Set("maxResults", strconv.Itoa(pageSize(q.MaxResults, 50, maxUserSearch)))
+	epoch := c.users.epoch()
 	var found []userJSON
 	if err := c.get(ctx, "user/assignable/search", v, &found); err != nil {
 		return nil, fmt.Errorf("jira: assignable users: %w", err)
 	}
 	out := users(found)
-	for _, u := range out {
-		c.users.put(u)
-	}
+	c.keepUsers(epoch, out...)
 	return out, nil
 }
 
 // FindUser resolves who, an account ID, an exact display name or an
-// email (case ignored), to one active user. A name several users share
-// is a *MatchError listing them; no exact match is a *MatchError listing
-// the users whose name or email starts with who.
+// email (case ignored), to one active user who is not an app. A name
+// several users share is a *MatchError listing them, and no exact match
+// is a *MatchError listing the users whose name or email starts with
+// who. A name more users start with than Jira's search window holds is
+// an *UnprovenMatchError, since a second exact match may lie beyond it.
 func (c *Client) FindUser(ctx context.Context, who string) (User, error) {
+	if err := c.admit(ctx); err != nil {
+		return User{}, err
+	}
 	return c.findUser(ctx, who, nil)
 }
 
-// findUser is FindUser searching with search when set (the users
-// assignable to one issue), or the site's user search.
-func (c *Client) findUser(ctx context.Context, who string, search func(context.Context, string) ([]User, error)) (User, error) {
+// findUser is FindUser, and with scope set also checks that the user can
+// be assigned there, asking about the user by account ID.
+func (c *Client) findUser(ctx context.Context, who string, scope *AssignableQuery) (User, error) {
 	who = strings.TrimSpace(who)
 	if who == "" {
 		return User{}, notSent("a user needs an account ID, name or email")
 	}
+	u, err := c.resolveUser(ctx, who)
+	if err != nil {
+		return User{}, err
+	}
+	if !eligible(u) {
+		return User{}, &MatchError{What: "active user", Input: who}
+	}
+	if scope == nil {
+		return u, nil
+	}
+	q := *scope
+	q.AccountID = u.AccountID
+	found, err := c.AssignableUsers(ctx, q)
+	if err != nil {
+		return User{}, fmt.Errorf("jira: find user %q: %w", who, err)
+	}
+	for _, a := range found {
+		if a.AccountID == u.AccountID {
+			return u, nil
+		}
+	}
+	return User{}, &MatchError{What: "user who can be assigned " + firstNonEmpty(q.Issue, "in "+q.Project), Input: who}
+}
+
+// eligible reports a user a value may name: active and not an app.
+func eligible(u User) bool { return u.Active && u.AccountType != "app" }
+
+// resolveUser finds who by account ID, then by exact name or email.
+func (c *Client) resolveUser(ctx context.Context, who string) (User, error) {
 	if !strings.ContainsFunc(who, unicode.IsSpace) && !strings.Contains(who, "@") {
 		if u, ok := c.users.get(who); ok {
 			return u, nil
 		}
-		byID, err := c.userSearch(ctx, url.Values{"accountId": {who}}, 1)
+		byID, err := c.userSearch(ctx, url.Values{"accountId": {who}}, 0, 1)
 		if err != nil {
 			return User{}, fmt.Errorf("jira: find user %q: %w", who, err)
 		}
@@ -203,18 +264,13 @@ func (c *Client) findUser(ctx context.Context, who string, search func(context.C
 			}
 		}
 	}
-	if search == nil {
-		search = func(ctx context.Context, q string) ([]User, error) {
-			return c.userSearch(ctx, url.Values{"query": {q}}, 100)
-		}
-	}
-	found, err := search(ctx, who)
+	found, complete, err := c.usersMatching(ctx, who)
 	if err != nil {
 		return User{}, fmt.Errorf("jira: find user %q: %w", who, err)
 	}
 	var exact, all []User
 	for _, u := range found {
-		if !u.Active || u.AccountType == "app" {
+		if !eligible(u) {
 			continue
 		}
 		all = append(all, u)
@@ -222,14 +278,44 @@ func (c *Client) findUser(ctx context.Context, who string, search func(context.C
 			exact = append(exact, u)
 		}
 	}
-	if len(exact) == 1 {
+	switch {
+	case len(exact) > 1:
+		return User{}, &MatchError{What: "user", Input: who, Ambiguous: true, Candidates: userCandidates(exact)}
+	case !complete:
+		return User{}, &UnprovenMatchError{What: "user", Input: who, Limit: maxUserSearch}
+	case len(exact) == 1:
 		return exact[0], nil
 	}
-	m := &MatchError{What: "user", Input: who, Ambiguous: len(exact) > 1, Candidates: userCandidates(all)}
-	if m.Ambiguous {
-		m.Candidates = userCandidates(exact)
+	return User{}, &MatchError{What: "user", Input: who, Candidates: userCandidates(all)}
+}
+
+// usersMatching walks the user search for query to its end: a page that
+// comes back empty, or the end of Jira's window, when complete is false
+// because more users may match than it lists. A page that holds no user
+// not seen already fails the walk rather than repeat it.
+func (c *Client) usersMatching(ctx context.Context, query string) (found []User, complete bool, err error) {
+	seen := map[string]bool{}
+	for start := 0; start < maxUserSearch; {
+		page, err := c.userSearch(ctx, url.Values{"query": {query}}, start, maxUserSearch-start)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(page) == 0 {
+			return found, true, nil
+		}
+		fresh := false
+		for _, u := range page {
+			if !seen[u.AccountID] {
+				seen[u.AccountID], fresh = true, true
+				found = append(found, u)
+			}
+		}
+		if !fresh {
+			return nil, false, fmt.Errorf("the user search repeated its page at %d", start)
+		}
+		start += len(page)
 	}
-	return User{}, m
+	return found, false, nil
 }
 
 func userCandidates(us []User) []Candidate {
@@ -250,54 +336,4 @@ func pageSize(n, def, max int) int {
 		n = def
 	}
 	return min(n, max)
-}
-
-// userCache keeps the most recently used users by account ID, at most
-// size of them.
-type userCache struct {
-	mu    sync.Mutex
-	size  int
-	order *list.List // of User, most recent first
-	byID  map[string]*list.Element
-}
-
-func newUserCache(size int) *userCache {
-	return &userCache{size: size, order: list.New(), byID: map[string]*list.Element{}}
-}
-
-func (uc *userCache) get(id string) (User, bool) {
-	uc.mu.Lock()
-	defer uc.mu.Unlock()
-	e, ok := uc.byID[id]
-	if !ok {
-		return User{}, false
-	}
-	uc.order.MoveToFront(e)
-	return e.Value.(User), true
-}
-
-func (uc *userCache) put(u User) {
-	if u.AccountID == "" {
-		return
-	}
-	uc.mu.Lock()
-	defer uc.mu.Unlock()
-	if e, ok := uc.byID[u.AccountID]; ok {
-		e.Value = u
-		uc.order.MoveToFront(e)
-		return
-	}
-	uc.byID[u.AccountID] = uc.order.PushFront(u)
-	if uc.order.Len() > uc.size {
-		last := uc.order.Back()
-		uc.order.Remove(last)
-		delete(uc.byID, last.Value.(User).AccountID)
-	}
-}
-
-func (uc *userCache) clear() {
-	uc.mu.Lock()
-	defer uc.mu.Unlock()
-	uc.order.Init()
-	clear(uc.byID)
 }

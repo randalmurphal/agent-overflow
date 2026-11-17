@@ -12,7 +12,7 @@ import (
 
 func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("POST", "/rest/api/3/issue/WEB-1/attachments", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if r.Header.Get("X-Atlassian-Token") != "no-check" {
 			t.Error("no anti-XSRF header")
@@ -44,7 +44,7 @@ func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 
 func TestAttachmentsListAndDelete(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "fields", "attachment")
 		reply(200, `{"id":"10001","key":"WEB-1","fields":{"attachment":[{"id":"501","filename":"a.png","size":3}]}}`)(w, r, b)
@@ -61,7 +61,7 @@ func TestAttachmentsListAndDelete(t *testing.T) {
 
 func TestDownloadAttachmentIsBounded(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "redirect", "false")
 		_, _ = w.Write([]byte("0123456789"))
@@ -84,7 +84,7 @@ func TestDownloadAttachmentIsBounded(t *testing.T) {
 
 func TestAttachmentMediaID(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/attachment/content/501", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		w.Header().Set("Location", "https://api.media.example.com/file/0f1e2d3c-media/binary?token=signed&client=x")
 		w.WriteHeader(http.StatusSeeOther)

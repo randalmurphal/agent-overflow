@@ -125,6 +125,17 @@ Other:
   ([developer thread](https://community.developer.atlassian.com/t/unable-to-change-issue-type-via-rest-api/64003),
   [community thread](https://community.atlassian.com/t5/Jira-questions/Update-both-issue-type-and-fields-for-Jira-issue/qaq-p/1663305)).
   Not measured.
+- Measured on 2026-11-16, reads only. A Jira Service Management comment
+  that is internal reads `jsdPublic: false` and carries the comment
+  property `sd.public.comment` with value `{"internal": true}`. A
+  customer-visible one reads `jsdPublic: true` and carries
+  `sd.allow.public.comment` with value `{"allow": true}` instead. The REST
+  spec documents neither property.
+- Measured the same day. `GET /rest/api/3/attachment/content/{id}`
+  answers 303 with a `Location` on another host whose path is
+  `/file/{media id}/binary` and whose query carries a signed token. With
+  `redirect=false` the same path answers 200 with the file from the Jira
+  site itself.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.

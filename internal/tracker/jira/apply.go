@@ -21,24 +21,32 @@ type CreateResult struct {
 	Uploaded []Attachment
 }
 
-// ApplyCreate sends a create plan. Without images it is one request.
-// With images the issue is created with each image written as a
-// paragraph naming its file, the images are attached to it, and the rich
-// text that embeds them is written again in full. A failure is a
+// ApplyCreate sends a create plan. Every image is read again and checked
+// against the plan before anything is sent. Without images the create is
+// one request. With images the issue is created with each image written
+// as a paragraph naming its file, the images are attached to it, and the
+// rich text that embeds them is written again in full. A failure is a
 // *StepError; the result says what exists.
 func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, error) {
 	var res CreateResult
+	if err := c.admit(ctx); err != nil {
+		return res, err
+	}
 	if err := p.claim(c); err != nil {
 		return res, err
 	}
+	held, err := p.stage.hold(ctx, p.images)
+	if err != nil {
+		return res, &StepError{Step: StepCheck, Err: err}
+	}
 	fields := map[string]json.RawMessage{
-		"project":   projectRef(p.Project),
-		"issuetype": mustJSON(idRef{p.IssueType.ID}),
+		"project":   projectRef(p.project),
+		"issuetype": mustJSON(idRef{p.issueType.ID}),
 	}
 	update := map[string]json.RawMessage{}
-	for _, v := range p.Values {
-		if len(v.Images) > 0 {
-			stand, err := withoutPending(v.doc, v.Images)
+	for _, v := range p.values {
+		if len(v.imgs) > 0 {
+			stand, err := withoutPending(v.doc, v.imgs)
 			if err != nil {
 				return res, &StepError{Step: StepCreate, Err: notSentErr(err)}
 			}
@@ -56,17 +64,20 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 		Key string `json:"key"`
 	}
 	if err := c.send(ctx, http.MethodPost, "issue", nil, body, &created); err != nil {
-		return res, &StepError{Step: StepCreate, Err: fmt.Errorf("jira: create in %s: %w", p.Project, err)}
+		return res, &StepError{Step: StepCreate, Err: fmt.Errorf("jira: create in %s: %w", p.project, err)}
+	}
+	if !numericRE.MatchString(created.ID) {
+		return res, &StepError{Step: StepCreate, Err: &AnswerError{Message: "the create's answer names no issue ID"}}
 	}
 	res.ID, res.Key = created.ID, created.Key
-	if len(p.Images) == 0 {
+	if len(p.images) == 0 {
 		return res, nil
 	}
-	ids, err := c.uploadImages(ctx, created.ID, p.stage, p.Images, &res.Uploaded)
+	ids, err := c.uploadImages(ctx, created.ID, p.images, held, &res.Uploaded)
 	if err != nil {
 		return res, &StepError{Step: StepUpload, Err: err}
 	}
-	finish, err := patchedFields(p.Values, ids, true)
+	finish, err := patchedFields(p.values, ids, true)
 	if err != nil {
 		return res, &StepError{Step: StepFinish, Err: notSentErr(err)}
 	}
@@ -107,7 +118,7 @@ func (v Value) addTo(fields, update map[string]json.RawMessage) {
 func patchedFields(vs []Value, ids map[string]string, onlyImages bool) (map[string]json.RawMessage, error) {
 	out := map[string]json.RawMessage{}
 	for _, v := range vs {
-		if len(v.Images) == 0 {
+		if len(v.imgs) == 0 {
 			if !onlyImages && v.Update == nil {
 				out[v.FieldID] = v.Fields
 			}
@@ -123,27 +134,21 @@ func patchedFields(vs []Value, ids map[string]string, onlyImages bool) (map[stri
 	return out, nil
 }
 
-// uploadImages attaches imgs to the issue and returns their media IDs by
-// placeholder, adding each attachment to done as it is stored.
-func (c *Client) uploadImages(ctx context.Context, issueID string, stage *imageStage, imgs []*Image, done *[]Attachment) (map[string]string, error) {
+// uploadImages attaches imgs, whose content held has, to the issue and
+// returns their media IDs by placeholder, adding each attachment to done
+// as it is stored.
+func (c *Client) uploadImages(ctx context.Context, issue string, imgs []*Image, held map[*Image][]byte, done *[]Attachment) (map[string]string, error) {
 	ids := map[string]string{}
 	for _, img := range imgs {
-		content, err := stage.content(ctx, img)
-		if err != nil {
-			if se, ok := errors.AsType[*StaleError](err); ok {
-				se.Issue = issueID
-			}
-			return ids, notSentErr(err)
-		}
-		stored, err := c.Attach(ctx, issueID, File{Name: img.Name, Content: bytes.NewReader(content)})
+		stored, err := c.attach(ctx, issue, File{Name: img.Name, Content: bytes.NewReader(held[img])})
+		*done = append(*done, stored...)
 		if err != nil {
 			return ids, err
 		}
 		if len(stored) != 1 {
-			return ids, fmt.Errorf("jira: attaching %s stored %d attachments", img.Name, len(stored))
+			return ids, &AnswerError{Message: fmt.Sprintf("attaching %s stored %d attachments", img.Name, len(stored))}
 		}
-		*done = append(*done, stored[0])
-		mediaID, err := c.AttachmentMediaID(ctx, stored[0].ID)
+		mediaID, err := c.mediaID(ctx, stored[0].ID)
 		if err != nil {
 			return ids, err
 		}
@@ -161,35 +166,46 @@ type EditResult struct {
 	Issue *Issue
 }
 
-// ApplyEdit sends an edit plan: it reads the issue's rich text fields
-// again and refuses with a *StaleError when one changed since the plan,
-// attaches the images, then writes the fields. A failure is a
-// *StepError; the result says what was done.
+// ApplyEdit sends an edit plan: it reads again every rich text field the
+// plan writes and every image it embeds, and refuses with a *StaleError
+// when one changed since the plan, before anything is sent; then it
+// attaches the images and writes the fields. A failure is a *StepError;
+// the result says what was done.
 func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error) {
 	var res EditResult
+	if err := c.admit(ctx); err != nil {
+		return res, err
+	}
 	if err := p.claim(c); err != nil {
 		return res, err
 	}
-	if len(p.Values) == 0 {
+	if len(p.values) == 0 {
 		return res, nil
 	}
 	if err := c.recheck(ctx, p); err != nil {
 		return res, &StepError{Step: StepCheck, Err: err}
 	}
+	held, err := p.stage.hold(ctx, p.images)
+	if err != nil {
+		var se *StaleError
+		if errors.As(err, &se) {
+			se.Issue = p.issueKey
+		}
+		return res, &StepError{Step: StepCheck, Err: err}
+	}
 	var ids map[string]string
-	if len(p.Images) > 0 {
-		var err error
-		if ids, err = c.uploadImages(ctx, p.IssueID, p.stage, p.Images, &res.Uploaded); err != nil {
+	if len(p.images) > 0 {
+		if ids, err = c.uploadImages(ctx, p.issueID, p.images, held, &res.Uploaded); err != nil {
 			return res, &StepError{Step: StepUpload, Err: err}
 		}
 	}
-	fields, err := patchedFields(p.Values, ids, false)
+	fields, err := patchedFields(p.values, ids, false)
 	if err != nil {
 		return res, &StepError{Step: StepEdit, Err: notSentErr(err)}
 	}
 	update := map[string]json.RawMessage{}
 	var names []string
-	for _, v := range p.Values {
+	for _, v := range p.values {
 		if v.Update != nil {
 			update[v.FieldID] = v.Update
 		}
@@ -201,8 +217,8 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 	}
 	q := url.Values{"returnIssue": {"true"}, "fields": {strings.Join(names, ",")}}
 	var stored issueJSON
-	if err := c.send(ctx, http.MethodPut, "issue/"+url.PathEscape(p.IssueID), q, body, &stored); err != nil {
-		return res, &StepError{Step: StepEdit, Err: fmt.Errorf("jira: edit %s: %w", p.IssueKey, err)}
+	if err := c.send(ctx, http.MethodPut, "issue/"+url.PathEscape(p.issueID), q, body, &stored); err != nil {
+		return res, &StepError{Step: StepEdit, Err: fmt.Errorf("jira: edit %s: %w", p.issueKey, err)}
 	}
 	if stored.ID != "" {
 		res.Issue = stored.decode()
@@ -210,12 +226,13 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 	return res, nil
 }
 
-// recheck reads the stored documents p's rich text edits were computed
-// from and refuses when one changed.
+// recheck reads the stored document of every rich text field p writes,
+// a clear included, and refuses when one is no longer the document the
+// plan was made against.
 func (c *Client) recheck(ctx context.Context, p *EditPlan) error {
 	var rich []Value
-	for _, v := range p.Values {
-		if v.doc != nil {
+	for _, v := range p.values {
+		if v.rich {
 			rich = append(rich, v)
 		}
 	}
@@ -226,7 +243,7 @@ func (c *Client) recheck(ctx context.Context, p *EditPlan) error {
 	for i, v := range rich {
 		ids[i] = v.FieldID
 	}
-	is, err := c.GetIssue(ctx, p.IssueID, ids...)
+	is, err := c.GetIssue(ctx, p.issueID, ids...)
 	if err != nil {
 		return err
 	}
@@ -236,7 +253,7 @@ func (c *Client) recheck(ctx context.Context, p *EditPlan) error {
 			return notSentErr(err)
 		}
 		if !adf.Equal(now, v.base) {
-			return notSentErr(&StaleError{Issue: p.IssueKey, What: v.Name})
+			return notSentErr(&StaleError{Issue: p.issueKey, What: v.Name})
 		}
 	}
 	return nil

@@ -9,7 +9,7 @@ import (
 
 func TestLinkAndUnlinkIssues(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issueLinkType", reply(200, `{"issueLinkTypes":[{"id":"10000","name":"Blocks","inward":"is blocked by","outward":"blocks"},{"id":"10001","name":"Relates","inward":"relates to","outward":"relates to"}]}`))
 	f.on("POST", "/rest/api/3/issueLink", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantJSON(t, b, `{"type":{"id":"10000"},"outwardIssue":{"key":"WEB-1"},"inwardIssue":{"id":"10002"}}`)
@@ -32,7 +32,7 @@ func TestLinkAndUnlinkIssues(t *testing.T) {
 
 func TestRemoteLinks(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1/remotelink", reply(200, `[{"id":10000,"globalId":"system=forge&id=7","relationship":"mentioned in",
 		"application":{"name":"Forge"},"object":{"url":"https://forge.example.com/mr/7","title":"MR 7","status":{"resolved":true}}}]`))
 	f.on("POST", "/rest/api/3/issue/WEB-1/remotelink", func(w http.ResponseWriter, r *http.Request, b []byte) {
@@ -60,7 +60,7 @@ func TestRemoteLinks(t *testing.T) {
 
 func TestWatchers(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1/watchers", reply(200, `{"isWatching":true,"watchCount":3,"watchers":[`+userOneJSON+`]}`))
 	f.on("POST", "/rest/api/3/issue/WEB-1/watchers", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if string(b) != `"acc-user2"` {

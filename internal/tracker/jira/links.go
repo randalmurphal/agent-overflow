@@ -3,10 +3,10 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 )
 
@@ -23,6 +23,9 @@ type LinkInput struct {
 // stores, and answers a link it already has as made; read the issue's
 // Links for its ID.
 func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	for _, ref := range []string{in.Outward, in.Inward} {
 		if err := checkIssue(ref); err != nil {
 			return err
@@ -59,6 +62,9 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 
 // UnlinkIssues deletes an issue link by its ID.
 func (c *Client) UnlinkIssues(ctx context.Context, linkID string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	if err := checkID("issue link", linkID); err != nil {
 		return err
 	}
@@ -100,6 +106,9 @@ type remoteLinkJSON struct {
 
 // RemoteLinks returns an issue's remote links.
 func (c *Client) RemoteLinks(ctx context.Context, issue string) ([]RemoteLink, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return nil, err
@@ -136,6 +145,9 @@ type RemoteLinkInput struct {
 // AddRemoteLink adds a remote link, or replaces the one with the same
 // GlobalID, and returns its ID.
 func (c *Client) AddRemoteLink(ctx context.Context, issue string, in RemoteLinkInput) (string, error) {
+	if err := c.admit(ctx); err != nil {
+		return "", err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return "", err
@@ -162,16 +174,27 @@ func (c *Client) AddRemoteLink(ctx context.Context, issue string, in RemoteLinkI
 		body["globalId"] = in.GlobalID
 	}
 	var stored struct {
-		ID int64 `json:"id"`
+		ID json.RawMessage `json:"id"`
 	}
-	if err := c.send(ctx, http.MethodPost, path+"/remotelink", nil, body, &stored); err != nil {
+	err = c.send(ctx, http.MethodPost, path+"/remotelink", nil, body, &stored)
+	if _, ok := errors.AsType[*AnswerError](err); ok {
+		err = &StepError{Step: StepRemoteLink, Err: err}
+	}
+	if err != nil {
 		return "", fmt.Errorf("jira: add remote link on %s: %w", issue, err)
 	}
-	return strconv.FormatInt(stored.ID, 10), nil
+	id := idText(stored.ID)
+	if !numericRE.MatchString(id) {
+		return "", &StepError{Step: StepRemoteLink, Err: &AnswerError{Message: "the remote link's answer names no link ID"}}
+	}
+	return id, nil
 }
 
 // RemoveRemoteLink deletes a remote link by its ID.
 func (c *Client) RemoveRemoteLink(ctx context.Context, issue, linkID string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return err
@@ -195,6 +218,9 @@ type Watchers struct {
 
 // Watchers returns an issue's watchers.
 func (c *Client) Watchers(ctx context.Context, issue string) (Watchers, error) {
+	if err := c.admit(ctx); err != nil {
+		return Watchers{}, err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return Watchers{}, err
@@ -212,6 +238,9 @@ func (c *Client) Watchers(ctx context.Context, issue string) (Watchers, error) {
 
 // AddWatcher makes the user with accountID watch an issue.
 func (c *Client) AddWatcher(ctx context.Context, issue, accountID string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return err
@@ -227,6 +256,9 @@ func (c *Client) AddWatcher(ctx context.Context, issue, accountID string) error 
 
 // RemoveWatcher stops the user with accountID watching an issue.
 func (c *Client) RemoveWatcher(ctx context.Context, issue, accountID string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return err

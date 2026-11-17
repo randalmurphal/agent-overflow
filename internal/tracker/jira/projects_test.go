@@ -3,13 +3,24 @@ package jira
 import (
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // projectPages answers project/search with pages of two from a list of
-// five, failing at failAt when it is not negative.
+// five, failing at failAt when it is not negative. A client that asks
+// for more than ten pages is looping: the test fails and the page is
+// refused, so the loop ends.
 func projectPages(t *testing.T, failAt int, emptyAt int) handler {
+	var calls atomic.Int32
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if calls.Add(1) > 10 {
+			t.Error("the client kept asking for pages")
+			reply(400, `{}`)(w, r, b)
+			return
+		}
 		wantQuery(t, r, "maxResults", "100")
 		start := r.URL.Query().Get("startAt")
 		var n int
@@ -35,28 +46,39 @@ func projectPages(t *testing.T, failAt int, emptyAt int) handler {
 
 func TestProjectsPagesToTheEnd(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/project/search", projectPages(t, -1, -1))
 	ps, err := c.Projects(t.Context(), ProjectQuery{})
-	if err != nil || len(ps) != 5 || ps[4].Key != "P4" {
-		t.Fatalf("got %d projects, %v", len(ps), err)
+	if err != nil || len(ps.Projects) != 5 || ps.Projects[4].Key != "P4" || !ps.Complete {
+		t.Fatalf("got %+v, %v", ps, err)
 	}
 	if n := f.count("GET", "/rest/api/3/project/search"); n != 3 {
 		t.Errorf("%d pages, want 3", n)
 	}
-	limited, err := c.Projects(t.Context(), ProjectQuery{Limit: 3})
-	if err != nil || len(limited) != 3 {
-		t.Errorf("limit: %d %v", len(limited), err)
+	for limit, complete := range map[int]bool{3: false, 4: false, 5: true, 6: true} {
+		f.on("GET", "/rest/api/3/project/search", projectPages(t, -1, -1))
+		got, err := c.Projects(t.Context(), ProjectQuery{Limit: limit})
+		if err != nil || len(got.Projects) != min(limit, 5) || got.Complete != complete {
+			t.Errorf("limit %d: %d projects, complete %v, %v", limit, len(got.Projects), got.Complete, err)
+		}
+	}
+	// A negative limit is not "no limit".
+	n := f.count("GET", "/rest/api/3/project/search")
+	if _, err := c.Projects(t.Context(), ProjectQuery{Limit: -1}); !trackerapi.WriteNotApplied(err) {
+		t.Errorf("a negative limit: %v", err)
+	}
+	if f.count("GET", "/rest/api/3/project/search") != n {
+		t.Error("a negative limit was sent")
 	}
 }
 
 func TestProjectsFailureMidPageKeepsWhatWasRead(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/project/search", projectPages(t, 2, -1))
 	ps, err := c.Projects(t.Context(), ProjectQuery{})
-	if err == nil || len(ps) != 2 {
-		t.Fatalf("got %d projects and %v", len(ps), err)
+	if err == nil || len(ps.Projects) != 2 || ps.Complete {
+		t.Fatalf("got %+v and %v", ps, err)
 	}
 	f.on("GET", "/rest/api/3/project/search", projectPages(t, -1, 2))
 	if _, err := c.Projects(t.Context(), ProjectQuery{}); err == nil {
@@ -66,7 +88,7 @@ func TestProjectsFailureMidPageKeepsWhatWasRead(t *testing.T) {
 
 func TestProjectAndStatuses(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/project/WEB", reply(200, `{"id":"10000","key":"WEB","name":"Web","projectTypeKey":"service_desk",
 		"issueTypes":[{"id":"1","name":"Task","hierarchyLevel":0},{"id":"2","name":"Sub-task","subtask":true,"hierarchyLevel":-1}]}`))
 	f.on("GET", "/rest/api/3/project/WEB/statuses", reply(200, `[{"id":"1","name":"Task","subtask":false,"self":"x",
@@ -83,7 +105,7 @@ func TestProjectAndStatuses(t *testing.T) {
 
 func TestPrioritiesAndLinkTypes(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/priority/search", reply(200, `{"values":[{"id":"1","name":"High","statusColor":"#f00"},{"id":"2","name":"Low"}],"isLast":true}`))
 	f.on("GET", "/rest/api/3/issueLinkType", reply(200, `{"issueLinkTypes":[{"id":"10000","name":"Blocks","inward":"is blocked by","outward":"blocks"}]}`))
 	ps, err := c.Priorities(t.Context())

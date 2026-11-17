@@ -10,7 +10,9 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -28,90 +30,138 @@ const uploadFraming = 4 << 10
 // Image is a local image a Markdown body embeds, read and checked when
 // planned and uploaded to the issue when applied.
 type Image struct {
-	// Ref is the reference as the Markdown wrote it; Name the file name
-	// it is attached under.
+	// Ref is the reference as the Markdown first wrote it; Name the file
+	// name it is attached under.
 	Ref  string
 	Name string
 	Size int64
 
+	path        string // the name inside the image folder, normalized
 	sum         [sha256.Size]byte
 	placeholder string
 }
 
-// imageStage collects the images one plan embeds.
+// imageStage collects the images one write embeds. They are read from
+// dir through an *os.Root, which refuses a name that leaves the folder,
+// through ".." or a symbolic link alike; the root is opened for each
+// pass over the images and closed before it returns, so no descriptor
+// outlives a call. A plan keeps the folder's path and each image's hash,
+// and its apply reads every image again before its first write. Together
+// the images of one write hold at most limit bytes, the upload limit
+// less its multipart framing, which bounds what an apply holds in memory.
 type imageStage struct {
-	fsys  fs.FS
-	limit int64
-	byRef map[string]*Image
-	list  []*Image
+	dir    string
+	limit  int64
+	total  int64
+	byPath map[string]*Image
+	list   []*Image
 }
 
-func newImageStage(fsys fs.FS, maxUpload int64) *imageStage {
-	return &imageStage{fsys: fsys, limit: maxUpload - uploadFraming, byRef: map[string]*Image{}}
+func newImageStage(dir string, maxUpload int64) *imageStage {
+	return &imageStage{dir: dir, limit: maxUpload - uploadFraming, byPath: map[string]*Image{}}
+}
+
+// imagePath normalizes ref to a name inside the image folder, so every
+// spelling of one file is one image: one leading "/" means the folder,
+// and the rest is cleaned. A name that leaves the folder is refused.
+func imagePath(ref string) (string, error) {
+	name := path.Clean(strings.TrimPrefix(ref, "/"))
+	if !fs.ValidPath(name) || name == "." {
+		return "", fmt.Errorf("image %s: not a path inside the image folder", ref)
+	}
+	return name, nil
+}
+
+// openRoot opens the image folder, which must be an absolute path.
+func (s *imageStage) openRoot() (*os.Root, error) {
+	if s.dir == "" {
+		return nil, errors.New("no folder to read local images from")
+	}
+	if !filepath.IsAbs(s.dir) {
+		return nil, fmt.Errorf("the image folder %s is not an absolute path", s.dir)
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("the image folder: %w", err)
+	}
+	return root, nil
 }
 
 // stage reads the image ref names and checks it is an image within the
-// upload limit; the same ref is staged once.
+// limit; one file is staged once however it is spelled.
 func (s *imageStage) stage(ctx context.Context, ref string) (*Image, error) {
-	if img, ok := s.byRef[ref]; ok {
-		return img, nil
-	}
-	content, err := s.read(ctx, ref)
+	name, err := imagePath(ref)
 	if err != nil {
 		return nil, err
+	}
+	if img, ok := s.byPath[name]; ok {
+		return img, nil
+	}
+	root, err := s.openRoot()
+	if err != nil {
+		return nil, fmt.Errorf("image %s: %w", ref, err)
+	}
+	defer func() { _ = root.Close() }()
+	content, err := readImage(ctx, root, name, s.limit-s.total)
+	if err != nil {
+		return nil, fmt.Errorf("image %s: %w", ref, err)
 	}
 	if kind := http.DetectContentType(content); !strings.HasPrefix(kind, "image/") {
 		return nil, fmt.Errorf("%s is %s, not an image; attach other files with Attach", ref, kind)
 	}
 	img := &Image{
-		Ref: ref, Name: path.Base(fsName(ref)), Size: int64(len(content)),
+		Ref: ref, Name: path.Base(name), Size: int64(len(content)), path: name,
 		sum: sha256.Sum256(content), placeholder: pendingPrefix + strconv.Itoa(len(s.list)),
 	}
-	s.byRef[ref] = img
+	s.total += img.Size
+	s.byPath[name] = img
 	s.list = append(s.list, img)
 	return img, nil
 }
 
-// read reads ref whole, refusing one over the limit.
-func (s *imageStage) read(ctx context.Context, ref string) ([]byte, error) {
-	if s.fsys == nil {
-		return nil, fmt.Errorf("image %s: no folder to read local images from", ref)
-	}
-	name := fsName(ref)
-	if !fs.ValidPath(name) {
-		return nil, fmt.Errorf("image %s: not a path inside the image folder", ref)
-	}
-	f, err := s.fsys.Open(name)
+// readImage reads name from root whole, refusing more than limit bytes.
+func readImage(ctx context.Context, root *os.Root, name string, limit int64) ([]byte, error) {
+	f, err := root.Open(filepath.FromSlash(name))
 	if err != nil {
-		return nil, fmt.Errorf("image %s: %w", ref, err)
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 	var buf bytes.Buffer
-	_, err = io.Copy(&buf, io.LimitReader(ctxReader{ctx, f}, s.limit+1))
-	if err != nil {
-		return nil, fmt.Errorf("image %s: %w", ref, err)
+	if _, err := io.Copy(&buf, io.LimitReader(ctxReader{ctx, f}, limit+1)); err != nil {
+		return nil, err
 	}
-	if int64(buf.Len()) > s.limit {
-		return nil, fmt.Errorf("image %s is over the %d-byte upload limit", ref, s.limit)
+	if int64(buf.Len()) > limit {
+		return nil, fmt.Errorf("the images of one write are over the %d-byte upload limit", limit)
 	}
 	return buf.Bytes(), nil
 }
 
-// content reads img again for its upload, refusing it when it changed
-// since it was staged.
-func (s *imageStage) content(ctx context.Context, img *Image) ([]byte, error) {
-	content, err := s.read(ctx, img.Ref)
+// hold reads imgs again, before the first write of the call that uploads
+// them, and returns their content by image. An image that changed since
+// it was staged is a *StaleError; any failure is the call's refusal
+// before it sent anything.
+func (s *imageStage) hold(ctx context.Context, imgs []*Image) (map[*Image][]byte, error) {
+	if len(imgs) == 0 {
+		return nil, nil
+	}
+	root, err := s.openRoot()
 	if err != nil {
-		return nil, err
+		return nil, notSentErr(err)
 	}
-	if sha256.Sum256(content) != img.sum {
-		return nil, &StaleError{What: "image " + img.Ref}
+	defer func() { _ = root.Close() }()
+	out := make(map[*Image][]byte, len(imgs))
+	for _, img := range imgs {
+		content, err := readImage(ctx, root, img.path, img.Size)
+		switch {
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			return nil, err
+		case err != nil || sha256.Sum256(content) != img.sum:
+			return nil, notSentErr(&StaleError{What: "image " + img.Ref})
+		}
+		out[img] = content
 	}
-	return content, nil
+	return out, nil
 }
-
-// fsName is ref as an fs.FS name: one leading "/" is dropped.
-func fsName(ref string) string { return strings.TrimPrefix(ref, "/") }
 
 // ctxReader stops reading once ctx ends.
 type ctxReader struct {
@@ -165,11 +215,12 @@ func buildRich(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value)
 	if err != nil {
 		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
 	}
-	v.doc, v.base, v.edits = doc, base, ws
+	v.rich, v.doc, v.base, v.edits = true, doc, base, ws
 	for _, w := range ws {
 		v.Warnings = append(v.Warnings, f.Name+": "+w.String())
 	}
-	v.Images = b.stage.in(doc)
+	v.imgs = b.stage.in(doc)
+	v.Images = imageCopies(v.imgs)
 	v.Unchanged = base != nil && adf.Equal(doc, base)
 	v.Display = adf.ToMarkdown(doc)
 	if v.Fields, err = json.Marshal(doc); err != nil {
@@ -200,6 +251,18 @@ func (b *builder) markdown(ctx context.Context, md string, base *adf.Node) (*adf
 		return nil, nil, errBlank
 	}
 	return doc, ws, nil
+}
+
+// imageCopies are copies of imgs, for a caller to keep.
+func imageCopies(imgs []*Image) []Image {
+	if len(imgs) == 0 {
+		return nil
+	}
+	out := make([]Image, len(imgs))
+	for i, img := range imgs {
+		out[i] = *img
+	}
+	return out
 }
 
 // in lists the staged images doc names, in the order staged.

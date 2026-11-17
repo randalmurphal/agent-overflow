@@ -45,17 +45,8 @@ var (
 // sent and the display.
 func TestValueEveryKind(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/user/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		switch r.URL.Query().Get("query") {
-		case "User 1":
-			reply(200, `[`+userOneJSON+`]`)(w, r, b)
-		case "User 2":
-			reply(200, `[`+userTwoJSON+`]`)(w, r, b)
-		default:
-			reply(200, `[]`)(w, r, b)
-		}
-	})
+	c := newTestClient(t, f)
+	f.on("GET", "/rest/api/3/user/search", userSearch(t, nil, map[string][]string{"User 1": {userOneJSON}, "User 2": {userTwoJSON}}))
 	f.on("GET", "/rest/api/3/issue/WEB-100", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "fields", "summary")
 		reply(200, `{"id":"10000","key":"WEB-100","fields":{"summary":"Login epic"}}`)(w, r, b)
@@ -104,7 +95,7 @@ func TestValueEveryKind(t *testing.T) {
 }
 
 func TestValueClear(t *testing.T) {
-	c, _ := newTestClient(t, newFake(t))
+	c := newTestClient(t, newFake(t))
 	for _, tc := range []struct {
 		f              FieldMeta
 		fields, update string
@@ -131,7 +122,7 @@ func TestValueClear(t *testing.T) {
 // TestValueRefusals proves every check that fails before sending, each
 // as a *trackerapi.NotSentError.
 func TestValueRefusals(t *testing.T) {
-	c, _ := newTestClient(t, newFake(t))
+	c := newTestClient(t, newFake(t))
 	addOnly := labelsField
 	addOnly.Operations = []string{"add"}
 	for name, tc := range map[string]struct {
@@ -167,7 +158,7 @@ func TestValueRefusals(t *testing.T) {
 }
 
 func TestValueMatchErrors(t *testing.T) {
-	c, _ := newTestClient(t, newFake(t))
+	c := newTestClient(t, newFake(t))
 	_, err := c.Value(t.Context(), colorField, Text("RED"), ValueOptions{})
 	me, ok := errors.AsType[*MatchError](err)
 	if !ok || !me.Ambiguous || len(me.Candidates) != 2 {
@@ -182,7 +173,7 @@ func TestValueMatchErrors(t *testing.T) {
 
 func TestValuePriorityWithoutAllowedValues(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/priority/search", reply(200, `{"values":[{"id":"1","name":"High"},{"id":"2","name":"Low"}],"isLast":true}`))
 	bare := meta("priority", "Priority", Schema{Type: "priority", System: "priority"})
 	v, err := c.Value(t.Context(), bare, Text("Low"), ValueOptions{})
@@ -192,7 +183,7 @@ func TestValuePriorityWithoutAllowedValues(t *testing.T) {
 }
 
 func TestValueNamesUncheckedWithoutAllowedValues(t *testing.T) {
-	c, _ := newTestClient(t, newFake(t))
+	c := newTestClient(t, newFake(t))
 	bare := meta("components", "Components", Schema{Type: "array", Items: "component", System: "components"})
 	v, err := c.Value(t.Context(), bare, Texts("Web", "API"), ValueOptions{})
 	if err != nil || len(v.Warnings) != 1 {
@@ -201,12 +192,20 @@ func TestValueNamesUncheckedWithoutAllowedValues(t *testing.T) {
 	wantJSON(t, v.Fields, `[{"name":"Web"},{"name":"API"}]`)
 }
 
-func TestValueAssigneeSearchesAssignableUsers(t *testing.T) {
+// TestValueAssigneeMustBeAssignable proves the assignee is checked with
+// the assignable endpoint by account ID however the user was named: by
+// name, by account ID, or from the cache.
+func TestValueAssigneeMustBeAssignable(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
+	f.on("GET", "/rest/api/3/user/search", userSearch(t, map[string]string{"acc-user1": userOneJSON}, map[string][]string{"User 2": {userTwoJSON}}))
 	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "issueKey", "WEB-1")
-		wantQuery(t, r, "query", "User 2")
+		if r.URL.Query().Get("query") != "" {
+			t.Error("the scoped check asks by name")
+		}
+		// Only the user asked about vouches: an answer naming someone
+		// else, as one that ignored accountId would, does not.
 		reply(200, `[`+userTwoJSON+`]`)(w, r, b)
 	})
 	assignee := meta("assignee", "Assignee", Schema{Type: "user", System: "assignee"})
@@ -214,11 +213,19 @@ func TestValueAssigneeSearchesAssignableUsers(t *testing.T) {
 	if err != nil || string(v.Fields) != `{"accountId":"acc-user2"}` {
 		t.Fatalf("got %s %v", v.Fields, err)
 	}
+	for _, who := range []string{"acc-user1", "acc-user1"} { // the second from the cache
+		if _, err := c.Value(t.Context(), assignee, Text(who), ValueOptions{Issue: "WEB-1"}); !trackerapi.WriteNotApplied(err) {
+			t.Errorf("a user who cannot be assigned: %v", err)
+		}
+	}
+	if n := f.count("GET", "/rest/api/3/user/assignable/search"); n != 3 {
+		t.Errorf("%d scoped checks, want 3", n)
+	}
 }
 
 func TestValueParentMissing(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-999", reply(404, `{"errorMessages":["Issue does not exist"]}`))
 	f.on("GET", myselfURL, reply(200, userOneJSON))
 	_, err := c.Value(t.Context(), parentField, Text("WEB-999"), ValueOptions{})

@@ -46,7 +46,7 @@ const fullIssueJSON = `{"id":"10001","key":"WEB-1","fields":{
 
 func TestGetIssueDecodesEveryTypedField(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "fields", "*all")
 		reply(200, fullIssueJSON)(w, r, b)
@@ -146,7 +146,7 @@ func TestCustomFieldReaders(t *testing.T) {
 // field leaves it zero, keeps it raw, names it, and decodes the rest.
 func TestOneBadFieldKeepsTheIssue(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1", reply(200, `{"id":"10001","key":"WEB-1","fields":{
 		"summary":"Still here","status":"Done","description":{"type":"paragraph"},"created":"yesterday",
 		"customfield_10001":{"anything":[1,2]}}}`))
@@ -167,7 +167,7 @@ func TestOneBadFieldKeepsTheIssue(t *testing.T) {
 
 func TestGetIssueRefusesPathText(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	for _, ref := range []string{"", "..", "WEB-1/comment", "WEB-1?x=1", "WEB 1"} {
 		if _, err := c.GetIssue(t.Context(), ref); err == nil {
 			t.Errorf("%q reached a path", ref)

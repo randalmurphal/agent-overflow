@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -54,17 +55,20 @@ func (e *MatchError) Error() string {
 	return fmt.Sprintf("jira: no %s matches %q; candidates: %s", e.What, e.Input, strings.Join(names, ", "))
 }
 
-// match finds want among cands by ID, then by name ignoring case. One hit
-// wins; among several, the one whose ID or name is exactly want wins
+// match finds want among cands. An exact ID wins first and is never
+// ambiguous; names are compared, case ignored, only when no ID is want.
+// One name hit wins; among several, the one spelled exactly as want wins
 // when only one is. Otherwise the error lists the hits, or every
 // candidate when nothing matched.
 func match(what, want string, cands []Candidate) (Candidate, error) {
+	for _, c := range cands {
+		if c.ID != "" && c.ID == want {
+			return c, nil
+		}
+	}
 	var hits, exact []Candidate
 	for _, c := range cands {
-		switch {
-		case c.ID != "" && c.ID == want:
-			hits, exact = append(hits, c), append(exact, c)
-		case strings.EqualFold(c.Name, want):
+		if strings.EqualFold(c.Name, want) {
 			hits = append(hits, c)
 			if c.Name == want {
 				exact = append(exact, c)
@@ -91,7 +95,10 @@ type StaleError struct {
 }
 
 func (e *StaleError) Error() string {
-	return fmt.Sprintf("jira: %s on %s changed since the edit was planned; plan it again", e.What, e.Issue)
+	if e.Issue == "" {
+		return fmt.Sprintf("jira: %s changed since the write was planned; plan it again", e.What)
+	}
+	return fmt.Sprintf("jira: %s on %s changed since the write was planned; plan it again", e.What, e.Issue)
 }
 
 // MissingFieldsError is a create that leaves required fields unset.
@@ -113,7 +120,8 @@ type Step string
 const (
 	// StepCheck reads the issue again to see that a plan still applies.
 	StepCheck Step = "check"
-	// StepUpload attaches a local image the Markdown embeds.
+	// StepUpload attaches a file: a local image the Markdown embeds, or
+	// the files of Attach.
 	StepUpload Step = "upload"
 	// StepCreate creates the issue.
 	StepCreate Step = "create"
@@ -124,12 +132,16 @@ const (
 	StepFinish Step = "finish"
 	// StepTransition moves the issue.
 	StepTransition Step = "transition"
-	// StepComment adds a comment.
+	// StepComment adds or edits a comment.
 	StepComment Step = "comment"
+	// StepRemoteLink adds a remote link.
+	StepRemoteLink Step = "remote link"
 )
 
-// StepError is the failure of one step of a multi-request write. The
-// result returned with it says what the earlier steps did.
+// StepError is the failure of one step of a write: a step of a
+// multi-request write, or a single write whose answer did not decode.
+// The result returned with it says what the earlier steps did, and what
+// the failed step stored when it was applied.
 type StepError struct {
 	Step Step
 	Err  error
@@ -138,9 +150,31 @@ type StepError struct {
 func (e *StepError) Error() string { return fmt.Sprintf("jira: %s step: %v", e.Step, e.Err) }
 func (e *StepError) Unwrap() error { return e.Err }
 
+// Applied reports a step Jira applied whose answer this package could not
+// read (an *AnswerError): the write happened, and the result carries what
+// of its answer decoded.
+func (e *StepError) Applied() bool {
+	_, ok := errors.AsType[*AnswerError](e.Err)
+	return ok && e.Step != StepCheck
+}
+
 // OutcomeUnknown reports whether the failed step may have been applied:
 // a write the tracker did not answer in full. A caller reads the issue
 // before it offers the write again.
 func (e *StepError) OutcomeUnknown() bool {
-	return e.Step != StepCheck && !trackerapi.WriteNotApplied(e.Err)
+	return e.Step != StepCheck && !e.Applied() && !trackerapi.WriteNotApplied(e.Err)
+}
+
+// UnprovenMatchError is a name more candidates share than the tracker
+// lists: the first Limit matched, so a second exact match may lie beyond
+// them and the name cannot be shown to mean one. Naming the candidate by
+// its ID resolves it.
+type UnprovenMatchError struct {
+	What  string
+	Input string
+	Limit int
+}
+
+func (e *UnprovenMatchError) Error() string {
+	return fmt.Sprintf("jira: %q matches more than the %d %s candidates Jira lists, so it cannot be shown to name one; name it by ID", e.Input, e.Limit, e.What)
 }

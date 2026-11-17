@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/trackerapi"
@@ -16,7 +15,7 @@ import (
 // commentSite is WEB-1 in a project of typeKey.
 func commentSite(t *testing.T, typeKey string) (*fakeJira, *Client) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "fields", "project")
 		reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"`+typeKey+`"}}}`)(w, r, b)
@@ -83,13 +82,7 @@ func TestAddCommentRefusesBlankAndMissesNothing(t *testing.T) {
 
 func TestAddCommentWithImageAndMention(t *testing.T) {
 	f, c := commentSite(t, "software")
-	f.on("GET", "/rest/api/3/user/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if r.URL.Query().Get("query") == "User 2" {
-			reply(200, `[`+userTwoJSON+`]`)(w, r, b)
-			return
-		}
-		reply(200, `[]`)(w, r, b)
-	})
+	f.on("GET", "/rest/api/3/user/search", userSearch(t, nil, map[string][]string{"User 2": {userTwoJSON}}))
 	var uploads atomic.Int32
 	imageRoutes(t, f, "WEB-1", &uploads)
 	f.on("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
@@ -103,7 +96,7 @@ func TestAddCommentWithImageAndMention(t *testing.T) {
 		storedCommentReply(string(body.Body))(w, r, b)
 	})
 	res, err := c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "@[User 2] see\n\n![a](a.png)\n",
-		Images: fstest.MapFS{"a.png": {Data: pngBytes}}})
+		ImageDir: imageDir(t, map[string][]byte{"a.png": pngBytes})})
 	if err != nil || len(res.Uploaded) != 1 || res.Comment == nil {
 		t.Fatalf("got %+v %v", res, err)
 	}
@@ -115,7 +108,7 @@ func TestAddCommentWithImageAndMention(t *testing.T) {
 
 func TestCommentsPage(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "startAt", "1")
 		wantQuery(t, r, "maxResults", "2")
@@ -134,7 +127,7 @@ func TestCommentsPage(t *testing.T) {
 // role.
 func editCommentSite(t *testing.T, body *adf.Node) (*fakeJira, *Client) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":`+docJSON(t, body)+`,"visibility":{"type":"role","value":"Developers"}}`))
 	return f, c
 }
@@ -190,7 +183,7 @@ func TestEditCommentRefusals(t *testing.T) {
 
 func TestDeleteComment(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("DELETE", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	if err := c.DeleteComment(t.Context(), "WEB-1", "900"); err != nil {
 		t.Fatal(err)

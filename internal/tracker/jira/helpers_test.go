@@ -5,10 +5,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker/adf"
@@ -83,41 +84,39 @@ func reply(status int, body string) handler {
 	}
 }
 
-// testClock is the client's injected clock.
-type testClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
+// testToken is the credential's secret, which no answer text may repeat.
+const testToken = "fake-token-6Jq2"
 
-func (k *testClock) now() time.Time {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	return k.t
-}
-
-func (k *testClock) advance(d time.Duration) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.t = k.t.Add(d)
-}
-
-// newTestClient is a Client on f with a static credential and the test
-// clock.
-func newTestClient(t *testing.T, f *fakeJira) (*Client, *testClock) {
+// newTestClient is a Client on f with a static credential.
+func newTestClient(t *testing.T, f *fakeJira) *Client {
 	t.Helper()
 	c, err := New(Options{
 		BaseURL: f.srv.URL,
 		Version: "test",
 		Credentials: trackerapi.StaticCredentials(
-			trackerapi.Basic("user1@example.com", secret.New([]byte("fake-token")))),
+			trackerapi.Basic("user1@example.com", secret.New([]byte(testToken)))),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
-	c.now = clock.now
 	t.Cleanup(c.Close)
-	return c, clock
+	return c
+}
+
+// imageDir is a new folder holding files, by slash-separated name.
+func imageDir(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, data := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
 }
 
 // wantJSON fails unless got and want are the same JSON value.

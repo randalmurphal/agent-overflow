@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -39,20 +38,21 @@ type commentJSON struct {
 	Visibility   json.RawMessage `json:"visibility"`
 }
 
-// comment decodes a comment; a body that is not a document is an error,
-// since the comment cannot be shown or edited.
+// comment decodes a comment. A body that is not a document is an error,
+// since the comment cannot be shown or edited; the comment returned with
+// it holds everything else.
 func (j commentJSON) comment() (Comment, error) {
 	out := Comment{ID: j.ID, Author: j.Author.userPtr(), UpdateAuthor: j.UpdateAuthor.userPtr()}
-	if !isNull(j.Body) {
-		if err := decodeDoc(j.Body, &out.Body); err != nil {
-			return out, fmt.Errorf("comment %s: %w", j.ID, err)
-		}
-	}
 	out.Created, _ = parseTime(j.Created)
 	out.Updated, _ = parseTime(j.Updated)
 	out.Internal = j.JSDPublic != nil && !*j.JSDPublic
 	if !isNull(j.Visibility) {
 		out.Visibility = j.Visibility
+	}
+	if !isNull(j.Body) {
+		if err := decodeDoc(j.Body, &out.Body); err != nil {
+			return out, fmt.Errorf("comment %s: %w", j.ID, err)
+		}
 	}
 	return out, nil
 }
@@ -67,6 +67,9 @@ type CommentPage struct {
 // Comments returns the page of an issue's comments from startAt, at most
 // max of them (zero means 100).
 func (c *Client) Comments(ctx context.Context, issue string, startAt, max int) (CommentPage, error) {
+	if err := c.admit(ctx); err != nil {
+		return CommentPage{}, err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return CommentPage{}, err
@@ -96,6 +99,13 @@ func (c *Client) Comments(ctx context.Context, issue string, startAt, max int) (
 
 // Comment returns one comment.
 func (c *Client) Comment(ctx context.Context, issue, id string) (Comment, error) {
+	if err := c.admit(ctx); err != nil {
+		return Comment{}, err
+	}
+	return c.comment(ctx, issue, id)
+}
+
+func (c *Client) comment(ctx context.Context, issue, id string) (Comment, error) {
 	path, err := commentPath(issue, id)
 	if err != nil {
 		return Comment{}, err
@@ -124,7 +134,8 @@ func commentPath(issue, id string) (string, error) {
 
 // Audience is who a new comment reaches on a Jira Service Management
 // project. It must be chosen there, since a public comment is emailed to
-// the customer; elsewhere every comment is public.
+// the customer; elsewhere every comment is public. A value outside the
+// constants below is refused before anything is sent.
 type Audience uint8
 
 const (
@@ -138,13 +149,22 @@ const (
 )
 
 // internalProperty is the comment property that makes a service desk
-// comment internal.
+// comment internal. The platform spec does not document it; a site
+// measured stores an internal comment with it and jsdPublic false
+// (docs/references/tracker-api-measurements.md). A public comment
+// carries sd.allow.public.comment, which Jira Service Management sets
+// itself, so nothing is sent for one.
 var internalProperty = []map[string]any{{"key": "sd.public.comment", "value": map[string]bool{"internal": true}}}
 
 // commentAudience checks aud against the issue's project and returns the
 // properties a new comment carries, and whether the project is a
 // service desk.
 func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience) ([]map[string]any, bool, error) {
+	switch aud {
+	case AudienceUnset, AudiencePublic, AudienceInternal:
+	default:
+		return nil, false, notSent("comment on %s: %d is not an Audience", issue, aud)
+	}
 	is, err := c.GetIssue(ctx, issue, "project")
 	if err != nil {
 		return nil, false, err
@@ -174,8 +194,9 @@ type CommentInput struct {
 	Issue    string
 	Markdown string
 	Audience Audience
-	// Images is where the Markdown's local images are read.
-	Images fs.FS
+	// ImageDir is the folder the Markdown's local images are read from;
+	// see EditInput.
+	ImageDir string
 }
 
 // CommentResult is how far a comment write got: the images attached, and
@@ -185,11 +206,16 @@ type CommentResult struct {
 	Comment  *Comment
 }
 
-// AddComment converts the Markdown, checks the audience, then attaches
-// the images and adds the comment. A failure after the first request is
-// a *StepError.
+// AddComment checks the audience, converts the Markdown and reads its
+// images, then attaches the images and adds the comment. A failure after
+// the first write is a *StepError; a comment stored whose answer did not
+// decode is one whose Applied reports it, with the comment's ID in the
+// result.
 func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult, error) {
 	var res CommentResult
+	if err := c.admit(ctx); err != nil {
+		return res, err
+	}
 	path, err := issuePath(in.Issue)
 	if err != nil {
 		return res, err
@@ -198,45 +224,53 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	if err != nil {
 		return res, fmt.Errorf("jira: comment on %s: %w", in.Issue, err)
 	}
-	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, Images: in.Images}, stage: newImageStage(in.Images, c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
 	doc, _, err := b.markdown(ctx, in.Markdown, nil)
 	if err != nil {
 		return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
 	}
-	if doc, err = c.uploadInto(ctx, in.Issue, b.stage, doc, &res); err != nil {
+	imgs := b.stage.in(doc)
+	held, err := b.stage.hold(ctx, imgs)
+	if err != nil {
+		return res, err
+	}
+	if doc, err = c.uploadInto(ctx, in.Issue, doc, imgs, held, &res.Uploaded); err != nil {
 		return res, err
 	}
 	body := map[string]any{"body": doc}
 	if props != nil {
 		body["properties"] = props
 	}
-	var stored commentJSON
-	if err := c.send(ctx, http.MethodPost, path+"/comment", nil, body, &stored); err != nil {
-		return res, &StepError{Step: StepComment, Err: fmt.Errorf("jira: comment on %s: %w", in.Issue, err)}
-	}
-	return res, c.storedComment(stored, &res)
-}
-
-// storedComment decodes the comment a write returned into res. A body
-// that does not decode leaves the outcome known (the write was answered)
-// and says so.
-func (c *Client) storedComment(j commentJSON, res *CommentResult) error {
-	cm, err := j.comment()
+	res.Comment, err = c.writeComment(ctx, http.MethodPost, path+"/comment", body)
 	if err != nil {
-		return fmt.Errorf("jira: the comment was stored but its answer did not decode: %w", err)
+		return res, fmt.Errorf("jira: comment on %s: %w", in.Issue, err)
 	}
-	res.Comment = &cm
-	return nil
+	return res, nil
 }
 
-// uploadInto attaches the images doc embeds to issue and returns a copy
-// of doc naming them by media ID; doc itself without images.
-func (c *Client) uploadInto(ctx context.Context, issue string, stage *imageStage, doc *adf.Node, res *CommentResult) (*adf.Node, error) {
-	imgs := stage.in(doc)
+// writeComment sends a comment write and decodes the comment it stored.
+// A failure to send is a StepComment *StepError; so is an answer that
+// does not decode, which Applied reports, with whatever of the comment
+// decoded (its ID at least, when the answer named one) returned.
+func (c *Client) writeComment(ctx context.Context, method, path string, body any) (*Comment, error) {
+	var stored commentJSON
+	if err := c.send(ctx, method, path, nil, body, &stored); err != nil {
+		return nil, &StepError{Step: StepComment, Err: err}
+	}
+	cm, err := stored.comment()
+	if err != nil {
+		return &cm, &StepError{Step: StepComment, Err: &AnswerError{Message: "the comment was stored, but its answer did not decode: " + err.Error()}}
+	}
+	return &cm, nil
+}
+
+// uploadInto attaches imgs, whose content held has, to issue and returns
+// a copy of doc naming them by media ID; doc itself without images.
+func (c *Client) uploadInto(ctx context.Context, issue string, doc *adf.Node, imgs []*Image, held map[*Image][]byte, done *[]Attachment) (*adf.Node, error) {
 	if len(imgs) == 0 {
 		return doc, nil
 	}
-	ids, err := c.uploadImages(ctx, issue, stage, imgs, &res.Uploaded)
+	ids, err := c.uploadImages(ctx, issue, imgs, held, done)
 	if err != nil {
 		return nil, &StepError{Step: StepUpload, Err: err}
 	}
@@ -260,7 +294,9 @@ type CommentEdit struct {
 	// content Markdown cannot show; without it such an edit is a
 	// *adf.LossError.
 	AcceptLoss bool
-	Images     fs.FS
+	// ImageDir is the folder the Markdown's local images are read from;
+	// see EditInput.
+	ImageDir string
 }
 
 // EditComment edits the stored body with the Markdown, keeping what
@@ -269,18 +305,21 @@ type CommentEdit struct {
 // and returns the comment as read.
 func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult, error) {
 	var res CommentResult
+	if err := c.admit(ctx); err != nil {
+		return res, err
+	}
 	path, err := commentPath(in.Issue, in.ID)
 	if err != nil {
 		return res, err
 	}
-	cur, err := c.Comment(ctx, in.Issue, in.ID)
+	cur, err := c.comment(ctx, in.Issue, in.ID)
 	if err != nil {
 		return res, err
 	}
 	if in.From != nil && !adf.Equal(in.From, cur.Body) {
 		return res, notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
 	}
-	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, Images: in.Images}, stage: newImageStage(in.Images, c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
 	doc, ws, err := b.markdown(ctx, in.Markdown, cur.Body)
 	if err == nil {
 		err = adf.CheckLoss(ws, in.AcceptLoss)
@@ -292,7 +331,12 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 		res.Comment = &cur
 		return res, nil
 	}
-	if doc, err = c.uploadInto(ctx, in.Issue, b.stage, doc, &res); err != nil {
+	imgs := b.stage.in(doc)
+	held, err := b.stage.hold(ctx, imgs)
+	if err != nil {
+		return res, err
+	}
+	if doc, err = c.uploadInto(ctx, in.Issue, doc, imgs, held, &res.Uploaded); err != nil {
 		return res, err
 	}
 	body := map[string]any{"body": doc}
@@ -300,15 +344,18 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 		// A PUT without it would show a restricted comment to everyone.
 		body["visibility"] = cur.Visibility
 	}
-	var stored commentJSON
-	if err := c.send(ctx, http.MethodPut, path, nil, body, &stored); err != nil {
-		return res, &StepError{Step: StepComment, Err: fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err)}
+	res.Comment, err = c.writeComment(ctx, http.MethodPut, path, body)
+	if err != nil {
+		return res, fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err)
 	}
-	return res, c.storedComment(stored, &res)
+	return res, nil
 }
 
 // DeleteComment deletes a comment.
 func (c *Client) DeleteComment(ctx context.Context, issue, id string) error {
+	if err := c.admit(ctx); err != nil {
+		return err
+	}
 	path, err := commentPath(issue, id)
 	if err != nil {
 		return err

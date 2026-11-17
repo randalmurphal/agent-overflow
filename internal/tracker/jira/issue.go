@@ -303,6 +303,9 @@ func (l issueLinkJSON) link() IssueLink {
 // GetIssue reads one issue with the fields named (IDs, or *all,
 // *navigable and -ID exclusions); none named reads *all.
 func (c *Client) GetIssue(ctx context.Context, ref string, fields ...string) (*Issue, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	path, err := issuePath(ref)
 	if err != nil {
 		return nil, err

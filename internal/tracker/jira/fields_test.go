@@ -15,7 +15,7 @@ const catalogJSON = `[
 
 func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/field", reply(200, catalogJSON))
 	for range 2 {
 		fs, err := c.Fields(t.Context())
@@ -44,7 +44,7 @@ func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 // ForgetFields stores nothing.
 func TestForgetFieldsDuringALoad(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/field", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if f.count("GET", "/rest/api/3/field") == 1 {
 			c.ForgetFields()
@@ -64,7 +64,7 @@ func TestForgetFieldsDuringALoad(t *testing.T) {
 
 func TestCreateMetaPagesAndKeys(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "maxResults", "200")
 		if r.URL.Query().Get("startAt") == "0" {
@@ -97,16 +97,57 @@ func TestCreateMetaPagesAndKeys(t *testing.T) {
 
 func TestCreateMetaEmptyPageStops(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
-	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", reply(200, `{"issueTypes":[],"total":3}`))
+	c := newTestClient(t, f)
+	f.on("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if f.count("GET", "/rest/api/3/issue/createmeta/WEB/issuetypes") > 10 {
+			t.Error("the client kept asking for pages")
+			reply(400, `{}`)(w, r, b)
+			return
+		}
+		reply(200, `{"issueTypes":[],"total":3}`)(w, r, b)
+	})
 	if _, err := c.CreateIssueTypes(t.Context(), "WEB"); err == nil {
 		t.Error("an empty page short of the total must fail, not loop")
 	}
 }
 
+// TestFieldCatalogCopiesShareNothing proves a catalog handed out shares
+// no memory with the cache or with another caller's copy.
+func TestFieldCatalogCopiesShareNothing(t *testing.T) {
+	f := newFake(t)
+	c := newTestClient(t, f)
+	f.on("GET", "/rest/api/3/field", reply(200, catalogJSON))
+	first, err := c.Fields(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first[1].ClauseNames[0] = "changed"
+	second, _ := c.Fields(t.Context())
+	second[1].ClauseNames[1] = "changed too"
+	third, _ := c.Fields(t.Context())
+	if third[1].ClauseNames[0] != "cf[10001]" || third[1].ClauseNames[1] != "Story Points" {
+		t.Errorf("a caller's change reached the cache: %v", third[1].ClauseNames)
+	}
+}
+
+// TestFieldIDWinsOverName proves a field named by its exact ID is that
+// field even when another field carries the ID as its name.
+func TestFieldIDWinsOverName(t *testing.T) {
+	s := Screen{Fields: []FieldMeta{
+		{ID: "customfield_10020", Name: "summary"},
+		{ID: "summary", Name: "Summary"},
+	}}
+	if f, err := s.Field("summary"); err != nil || f.ID != "summary" {
+		t.Errorf("got %+v %v", f, err)
+	}
+	if f, err := s.Field("SUMMARY"); err == nil {
+		t.Errorf("two names in another case: %+v", f)
+	}
+}
+
 func TestEditMetaAndScreenLookup(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1/editmeta", reply(200, `{"fields":{
 		"customfield_10002":{"key":"customfield_10002","name":"Team","required":false,"schema":{"type":"team","custom":"com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team"},"operations":["set"]},
 		"customfield_10003":{"key":"customfield_10003","name":"team","required":false,"schema":{"type":"string"},"operations":["set"]},

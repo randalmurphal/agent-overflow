@@ -78,7 +78,7 @@ func TestDialectRateLimited(t *testing.T) {
 // errors on a StatusError, and a refused login marked on a 200.
 func TestDialectThroughTransport(t *testing.T) {
 	f := newFake(t)
-	c, _ := newTestClient(t, f)
+	c := newTestClient(t, f)
 	f.on("PUT", "/rest/api/3/issue/WEB-1/assignee", reply(400, `{"errorMessages":[],"errors":{"assignee":"User cannot be assigned"}}`))
 	err := c.Assign(t.Context(), "WEB-1", "acc-user1")
 	se, ok := errors.AsType[*trackerapi.StatusError](err)

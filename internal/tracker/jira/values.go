@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"slices"
 	"strings"
 
@@ -80,13 +79,15 @@ type Value struct {
 	// Images are the local images a rich text value embeds, uploaded to
 	// the issue when a plan is applied; Fields names them by placeholder
 	// until then.
-	Images []*Image
+	Images []Image
 	// Unchanged reports a rich text edit that stores the document already
 	// there.
 	Unchanged bool
 
-	doc   *adf.Node     // a rich text value's document
-	base  *adf.Node     // the stored document a rich text edit applies to
+	rich  bool          // a rich text field's value, a clear included
+	doc   *adf.Node     // a rich text value's document; nil for a clear
+	base  *adf.Node     // the stored document a rich text value replaces
+	imgs  []*Image      // the staged images doc embeds
 	edits []adf.Warning // the conversion's warnings, for CheckLoss
 }
 
@@ -102,10 +103,10 @@ type ValueOptions struct {
 	// be assigned there.
 	Issue   string
 	Project string
-	// Images is where a Markdown body's local images are read; nil
-	// refuses them. A reference is an fs.FS name; one leading "/" is
-	// dropped, so os.DirFS("/") serves absolute paths.
-	Images fs.FS
+	// ImageDir is the folder a Markdown body's local images are read
+	// from, an absolute path; empty refuses them. See ImageDir on
+	// EditInput.
+	ImageDir string
 	// Base is the stored document a rich text value edits, kept where the
 	// Markdown leaves it unchanged; nil converts the Markdown afresh.
 	Base *adf.Node
@@ -117,7 +118,10 @@ type ValueOptions struct {
 // whose type this package does not build takes RawJSON only. Local
 // images are read and checked but not uploaded; a plan uploads them.
 func (c *Client) Value(ctx context.Context, f FieldMeta, in Input, opts ValueOptions) (Value, error) {
-	b := &builder{c: c, opts: opts, stage: newImageStage(opts.Images, c.maxUpload)}
+	if err := c.admit(ctx); err != nil {
+		return Value{}, err
+	}
+	b := &builder{c: c, opts: opts, stage: newImageStage(opts.ImageDir, c.maxUpload)}
 	v, err := b.build(ctx, f, in)
 	return v, notSentErr(err)
 }
@@ -148,6 +152,12 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 			return v, fmt.Errorf("jira: %s is required and cannot be cleared", f.Name)
 		}
 		v.Fields, v.Update, v.Display = clearValue(f, r)
+		if k == kindRich {
+			// A clear replaces the stored document as an edit does, so a
+			// plan rechecks it the same way.
+			v.rich, v.base = true, b.opts.Base
+			v.Unchanged = v.base == nil
+		}
 		return v, nil
 	case inputRaw:
 		if !json.Valid(in.raw) {

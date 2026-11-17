@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // Schema is a field's type as Jira reports it. Type is the JSON type
@@ -45,48 +44,37 @@ type Field struct {
 	Orderable   bool     `json:"orderable"`
 }
 
-// catalogCache holds the field catalog once read. Callers that miss it
-// together each read it; the last to finish stores.
-type catalogCache struct {
-	mu     sync.Mutex
-	fields []Field
-	loaded bool
-	gen    uint64
+// cloneFields is a copy of fs sharing no memory with it.
+func cloneFields(fs []Field) []Field {
+	out := slices.Clone(fs)
+	for i := range out {
+		out[i].ClauseNames = slices.Clone(out[i].ClauseNames)
+	}
+	return out
 }
 
 // Fields returns every field the user can see, with its schema, from the
-// client's cache once read.
+// client's cache once read. Callers that miss the cache together each
+// read it. The slice is the caller's own.
 func (c *Client) Fields(ctx context.Context) ([]Field, error) {
-	cc := &c.catalog
-	cc.mu.Lock()
-	if cc.loaded {
-		out := slices.Clone(cc.fields)
-		cc.mu.Unlock()
-		return out, nil
+	if err := c.admit(ctx); err != nil {
+		return nil, err
 	}
-	gen := cc.gen
-	cc.mu.Unlock()
+	if fields, ok := c.catalog.get(struct{}{}); ok {
+		return fields, nil
+	}
+	epoch := c.catalog.epoch()
 	var fields []Field
 	if err := c.get(ctx, "field", nil, &fields); err != nil {
 		return nil, fmt.Errorf("jira: field catalog: %w", err)
 	}
-	cc.mu.Lock()
-	if gen == cc.gen {
-		cc.fields, cc.loaded = fields, true
-	}
-	cc.mu.Unlock()
-	return slices.Clone(fields), nil
+	c.catalog.put(epoch, struct{}{}, fields)
+	return fields, nil
 }
 
 // ForgetFields drops the cached field catalog; a read in flight stores
 // nothing.
-func (c *Client) ForgetFields() {
-	cc := &c.catalog
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.fields, cc.loaded = nil, false
-	cc.gen++
-}
+func (c *Client) ForgetFields() { c.catalog.clear() }
 
 // FieldMeta is a field as a screen offers it: on create, on edit, or on
 // a transition.
@@ -237,6 +225,9 @@ const createMetaPageSize = 200
 // CreateIssueTypes returns the issue types the user can create in a
 // project.
 func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueType, error) {
+	if err := c.admit(ctx); err != nil {
+		return nil, err
+	}
 	if err := checkProject(project); err != nil {
 		return nil, err
 	}
@@ -257,6 +248,9 @@ func (c *Client) CreateIssueTypes(ctx context.Context, project string) ([]IssueT
 
 // CreateMeta returns the create screen of a project and issue type ID.
 func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (Screen, error) {
+	if err := c.admit(ctx); err != nil {
+		return Screen{}, err
+	}
 	if err := checkProject(project); err != nil {
 		return Screen{}, err
 	}
@@ -301,6 +295,9 @@ func createMetaPages(ctx context.Context, c *Client, path string, take func(crea
 // EditMeta returns the edit screen of an issue: the fields the user may
 // change on it.
 func (c *Client) EditMeta(ctx context.Context, issue string) (Screen, error) {
+	if err := c.admit(ctx); err != nil {
+		return Screen{}, err
+	}
 	path, err := issuePath(issue)
 	if err != nil {
 		return Screen{}, err

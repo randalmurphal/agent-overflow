@@ -31,19 +31,29 @@ type SearchQuery struct {
 	PageToken string
 }
 
+// SearchWarning is Jira's note on a search, such as a clause cut at its
+// argument limit or results truncated. Type is Jira's code
+// (CLAUSE_LIMIT_EXCEEDED); Jira marks warnings experimental, so new
+// types may appear.
+type SearchWarning struct {
+	Type    string
+	Message string
+}
+
 // SearchPage is one page of results. NextPageToken is empty on the last
 // page; a token expires seven days after Jira hands it out.
 type SearchPage struct {
 	Issues        []*Issue
 	NextPageToken string
-	// Warnings are Jira's notes on the search, such as a clause cut at
-	// its argument limit.
-	Warnings []string
+	Warnings      []SearchWarning
 }
 
 // Search runs one page of q on the enhanced search endpoint. Recent
 // writes may not show yet.
 func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) {
+	if err := c.admit(ctx); err != nil {
+		return SearchPage{}, err
+	}
 	if strings.TrimSpace(q.JQL) == "" {
 		return SearchPage{}, notSent("a search needs JQL")
 	}
@@ -62,6 +72,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) 
 		NextPageToken string      `json:"nextPageToken"`
 		IsLast        bool        `json:"isLast"`
 		Warnings      []struct {
+			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"warnings"`
 	}
@@ -79,35 +90,50 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) 
 		page.NextPageToken = v.NextPageToken
 	}
 	for _, w := range v.Warnings {
-		page.Warnings = append(page.Warnings, w.Message)
+		page.Warnings = append(page.Warnings, SearchWarning(w))
 	}
 	return page, nil
 }
 
+// SearchResult is what a search run to its end returned. Complete is
+// false when the limit cut the search or Jira attached any warning, since
+// a warning may say the results were cut; Warnings are every page's.
+type SearchResult struct {
+	Issues   []*Issue
+	Warnings []SearchWarning
+	Complete bool
+}
+
 // SearchAll runs q from its first page (or q.PageToken) to the last, at
 // most limit issues when limit is above zero. A failure after some pages
-// returns their issues with the error; a token Jira hands out twice
-// fails the search instead of looping.
-func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) ([]*Issue, error) {
-	var out []*Issue
+// returns their issues and warnings with the error; a token Jira hands
+// out twice fails the search instead of looping.
+func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) (SearchResult, error) {
+	var out SearchResult
 	seen := map[string]bool{}
 	for {
 		if limit > 0 {
-			q.MaxResults = min(pageSize(q.MaxResults, 100, maxSearchPage), limit-len(out))
+			q.MaxResults = min(pageSize(q.MaxResults, 100, maxSearchPage), limit-len(out.Issues))
 		}
 		page, err := c.Search(ctx, q)
 		if err != nil {
 			return out, err
 		}
-		out = append(out, page.Issues...)
-		if limit > 0 && len(out) >= limit {
-			return out[:limit], nil
+		out.Issues = append(out.Issues, page.Issues...)
+		out.Warnings = append(out.Warnings, page.Warnings...)
+		cut := limit > 0 && len(out.Issues) > limit
+		if cut {
+			out.Issues = out.Issues[:limit]
 		}
 		if page.NextPageToken == "" {
+			out.Complete = !cut && len(out.Warnings) == 0
+			return out, nil
+		}
+		if limit > 0 && len(out.Issues) >= limit {
 			return out, nil
 		}
 		if seen[page.NextPageToken] {
-			return out, fmt.Errorf("jira: search: the page token repeated after %d issues", len(out))
+			return out, fmt.Errorf("jira: search: the page token repeated after %d issues", len(out.Issues))
 		}
 		seen[page.NextPageToken] = true
 		q.PageToken = page.NextPageToken
@@ -117,6 +143,9 @@ func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) ([]*Is
 // CountIssues returns Jira's approximate count of the issues jql matches.
 // jql must be bounded.
 func (c *Client) CountIssues(ctx context.Context, jql string) (int64, error) {
+	if err := c.admit(ctx); err != nil {
+		return 0, err
+	}
 	if strings.TrimSpace(jql) == "" {
 		return 0, notSent("a count needs JQL")
 	}
@@ -134,11 +163,14 @@ func (c *Client) CountIssues(ctx context.Context, jql string) (int64, error) {
 }
 
 // BulkResult is what a bulk fetch returned: the issues, and the ones Jira
-// could not return with its reason. An issue the user cannot see is in
-// neither.
+// could not return with its reason. An issue the user cannot see, or
+// that does not exist, is in neither; Complete reports that every issue
+// named came back, so it is false when one is missing, failed, or was
+// named twice.
 type BulkResult struct {
-	Issues []*Issue
-	Failed []BulkFailure
+	Issues   []*Issue
+	Failed   []BulkFailure
+	Complete bool
 }
 
 // BulkFailure is an issue a bulk fetch could not return.
@@ -151,6 +183,9 @@ type BulkFailure struct {
 // (none means Jira's navigable fields), 100 per request. A failure after
 // some requests returns their issues with the error.
 func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string) (BulkResult, error) {
+	if err := c.admit(ctx); err != nil {
+		return BulkResult{}, err
+	}
 	for _, ref := range refs {
 		if err := checkIssue(ref); err != nil {
 			return BulkResult{}, err
@@ -183,6 +218,7 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 			out.Failed = append(out.Failed, BulkFailure(e))
 		}
 	}
+	out.Complete = len(out.Failed) == 0 && len(out.Issues) == len(refs)
 	return out, nil
 }
 
