@@ -397,7 +397,7 @@ func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	err = p.driver.Navigate(opCtx, target)
 	if err == nil {
-		_, err = m.readInfo(opCtx, p, pageListing{})
+		_, _, err = m.readInfo(opCtx, p, pageListing{})
 	}
 	cancel()
 	if err != nil {
@@ -458,10 +458,16 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	m.mu.Unlock()
 	p.mu.Lock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	_, err := m.readInfo(opCtx, p, pageListing{})
+	_, read, err := m.readInfo(opCtx, p, pageListing{})
 	cancel()
 	info := p.cachedInfo()
-	if err != nil && p.ctx.Err() == nil {
+	if err == nil {
+		// The page's address as of its suspension, read under the page lock:
+		// a report the cache took meanwhile can be one the engine made
+		// before the read, delivered late.
+		info.URL = truncateUTF8(read.URL, maxBrowserURLBytes)
+		info.Title = truncateUTF8(read.Title, maxBrowserTitleBytes)
+	} else if p.ctx.Err() == nil {
 		log.Printf("browser: suspend page %s: read its address: %v; keeping %s", p.id, err, info.URL)
 	}
 	m.mu.Lock()

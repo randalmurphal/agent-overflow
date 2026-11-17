@@ -149,13 +149,18 @@ per-platform no-op.
   An engine report commits what the page now shows; each engine numbers its
   reports where it orders them (a native view on its UI thread, a CDP engine
   in its event stream), as it does its loading reports, and the Manager
-  drops one older than a report it committed. A read (an operation's,
-  `browser_pages`', a selection's, the history refresh after a report)
-  commits its answer only if no other commit landed while it read, and an
+  drops one older than a report it committed. A native view reports through
+  its page's own hook, so the fence sees every report from the moment the
+  engine page exists, while the page is still created, restored or adopted;
+  a report for a page that left its tabs changes nothing shown. A read (an
+  operation's, `browser_pages`', a selection's, the history refresh after a
+  report) is stamped before it asks; the address and the back/forward state
+  each keep the stamp of the write that set them, and a read's part is
+  committed only if no write that began later set that field. An
   operation's read commits inside the hold of the page lock it read under,
   so no navigation runs between them. A write that does not know the
   back/forward state (an engine report, a snapshot) keeps what the tab
-  shows.
+  shows. A suspension saves the address it read.
 - The chat header's browser button is present wherever the native browser is
   usable for the thread, tabs or not. With no tab it opens the pane on a new
   tab, as a mod-clicked link does on a tab at the link. A new tab the user

@@ -172,7 +172,7 @@ func TestAHistoryRefreshNeverCommitsOverANewerRead(t *testing.T) {
 			}
 		}
 	}
-	manager.refreshHistoryState(p, p.infoGeneration())
+	manager.refreshHistoryState(p, p.readStamp())
 	if info := p.cachedInfo(); info.CanGoBack || !info.CanGoForward {
 		t.Fatalf("after going back the cache reads back %v forward %v, want false true", info.CanGoBack, info.CanGoForward)
 	}

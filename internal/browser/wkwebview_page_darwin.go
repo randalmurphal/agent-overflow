@@ -76,7 +76,7 @@ type wkPage struct {
 	// (pageHooks.Loading).
 	loadOrder atomic.Uint64
 	// infoOrder numbers the view's address and title reports, on the main
-	// thread (engineEvents.PageInfoChanged).
+	// thread (pageHooks.Info).
 	infoOrder atomic.Uint64
 }
 

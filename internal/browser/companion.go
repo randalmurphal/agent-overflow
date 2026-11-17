@@ -158,17 +158,19 @@ type paneMount struct {
 // whose pages hold one: a write is never lost whoever publishes next, and an
 // operation that changed nothing pushes nothing.
 
-// A page's info has two kinds of writer. An engine report (updatePageInfo)
-// carries the engine's state as it changed, numbered in the engine's order;
-// it is committed unless a newer report already was. A read asks the engine
-// and commits what it was answered (commitRead) only if no other commit
-// landed while it asked: that commit is an engine report as new as the read
-// or newer, or a read that began later, and it stands. A read run for an
-// operation holds the page-operation lock from the read through its commit,
-// so no other operation's read lands in between.
+// A page's info has two kinds of writer. An engine report (pageInfoReport)
+// carries the engine's address and title as they changed, numbered in the
+// engine's order; it is committed unless a newer report already was. A read
+// asks the engine and commits what it was answered (commitRead). The address
+// and the history state are fenced apart: each holds the stamp of the write
+// that set it (readStamp, or a stamp taken at the commit for any other
+// write), and a read's part is committed only if no write that began after
+// the read set that field. A read run for an operation holds the
+// page-operation lock from the read through its commit, so no other
+// operation's read lands in between.
 
 // pageUpdate is one write of a page's cached info. commitInfo applies it,
-// and nothing else changes the info of a page in its thread's tabs.
+// and nothing else changes the info of a page once it exists.
 type pageUpdate struct {
 	// Location is the address and title; nil keeps them (a history refresh,
 	// a label).
@@ -177,20 +179,21 @@ type pageUpdate struct {
 	// it (an engine report, a snapshot script), and the tab keeps the state
 	// it shows rather than turn its buttons off.
 	History *pageHistory
-	// Listing is what only a browser_pages answer means; a write with a
+	// Listing is what only a browser_pages answer means; a committed
 	// Location replaces it, so any other read clears it.
 	Listing pageListing
 	// Label, when set, replaces the label; nil keeps it.
 	Label *string
-	// Report is an engine report's order (engineEvents.PageInfoChanged),
-	// zero for any other write. A report is committed only if newer than
-	// every report committed before it.
+	// Report is an engine report's order (pageHooks.Info), zero for any
+	// other write. A report is committed only if newer than every report
+	// committed before it.
 	Report uint64
-	// ReadSince, for a read's answer, is the commit count the read began at
-	// (infoGeneration); the answer is committed only if no commit landed
-	// since. Nil commits unconditionally: an engine report, a label, or a
-	// page not yet in its thread's tabs (openAndLoad).
-	ReadSince *uint64
+	// Stamp, for a read's answer, is the stamp the read took before it
+	// asked (readStamp): each part is committed only if its field was not
+	// set by a write that began later. Zero takes a stamp at the commit,
+	// newer than every read begun: an engine report, a label, or a page's
+	// own write before it is listed (openAndLoad).
+	Stamp uint64
 }
 
 type pageLocation struct{ URL, Title string }
@@ -204,31 +207,36 @@ type pageListing struct {
 	LastOpened string
 }
 
-// commitInfo applies u unless it is older than what the page holds (Report,
-// ReadSince), bounding the address and title. A commit of the address or
-// history counts toward infoGeneration, and one that changes what the tab
-// shows sets the page's unpushed record. It answers the page's info after
-// and whether u was committed.
+// commitInfo applies the parts of u that are newer than what the page holds
+// (Report, Stamp), bounding the address and title, and sets the page's
+// unpushed record when what the tab shows changed. It answers the page's
+// info after, and whether the address u carries was committed.
 func (p *managedPage) commitInfo(u pageUpdate) (PageInfo, bool) {
 	p.metaMu.Lock()
 	defer p.metaMu.Unlock()
-	if u.ReadSince != nil && *u.ReadSince != p.infoGen {
-		return p.info, false
-	}
 	if u.Report != 0 {
 		if u.Report <= p.infoReport {
 			return p.info, false
 		}
 		p.infoReport = u.Report
 	}
+	stamp := u.Stamp
+	if stamp == 0 {
+		p.infoStamp++
+		stamp = p.infoStamp
+	}
 	info := p.info
-	if u.Location != nil {
+	located := false
+	if u.Location != nil && stamp > p.locationStamp {
 		info.URL = truncateUTF8(u.Location.URL, maxBrowserURLBytes)
 		info.Title = truncateUTF8(u.Location.Title, maxBrowserTitleBytes)
 		info.Selected, info.LastOpened = u.Listing.Selected, u.Listing.LastOpened
+		p.locationStamp = stamp
+		located = true
 	}
-	if u.History != nil {
+	if u.History != nil && stamp > p.historyStamp {
 		info.CanGoBack, info.CanGoForward = u.History.CanGoBack, u.History.CanGoForward
+		p.historyStamp = stamp
 	}
 	if u.Label != nil {
 		info.Label = *u.Label
@@ -237,27 +245,25 @@ func (p *managedPage) commitInfo(u pageUpdate) (PageInfo, bool) {
 		p.load.unpushed = true
 	}
 	p.info = info
-	if u.Location != nil || u.History != nil {
-		p.infoGen++
-	}
-	return info, true
+	return info, located
 }
 
-// infoGeneration answers how many commits the page's address and history
-// have had; a read takes it before it asks the engine.
-func (p *managedPage) infoGeneration() uint64 {
-	p.metaMu.RLock()
-	defer p.metaMu.RUnlock()
-	return p.infoGen
+// readStamp answers a stamp newer than every write committed so far; a read
+// takes one before it asks the engine.
+func (p *managedPage) readStamp() uint64 {
+	p.metaMu.Lock()
+	defer p.metaMu.Unlock()
+	p.infoStamp++
+	return p.infoStamp
 }
 
-// commitRead commits u, the answer of a read that began at generation since,
-// unless another commit landed during the read (commitInfo).
-func (m *Manager) commitRead(p *managedPage, u pageUpdate, since uint64) (PageInfo, bool) {
+// commitRead commits u, the answer of a read that took stamp before it
+// asked (commitInfo).
+func (m *Manager) commitRead(p *managedPage, u pageUpdate, stamp uint64) (PageInfo, bool) {
 	if m.infoRead != nil {
 		m.infoRead(p)
 	}
-	u.ReadSince = &since
+	u.Stamp = stamp
 	return p.commitInfo(u)
 }
 
@@ -416,6 +422,30 @@ func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 	return nil
 }
 
+// creatingPageByHandleLocked returns the page being created or restored
+// whose engine page has handle, or nil. The caller holds m.mu.
+func (m *Manager) creatingPageByHandleLocked(handle string) *managedPage {
+	for _, scope := range m.scopes {
+		for p := range scope.creating {
+			if p.driver != nil && p.driver.Handle() == handle {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+// pageListedLocked reports whether p is in its thread's tabs. The caller
+// holds m.mu.
+func (m *Manager) pageListedLocked(p *managedPage) bool {
+	for _, scope := range m.scopes {
+		if scope.pages[p.id] == p {
+			return true
+		}
+	}
+	return false
+}
+
 // pageEscape is the key the page always keeps: a bare Escape, which AO only
 // observes (keyChord).
 var pageEscape = keybindings.Accelerator{Key: "escape"}
@@ -510,42 +540,61 @@ func (m *Manager) AcceleratorsChanged() {
 	}
 }
 
-// updatePageInfo is engineEvents.PageInfoChanged.
+// updatePageInfo is engineEvents.PageInfoChanged, a CDP engine's report of
+// a page by its handle.
 func (m *Manager) updatePageInfo(handle, url, title string, order uint64) {
 	m.mu.Lock()
 	found := m.pageByHandleLocked(handle)
-	m.mu.Unlock()
 	if found == nil {
-		return
+		found = m.creatingPageByHandleLocked(handle)
 	}
-	// The report carries no history state: the tab keeps what it shows
-	// until the refresh below.
-	if _, committed := found.commitInfo(pageUpdate{Location: &pageLocation{URL: url, Title: title}, Report: order}); !committed {
+	m.mu.Unlock()
+	if found != nil {
+		m.pageInfoReport(found, url, title, order)
+	}
+}
+
+// pageInfoReport is pageHooks.Info: an engine report of p's address and
+// title. It is committed to p wherever p is, so the report order fence sees
+// every report from the moment p's engine page exists: a page being created,
+// restored or adopted takes it into its unlisted info, which its own load
+// read replaces when that read began later, and a page that left its
+// thread's tabs takes it into info nothing reads again. Only a listed page
+// pushes it and refreshes its history state; an unlisted page's load read
+// carries the history and its listing pushes.
+func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64) {
+	if _, committed := p.commitInfo(pageUpdate{Location: &pageLocation{URL: url, Title: title}, Report: order}); !committed {
 		// A newer report was committed first and runs its own refresh.
 		return
 	}
-	since := found.infoGeneration()
+	m.mu.Lock()
+	listed := m.pageListedLocked(p)
+	m.mu.Unlock()
+	if !listed {
+		return
+	}
+	stamp := p.readStamp()
 	// An engine reports the same address and title again (a target info
 	// change that touched neither); that alone pushes nothing.
-	m.publishPages(found.owner)
-	go m.refreshHistoryState(found, since)
+	m.publishPages(p.owner)
+	go m.refreshHistoryState(p, stamp)
 }
 
 // refreshHistoryState re-reads one page's back/forward availability after an
 // engine announced a navigation, off the engine's event goroutine — the read
 // is a driver round trip, and blocking the event dispatcher on it could
 // deadlock an engine whose events and commands share a loop. It runs without
-// the page-operation lock, so its answer is committed only if nothing else
-// committed since the report it follows (since): a later report runs its own
-// refresh, and an operation's read carries the history state itself.
-func (m *Manager) refreshHistoryState(p *managedPage, since uint64) {
+// the page-operation lock under the stamp taken after the report (stamp): an
+// operation's read that began later carries the history state itself and
+// stands, and an address commit does not touch its answer.
+func (m *Manager) refreshHistoryState(p *managedPage, stamp uint64) {
 	ctx, cancel := operationContext(context.Background(), p.driver.Lifetime(), operationTimeout)
 	defer cancel()
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
 		return
 	}
-	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, since)
+	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, stamp)
 	m.publishPages(p.owner)
 }
 

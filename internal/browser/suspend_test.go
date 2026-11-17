@@ -28,6 +28,8 @@ type restoreEngine struct {
 	// receives one value per read that reached it.
 	infoGate chan struct{}
 	reading  chan struct{}
+	// lastPage is the engine page created last.
+	lastPage *gatedPage
 }
 
 func newRestoreManager(t *testing.T, dir string, opts ManagerOptions) (*Manager, *restoreEngine) {
@@ -79,7 +81,11 @@ func (p *restoreProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriv
 		return nil, err
 	}
 	p.engine.pagesCreated.Add(1)
-	return &gatedPage{pageDriver: driver, engine: p.engine}, nil
+	page := &gatedPage{pageDriver: driver, engine: p.engine}
+	p.engine.mu.Lock()
+	p.engine.lastPage = page
+	p.engine.mu.Unlock()
+	return page, nil
 }
 
 type gatedPage struct {
