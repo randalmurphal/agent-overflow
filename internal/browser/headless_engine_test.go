@@ -1520,6 +1520,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 
 	assertRealPopupsPassThePolicy(t, engine)
 	assertRealDocumentTitles(t, engine)
+	assertRealDocumentTitleChanges(t, engine)
 	assertRealEvaluateSemantics(t, engine)
 	assertRealPageOperations(t, engine)
 	if err := filepath.WalkDir(home, func(path string, _ os.DirEntry, err error) error {

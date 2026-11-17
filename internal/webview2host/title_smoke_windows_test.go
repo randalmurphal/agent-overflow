@@ -23,8 +23,11 @@ import (
 //     runs in each new document once the Page domain is enabled (without
 //     Page.enable WebView2 creates the world and runs nothing; the CDP page
 //     has it enabled by chromedp's attach);
-//   - the parsed <title> and a later assignment by script both arrive as
-//     Runtime.bindingCalled from that world, and a page script does not see
+//   - a MutationObserver the script puts on the Document node when it is
+//     evaluated, before the document has a root and with no event, sees
+//     the parsed <title>, a later assignment by script, and the document
+//     document.open and document.write replace it with, each arriving as
+//     Runtime.bindingCalled from that world; a page script does not see
 //     the binding.
 //
 // It logs whether any Target.targetInfoChanged carried either title, the
@@ -51,6 +54,7 @@ func TestTitleSmokeReportsADocumentsTitleFromAnIsolatedWorld(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<!doctype html><title>Parsed</title><script>
 setTimeout(() => { document.title = typeof __smokeTitle + " by script" }, 300)
+setTimeout(() => { document.open(); document.write("<!doctype html><title>Rewritten</title>"); document.close() }, 600)
 </script>`))
 	}))
 	t.Cleanup(server.Close)
@@ -99,7 +103,7 @@ setTimeout(() => { document.title = typeof __smokeTitle + " by script" }, 300)
 	cdp.call("Page.enable", map[string]any{}, session, nil)
 	cdp.call("Runtime.addBinding", map[string]any{"name": "__smokeTitle", "executionContextName": "smoke-title"}, session, nil)
 	cdp.call("Page.addScriptToEvaluateOnNewDocument", map[string]any{
-		"source":         `document.addEventListener("DOMContentLoaded", () => { __smokeTitle(document.title); new MutationObserver(() => __smokeTitle(document.title)).observe(document.head, {subtree: true, childList: true, characterData: true}) })`,
+		"source":         `let last = ""; new MutationObserver(() => { if (document.title && document.title !== last) __smokeTitle(last = document.title) }).observe(document, {subtree: true, childList: true, characterData: true})`,
 		"worldName":      "smoke-title",
 		"runImmediately": true,
 	}, session, nil)
@@ -108,7 +112,7 @@ setTimeout(() => { document.title = typeof __smokeTitle + " by script" }, 300)
 	var bound []string
 	infoTitles := map[string]bool{}
 	deadline := time.Now().Add(10 * time.Second)
-	for len(bound) < 2 && time.Now().Before(deadline) {
+	for len(bound) < 3 && time.Now().Before(deadline) {
 		messages := cdp.events
 		cdp.events = nil
 		messages = append(messages, cdp.collect(250*time.Millisecond)...)
@@ -130,7 +134,7 @@ setTimeout(() => { document.title = typeof __smokeTitle + " by script" }, 300)
 		}
 	}
 	t.Logf("titles Target.targetInfoChanged carried: %v", infoTitles)
-	if len(bound) < 2 || bound[0] != "Parsed" || bound[1] != "undefined by script" {
-		t.Fatalf("the isolated world reported %q, want [Parsed, undefined by script]", bound)
+	if len(bound) != 3 || bound[0] != "Parsed" || bound[1] != "undefined by script" || bound[2] != "Rewritten" {
+		t.Fatalf("the isolated world reported %q, want [Parsed, undefined by script, Rewritten]", bound)
 	}
 }

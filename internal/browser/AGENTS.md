@@ -91,6 +91,10 @@ headless engine starts one Chromium process per profile with an isolated user
 data directory. Headless mode is selected explicitly by serve boot and must not
 become a fallback for an ordinary windowless process.
 
+The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
+page event, and observes only the title path; never observe a document's
+whole subtree from it.
+
 chromedp delivers each event method on its own subscription, so handlers run in
 no fixed order across methods. State fed by several methods must settle the
 same way under any interleaving and bound what it keeps for unmatched events

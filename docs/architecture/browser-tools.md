@@ -189,7 +189,13 @@ per-platform no-op.
   Chromium sends no report when the document sets its title; the document
   reports its address and title itself, from an isolated world through a
   `Runtime.addBinding` binding (`cdp_page.go`), and that title is the tab's
-  while the tab shows that address, whichever of the two arrives first. A
+  while the tab shows that address, whichever of the two arrives first.
+  The watcher starts when it is evaluated, so no page event handling can
+  stop it, and observes only the nodes a title change passes through (the
+  Document's and the root's children, the head's children, the title
+  element's subtree), re-pointed when one is replaced: `document.write`
+  replacing the document, a replaced root and an SVG title all report,
+  and a busy body costs it nothing. A
   read (an
   operation's, `browser_pages`', a selection's, the history refresh after a
   report) is stamped before it asks; the address and the back/forward state

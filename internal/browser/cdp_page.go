@@ -109,12 +109,22 @@ func dialCDPBrowser(browserCtx context.Context, subscribe func() error) error {
 // the Page domain has no title event. So each document reports its own:
 // a watcher installed in an isolated world of every new document sends
 // [location.href, document.title] through a binding exposed only to that
-// world, once at DOMContentLoaded and then on each change it sees (the
-// head's subtree, the root's children, the Navigation API's entry change),
-// deduplicated and at most once per documentTitleIntervalMs. A frame's
-// document is not the tab's and reports nothing. Page scripts
-// see neither the binding nor the watcher. Each report is one event and no
-// round trip.
+// world, deduplicated and at most once per documentTitleIntervalMs. A
+// frame's document is not the tab's and reports nothing. Page scripts see
+// neither the binding nor the watcher, and nothing a page does to events
+// stops it: it starts when it is evaluated, before the document has a root.
+//
+// It observes the nodes a title change passes through and nothing else: the
+// Document's own children (a root replaced, or removed by document.open),
+// the root's children (a head or an SVG title arriving), the head's
+// children, and the subtree of the title element document.title reads (the
+// head's, or a root child's; an SVG root's own title child). Each callback
+// re-points those observations when the root, the head or the title element
+// changed, so a body's mutations cost nothing. The Navigation API's entry
+// change reports a same-document address change. A document still loading
+// with no title yet sends nothing first; it is looked at again each
+// interval, so an untitled page reports once it has loaded. Each report is
+// one event and no round trip.
 const (
 	documentTitleWorld      = "ao-document-title"
 	documentTitleBinding    = "__aoDocumentTitle"
@@ -124,38 +134,57 @@ const (
 // documentTitleWatcher is the isolated-world script. It cuts what it sends
 // at the Manager's bounds counted in UTF-16 units, so a page cannot push an
 // unbounded payload through the relay; commitInfo then bounds the bytes.
+// The world's __aoDocumentTitleWatch counts its observer callbacks.
 var documentTitleWatcher = fmt.Sprintf(`(() => {
   const send = globalThis[%[1]q];
   if (typeof send !== "function" || globalThis.__aoDocumentTitleWatch || window.top !== window) return;
-  globalThis.__aoDocumentTitleWatch = true;
-  let sent = "", last = 0, timer = 0, head = null;
+  const watch = globalThis.__aoDocumentTitleWatch = {callbacks: 0};
+  const svg = "http://www.w3.org/2000/svg";
+  let sent = "", last = 0, timer = 0, root = null, head = null, title = null;
   const flush = () => {
     timer = 0;
-    const report = JSON.stringify([String(location.href).slice(0, %[2]d), String(document.title).slice(0, %[3]d)]);
+    const now = String(document.title);
+    if (!sent && !now && document.readyState === "loading") {
+      timer = setTimeout(flush, %[4]d);
+      return;
+    }
+    const report = JSON.stringify([String(location.href).slice(0, %[2]d), now.slice(0, %[3]d)]);
     if (report === sent) return;
     sent = report;
     last = Date.now();
     send(report);
   };
-  const observer = new MutationObserver(() => changed());
-  const watchHead = () => {
-    if (document.head && document.head !== head) {
-      head = document.head;
-      observer.observe(head, {subtree: true, childList: true, characterData: true});
-    }
-  };
   const changed = () => {
-    watchHead();
     if (!timer) timer = setTimeout(flush, Math.max(0, last + %[4]d - Date.now()));
   };
-  const start = () => {
-    if (document.documentElement) observer.observe(document.documentElement, {childList: true});
-    watchHead();
-    if (globalThis.navigation) navigation.addEventListener("currententrychange", changed);
-    flush();
+  const titleOf = (r, h) => {
+    if (!r) return null;
+    const inHead = h && h.getElementsByTagName("title")[0];
+    if (inHead) return inHead;
+    for (const child of r.children) if (child.localName === "title" && child.namespaceURI === r.namespaceURI) return child;
+    return null;
   };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, {once: true});
-  else start();
+  const observer = new MutationObserver(() => {
+    watch.callbacks++;
+    point();
+    changed();
+  });
+  const point = () => {
+    const r = document.documentElement;
+    const h = r && r.namespaceURI !== svg ? document.head : null;
+    const t = titleOf(r, h);
+    if (r === root && h === head && t === title) return;
+    root = r, head = h, title = t;
+    observer.disconnect();
+    observer.observe(document, {childList: true});
+    if (r) observer.observe(r, {childList: true});
+    if (h) observer.observe(h, {childList: true});
+    if (t) observer.observe(t, {childList: true, characterData: true, subtree: true});
+  };
+  observer.observe(document, {childList: true});
+  point();
+  if (globalThis.navigation) navigation.addEventListener("currententrychange", changed);
+  changed();
 })()`, documentTitleBinding, maxBrowserURLBytes, maxBrowserTitleBytes, documentTitleIntervalMs)
 
 // watchDocumentTitle installs the title watcher and routes its reports to
