@@ -246,6 +246,20 @@ func (s *Store) ThreadDeleteClaim(threadID string) (claim string, committed bool
 // call, which claims the threads a drained spawn added. It returns the
 // family as claimed.
 func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMember, err error) {
+	return s.claimDeleteFamily(op, ids, nil)
+}
+
+// ClaimLinkedDelete is ClaimDeleteFamily for the delete a paired computer's
+// owner sends for its worker id here through its link: id's own claim holds
+// only while that link owns it (ErrWorkerNotOwned), as a worker's holds
+// only through its owner here, and what id owns here is claimed with it.
+func (s *Store) ClaimLinkedDelete(op, id string, link LinkFence) ([]DeleteMember, error) {
+	return s.claimDeleteFamily(op, []string{id}, &link)
+}
+
+// claimDeleteFamily claims ids' family for op; link, when set, fences the
+// claim of the threads ids names.
+func (s *Store) claimDeleteFamily(op string, ids []string, link *LinkFence) (members []DeleteMember, err error) {
 	if op == "" {
 		return nil, errors.New("store: a delete claim needs its operation's id")
 	}
@@ -269,8 +283,11 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMemb
 			continue
 		}
 		fence := workerFence{}
-		if member.Kind == DeleteWorker {
+		switch {
+		case member.Kind == DeleteWorker:
 			fence.owner = member.Under
+		case member.Kind == DeleteNamed && link != nil:
+			fence.link = link
 		}
 		if err := claimThreadDeleteTx(tx, op, member.ThreadID, fence); err != nil {
 			return nil, err

@@ -154,6 +154,32 @@ var archivedOwnedCallersSQL = `WITH RECURSIVE under(id) AS (
 		)
 		SELECT id FROM under`
 
+// HasRemoteSpawns reports whether any of threadIDs spawned a thread on a
+// paired computer, its spawn's acceptance answered or not: what a delete of
+// them owes there (CommitDeleteClaim), for its confirmation to say. One
+// probe of idx_thread_requests_caller per thread.
+func (s *Store) HasRemoteSpawns(threadIDs []string) (bool, error) {
+	ids := uniqueNonEmptyStrings(threadIDs)
+	if len(ids) == 0 {
+		return false, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return false, fmt.Errorf("store: encode the threads to probe for remote spawns: %w", err)
+	}
+	var found bool
+	if err := s.reader().QueryRow(hasRemoteSpawnsSQL, string(encoded)).Scan(&found); err != nil {
+		return false, fmt.Errorf("store: probe for remote spawns: %w", err)
+	}
+	return found, nil
+}
+
+// hasRemoteSpawnsSQL is true when a thread of the JSON array ?1 made a
+// spawn on another computer.
+const hasRemoteSpawnsSQL = `SELECT EXISTS (SELECT 1 FROM json_each(?1) AS caller
+	  CROSS JOIN thread_requests ON thread_requests.caller_thread_id = caller.value
+	 WHERE thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> '')`
+
 // dueOwnerOpsSQL reads up to limit owed operations due by ?, the earliest
 // first.
 func dueOwnerOpsSQL(limit int) string {
