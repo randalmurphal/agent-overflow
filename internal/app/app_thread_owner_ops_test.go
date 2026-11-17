@@ -311,7 +311,7 @@ func TestTheSweepWakesForAnOwedOperation(t *testing.T) {
 	if delay := f.app.threadRequestSweepDelay(time.Now()); delay < time.Minute {
 		t.Fatalf("the sweep sleeps %v with nothing owed; the test needs nothing else due", delay)
 	}
-	owed, err := f.app.store.OweRemoteArchives(owner.ID, true)
+	owed, err := f.app.store.OweRemoteArchives(owner.ID)
 	if err != nil || len(owed) != 1 {
 		t.Fatalf("owed %+v, %v", owed, err)
 	}

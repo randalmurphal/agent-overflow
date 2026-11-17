@@ -63,10 +63,7 @@ type restingThreadWork struct {
 	// flip. A repeated archive reads them too, so a worker an earlier one
 	// could not archive is tried again however deep it is.
 	workers []store.OwnedWorker
-	// unread is why the workers could not be read: the archive's walk then
-	// does not end it (walkArchive).
-	unread error
-	err    error
+	err     error
 }
 
 // held reports whether sendID was in the thread's queue when it was

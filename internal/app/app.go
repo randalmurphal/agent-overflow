@@ -870,10 +870,6 @@ type App struct {
 	// threadID's archive decided to end it and before the store ends it
 	// (endArchiveWalk), so a test can archive the thread again then.
 	archiveWalkEndingForTest func(threadID string)
-	// archivedWorkersReadForTest, when set, runs before an archive reads the
-	// workers it goes on to archive (readArchivedWorkers); an error it
-	// returns is that read's.
-	archivedWorkersReadForTest func(threadID string) error
 	// workerPromptAnsweringForTest, when set, runs once an answer claimed
 	// a routed prompt and before it is written to the worker
 	// (answerRoutedPrompt); an error it returns is that write's failure.

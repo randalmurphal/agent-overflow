@@ -152,7 +152,7 @@ func TestADeleteOverridesAnOwedArchive(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if owed, err := s.OweRemoteArchives("lead", true); err != nil || len(owed) != 1 || owed[0].Op != OwnerOpArchive || owed[0].Seq != 1 {
+	if owed, err := s.OweRemoteArchives("lead"); err != nil || len(owed) != 1 || owed[0].Op != OwnerOpArchive || owed[0].Seq != 1 {
 		t.Fatalf("owe archives = %+v, %v", owed, err)
 	}
 	if marked, err := s.MarkOwnerOpSent("r", 1); err != nil || !marked {
@@ -204,7 +204,7 @@ func TestADeleteOverridesAnOwedArchive(t *testing.T) {
 // OweRemoteArchives owes an archive for the remote spawns of the owner and
 // of the archived owned threads beneath it, not of an open worker or one
 // with a sidebar row, and only while the owner is archived, whose cascade
-// mark it then clears once the archive finished.
+// mark it then clears.
 func TestOweRemoteArchives(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"owner", "archived", "open", "placed", "free"} {
@@ -227,19 +227,10 @@ func TestOweRemoteArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if owed, err := s.OweRemoteArchives("free", true); err != nil || len(owed) != 0 {
+	if owed, err := s.OweRemoteArchives("free"); err != nil || len(owed) != 0 {
 		t.Fatalf("an open owner owed %+v, %v", owed, err)
 	}
-	// An archive that is not finished owes the same and keeps its mark.
-	unfinished, err := s.OweRemoteArchives("owner", false)
-	if err != nil || len(unfinished) != 2 {
-		t.Fatalf("an unfinished archive owed %+v, %v; want both archives", unfinished, err)
-	}
-	var marked bool
-	if err := s.db.QueryRow(`SELECT archive_cascade FROM threads WHERE id = 'owner'`).Scan(&marked); err != nil || !marked {
-		t.Fatalf("an unfinished archive's mark = %v, %v; want it kept", marked, err)
-	}
-	owed, err := s.OweRemoteArchives("owner", true)
+	owed, err := s.OweRemoteArchives("owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +265,7 @@ func TestOwnerOpsDueList(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead", true); err != nil {
+	if _, err := s.OweRemoteArchives("lead"); err != nil {
 		t.Fatal(err)
 	}
 	now := ownerOps(t, s)["a"].NextAt
@@ -316,7 +307,7 @@ func TestNextThreadRequestWorkReportsOwnerOps(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead", true); err != nil {
+	if _, err := s.OweRemoteArchives("lead"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RescheduleOwnerOp("r", 1, 4242, ""); err != nil {
@@ -336,7 +327,7 @@ func TestForgettingAComputerDropsItsOwedOps(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead", true); err != nil {
+	if _, err := s.OweRemoteArchives("lead"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ForgetRemoteSpawnsOnComputer("pc-gone"); err != nil {
@@ -379,7 +370,7 @@ func TestRestoreKeepsOwedOwnerOps(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead", true); err != nil {
+	if _, err := s.OweRemoteArchives("lead"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RestoreFrom(path); err != nil {

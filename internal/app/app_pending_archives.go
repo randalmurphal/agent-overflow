@@ -36,26 +36,25 @@ func (a *App) beginArchiveWalk(threadID string) {
 }
 
 // endArchiveWalk records the end of a walk of threadID's archive. The last
-// walk to end owes the paired computers the archives of its workers there
-// while the thread is still archived (store.OweRemoteArchives), and in the
-// same transaction ends the archive when the walk finished, having read
-// the workers it owns; it returns what it owed for its caller to deliver
-// (deliverOwnerOps). A walk that did not finish, or a failure, leaves the
-// archive unfinished, for the next boot to finish.
+// walk to end ends the archive while the thread is still archived
+// (store.OweRemoteArchives), in the transaction that owes the paired
+// computers the archives of its workers there, and returns what it owed
+// for its caller to deliver (deliverOwnerOps). A failure leaves the archive
+// unfinished, for the next boot to finish.
 //
 // It holds the thread's action lock across the decision and the end: a new
 // archive commits its mark and records its walk under that lock
 // (runArchive), so it lands before the decision, which then counts it, or
 // after the end, which then leaves its mark alone.
-func (a *App) endArchiveWalk(threadID string, finished bool) ([]store.OwnerOp, error) {
+func (a *App) endArchiveWalk(threadID string) ([]store.OwnerOp, error) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	return a.endArchiveWalkLocked(threadID, finished)
+	return a.endArchiveWalkLocked(threadID)
 }
 
 // endArchiveWalkLocked is endArchiveWalk for a caller that holds the
 // thread's action lock.
-func (a *App) endArchiveWalkLocked(threadID string, finished bool) ([]store.OwnerOp, error) {
+func (a *App) endArchiveWalkLocked(threadID string) ([]store.OwnerOp, error) {
 	w := &a.archiveWalks
 	w.mu.Lock()
 	if w.running[threadID] > 1 {
@@ -68,7 +67,7 @@ func (a *App) endArchiveWalkLocked(threadID string, finished bool) ([]store.Owne
 	if hook := a.archiveWalkEndingForTest; hook != nil {
 		hook(threadID)
 	}
-	owed, err := a.store.OweRemoteArchives(threadID, finished)
+	owed, err := a.store.OweRemoteArchives(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("record that the archive of %s finished; the next start finishes it: %w", threadID, err)
 	}
@@ -141,9 +140,6 @@ func (a *App) resumeArchive(id string) {
 	}
 	for _, worker := range outcome.workers {
 		log.Printf("app: pending archive of %s: worker %s not archived: %v", id, worker.threadID, worker.err)
-	}
-	for _, unread := range outcome.unread {
-		log.Printf("app: pending archive of %s: %s: %v", id, unread.threadID, unread.err)
 	}
 }
 

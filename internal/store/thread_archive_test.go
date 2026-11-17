@@ -187,7 +187,7 @@ func TestUnarchivingSupersedesTheArchivesOwedForItsLinks(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"owner", "other"} {
-		if _, err := s.OweRemoteArchives(id, true); err != nil {
+		if _, err := s.OweRemoteArchives(id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -351,7 +351,7 @@ func TestListUnfinishedArchives(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.OweRemoteArchives("done", true); err != nil {
+	if _, err := s.OweRemoteArchives("done"); err != nil {
 		t.Fatal(err)
 	}
 	seedTransfer(t, s, "moved", "outgoing", "move", "complete", 128)

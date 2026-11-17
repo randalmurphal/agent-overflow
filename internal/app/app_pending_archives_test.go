@@ -2,10 +2,8 @@ package app
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,41 +157,6 @@ func TestABootFinishesAnArchiveACrashCut(t *testing.T) {
 			archivedIs(t, boot, "after the boot", tc.want)
 			if left := unfinishedArchives(t, boot); len(left) != 0 {
 				t.Errorf("unfinished archives after the boot = %v", left)
-			}
-		})
-	}
-}
-
-// An archive whose workers could not be read is unfinished: its result
-// says so, the workers stay open, its mark stays, and the next boot
-// archives them, at the owner's level and at a worker's below it alike.
-func TestAnArchiveWhoseWorkersCouldNotBeReadStaysUnfinished(t *testing.T) {
-	t.Parallel()
-	for _, unread := range []string{"owner", "worker"} {
-		t.Run(unread, func(t *testing.T) {
-			t.Parallel()
-			crash := newArchiveCrash(t)
-			crash.app.archivedWorkersReadForTest = func(threadID string) error {
-				if threadID == unread {
-					return errors.New("disk read failed")
-				}
-				return nil
-			}
-			result, err := crash.app.ArchiveThread("owner")
-			if err != nil {
-				t.Fatal(err)
-			}
-			archivedIs(t, crash.app, "after the archive", map[string]bool{"owner": true, "worker": unread == "worker", "deep": false})
-			if left := unfinishedArchives(t, crash.app); !slices.Equal(left, []string{unread}) {
-				t.Fatalf("unfinished = %v, want %s, whose workers were not read", left, unread)
-			}
-			if !strings.Contains(result.CleanupError, "sub-threads could not be read") || !strings.Contains(result.CleanupError, "disk read failed") {
-				t.Fatalf("CleanupError = %q, want it to say the sub-threads could not be read", result.CleanupError)
-			}
-			boot := crash.reboot(t)
-			archivedIs(t, boot, "after the boot", map[string]bool{"owner": true, "worker": true, "deep": true})
-			if left := unfinishedArchives(t, boot); len(left) != 0 {
-				t.Fatalf("unfinished after the boot = %v", left)
 			}
 		})
 	}
