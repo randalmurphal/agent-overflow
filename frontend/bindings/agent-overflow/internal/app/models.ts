@@ -8126,8 +8126,11 @@ export class ThreadAgentRow {
     "title": string;
 
     /**
-     * Placement and Archived are the stored placement and archive state of
-     * the thread a local spawn made; empty and false for every other row.
+     * Placement and Archived are the placement and archive state of the
+     * thread a spawn made, as the computer that holds the thread reported
+     * it: this one's store for a local spawn, the agent_rows answer of a
+     * paired computer for one there, nested rows included. Empty and false
+     * for every other row and from a computer that does not report them.
      * Placement is empty too for a thread that takes none (an assistant's
      * helper, outside every project), so no sidebar row is offered for it.
      */
@@ -8160,14 +8163,18 @@ export class ThreadAgentRow {
     "worker"?: string;
 
     /**
-     * BlockedOn is approval or question for a local target waiting on a
-     * prompt, person for a paired computer's target that reports it is
-     * blocked; BlockedDetail says what it asks and BlockedRoutedTo names
-     * the spawner its prompt went to (ruling 19).
+     * BlockedOn is approval or question for a target waiting on a prompt,
+     * here or as a paired computer's agent_rows answer reports it, and
+     * person for a paired computer's target known only to be blocked;
+     * BlockedDetail says what it asks and BlockedRoutedTo names the
+     * spawner its prompt went to (ruling 19). BlockedRoutedHere marks a
+     * paired computer's prompt routed back to the spawner here, which
+     * BlockedRoutedTo then names as this computer does.
      */
     "blockedOn"?: string;
     "blockedDetail"?: string;
     "blockedRoutedTo"?: string;
+    "blockedRoutedHere"?: boolean;
 
     /**
      * Activity is what a running target did last: its latest top-level
@@ -8362,6 +8369,26 @@ export class ThreadAgentRows {
     "runtimeMs"?: number;
     "turnOpen"?: boolean;
     "turnStartedAt"?: number;
+
+    /**
+     * Placement and Archived are the listed thread's own, answered by
+     * agent_rows for the spawn row on the computer that asked
+     * (ThreadAgentRow.Placement).
+     */
+    "placement"?: string;
+    "archived"?: boolean;
+
+    /**
+     * BlockedOn, BlockedDetail and BlockedRoutedTo are the prompt the
+     * listed thread waits on, as its own Agents row here reads it
+     * (threadWaitingOn). RoutedToAsker says that prompt went to the thread
+     * on the asking computer whose link owns the listed thread
+     * (routedToAsker), which that computer names itself.
+     */
+    "blockedOn"?: string;
+    "blockedDetail"?: string;
+    "blockedRoutedTo"?: string;
+    "routedToAsker"?: boolean;
 
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
@@ -9214,6 +9241,21 @@ export class ThreadPeerRequest {
     "blockedRoutedTo"?: string;
 
     /**
+     * BlockedRoutedToCaller is set when that prompt went back to the
+     * asking computer, to the thread whose link owns the target there
+     * (routedToAsker): the caller's own spawner, not a thread on that
+     * computer.
+     */
+    "blockedRoutedToCaller"?: boolean;
+
+    /**
+     * Placement is the target thread's placement there: owned, grouped or
+     * standalone. A computer that predates ownership across computers
+     * sends none, and its spawn's thread has a sidebar row there.
+     */
+    "placement"?: string;
+
+    /**
      * WaitingOn is what the target still waits on while its request waits
      * for its rest: a spawn, or a send from the thread that spawned it,
      * whose turn ended with work of its own left (restSettlement). Live,
@@ -9267,14 +9309,14 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField19_0 = $$createType166;
-        const $$createField20_0 = $$createType166;
+        const $$createField21_0 = $$createType166;
+        const $$createField22_0 = $$createType166;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField19_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField21_0($$parsedSource["answerAgent"]);
         }
         if ("lateReplyAgent" in $$parsedSource) {
-            $$parsedSource["lateReplyAgent"] = $$createField20_0($$parsedSource["lateReplyAgent"]);
+            $$parsedSource["lateReplyAgent"] = $$createField22_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }
