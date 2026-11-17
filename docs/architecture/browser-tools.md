@@ -276,6 +276,14 @@ behave as a desktop browser's:
   an error toast with the reason otherwise. `canceled` means AO stopped it
   (the user, a quota, its size, its page closing); an end the engine
   reports on its own is `failed`, with the engine's reason when it gives one.
+  On Windows through WSL the pane's WebView2 writes into the jar's AO
+  directory through its Windows view (`internal/browser/hosted_downloads.go`,
+  which records the protocol real WebView2 accepts; `TestDownloadSmoke` in
+  `internal/webview2host` runs it on the real runtime). A refusal does not
+  fail the page: it is logged with the engine's message, the user gets one
+  error toast per browser profile (a Kind `downloads-unmanaged` event), and
+  each download that starts in that profile is cancelled and listed as
+  failed with the reason.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,

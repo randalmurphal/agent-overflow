@@ -274,6 +274,14 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
+// downloadsUnmanaged is the optional half of a page driver whose engine can
+// fail to keep the page's downloads in AO's directory without failing the
+// page: it answers why, empty when downloads are managed. The Manager tells
+// the user once per jar profile.
+type downloadsUnmanaged interface {
+	downloadsUnmanaged() string
+}
+
 // pageFind is the optional find-in-page half of a page driver: the engine's
 // own text search, never one AO runs in the document. A driver without it
 // has no find. The Manager owns the session (which page, its query, the

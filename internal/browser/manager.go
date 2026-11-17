@@ -259,6 +259,9 @@ type jarScope struct {
 	// downloadDir is where the engine writes this jar's downloads before
 	// they move to their workspace's directory.
 	downloadDir string
+	// downloadsWarned is whether the user was told downloads in this jar's
+	// profile are not managed. Guarded by m.mu.
+	downloadsWarned bool
 }
 
 type managedPage struct {
@@ -821,11 +824,25 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	if err != nil {
 		return err
 	}
+	warn := ""
+	if unmanaged, ok := driver.(downloadsUnmanaged); ok {
+		warn = unmanaged.downloadsUnmanaged()
+	}
 	// Under m.mu: the jar's policy resolves a request to the page being
 	// created (jarAllows) while it loads, before it is registered.
 	m.mu.Lock()
 	p.attach(driver)
+	if warn != "" {
+		// Once per profile: every page of it would say the same.
+		if scope.downloadsWarned {
+			warn = ""
+		}
+		scope.downloadsWarned = true
+	}
 	m.mu.Unlock()
+	if warn != "" {
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: "Downloads are off in this browser profile: " + warn})
+	}
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return err
