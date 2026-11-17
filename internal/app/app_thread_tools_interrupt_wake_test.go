@@ -50,6 +50,11 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 				if err != nil {
 					t.Fatalf("the other thread's send: %v", err)
 				}
+				// The send returns once its message is handed to the
+				// dispatch. One that reaches the session only after the
+				// stopped turn ended opens a turn of its own, which no stop
+				// is kept for.
+				f.awaitReceiptRunning(t, sent.Token)
 				return other, sent.Token
 			},
 			stop: func(f *requestFixture, threadID string, by threadtools.Caller) error {
