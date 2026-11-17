@@ -348,7 +348,11 @@ func (h *Host) ReportUndelivered(pageID string, kind ReportKind) {
 
 // departPopup answers any open request. An announced popup needs a closed
 // report. An unannounced popup with downloads, or needed to announce a
-// descendant (departTaken), first reports its popup and held snapshots.
+// descendant (departTaken), first reports its popup and held snapshots,
+// under the target it has or none, which the backend never attaches; any
+// other goes unheard. Runs on the UI thread, once the page is out of the
+// registry and before its handlers retire, and answers whether to report
+// the page closed.
 func (h *Host) departPopup(page *hostPage, announce bool) bool {
 	h.answerNoWindow(page)
 	if !page.unannounced() {
