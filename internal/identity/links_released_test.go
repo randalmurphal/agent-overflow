@@ -108,6 +108,30 @@ func TestEverySessionEndThatReleasesALinkHandsItOver(t *testing.T) {
 			t.Fatalf("pruning the expired session released %v, want %s", got, worker)
 		}
 	})
+	t.Run("a restart retiring a pending pairing", func(t *testing.T) {
+		s, st, _, owner, _ := newFixture(t)
+		member := newSigningDevice(t)
+		link, err := s.MintPairingLink(PairingRequest{Purpose: "own-device", UserID: owner.ID, DeviceClass: DevicePhone, BindingClass: BindingDeviceBound, Scopes: []Scope{ScopeThreadsRead}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Label: "Phone", Proof: member.proof(t, "POST", "/auth/pair", link.Token, s.now())})
+		if reason.Refused() {
+			t.Fatal(reason)
+		}
+		session, err := st.GetSession(pending.Tokens.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker := linkThread(t, st, session.DeviceID)
+		_, boot, err := Bootstrap(st, testBackendID, "Owner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(boot.ReleasedThreads, []string{worker}) {
+			t.Fatalf("the restart released %v, want %s", boot.ReleasedThreads, worker)
+		}
+	})
 	t.Run("a merge removing a member", func(t *testing.T) {
 		s, st, _, owner, _ := newFixture(t)
 		released := recordReleases(s)

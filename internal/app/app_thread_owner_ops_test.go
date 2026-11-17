@@ -259,11 +259,14 @@ func TestTheSweepWakesForAnOwedOperation(t *testing.T) {
 	f := newThreadToolsFixture(t)
 	owner := f.thread(t, "owner")
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: newThreadRequestToken(), CallerThreadID: owner.ID, Kind: store.ThreadRequestSpawn,
-		TargetThreadID: "worker-elsewhere", TargetComputerID: "computer-elsewhere", State: store.ThreadRequestFinished}); err != nil {
+		TargetComputerID: "computer-elsewhere", State: store.ThreadRequestFinished, NextCheck: time.Now().Add(time.Hour).UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := f.app.store.ArchiveThread(owner.ID); err != nil {
 		t.Fatal(err)
+	}
+	if delay := f.app.threadRequestSweepDelay(time.Now()); delay < time.Minute {
+		t.Fatalf("the sweep sleeps %v with nothing owed; the test needs nothing else due", delay)
 	}
 	owed, err := f.app.store.OweRemoteArchives(owner.ID)
 	if err != nil || len(owed) != 1 {
@@ -599,6 +602,35 @@ func TestTheCleanupOfASpawnerMovedAwayReleasesItsWorkers(t *testing.T) {
 		t.Fatalf("the worker there is %s, want standalone", row.Placement)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return listedThere(p.worker) })
+	if owed := p.owed(t); len(owed) != 0 {
+		t.Fatalf("still owed %+v", owed)
+	}
+}
+
+// A worker moved on from the computer its spawn went to is out of the
+// spawner's reach: its archive is answered there as gone, and settled.
+func TestAnArchiveForAWorkerMovedOnIsSettled(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	transfer, err := p.dest.store.CreateThreadTransfer(store.ThreadTransfer{
+		ID: entityid.New(), ThreadID: p.worker, PeerBackendID: entityid.New(), Kind: "move", Direction: "outgoing",
+		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"prepared", "committed", "complete"} {
+		if _, err := p.dest.store.AdvanceThreadTransfer(transfer.ID, phase, strings.Repeat("b", 64)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := p.source.ArchiveThread(p.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.WorkersNotArchived) != 0 {
+		t.Fatalf("WorkersNotArchived = %+v, want none: the worker moved on", result.WorkersNotArchived)
+	}
 	if owed := p.owed(t); len(owed) != 0 {
 		t.Fatalf("still owed %+v", owed)
 	}
