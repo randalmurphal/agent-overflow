@@ -29,13 +29,16 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 		return PageInfo{}, err
 	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
+	since := p.infoGeneration()
 	info, infoErr := m.pageInfo(opCtx, p)
 	cancel()
+	if infoErr == nil {
+		m.commitRead(p, info, since)
+	}
 	p.mu.Unlock()
 	if infoErr != nil {
 		return PageInfo{}, infoErr
 	}
-	p.setInfo(info)
 	m.publishPages(access.ThreadID)
 	return p.cachedInfo(), nil
 }

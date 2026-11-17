@@ -245,8 +245,11 @@ func aoWKVPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 		return
 	}
 	page.noteLoad(location)
-	// Off the main thread: the Manager takes its own locks to route this.
-	go page.engine.events.PageInfoChanged(page.handle, location, name)
+	// Off the main thread, in order: the Manager takes its own locks to route
+	// this.
+	page.infoReports.report(location, name, func(url, title string) {
+		page.engine.events.PageInfoChanged(page.handle, url, title)
+	})
 }
 
 //export aoWKVPageLoading
