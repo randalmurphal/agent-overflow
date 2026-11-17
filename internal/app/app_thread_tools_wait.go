@@ -35,6 +35,9 @@ type threadRequestState struct {
 	next uint64
 	// waits is every parked call, by registration id.
 	waits map[uint64]threadRequestWait
+	// parked counts the calls parked on each request token, so a read of
+	// rest asks of one token without reading every wait (parkedOn).
+	parked map[string]int
 	// running maps a target thread to the receipt tokens whose turn a turn
 	// end on that thread could settle. It is the settlement observer's
 	// gate: a thread with no entry here costs one map read per turn end
@@ -219,14 +222,43 @@ func (a *App) beginWait(ctx context.Context, wait threadRequestWait, keys []stri
 	a.threadRequests.next++
 	id := a.threadRequests.next
 	a.threadRequests.waits[id] = wait
+	a.countParkedLocked(wait, 1)
 	a.threadRequests.mu.Unlock()
 
 	return waitCtx, wait.woke, func() {
 		a.threadRequests.mu.Lock()
-		delete(a.threadRequests.waits, id)
+		if _, registered := a.threadRequests.waits[id]; registered {
+			delete(a.threadRequests.waits, id)
+			a.countParkedLocked(wait, -1)
+		}
 		a.threadRequests.mu.Unlock()
 		cancel(nil)
 	}
+}
+
+// countParkedLocked adds by to the count of each key of a call parked on
+// thread requests. The caller holds threadRequests.mu.
+func (a *App) countParkedLocked(wait threadRequestWait, by int) {
+	if wait.remote {
+		return
+	}
+	if a.threadRequests.parked == nil {
+		a.threadRequests.parked = map[string]int{}
+	}
+	for key := range wait.keys {
+		if n := a.threadRequests.parked[key] + by; n > 0 {
+			a.threadRequests.parked[key] = n
+		} else {
+			delete(a.threadRequests.parked, key)
+		}
+	}
+}
+
+// parkedOn reports whether a call is parked on the request token.
+func (a *App) parkedOn(token string) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.parked[token] > 0
 }
 
 // requestWaitActive reports whether a call is parked on this key. The

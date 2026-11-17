@@ -1,19 +1,15 @@
 package app
 
-// A decision that cannot be taken back reads rest fresh at that moment, the
-// threads below included: a held request settles `finished` only when a
-// thread a spawn of its thread made has no work the Agents rows' drain has
-// not recorded yet, and the retention sweep clears no spawn whose thread
-// works. A source that cannot be read holds either for the next pass.
+// A decision that cannot be taken back reads rest from the threads' own
+// sources, the threads below included, never from what the Agents rows'
+// drain recorded: a held request settles `finished` only when no thread a
+// spawn of its thread made has work, recorded or not, and the retention
+// sweep clears no spawn whose thread works. A source that cannot be read
+// holds either for the next pass.
 
 import (
-	"bytes"
-	"database/sql"
-	"log"
 	"path/filepath"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,87 +154,6 @@ func TestAHeldRequestReadsTheThreadsBelowItFresh(t *testing.T) {
 	}
 }
 
-// lockedBuffer is a log destination several goroutines write.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// A source of a thread below the worker cannot be read while the worker's
-// turn end reads its rest: the request stays held, the failure is logged
-// naming that thread, and a pass once the source reads again settles it.
-// Serial: it captures the global logger.
-func TestAFailedReadBelowAHeldRequestHoldsIt(t *testing.T) {
-	logs := &lockedBuffer{}
-	previous := log.Writer()
-	log.SetOutput(logs)
-	t.Cleanup(func() { log.SetOutput(previous) })
-
-	f := newRequestFixture(t)
-	f.watchAgentRows()
-	f.holdCallerSession()
-	gate := filepath.Join(t.TempDir(), "worker-turn")
-	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Handed it on.")})
-	w := f.spawnWorker(t, "run the board")
-	f.awaitTurnRunning(t, w.Token)
-	child := f.settledChild(t, w.ThreadID)
-
-	db, err := sql.Open("sqlite", "file:"+f.dbPath+"?_pragma=busy_timeout(10000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	var broken atomic.Bool
-	f.app.threadRequestsWG.Wait()
-	f.app.restBelowReadForTest = func(threadID string) {
-		if threadID != w.ThreadID || !broken.CompareAndSwap(false, true) {
-			return
-		}
-		// The worker's own sources read it at rest; the child's background
-		// inventory reads remote_watches, now unreadable.
-		if _, err := db.Exec(`ALTER TABLE remote_watches RENAME TO remote_watches_unreadable`); err != nil {
-			t.Error(err)
-		}
-	}
-	ended := f.awaitTurnEndRead(t, w.ThreadID)
-	release(t, gate)
-	select {
-	case <-ended:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the worker's turn end was never read")
-	}
-	if !broken.Load() {
-		t.Fatal("the turn end never read below the worker")
-	}
-	if row := f.request(t, w.Token); row.State != store.ThreadRequestRunning || !f.app.restHeld(w.ThreadID, w.Token) {
-		t.Fatalf("request %+v settled with a source below it unread", row)
-	}
-	if got := logs.String(); !strings.Contains(got, child.ID) {
-		t.Fatalf("the failed read below the worker was not logged naming %s:\n%s", child.ID, got)
-	}
-
-	if _, err := db.Exec(`ALTER TABLE remote_watches_unreadable RENAME TO remote_watches`); err != nil {
-		t.Fatal(err)
-	}
-	f.app.settleRestedReceipts()
-	row := f.awaitRequestState(t, w.Token, store.ThreadRequestFinished)
-	if string(row.Answer) != "Handed it on." {
-		t.Fatalf("settled %+v; want finished with the worker's message", row)
-	}
-}
-
 // A spawn past the retention floor whose worker has a loop armed, which
 // nothing reported to the Agents rows, keeps its answer and token on both
 // sides: the sweep reads the worker's sources before it clears anything,
@@ -299,10 +214,10 @@ func TestTheRetentionSweepLeavesAWorkingSpawnWhole(t *testing.T) {
 	}
 }
 
-// A thread below the worker that the record holds with no spawn link, as
-// one recorded before the spawn that names it did, is read again with its
-// link: its loop keeps the worker from rest, and its cancel lets it rest.
-func TestARestReadFindsAChildRecordedBeforeItsSpawnNamedIt(t *testing.T) {
+// The record of a thread held with no spawn link, as one recorded before
+// the spawn that names it did, is read again with its link when its
+// durable sources change: its loop records it as a worker.
+func TestTheRecordFindsAChildRecordedBeforeItsSpawnNamedIt(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	worker, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
@@ -310,11 +225,10 @@ func TestARestReadFindsAChildRecordedBeforeItsSpawnNamedIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	child := f.settledChild(t, worker.ID)
-	wake, err := f.app.store.RegisterAgentWake(store.AgentWake{
+	if _, err := f.app.store.RegisterAgentWake(store.AgentWake{
 		ID: "wake-child", ThreadID: child.ID, Kind: store.AgentWakeLoop, Label: "board",
 		IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli(),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f.app.threadRequestsWG.Wait()
@@ -324,78 +238,10 @@ func TestARestReadFindsAChildRecordedBeforeItsSpawnNamedIt(t *testing.T) {
 	}
 	f.app.liveWorkers.threads[child.ID] = liveWorker{workerRest: workerRest{unrest: workerBlocked}}
 	f.app.liveWorkers.mu.Unlock()
-	if atRest, err := f.app.heldThreadAtRest(worker.ID); err != nil || atRest {
-		t.Fatalf("worker at rest %v, %v with its child's loop armed; want not", atRest, err)
+	if worker, err := f.app.reassessWorker(child.ID, true); err != nil || !worker {
+		t.Fatalf("reassess the child: worker %v, %v; want its link read", worker, err)
 	}
-	if _, found, err := f.app.store.CancelAgentWake(child.ID, wake.Label, store.AgentWakeLoop, agentWakeOutcomeCancelled); err != nil || !found {
-		t.Fatalf("CancelAgentWake: %v %v", found, err)
+	if rest := f.app.liveWorkerUnrest(store.ThreadRequest{Token: "spawn-of-" + child.ID, TargetThreadID: child.ID}); rest.unrest != workerWaiting {
+		t.Fatalf("the child's row reads %+v; want waiting on its loop", rest)
 	}
-	// The cancel's frame reaches the drain, which records the child at rest.
-	f.app.noteWorkerWaiting(child.ID)
-	f.app.threadRequestsWG.Wait()
-	if atRest, err := f.app.heldThreadAtRest(worker.ID); err != nil || !atRest {
-		t.Fatalf("worker at rest %v, %v with its child's loop cancelled; want at rest", atRest, err)
-	}
-}
-
-// A held request's read of rest costs the reads of its own thread's
-// sources, one read of the links below it, a reassessment of each thread
-// there and the listing's state twice: the same with nothing else on the
-// computer as with busy threads outside the subtree, each with open work
-// and a loop and recorded live. One more thread below costs one more
-// reassessment.
-func TestARestReadBelowCostsItsSubtree(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	worker, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child := f.settledChild(t, worker.ID)
-	f.settledChild(t, child.ID)
-	measure := func(what string) (int, map[string]int) {
-		t.Helper()
-		f.app.threadRequestsWG.Wait()
-		stop := readsUnder(f.app.store, "app.(*App).heldThreadAtRest")
-		atRest, err := f.app.heldThreadAtRest(worker.ID)
-		total, by := stop()
-		if err != nil || !atRest {
-			t.Fatalf("%s: worker at rest %v, %v; want at rest", what, atRest, err)
-		}
-		return total, by
-	}
-	quiet, quietBy := measure("nothing else on the computer")
-
-	now := time.Now().UnixMilli()
-	for i := range 20 {
-		busy := f.settledChild(t, f.caller.ID)
-		if _, err := f.app.store.RegisterAgentWake(store.AgentWake{
-			ID: "wake-" + busy.ID, ThreadID: busy.ID, Kind: store.AgentWakeLoop, Label: "board",
-			IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli(),
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: "busy-send-" + busy.ID, CallerThreadID: busy.ID,
-			Kind: store.ThreadRequestSend, TargetThreadID: f.caller.ID, Notify: true, State: store.ThreadRequestRunning,
-			CreatedAt: now + int64(i), UpdatedAt: now + int64(i)}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.app.reassessWorker(busy.ID, true); err != nil {
-			t.Fatal(err)
-		}
-		if !f.app.liveWorker(busy.ID) {
-			t.Fatalf("busy thread %s is not recorded live", busy.ID)
-		}
-	}
-	busy, busyBy := measure("20 busy threads outside the subtree")
-	if busy != quiet {
-		t.Fatalf("the read costs %d statements with busy threads outside the subtree, %d without; want the same\n%v\n%v", busy, quiet, busyBy, quietBy)
-	}
-
-	f.settledChild(t, child.ID)
-	deeper, deeperBy := measure("one more thread below")
-	if deeper <= quiet {
-		t.Fatalf("one more thread below costs %d statements, the read before it %d; want more\n%v\n%v", deeper, quiet, deeperBy, quietBy)
-	}
-	t.Logf("a held request's read of rest with two threads below: %d statements %v; a third below: %d", quiet, quietBy, deeper)
 }

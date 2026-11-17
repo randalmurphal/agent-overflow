@@ -119,9 +119,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 			OriginChanged: a.noteWorkflowOriginChange,
 			// The thread the run reports to may rest now that its report
 			// is in its hands, or will not come.
-			ReportSettled: func(itemID string) {
-				a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.workflowRuns[itemID] = struct{}{} })
-			},
+			ReportSettled: a.noteWorkflowRunChanged,
 			Attention: workflowapp.AttentionPorts{
 				Notify: func(itemID, title, body string) error {
 					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {

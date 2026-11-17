@@ -40,7 +40,8 @@ const (
 	// longest the sweep ever sleeps.
 	threadRequestExpiryInterval = 10 * time.Minute
 	// restRecoveryRetry is how soon the sweep tries again what the boot's
-	// recovery of rest could not read (retryRestRecovery).
+	// recovery of rest, or a held request's read of rest, could not read
+	// (retryRestRecovery, retryFailedRestReads).
 	restRecoveryRetry = 5 * time.Second
 	// threadRequestPollBatch bounds one pass over the remote rows.
 	threadRequestPollBatch = 32
@@ -142,8 +143,10 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 			return
 		}
 		now := time.Now()
-		// What the boot's recovery of rest could not read, read again.
+		// What the boot's recovery of rest, or a held request's read of
+		// rest, could not read, read again.
 		a.retryRestRecovery()
+		a.retryFailedRestReads()
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
 		a.pollRemoteThreadRequests(now)
@@ -205,7 +208,7 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 			// same terms as the poll's rows.
 			due = append(due, schedule.OwnerOp)
 		}
-		if a.restRecoveryPending() {
+		if a.restRecoveryPending() || a.restReadsFailed() {
 			due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
 		}
 		if loops, err := a.store.NextAgentWakeDue(); err != nil {
@@ -929,7 +932,8 @@ func (a *App) settleRemoteThreadRequestOwing(row store.ThreadRequest, settlement
 
 // expireThreadRequests is the retention pass: answers nobody collected are
 // dropped a day after they were written, rows are deleted at the floor (a
-// spawn's lineage is kept with its payload cleared), remote job watches with
+// spawn's lineage is kept with its payload cleared, and a spawn whose
+// thread here is not at rest is left whole: restedSpawnsPastFloor), remote job watches with
 // nothing left to deliver go at the same floor, and answer files nobody
 // read go with them.
 func (a *App) expireThreadRequests(now time.Time) {
@@ -939,11 +943,7 @@ func (a *App) expireThreadRequests(now time.Time) {
 		log.Printf("thread tools: dropped %d uncollected answer(s) past their hold", dropped)
 	}
 	floor := now.AddDate(0, 0, -store.ThreadRequestRetentionDays).UnixMilli()
-	if err := a.reassessSpawnsPastFloor(floor); err != nil {
-		// Nothing past the floor is cleared on a partial reading of rest;
-		// the next pass reads again.
-		logThreadRequestSweep("read the rest of the threads of spawns past retention", err)
-	} else if swept, released, err := a.store.DeleteThreadRequestsBefore(floor, a.parkedRequestTokens(), a.liveWorkerThreads()); err != nil {
+	if swept, released, err := a.sweepThreadRequestsBefore(floor); err != nil {
 		logThreadRequestSweep("delete requests past retention", err)
 	} else {
 		if swept > 0 {
@@ -961,17 +961,13 @@ func (a *App) expireThreadRequests(now time.Time) {
 	a.sweepThreadExports(now)
 }
 
-// reassessSpawnsPastFloor reads, from their sources now, the threads of the
-// spawns past floor and every thread below them (reassessSpawnedBelow), so
-// the sweep's clearing of a spawn, which cannot be taken back, reads their
-// rest as the listing does and fresh. Nothing to read while no spawn is
-// past the floor.
-func (a *App) reassessSpawnsPastFloor(floor int64) error {
-	targets, err := a.store.SpawnTargetsPastFloor(floor)
-	if err != nil || len(targets) == 0 {
-		return err
-	}
-	return a.reassessSpawnedBelow(targets, true)
+// sweepThreadRequestsBefore deletes the requests past floor, and clears
+// the spawns past it whose threads here read at rest
+// (restedSpawnsPastFloor), leaving the others whole.
+func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []string, err error) {
+	rested, done := a.restedSpawnsPastFloor(floor)
+	defer done()
+	return a.store.DeleteThreadRequestsBefore(floor, rested)
 }
 
 // sweepThreadExports deletes the two kinds of export file nobody keeps: an

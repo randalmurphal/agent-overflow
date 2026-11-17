@@ -60,7 +60,7 @@ type Deps struct {
 	// reported to before and the one it reports to now.
 	OriginChanged func(store.WorkItemOriginChange)
 	// ReportSettled hears that a run's rest no longer owes the thread it
-	// reports to a report (ReportingRuns).
+	// reports to a report (OwedReports).
 	ReportSettled func(itemID string)
 	Logf          func(format string, args ...any)
 	Now           func() time.Time

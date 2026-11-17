@@ -153,12 +153,12 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 			step:     step,
 			prefixed: []string{"idx_thread_transfers_owner"},
 		}, ownedWorkersToArchiveSQL, "lead")
-		// A held request's fresh read of rest walks every spawn link down,
-		// whatever the placement.
-		assertWalkProbesTheQueuedKey(t, s, "threadsSpawnedBelowSQL", walkPlan{
+		// A decision's read of rest walks every spawn link down, whatever
+		// the placement, by caller through the index of links alone.
+		assertWalkProbesTheQueuedKey(t, s, "subtreeReachedSQL", walkPlan{
 			step: []string{"SEARCH link USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=?)"},
 			want: []string{"SEARCH threads USING COVERING INDEX sqlite_autoindex_threads_1 (id=?)"},
-		}, threadsSpawnedBelowSQL, `["lead"]`)
+		}, subtreeReachedSQL, `["lead"]`)
 	})
 
 	t.Run("agent requests", func(t *testing.T) {

@@ -40,13 +40,23 @@ func remoteLoopWorker(t *testing.T, pair *reachPair) (*agentPeerPair, string) {
 	return agentPair, child
 }
 
+// expirePastTheFloor runs each app's retention pass at a moment past the
+// floor of everything settled now.
+func expirePastTheFloor(apps ...*App) {
+	later := time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays).Add(time.Minute)
+	for _, app := range apps {
+		app.expireThreadRequests(later)
+	}
+}
+
 // A remote worker with nothing open below it, only an armed loop or a live
-// turn, keeps its spawn's receipt there past the retention floor: the
-// receipt is kept as its lineage with its answer gone and its token
-// unknown, so the spawner's listing and Stop still reach the worker. The
-// store's own tests hold the lineage's shape and its delete with the
-// thread.
-func TestRetentionKeepsTheReceiptOfARemoteWorkerThatIsNotAtRest(t *testing.T) {
+// turn, keeps its spawn whole on both computers past the retention floor:
+// the destination's sweep reads the worker not at rest and leaves the
+// receipt and its answer, the source's leaves the spawn it reports open, so
+// the token still answers on both, and the spawner's listing and Stop
+// still reach the worker. A worker at rest past the floor is kept as its
+// lineage (TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued).
+func TestRetentionKeepsTheSpawnOfARemoteWorkerThatIsNotAtRestWhole(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	for name, start := range map[string]func(*testing.T, *reachPair) (*agentPeerPair, string){
@@ -56,23 +66,20 @@ func TestRetentionKeepsTheReceiptOfARemoteWorkerThatIsNotAtRest(t *testing.T) {
 			t.Parallel()
 			pair := newReachPair(t)
 			agentPair, child := start(t, pair)
-			floor := time.Now().Add(time.Minute).UnixMilli()
-			for _, app := range []*App{pair.source, pair.dest} {
-				if _, _, err := app.store.DeleteThreadRequestsBefore(floor, nil, nil); err != nil {
-					t.Fatalf("sweep: %v", err)
-				}
+			token := agentPair.spawn.Token
+			receipt := pair.receipt(t, token)
+			expirePastTheFloor(pair.source, pair.dest)
+			if got, found, err := pair.dest.store.GetThreadRequestReceipt(token); err != nil || !found || string(got.Answer) != string(receipt.Answer) {
+				t.Fatalf("the receipt there after the sweeps: %+v, found %v, %v; want it whole with %q", got, found, err, receipt.Answer)
 			}
-			if _, found, err := pair.dest.store.GetThreadRequestReceipt(agentPair.spawn.Token); err != nil || found {
-				t.Fatalf("the lineage's token reads found %v, %v; want unknown", found, err)
-			}
-			if !pair.request(t, agentPair.spawn.Token).NestedOpen {
-				t.Fatal("the sweep here dropped the spawn's open work")
+			if got, found, err := pair.source.store.GetThreadRequest(token); err != nil || !found || string(got.Answer) != string(agentPair.spawn.Answer) || !got.NestedOpen {
+				t.Fatalf("the spawn here after the sweeps: %+v, found %v, %v; want it whole, open, with %q", got, found, err, agentPair.spawn.Answer)
 			}
 			listing, err := pair.source.peerThreadAgentRows(t.Context(), agentPair.spawn, threadAgentRowDepth-1)
 			if err != nil || listing.Worker == "" {
 				t.Fatalf("the forwarded listing after the sweeps = %+v, %v; want the worker's state", listing, err)
 			}
-			stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, agentPair.spawn.Token)
+			stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, token)
 			if err != nil || len(stop.Failures) != 0 {
 				t.Fatalf("the Stop after the sweeps = %+v, %v; want it to reach the worker", stop, err)
 			}
@@ -80,7 +87,6 @@ func TestRetentionKeepsTheReceiptOfARemoteWorkerThatIsNotAtRest(t *testing.T) {
 				rest, err := pair.dest.workerUnrest(child)
 				return err == nil && rest.unrest == ""
 			})
-
 		})
 	}
 }
@@ -148,19 +154,14 @@ func remoteRestedWorker(t *testing.T, pair *reachPair) (store.ThreadRequest, str
 	return spawn, child
 }
 
-// sweepPastTheFloor runs the retention sweep on both computers with every
+// sweepPastTheFloor runs the retention pass on both computers with every
 // settled row past the floor. The spawn here settled an hour ago, so it is
 // out of the Agents segment's settled window, as every row past the floor
 // is.
 func sweepPastTheFloor(t *testing.T, pair *reachPair, token string) {
 	t.Helper()
 	execOnStore(t, pair.dbPath, `UPDATE thread_requests SET settled_at = settled_at - 3600000 WHERE token = '`+token+`'`)
-	floor := time.Now().Add(time.Minute).UnixMilli()
-	for _, app := range []*App{pair.source, pair.dest} {
-		if _, _, err := app.store.DeleteThreadRequestsBefore(floor, nil, nil); err != nil {
-			t.Fatalf("sweep: %v", err)
-		}
-	}
+	expirePastTheFloor(pair.source, pair.dest)
 }
 
 // A remote worker at rest through both retention sweeps keeps its link at

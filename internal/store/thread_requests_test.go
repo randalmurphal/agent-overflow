@@ -932,7 +932,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		}
 	}
 
-	swept, _, err := s.DeleteThreadRequestsBefore(1000, nil, nil)
+	swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(s, 1000))
 	if err != nil {
 		t.Fatalf("retention sweep: %v", err)
 	}
@@ -993,7 +993,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		t.Errorf("threads spawned by t-caller after the sweep = %v, %v; want t-child", ids, err)
 	}
 	// A second sweep finds nothing left to take.
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000, nil, nil); err != nil || swept != 0 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(s, 1000)); err != nil || swept != 0 {
 		t.Errorf("second sweep: swept=%d err=%v", swept, err)
 	}
 	// Nothing writes an answer or a wake back onto the lineage row.
@@ -1011,7 +1011,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if err := s.DeleteThread("t-child"); err != nil {
 		t.Fatal(err)
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000, nil, nil); err != nil || swept != 1 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(s, 1000)); err != nil || swept != 1 {
 		t.Errorf("sweep after the child was deleted: swept=%d err=%v", swept, err)
 	}
 	for _, token := range []string{"tok-receipt-settled-recent", "tok-receipt-open-old"} {
@@ -1041,69 +1041,12 @@ func spawnWithReceipt(t *testing.T, s *Store, token, caller, target string, at i
 	}
 }
 
-// A settled spawn past the floor whose thread the listing keeps open, a
-// thread live on this computer (a loop armed there) or open work deeper
-// than the marks count, keeps its answer and its token on both sides: the
-// sweep reads the listing's own predicate. Once the thread rests, the next
-// sweep keeps only its lineage, as for any spawn.
-func TestRetentionLeavesASpawnWhoseThreadWorksWhole(t *testing.T) {
-	t.Parallel()
-	for _, c := range []struct {
-		name string
-		live []string
-		// work opens what keeps root from rest and returns its end.
-		work func(t *testing.T, s *Store) (rest func())
-	}{
-		{"a loop armed on its thread", []string{"root"}, func(*testing.T, *Store) func() { return func() {} }},
-		{"open work five spawns below its thread", nil, func(t *testing.T, s *Store) func() {
-			seedAgentRequest(t, s, "deep-send", "e", ThreadRequestSend, "peer", true, 300)
-			return func() { settleAgentRequest(t, s, "deep-send", 400) }
-		}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			s := newTestStore(t)
-			chain := []string{"root", "a", "b", "c", "d", "e"}
-			for _, id := range append([]string{"lead", "peer"}, chain...) {
-				mustCreateThread(t, s, id)
-			}
-			spawnWithReceipt(t, s, "to-root", "lead", "root", 200)
-			for i, id := range chain[1:] {
-				seedAgentRequest(t, s, "to-"+id, chain[i], ThreadRequestSpawn, id, false, int64(110+i))
-				settleAgentRequest(t, s, "to-"+id, int64(210+i))
-			}
-			rest := c.work(t, s)
-			if _, _, err := s.DeleteThreadRequestsBefore(1000, nil, c.live); err != nil {
-				t.Fatal(err)
-			}
-			if row, found, err := s.GetThreadRequest("to-root"); err != nil || !found || string(row.Answer) != "done" {
-				t.Fatalf("the spawn after the sweep: %+v, found %v, %v; want it whole", row, found, err)
-			}
-			if receipt, found, err := s.GetThreadRequestReceipt("to-root"); err != nil || !found || string(receipt.Answer) != "done" {
-				t.Fatalf("the spawn's receipt after the sweep: %+v, found %v, %v; want it whole", receipt, found, err)
-			}
-
-			rest()
-			if _, _, err := s.DeleteThreadRequestsBefore(1000, nil, nil); err != nil {
-				t.Fatal(err)
-			}
-			if row := rawThreadRequest(t, s, "to-root"); !row.LineageOnly || row.Answer != nil {
-				t.Fatalf("the spawn once its thread rests: %+v; want its lineage alone", row)
-			}
-			if _, found, err := s.GetThreadRequestReceipt("to-root"); err != nil || found {
-				t.Fatalf("the receipt once its thread rests: found %v, %v; want its lineage alone", found, err)
-			}
-		})
-	}
-}
-
 // A spawn's receipt settled before the floor whose thread exists is kept as
 // its lineage: the owner, source and target it names stay, its answers go,
 // its token is unknown and no writer touches it, and it still says which
 // source thread spawned the thread. Another kind's receipt, or a spawn's
-// whose thread is gone, is deleted, whatever other threads are live. A
-// sweep with only lineage left finds nothing due, and the lineage goes once
-// its thread does.
+// whose thread is gone, is deleted. A sweep with only lineage left finds
+// nothing due, and the lineage goes once its thread does.
 func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -1127,7 +1070,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 			t.Fatalf("settle %s: %+v %v", token, result, err)
 		}
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000, nil, []string{"t-elsewhere"}); err != nil || swept != 3 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(s, 1000)); err != nil || swept != 3 {
 		t.Fatalf("sweep = %d, %v; want one lineage kept and two receipts deleted", swept, err)
 	}
 	var lineage, agent int
@@ -1165,7 +1108,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 			t.Fatalf("spawned for %s/%s = %v, %v; want %v", c.owner, c.source, got, err, c.want)
 		}
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000, nil, nil); err != nil || swept != 0 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(s, 1000)); err != nil || swept != 0 {
 		t.Fatalf("second sweep = %d, %v; want nothing", swept, err)
 	}
 	// The app detaches a thread's settled receipts before it deletes or
@@ -1176,7 +1119,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 	if err := s.DeleteThread("t-child"); err != nil {
 		t.Fatal(err)
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000, nil, nil); err != nil || swept != 1 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(s, 1000)); err != nil || swept != 1 {
 		t.Fatalf("sweep once the thread is gone = %d, %v; want the lineage deleted", swept, err)
 	}
 	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 0 {

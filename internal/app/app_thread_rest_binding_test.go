@@ -246,7 +246,7 @@ func TestAWorkflowRunsOwedReportHoldsTheSpawnUntilTheWorkerReadsIt(t *testing.T)
 		t.Fatalf("settled %+v; want finished with the turn that read the report", row)
 	}
 	f.awaitWorkerRow(t, w.Token, "", "")
-	if owed := f.app.workflowApplication().ReportingRuns(); len(owed) != 0 {
+	if owed := f.app.workflowApplication().OwedReports(); len(owed) != 0 {
 		t.Fatalf("runs still reporting: %v", owed)
 	}
 }
@@ -278,7 +278,7 @@ func TestACancelledWorkflowRunLetsTheSpawnSettle(t *testing.T) {
 	}
 	f.awaitWorkerRow(t, w.Token, "", "")
 	f.app.workflowApplication().WaitWake()
-	if owed := f.app.workflowApplication().ReportingRuns(); len(owed) != 0 {
+	if owed := f.app.workflowApplication().OwedReports(); len(owed) != 0 {
 		t.Fatalf("runs still reporting: %v", owed)
 	}
 }
@@ -331,7 +331,7 @@ func TestACoalescedWorkflowWakeLetsTheSpawnSettle(t *testing.T) {
 		t.Fatalf("settled %+v; want finished with the turn that read the report", row)
 	}
 	f.awaitWorkerRow(t, w.Token, "", "")
-	if owed := f.app.workflowApplication().ReportingRuns(); len(owed) != 0 {
+	if owed := f.app.workflowApplication().OwedReports(); len(owed) != 0 {
 		t.Fatalf("runs still reporting: %v", owed)
 	}
 	if turn, found, err := f.app.store.GetTurnByThreadIndex(w.ThreadID, 2); err != nil || found {

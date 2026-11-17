@@ -34,12 +34,11 @@ import (
 // the durable ones (background work, loops, watches, reminders, answers
 // on their way, workflow runs and unanswered questions), from the
 // background tray, wake, request, workflow and question frames and the
-// boot (recoverRestAtBoot). A decision that cannot be taken back, a held
-// request settling or the retention sweep clearing a spawn, reassesses the
-// threads below first, on its own goroutine (reassessSpawnedBelow), since
-// the drain records a change after it happened. Every other reader, the
-// listing's reads, the row view, the change frames' gates and Past,
-// consumes only what it stored.
+// boot (recoverRestAtBoot). Its readers, the listing's reads, the row
+// view, the change frames' gates, Past and Stop All's selection, consume
+// only what it stored. A decision that cannot be taken back, a held request
+// settling or the retention sweep clearing a spawn, reads neither it nor
+// the marks: it reads the threads' own sources (readRest).
 
 // Why a worker is not at rest, in the order a row shows them. Waiting is
 // below the rest: background work, a loop, watch or reminder, or a timer.
@@ -85,14 +84,14 @@ type workerRest struct {
 // threadRest says why threadID is not at rest, the zero value when it is:
 // its own state (workerUnrest) or, with nothing of its own, open work at
 // any depth below it (store.ThreadAgentState.OpenBelow), which reads
-// waiting with no detail. It is the one reading of rest: its own state read
-// now, the work below over what liveWorkers recorded. A held request reads
-// it before it settles, then the work below fresh (heldThreadAtRest);
-// thread_status with thread_ids waits for it (threadStateNow), and a paired
-// computer answers with it, for its agent_rows (answerThreadAgentRows) and
-// for a request's poll (threadPeerRequestState). The Agents rows read the
-// same two halves from what was recorded: liveWorkers for the thread's own
-// state, the listing's TargetOpen for the work below it.
+// waiting with no detail: its own state read now, the work below as the
+// listing records it. thread_status with thread_ids waits for it
+// (threadStateNow), and a paired computer answers with it, for its
+// agent_rows (answerThreadAgentRows) and for a request's poll
+// (threadPeerRequestState). The Agents rows read the same two halves from
+// what was recorded: liveWorkers for the thread's own state, the listing's
+// TargetOpen for the work below it. A decision that cannot be taken back
+// reads neither record (readRest).
 func (a *App) threadRest(threadID string) (workerRest, error) {
 	rest, err := a.workerUnrest(threadID)
 	if err != nil || rest.unrest != "" {
@@ -140,17 +139,27 @@ func (rest workerRest) waitingLine() string {
 }
 
 // workerUnrest says why threadID is not at rest, the zero value when it
-// is: the one answer to that question, from every source in the order a
-// row shows them. workerHeldUnrest asks what triage holds,
-// workerDurableUnrest the store, workerTimerUnrest the provider's timers;
-// a source added later is one more case in one of them, and the event that
-// changes it one more call of noteWorkerLiveness or noteWorkerWaiting.
+// is: its own sources read now, the store's first (ownRest).
+func (a *App) workerUnrest(threadID string) (workerRest, error) {
+	src, err := a.store.ReadThreadRestSources(threadID, a.workflowApplication().OwedReports())
+	if err != nil {
+		return workerRest{}, err
+	}
+	return a.ownRest(threadID, src)
+}
+
+// ownRest is the one answer to why threadID is not at rest by its own
+// state, the zero value when it is, from every source in the order a row
+// shows them: src, what the store holds (durableRest); what triage holds
+// (workerHeldUnrest); the provider's timers (workerTimerUnrest). A source
+// added later is one more case in one of them, and the event that changes
+// it one more call of noteWorkerLiveness or noteWorkerWaiting.
 //
 // The store is read before triage, as reassessWorker reads them: an answer
 // on its way stops being one when the turn it starts echoes it, so a read
 // that finds it delivered then finds that turn, or that turn's end.
-func (a *App) workerUnrest(threadID string) (workerRest, error) {
-	waits, _, err := a.workerDurableUnrest(threadID)
+func (a *App) ownRest(threadID string, src store.ThreadRestSources) (workerRest, error) {
+	waits, _, err := a.durableRest(threadID, src)
 	if err != nil {
 		return workerRest{}, err
 	}
@@ -179,32 +188,33 @@ func (a *App) workerHeldUnrest(threadID string) string {
 	return ""
 }
 
-// workerDurableUnrest is whether threadID waits on something the store
-// records that starts a turn there without a person: a question it asked
+// workerDurableUnrest is durableRest over threadID's sources read now.
+func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
+	src, err := a.store.ReadThreadRestSources(threadID, a.workflowApplication().OwedReports())
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	return a.durableRest(threadID, src)
+}
+
+// durableRest is whether threadID waits on something the store records
+// (src) that starts a turn there without a person: a question it asked
 // that nobody answered yet (blocked, as its prompt reads); an answer to a
 // request it made on its way to it (queued, store.ThreadAnswerDue); or,
 // waiting, running background work (what runningBackgroundWorkForThread
 // reports: Claude tasks and background agents, Codex subagents and
 // terminals, remote commands), a workflow run reporting to it that runs or
-// whose report is owed (workflowapp.Service.ReportingRuns), an armed
-// loop or watch, or a reminder that has not fired. The detail is the
-// background work's summary, the run's goal, or the loop, watch or
-// reminder named as its wake rows name it (wakeWaitingLine); background
-// says the wait is background work. Each source is one indexed read, taken
+// whose report is owed (workflowapp.Service.OwedReports), an armed loop or
+// watch, or a reminder that has not fired. The detail is the background
+// work's summary, the run's goal, or the loop, watch or reminder named as
+// its wake rows name it (wakeWaitingLine); background says the wait is
+// background work. The background inventory is read here, per thread,
 // while nothing earlier answered.
-func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
-	asking, err := a.store.ThreadHasUnansweredAsyncQuestions(threadID)
-	if err != nil {
-		return workerRest{}, false, err
-	}
-	if asking {
+func (a *App) durableRest(threadID string, src store.ThreadRestSources) (workerRest, bool, error) {
+	if src.Asking {
 		return workerRest{unrest: workerBlocked}, false, nil
 	}
-	due, err := a.store.ThreadAnswerDue(threadID)
-	if err != nil {
-		return workerRest{}, false, err
-	}
-	if due {
+	if src.AnswerDue {
 		return workerRest{unrest: workerQueued}, false, nil
 	}
 	work, err := a.runningBackgroundWorkForThread(threadID, "")
@@ -218,26 +228,14 @@ func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
 		}
 		return workerRest{unrest: workerWaiting, detail: detail}, true, nil
 	}
-	goal, reporting, err := a.store.WorkflowRunReportingTo(threadID, a.workflowApplication().ReportingRuns())
-	if err != nil {
-		return workerRest{}, false, err
+	if src.Workflow {
+		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(src.WorkflowGoal)}, false, nil
 	}
-	if reporting {
-		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(goal)}, false, nil
+	if src.Wake {
+		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(src.WakeKind, src.WakeLabel)}, false, nil
 	}
-	wakes, err := a.store.ListAgentWakes(threadID)
-	if err != nil {
-		return workerRest{}, false, err
-	}
-	if len(wakes) > 0 {
-		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(wakes[0].Kind, wakes[0].Label)}, false, nil
-	}
-	reminders, _, err := a.store.ListOpenThreadReminders(threadID, 1)
-	if err != nil {
-		return workerRest{}, false, err
-	}
-	if len(reminders) > 0 {
-		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(threadWakeKindReminder, reminderLabel(string(reminders[0].Answer)))}, false, nil
+	if src.Reminder {
+		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(threadWakeKindReminder, reminderLabel(src.ReminderNote))}, false, nil
 	}
 	return workerRest{}, false, nil
 }

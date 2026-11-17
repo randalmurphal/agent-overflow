@@ -59,10 +59,7 @@ func (s *Service) StartEngine(ctx context.Context, config EngineRuntimeConfig) e
 	s.engine = workflowEngine
 	s.runner = config.Runner
 	s.runtimeMu.Unlock()
-	err = s.seedRunningReports()
-	if err == nil {
-		err = workflowEngine.Start(ctx)
-	}
+	err = workflowEngine.Start(ctx)
 	if err != nil {
 		s.runtimeMu.Lock()
 		s.engine = nil

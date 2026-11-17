@@ -66,7 +66,7 @@ func (f *reportFixture) owe() {
 }
 
 func (f *reportFixture) owed() bool {
-	return slices.Contains(f.service.ReportingRuns(), f.item.ID)
+	return slices.Contains(f.service.OwedReports(), f.item.ID)
 }
 
 // expectSettledOnce checks the rest's report is owed until its wake job
@@ -78,7 +78,7 @@ func (f *reportFixture) expectSettledOnce(t *testing.T, unblock func()) {
 	}
 	unblock()
 	if f.owed() {
-		t.Fatalf("the report is still owed after its wake job: %v", f.service.ReportingRuns())
+		t.Fatalf("the report is still owed after its wake job: %v", f.service.OwedReports())
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -153,35 +153,30 @@ func TestARunsRestOwesItsReportUntilItsWakeJobEnds(t *testing.T) {
 	})
 }
 
-// Running, a run is recorded as reporting from its running event on, so
-// the span between its rest's write and that rest's event is covered; a
-// run already running when the engine starts is recorded by the start.
-func TestARunningRunIsRecordedUntilItsLastRestsWakeJob(t *testing.T) {
+// A run that runs owes nothing: the store says it runs. Its report is owed
+// from its rest's event, recorded before that event is emitted, until the
+// rest's wake job ends; running again owes nothing more.
+func TestARunOwesItsReportFromItsRestsEvent(t *testing.T) {
 	f := newReportFixture(t)
 	if err := f.store.UpdateWorkItemState(f.item.ID, string(engine.StateRunning), "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.seedRunningReports(); err != nil {
-		t.Fatal(err)
+	f.service.HandleEngineEvent(eventchan.WorkflowItemState, engine.StateEvent{
+		ItemID: f.item.ID, From: engine.StateNeedsHuman, To: engine.StateRunning,
+	}, func(eventchan.Channel, any) {})
+	if f.owed() {
+		t.Fatal("a running run is recorded as owing a report")
 	}
-	if !f.owed() {
-		t.Fatal("a run running at the engine's start is not recorded")
-	}
-	// The rest is written; its event has not been emitted yet.
 	f.write(engine.StateNeedsHuman, engine.ReasonGate)
-	if !f.owed() {
-		t.Fatal("the run is not recorded between its rest's write and event")
-	}
 	unblock := f.block()
 	f.owe()
 	f.expectSettledOnce(t, unblock)
 
-	// A run that starts running again is recorded from its event.
 	f.service.HandleEngineEvent(eventchan.WorkflowItemState, engine.StateEvent{
 		ItemID: f.item.ID, From: engine.StateNeedsHuman, To: engine.StateRunning,
 	}, func(eventchan.Channel, any) {})
-	if !f.owed() {
-		t.Fatal("a run running again is not recorded")
+	if f.owed() {
+		t.Fatal("a run running again is recorded as owing a report")
 	}
 	f.service.WaitWake()
 }

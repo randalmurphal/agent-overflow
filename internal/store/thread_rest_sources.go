@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -62,37 +61,6 @@ func (s *Store) ThreadsWithAnswerDue() ([]string, error) {
 		WHERE `+threadAnswerDueSQL(""))
 }
 
-// WorkflowRunReportingTo names the oldest workflow run that reports to
-// threadID and is running, or is one of reporting (the runs whose report
-// the workflow owner says may still be owed, workflowapp.ReportingRuns), by
-// its goal, found false when none is. A run that waits on a person, or
-// ended, with its report in the thread's hands, starts no turn there by
-// itself.
-func (s *Store) WorkflowRunReportingTo(threadID string, reporting []string) (goal string, found bool, err error) {
-	ids, err := json.Marshal(append([]string{}, reporting...))
-	if err != nil {
-		return "", false, fmt.Errorf("store: read the workflow run reporting to %s: %w", threadID, err)
-	}
-	err = s.reader().QueryRow(`SELECT goal FROM work_items
-		WHERE origin_thread_id = ? AND origin_thread_id <> ''
-		  AND (state = 'running' OR id IN (SELECT value FROM json_each(?)))
-		ORDER BY created_at ASC, id ASC LIMIT 1`, threadID, string(ids)).Scan(&goal)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("store: read the workflow run reporting to %s: %w", threadID, err)
-	}
-	return goal, true, nil
-}
-
-// RunningRootWorkItemIDs lists the runs a thread can be bound to, a
-// root's, that are running.
-func (s *Store) RunningRootWorkItemIDs() ([]string, error) {
-	return s.queryThreadIDs("store: list the running root workflow runs",
-		`SELECT id FROM work_items WHERE state = 'running' AND parent_item_id = ''`)
-}
-
 // ThreadsWithRunningWorkflowRuns lists the threads a running workflow run
 // reports to.
 func (s *Store) ThreadsWithRunningWorkflowRuns() ([]string, error) {
@@ -126,21 +94,6 @@ func (s *Store) CallerSpawnedRemote(callerThreadID, computerID, threadID string)
 		return false, fmt.Errorf("store: read whether %s spawned %s on %s: %w", callerThreadID, threadID, computerID, err)
 	}
 	return spawned, nil
-}
-
-// ThreadHasUnansweredAsyncQuestions reports whether threadID has a
-// question still waiting for an answer: the thread waits on whoever
-// answers it, and takes a turn for that answer. The same rows as
-// UnansweredAsyncQuestions, on idx_async_questions_pending.
-func (s *Store) ThreadHasUnansweredAsyncQuestions(threadID string) (bool, error) {
-	var open bool
-	err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM async_questions q
-		WHERE q.thread_id = ?1 AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered'
-		AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = ?1 AND t.archived = 0))`, threadID).Scan(&open)
-	if err != nil {
-		return false, fmt.Errorf("store: read whether %s has unanswered questions: %w", threadID, err)
-	}
-	return open, nil
 }
 
 // TurnsAfter lists threadID's turns past turnIndex, oldest first: the turns
