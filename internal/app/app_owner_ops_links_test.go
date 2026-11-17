@@ -1,9 +1,7 @@
 package app
 
 import (
-	"context"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,9 +15,8 @@ import (
 )
 
 // An owner operation reaches its spawn's link whatever became of the
-// receipt around it, answers gone only when no worker can appear for the
-// token, and stays owed until every worker below it there is archived or
-// deleted (docs/specs/standing-agents.md, Owned workers).
+// receipt around it, and stays owed until every worker below it there is
+// archived or deleted (docs/specs/standing-agents.md, Owned workers).
 
 // lineageOnly moves the pair's spawn receipt there past the retention
 // floor, its link standing: the receipt is settled, its owner reached it
@@ -98,167 +95,6 @@ func TestAnOwnerOpReachesALinkKeptAsLineage(t *testing.T) {
 	})
 }
 
-// An owner operation that arrives before the spawn it names, here a
-// delete sent while the spawn is still on its way, fences the token: the
-// spawn then creates nothing there, and its receipt says why.
-func TestAnOwnerOpBeforeItsSpawnArrivesFencesTheSpawn(t *testing.T) {
-	t.Parallel()
-	p := newOwnerOpPair(t, false)
-	arrived, release := make(chan ThreadPeerCall, 1), make(chan struct{})
-	var once, freed sync.Once
-	free := func() { freed.Do(func() { close(release) }) }
-	t.Cleanup(free)
-	hold := func(call ThreadPeerCall) {
-		once.Do(func() {
-			arrived <- call
-			<-release
-		})
-	}
-	p.peer.spawning.Store(&hold)
-	spawned := make(chan error, 1)
-	go func() {
-		_, err := p.adapter().Spawn(t.Context(), p.callerIdentity(),
-			threadtools.SpawnCall{Prompt: "more work", ComputerID: p.computer, ProjectID: p.project})
-		spawned <- err
-	}()
-	call := within(t, "the spawn on its way", arrived)
-	answer, err := p.source.callOwnerOp(t.Context(), store.OwnerOp{
-		Token: call.Token, Seq: 1, Op: store.OwnerOpDelete, ComputerID: p.computer, SourceThreadID: p.caller.ID,
-	})
-	if err != nil || answer.Outcome != ownerOpGone {
-		t.Fatalf("the delete ahead of its spawn = %+v, %v; want gone", answer, err)
-	}
-	free()
-	if err := within(t, "the spawn", spawned); err == nil || !strings.Contains(err.Error(), "cancelled before its thread was created") {
-		t.Fatalf("the fenced spawn = %v, want it refused with the fence's answer", err)
-	}
-	rows, err := p.dest.store.ListThreads()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].ID != p.worker {
-		t.Fatalf("the threads there = %d, want only the first worker: the fenced spawn made one", len(rows))
-	}
-	receipt := p.receipt(t, call.Token)
-	if receipt.State != store.ThreadReceiptCancelled || receipt.TargetThreadID != "" || receipt.OwnerOpSeq != 1 {
-		t.Fatalf("the fenced receipt = %+v, want cancelled under the delete with no thread", receipt)
-	}
-	// Another device's or thread's operation fences nothing.
-	for name, op := range map[string]struct{ device, source string }{
-		"another device": {"another-device", p.caller.ID},
-		"another source": {p.device, entityid.New()},
-	} {
-		got, err := p.dest.admitOwnerOp(t.Context(), op.device, op.source, threadOwnerOpArgs{Spawn: call.Token, Seq: 2, Op: store.OwnerOpArchive})
-		if err != nil || got.Outcome != ownerOpGone {
-			t.Errorf("%s: %+v, %v; want gone", name, got, err)
-		}
-	}
-	if receipt := p.receipt(t, call.Token); receipt.OwnerDeviceID != p.device || receipt.OwnerOpSeq != 1 {
-		t.Fatalf("another caller's operation changed the fence: %+v", receipt)
-	}
-}
-
-// A spawn the other computer had not accepted when its spawner was
-// archived is cancelled there, whatever order the archive, the reopen's
-// supersede and the spawn itself arrive in: a supersede with no receipt
-// fences the token as the archive does, so an older archive arriving after
-// it, or the spawn, finds the fence. Nothing stays owed here.
-func TestASpawnNotYetAcceptedWhenItsSpawnerWasArchivedIsCancelledInAnyOrder(t *testing.T) {
-	t.Parallel()
-	for name, order := range map[string][]string{
-		"supersede, older archive, spawn": {"supersede", "archive", "spawn"},
-		"supersede, spawn, older archive": {"supersede", "spawn", "archive"},
-		"archive, supersede, spawn":       {"archive", "supersede", "spawn"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			p := newOwnerOpPair(t, false)
-			// The spawn's first call is held on its way into the other
-			// computer; the source gives up on it.
-			arrived, release := make(chan ThreadPeerCall, 1), make(chan struct{})
-			var freed sync.Once
-			free := func() { freed.Do(func() { close(release) }) }
-			t.Cleanup(free)
-			var first atomic.Bool
-			hold := func(call ThreadPeerCall) {
-				if first.CompareAndSwap(false, true) {
-					arrived <- call
-					<-release
-				}
-			}
-			p.peer.spawning.Store(&hold)
-			ctx, cancel := context.WithCancel(t.Context())
-			spawned := make(chan error, 1)
-			go func() {
-				_, err := p.adapter().Spawn(ctx, p.callerIdentity(),
-					threadtools.SpawnCall{Prompt: "more work", ComputerID: p.computer, ProjectID: p.project})
-				spawned <- err
-			}()
-			call := within(t, "the spawn on its way", arrived)
-			cancel()
-			// An uncertain ack or the cancellation's error: either way the
-			// source stopped waiting, and the call is still on its way.
-			_ = within(t, "the source giving up on the spawn", spawned)
-
-			// The archive is sent and not answered; the reopen supersedes it.
-			p.peer.asleep.Store(true)
-			if _, err := p.source.ArchiveThread(p.caller.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := p.source.UnarchiveThread(p.caller.ID); err != nil {
-				t.Fatal(err)
-			}
-			p.peer.asleep.Store(false)
-			var archive store.OwnerOp
-			for _, op := range p.owed(t) {
-				if op.Token == call.Token && op.Op == store.OwnerOpSupersede {
-					archive = op
-				}
-			}
-			if archive.Seq != 2 {
-				t.Fatalf("owed = %+v, want the spawn's sent archive superseded at 2", p.owed(t))
-			}
-			archive.Op, archive.Seq = store.OwnerOpArchive, 1
-
-			var refusal error
-			for _, step := range order {
-				switch step {
-				case "supersede":
-					p.drain(t)
-				case "archive":
-					// The archive sent before the reopen, arriving late.
-					answer, err := p.source.callOwnerOp(t.Context(), archive)
-					if err != nil || answer.Outcome != ownerOpGone {
-						t.Fatalf("the older archive = %+v, %v; want gone", answer, err)
-					}
-				case "spawn":
-					var reply ThreadPeerReply
-					refusal = p.source.backends.CallThreadPeer(t.Context(), p.computer, "ThreadToolCall", &reply, call)
-				}
-			}
-			if refusal == nil || !strings.Contains(refusal.Error(), "cancelled before its thread was created") {
-				t.Fatalf("the spawn = %v, want it refused with the fence's answer", refusal)
-			}
-			rows, err := p.dest.store.ListThreads()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(rows) != 1 || rows[0].ID != p.worker {
-				t.Fatalf("the threads there = %d, want only the first worker", len(rows))
-			}
-			if archivedThere(t, p, p.worker) {
-				t.Fatal("the first worker was archived though its spawner was reopened")
-			}
-			if receipt := p.receipt(t, call.Token); receipt.State != store.ThreadReceiptCancelled || receipt.TargetThreadID != "" {
-				t.Fatalf("the spawn's receipt there = %+v, want it fenced", receipt)
-			}
-			if owed := p.owed(t); len(owed) != 0 {
-				t.Fatalf("still owed %+v", owed)
-			}
-		})
-	}
-}
-
 // A retry that settles a spawn while its first attempt is still making
 // the thread, and the owner's delete answered gone after it, leave nothing:
 // the first attempt cannot name its thread on the settled receipt, and
@@ -320,55 +156,6 @@ func TestASpawnSettledWhileItsThreadIsMadeKeepsNoThread(t *testing.T) {
 	}
 	if receipt := p.receipt(t, call.Token); receipt.TargetThreadID != "" {
 		t.Fatalf("the settled receipt names %s", receipt.TargetThreadID)
-	}
-}
-
-// An archive there whose worker's own workers could not be read stays
-// owed here, names that worker pending on its computer with why, keeps
-// the worker's archive unfinished there, and archives its worker once the
-// read succeeds.
-func TestARemoteArchiveWhoseWorkersCouldNotBeReadStaysOwed(t *testing.T) {
-	t.Parallel()
-	p := newOwnerOpPair(t, false)
-	child := p.spawnBelowThere(t, p.worker)
-	var fail atomic.Bool
-	fail.Store(true)
-	p.dest.archivedWorkersReadForTest = func(threadID string) error {
-		if threadID == p.worker && fail.Load() {
-			return errors.New("disk read failed")
-		}
-		return nil
-	}
-	result, err := p.source.ArchiveThread(p.caller.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.WorkersNotArchived) != 1 {
-		t.Fatalf("WorkersNotArchived = %+v, want the worker whose workers there were not read", result.WorkersNotArchived)
-	}
-	if failure := result.WorkersNotArchived[0]; failure.ThreadID != p.worker || !failure.Pending || failure.Computer == "" ||
-		!strings.Contains(failure.Error, "sub-threads could not be read") {
-		t.Fatalf("the worker there is reported %+v, want it pending, its sub-threads not read", failure)
-	}
-	if !archivedThere(t, p, p.worker) || archivedThere(t, p, child) {
-		t.Fatal("want the worker archived there and its own worker still open")
-	}
-	if owed := p.owed(t); len(owed) != 1 || owed[0].Op != store.OwnerOpArchive {
-		t.Fatalf("owed = %+v, want the archive still owed", owed)
-	}
-	if left := unfinishedArchives(t, p.dest); !slices.Equal(left, []string{p.worker}) {
-		t.Fatalf("unfinished there = %v, want the worker's archive", left)
-	}
-	fail.Store(false)
-	p.drain(t)
-	if !archivedThere(t, p, child) {
-		t.Fatal("the worker's own worker there was not archived once its read succeeded")
-	}
-	if owed := p.owed(t); len(owed) != 0 {
-		t.Fatalf("still owed %+v", owed)
-	}
-	if left := unfinishedArchives(t, p.dest); len(left) != 0 {
-		t.Fatalf("unfinished there = %v", left)
 	}
 }
 

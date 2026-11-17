@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -552,16 +551,6 @@ func (t threadToolsApp) acceptRequest(
 	made := false
 	listing := store.ListingUnchanged
 	if target == "" && create != nil {
-		if !created && !slices.Contains(store.ThreadReceiptOpenStates(), receipt.State) {
-			// Settled before any thread: its owner's operation fenced the
-			// token (store.FenceSpawn), or a retry settled it. Nothing is
-			// made; the settlement's answer is the refusal.
-			answer := string(receipt.Answer)
-			if answer == "" {
-				answer = "That request was settled before its thread was created; nothing ran under it."
-			}
-			return "", false, errorsx.Public(threadtools.CodeInvalidRequest, answer, nil)
-		}
 		if !created {
 			// The receipt exists with no thread: the attempt that accepted
 			// it died between the two writes. Settle it here rather than
@@ -591,8 +580,7 @@ func (t threadToolsApp) acceptRequest(
 			named, listing, err = t.app.store.SetThreadReceiptTarget(token, target, own)
 			if err == nil && !named {
 				// Settled while its thread was being made: a retry found it
-				// unnamed, or its owner archived, deleted or moved the
-				// spawner first (store.FenceSpawn).
+				// unnamed.
 				err = errorsx.Public(threadtools.CodeInvalidRequest,
 					"That request was settled before its thread could be recorded, so the thread made for it was removed and nothing ran under it.", nil)
 			}

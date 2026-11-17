@@ -52,41 +52,6 @@ func TestReachSpawnLink(t *testing.T) {
 	}
 }
 
-// FenceSpawn writes, for a token with no receipt, a settled one with no
-// thread under its owner's operation, which an acceptance then finds and
-// no naming moves; it leaves a receipt that exists alone.
-func TestFenceSpawn(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "made")
-	reachable(t, s, "dev")
-	reach, found, err := s.FenceSpawn("fenced", "dev", "lead", 4, 5000)
-	if err != nil || !found || reach.State != ThreadReceiptCancelled || reach.Open() || reach.Linked || reach.TargetThreadID != "" || reach.OwnerOpSeq != 4 {
-		t.Fatalf("the fence = %+v, %v, %v", reach, found, err)
-	}
-	stored, created, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
-		Token: "fenced", OwnerDeviceID: "dev", SourceComputerID: "pc", SourceThreadID: "lead", Kind: ThreadRequestSpawn, SpawnLink: true,
-	})
-	if err != nil || created || stored.State != ThreadReceiptCancelled || string(stored.Answer) != SpawnFencedAnswer {
-		t.Fatalf("the late acceptance = %+v, created %v, %v; want the fence", stored, created, err)
-	}
-	if named, _, err := s.SetThreadReceiptTarget("fenced", "made", true); err != nil || named {
-		t.Fatalf("naming the fenced receipt: %v, %v; want it refused", named, err)
-	}
-
-	// A receipt that exists is left as it is.
-	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
-		Token: "open", OwnerDeviceID: "dev", SourceComputerID: "pc", SourceThreadID: "lead", Kind: ThreadRequestSpawn, SpawnLink: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if reach, found, err := s.FenceSpawn("open", "dev", "lead", 5, 6000); err != nil || !found || !reach.Open() || reach.OwnerOpSeq != 0 {
-		t.Fatalf("a fence over an open receipt = %+v, %v, %v; want it open and untouched", reach, found, err)
-	}
-	if reach, found, err := s.FenceSpawn("open", "other", "lead", 5, 6000); err != nil || found {
-		t.Fatalf("another device's fence over a receipt = %+v, %v, %v", reach, found, err)
-	}
-}
-
 // A receipt settled before its thread is named names none, for a paired
 // computer's request and a local one alike.
 func TestNamingASettledReceiptIsRefused(t *testing.T) {

@@ -106,31 +106,6 @@ func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64
 	return reach, true, nil
 }
 
-// FenceSpawn ends, for its owner, a spawn this computer has no receipt for
-// yet: the receipt is written settled cancelled with the operation's
-// sequence and no thread, so the spawn's acceptance, if it arrives, finds a
-// settled receipt and creates nothing, and no naming can give the token a
-// thread (SetThreadReceiptTarget). It returns the receipt as its owner
-// reaches it: the fence, or the receipt an acceptance wrote first. Found is
-// false when the token belongs to another device or source.
-func (s *Store) FenceSpawn(token, deviceID, sourceThreadID string, seq, now int64) (SpawnReach, bool, error) {
-	action := fmt.Sprintf("store: fence spawn %s", token)
-	if _, err := s.db.Exec(`INSERT INTO thread_request_receipts (
-		    token, owner_device_id, source_thread_id, kind, state, answer, answer_kind,
-		    revision, settled_at, expires_at, owner_op_seq, owner_seen_at, created_at, updated_at
-		 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?10, ?9, ?8, ?8, ?8)
-		 ON CONFLICT(token) DO NOTHING`,
-		token, deviceID, sourceThreadID, ThreadRequestSpawn, ThreadReceiptCancelled,
-		[]byte(SpawnFencedAnswer), ThreadAnswerError, now, seq, now+threadAnswerHoldMillis); err != nil {
-		return SpawnReach{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	return s.ReachSpawnLink(token, deviceID, sourceThreadID, now)
-}
-
-// SpawnFencedAnswer is the answer of a spawn its owner archived, deleted or
-// released before this computer accepted it (FenceSpawn).
-const SpawnFencedAnswer = "That spawn was cancelled before its thread was created: the thread that made it was archived, deleted or moved first."
-
 // releaseSpawnLinksTx ends, in tx, every link the condition where (over
 // thread_request_receipts, with args) selects, and returns the threads they
 // named, sorted: the trigger has made each owned one standalone, so the
