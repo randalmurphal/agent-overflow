@@ -15,8 +15,9 @@ import (
 // kept). A created or an info change for a gone target is dropped, so a
 // target destroyed before its creation is handled leaves nothing behind.
 //
-// known and openers hold only live targets, so the browser's targets bound
-// them; gone and the held info are bounded by orderSlack. The record goes
+// known and openers hold live targets, and a target whose destroy was
+// handled before its creation once its tombstone left gone; both are
+// bounded by maxKnownTargets, gone and the held info by orderSlack. The record goes
 // with its connection: each connection makes its own.
 //
 // Every info change is numbered as it is handled, held or not, so a held
@@ -25,12 +26,20 @@ import (
 // Each method runs the engine's part, when it takes one, under mu, so what
 // the engine binds or looks up there is settled against the other events of
 // the same target.
+// maxKnownTargets bounds the known targets and the opener edges a
+// connection keeps. A browser's live targets are far fewer (the launcher
+// keeps at most webview2host.MaxHostPages pages, each with its frames and
+// workers); past it the oldest go, so a target whose destroy was handled
+// before its creation, after its tombstone left the gone record, is not
+// kept for the connection's life.
+const maxKnownTargets = 4 * orderSlack
+
 type cdpTargets struct {
 	mu    sync.Mutex
-	known map[target.ID]struct{}
+	known *boundedMap[target.ID, struct{}]
 	// openers maps each known page target that has an opener to it, for the
 	// browser-wide navigation policy.
-	openers  map[target.ID]target.ID
+	openers  *boundedMap[target.ID, target.ID]
 	gone     *boundedMap[target.ID, struct{}]
 	heldInfo *boundedMap[target.ID, heldTarget]
 	// next numbers the info changes, called under mu
@@ -58,34 +67,38 @@ func newCDPTargets(next func() uint64) *cdpTargets {
 	}
 	return &cdpTargets{
 		next:     next,
-		known:    make(map[target.ID]struct{}),
-		openers:  make(map[target.ID]target.ID),
+		known:    newBoundedMap[target.ID, struct{}](maxKnownTargets),
+		openers:  newBoundedMap[target.ID, target.ID](maxKnownTargets),
 		gone:     newBoundedMap[target.ID, struct{}](orderSlack),
 		heldInfo: newBoundedMap[target.ID, heldTarget](orderSlack),
 	}
 }
 
 // created records a created target, with its opener when it is a page that
-// has one, and answers false for a target already gone. Otherwise then runs
-// with the target's newest info: the info held for it, with its number, if
-// there was any.
+// has one, and answers false for a target already gone. Otherwise then, if
+// given, takes and runs with the target's newest info: the info held for
+// it, with its number, if there was any. With no then, the held info stays
+// for takeHeld.
 func (t *cdpTargets) created(info *target.Info, then func(newest *target.Info, held bool, order uint64)) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, gone := t.gone.get(info.TargetID); gone {
 		return false
 	}
-	t.known[info.TargetID] = struct{}{}
+	t.known.put(info.TargetID, struct{}{})
 	if info.Type == "page" && info.OpenerID != "" {
-		t.openers[info.TargetID] = info.OpenerID
+		t.openers.put(info.TargetID, info.OpenerID)
+	}
+	if then == nil {
+		// The info held for the target stays for the page that comes to
+		// answer to it (takeHeld).
+		return true
 	}
 	newest, held := t.heldInfo.take(info.TargetID)
 	if !held {
 		newest = heldTarget{info: info}
 	}
-	if then != nil {
-		then(newest.info, held, newest.order)
-	}
+	then(newest.info, held, newest.order)
 	return true
 }
 
@@ -119,8 +132,8 @@ func (t *cdpTargets) takeHeld(id target.ID) (*target.Info, uint64, bool) {
 func (t *cdpTargets) destroyed(id target.ID, then func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.known, id)
-	delete(t.openers, id)
+	t.known.delete(id)
+	t.openers.delete(id)
 	t.heldInfo.delete(id)
 	t.gone.put(id, struct{}{})
 	if then != nil {
@@ -131,7 +144,7 @@ func (t *cdpTargets) destroyed(id target.ID, then func()) {
 // isKnownLocked reports whether id is a known target. The caller holds mu,
 // in a method's part.
 func (t *cdpTargets) isKnownLocked(id target.ID) bool {
-	_, known := t.known[id]
+	_, known := t.known.get(id)
 	return known
 }
 
@@ -143,8 +156,8 @@ func (t *cdpTargets) owners(frame string) []string {
 	owners := []string{frame}
 	// A popup has one opener, so the chain is at most every known popup
 	// long; the bound stops a cycle.
-	for id := target.ID(frame); len(owners) <= len(t.openers); {
-		opener := t.openers[id]
+	for id := target.ID(frame); len(owners) <= t.openers.len(); {
+		opener, _ := t.openers.get(id)
 		if opener == "" {
 			break
 		}
@@ -158,5 +171,5 @@ func (t *cdpTargets) owners(frame string) []string {
 func (t *cdpTargets) retained() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return len(t.known) + len(t.openers) + t.gone.len() + t.heldInfo.len()
+	return t.known.len() + t.openers.len() + t.gone.len() + t.heldInfo.len()
 }

@@ -102,7 +102,7 @@ func TestTargetDestroyedBeforeCreatedLeavesNoLiveOpener(t *testing.T) {
 		t.Errorf("owners %v", owners)
 	}
 	targets.mu.Lock()
-	known, openers := len(targets.known), len(targets.openers)
+	known, openers := targets.known.len(), targets.openers.len()
 	targets.mu.Unlock()
 	if known != 0 || openers != 0 {
 		t.Errorf("known %d, openers %d", known, openers)
@@ -117,6 +117,42 @@ func TestTargetDestroyedBeforeCreatedLeavesNoLiveOpener(t *testing.T) {
 	}
 	if n := targets.retained(); n > 2*orderSlack {
 		t.Errorf("the record retains %d ids", n)
+	}
+}
+
+// The record is bounded whatever the order of events: destroys handled
+// ahead of their creates, past what the gone record keeps, leave no known
+// target or opener edge past the record's own bound.
+func TestCDPTargetsAreBoundedWhateverTheOrder(t *testing.T) {
+	targets := newCDPTargets(nil)
+	for batch := range 10 {
+		var ids []target.ID
+		for i := range 2 * orderSlack {
+			ids = append(ids, target.ID(fmt.Sprintf("T-%d-%d", batch, i)))
+		}
+		for _, id := range ids {
+			targets.destroyed(id, nil)
+		}
+		for _, id := range ids {
+			targets.created(&target.Info{TargetID: id, Type: "page", OpenerID: "T-opener"}, nil)
+		}
+	}
+	if n, bound := targets.retained(), 2*maxKnownTargets+2*orderSlack; n > bound {
+		t.Errorf("the record retains %d ids, past its bound %d", n, bound)
+	}
+}
+
+// An info change held before its target's creation is handled stays held
+// for the page that comes to answer to the target when the creation runs
+// nothing with it (the hosted engine's subscription), so a redirect reported
+// first is not lost.
+func TestCDPTargetsKeepHeldInfoForItsPage(t *testing.T) {
+	targets := newCDPTargets(nil)
+	targets.changed(&target.Info{TargetID: "T-popup", Type: "page", URL: "https://example.test/redirected", Title: "Redirected"}, func() bool { return false })
+	targets.created(&target.Info{TargetID: "T-popup", Type: "page", URL: "https://example.test/asked"}, nil)
+	info, _, ok := targets.takeHeld("T-popup")
+	if !ok || info.URL != "https://example.test/redirected" || info.Title != "Redirected" {
+		t.Fatalf("held info %+v, %v; want the redirect", info, ok)
 	}
 }
 
