@@ -65,21 +65,17 @@ All dated 2026-11-15.
   OAuth has no flow for a desktop app without a shipped secret.
 - **Reusable code from the `atl` project is copied in as files, without
   history. Nothing is imported from it, `atl` stays a separate tool, and it
-  is not changed for this.** The ADF and Markdown converter, date parsing
-  and error types copy as they are, with the converter's golden files. The
-  HTTP layer, which never replays a write and marks a write whose outcome
-  is unknown, and the Atlassian client copy with their terminal output and
-  disk cache removed. The Jira and Tempo logic (the field-by-name value
-  builder, create and edit metadata, transitions, comments, worklog
-  validation) is bound to atl's command context, so it is separated from
-  the commands on this side: its reads already return typed values, while
-  most writes and the worklog validation sit inside command functions and
-  are reshaped to take a client and return values. The refusal of an edit
-  that would lose formatting lives in atl's command layer, not the
-  converter, and is carried over with it. atl's command tests assert
-  terminal output and do not move; their fixtures can. Copied files carry
-  no site-specific field names, field or status aliases, or report
-  conventions.
+  is not changed for this.** The ADF and Markdown converter is the copy,
+  with its hand-written golden files; the refusal of an edit that would
+  lose formatting, which lived in atl's command layer, moved into it. The
+  rest of atl is bound to its command context and its one site, so the
+  tracker clients are written here with atl as the reference for logic and
+  edge cases: the HTTP layer to the forge transport's rules, typed inputs
+  in place of atl's text conventions for field values, and typed errors.
+  atl's recorded responses hold real site data and are not copied; nor are
+  its aliases, reports, prompts, dry runs, disk cache or relative date
+  parsing. [Tracker clients](../architecture/tracker-clients.md) is the
+  contract for what was built.
 - **Agents reach a tracker through tools the app provides to its threads.**
   The tools read, search, create, edit, transition, comment, move between
   sprints and list and add worklogs. A write goes through the app's client,
