@@ -9272,11 +9272,18 @@ export class ThreadPeerRequest {
 
     /**
      * BlockedRoutedToCaller is set when that prompt went back to the
-     * asking computer, to the thread whose link owns the target there
-     * (routedToAsker): the caller's own spawner, not a thread on that
-     * computer.
+     * request's caller, the thread whose link owns the target there
+     * (routedToAsker), not a thread on that computer.
      */
     "blockedRoutedToCaller"?: boolean;
+
+    /**
+     * BlockedRoutedToThread names the asking computer's thread that prompt
+     * went back to, whichever of its threads made the request: the
+     * spawner, which a send from another thread names. A computer that
+     * does not send it says only BlockedRoutedToCaller.
+     */
+    "blockedRoutedToThread"?: string;
 
     /**
      * Placement is the target thread's placement there: owned, grouped or
@@ -9339,14 +9346,14 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField21_0 = $$createType168;
         const $$createField22_0 = $$createType168;
+        const $$createField23_0 = $$createType168;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField21_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField22_0($$parsedSource["answerAgent"]);
         }
         if ("lateReplyAgent" in $$parsedSource) {
-            $$parsedSource["lateReplyAgent"] = $$createField22_0($$parsedSource["lateReplyAgent"]);
+            $$parsedSource["lateReplyAgent"] = $$createField23_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }
