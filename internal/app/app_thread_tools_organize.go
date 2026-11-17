@@ -222,6 +222,9 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 		work = &captured
 	case patch.Archived != nil && *patch.Archived && result.Thread.Archived:
 		work = &restingThreadWork{threadID: threadID}
+	case result.ArchivedChanged:
+		// The completions the archive held are the watcher's again.
+		a.nudgeRemoteWatches()
 	}
 	// The group frame goes first: a client that receives the thread's new
 	// groupId before it has the group row has nowhere to render the thread.

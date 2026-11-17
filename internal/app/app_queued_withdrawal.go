@@ -148,6 +148,8 @@ func (a *App) queuedMessageOwner(threadID, sendID string, by queuedWithdrawal) (
 			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, store.WithdrawQueued, paced)
 		}
 		owner.settle = func(store.FlushQueueItem) error {
+			// A completion given back is its watch's to deliver again.
+			a.nudgeRemoteWatches()
 			a.emitBackgroundChanged(threadID)
 			return nil
 		}

@@ -249,7 +249,8 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   opt-in; `openRPC(ctx, capability)` refuses a peer whose hello lacks
   the capability with `errUnsupportedPeerOperation`, translated to
   `remote_unsupported`.
-- The remote watch poller: 2 s ticker, 32 due rows, four concurrent,
+- The remote watch poller: sleeps until its next due row (at least 2 s
+  apart) and is nudged by new work, 32 due rows, four concurrent,
   +5 s normal, +30 s after an error, +5 s while a wait is parked,
   resumed at boot from the table. `beginRemoteWait` ends after the reply
   is written so the poller cannot double-deliver.

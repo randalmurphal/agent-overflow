@@ -130,7 +130,11 @@ the transcript both show a running call. The tool server emits
 running, so both surfaces flip together.
 The source backend tracks outstanding jobs across frontend disconnects
 and source restarts. It polls only outstanding jobs, four checks at a time,
-with a slower retry after connection errors. An unreachable host is not an
+with a slower retry after connection errors. It sleeps until the earliest
+due watch or owed cancel, and each write that adds or brings one forward
+wakes it (`nudgeRemoteWatches`); with no outstanding job it does no work.
+Successive checks of one host reuse its pooled connection
+(`internal/attachedbackends/peerconns.go`). An unreachable host is not an
 exited process. A start whose reply was lost is checked against the destination
 once no retry is in flight: a host holding no receipt for it never accepted the
 request, and that job is released rather than watched forever.
