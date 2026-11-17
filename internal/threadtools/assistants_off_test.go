@@ -81,50 +81,33 @@ func TestAssistantsOffShapeSaysNothingOfAssistants(t *testing.T) {
 	}
 }
 
-// With assistants turned off on this computer, a paired computer's
-// assistant is no address and no search row for its callers; a plain thread
-// there still is, and turning assistants on gives the assistant back.
-func TestAssistantsOffHidesAPairedComputersAssistants(t *testing.T) {
+// Each computer answers for its own assistants by its own setting: a caller
+// reaches a paired computer's assistant by name and finds it in search
+// whatever the caller's computer has, and a computer whose own assistants
+// are off refuses the address, which the caller reads as that refusal
+// rather than as a computer that did not answer.
+func TestAPairedComputersAssistantsFollowItsOwnSetting(t *testing.T) {
 	p := newPair(t)
 	p.remote.addThread(assistantThread(remoteAgentThreadID, "Ops"))
 	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
 	p.remote.hits = []Hit{{Thread: assistantThread(remoteAgentThreadID, "Ops")}, {Thread: Thread{ID: remoteThreadID, Title: "Remote"}}}
-	off := p.session()
-	off.assistantsOff = true
 
-	_, err := off.resolve(context.Background(), "Ops", "")
-	if code, message := publicMessage(err); code != CodeUnsupported || message != "Assistants are turned off in Settings on this computer." {
-		t.Fatalf("resolve a paired assistant while off = %s %q", code, message)
-	}
-	if target, err := off.resolve(context.Background(), remoteThreadID[:8], ""); err != nil || target.ThreadID != remoteThreadID {
-		t.Fatalf("resolve a paired plain thread while off = %+v, %v", target, err)
-	}
 	if target, err := p.session().resolve(context.Background(), "Ops", ""); err != nil || target.ThreadID != remoteAgentThreadID {
-		t.Fatalf("resolve a paired assistant while on = %+v, %v", target, err)
+		t.Fatalf("resolve a paired assistant = %+v, %v", target, err)
 	}
-	// A computer whose own assistants are off refuses the name; the caller
-	// reads that refusal, not that the computer did not answer.
+	var ids []string
+	for _, group := range rows(t, call(t, p.server, localCaller(), "thread_search", `{}`)["computers"]) {
+		for _, row := range rows(t, field(t, group, "rows")) {
+			ids = append(ids, row.(map[string]any)["thread_id"].(string))
+		}
+	}
+	if !slices.Contains(ids, remoteAgentThreadID) || !slices.Contains(ids, remoteThreadID) {
+		t.Errorf("search listed %v; want the paired assistant and the plain thread", ids)
+	}
+
 	p.remote.failWith = publicf(CodeUnsupported, "Assistants are turned off in Settings on Studio.")
-	_, err = p.session().resolve(context.Background(), "Ops", "")
+	_, err := p.session().resolve(context.Background(), "Ops", "")
 	if code, message := publicMessage(err); code != CodeUnsupported || message != "Assistants are turned off in Settings on Studio." {
 		t.Fatalf("resolve an assistant its computer has off = %s %q", code, message)
-	}
-	p.remote.failWith = nil
-
-	searched := func(assistantsOff bool) []string {
-		p.local.assistantsOff = assistantsOff
-		var ids []string
-		for _, group := range rows(t, call(t, p.server, localCaller(), "thread_search", `{}`)["computers"]) {
-			for _, row := range rows(t, field(t, group, "rows")) {
-				ids = append(ids, row.(map[string]any)["thread_id"].(string))
-			}
-		}
-		return ids
-	}
-	if ids := searched(true); slices.Contains(ids, remoteAgentThreadID) || !slices.Contains(ids, remoteThreadID) {
-		t.Errorf("search while off listed %v; want the plain thread and not the assistant", ids)
-	}
-	if ids := searched(false); !slices.Contains(ids, remoteAgentThreadID) {
-		t.Errorf("search while on listed %v; want the assistant back", ids)
 	}
 }

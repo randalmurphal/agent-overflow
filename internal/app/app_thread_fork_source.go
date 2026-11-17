@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -32,6 +33,9 @@ func (a *App) forkSource(op, sourceThreadID string) (store.Thread, error) {
 // a delete claimed or committed as store.ErrThreadDeleting: a claimed one
 // is refused as being deleted, since its delete may yet be refused.
 func (a *App) checkForkSource(op, sourceThreadID string) error {
+	if _, err := a.admitPersonOperation(context.Background(), sourceThreadID); err != nil {
+		return err
+	}
 	err := a.threadApplication().CheckMutable(sourceThreadID)
 	deleted := errors.Is(err, store.ErrThreadGone)
 	if !deleted && errors.Is(err, store.ErrThreadDeleting) {

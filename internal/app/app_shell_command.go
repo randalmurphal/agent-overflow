@@ -186,6 +186,9 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 		return ShellCommandRun{}, err
 	}
 	defer unlockMutation()
+	if ctx, err = a.admitPersonOperation(ctx, threadID); err != nil {
+		return ShellCommandRun{}, err
+	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return ShellCommandRun{}, fmt.Errorf("run shell command: load thread: %w", err)

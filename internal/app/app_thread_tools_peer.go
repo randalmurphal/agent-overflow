@@ -193,7 +193,8 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 	if err != nil {
 		return threadtools.Resolution{}, err
 	}
-	return a.threadToolsAdapter().ResolveThreadRef(threadtools.WithCaller(ctx, caller), resolve.Ref)
+	// Forwarded: a refusal names this computer to the caller on its own.
+	return a.threadToolsAdapter().ResolveThreadRef(threadtools.WithForwarded(threadtools.WithCaller(ctx, caller)), resolve.Ref)
 }
 
 // ThreadToolQuery runs one read tool here and returns its JSON result

@@ -549,6 +549,10 @@ func (a *App) sendMessageLocked(
 		return store.Item{}, nil
 	}
 
+	ctx, err = a.admitPersonOperation(ctx, threadID)
+	if err != nil {
+		return store.Item{}, err
+	}
 	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}

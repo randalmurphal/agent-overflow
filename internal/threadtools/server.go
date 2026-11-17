@@ -72,8 +72,7 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 	// because a forwarded call names the thread it came from and the App
 	// interface's Peer takes nothing but a context.
 	ctx = WithCaller(ctx, caller)
-	call := &session{app: s.app, caller: caller, computers: computers, now: s.now, wakeFloor: s.wakeFloor,
-		assistantsOff: !forwarded && s.app.AssistantsOff()}
+	call := &session{app: s.app, caller: caller, computers: computers, now: s.now, wakeFloor: s.wakeFloor}
 	switch name {
 	case "thread_search":
 		return call.search(ctx, args)
@@ -157,15 +156,6 @@ type session struct {
 	computers []Computer
 	now       func() time.Time
 	wakeFloor int
-	// assistantsOff keeps the assistants paired computers report out of
-	// this caller's answers (App.AssistantsOff).
-	assistantsOff bool
-}
-
-// errAssistantsOff refuses an assistant as an address while this computer
-// has assistants turned off.
-func errAssistantsOff() error {
-	return publicf(CodeUnsupported, "Assistants are turned off in Settings on this computer.")
 }
 
 func (c *session) paired() bool { return len(c.computers) > 0 }

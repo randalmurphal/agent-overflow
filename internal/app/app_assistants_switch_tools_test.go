@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -117,5 +118,46 @@ func TestAPausedAssistantsThreadIsHiddenFromNotifications(t *testing.T) {
 	setAssistants(t, a, true)
 	if a.notificationThreadRef(target.ID).Hidden {
 		t.Error("an assistant's thread stays hidden from notifications once assistants are on")
+	}
+}
+
+// Each computer decides for its own assistants. An agent on a computer with
+// assistants off still finds and reaches a paired computer's assistant,
+// its current thread by id and prefix and in the listing; once that
+// computer turns its own off, the assistant is out of its listing and its
+// thread is refused with the message naming it.
+func TestAPairedComputersAssistantsFollowThatComputersSetting(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	assistant := reachThread(t, pair.dest, "bbbbbbb1-0000-4000-8000-000000000001", "Ops")
+	testAssistant(t, pair.dest, assistant.ID)
+	pair.source.store.PauseAssistants(true)
+
+	listed := func() []string {
+		var ids []string
+		for _, group := range pair.call(t, "thread_search", `{"limit":50}`)["computers"].([]any) {
+			for _, row := range group.(map[string]any)["rows"].([]any) {
+				ids = append(ids, row.(map[string]any)["thread_id"].(string))
+			}
+		}
+		return ids
+	}
+	if ids := listed(); !slices.Contains(ids, assistant.ID) {
+		t.Fatalf("the listing from a computer with assistants off = %v; want the paired computer's assistant", ids)
+	}
+	for _, ref := range []string{assistant.ID, assistant.ID[:12]} {
+		if shown := pair.call(t, "thread_show", `{"thread_id":"`+ref+`","turns":1}`); shown["computer_id"] != pair.computer {
+			t.Fatalf("thread_show %s = %v; want the paired computer's assistant", ref, shown)
+		}
+	}
+
+	pair.dest.store.PauseAssistants(true)
+	if ids := listed(); slices.Contains(ids, assistant.ID) {
+		t.Fatalf("the listing once the paired computer turned its own off = %v", ids)
+	}
+	_, err := pair.callRaw(t, "thread_show", `{"thread_id":"`+assistant.ID+`","turns":1}`)
+	if want := "Assistants are turned off in Settings on " + pair.dest.backendDisplayName() + "."; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("thread_show of an assistant its computer has off = %v, want %q", err, want)
 	}
 }

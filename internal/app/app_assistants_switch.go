@@ -27,6 +27,9 @@ import (
 //   - no session starts for them: an app-written message for one waits in
 //     its queue (flushStartFenced, startAgentNoticeSession), any other start
 //     is refused (startSession), and they admit no new work (admitWork);
+//   - a person's send, steer, edit and resend, fork, transfer, shell command
+//     or workflow binding is refused before it changes anything
+//     (admitPersonOperation); a message queued in the composer waits;
 //   - a worker's question goes to the user instead (store.SpawnerOf).
 //
 // Turning assistants off also brings what they were doing to a stop: their
@@ -166,11 +169,6 @@ func (a *App) convergeAssistants() {
 	}
 }
 
-// AssistantsOff is threadtools.App's: the thread tools keep paired
-// computers' assistants out of this computer's callers' answers while it is
-// off here.
-func (t threadToolsApp) AssistantsOff() bool { return t.app.assistantsPaused() }
-
 // assistantsPaused reports whether assistants are off on this computer.
 func (a *App) assistantsPaused() bool {
 	return a.store != nil && a.store.AssistantsPaused()
@@ -196,6 +194,35 @@ func (a *App) refusePausedAssistantThread(threadID string) error {
 		return errAssistantsOff
 	}
 	return nil
+}
+
+// personAdmissionKey marks a context whose operation admitPersonOperation
+// admitted on a thread.
+type personAdmissionKey struct{ threadID string }
+
+// admitPersonOperation is the admission of a person's operation that drives
+// a thread or changes its conversation: a send, a steer, an edit and resend,
+// a fork, a transfer, a shell command, a workflow binding. It refuses a
+// paused assistant's thread with the off message. Call it under the thread's
+// action lock before anything is staged or cut. The context it returns
+// carries the admission, so a session start the operation makes later is
+// not refused by a pause that landed meanwhile: the pause stops that session
+// when it takes the action lock after the operation.
+func (a *App) admitPersonOperation(ctx context.Context, threadID string) (context.Context, error) {
+	if personAdmitted(ctx, threadID) {
+		return ctx, nil
+	}
+	if err := a.refusePausedAssistantThread(threadID); err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, personAdmissionKey{threadID}, true), nil
+}
+
+// personAdmitted reports whether ctx carries admitPersonOperation's
+// admission for threadID.
+func personAdmitted(ctx context.Context, threadID string) bool {
+	admitted, _ := ctx.Value(personAdmissionKey{threadID}).(bool)
+	return admitted
 }
 
 // refuseAssistantsOff refuses creating or replacing an assistant while

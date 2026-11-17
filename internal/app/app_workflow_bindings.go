@@ -67,16 +67,17 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 	if thread.Archived {
 		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: thread %s is archived", item.ID, thread.ID)
 	}
-	if err := workflowapp.ValidateBindingThread(item, thread); err != nil {
-		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
-	}
 	// A run bound to a thread being brought to rest would report to it after
-	// the rest paused the runs that do.
-	done, err := a.resting.admit(thread.ID, nil)
+	// the rest paused the runs that do, and a paused assistant's thread
+	// takes none.
+	done, err := a.admitWork(thread.ID, "")
 	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
 	}
 	defer done()
+	if err := workflowapp.ValidateBindingThread(item, thread); err != nil {
+		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
+	}
 	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		return store.WorkItem{}, err
 	}
