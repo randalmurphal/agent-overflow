@@ -112,6 +112,45 @@ type engineFileURL interface {
 	BackendFilePath(ctx context.Context, rawURL string) (string, error)
 }
 
+// paneHost is the engine capability the Manager's visibility path drives.
+// Every windowed engine implements it; an engine with no window to show does
+// not. The Manager decides WHICH page is presented (policy); the engine
+// decides how a controller is made to appear (mechanism).
+//
+// A page that is not visible never holds keyboard focus. HidePage, and the
+// close of a page, give keyboard focus the page held to the app's webview,
+// done by the same code that hands it over for a claimed chord
+// (engineAppFocus, or the launcher's chord gate). ShowPage never takes focus.
+type paneHost interface {
+	ShowPage(handle string)
+	HidePage(handle string)
+	// SetPageBounds carries the placement the Manager computed: the page's
+	// own viewport, the scale the pane shows it at, and the fitted rect in
+	// the SPA's CSS pixels. The host converts that rect with the rect's
+	// pixel ratio or its own size over the rect's viewport, so no engine
+	// ever equates CSS pixels with its native units. Always sent before a
+	// show.
+	SetPageBounds(handle string, placement PanePlacement)
+	// FocusPage gives the page's view keyboard focus for one focus intent,
+	// as a click into the page does, if and only if the host presents and
+	// shows that view and req.Live holds at the moment focus would move;
+	// otherwise it leaves focus alone. It never takes the OS focus from
+	// another application. The Manager asks for the presented page only
+	// (applyFocusIntent); the host's own checks are what hold when a hide or
+	// a withdrawal races the request.
+	FocusPage(handle string, req focusRequest) (focusResult, error)
+}
+
+// paneDevTools is the OPTIONAL inspector half, split from paneHost because
+// implementing it is a capability claim: WKWebView has no public call that
+// opens its inspector (macOS devtools are Safari's Develop menu against an
+// inspectable view), so the darwin engine deliberately does not implement
+// this and the Manager's assertion failure — "devtools are not available on
+// this browser engine" — is the true answer there.
+type paneDevTools interface {
+	OpenPageDevTools(handle string)
+}
+
 // engineProfile is one cookie jar's isolated site data (jar.go): the unit that
 // owns its pages and their download behavior. Site data itself is the ENGINE's
 // (spec §4) — a real browser profile on disk, or an ephemeral session — so
