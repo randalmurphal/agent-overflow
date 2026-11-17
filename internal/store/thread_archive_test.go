@@ -250,8 +250,9 @@ func TestUnarchivingSupersedesTheArchivesOwedForItsLinks(t *testing.T) {
 }
 
 // A paired computer's archive of its worker here holds only through the
-// link it names, is taken once per sequence, and marks the worker's own
-// archive unfinished whether or not it flipped the row.
+// link it names, is taken once per sequence, walks again when its sequence
+// is sent again while the worker is still archived, and marks the worker's
+// own archive unfinished whether or not it flipped the row.
 func TestArchiveLinkedWorker(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"worker", "placed", "local", "spawner"} {
@@ -290,10 +291,20 @@ func TestArchiveLinkedWorker(t *testing.T) {
 	if seq := receiptLink(t, s, "tok").OwnerOpSeq; seq != 2 {
 		t.Fatalf("the link's seq = %d, want 2", seq)
 	}
-	for _, seq := range []int64{2, 1} {
-		if _, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", seq); err != nil || changed || applied {
-			t.Fatalf("a replay of seq %d: %v, %v, %v; want nothing done", seq, changed, applied, err)
-		}
+	if _, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 1); err != nil || changed || applied {
+		t.Fatalf("an older seq: %v, %v, %v; want nothing done", changed, applied, err)
+	}
+	// The same seq again, while the worker is archived under it, walks
+	// again: its walk ended and is unfinished once more.
+	if _, err := s.db.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = 'worker'`); err != nil {
+		t.Fatal(err)
+	}
+	if row, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 2); err != nil || changed || !applied || !row.Archived {
+		t.Fatalf("a replay of seq 2: %+v, %v, %v, %v; want its walk again", row, changed, applied, err)
+	}
+	requireArchiveState(t, s, "replayed", "worker", true, true)
+	if seq := receiptLink(t, s, "tok").OwnerOpSeq; seq != 2 {
+		t.Fatalf("the replay moved the link's seq to %d", seq)
 	}
 	if _, _, _, err := s.ArchiveLinkedWorker("worker", "tok", "other", 1); !errors.Is(err, ErrWorkerNotOwned) {
 		t.Fatalf("another device's replay: %v, want ErrWorkerNotOwned", err)
@@ -314,6 +325,11 @@ func TestArchiveLinkedWorker(t *testing.T) {
 	if _, _, err := s.UnarchiveThread("worker"); err != nil {
 		t.Fatal(err)
 	}
+	// Reopened since, the same seq again changes nothing.
+	if _, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 3); err != nil || changed || applied {
+		t.Fatalf("a replay after a reopen: %v, %v, %v; want nothing done", changed, applied, err)
+	}
+	requireArchiveState(t, s, "a replay after a reopen", "worker", false, false)
 	if found, err := s.SupersedeLink("tok", "dev", "lead-tok", 5); err != nil || !found {
 		t.Fatalf("supersede: %v, %v", found, err)
 	}

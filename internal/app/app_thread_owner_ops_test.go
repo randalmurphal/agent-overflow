@@ -36,6 +36,12 @@ type ownerOpPeer struct {
 	unreachable atomic.Bool
 	// returns counts the prompt hand-backs that reached this computer.
 	returns atomic.Int32
+	// spawning, when set, runs before a forwarded thread_spawn reaches the
+	// app, with the call.
+	spawning atomic.Pointer[func(ThreadPeerCall)]
+	// replying, when set, runs before an agent_prompt_reply reaches the
+	// app; an error it returns is the call's answer.
+	replying atomic.Pointer[func() error]
 }
 
 var errPeerUnreachable = errors.New("the computer cannot be reached")
@@ -58,8 +64,19 @@ func (p *ownerOpPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (
 	if p.unreachable.Load() {
 		return ThreadPeerReply{}, errPeerUnreachable
 	}
-	if call.Tool == threadAgentPeerPromptReturn {
+	switch call.Tool {
+	case threadAgentPeerPromptReturn:
 		p.returns.Add(1)
+	case "thread_spawn":
+		if spawning := p.spawning.Load(); spawning != nil {
+			(*spawning)(call)
+		}
+	case threadAgentPeerPromptReply:
+		if replying := p.replying.Load(); replying != nil {
+			if err := (*replying)(); err != nil {
+				return ThreadPeerReply{}, err
+			}
+		}
 	}
 	if call.Tool != threadOwnerOpTool {
 		return p.App.ThreadToolCall(ctx, call)

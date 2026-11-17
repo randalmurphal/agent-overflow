@@ -116,7 +116,7 @@ func (f *linkedWorkers) route(t *testing.T, worker string) *provider.PromptRoute
 // list is agent_rows for worker i as its spawn's computer asks it.
 func (f *linkedWorkers) list(t *testing.T, i int, held ...string) []ThreadAgentPrompt {
 	t.Helper()
-	prompts, err := f.app.peerPromptsOf(f.device, f.lead, f.workers[i].Title,
+	prompts, err := f.app.peerPromptsOf(t.Context(), f.device, f.lead, f.workers[i].Title,
 		threadAgentPeerArgs{ThreadID: f.workers[i].ID, Spawn: f.spawns[i], Held: held})
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestALinkedWorkersPromptIsHeldForItsSpawnerThere(t *testing.T) {
 		"another source":   {f.device, "6f1c2a4e-9d3b-4c1a-8e2f-000000000000", threadAgentPeerArgs{ThreadID: worker, Spawn: f.spawns[0]}},
 		"another thread's": {f.device, f.lead, threadAgentPeerArgs{ThreadID: f.local.ID, Spawn: f.spawns[0]}},
 	} {
-		prompts, err := f.app.peerPromptsOf(args.device, args.source, "", args.call)
+		prompts, err := f.app.peerPromptsOf(t.Context(), args.device, args.source, "", args.call)
 		if err != nil || len(prompts) != 0 {
 			t.Errorf("%s: listed %+v, %v; want nothing", name, prompts, err)
 		}
@@ -288,7 +288,7 @@ func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 				t.Errorf("%s, %s: %v; want it refused as not yours", name, tool, err)
 			}
 		}
-		if prompts, err := f.app.peerPromptsOf(tc.device, tc.source, "", threadAgentPeerArgs{
+		if prompts, err := f.app.peerPromptsOf(t.Context(), tc.device, tc.source, "", threadAgentPeerArgs{
 			ThreadID: f.workers[0].ID, Spawn: tc.args.Spawn, Held: []string{tc.args.Token},
 		}); err != nil || (len(prompts) > 0 && tc.args.Spawn != f.spawns[0]) {
 			t.Errorf("%s: listed %+v, %v", name, prompts, err)

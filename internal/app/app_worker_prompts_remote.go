@@ -88,7 +88,11 @@ type remoteWorkerPrompt struct {
 	// wake's identity; both empty before its first delivery.
 	holder, delivery string
 	// held says its wake reached the queue and nothing has ended it since.
-	held     bool
+	held bool
+	// rejected marks a delivery its holder did not take while it answered:
+	// an answer that does not land moves the prompt on then
+	// (endRemoteAnswer).
+	rejected bool
 	state    remotePromptState
 	answer   string
 	closedAt time.Time
@@ -340,6 +344,9 @@ func (a *App) remotePromptNotTaken(key remotePromptKey, delivery string) {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
 	prompt := r.byKey[key]
+	if prompt != nil && prompt.state == remotePromptAnswering && prompt.delivery == delivery {
+		prompt.held, prompt.rejected = false, true
+	}
 	if prompt == nil || prompt.state != remotePromptRouted || prompt.delivery != delivery {
 		r.mu.Unlock()
 		return
@@ -396,7 +403,8 @@ func (a *App) rerouteRemotePrompt(key remotePromptKey, delivery string, reject b
 
 // rerouteRemotePromptsFrom reconciles the routed prompts held by threadID,
 // which a handoff, an archive, a delete, a rest or a pause changed
-// (reroutePromptsFrom).
+// (reroutePromptsFrom). One being answered is reconciled when its answer
+// ends (endRemoteAnswer).
 func (a *App) rerouteRemotePromptsFrom(threadID string) {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
@@ -450,6 +458,30 @@ func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) {
 			log.Printf("worker prompts: give %s back to %s: %v", key.token, key.computerID, err)
 		}
 	})
+}
+
+// forgetRemotePrompts closes the prompts a computer no longer paired put to
+// threads here, an answer on its way included, and withdraws their wakes.
+// Nothing is sent to it. A late thread_reply on one is told it is closed.
+// It runs on the prompts' serial queue (forgetPeerAgentRows).
+func (a *App) forgetRemotePrompts(computerID string) {
+	r := &a.workerPrompts.remote
+	now := time.Now()
+	var withdraw []remoteWorkerPrompt
+	r.mu.Lock()
+	for key, prompt := range r.byKey {
+		if key.computerID != computerID || prompt.state == remotePromptClosed {
+			continue
+		}
+		if prompt.state == remotePromptRouted && prompt.delivery != "" {
+			withdraw = append(withdraw, *prompt)
+		}
+		prompt.state, prompt.closedAt, prompt.held = remotePromptClosed, now, false
+	}
+	r.mu.Unlock()
+	for _, prompt := range withdraw {
+		a.withdrawRemotePromptWake(prompt)
+	}
 }
 
 // withdrawRemotePromptWake takes a delivery's wake out of its holder's
@@ -530,11 +562,11 @@ func (a *App) answerRemoteWorkerPrompt(ctx context.Context, caller threadtools.C
 		err = a.callPeerPrompt(ctx, spawn, threadAgentPeerPromptReply, args, &out)
 	}
 	if err == nil {
-		r.endAnswer(key, remotePromptAnswered)
+		a.endRemoteAnswer(key, remotePromptAnswered)
 		ack.Accepted = out.Accepted
 		return ack, true, nil
 	}
-	r.endAnswer(key, remotePromptRouted)
+	a.endRemoteAnswer(key, remotePromptRouted)
 	code, message, uncertain := threadErrorDetails("reply", err)
 	if !uncertain {
 		return ack, true, errorsx.Public(code, message, err)
@@ -545,20 +577,37 @@ func (a *App) answerRemoteWorkerPrompt(ctx context.Context, caller threadtools.C
 		name, message), err)
 }
 
-// endAnswer records how the holder's answer ended.
-func (r *remoteWorkerPrompts) endAnswer(key remotePromptKey, state remotePromptState) {
+// endRemoteAnswer is the one exit from answering. A prompt the answer left
+// routed was skipped by every reconcile meanwhile, so it is reconciled now
+// with its spawn's caller (rerouteRemotePrompt): a handoff moves it to the
+// successor, a holder archived, deleted, at rest or paused gives it back,
+// and a delivery the holder did not take meanwhile moves it on.
+func (a *App) endRemoteAnswer(key remotePromptKey, state remotePromptState) {
+	routed, rejected := a.workerPrompts.remote.endAnswer(key, state)
+	if routed {
+		a.workerPrompts.run(func() { a.rerouteRemotePrompt(key, "", rejected) })
+	}
+}
+
+// endAnswer records how the holder's answer ended, for endRemoteAnswer
+// alone, and returns whether the prompt is routed again and whether its
+// delivery was not taken meanwhile.
+func (r *remoteWorkerPrompts) endAnswer(key remotePromptKey, state remotePromptState) (bool, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	prompt := r.byKey[key]
 	if prompt == nil || prompt.state != remotePromptAnswering {
-		return
+		return false, false
 	}
 	prompt.state = state
+	rejected := prompt.rejected
+	prompt.rejected = false
 	if state == remotePromptRouted {
 		prompt.answer = ""
-		return
+		return true, rejected
 	}
 	prompt.held, prompt.closedAt = false, time.Now()
+	return false, false
 }
 
 // callPeerPrompt forwards agent_prompt_reply or agent_prompt_return to the

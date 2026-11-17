@@ -167,9 +167,12 @@ func (s *Store) ListUnfinishedArchives() ([]string, error) {
 // deviceID. In one transaction it refuses a thread the link does not own
 // (ErrWorkerNotOwned), takes seq once, and archives the thread
 // (setThreadArchivedTx with the link's fence), marking an already archived
-// one's archive unfinished so its walk runs again. applied is false for a
-// seq at or below one the link already took, which changes nothing; changed
-// is whether the flag moved.
+// one's archive unfinished so its walk runs again. The seq the link took
+// last, sent again, walks again while the thread is still archived: its
+// owner keeps it owed until every worker below is archived, and the walk is
+// what archives them. applied is false for an older seq, or the same one
+// once the thread was reopened, which changes nothing; changed is whether
+// the flag moved.
 func (s *Store) ArchiveLinkedWorker(threadID, token, deviceID string, seq int64) (row Thread, changed, applied bool, err error) {
 	action := fmt.Sprintf("store: archive linked worker %s for spawn %s", threadID, token)
 	tx, err := s.db.Begin()
@@ -185,11 +188,29 @@ func (s *Store) ArchiveLinkedWorker(threadID, token, deviceID string, seq int64)
 	case err != nil:
 		return Thread{}, false, false, fmt.Errorf("%s: read the link: %w", action, err)
 	}
-	if seq <= taken {
+	if seq < taken {
 		return Thread{}, false, false, nil
 	}
 	fence := workerFence{link: &LinkFence{Token: token, DeviceID: deviceID}}
 	condition, args := fence.condition()
+	if seq == taken {
+		result, err := tx.Exec(`UPDATE threads SET archive_cascade = 1 WHERE id = ? AND archived = 1 AND `+condition,
+			append([]any{threadID}, args...)...)
+		if err != nil {
+			return Thread{}, false, false, fmt.Errorf("%s: walk seq %d again: %w", action, seq, err)
+		}
+		again, err := rowsChanged(result, action)
+		if err != nil || !again {
+			return Thread{}, false, false, err
+		}
+		if row, err = getThreadTx(tx, threadID); err != nil {
+			return Thread{}, false, false, fmt.Errorf("%s: %w", action, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return Thread{}, false, false, fmt.Errorf("%s: commit: %w", action, err)
+		}
+		return row, false, true, nil
+	}
 	var owned bool
 	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM threads WHERE id = ? AND `+condition+`)`,
 		append([]any{threadID}, args...)...).Scan(&owned); err != nil {

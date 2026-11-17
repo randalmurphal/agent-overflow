@@ -980,8 +980,13 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		// spawner here.
 		if state.State == threadtools.RequestBlocked {
 			out.BlockedOn, out.BlockedRoutedTo = "person", remote.routedTo
-			if remote.routedToCaller {
+			switch {
+			case remote.routedToCaller:
 				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(row.CallerThreadID, remote.routedTo), true
+			case remote.routedToThread != "":
+				// Another thread here holds it: the spawner of the thread
+				// this row's request went to.
+				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(remote.routedToThread, remote.routedTo), true
 			}
 		}
 		out.Activity = rest.detail

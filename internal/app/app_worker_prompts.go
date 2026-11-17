@@ -107,6 +107,10 @@ type workerPrompt struct {
 	// recognized.
 	answer   string
 	closedAt time.Time
+	// handBack marks a prompt something handed back while it was being
+	// answered: an answer that does not land hands it back then
+	// (endPromptAnswer).
+	handBack bool
 	// remote holds a prompt routed to a thread on a paired computer, nil
 	// for one routed to a thread here.
 	remote *remotePromptHold
@@ -472,12 +476,16 @@ func (a *App) answerRoutedPrompt(ctx context.Context, prompt workerPrompt, call 
 	// resolution to settle them by, and a prompt that moved is its new
 	// recipient's.
 	if !a.workerPromptOpenTo(prompt) {
-		a.workerPrompts.endAnswer(prompt.token, workerPromptSettled)
+		a.endPromptAnswer(prompt.token, workerPromptSettled)
 		return ack, errWorkerPromptClosed
 	}
 	// The answer goes to the session that asked, or nowhere; an async
 	// question's goes to the worker's queue, as the person's answers do.
+	if hook := a.workerPromptAnsweringForTest; hook != nil {
+		err = hook(prompt.token)
+	}
 	switch {
+	case err != nil:
 	case prompt.async:
 		err = a.answerAsyncWorkerPrompt(ctx, prompt, *question)
 	case approval != nil:
@@ -489,10 +497,10 @@ func (a *App) answerRoutedPrompt(ctx context.Context, prompt workerPrompt, call 
 	}
 	if err != nil {
 		if errors.Is(err, transport.ErrAlreadyHandled) {
-			a.workerPrompts.endAnswer(prompt.token, workerPromptSettled)
+			a.endPromptAnswer(prompt.token, workerPromptSettled)
 			return ack, errWorkerPromptClosed
 		}
-		a.workerPrompts.endAnswer(prompt.token, workerPromptRouted)
+		a.endPromptAnswer(prompt.token, workerPromptRouted)
 		log.Printf("worker prompts: answer %s of %s: %v", prompt.requestID, prompt.workerID, err)
 		if errors.Is(err, provider.ErrApprovalDecisionUnavailable) {
 			return ack, errorsx.Public(threadtools.CodeInvalidRequest,
@@ -501,9 +509,33 @@ func (a *App) answerRoutedPrompt(ctx context.Context, prompt workerPrompt, call 
 		return ack, errorsx.Public(threadtools.CodeInvalidRequest,
 			"The answer did not reach the worker, and its prompt is still open. Try again, or ask the user.", nil)
 	}
-	a.workerPrompts.endAnswer(prompt.token, workerPromptAnswered)
+	a.endPromptAnswer(prompt.token, workerPromptAnswered)
 	ack.Accepted = true
 	return ack, nil
+}
+
+// endPromptAnswer is the one exit from answering. A prompt the answer left
+// routed did not change hands meanwhile, since every other transition
+// skips a prompt being answered, so this reconciles what happened: a hand
+// back asked for meanwhile (a return, a wake that was not taken) hands it
+// back now; a prompt no longer open to its agent (the worker stopped
+// waiting, or the prompt moved) is handed back, which moves nothing for a
+// closed one; and one held for a paired computer goes back unless its link
+// still owns the worker, then has its lease checked again
+// (expirePromptLease), which a check that fired meanwhile skipped.
+func (a *App) endPromptAnswer(token string, state workerPromptState) {
+	prompt, routed, handBack := a.workerPrompts.endAnswer(token, state)
+	switch {
+	case !routed:
+	case handBack, !a.workerPromptOpenTo(prompt):
+		a.handBackWorkerPrompt(token)
+	case prompt.remote != nil:
+		if !a.promptLinkStands(prompt) {
+			a.handBackWorkerPrompt(token)
+			return
+		}
+		a.expirePromptLease(token)
+	}
 }
 
 var (
@@ -728,11 +760,16 @@ func (w *workerPrompts) settleWorker(workerID string) []workerPrompt {
 	return closed
 }
 
-// settleToken closes the registration under token when it is routed.
+// settleToken closes the registration under token when it is routed. One
+// being answered is marked to be handed back if its answer does not land
+// (endPromptAnswer).
 func (w *workerPrompts) settleToken(token string) (workerPrompt, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	prompt := w.byToken[token]
+	if prompt != nil && prompt.state == workerPromptAnswering {
+		prompt.handBack = true
+	}
 	if prompt == nil || prompt.state != workerPromptRouted {
 		return workerPrompt{}, false
 	}
@@ -764,25 +801,30 @@ func (w *workerPrompts) beginAnswer(token, answer string) error {
 	}
 }
 
-// endAnswer records how the agent's answer ended. An answer that did not
-// reach the worker leaves the prompt routed, unless a later registration
-// replaced this one meanwhile: then the prompt is that one's.
-func (w *workerPrompts) endAnswer(token string, state workerPromptState) {
+// endAnswer records how the agent's answer ended, for endPromptAnswer
+// alone. An answer that did not reach the worker leaves the prompt routed,
+// unless a later registration replaced this one meanwhile: then the prompt
+// is that one's. It returns the registration, whether it is routed again,
+// and whether a hand back was asked for meanwhile.
+func (w *workerPrompts) endAnswer(token string, state workerPromptState) (workerPrompt, bool, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	prompt := w.byToken[token]
 	if prompt == nil {
-		return
+		return workerPrompt{}, false, false
 	}
 	if state == workerPromptRouted && w.current[prompt.key()] != token {
 		state = workerPromptSettled
 	}
 	prompt.state = state
+	handBack := prompt.handBack
+	prompt.handBack = false
 	if state == workerPromptRouted {
 		prompt.answer = ""
-		return
+		return *prompt, true, handBack
 	}
 	prompt.closedAt = time.Now()
+	return *prompt, false, false
 }
 
 // drainWorkerPrompts waits for queued deliveries, settlements and

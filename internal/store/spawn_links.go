@@ -41,10 +41,10 @@ const spawnLinkTouchGap = int64(60 * 60 * 1000)
 // retention floor (both parameters), and that is older than the floor.
 const staleSpawnLinkSQL = `spawn_link = 1 AND owner_seen_at < ? AND created_at < ?`
 
-// TouchSpawnLinkOwner records that the link's owner reached it at now: its
+// touchSpawnLinkOwner records that the link's owner reached it at now: its
 // own device, for its own source thread. It writes at most once per
 // spawnLinkTouchGap and reports whether it wrote.
-func (s *Store) TouchSpawnLinkOwner(token, deviceID, sourceThreadID string, now int64) (bool, error) {
+func (s *Store) touchSpawnLinkOwner(token, deviceID, sourceThreadID string, now int64) (bool, error) {
 	action := fmt.Sprintf("store: note the owner of spawn link %s", token)
 	result, err := s.db.Exec(`UPDATE thread_request_receipts SET owner_seen_at = ?1
 		 WHERE token = ?2 AND owner_device_id = ?3 AND source_thread_id = ?4 AND spawn_link = 1
@@ -54,6 +54,82 @@ func (s *Store) TouchSpawnLinkOwner(token, deviceID, sourceThreadID string, now 
 	}
 	return rowsChanged(result, action)
 }
+
+// SpawnReach is a paired computer's spawn receipt as the device that made
+// it reaches it for its source thread (ReachSpawnLink).
+type SpawnReach struct {
+	// TargetThreadID is the thread the spawn made, "" before it is named or
+	// after it was deleted or moved away.
+	TargetThreadID string
+	// State is the receipt's state; an open one can still name a thread.
+	State string
+	// Linked is whether the spawn's link stands (spawn_link).
+	Linked bool
+	// Owned is whether the link owns its thread: it stands and the thread
+	// is owned, not given a sidebar row or a group. Only then do the
+	// thread's prompts route to the spawner (SpawnOwnerOf).
+	Owned bool
+	// OwnerOpSeq is the newest owner operation the receipt admitted.
+	OwnerOpSeq int64
+}
+
+// Open reports whether the receipt can still name a thread.
+func (r SpawnReach) Open() bool {
+	return slices.Contains(threadReceiptOpenStates, r.State)
+}
+
+// ReachSpawnLink is the one reader that authenticates a paired computer's
+// call about its spawn: the receipt of the spawn token names, made by
+// deviceID for its thread sourceThreadID, the lineage the retention floor
+// kept included, so a link past the ledger's floor still answers its owner.
+// Found is false for any other token, device or source. A call that reaches
+// a standing link is the owner's contact, whatever its thread's placement
+// (touchSpawnLinkOwner).
+func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64) (SpawnReach, bool, error) {
+	var reach SpawnReach
+	err := s.reader().QueryRow(`SELECT COALESCE(r.target_thread_id, ''), r.state, r.spawn_link, r.owner_op_seq,
+		    r.spawn_link = 1 AND EXISTS (SELECT 1 FROM threads WHERE threads.id = r.target_thread_id AND threads.placement = 'owned')
+		  FROM thread_request_receipts AS r
+		 WHERE r.token = ? AND r.owner_device_id = ? AND r.source_thread_id = ? AND r.kind = ?`,
+		token, deviceID, sourceThreadID, ThreadRequestSpawn).Scan(&reach.TargetThreadID, &reach.State, &reach.Linked, &reach.OwnerOpSeq, &reach.Owned)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SpawnReach{}, false, nil
+	}
+	if err != nil {
+		return SpawnReach{}, false, fmt.Errorf("store: read spawn %s for its owner: %w", token, err)
+	}
+	if reach.Linked {
+		if _, err := s.touchSpawnLinkOwner(token, deviceID, sourceThreadID, now); err != nil {
+			return SpawnReach{}, false, err
+		}
+	}
+	return reach, true, nil
+}
+
+// FenceSpawn ends, for its owner, a spawn this computer has no receipt for
+// yet: the receipt is written settled cancelled with the operation's
+// sequence and no thread, so the spawn's acceptance, if it arrives, finds a
+// settled receipt and creates nothing, and no naming can give the token a
+// thread (SetThreadReceiptTarget). It returns the receipt as its owner
+// reaches it: the fence, or the receipt an acceptance wrote first. Found is
+// false when the token belongs to another device or source.
+func (s *Store) FenceSpawn(token, deviceID, sourceThreadID string, seq, now int64) (SpawnReach, bool, error) {
+	action := fmt.Sprintf("store: fence spawn %s", token)
+	if _, err := s.db.Exec(`INSERT INTO thread_request_receipts (
+		    token, owner_device_id, source_thread_id, kind, state, answer, answer_kind,
+		    revision, settled_at, expires_at, owner_op_seq, owner_seen_at, created_at, updated_at
+		 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?10, ?9, ?8, ?8, ?8)
+		 ON CONFLICT(token) DO NOTHING`,
+		token, deviceID, sourceThreadID, ThreadRequestSpawn, ThreadReceiptCancelled,
+		[]byte(SpawnFencedAnswer), ThreadAnswerError, now, seq, now+threadAnswerHoldMillis); err != nil {
+		return SpawnReach{}, false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.ReachSpawnLink(token, deviceID, sourceThreadID, now)
+}
+
+// SpawnFencedAnswer is the answer of a spawn its owner archived, deleted or
+// released before this computer accepted it (FenceSpawn).
+const SpawnFencedAnswer = "That spawn was cancelled before its thread was created: the thread that made it was archived, deleted or moved first."
 
 // releaseSpawnLinksTx ends, in tx, every link the condition where (over
 // thread_request_receipts, with args) selects, and returns the threads they

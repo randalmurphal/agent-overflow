@@ -344,7 +344,7 @@ func TestReleasingLinks(t *testing.T) {
 		t.Fatalf("owning a released worker = %v, want ErrThreadNotSpawned", err)
 	}
 
-	if touched, err := s.TouchSpawnLinkOwner("tok-fresh", other.ID, "lead-tok-fresh", 1000+2*spawnLinkTouchGap); err != nil || !touched {
+	if touched, err := s.touchSpawnLinkOwner("tok-fresh", other.ID, "lead-tok-fresh", 1000+2*spawnLinkTouchGap); err != nil || !touched {
 		t.Fatalf("touch the fresh link: %v, %v", touched, err)
 	}
 	_, released, err := s.DeleteThreadRequestsBefore(1000 + spawnLinkTouchGap)
@@ -619,7 +619,7 @@ func TestLineageKeepsTheLink(t *testing.T) {
 	}
 }
 
-// TouchSpawnLinkOwner records the owner's call only for the link's own
+// touchSpawnLinkOwner records the owner's call only for the link's own
 // device and source, and at most once an hour.
 func TestTouchSpawnLinkOwner(t *testing.T) {
 	s := newTestStore(t)
@@ -629,15 +629,15 @@ func TestTouchSpawnLinkOwner(t *testing.T) {
 		"another device": {"other", "lead-tok"},
 		"another source": {"dev", "elsewhere"},
 	} {
-		if touched, err := s.TouchSpawnLinkOwner("tok", touch.device, touch.source, 1000+2*spawnLinkTouchGap); err != nil || touched {
+		if touched, err := s.touchSpawnLinkOwner("tok", touch.device, touch.source, 1000+2*spawnLinkTouchGap); err != nil || touched {
 			t.Errorf("%s touched the link: %v, %v", name, touched, err)
 		}
 	}
-	if touched, err := s.TouchSpawnLinkOwner("tok", "dev", "lead-tok", 1000+spawnLinkTouchGap/2); err != nil || touched {
+	if touched, err := s.touchSpawnLinkOwner("tok", "dev", "lead-tok", 1000+spawnLinkTouchGap/2); err != nil || touched {
 		t.Fatalf("a touch inside the hour wrote: %v, %v", touched, err)
 	}
 	at := int64(1000 + 2*spawnLinkTouchGap)
-	if touched, err := s.TouchSpawnLinkOwner("tok", "dev", "lead-tok", at); err != nil || !touched {
+	if touched, err := s.touchSpawnLinkOwner("tok", "dev", "lead-tok", at); err != nil || !touched {
 		t.Fatalf("the owner's touch: %v, %v", touched, err)
 	}
 	if got := receiptLink(t, s, "tok").OwnerSeenAt; got != at {
@@ -646,7 +646,7 @@ func TestTouchSpawnLinkOwner(t *testing.T) {
 	if _, err := s.ReleaseSpawnLink("tok", "dev", "lead-tok"); err != nil {
 		t.Fatal(err)
 	}
-	if touched, err := s.TouchSpawnLinkOwner("tok", "dev", "lead-tok", at+2*spawnLinkTouchGap); err != nil || touched {
+	if touched, err := s.touchSpawnLinkOwner("tok", "dev", "lead-tok", at+2*spawnLinkTouchGap); err != nil || touched {
 		t.Fatalf("a released link was touched: %v, %v", touched, err)
 	}
 }
