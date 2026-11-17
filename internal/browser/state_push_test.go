@@ -362,7 +362,9 @@ func TestAClientReadLeavesAWriteForThePush(t *testing.T) {
 }
 
 // Writes racing pushes: whichever push takes a page's record, every write
-// reaches a push, so the newest push shows the last title written.
+// reaches a push, so the newest push shows the last title written. The
+// push that takes the last write's record can be a history refresh's, on a
+// goroutine of its own (refreshHistoryState), so it is waited for.
 func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -390,8 +392,10 @@ func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	}()
 	wg.Wait()
 	want := "title " + strconv.Itoa(writes-1)
-	if got := pushes.shownTitle(page.ID); got != want {
-		t.Fatalf("the newest push shows %q, want %q", got, want)
+	for deadline := time.Now().Add(3 * time.Second); pushes.shownTitle(page.ID) != want; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the newest push shows %q, want %q", pushes.shownTitle(page.ID), want)
+		}
 	}
 }
 
