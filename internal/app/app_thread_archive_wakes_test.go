@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -176,7 +175,7 @@ func TestAnArchiveReportsSchedulesItCouldNotCancel(t *testing.T) {
 		WHEN NEW.state = 'cancelled' BEGIN SELECT RAISE(ABORT, 'cancel refused'); END`)
 
 	err := archiveThread(a, thread.ID)
-	if err == nil || !strings.Contains(err.Error(), "cancel the loops and watches of "+thread.ID) {
+	if err == nil || err.Error() != "The thread was archived, but its loops, watches and reminders may not all have been cancelled." {
 		t.Fatalf("ArchiveThread: %v, want the failed cancel reported", err)
 	}
 	if row, err := a.store.GetThread(thread.ID); err != nil || !row.Archived {
