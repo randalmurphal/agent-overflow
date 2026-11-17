@@ -24,6 +24,7 @@ import {
   DeleteProviderCustomEnvVar,
   GetNativeMemoryStatus,
   GetSettings,
+  GetStandingAgent,
   SetProviderCustomEnvVar,
   UpdateSettings,
   GetThreadAgentRows,
@@ -32,6 +33,7 @@ import {
   ListStandingAgentWakes,
   ListThreadAgentRows,
   ListThreadPastAgentRows,
+  ListThreadRecurringJobs,
   ListThreadWakes,
   ListThreadWorkerSummaries,
   MarkThreadsRead,
@@ -156,6 +158,8 @@ describe('the surfaces v0.0.19 lacks read empty', () => {
     expect(await GetThreadRequestStates('t1', ['k'])).toEqual([]);
     expect(await GetNativeMemoryStatus()).toBeNull();
     expect(await CheckAgentProfiles([])).toBeNull();
+    expect(await GetStandingAgent('t1')).toBeNull();
+    expect(await ListThreadRecurringJobs('t1')).toEqual([]);
   });
 
   it('leaves any other failure of those reads to the caller', async () => {

@@ -45,7 +45,6 @@ export {
   ForkThreadFromMessage,
   ForkSideChat,
   PromoteScratchThread,
-  GetStandingAgent,
   BeginThreadTransfer,
   GetThreadTransferDestinationProject,
   BindThreadTransferDestination,
@@ -53,7 +52,6 @@ export {
   GetThreadTransfers,
   GetThreadTransferStatus,
   GetThreadTransferIntent,
-  ListThreadRecurringJobs,
   RetryThreadTransfer,
   CancelThreadTransfer,
   DiscardUnpreparedThreadTransfer,
@@ -1313,6 +1311,8 @@ export { AsyncQuestion, AsyncQuestionAnswer } from '../../../bindings/agent-over
 import { Call } from '@wailsio/runtime';
 import {
   CheckAgentProfiles as CheckAgentProfilesRaw,
+  GetStandingAgent as GetStandingAgentRaw,
+  ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
   DeleteThreads as DeleteThreadsRaw,
   GetDeleteDependents as GetDeleteDependentsRaw,
   GetNativeMemoryStatus as GetNativeMemoryStatusRaw,
@@ -1341,10 +1341,11 @@ import {
   type NativeMemoryStatus,
   type StandingAgentWakes as StandingAgentWakesRow,
   type ThreadAgentRowRead as ThreadAgentRowReadRow,
+  type ThreadRecurringJob as ThreadRecurringJobRow,
   type ThreadRequestState as ThreadRequestStateRow,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindings/agent-overflow/internal/settings/models.js';
-import type { PastAgentRowsCursor, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
+import type { PastAgentRowsCursor, StandingAgent as StandingAgentRow, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
 import { orOlder, ThreadsPartlyDeleted } from './olderComputer';
 
@@ -1447,6 +1448,16 @@ export function WorkflowPauseItemAndEndSessions(itemId: string): Promise<void> {
   return orOlder(() => WorkflowPauseItemAndEndSessionsRaw(itemId), () => {
     throw new Error('That computer runs an older version, which cannot end sessions. Pause still pauses the run.');
   });
+}
+
+/** Null on a computer without assistants: it has no standing agent. */
+export function GetStandingAgent(threadID: string): Promise<StandingAgentRow | null> {
+  return orOlder(() => GetStandingAgentRaw(threadID), () => null);
+}
+
+/** Empty on a computer without recurring jobs. */
+export function ListThreadRecurringJobs(threadID: string): Promise<ThreadRecurringJobRow[]> {
+  return orOlder(() => ListThreadRecurringJobsRaw(threadID), () => []);
 }
 
 /** Null when the computer cannot check profiles; the save goes ahead and UpdateSettings decides. */

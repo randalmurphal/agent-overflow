@@ -239,7 +239,8 @@ func TestARemoteWorkersPromptsWakeItsSpawnerAndItsRepliesAnswerThem(t *testing.T
 		{Token: byRequest["req-ask"], Answers: []string{"parser", "yes"}, Text: "parser, then ship"},
 	} {
 		ack, err := p.reply(t, caller, call)
-		if err != nil || !ack.Accepted || !ack.Prompt || ack.SourceThreadID != p.worker {
+		// The worker's thread is there, named by that computer's id here.
+		if err != nil || !ack.Accepted || !ack.Prompt || ack.SourceThreadID != p.worker || ack.SourceComputerID != p.spawn.TargetComputerID {
 			t.Fatalf("the reply on %s = %+v, %v", call.Token, ack, err)
 		}
 	}

@@ -532,7 +532,8 @@ func (a *App) answerRemoteWorkerPrompt(ctx context.Context, caller threadtools.C
 		return threadtools.ReplyAck{}, false, nil
 	}
 	ack = threadtools.ReplyAck{Token: call.Token, State: threadtools.RequestReplied,
-		SourceThreadID: prompt.spawn.TargetThreadID, SourceComputer: prompt.computerName, Prompt: true}
+		SourceThreadID: prompt.spawn.TargetThreadID, SourceComputer: prompt.computerName,
+		SourceComputerID: prompt.key.computerID, Prompt: true}
 	if prompt.holder != caller.ThreadID {
 		r.mu.Unlock()
 		return ack, true, errorsx.Public(threadtools.CodeRequestNotYours,

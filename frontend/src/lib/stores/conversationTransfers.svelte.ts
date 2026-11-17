@@ -82,25 +82,22 @@ export function openConversationTransfer(thread: Thread, destination?: BackendKe
 }
 // A transfer stops the source session, so the recurring jobs it holds end
 // rather than holding the transfer. The dialog names them before the user
-// commits. A source too old to answer refuses such a transfer itself.
+// commits.
 async function loadRecurringJobs(request: TransferRequest): Promise<void> {
   try {
     const recurringJobs = await withBackendTarget(request.source, () => ListThreadRecurringJobs(request.thread.id));
     patchRequest(request.operationID, { recurringJobs });
   } catch (error) {
-    if (error instanceof TransportError && error.code === 'method_not_found') return;
     patchRequest(request.operationID, { recurringJobsError: userFacingError(error) });
   }
 }
 // A standing agent's home and schedules belong to its computer, so the
-// dialog says what a transfer leaves behind before the user commits. A
-// source too old to answer has no standing agents.
+// dialog says what a transfer leaves behind before the user commits.
 async function loadStandingAgent(request: TransferRequest): Promise<void> {
   try {
     const agent = await withBackendTarget(request.source, () => GetStandingAgent(request.thread.id));
     patchRequest(request.operationID, { standingAgent: agent !== null });
   } catch (error) {
-    if (error instanceof TransportError && error.code === 'method_not_found') return;
     patchRequest(request.operationID, { standingAgentError: userFacingError(error) });
   }
 }

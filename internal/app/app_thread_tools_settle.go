@@ -920,9 +920,10 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			"That token belongs to a request addressed to another thread. Reply only to the requests this thread was asked.", nil)
 	}
 	ack := threadtools.ReplyAck{
-		Token:          call.Token,
-		SourceThreadID: receipt.SourceThreadID,
-		SourceComputer: receipt.SourceComputerName,
+		Token:            call.Token,
+		SourceThreadID:   receipt.SourceThreadID,
+		SourceComputer:   receipt.SourceComputerName,
+		SourceComputerID: receipt.SourceComputerID,
 	}
 	text := []byte(call.Text)
 	switch receipt.State {

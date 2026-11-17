@@ -265,9 +265,11 @@ type ReplyAck struct {
 	Revision int64  `json:"revision"`
 	Late     bool   `json:"late,omitempty"`
 	// Target names the thread the reply answered, so the responder can
-	// see where it went.
-	SourceThreadID string `json:"source_thread_id,omitempty"`
-	SourceComputer string `json:"source_computer,omitempty"`
+	// see where it went: the computer is that thread's, its id as the
+	// replying computer knows it, empty for one here.
+	SourceThreadID   string `json:"source_thread_id,omitempty"`
+	SourceComputer   string `json:"source_computer,omitempty"`
+	SourceComputerID string `json:"source_computer_id,omitempty"`
 	// Prompt is set when the token was a worker's question or approval and
 	// the answer went to that worker's open prompt.
 	Prompt bool `json:"prompt,omitempty"`

@@ -56,11 +56,6 @@ export function projectRow(page: Page, id: string): Locator {
   return rowIn(projectsSection(page), id);
 }
 
-/** A row's shell in the Projects section. */
-export function projectShell(page: Page, id: string): Locator {
-  return shellIn(projectsSection(page), id);
-}
-
 async function press(target: Locator, layout: Layout): Promise<void> {
   if (layout === 'desktop') await target.click();
   else await target.tap();

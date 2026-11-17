@@ -299,7 +299,7 @@ function threadReplyView(reply: Input, names: AoToolNames): AoResultView {
   const accepted = reply.accepted === true;
   view.outcome = join(accepted ? 'accepted' : 'already stored', reply.late === true ? 'late' : '', requestState(str(reply, 'state')));
   const id = str(reply, 'source_thread_id');
-  view.link = threadLink(id, threadName(id, names), '', str(reply, 'source_computer'));
+  view.link = threadLink(id, threadName(id, names), str(reply, 'source_computer_id'), str(reply, 'source_computer'));
   fact(view.facts, 'answered', reply.prompt === true ? "the worker's question" : '');
   fact(view.facts, 'request', shortId(str(reply, 'token')));
   view.note = str(reply, 'note');

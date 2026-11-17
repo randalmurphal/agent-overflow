@@ -200,10 +200,16 @@ func TestAStopThatLeftPartOfAWorkerRunningNamesItToTheSpawner(t *testing.T) {
 		t.Parallel()
 		pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
 		destID, _ := pair.dest.backendIdentity()
-		if _, err := (threadToolsApp{app: pair.dest}).Reply(t.Context(),
+		ack, err := (threadToolsApp{app: pair.dest}).Reply(t.Context(),
 			threadtools.Caller{ThreadID: pair.child, ComputerID: destID, ComputerName: "destination"},
-			threadtools.ReplyCall{Token: pair.spawn.Token, Text: "Started; still at it."}); err != nil {
+			threadtools.ReplyCall{Token: pair.spawn.Token, Text: "Started; still at it."})
+		if err != nil {
 			t.Fatalf("Reply there: %v", err)
+		}
+		// The caller's thread is on the spawner's computer, named by its id there.
+		receipt, _, err := pair.dest.store.GetThreadRequestReceipt(pair.spawn.Token)
+		if err != nil || ack.SourceComputerID == "" || ack.SourceComputerID != receipt.SourceComputerID {
+			t.Fatalf("the reply names the caller's computer %q, want %q (%v)", ack.SourceComputerID, receipt.SourceComputerID, err)
 		}
 		waitUntil(t, 10*time.Second, func() bool {
 			pair.poll(t)

@@ -99,11 +99,6 @@ export function wakeInput(harness: HarnessApp, cwd: string, contains: string, ti
   );
 }
 
-/** The next `thread:wakes_changed` frame for a thread. */
-export function wakesChanged(harness: HarnessApp, thread: string, timeoutMs = 30_000) {
-  return harness.waitForEvent<{ threadId: string }>('thread:wakes_changed', (data) => data.threadId === thread, timeoutMs);
-}
-
 export function trayRow(page: Page, kind: 'loop' | 'watch' | 'reminder', label: string): Locator {
   return page.locator(`[data-testid="wake-tray-row"][data-kind="${kind}"][data-label="${label}"]`);
 }

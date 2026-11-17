@@ -199,7 +199,7 @@ it('reports a failed recurring-job check and stays quiet for a source without th
   setBindingMock('ListThreadRecurringJobs', async () => { throw new TransportError('method_not_found', 'unknown method'); });
   openConversationTransfer(thread);
   await tick();
-  expect(pendingConversationTransfer()?.recurringJobs).toBeUndefined();
+  expect(pendingConversationTransfer()?.recurringJobs).toEqual([]);
   expect(pendingConversationTransfer()?.recurringJobsError).toBeUndefined();
 });
 
@@ -228,6 +228,6 @@ it('reports a failed standing-agent check and stays quiet for a source without t
   setBindingMock('GetStandingAgent', async () => { throw new TransportError('method_not_found', 'unknown method'); });
   openConversationTransfer(thread);
   await tick();
-  expect(pendingConversationTransfer()?.standingAgent).toBeUndefined();
+  expect(pendingConversationTransfer()?.standingAgent).toBe(false);
   expect(pendingConversationTransfer()?.standingAgentError).toBeUndefined();
 });
