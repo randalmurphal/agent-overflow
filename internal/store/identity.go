@@ -577,7 +577,7 @@ type DeviceRevocation struct {
 	// not the device row itself moved.
 	SessionIDs []string
 	// ReleasedThreads are the threads whose spawn link the device owned,
-	// released in the same transaction (spawn_links.go): a computer that
+	// released in the same transaction (session_end.go): a computer that
 	// lost its access owns nothing here.
 	ReleasedThreads []string
 }
@@ -621,28 +621,9 @@ func (s *Store) RevokeDevice(deviceID string, at int64) (DeviceRevocation, error
 		return DeviceRevocation{}, fmt.Errorf("store: revoke device: rows affected: %w", err)
 	}
 
-	rows, err := tx.Query(
-		`UPDATE sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL
-		 RETURNING id`, at, deviceID)
-	if err != nil {
-		return DeviceRevocation{}, fmt.Errorf("store: revoke device sessions: %w", err)
-	}
-	var sessionIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return DeviceRevocation{}, fmt.Errorf("store: revoke device sessions: %w", err)
-		}
-		sessionIDs = append(sessionIDs, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return DeviceRevocation{}, fmt.Errorf("store: revoke device sessions: %w", err)
-	}
-	rows.Close()
-
-	released, err := releaseSpawnLinksTx(tx, `owner_device_id = ?`, deviceID)
+	// The device itself is checked whether or not a session moved, so a
+	// re-revoke also releases a link a previous one left.
+	sessionIDs, released, err := endSessionsTx(tx, revokeSessions, at, []string{deviceID}, `device_id = ?`, deviceID)
 	if err != nil {
 		return DeviceRevocation{}, fmt.Errorf("store: revoke device: %w", err)
 	}
@@ -687,17 +668,33 @@ func (s *Store) RestoreDevice(deviceID string) (bool, error) {
 // (`idx_devices_key_thumbprint` is unique over the surviving rows), so
 // the same key may enroll again. That is the intent: re-pairing still
 // costs an owner-minted link and the verification number.
-func (s *Store) DeleteDevice(deviceID string) (bool, error) {
-	result, err := s.db.Exec(
+//
+// Its sessions are deleted first, through the one path that ends sessions
+// (session_end.go), rather than by the cascade; released names the threads
+// whose links that released.
+func (s *Store) DeleteDevice(deviceID string) (deleted bool, released []string, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, nil, fmt.Errorf("store: delete device: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, released, err = endSessionsTx(tx, deleteSessions, 0, nil,
+		`device_id IN (SELECT id FROM devices WHERE id = ? AND revoked_at IS NOT NULL)`, deviceID); err != nil {
+		return false, nil, fmt.Errorf("store: delete device: %w", err)
+	}
+	result, err := tx.Exec(
 		`DELETE FROM devices WHERE id = ? AND revoked_at IS NOT NULL`, deviceID)
 	if err != nil {
-		return false, fmt.Errorf("store: delete device: %w", err)
+		return false, nil, fmt.Errorf("store: delete device: %w", err)
 	}
-	deleted, err := result.RowsAffected()
+	rows, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("store: delete device: rows affected: %w", err)
+		return false, nil, fmt.Errorf("store: delete device: rows affected: %w", err)
 	}
-	return deleted > 0, nil
+	if err := tx.Commit(); err != nil {
+		return false, nil, fmt.Errorf("store: delete device: commit: %w", err)
+	}
+	return rows > 0, released, nil
 }
 
 func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {

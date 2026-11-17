@@ -329,11 +329,11 @@ func TestRevokeSessionReportsWhetherItMovedAndKeepsTheFirstStamp(t *testing.T) {
 	if err := s.CreateSession(newTestSession("sess-1", owner, device, key, 9000)); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	moved, err := s.RevokeSession("sess-1", 2000)
+	moved, _, err := s.RevokeSession("sess-1", 2000)
 	if err != nil || !moved {
 		t.Fatalf("first revoke: moved=%v err=%v", moved, err)
 	}
-	moved, err = s.RevokeSession("sess-1", 3000)
+	moved, _, err = s.RevokeSession("sess-1", 3000)
 	if err != nil || moved {
 		t.Fatalf("second revoke: moved=%v err=%v", moved, err)
 	}
@@ -347,7 +347,7 @@ func TestRevokeSessionReportsWhetherItMovedAndKeepsTheFirstStamp(t *testing.T) {
 	if got.Live(1) {
 		t.Fatal("revoked session still reports live")
 	}
-	moved, err = s.RevokeSession("no-such-session", 4000)
+	moved, _, err = s.RevokeSession("no-such-session", 4000)
 	if err != nil || moved {
 		t.Fatalf("revoke of an unknown session: moved=%v err=%v", moved, err)
 	}
@@ -362,7 +362,7 @@ func TestTouchSessionSkipsRevokedRows(t *testing.T) {
 	if moved, err := s.TouchSession("sess-1", 1500); err != nil || !moved {
 		t.Fatalf("touch live session: moved=%v err=%v", moved, err)
 	}
-	if _, err := s.RevokeSession("sess-1", 2000); err != nil {
+	if _, _, err := s.RevokeSession("sess-1", 2000); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 	if moved, err := s.TouchSession("sess-1", 2500); err != nil || moved {
@@ -399,7 +399,7 @@ func TestRevokeDeviceClosesItsSessionsInOneWrite(t *testing.T) {
 	}
 	// One of this device's sessions is already revoked; it must not be
 	// reported again, because it was closed by whoever revoked it.
-	if _, err := s.RevokeSession("sess-b", 1500); err != nil {
+	if _, _, err := s.RevokeSession("sess-b", 1500); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 
@@ -451,7 +451,7 @@ func TestListLiveSessionsExcludesExpiredAndRevoked(t *testing.T) {
 	if err := s.CreateSession(newTestSession("revoked", owner, device, key, 9000)); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if _, err := s.RevokeSession("revoked", 1600); err != nil {
+	if _, _, err := s.RevokeSession("revoked", 1600); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 	live, err := s.ListLiveSessions(2000)
