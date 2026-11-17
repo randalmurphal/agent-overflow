@@ -227,6 +227,80 @@ func TestAnOwnedSpawnWithoutItsLevelIsAPlainRowThere(t *testing.T) {
 	}
 }
 
+// revokingPeer is a destination whose spawning device loses its last
+// session here once the spawn's call is admitted: before the receipt is
+// written, or between that write and the naming write that would own the
+// thread.
+type revokingPeer struct {
+	*App
+	t             *testing.T
+	beforeReceipt bool
+}
+
+func (p *revokingPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if call.Tool != "thread_spawn" {
+		return p.App.ThreadToolCall(ctx, call)
+	}
+	owner, err := p.remoteCommandOwner(ctx)
+	if err != nil {
+		return ThreadPeerReply{}, err
+	}
+	revoke := func() {
+		sessions, err := p.store.ListSessionsForDevice(owner)
+		if err != nil {
+			p.t.Error(err)
+		}
+		for _, session := range sessions {
+			if _, _, err := p.store.RevokeSession(session.ID, time.Now().UnixMilli()); err != nil {
+				p.t.Error(err)
+			}
+		}
+	}
+	if p.beforeReceipt {
+		revoke()
+	} else {
+		// Set and read on this call's goroutine, before anything reads it.
+		p.spawnNamingForTest = func(string) { revoke() }
+	}
+	return p.runThreadPeerRequest(ctx, owner, call)
+}
+
+// A link needs its owner's device to reach this computer through an
+// unrevoked session. An owned spawn whose device loses its last one before
+// the receipt is written, or before the naming write owns the thread, ends
+// standalone with a sidebar row and no link, as a release leaves it.
+func TestAnOwnedSpawnFromADeviceWithoutASessionIsStandaloneThere(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	for _, tc := range []struct {
+		name          string
+		beforeReceipt bool
+	}{
+		{name: "revoked before the receipt", beforeReceipt: true},
+		{name: "revoked before the naming"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+				return serveAppAs(t, app, &revokingPeer{App: app, t: t, beforeReceipt: tc.beforeReceipt})
+			})
+			listedThere := recordListedFrames(pair.dest)
+			installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+
+			ack := pair.spawnThere(t, "work over there", nil)
+			receipt := pair.receipt(t, ack.Token)
+			thread, err := pair.dest.store.GetThread(receipt.TargetThreadID)
+			if err != nil || thread.Placement != store.PlacementStandalone || receipt.SpawnLink {
+				t.Fatalf("the thread there is %s, linked %v, %v; want standalone and no link", thread.Placement, receipt.SpawnLink, err)
+			}
+			waitUntil(t, 10*time.Second, func() bool { return listedThere(thread.ID) })
+			if listed, _, _ := sidebarListsThread(t, pair.dest, pair.project, thread.ID, 0); !listed {
+				t.Fatal("the standalone thread has no sidebar row there")
+			}
+		})
+	}
+}
+
 // A paired computer's request from the thread whose link owns a worker
 // there marks the worker read when the worker answers, as a local
 // spawner's answer does (ruling 30); one the person gave a sidebar row,

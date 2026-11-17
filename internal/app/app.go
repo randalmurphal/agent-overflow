@@ -806,9 +806,10 @@ type App struct {
 	// (reconcileAsyncQuestions), so a test can change the thread at that
 	// moment.
 	asyncQuestionsReadForTest func(threadID string)
-	// spawnNamingForTest, when set, runs in a local thread_spawn of
-	// callerThreadID's once its thread is made and before the spawn names
-	// it (acceptRequest), so a test can hold an admitted spawn there.
+	// spawnNamingForTest, when set, runs in a thread_spawn of
+	// callerThreadID's, here or on a paired computer, once its thread is
+	// made and before the spawn names it (acceptRequest), so a test can hold
+	// an admitted spawn there.
 	spawnNamingForTest func(callerThreadID string)
 	// deleteClaimedForTest, when set, runs once a delete's claim committed
 	// and before it verifies anything (familyDelete.claim), with the

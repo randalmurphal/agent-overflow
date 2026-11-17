@@ -572,12 +572,12 @@ func (t threadToolsApp) acceptRequest(
 			return "", false, err
 		}
 		target = thread.ID
+		if hook := t.app.spawnNamingForTest; hook != nil {
+			hook(origin.caller.ThreadID)
+		}
 		if origin.foreign {
 			_, listing, err = t.app.store.SetThreadReceiptTarget(token, target, own)
 		} else {
-			if hook := t.app.spawnNamingForTest; hook != nil {
-				hook(origin.caller.ThreadID)
-			}
 			// One write names the thread on both rows and accepts the source
 			// row; a request a settlement already moved keeps its state.
 			listing, err = t.app.store.NameLocalThreadRequestTarget(token, target, own)
