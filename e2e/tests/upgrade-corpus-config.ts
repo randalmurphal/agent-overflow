@@ -726,7 +726,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
       'origin_thread_id', 'late_reply', 'late_reply_at', 'late_delivered_at', 'wake_attempts', 'wake_next_check', 'wake_issue',
       'lineage_only', 'superseded', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
       'late_delivered_how', 'made_in_thread_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
-      'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'rest_unreported',
+      'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'rest_unreported', 'answer_cause', 'answer_cause_arg',
     ],
     values: {
       kind: ['ask'],
@@ -740,11 +740,11 @@ export const coverageAllowlist: CoverageAllowance[] = [
       late_reply_agent: [1],
       nested_open: [1],
     },
-    reason: "the top-up's requests are thread_send and thread_remind requests its caller takes as each settles, and the assistant's helper spawn; an ask, a late reply, a failed or stopped request, a wake whose caller cannot take it (no request reads draft since a wake never enters the composer), an answer from a standing agent, a handoff's moved request, a remote spawn and a spawn the retention floor kept as lineage are not staged, and open states are ones a request passes through",
+    reason: "the top-up's requests are thread_send and thread_remind requests its caller takes as each settles, and the assistant's helper spawn; an ask, a late reply, a failed or stopped request (so no interruption's cause), a wake whose caller cannot take it (no request reads draft since a wake never enters the composer), an answer from a standing agent, a handoff's moved request, a remote spawn and a spawn the retention floor kept as lineage are not staged, and open states are ones a request passes through",
   },
   {
     table: 'thread_request_receipts',
-    columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role', 'lineage_only'],
+    columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role', 'lineage_only', 'answer_cause', 'answer_cause_arg'],
     values: {
       kind: ['ask', 'remind'],
       state: ['accepted', 'running', 'errored', 'cancelled', 'interrupted', 'expired'],
@@ -753,7 +753,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
       late_reply_agent: [1],
       lineage_only: [1],
     },
-    reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed or stopped request or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
+    reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed or stopped request (so no interruption's cause) or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
   },
   {
     table: 'thread_request_receipts',

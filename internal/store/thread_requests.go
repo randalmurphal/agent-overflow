@@ -104,9 +104,16 @@ type ThreadRequest struct {
 	// that ends unsettled arms it.
 	Notify bool   `json:"notify"`
 	State  string `json:"state"`
-	// Answer is the whole settled text, never truncated.
-	Answer      []byte `json:"-"`
-	AnswerKind  string `json:"answerKind,omitempty"`
+	// Answer is the whole settled text, never truncated. For an
+	// interruption with a Cause it is what the turn had written, if
+	// anything; the words an agent reads are rendered from both.
+	Answer     []byte `json:"-"`
+	AnswerKind string `json:"answerKind,omitempty"`
+	// Cause and CauseArg are why an `interrupted` answer was interrupted
+	// (threadtools.Cause), empty for every other answer and for one an
+	// earlier build or computer recorded as text alone.
+	Cause       string `json:"-"`
+	CauseArg    string `json:"-"`
 	LateReply   []byte `json:"-"`
 	LateReplyAt int64  `json:"lateReplyAt,omitempty"`
 	Revision    int64  `json:"revision"`
@@ -216,7 +223,11 @@ type ThreadRequestSettlement struct {
 	State      string
 	Answer     []byte
 	AnswerKind string
-	SettledAt  int64
+	// Cause and CauseArg are why an `interrupted` settlement was
+	// interrupted (ThreadRequest.Cause); no other state carries one.
+	Cause     string
+	CauseArg  string
+	SettledAt int64
 	// ExpiresAt is when an uncollected answer is dropped. The destination
 	// sets it to SettledAt plus a day; the source copies what the
 	// destination reported.
@@ -258,6 +269,18 @@ func (s ThreadRequestSettlement) validate(action string, states map[string]struc
 	if s.ArmWake && s.DisarmWake {
 		return fmt.Errorf("%s: a settlement cannot both arm and disarm the wake", action)
 	}
+	return validateAnswerCause(action, s.State, s.Cause, s.CauseArg)
+}
+
+// validateAnswerCause refuses a cause on an answer that is no interruption,
+// and an argument with no cause. The two tables spell `interrupted` alike.
+func validateAnswerCause(action, state, cause, arg string) error {
+	if cause != "" && state != ThreadRequestInterrupted {
+		return fmt.Errorf("%s: a %s answer has no cause, this one says %q", action, state, cause)
+	}
+	if cause == "" && arg != "" {
+		return fmt.Errorf("%s: a cause argument %q with no cause", action, arg)
+	}
 	return nil
 }
 
@@ -270,7 +293,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
-    late_reply_agent, late_reply_agent_role, rest_unreported`
+    late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -301,7 +324,7 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
-		&lateReplyAgent, &lateReplyAgentRole, &restUnreported,
+		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg,
 	}, extra...)...)
 	r.NestedOpen = nestedOpen != 0
 	r.RestUnreported = restUnreported != 0
@@ -432,12 +455,12 @@ func settleThreadRequest(db sqlExecutor, token string, from []string, settlement
 		settledAt = nowMillis()
 	}
 	agent, role := answerAgentColumns(settlement.Agent)
-	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
+	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind, settlement.Cause, settlement.CauseArg,
 		settledAt, nilIfZero(settlement.ExpiresAt), agent, role, boolToInt(settlement.DisarmWake), boolToInt(settlement.ArmWake),
 		nowMillis(), token}
 	result, err := db.Exec(
 		`UPDATE thread_requests
-		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
+		    SET state = ?, answer = ?, answer_kind = ?, answer_cause = ?, answer_cause_arg = ?, revision = revision + 1,
 		        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?,
 		        notify = CASE WHEN ? = 1 THEN 0 ELSE `+threadRequestArmSQL+` END, updated_at = ?
 		  WHERE token = ? AND `+clause+where,
@@ -503,6 +526,8 @@ type ThreadReceiptAnswer struct {
 	State          string
 	Answer         []byte
 	AnswerKind     string
+	Cause          string
+	CauseArg       string
 	SettledAt      int64
 	ExpiresAt      int64
 	Agent          *ThreadAnswerAgent
@@ -520,7 +545,7 @@ type ThreadReceiptAnswer struct {
 func (r ThreadRequestReceipt) Snapshot() ThreadReceiptAnswer {
 	return ThreadReceiptAnswer{
 		Revision: r.Revision, State: r.State, Answer: r.Answer, AnswerKind: r.AnswerKind,
-		SettledAt: r.SettledAt, ExpiresAt: r.ExpiresAt, Agent: r.AnswerAgent,
+		Cause: r.Cause, CauseArg: r.CauseArg, SettledAt: r.SettledAt, ExpiresAt: r.ExpiresAt, Agent: r.AnswerAgent,
 		LateReply: r.LateReply, LateReplyAt: r.LateReplyAt, LateReplyAgent: r.LateReplyAgent,
 	}
 }
@@ -558,6 +583,8 @@ func collectThreadRequest(db sqlExecutor, token string, answer ThreadReceiptAnsw
 		State:      ThreadRequestStateForReceipt(answer.State),
 		Answer:     answer.Answer,
 		AnswerKind: answer.AnswerKind,
+		Cause:      answer.Cause,
+		CauseArg:   answer.CauseArg,
 		SettledAt:  answer.SettledAt,
 		ExpiresAt:  answer.ExpiresAt,
 		Agent:      answer.Agent,
@@ -1087,7 +1114,7 @@ const spawnLineageSQL = `kind = 'spawn' AND target_thread_id <> ''
 // still owed. The sweep appends its floor to the WHERE, which skips rows
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
-	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
+	SET lineage_only = 1, answer = NULL, answer_kind = '', answer_cause = '', answer_cause_arg = '', late_reply = NULL, late_reply_at = NULL,
 	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
 	    nested_open = 0, target_provider = '', polling = 0
 	WHERE lineage_only = 0`
@@ -1136,7 +1163,7 @@ const (
 	// the source and target it names and its state and times, its answers
 	// and their agents gone. The sweep appends its floor.
 	clearReceiptLineageSQL = `UPDATE thread_request_receipts
-	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL, expires_at = NULL,
+	SET lineage_only = 1, answer = NULL, answer_kind = '', answer_cause = '', answer_cause_arg = '', late_reply = NULL, late_reply_at = NULL, expires_at = NULL,
 	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = ''
 	WHERE `
 )
