@@ -126,10 +126,11 @@ per-platform no-op.
   the tab set records it, so racing closes record it once. Reopen pops the
   newest into a new tab at that position, without its label if another tab
   took it meanwhile, since labels stay unique; a reopen that fails before the
-  tab exists puts the entry back unless a forget ran meanwhile. The state
+  tab exists puts the entry back unless the thread's own history was
+  forgotten meanwhile (another thread's forget does not count). The state
   carries `closedTabs`, the stack's depth. The stack is browsing history,
-  forgotten with the recent addresses below by the same helpers and
-  generation, and a private jar keeps none.
+  forgotten with the recent addresses below by the same helpers, and a
+  private jar keeps none.
 - A tab's state comes from the Manager alone (`internal/browser/lifecycle.go`).
   A new tab is in the state, `creating`, before the engine page exists; the
   user's own new tab is also selected and shown at once, and a failed creation

@@ -27,6 +27,24 @@ type closedTab struct {
 	index int
 }
 
+// closedTabs is one thread's closed-tab history. A forget of the thread's
+// browsing history removes the object (forgetBrowsingLocked), and the next
+// close starts a new one, so a reopen that took an entry can tell whether
+// the history it took from is still the thread's: the same object is.
+// Emptied by reopens, it stays until a forget.
+type closedTabs struct {
+	tabs []closedTab
+}
+
+// closedCountLocked is how many tabs threadID can reopen. The caller holds
+// m.mu.
+func (m *Manager) closedCountLocked(threadID string) int {
+	if stack := m.closedTabs[threadID]; stack != nil {
+		return len(stack.tabs)
+	}
+	return 0
+}
+
 // reopenable reports whether a closed tab at rawURL is worth keeping: an
 // address a new tab can load through the address bar.
 func reopenable(rawURL string) bool {
@@ -70,21 +88,19 @@ func (m *Manager) recordUserCloseLocked(threadID, pageID string) {
 // pushClosedLocked adds tab as the thread's most recently closed, dropping
 // the oldest past maxClosedTabs. The caller holds m.mu.
 func (m *Manager) pushClosedLocked(threadID string, tab closedTab) {
-	stack := append(m.closedTabs[threadID], tab)
-	if len(stack) > maxClosedTabs {
-		stack = append([]closedTab(nil), stack[len(stack)-maxClosedTabs:]...)
+	stack := m.closedTabs[threadID]
+	if stack == nil {
+		stack = &closedTabs{}
+		m.closedTabs[threadID] = stack
 	}
-	m.closedTabs[threadID] = stack
+	stack.push(tab)
 }
 
-// setClosedLocked stores a thread's closed tabs, removing an empty entry.
-// The caller holds m.mu.
-func (m *Manager) setClosedLocked(threadID string, stack []closedTab) {
-	if len(stack) == 0 {
-		delete(m.closedTabs, threadID)
-		return
+func (s *closedTabs) push(tab closedTab) {
+	s.tabs = append(s.tabs, tab)
+	if len(s.tabs) > maxClosedTabs {
+		s.tabs = append([]closedTab(nil), s.tabs[len(s.tabs)-maxClosedTabs:]...)
 	}
-	m.closedTabs[threadID] = stack
 }
 
 // ReopenClosedTab reopens the thread's most recently closed tab at its
@@ -93,13 +109,12 @@ func (m *Manager) setClosedLocked(threadID string, stack []closedTab) {
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 	m.mu.Lock()
 	stack := m.closedTabs[access.ThreadID]
-	if len(stack) == 0 {
+	if stack == nil || len(stack.tabs) == 0 {
 		m.mu.Unlock()
 		return nil
 	}
-	tab := stack[len(stack)-1]
-	m.setClosedLocked(access.ThreadID, stack[:len(stack)-1])
-	gen := m.recentGen
+	tab := stack.tabs[len(stack.tabs)-1]
+	stack.tabs = stack.tabs[:len(stack.tabs)-1]
 	m.mu.Unlock()
 	info, err := m.openUserTab(ctx, access, tab.url, tab.label, tab.index)
 	if err != nil && info.ID == "" {
@@ -107,13 +122,11 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 			m.reopenRefused()
 		}
 		// No tab opened (the thread's page limit, say): it can be reopened
-		// once the reason is gone, unless a forget of browsing history
-		// (forgetBrowsingLocked) ran since the pop and took it with the rest.
-		// The generation is Manager-wide, so another thread's forget drops
-		// the entry too.
+		// once the reason is gone, unless a forget of this thread's browsing
+		// history ran since the pop and took the history it came from.
 		m.mu.Lock()
-		if m.recentGen == gen {
-			m.pushClosedLocked(access.ThreadID, tab)
+		if m.closedTabs[access.ThreadID] == stack {
+			stack.push(tab)
 		}
 		m.mu.Unlock()
 		m.emitThreadState(access.ThreadID)
