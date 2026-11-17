@@ -17,9 +17,7 @@ package store
 // On the computer that holds the spawner (S), a remote spawn's
 // `owner_op_seq` numbers the owner operations owed for it, and
 // `thread_owner_ops` keeps what S still owes D, one row per link, past the
-// spawn row's own delete (no foreign key); its `unanswered_archive_seq` is
-// the newest archive sent for the link that no answer has overtaken, which
-// a reopen withdraws with a supersede. idx_thread_requests_remote_spawn_target
+// spawn row's own delete (no foreign key). idx_thread_requests_remote_spawn_target
 // finds the remote spawn that names a thread there.
 //
 // `threads.archive_cascade` marks an archive that has not finished reaching
@@ -51,7 +49,6 @@ CREATE TABLE thread_owner_ops (
   op               TEXT NOT NULL CHECK(op IN ('archive','delete','release','supersede')),
   seq              INTEGER NOT NULL,
   sent             INTEGER NOT NULL DEFAULT 0 CHECK(sent IN (0,1)),
-  unanswered_archive_seq INTEGER NOT NULL DEFAULT 0,
   owed_at          INTEGER NOT NULL,
   next_at          INTEGER NOT NULL,
   attempts         INTEGER NOT NULL DEFAULT 0,
