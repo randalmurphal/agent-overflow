@@ -117,10 +117,14 @@ func TestADueSelectionHeldAcrossThePauseDoesNotRun(t *testing.T) {
 
 	// The sweep's pass, served from the selection it held.
 	for _, row := range wakes {
-		a.fireAgentWake(row, now, agentWakeFire{at: now.UnixMilli()})
+		if err := a.fireAgentWake(row, now, agentWakeFire{at: now.UnixMilli()}); !errors.Is(err, errAssistantsOff) {
+			t.Fatalf("the held %s fired with %v, want it refused as assistants off", row.Kind, err)
+		}
 	}
 	for _, row := range reminders {
-		a.fireThreadReminder(row, now)
+		if err := a.fireThreadReminder(row, now); !errors.Is(err, errAssistantsOff) {
+			t.Fatalf("the held reminder fired with %v, want it refused as assistants off", err)
+		}
 	}
 	for _, row := range wakes {
 		awaitNoAgentWakeRun(t, a, row.ID)
