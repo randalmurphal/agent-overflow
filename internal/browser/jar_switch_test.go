@@ -219,20 +219,19 @@ func TestClosedSwitchedTabsKeepTheirSlotsUntilTheirPagesClose(t *testing.T) {
 		t.Fatalf("a page while the eight old pages still close answered %v", err)
 	}
 	release()
+	// Each old page finishes closing on its own goroutine and frees its slot
+	// then, so every one of the eight new pages may wait for one.
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, err := manager.NewPage(t.Context(), access)
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no page after the old pages closed: %v", err)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	for range maxPagesPerThread - 1 {
-		if _, err := manager.NewPage(t.Context(), access); err != nil {
-			t.Fatalf("a page after the old pages closed: %v", err)
+	for i := range maxPagesPerThread {
+		for {
+			_, err := manager.NewPage(t.Context(), access)
+			if err == nil {
+				break
+			}
+			if !strings.Contains(err.Error(), "still shutting down") || time.Now().After(deadline) {
+				t.Fatalf("page %d after the old pages closed: %v", i+1, err)
+			}
+			time.Sleep(time.Millisecond)
 		}
 	}
 }
