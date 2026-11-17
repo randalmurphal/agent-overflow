@@ -880,6 +880,36 @@ func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
 	}
 }
 
+// The thread that answers the prompts of a worker this computer spawned on
+// a paired computer is the spawn's caller while it is not archived; a
+// local spawn or an unknown token names none.
+func TestRemotePromptHolderIsTheSpawnsCallerWhileItCanAnswer(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "worker"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "near", "lead", ThreadRequestSpawn, "worker", false, 100)
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "far", CallerThreadID: "lead", Kind: ThreadRequestSpawn, TargetComputerID: "desk", TargetThreadID: "remote-worker",
+		State: ThreadRequestRunning, CreatedAt: 110, UpdatedAt: 110,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for token, want := range map[string]string{"far": "lead", "near": "", "missing": ""} {
+		holder, title, found, err := s.RemotePromptHolder(token)
+		if err != nil || found != (want != "") || holder != want || (found && title != "Thread lead") {
+			t.Errorf("holder of %s = %q %q found=%v err=%v; want %q", token, holder, title, found, err, want)
+		}
+	}
+	if _, _, err := s.ArchiveThread("lead"); err != nil {
+		t.Fatal(err)
+	}
+	if holder, _, found, err := s.RemotePromptHolder("far"); err != nil || found {
+		t.Errorf("holder of a spawn whose caller is archived = %q found=%v err=%v; want none", holder, found, err)
+	}
+}
+
 // A thread's prompts go to the caller of its newest local spawn, whoever
 // that is, a worker's worker to the worker; a thread whose spawner is
 // archived, or that only a spawn on another computer names, has none. A

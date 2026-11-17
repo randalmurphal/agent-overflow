@@ -2092,5 +2092,23 @@ func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 		if strings.Contains(first, routes) != (placement == "") {
 			t.Fatalf("placement %q: the spawn's message there reads\n%s", placement, first)
 		}
+		if placement != "" {
+			continue
+		}
+		// A send that names the spawner's computer and thread but comes over
+		// another device's pairing is not the link's owner.
+		link := pair.receipt(t, ack.Token)
+		for device, want := range map[string]bool{link.OwnerDeviceID: true, "other-device": false} {
+			message, err := threadToolsApp{app: pair.dest}.requestMessage(threadRequestOrigin{
+				caller:  threadtools.Caller{ComputerID: link.SourceComputerID, ThreadID: link.SourceThreadID, Title: link.SourceThreadTitle},
+				foreign: true, ownerDevice: device,
+			}, "a-send", store.ThreadRequestSend, worker, "one more thing", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(message.Text(), routes) != want {
+				t.Fatalf("a send over device %q reads\n%s\nwant the prompts line: %v", device, message.Text(), want)
+			}
+		}
 	}
 }

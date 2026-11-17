@@ -270,9 +270,10 @@ func (a *App) deliverRemotePrompt(key remotePromptKey) {
 			queued = live()
 			return message, queued, nil
 		},
-		keep:      func() (bool, error) { return live(), nil },
-		withdrawn: func() { a.remotePromptNotTaken(key, current.delivery) },
-		failed:    func() { a.remotePromptNotTaken(key, current.delivery) },
+		// A wake keep withdraws is no longer the prompt's current delivery,
+		// so its withdrawal moves nothing on.
+		keep:   func() (bool, error) { return live(), nil },
+		failed: func() { a.remotePromptNotTaken(key, current.delivery) },
 		startFailed: func(err error) string {
 			return fmt.Sprintf("Thread %q on %s is waiting on this thread's answer, but this thread's agent could not start: %v. The prompt goes back to the person there.",
 				current.prompt.Title, current.computerName, err)

@@ -279,6 +279,87 @@ func TestAPromptItsSpawnerNeverHoldsGoesToThePersonThereAfterTheLease(t *testing
 	}
 }
 
+// A prompt whose wake waits in its spawner's queue here outlasts the
+// lease there: each ask names it as held, which renews it.
+func TestAPromptItsSpawnerHoldsOutlastsTheLease(t *testing.T) {
+	t.Parallel()
+	p := newRemotePromptPair(t, remoteApproveLine)
+	p.openThere(t, 1)
+	p.sweep()
+	p.wakesFor(t, p.caller.ID, 1)
+	held := p.dest.workerPrompts.heldFor(p.spawn.Token, p.worker)
+	if len(held) != 1 {
+		t.Fatalf("the worker holds %d prompts for the spawner here, want one", len(held))
+	}
+	// The lease is shortened once an ask named it held, so the test does
+	// not race the first ask.
+	waitUntil(t, 15*time.Second, func() bool {
+		p.dest.workerPrompts.mu.Lock()
+		defer p.dest.workerPrompts.mu.Unlock()
+		prompt := p.dest.workerPrompts.byToken[held[0].token]
+		return prompt != nil && prompt.remote != nil && !prompt.remote.heldAt.IsZero()
+	})
+	const lease = 3 * time.Second
+	p.dest.workerPromptLeaseOverride = lease
+	p.dest.armPromptLease(held[0].token, 0)
+	time.Sleep(2*lease + time.Second)
+	if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID {
+		t.Fatalf("the held prompt is routed to %+v (open %v) past the lease, want the spawner here", route, open)
+	}
+	if p.announcedToPerson("req-allow") {
+		t.Fatal("the person there was asked about a prompt its spawner holds")
+	}
+}
+
+// An answer read late that leaves out a prompt an earlier answer listed
+// closes it, and the next answer that lists it again puts it to the
+// spawner again under a new delivery.
+func TestARemotePromptLeftOutOfALateAnswerIsDeliveredAgain(t *testing.T) {
+	t.Parallel()
+	p := newRemotePromptPair(t, remoteApproveLine)
+	p.openThere(t, 1)
+	listing, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	if err != nil || len(listing.Prompts) != 1 {
+		t.Fatalf("the listing there: %+v, %v; want one prompt", listing.Prompts, err)
+	}
+	reconcile := func(listed []ThreadAgentPrompt) {
+		p.source.workerPrompts.run(func() { p.source.reconcileRemotePrompts(p.spawn, listed) })
+		p.drain(t)
+	}
+	reconcile(listing.Prompts)
+	first := p.wakesFor(t, p.caller.ID, 1)[0]
+	reconcile(nil)
+	p.wakesFor(t, p.caller.ID, 0)
+	reconcile(listing.Prompts)
+	again := p.wakesFor(t, p.caller.ID, 1)[0]
+	if again.token != first.token || again.delivery == first.delivery {
+		t.Fatalf("the prompt listed again was delivered as %+v after %+v, want the same token under a new delivery", again, first)
+	}
+}
+
+// Only a prompt's current delivery is live, takes a hold, or records the
+// thread its wake moved to: an earlier delivery's callbacks change nothing.
+func TestOnlyARemotePromptsCurrentDeliveryCounts(t *testing.T) {
+	t.Parallel()
+	key := remotePromptKey{computerID: "desk", token: "prompt-1"}
+	r := &remoteWorkerPrompts{byKey: map[remotePromptKey]*remoteWorkerPrompt{
+		key: {key: key, holder: "the-holder", delivery: "boot-2", state: remotePromptRouted},
+	}}
+	if r.live(key, "boot-1") || !r.live(key, "boot-2") {
+		t.Fatal("live does not follow the current delivery")
+	}
+	r.hold(key, "boot-1")
+	r.moveTo(key, "boot-1", "another-thread")
+	if prompt := r.byKey[key]; prompt.held || prompt.holder != "the-holder" {
+		t.Fatalf("an earlier delivery changed the prompt: %+v", prompt)
+	}
+	r.hold(key, "boot-2")
+	r.moveTo(key, "boot-2", "the-successor")
+	if prompt := r.byKey[key]; !prompt.held || prompt.holder != "the-successor" {
+		t.Fatalf("the current delivery did not take: %+v", prompt)
+	}
+}
+
 // The person answers there: the spawner's wake is withdrawn here, and its
 // reply, before this computer heard and after, is refused as closed.
 func TestAPersonsAnswerThereWithdrawsTheWakeAndRefusesALateReply(t *testing.T) {

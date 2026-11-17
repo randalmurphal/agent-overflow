@@ -1,12 +1,14 @@
 package app
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -30,6 +32,8 @@ type linkedWorkers struct {
 	spawns  []string
 	// local is a worker a thread here spawned.
 	local store.Thread
+	// dbPath is the store's file, for a second handle that rewrites a link.
+	dbPath string
 }
 
 const linkedLeadComputer, linkedLeadComputerName = "desk-computer", "Desk"
@@ -43,12 +47,14 @@ func newLinkedWorkers(t *testing.T, n int) *linkedWorkers {
 // zero for now.
 func newLinkedWorkersAt(t *testing.T, n int, createdAt int64) *linkedWorkers {
 	t.Helper()
-	a, events := newAppForFlushQueueRPC(t)
+	a, dbPath := newTestAppWithStorePath(t)
+	events := &emitRecorder{}
+	a.testEmitHook = events.capture
 	a.triage = triage.NewRouter(a.store, a.emit)
 	a.configureTriageQueueCallbacks()
 	a.triage.SetPromptRouter(a.routeWorkerPrompt)
 	a.startSessionFn = func(string) error { return errors.New("no provider in this test") }
-	f := &linkedWorkers{app: a, events: events, device: reachableDevice(t, a.store), lead: "6f1c2a4e-9d3b-4c1a-8e2f-0a1b2c3d4e5f"}
+	f := &linkedWorkers{app: a, events: events, device: reachableDevice(t, a.store), lead: "6f1c2a4e-9d3b-4c1a-8e2f-0a1b2c3d4e5f", dbPath: dbPath}
 	for i := range n {
 		worker := noticeTestThread(t, a, "linked-worker-"+string(rune('a'+i)))
 		token := "linked-spawn-" + string(rune('a'+i))
@@ -170,6 +176,16 @@ func TestALinkedWorkersPromptIsHeldForItsSpawnerThere(t *testing.T) {
 	if len(listed) != 1 || listed[0].Token != token || listed[0].Title != f.workers[0].Title ||
 		listed[0].Approval == nil || listed[0].Approval.ToolName != "Bash" || listed[0].Approval.Description != "make deploy" {
 		t.Fatalf("the link's listing = %+v, want the approval under %s", listed, token)
+	}
+	// A thread here that calls itself the lead cannot answer it with its
+	// own thread_reply: only the binding answers a held prompt.
+	_, handled, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.lead},
+		threadtools.ReplyCall{Token: token, Decision: threadtools.DecisionAllow})
+	if code, _, _ := errorsx.PublicDetails(err); !handled || code != threadtools.CodeRequestNotYours {
+		t.Fatalf("a local thread_reply on the held prompt: handled %v, %v; want it refused as not yours", handled, err)
+	}
+	if prompt, _ := f.app.workerPrompts.get(token); prompt.state != workerPromptRouted {
+		t.Fatalf("the held prompt is %v after a refused local reply", prompt.state)
 	}
 	for name, args := range map[string]struct {
 		device, source string
@@ -302,6 +318,81 @@ func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 	}
 	if f.route(t, f.workers[0].ID) != nil || !f.handedToPerson(f.workers[0].ID) {
 		t.Fatal("the returned prompt did not go to the person here")
+	}
+}
+
+// The binding holds a call to both the link a prompt was held through and
+// the link that owns its worker now: after the link changes, neither the
+// old link's identity nor the new one's may renew, answer or give back the
+// prompt.
+func TestTheBindingHoldsACallToTheLinkThenAndNow(t *testing.T) {
+	t.Parallel()
+	for name, change := range map[string]struct {
+		column, value string
+	}{
+		"spawn":         {"token", "relinked-spawn"},
+		"device":        {"owner_device_id", "other-device"},
+		"source thread": {"source_thread_id", "6f1c2a4e-9d3b-4c1a-8e2f-000000000000"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newLinkedWorkers(t, 1)
+			token := f.ask(t, 0)
+			raw, err := sql.Open("sqlite", f.dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := raw.Exec(`UPDATE thread_request_receipts SET `+change.column+` = ? WHERE token = ?`, change.value, f.spawns[0]); err != nil {
+				t.Fatal(err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			then := struct{ device, source, spawn string }{f.device, f.lead, f.spawns[0]}
+			now := then
+			switch change.column {
+			case "token":
+				now.spawn = change.value
+			case "owner_device_id":
+				now.device = change.value
+			default:
+				now.source = change.value
+			}
+			for which, id := range map[string]struct{ device, source, spawn string }{"then": then, "now": now} {
+				for _, tool := range []string{threadAgentPeerPromptReturn, threadAgentPeerPromptReply} {
+					err := f.call(t, id.device, id.source, tool, threadPromptPeerArgs{Spawn: id.spawn, Token: token, Decision: threadtools.DecisionAllow})
+					if !errors.Is(err, errPeerPromptNotYours) {
+						t.Errorf("the link %s, %s: %v; want it refused as not yours", which, tool, err)
+					}
+				}
+			}
+			if prompt, _ := f.app.workerPrompts.get(token); prompt.state != workerPromptRouted {
+				t.Fatalf("the prompt is %v after the refused calls, want it still routed", prompt.state)
+			}
+		})
+	}
+}
+
+// A prompt announced routed through a link that no longer routes there by
+// the time it is held, the link replaced or gone, goes to the person at
+// once rather than when its lease runs out.
+func TestAPromptRoutedThroughAStaleLinkGoesToThePersonAtOnce(t *testing.T) {
+	t.Parallel()
+	f := newLinkedWorkers(t, 1)
+	worker := f.workers[0].ID
+	f.app.triage.SetPromptRouter(func(threadID string) *provider.PromptRoute {
+		if threadID == worker {
+			return &provider.PromptRoute{ThreadID: "6f1c2a4e-9d3b-4c1a-8e2f-0000000000aa", Title: "a lead before", ComputerID: linkedLeadComputer, ComputerName: linkedLeadComputerName}
+		}
+		return f.app.routeWorkerPrompt(threadID)
+	})
+	askOn(t, f.app, worker, "approval-1", false)
+	waitUntil(t, 10*time.Second, func() bool {
+		f.drain(t)
+		return f.route(t, worker) == nil && f.handedToPerson(worker)
+	})
+	if held := f.app.workerPrompts.heldFor(f.spawns[0], worker); len(held) != 0 {
+		t.Fatalf("the worker holds %d prompts for a link that does not route there", len(held))
 	}
 }
 
