@@ -1107,15 +1107,18 @@ func (t threadToolsApp) requestMessage(
 		UserMessage:     latest,
 		Agent:           origin.agent,
 	}
+	// A worker's questions and approvals reach the thread that spawned it
+	// (store.SpawnOwnerOf): one on this computer, or the thread on a paired
+	// computer whose spawn's link owns it, through that link's pairing.
+	owner, found, err := t.app.store.SpawnOwnerOf(targetThreadID)
+	if err != nil {
+		return usermessage.AgentMessage{}, err
+	}
 	if !origin.foreign {
-		// A worker's questions and approvals reach the thread that spawned
-		// it on this computer (store.SpawnOwnerOf); a sender on another
-		// computer never routes them.
-		owner, found, err := t.app.store.SpawnOwnerOf(targetThreadID)
-		if err != nil {
-			return usermessage.AgentMessage{}, err
-		}
 		footer.RoutesPrompts = found && owner.ComputerID == "" && owner.ThreadID == caller.ThreadID
+	} else {
+		footer.RoutesPrompts = found && owner.ComputerID == caller.ComputerID && owner.ThreadID == caller.ThreadID &&
+			owner.DeviceID == origin.ownerDevice
 	}
 	// The body is the sender's text and the footer is this computer's; a
 	// body line that opens like the footer is quoted so only the footer
