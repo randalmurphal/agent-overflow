@@ -256,7 +256,7 @@ func (p *headlessProfile) ensureBrowser() (context.Context, error) {
 	if err := p.armLaunch(launchCancel); err != nil {
 		return nil, err
 	}
-	defer p.armLaunch(nil)
+	defer p.disarmLaunch()
 
 	launched, err := p.launch(launchCtx)
 	if err != nil {
@@ -424,8 +424,8 @@ func (p *headlessProfile) reportLost(pages []string) {
 	}
 }
 
-// armLaunch publishes (or clears) the cancel Interrupt reaches the launch
-// through, refusing to start one on a disposed profile.
+// armLaunch publishes the cancel Interrupt reaches the launch through,
+// refusing to start one on a disposed profile.
 func (p *headlessProfile) armLaunch(cancel context.CancelFunc) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -434,6 +434,13 @@ func (p *headlessProfile) armLaunch(cancel context.CancelFunc) error {
 	}
 	p.launchCancel = cancel
 	return nil
+}
+
+// disarmLaunch clears the cancel armLaunch published, as the launch ends.
+func (p *headlessProfile) disarmLaunch() {
+	p.mu.Lock()
+	p.launchCancel = nil
+	p.mu.Unlock()
 }
 
 // launchFailed frames a failed launch with the binary that failed. A reason
