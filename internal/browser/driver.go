@@ -131,6 +131,11 @@ type paneHost interface {
 	// ever equates CSS pixels with its native units. Always sent before a
 	// show.
 	SetPageBounds(handle string, placement PanePlacement)
+	// SetPageBase sets the color the page's view paints wherever its
+	// document leaves the background transparent or has not painted yet,
+	// as "#rrggbb". It holds, shown or hidden, until the next call; the
+	// Manager decides it (applyPageBase) and sends it only when it changes.
+	SetPageBase(handle, color string)
 	// FocusPage gives the page's view keyboard focus for one focus intent,
 	// as a click into the page does, if and only if the host presents and
 	// shows that view and req.Live holds at the moment focus would move;

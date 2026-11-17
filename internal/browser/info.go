@@ -133,7 +133,7 @@ func (m *Manager) commitRead(p *managedPage, u pageUpdate, stamp uint64) (PageIn
 	u.Stamp = stamp
 	info, located := p.commitInfo(u)
 	if located {
-		m.presentAddressCommitted(p)
+		m.applyPageBase(p)
 	}
 	return info, located
 }
@@ -221,7 +221,7 @@ func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64
 		// A newer report was committed first and runs its own refresh.
 		return
 	}
-	m.presentAddressCommitted(p)
+	m.applyPageBase(p)
 	m.mu.Lock()
 	listed := m.pageListedLocked(p)
 	m.mu.Unlock()

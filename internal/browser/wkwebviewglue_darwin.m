@@ -432,6 +432,25 @@ void ao_wkv_host_unpark(void *view) {
   }
 }
 
+// ao_bg_color turns a packed 0xRRGGBB into an NSColor. Negative means "no
+// colour", which restores the engine default.
+static NSColor *ao_bg_color(int bg) {
+  if (bg < 0) {
+    return nil;
+  }
+  return [NSColor colorWithSRGBRed:(CGFloat)((bg >> 16) & 0xFF) / 255.0
+                             green:(CGFloat)((bg >> 8) & 0xFF) / 255.0
+                              blue:(CGFloat)(bg & 0xFF) / 255.0
+                             alpha:1.0];
+}
+
+// ao_view_background answers the base colour last set on the view, or -1
+// when none was.
+static int ao_view_background(NSView *view) {
+  NSNumber *stored = objc_getAssociatedObject(view, &kAOBackgroundKey);
+  return stored == nil ? -1 : [stored intValue];
+}
+
 // ao_clip_for answers one page's clipping container, creating it on first
 // present and re-attaching it if it ever lost its superview. The association
 // owns it; ao_wkv_view_close is what takes it down, because a per-page view
@@ -453,8 +472,10 @@ static NSView *ao_clip_for(NSView *view) {
       [clip setClipsToBounds:YES];
     }
     // Hidden until the page is actually inside it: an empty container carrying
-    // the pane's background colour would paint over the SPA.
+    // the page's base colour would paint over the SPA.
     [clip setHidden:YES];
+    NSColor *base = ao_bg_color(ao_view_background(view));
+    [[clip layer] setBackgroundColor:base == nil ? NULL : [base CGColor]];
     // The association is the retain that keeps it alive past this pool.
     objc_setAssociatedObject(view, &kAOClipKey, clip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
@@ -478,46 +499,32 @@ static void ao_release_clip(NSView *view) {
   objc_setAssociatedObject(view, &kAOClipKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// ao_bg_color turns the packed 0xRRGGBB the Go half parsed into an NSColor.
-// Negative means "no colour", which restores the engine default.
-static NSColor *ao_bg_color(int bg) {
-  if (bg < 0) {
-    return nil;
-  }
-  return [NSColor colorWithSRGBRed:(CGFloat)((bg >> 16) & 0xFF) / 255.0
-                             green:(CGFloat)((bg >> 8) & 0xFF) / 255.0
-                              blue:(CGFloat)(bg & 0xFF) / 255.0
-                             alpha:1.0];
-}
-
-// ao_apply_background paints the page's base colour (the Manager's pageBase:
-// white under a document, the pane's colour under a blank tab) where the page
-// has not presented yet. Three surfaces need it: WKWebView's own
-// under-page colour (what WebKit paints outside the drawn content)
-// and both layers, because the web content arrives on a remote layer that can
-// lag the view's own frame by a frame or two — the clip container is the thing
-// behind that gap.
-//
-// Applied only when it CHANGED. A pane rect arrives once per changed frame
-// while the user drags, and dirtying two layer backgrounds on every one of
-// those frames is work nobody asked for. One stamp covers both surfaces
-// because the container is this page's own and is created with no colour at
-// all, so the two can never disagree.
-static void ao_apply_background(WKWebView *view, NSView *clip, int bg) {
-  NSNumber *previous = objc_getAssociatedObject(view, &kAOBackgroundKey);
-  if (previous != nil && [previous intValue] == bg) {
-    return;
-  }
-  objc_setAssociatedObject(view, &kAOBackgroundKey, [NSNumber numberWithInt:bg],
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  NSColor *color = ao_bg_color(bg);
-  CGColorRef cg = color == nil ? NULL : [color CGColor];
-  [view setUnderPageBackgroundColor:color];
-  if ([view layer] != nil) {
-    [[view layer] setBackgroundColor:cg];
-  }
-  if ([clip layer] != nil) {
-    [[clip layer] setBackgroundColor:cg];
+// ao_wkv_view_set_background paints the page's base colour (the Manager's
+// pageBase: white under a document, the pane's colour under a blank tab)
+// where the page has not drawn. Three surfaces need it: WKWebView's own
+// under-page colour (what WebKit paints outside the drawn content) and both
+// layers, because the web content arrives on a remote layer that can lag the
+// view's own frame by a frame or two, and the clip container is the thing
+// behind that gap. The colour is stored on the view, so a container present
+// creates later takes it too (ao_clip_for).
+void ao_wkv_view_set_background(void *view, int bg) {
+  @autoreleasepool {
+    if (view == NULL) {
+      return;
+    }
+    WKWebView *v = (WKWebView *)view;
+    objc_setAssociatedObject(v, &kAOBackgroundKey, [NSNumber numberWithInt:bg],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSColor *color = ao_bg_color(bg);
+    CGColorRef cg = color == nil ? NULL : [color CGColor];
+    [v setUnderPageBackgroundColor:color];
+    if ([v layer] != nil) {
+      [[v layer] setBackgroundColor:cg];
+    }
+    NSView *clip = ao_view_clip(v);
+    if ([clip layer] != nil) {
+      [[clip layer] setBackgroundColor:cg];
+    }
   }
 }
 
@@ -533,7 +540,7 @@ static CGFloat ao_snap_edge(CGFloat v, CGFloat backing) {
 
 void ao_wkv_host_present(void *view, double x, double y, double width, double height,
                          double clip_x, double clip_y, double clip_width, double clip_height,
-                         double vw, double vh, int bg) {
+                         double vw, double vh) {
   @autoreleasepool {
     if (ao_host == nil || view == NULL) {
       return;
@@ -620,7 +627,6 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
     // same reason the host is.
     CGFloat childY = [clip isFlipped] ? (fy - cy) : (cy + ch) - (fy + fh);
     ao_place(v, NSMakeRect(fx - cx, childY, fw, fh));
-    ao_apply_background((WKWebView *)v, clip, bg);
     [v setHidden:NO];
     [clip setHidden:NO];
   }

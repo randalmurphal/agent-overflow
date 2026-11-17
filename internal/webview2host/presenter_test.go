@@ -15,7 +15,7 @@ func boundsDirective() Directive {
 	return Directive{
 		Op: OpBounds, PageID: "page-1",
 		X: 10, Y: 20, W: 800, H: 600, CX: 10, CY: 20, CW: 800, CH: 600,
-		VW: 1600, VH: 900, DPR: 1.25, Bg: "#000000",
+		VW: 1600, VH: 900, DPR: 1.25,
 		Mount: "mount-1", PageW: 800, PageH: 600,
 	}
 }
@@ -46,7 +46,7 @@ func TestPresenterPlacesFromLocalGeometry(t *testing.T) {
 	// the directive's page size, and carries the local ratio and the
 	// directive's base color: the base is the page's, decided from its
 	// address by the backend, never the mount's.
-	if b.X != 300 || b.Y != 20 || b.W != 800 || b.H != 600 || b.DPR != 1.5 || b.Bg != "#000000" || b.VW != 1600 {
+	if b.X != 300 || b.Y != 20 || b.W != 800 || b.H != 600 || b.DPR != 1.5 || b.VW != 1600 {
 		t.Fatalf("local placement = %+v", b)
 	}
 	if b.CX != 300 || b.CW != 800 {
@@ -358,7 +358,6 @@ func TestNewBoundsDirectiveDecodesForAnOlderLauncher(t *testing.T) {
 		X, Y, W, H     float64
 		CX, CY, CW, CH float64
 		VW, VH         float64
-		Bg             string
 	}
 	if err := json.Unmarshal(raw, &older); err != nil {
 		t.Fatalf("an older launcher cannot decode: %v", err)

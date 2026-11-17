@@ -16,8 +16,8 @@ import (
 // re-park into an empty box, and devtools is the WebKit inspector
 // (docked in-app; developer extras are enabled at view creation). The page's
 // viewport is never touched here; SetViewport owns it, parked or presented.
-// The page's base color (pageBase) rides the same rect and is pushed to the
-// view, not the host.
+// The page's base (SetPageBase) is the view's own background, parked or
+// presented.
 //
 // The Manager always sends bounds before a show, so ShowPage presents at the
 // recorded placement and SetPageBounds on an already-presented page
@@ -33,28 +33,21 @@ type webkitPaneState struct {
 	shown        bool
 	applied      PanePlacement
 	appliedShown bool
-	// The background is its own dedupe: it is pushed to the view rather than to
-	// the host, it survives hide/park, and it must be right BEFORE the first
-	// present rather than repeated with every rect.
-	background    webkitRGB
-	hasBackground bool
 }
 
-// webkitPaneApplied compares the WHOLE placement, so the clip, the scale and
-// the background ride along: any change to any of them re-presents, which is
-// exactly what a moved clip needs, and a background-only change costs one
-// extra margin write.
+// webkitPaneApplied compares the WHOLE placement, so the clip and the scale
+// ride along: any change to either re-presents, which is exactly what a
+// moved clip needs.
 func webkitPaneApplied(st webkitPaneState) bool {
 	return st.appliedShown && st.applied == st.placement
 }
 
-// webkitRGB is one parsed pane background in GdkRGBA's 0..1 space.
+// webkitRGB is one parsed base color in GdkRGBA's 0..1 space.
 type webkitRGB struct{ R, G, B float64 }
 
-// webkitParseBackground reads the "#rrggbb" a PaneRect carries. Anything else —
-// empty, a named color, a CSS function, a short hex — is "no answer", and the
-// caller leaves the view's background alone rather than guessing a color that
-// would be wrong in the other theme.
+// webkitParseBackground reads a "#rrggbb" base. Anything else (empty, a named
+// color, a CSS function, a short hex) is "no answer", and the caller leaves
+// the view's background alone rather than guessing a color.
 func webkitParseBackground(value string) (webkitRGB, bool) {
 	value = strings.TrimSpace(value)
 	if len(value) != 7 || value[0] != '#' {
@@ -69,17 +62,6 @@ func webkitParseBackground(value string) (webkitRGB, bool) {
 		G: float64((packed>>8)&0xff) / 255,
 		B: float64(packed&0xff) / 255,
 	}, true
-}
-
-// takeBackground records a changed background and reports whether the caller
-// must push it. Called under e.mu; the GTK call happens after the unlock.
-func (st *webkitPaneState) takeBackground(rect PaneRect) (webkitRGB, bool) {
-	color, ok := webkitParseBackground(rect.Background)
-	if !ok || (st.hasBackground && st.background == color) {
-		return webkitRGB{}, false
-	}
-	st.background, st.hasBackground = color, true
-	return color, true
 }
 
 // webkitPaneTarget answers the page a pane call addresses, or nil for a
@@ -107,14 +89,8 @@ func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
 		st.appliedShown = true
 		st.applied = st.placement
 	}
-	color, paint := st.takeBackground(placement.Rect)
 	e.pane[p.id] = st
 	e.mu.Unlock()
-	// Background first: a present that exposes new pixels must find the pane's
-	// own color already under the page.
-	if paint {
-		_ = webkitSetViewBackground(p.liveView(), color)
-	}
 	if present {
 		_ = webkitPresentView(p.liveView(), placement)
 	}
@@ -136,12 +112,8 @@ func (e *webkitEngine) ShowPage(handle string) {
 		st.applied = st.placement
 	}
 	placement := st.placement
-	color, paint := st.takeBackground(placement.Rect)
 	e.pane[p.id] = st
 	e.mu.Unlock()
-	if paint {
-		_ = webkitSetViewBackground(p.liveView(), color)
-	}
 	if present {
 		_ = webkitPresentView(p.liveView(), placement)
 	}
@@ -163,6 +135,23 @@ func (e *webkitEngine) HidePage(handle string) {
 		if err := webkitHideView(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
 			log.Printf("browser: hide page %d: %v", p.id, err)
 		}
+	}
+}
+
+// SetPageBase sets the view's background color, which WebKit paints under
+// the document whether the view is parked or presented.
+func (e *webkitEngine) SetPageBase(handle, color string) {
+	p := webkitPaneTarget(handle)
+	if p == nil {
+		return
+	}
+	rgb, ok := webkitParseBackground(color)
+	if !ok {
+		log.Printf("browser: page %d base %q is not #rrggbb", p.id, color)
+		return
+	}
+	if err := webkitSetViewBackground(p.liveView(), rgb); err != nil && !errors.Is(err, errViewClosed) {
+		log.Printf("browser: page %d base: %v", p.id, err)
 	}
 }
 

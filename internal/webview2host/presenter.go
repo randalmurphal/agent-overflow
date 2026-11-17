@@ -56,9 +56,6 @@ func (p pagePresentation) view(local PaneGeometry, hasLocal bool) paneView {
 			X: fit.X, Y: fit.Y, W: fit.W, H: fit.H,
 			CX: fit.ClipX, CY: fit.ClipY, CW: fit.ClipW, CH: fit.ClipH,
 			VW: local.ViewportWidth, VH: local.ViewportHeight, DPR: local.DevicePixelRatio,
-			// The base color is the page's, which only the backend knows
-			// (its address), never the mount's.
-			Bg: p.directive.Bg,
 		},
 		hasBounds: true,
 		visible:   p.backendShown,

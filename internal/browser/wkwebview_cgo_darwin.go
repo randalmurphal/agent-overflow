@@ -482,21 +482,25 @@ func wkParkView(view unsafe.Pointer, slot int) {
 }
 
 // wkPresentView moves the view over the placement's fitted rect, cropped to
-// its visible intersection and carrying the page's base colour (pageBase). The
-// page's viewport was set by SetViewport and stays its bounds, so the fitted
-// frame over those bounds is the scale. The colour is parsed HERE rather than
-// on the main thread: the Objective-C half takes the packed value and never a
-// string.
+// its visible intersection. The page's viewport was set by SetViewport and
+// stays its bounds, so the fitted frame over those bounds is the scale.
 func wkPresentView(view wkView, placement PanePlacement) error {
 	rect := placement.Rect
-	background := C.int(wkBackgroundCode(rect.Background))
 	return view.do(func(view unsafe.Pointer) {
 		C.ao_wkv_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
 			C.double(rect.ClipX), C.double(rect.ClipY),
 			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
-			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
-			background)
+			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight))
+	})
+}
+
+// wkSetViewBackground paints the page's base (pageBase), packed 0xRRGGBB,
+// under the page. The colour is parsed before the dispatch: the Objective-C
+// half takes the packed value and never a string.
+func wkSetViewBackground(view wkView, code int) error {
+	return view.do(func(view unsafe.Pointer) {
+		C.ao_wkv_view_set_background(view, C.int(code))
 	})
 }
 

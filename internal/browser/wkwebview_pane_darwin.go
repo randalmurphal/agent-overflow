@@ -24,19 +24,18 @@ import (
 // repositions it. Both are deduped under e.mu — bookkeeping only, the AppKit
 // call happens after the lock is released (the same locking rule the Linux
 // engine states). The dedupe compares the WHOLE PanePlacement, so one that
-// moved only its clip, its scale or its background colour still reaches
-// AppKit, and one that changed nothing still costs no main-thread dispatch.
+// moved only its clip or its scale still reaches AppKit, and one that
+// changed nothing still costs no main-thread dispatch. The page's base
+// (SetPageBase) is the view's own, parked or presented.
 
-// wkNoBackground is what a placement with no resolved colour reports to the
-// Objective-C half, which then leaves the engine default in place.
+// wkNoBackground is what an unparseable colour reports to the Objective-C
+// half, which then leaves the engine default in place.
 const wkNoBackground = -1
 
-// wkBackgroundCode turns a placement's Background (the page's base,
-// pageBase) into the packed 0xRRGGBB the host
-// takes. Only "#rrggbb" is a colour: the value reaches an NSColor and a layer,
-// so anything else (empty, rgb(), a name, a short hex) is "no colour" rather
-// than a half-parsed one. Byte-wise and allocation-free — this runs on every
-// changed pane frame while a pane is dragged.
+// wkBackgroundCode turns a page's base (pageBase) into the packed 0xRRGGBB
+// the host takes. Only "#rrggbb" is a colour: the value reaches an NSColor
+// and a layer, so anything else (empty, rgb(), a name, a short hex) is "no
+// colour" rather than a half-parsed one.
 func wkBackgroundCode(value string) int {
 	if len(value) != 7 || value[0] != '#' {
 		return wkNoBackground
@@ -125,6 +124,23 @@ func (e *wkEngine) ShowPage(handle string) {
 	e.mu.Unlock()
 	if present {
 		_ = wkPresentView(p.liveView(), placement)
+	}
+}
+
+// SetPageBase sets the view's base colour, which it keeps parked or
+// presented and its clip container takes when present creates it.
+func (e *wkEngine) SetPageBase(handle, color string) {
+	p := wkPaneTarget(handle)
+	if p == nil {
+		return
+	}
+	code := wkBackgroundCode(color)
+	if code == wkNoBackground {
+		log.Printf("browser: page %d base %q is not #rrggbb", p.id, color)
+		return
+	}
+	if err := wkSetViewBackground(p.liveView(), code); err != nil && !errors.Is(err, errViewClosed) {
+		log.Printf("browser: page %d base: %v", p.id, err)
 	}
 }
 

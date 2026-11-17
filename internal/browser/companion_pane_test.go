@@ -22,8 +22,8 @@ type recordingPaneHost struct {
 	mu       sync.Mutex
 	calls    []string
 	onBounds func(PanePlacement)
-	// onBoundsHandle, when set, sees every SetPageBounds's handle and base.
-	onBoundsHandle func(handle, background string)
+	// onBase, when set, sees every SetPageBase. Bases are not in calls.
+	onBase func(handle, color string)
 	// onShow, when set, sees every ShowPage after it is recorded.
 	onShow func(handle string)
 	// onHide, when set, sees every HidePage after it is recorded.
@@ -75,13 +75,19 @@ var _ paneHost = (*recordingPaneHost)(nil)
 func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
 	e.record("bounds:" + handle)
 	e.mu.Lock()
-	onBounds, onBoundsHandle := e.onBounds, e.onBoundsHandle
+	onBounds := e.onBounds
 	e.mu.Unlock()
 	if onBounds != nil {
 		onBounds(placement)
 	}
-	if onBoundsHandle != nil {
-		onBoundsHandle(handle, placement.Rect.Background)
+}
+
+func (e *recordingPaneHost) SetPageBase(handle, color string) {
+	e.mu.Lock()
+	onBase := e.onBase
+	e.mu.Unlock()
+	if onBase != nil {
+		onBase(handle, color)
 	}
 }
 

@@ -47,8 +47,10 @@ func (m *Manager) publishPages(threadID string) {
 }
 
 // pageAdded follows p joining its thread's tabs (created, adopted or
-// restored): a use, the thread's active page when it has none, and a push.
+// restored): its base, a use, the thread's active page when it has none, and
+// a push. The base comes first, so a page shown at once shows on it.
 func (m *Manager) pageAdded(p *managedPage) {
+	m.applyPageBase(p)
 	p.touch()
 	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner)

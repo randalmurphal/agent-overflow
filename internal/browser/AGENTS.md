@@ -49,7 +49,10 @@ mode. Product behavior and authority are defined in
   its hides and any layout wait (`decidePresentation`), against the
   selection and live pages as they are then, so a page that lost the
   selection or its process meanwhile is never shown; the focus intent's
-  presented check also requires the selection. The pane uses a native view
+  presented check also requires the selection. A page's base color is the
+  page's own, applied shown or hidden by `applyPageBase` whenever its
+  address, its pane's color or its listing changes; a presentation
+  carries geometry only. The pane uses a native view
   positioned over the SPA; pixels do not cross the transport. Keyboard
   focus enters a page's view only by a click or a focus intent
   (`focus_intent.go`): the pane's request for one page, applied once while
@@ -89,6 +92,10 @@ engine reaches the Windows controller only through `internal/cdprelay`; the
 headless engine starts one Chromium process per profile with an isolated user
 data directory. Headless mode is selected explicitly by serve boot and must not
 become a fallback for an ordinary windowless process.
+
+The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
+page event, and observes only the title path; never observe a document's
+whole subtree from it.
 
 chromedp delivers each event method on its own subscription, so handlers run in
 no fixed order across methods. State fed by several methods must settle the

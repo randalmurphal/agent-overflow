@@ -32,6 +32,12 @@ const (
 	// The controller inside stays visible to Chromium, so a hidden page
 	// keeps compositing and capturing; only the window is gone.
 	OpHide Op = "hide"
+	// OpBackground sets the page's base color, Bg: what its controller
+	// paints wherever the document leaves its background transparent or has
+	// not painted yet. It holds, shown or hidden and with or without bounds,
+	// until the next OpBackground; the backend decides it from the page's
+	// address and the pane's color.
+	OpBackground Op = "background"
 	// OpClose destroys the controller.
 	OpClose Op = "close"
 	// OpDevTools opens the Chromium DevTools window for the page.
@@ -108,10 +114,7 @@ type Directive struct {
 	// pixels times DPR are the host window's client pixels. Zero means
 	// unknown, and the host falls back to its client size over VW/VH.
 	DPR float64 `json:"dpr,omitempty"`
-	// Bg is the page's base color ("#rrggbb"), which the backend decides
-	// from the page's address: the controller paints it wherever the
-	// document leaves its background transparent or has not painted yet.
-	// Empty leaves the engine default.
+	// Bg is an OpBackground's color, "#rrggbb".
 	Bg string `json:"bg,omitempty"`
 	// Mount names the pane mount the backend placed the page in, and
 	// PageW/PageH the page's viewport in CSS pixels. Seq is the number the
@@ -164,6 +167,14 @@ func (d Directive) Validate() error {
 			return err
 		}
 		return d.validateBounds()
+	case OpBackground:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		if d.Bg == "" {
+			return errors.New("background must name a color")
+		}
+		return validateBg(d.Bg)
 	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop:
 		return ValidatePageID(d.PageID)
 	case OpFocus:
@@ -230,21 +241,20 @@ func (d Directive) validateBounds() error {
 }
 
 // paneBounds is one rect the host positions a page at: the fitted rect, its
-// clip, the SPA viewport and pixel ratio it was measured under, and the pane
-// color. A bounds directive carries one; a local placement computes one.
+// clip, and the SPA viewport and pixel ratio it was measured under. A bounds
+// directive carries one; a local placement computes one.
 // Comparable, so the host can skip a move to where the page already is.
 type paneBounds struct {
 	X, Y, W, H     float64
 	CX, CY, CW, CH float64
 	VW, VH, DPR    float64
-	Bg             string
 }
 
 func (d Directive) paneBounds() paneBounds {
 	return paneBounds{
 		X: d.X, Y: d.Y, W: d.W, H: d.H,
 		CX: d.CX, CY: d.CY, CW: d.CW, CH: d.CH,
-		VW: d.VW, VH: d.VH, DPR: d.DPR, Bg: d.Bg,
+		VW: d.VW, VH: d.VH, DPR: d.DPR,
 	}
 }
 
@@ -269,7 +279,7 @@ func (b paneBounds) validate() error {
 
 // validateNumbers checks every number is finite and bounded, sizes and clip
 // sizes are not negative, the viewport pair is all-or-nothing, and the DPR
-// and background are in range. It does not require a positive size or clip:
+// is in range. It does not require a positive size or clip:
 // a pane with nothing to show is valid and simply hides the page.
 func (b paneBounds) validateNumbers() error {
 	for name, value := range map[string]float64{
@@ -298,7 +308,7 @@ func (b paneBounds) validateNumbers() error {
 	if b.DPR < 0 || b.DPR > maxPaneDPR {
 		return fmt.Errorf("bounds dpr %g is outside 0..%g", b.DPR, maxPaneDPR)
 	}
-	return validateBg(b.Bg)
+	return nil
 }
 
 // validateBg accepts "" or "#rrggbb". The value reaches a COM color struct
@@ -309,12 +319,12 @@ func validateBg(bg string) error {
 		return nil
 	}
 	if len(bg) != 7 || bg[0] != '#' {
-		return fmt.Errorf("bounds bg %q is not #rrggbb", bg)
+		return fmt.Errorf("background %q is not #rrggbb", bg)
 	}
 	for i := 1; i < 7; i++ {
 		c := bg[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return fmt.Errorf("bounds bg %q is not #rrggbb", bg)
+			return fmt.Errorf("background %q is not #rrggbb", bg)
 		}
 	}
 	return nil

@@ -396,6 +396,34 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 }
 
+// A page's base reaches the launcher on its own directive, with no bounds
+// and no show before it, and a placement carries no color.
+func TestHostedEngineSendsAPageBaseApartFromItsPlacement(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	engine.SetPageBase("page1", "#1e1e2e")
+	sink.expectOps(t, webview2host.OpBackground)
+	if base := sink.next(t); base.PageID != "page1" || base.Bg != "#1e1e2e" {
+		t.Fatalf("background directive = %+v", base)
+	}
+	// A page this engine does not own, and a color the launcher would
+	// refuse, never reach the wire.
+	engine.SetPageBase("page2", "#ffffff")
+	engine.SetPageBase("page1", "red")
+	sink.expectOps(t, webview2host.OpBackground)
+
+	pane := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ClipX: 12, ClipY: 34, ClipWidth: 800, ClipHeight: 600, ViewportWidth: 1600, ViewportHeight: 900, Visible: true, Background: "#123456"}
+	placement, ok := placePage(pane, 800, 600)
+	if !ok {
+		t.Fatal("an 800x600 pane must place an 800x600 page")
+	}
+	engine.SetPageBounds("page1", placement)
+	sink.expectOps(t, webview2host.OpBackground, webview2host.OpBounds)
+	if bounds := sink.next(t); bounds.Bg != "" {
+		t.Fatalf("a bounds directive carries the color %q", bounds.Bg)
+	}
+}
+
 func TestHostedEngineRefusesAnInvalidPageID(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	bindTestPage(t, engine, "not a page id", "TARGET-1")

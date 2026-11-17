@@ -34,7 +34,9 @@ viewport. Hide during invalid or zero-sized geometry. Hiding hides only the
 container and keeps the controller `IsVisible`; an invisible controller stops
 compositing, which freezes frames and hangs CDP captures. The page's size and
 scale come from the backend's device-metrics override, never from the
-controller's bounds.
+controller's bounds. A page's base color arrives on its own directive
+(`OpBackground`), with or without bounds, and holds shown or hidden; bounds
+carry no color.
 
 The SPA also posts each pane geometry report to the launcher
 (`geometry.go`); `presenter.go` decides where a page shows. A page bound by
@@ -74,7 +76,8 @@ a controller that outlived its page.
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
-`crash_smoke_windows_test.go`, `title_smoke_windows_test.go`),
+`crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
+`background_smoke_windows_test.go`),
 which need an installed runtime and open a window. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`.

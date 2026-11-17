@@ -449,8 +449,8 @@ func webkitPresentView(view webkitView, placement PanePlacement) error {
 	})
 }
 
-// webkitSetViewBackground paints the page's base color (pageBase) underneath
-// the page: white under a document, the pane's color under a blank tab.
+// webkitSetViewBackground paints the page's base (pageBase) underneath the
+// page: white under a document, the pane's color under a blank tab.
 func webkitSetViewBackground(view webkitView, color webkitRGB) error {
 	return view.do(func(view unsafe.Pointer) {
 		C.ao_wk_view_set_background(view, C.double(color.R), C.double(color.G), C.double(color.B))

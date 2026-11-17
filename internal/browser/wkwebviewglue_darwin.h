@@ -69,13 +69,15 @@ void ao_wkv_host_unpark(void *view);
 // presented. Per page, because two threads with a visible pane each present a
 // page at the same moment. An absent clip pair means unclipped, which presents
 // exactly as it did before clipping existed.
-//
-// bg is the pane's resolved background as packed 0xRRGGBB, or negative for
-// none. It is painted where the page has not presented yet, so a strip
-// exposed by a resize matches the pane instead of the engine default.
 void ao_wkv_host_present(void *view, double x, double y, double width, double height,
                          double clip_x, double clip_y, double clip_width, double clip_height,
-                         double vw, double vh, int bg);
+                         double vw, double vh);
+
+// ao_wkv_view_set_background sets the page's base colour (the Manager's
+// pageBase), packed 0xRRGGBB, or negative for the engine default. The view
+// keeps it parked or presented, and its clip container takes it, now or when
+// present creates it, so a strip a resize exposes is the base too.
+void ao_wkv_view_set_background(void *view, int bg);
 
 // ao_wkv_host_hide stops presenting THIS view without tearing anything down:
 // its clip container is hidden and no other page's presentation is touched.
