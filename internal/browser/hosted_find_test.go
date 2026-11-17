@@ -12,7 +12,7 @@ import (
 // itself.
 func TestHostedPageFindIsTheLaunchersFindBar(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	page := &hostedPage{engine: engine, id: "page1"}
 	if mode := page.FindMode(); mode != FindModeEngine {
 		t.Fatalf("find mode = %q", mode)
@@ -70,7 +70,7 @@ func TestHostedEngineFindUnavailableReport(t *testing.T) {
 	}
 
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page2", "TARGET-2")
+	bindTestPage(t, engine, "page2", "TARGET-2")
 	engine.Report("page2", webview2host.ReportFindUnavailable, "")
 	if mode := (&hostedPage{engine: engine, id: "page2"}).FindMode(); mode != "" {
 		t.Fatalf("find mode after find-unavailable = %q", mode)

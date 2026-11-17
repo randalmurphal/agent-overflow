@@ -424,24 +424,32 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 			t.Fatalf("ClosedTabs = %d, want the entry kept", got)
 		}
 	})
-	// A forget that runs while a refused reopen holds the entry it popped
-	// forgets that entry too.
+	// A forget of the thread's history that runs while a refused reopen
+	// holds the entry it popped forgets that entry too; another thread's
+	// forget leaves it to be put back.
 	for _, forget := range []struct {
 		name string
-		run  func(m *Manager, access Access) error
+		// run forgets, given the reopening thread and another thread.
+		run   func(m *Manager, access, other Access) error
+		keeps bool
 	}{
-		{"a jar switch between shared jars", func(m *Manager, access Access) error { return m.SetJar(access, JarProject) }},
-		{"clear site data", func(m *Manager, _ Access) error { return m.ClearSiteData(context.Background()) }},
-		{"thread delete", func(m *Manager, access Access) error { return m.CloseThread(context.Background(), access.ThreadID) }},
+		{"its jar switch between shared jars", func(m *Manager, access, _ Access) error { return m.SetJar(access, JarProject) }, false},
+		{"clear site data", func(m *Manager, _, _ Access) error { return m.ClearSiteData(context.Background()) }, false},
+		{"turning the browser off", func(m *Manager, _, _ Access) error { return m.Reconfigure(Config{Enabled: false}) }, false},
+		{"its delete", func(m *Manager, access, _ Access) error { return m.CloseThread(context.Background(), access.ThreadID) }, false},
+		{"another thread's jar switch", func(m *Manager, _, other Access) error { return m.SetJar(other, JarProject) }, true},
+		{"another thread's delete", func(m *Manager, _, other Access) error { return m.CloseThread(context.Background(), other.ThreadID) }, true},
 	} {
 		t.Run("a refused reopen, then "+forget.name, func(t *testing.T) {
 			m, access, _ := newTabsManager(t)
+			other := Access{ThreadID: "other", Workspace: t.TempDir(), ProjectID: "project"}
+			closeOne(t, m, other)
 			closeOne(t, m, access)
 			fill(t, m, access)
 			ran := false
 			m.reopenRefused = func() {
 				ran = true
-				if err := forget.run(m, access); err != nil {
+				if err := forget.run(m, access, other); err != nil {
 					t.Errorf("%s: %v", forget.name, err)
 				}
 			}
@@ -451,8 +459,21 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 			if !ran {
 				t.Fatal("the reopen was not refused")
 			}
-			if got := closedCount(t, m, access); got != 0 {
-				t.Fatalf("ClosedTabs = %d, want the entry forgotten with the rest", got)
+			want := 0
+			if forget.keeps {
+				want = 1
+			}
+			if got := closedCount(t, m, access); got != want {
+				t.Fatalf("ClosedTabs = %d, want %d", got, want)
+			}
+			if forget.keeps {
+				// The entry put back is the closed tab, still reopenable.
+				m.mu.Lock()
+				tabs := m.closedTabs[access.ThreadID].tabs
+				m.mu.Unlock()
+				if len(tabs) != 1 || tabs[0].url != addr("x") {
+					t.Fatalf("closed tabs = %+v, want the popped entry back", tabs)
+				}
 			}
 		})
 	}

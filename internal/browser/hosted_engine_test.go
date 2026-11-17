@@ -331,7 +331,7 @@ func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
 			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
 				PageClosed: func(handle string) { closed = append(closed, handle) },
 			})
-			engine.bind("page1", "TARGET-1")
+			bindTestPage(t, engine, "page1", "TARGET-1")
 
 			engine.Report("page1", kind, "")
 			if len(closed) != 1 || closed[0] != "page1" {
@@ -349,7 +349,7 @@ func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
 
 func TestHostedEngineShowAndHideAreDedupedAndPageScoped(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 
 	engine.ShowPage("page1")
 	engine.ShowPage("page1")
@@ -366,7 +366,7 @@ func TestHostedEngineShowAndHideAreDedupedAndPageScoped(t *testing.T) {
 
 func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	// An 800x600 pane showing a 1280x720 page: the placement is the fitted,
 	// centered rect (scale 0.625 -> 800x450, 75px down) and that is what the
 	// launcher positions the controller at.
@@ -398,7 +398,7 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 
 func TestHostedEngineRefusesAnInvalidPageID(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("not a page id", "TARGET-1")
+	bindTestPage(t, engine, "not a page id", "TARGET-1")
 	engine.ShowPage("not a page id")
 	engine.closePage("not a page id")
 	sink.expectOps(t)
@@ -415,7 +415,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 			infos = append(infos, fmt.Sprintf("%s %s %s %d", handle, url, title, order))
 		},
 	})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 
 	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
@@ -912,7 +912,7 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 		PageCrashed:     func(handle, reason string) { crashed <- handle + " " + reason },
 	})
 	engine.attachTimeout = 5 * time.Second
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	if _, err := engine.ensureBrowser(); err != nil {
 		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
 	}
@@ -950,48 +950,129 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	}
 }
 
-// A browser connection that ends on its own takes every page's session with
-// it: each bound page is reported crashed, none closed, and the next use
-// attaches again. A connection Stop ends reports nothing.
-func TestHostedEngineReportsItsPagesCrashedWhenTheConnectionIsLost(t *testing.T) {
-	endpoint := startFakeCDPEndpoint(t, nil, nil)
-	crashed := make(chan string, 4)
-	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		PageClosed:  func(handle string) { t.Errorf("page %s was reported closed", handle) },
-		PageCrashed: func(handle, reason string) { crashed <- handle + ": " + reason },
-	})
-	engine.attachTimeout = 5 * time.Second
-	engine.bind("page1", "TARGET-1")
-	engine.bind("page2", "TARGET-2")
-	if _, err := engine.ensureBrowser(); err != nil {
-		t.Fatalf("ensureBrowser: %v", err)
+// bindTestPage binds a page on no browser connection, one that never ends.
+func bindTestPage(t *testing.T, engine *hostedEngine, pageID, targetID string) {
+	t.Helper()
+	if err := engine.bind(pageID, targetID, context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	endpoint.hangUp()
-	var got []string
-	for range 2 {
-		select {
-		case report := <-crashed:
-			got = append(got, report)
-		case <-time.After(hostedTestDeadline):
-			t.Fatalf("the lost connection's pages were reported %v, want both", got)
-		}
-	}
-	slices.Sort(got)
-	if want := []string{"page1: " + connectionLostReason, "page2: " + connectionLostReason}; !slices.Equal(got, want) {
-		t.Fatalf("PageCrashed saw %v, want %v", got, want)
-	}
-	if _, ok := engine.browser(); ok {
-		t.Fatal("the engine still holds the lost connection")
-	}
+}
 
-	if _, err := engine.ensureBrowser(); err != nil {
-		t.Fatalf("attach again after the loss: %v", err)
-	}
-	engine.Stop()
-	select {
-	case report := <-crashed:
-		t.Fatalf("Stop reported %s", report)
-	case <-time.After(100 * time.Millisecond):
+// A browser connection that ends on its own takes the sessions of the pages
+// bound to it: each is reported crashed exactly once, none closed, whether
+// the connection's watcher or the attach that replaces it claims them first,
+// and a page of the replacement is never reported for the loss. A
+// connection Stop ends reports nothing.
+func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
+	for _, reconnectFirst := range []bool{false, true} {
+		name := "the watcher first"
+		if reconnectFirst {
+			name = "a reconnect first"
+		}
+		t.Run(name, func(t *testing.T) {
+			endpoint := startFakeCDPEndpoint(t, nil, nil)
+			crashed := make(chan string, 8)
+			engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
+				PageClosed:  func(handle string) { t.Errorf("page %s was reported closed", handle) },
+				PageCrashed: func(handle, reason string) { crashed <- handle + ": " + reason },
+			})
+			engine.attachTimeout = 5 * time.Second
+			ended := make(chan struct{}, 4)
+			release := make(chan struct{})
+			if reconnectFirst {
+				// Holds every watcher once its connection ended.
+				engine.connectionEnded = func() {
+					ended <- struct{}{}
+					<-release
+				}
+			}
+			defer func() {
+				if reconnectFirst {
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+				}
+			}()
+			reports := func(n int) []string {
+				t.Helper()
+				var got []string
+				for range n {
+					select {
+					case report := <-crashed:
+						got = append(got, report)
+					case <-time.After(hostedTestDeadline):
+						t.Fatalf("crash reports %v, want %d", got, n)
+					}
+				}
+				slices.Sort(got)
+				return got
+			}
+			none := func(when string) {
+				t.Helper()
+				select {
+				case report := <-crashed:
+					t.Fatalf("%s reported %s", when, report)
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+
+			connA, err := engine.ensureBrowser()
+			if err != nil {
+				t.Fatalf("ensureBrowser: %v", err)
+			}
+			for i, target := range []string{"TARGET-1", "TARGET-2"} {
+				if err := engine.bind(fmt.Sprintf("page%d", i+1), target, connA); err != nil {
+					t.Fatal(err)
+				}
+			}
+			endpoint.hangUp()
+			select {
+			case <-connA.Done():
+			case <-time.After(hostedTestDeadline):
+				t.Fatal("the hang-up never ended the connection")
+			}
+			want := []string{"page1: " + connectionLostReason, "page2: " + connectionLostReason}
+			var connB context.Context
+			if reconnectFirst {
+				<-ended
+				// A create reconnects while the lost connection's watcher is
+				// held: the attach reports the lost connection's pages.
+				if connB, err = engine.ensureBrowser(); err != nil {
+					t.Fatalf("reconnect: %v", err)
+				}
+				if err := engine.bind("page3", "TARGET-3", connB); err != nil {
+					t.Fatal(err)
+				}
+				if got := reports(2); !slices.Equal(got, want) {
+					t.Fatalf("PageCrashed saw %v, want %v", got, want)
+				}
+				close(release)
+				none("the lost connection's watcher, after the reconnect")
+			} else {
+				if got := reports(2); !slices.Equal(got, want) {
+					t.Fatalf("PageCrashed saw %v, want %v", got, want)
+				}
+				if _, ok := engine.browser(); ok {
+					t.Fatal("the engine still holds the lost connection")
+				}
+				if connB, err = engine.ensureBrowser(); err != nil {
+					t.Fatalf("reconnect: %v", err)
+				}
+				if err := engine.bind("page3", "TARGET-3", connB); err != nil {
+					t.Fatal(err)
+				}
+				none("the reconnect")
+			}
+			if err := engine.bind("late", "TARGET-9", connA); err == nil {
+				t.Fatal("a page was bound on the lost connection")
+			}
+
+			engine.Stop()
+			<-connB.Done()
+			none("Stop")
+		})
 	}
 }
 
@@ -1135,7 +1216,7 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 // through every intermediate one after the drag has stopped.
 func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	// No viewport yet, so SetViewScale records the scale without a CDP call.
 	page := &cdpPage{ctx: t.Context()}
 	engine.mu.Lock()
@@ -1179,7 +1260,7 @@ func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 // scale. Losing that drew the page 1:1, cropped by the pane, until a resize.
 func TestHostedEngineReShowRestoresThePlacementScale(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	page := &cdpPage{ctx: t.Context()}
 	engine.mu.Lock()
 	engine.drivers["page1"] = page

@@ -479,7 +479,7 @@ func TestFocusCompanionPageReportsTheEnginesRefusal(t *testing.T) {
 // intent that is live, naming the intent, on the page's own lane.
 func TestHostedFocusPageDirective(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	engine.mu.Lock()
 	engine.drivers["page1"] = &cdpPage{ctx: t.Context()}
 	engine.readPageRatio = func(context.Context, *cdpPage) (float64, error) { return 1, nil }

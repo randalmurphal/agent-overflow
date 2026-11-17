@@ -367,7 +367,7 @@ func (m *Manager) buildThreadState(threadID string, push bool) CompanionEvent {
 	}
 	session, hasSession := m.sessions[threadID]
 	active, _ := m.livePageLocked(session.ActivePageID)
-	closedTabs := len(m.closedTabs[threadID])
+	closedTabs := m.closedCountLocked(threadID)
 	downloads := m.threadDownloadsLocked(threadID)
 	m.stateSeq++
 	seq := m.stateSeq

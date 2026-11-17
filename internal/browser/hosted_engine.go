@@ -153,8 +153,15 @@ type hostedEngine struct {
 	pending       map[string]chan hostReport
 	pageByTarget  map[string]string
 	targetByPage  map[string]string
-	shown         map[string]bool
-	bounds        map[string]PanePlacement
+	// pageConn is the browser connection each bound page's session runs on
+	// (bind), until the page leaves or that connection's retirement claims
+	// it (claimLostLocked).
+	pageConn map[string]context.Context
+	// connectionEnded is a test seam: called by a connection's watcher once
+	// the connection ended, before it retires it. Production leaves it nil.
+	connectionEnded func()
+	shown           map[string]bool
+	bounds          map[string]PanePlacement
 	// drivers reaches a page's CDP half from its handle, for the one
 	// presentation fact the launcher cannot apply: the scale the device
 	// metrics override draws a presented page at.
@@ -220,6 +227,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		pending:         make(map[string]chan hostReport),
 		pageByTarget:    make(map[string]string),
 		targetByPage:    make(map[string]string),
+		pageConn:        make(map[string]context.Context),
 		shown:           make(map[string]bool),
 		bounds:          make(map[string]PanePlacement),
 		drivers:         make(map[string]*cdpPage),
@@ -308,6 +316,7 @@ func (e *hostedEngine) Stop() {
 	e.started = false
 	e.pageByTarget = make(map[string]string)
 	e.targetByPage = make(map[string]string)
+	e.pageConn = make(map[string]context.Context)
 	e.shown = make(map[string]bool)
 	e.bounds = make(map[string]PanePlacement)
 	e.drivers = make(map[string]*cdpPage)
@@ -565,13 +574,10 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.closePage(pageID)
 		return nil, err
 	}
-	e.bind(pageID, targetID)
-	if browserCtx.Err() != nil {
-		// The connection ended before the bind, so its watcher may not have
-		// seen the page; the page's session went with it.
+	if err := e.bind(pageID, targetID, browserCtx); err != nil {
 		driver.Close()
 		e.closePage(pageID)
-		return nil, errors.New("browser: the connection to the pane browser was lost")
+		return nil, err
 	}
 	if cdp, ok := driver.(*cdpPage); ok {
 		e.mu.Lock()
@@ -599,6 +605,20 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	defer e.attachMu.Unlock()
 	if browserCtx, ok := e.browser(); ok {
 		return browserCtx, nil
+	}
+	// A connection browser() refused has ended. Its pages are claimed before
+	// a replacement is published, whether or not its watcher has run; the
+	// report runs on its own goroutine, as the Manager's teardown it starts
+	// must not wait on this attach.
+	e.mu.Lock()
+	lost := e.browserCtx
+	var pages []string
+	if lost != nil {
+		pages = e.claimLostLocked(lost)
+	}
+	e.mu.Unlock()
+	if len(pages) > 0 {
+		go e.reportLost(pages)
 	}
 
 	attachCtx, attachCancel := context.WithTimeout(context.Background(), e.attachTimeout)
@@ -661,28 +681,49 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 // through the relay ended without Stop ending it.
 const connectionLostReason = "connection to the pane browser lost"
 
-// watchBrowser reports the pages of a browser connection that ended on its
-// own (the launcher, its relay or WebView2's browser process went) as
-// crashed: every page's CDP session went with the connection, so its tab
-// stays, failed at its address, and its Reload or a tool call creates the
-// page again on a new connection. Stop clears the connection first, which
-// leaves this silent.
+// watchBrowser retires a browser connection that ended on its own (the
+// launcher, its relay or WebView2's browser process went): every page's CDP
+// session went with it, so each page bound to it is reported crashed, its
+// tab stays failed at its address, and its Reload or a tool call creates the
+// page again on a new connection. An attach that finds the connection ended
+// first claims those pages itself (ensureBrowser), and Stop forgets every
+// page first; either leaves this nothing to report.
 func (e *hostedEngine) watchBrowser(browserCtx context.Context) {
 	<-browserCtx.Done()
+	if e.connectionEnded != nil {
+		e.connectionEnded()
+	}
 	e.mu.Lock()
-	if e.browserCtx != browserCtx {
-		e.mu.Unlock()
-		return
-	}
-	allocCancel := e.allocCancel
-	e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
-	pages := make([]string, 0, len(e.targetByPage))
-	for pageID := range e.targetByPage {
-		pages = append(pages, pageID)
-	}
+	pages := e.claimLostLocked(browserCtx)
 	e.mu.Unlock()
-	allocCancel()
+	e.reportLost(pages)
+}
+
+// claimLostLocked retires conn, a browser connection that has ended: it
+// drops conn as the engine's connection if it still is, and takes the pages
+// bound to it, which only this claim reports, so each is reported once
+// whichever of the watcher and the next attach claims first, and a page of
+// another connection never is. The caller holds e.mu and reports the pages
+// (reportLost).
+func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
+	if e.browserCtx == conn {
+		// The allocator is cancelled nowhere else.
+		e.allocCancel()
+		e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
+	}
+	var pages []string
+	for pageID, pageConn := range e.pageConn {
+		if pageConn == conn {
+			pages = append(pages, pageID)
+			delete(e.pageConn, pageID)
+		}
+	}
 	slices.Sort(pages)
+	return pages
+}
+
+// reportLost reports pages, claimed from a lost connection, crashed.
+func (e *hostedEngine) reportLost(pages []string) {
 	for _, pageID := range pages {
 		e.events.PageCrashed(pageID, connectionLostReason)
 	}
@@ -841,6 +882,7 @@ func (e *hostedEngine) retirePage(pageID string) {
 	targetID, known := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
+	delete(e.pageConn, pageID)
 	delete(e.shown, pageID)
 	delete(e.bounds, pageID)
 	delete(e.drivers, pageID)
@@ -895,11 +937,20 @@ func (e *hostedEngine) deliver(pageID string, report hostReport) bool {
 	return true
 }
 
-func (e *hostedEngine) bind(pageID, targetID string) {
+// bind pairs a page with its CDP target and with conn, the browser
+// connection its session runs on. It refuses a connection that has ended:
+// that connection's retirement may already have claimed its pages, and a
+// later one would never report this page.
+func (e *hostedEngine) bind(pageID, targetID string, conn context.Context) error {
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	if conn.Err() != nil {
+		return errors.New("browser: the connection to the pane browser was lost")
+	}
 	e.targetByPage[pageID] = targetID
 	e.pageByTarget[targetID] = pageID
-	e.mu.Unlock()
+	e.pageConn[pageID] = conn
+	return nil
 }
 
 func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
@@ -919,6 +970,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
+	delete(e.pageConn, pageID)
 	delete(e.shown, pageID)
 	delete(e.bounds, pageID)
 	delete(e.drivers, pageID)

@@ -153,7 +153,7 @@ type Manager struct {
 	awaitingLayout map[string]string
 	// closedTabs is, per thread, the tabs the user closed that can be
 	// reopened, most recent last (companion_tabs.go). Guarded by mu.
-	closedTabs map[string][]closedTab
+	closedTabs map[string]*closedTabs
 	// agentLinger is how long a page keeps showing agent activity after the
 	// last tool call on it ends (activity.go); a test shortens it.
 	agentLinger    time.Duration
@@ -398,7 +398,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:   findActionTimeout,
-		closedTabs:    make(map[string][]closedTab),
+		closedTabs:    make(map[string]*closedTabs),
 		agentLinger:   agentActivityLinger,
 		recentGen:     uint64(time.Now().UnixNano()),
 	}
