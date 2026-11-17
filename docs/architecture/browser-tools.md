@@ -200,6 +200,26 @@ behave as a desktop browser's:
   moves focus to the page area. DOM focus only: the native page takes
   keyboard focus from a click, as § Keyboard says. Switching tabs replaces
   an edit with the new tab's address.
+- Typing in the address opens a suggestion list
+  (`BrowserAddressSuggestions.svelte`, matching in `browserAddressMatch.ts`):
+  the thread's other open tabs (taking one switches to it), the dev servers
+  the thread's processes serve (`stores/devServers.svelte.ts`, rows whose
+  `threadId` is the thread's), then its recent addresses, each address once
+  and the field's own tab never. Arrows move the highlight without changing
+  the typed text, Enter or a click takes a row, Enter with none highlighted
+  navigates the text, and Escape closes the list before it reverts the
+  field. Nothing is fetched from the network while typing. The list is a
+  `Popover`, so the native view yields while it is open. Focusing the field
+  reads the recent addresses (`BrowserCompanionRecentAddresses`) and
+  rescans the dev servers, so neither rides the state push.
+- The recent addresses are the Manager's, per thread, in memory only
+  (`internal/browser/recent.go`): the last 50 addresses an open loaded
+  (the address bar's navigation, `browser_open`, `browser_open_file`),
+  newest first, one entry per address. A failed open, a page left on a
+  blank or internal document, a link followed in the page, history moves
+  and reloads add nothing. A private jar keeps none; a jar switch, Clear
+  site data, and deleting or archiving the thread forget them, and an open
+  those overtook records nothing.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
   lock, so it stops an address-bar navigation in flight. Once the engine
   has stopped, the navigation it interrupted (not one queued behind it)

@@ -582,6 +582,12 @@ and anti-changes that live only here:
   Windows or `\\wsl` path typed into it opens the file it names or fails
   naming the path, never a web search; a file can also be picked from the
   workspace without knowing its path.
+- The browser's address suggests only from this thread: its open tabs, its
+  dev servers and the addresses its pages recently opened. No network
+  suggestions or search queries while typing, and no inline completion: the
+  typed text is the user's until a row is chosen. Recent addresses are kept
+  in memory only, never for a private jar, and are forgotten by a jar
+  switch, Clear site data and closing the thread.
 - Each thread's browser chooses its cookie jar: this worktree (default),
   the whole project, this browser only, or private. A jar shares sign-ins
   and site data only; file and navigation permissions and download quotas

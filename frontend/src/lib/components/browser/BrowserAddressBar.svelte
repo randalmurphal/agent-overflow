@@ -20,13 +20,16 @@
   import Popover from '../primitives/Popover.svelte';
   import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import BrowserJarControl from './BrowserJarControl.svelte';
+  import BrowserAddressSuggestions from './BrowserAddressSuggestions.svelte';
+  import type { AddressSuggestion } from './browserAddressMatch';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
   // address, and the pane's own controls. The address behaves as a
   // browser's: focusing it selects it all (a second click places the caret),
-  // Enter navigates, and Escape puts the page's address back and leaves the
-  // field for the page.
+  // typing offers suggestions (BrowserAddressSuggestions), Enter navigates,
+  // and Escape closes the suggestions, or with none open puts the page's
+  // address back and leaves the field for the page.
 
   let {
     activePage,
@@ -117,6 +120,7 @@
 
   function onFocus(): void {
     addressFocused = true;
+    suggestions?.focused();
     if (!pressFocusing) input?.select();
   }
 
@@ -128,6 +132,7 @@
 
   function onKeydown(event: KeyboardEvent): void {
     if (isImeComposingEvent(event)) return;
+    if (suggestions?.keydown(event)) return;
     if (event.key === 'Escape') {
       // The field's press: neither a find bar nor a running turn behind it
       // takes it (the app dispatcher declines a prevented event).
@@ -145,6 +150,24 @@
       onLeave();
       void onAct('navigate', activePage.id, target);
     }
+  }
+
+  // A suggestion is taken as Enter takes typed text. A tab is switched to
+  // first, so the field leaves for that tab's page, unless focus has moved
+  // on meanwhile.
+  let suggestions: ReturnType<typeof BrowserAddressSuggestions> | undefined = $state(undefined);
+  function takeSuggestion(suggestion: AddressSuggestion): void {
+    if (!activePage) return;
+    address = pageAddress();
+    if (suggestion.pageId) {
+      void onAct('activate', suggestion.pageId).then(() => {
+        if (document.activeElement === input) onLeave();
+      });
+      return;
+    }
+    const pageId = activePage.id;
+    onLeave();
+    void onAct('navigate', pageId, suggestion.address);
   }
 </script>
 
@@ -179,8 +202,11 @@
     onblur={() => {
       addressFocused = false;
       pressFocusing = false;
+      suggestions?.close();
     }}
+    oninput={(event) => suggestions?.input(event.currentTarget.value)}
     onkeydown={onKeydown}
+    {...suggestions?.inputAria()}
   />
   <div class="flex shrink-0 items-center gap-0.5">
     <div class="flex items-center gap-0.5 @max-[32rem]:hidden compact:@max-[36rem]:hidden" data-testid="browser-address-secondary">
@@ -207,6 +233,8 @@
     <IconButton label="Close browser" size="sm" testId="browser-close" onClick={() => void onAct('hide', '')}><Icon icon={X} size={15} /></IconButton>
   </div>
 </div>
+
+<BrowserAddressSuggestions bind:this={suggestions} anchor={input} onPick={takeSuggestion} />
 
 <Popover anchor={moreAnchor} open={moreOpen} onClose={closeMore} placement="bottom-end" role="none">
   {#snippet children()}

@@ -57,6 +57,9 @@ describe('<BrowserPane> chrome', () => {
     setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
     setBindingMock('BrowserCompanionPaneRect', async () => undefined);
     browse = setBindingMock('BrowseDirectory', vi.fn(async (path: string) => listing(path)));
+    // What the address suggestions read when the field takes focus.
+    setBindingMock('BrowserCompanionRecentAddresses', async () => []);
+    setBindingMock('GetDevServers', async () => ({ previewHost: '', servers: [] }));
   });
   afterEach(() => {
     vi.useRealTimers();
