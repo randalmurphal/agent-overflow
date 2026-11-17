@@ -35,8 +35,8 @@ func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents)
 	}
 	return &webkitEngine{
 		configDir: configDir, window: opts.NativeWindow, events: events,
-		popups: make(map[string]unsafe.Pointer), slots: make(map[int]bool),
-		pane: make(map[uint64]webkitPaneState),
+		popups: make(map[string]unsafe.Pointer),
+		pane:   make(map[uint64]webkitPaneState),
 	}
 }
 
@@ -53,7 +53,6 @@ type webkitEngine struct {
 	mu        sync.Mutex
 	popupSeq  uint64
 	popups    map[string]unsafe.Pointer
-	slots     map[int]bool
 	profiles  map[uint64]*webkitProfile
 	pane      map[uint64]webkitPaneState
 	stopped   bool
@@ -134,25 +133,6 @@ func (e *webkitEngine) DiscardPage(handle string) {
 	if view := e.takePopup(handle); view != nil {
 		webkitCloseView(view)
 	}
-}
-
-// claimSlot reserves one row in the background host. Parked views are stacked
-// by slot inside a 1x1 clipping scroller, so two pages must never share one.
-func (e *webkitEngine) claimSlot() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for slot := 0; ; slot++ {
-		if !e.slots[slot] {
-			e.slots[slot] = true
-			return slot
-		}
-	}
-}
-
-func (e *webkitEngine) releaseSlot(slot int) {
-	e.mu.Lock()
-	delete(e.slots, slot)
-	e.mu.Unlock()
 }
 
 func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {
@@ -273,7 +253,7 @@ func (p *webkitProfile) newPageShell(hooks pageHooks) (*webkitPage, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	page := &webkitPage{
 		engine: p.engine, profile: p, id: webkitPageSeq.Add(1),
-		hooks: hooks, ctx: ctx, cancel: cancel, slot: -1,
+		hooks: hooks, ctx: ctx, cancel: cancel,
 	}
 	page.handle = fmt.Sprintf("page-%d", page.id)
 	webkitPageByID.Store(page.id, page)
@@ -283,12 +263,11 @@ func (p *webkitProfile) newPageShell(hooks pageHooks) (*webkitPage, error) {
 	return page, nil
 }
 
-// parkNew gives a page its slot in the background host. Parked is MAPPED: the
-// view has a real viewport and a fresh snapshot, it simply costs the window no
-// space. Hiding by opacity is banned — it stops rAF, which stops the page.
+// parkNew parks a new page's view. Parked is MAPPED: the view has a real
+// viewport and a fresh snapshot, it simply costs the window no space. Hiding
+// by opacity is banned — it stops rAF, which stops the page.
 func (p *webkitProfile) parkNew(page *webkitPage) {
-	page.slot = p.engine.claimSlot()
-	webkitParkView(page.view, page.slot)
+	webkitParkView(page.view)
 }
 
 func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) {

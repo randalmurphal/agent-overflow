@@ -32,22 +32,16 @@ void ao_wk_set_find_frame_script(const char *script, const char *world);
 // teardown over a fanned-out one. 0 until the host has attached once.
 int ao_wk_on_main_thread(void);
 
-// ao_wk_host_park puts a view's host into the background park at its own
-// slot. The park clips to 1x1, so a parked view is mapped at its full
-// viewport (real layout, fresh snapshots) while costing the window no size at
-// all. A GtkFixed at offscreen coordinates would instead propagate its size
-// and balloon the window.
-void ao_wk_host_park(void *view, int slot);
-
-// ao_wk_host_unpark removes a view's host from whichever container holds it.
-void ao_wk_host_unpark(void *view);
+// ao_wk_host_park parks a view: its host stays an overlay child as an empty
+// box, so a parked view is mapped at its full viewport (real layout, fresh
+// snapshots) while showing nothing and costing the window no size at all.
+void ao_wk_host_park(void *view);
 
 // ao_wk_overlay_size reads the pane overlay's size in its logical pixels. It
 // answers 0, leaving both untouched, when there is no overlay.
 int ao_wk_overlay_size(int *width, int *height);
 
-// ao_wk_host_present shows one view inside the pane: its host becomes an
-// overlay child filling the pane's VISIBLE clip box (four margins with
+// ao_wk_host_present shows one view inside the pane: its host fills the pane's VISIBLE clip box (four margins with
 // ALIGN_FILL), and the view is drawn inside it at off_x/off_y from the box's
 // top-left, scaled by scale. The view's own allocation stays its viewport
 // (ao_wk_view_set_size); the pane never resizes a page, it shows it scaled to
@@ -57,10 +51,10 @@ void ao_wk_host_present(void *view, int clip_left, int clip_top,
                         int clip_right, int clip_bottom, int off_x, int off_y,
                         double scale);
 
-// ao_wk_host_hide ends a presentation and parks the view at slot. A view
+// ao_wk_host_hide ends a presentation and parks the view. A view
 // that held keyboard focus hands it to the SPA's webview: it answers 1 when
 // it did, -1 when the view held focus and the handoff failed, 0 otherwise.
-int ao_wk_host_hide(void *view, int slot);
+int ao_wk_host_hide(void *view);
 
 // ao_wk_host_presented reports whether this view is presented, which is what
 // decides whether a dialog, picker, or context menu is shown or answered.

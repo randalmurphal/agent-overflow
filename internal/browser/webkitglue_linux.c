@@ -73,11 +73,11 @@ static uint64_t ao_view_profile_id(WebKitWebView *view) {
 //   GtkWindow
 //   └── GtkOverlay
 //       ├── main child : the Wails SPA WebKitWebView (unchanged, still live)
-//       ├── overlay 1  : 1x1 clipping GtkScrolledWindow -> GtkFixed (the park)
-//       │                └── one AoViewHost per hidden page
-//       └── overlay 2..N : one AoViewHost per PRESENTED page, ALIGN_FILL +
-//                          four margins at the pane's visible clip rect,
-//                          overflow hidden.
+//       └── overlay 1..N : one AoViewHost per page, overflow hidden. A
+//                          PRESENTED host fills the pane's visible clip rect
+//                          (ALIGN_FILL + four margins); a PARKED one is an
+//                          empty box at the overlay's origin (ALIGN_START, no
+//                          margins, and a host measures 0x0).
 //
 // AoViewHost is the one widget a page view ever lives in. It allocates the
 // view at EXACTLY the page's viewport — gtk_widget_allocate takes the size it
@@ -86,12 +86,15 @@ static uint64_t ao_view_profile_id(WebKitWebView *view) {
 // scale transform. That transform is the whole pane presentation: the page
 // keeps its viewport and is drawn scaled to fit, centered by the offset, and
 // GTK maps pointer input back through the same transform. Parked, the host
-// draws at scale 1 into the 1x1 clip, so a hidden page stays mapped with a
-// real viewport and fresh snapshots.
+// clips the view at scale 1 to nothing, so a hidden page stays mapped with a
+// real viewport and fresh snapshots, and costs the window no size (GtkOverlay
+// measures its main child alone).
 //
-// Order matters: the park is added BEFORE anything else so the SPA paints
-// over its 1px footprint, and a presented host is added last so it sits on
-// top.
+// A host is an overlay child from its first park to its close; hiding or
+// showing it only moves its box. Moving it to another parent would unrealize
+// the view, which drops the frame WebKit last drew, and the web process draws
+// a new one only when the page changes, so a static page shown again would
+// stay empty.
 //
 // MORE THAN ONE page can be presented at once — one per thread with a
 // visible pane — so nothing here is "the presented view". A host belongs to
@@ -115,6 +118,7 @@ static uint64_t ao_view_profile_id(WebKitWebView *view) {
 typedef struct {
   GtkWidget parent;
   GtkWidget *view;
+  gboolean presented;
   int page_w;
   int page_h;
   double scale;
@@ -178,7 +182,6 @@ static void ao_view_host_init(AoViewHost *host) {
 }
 
 static GtkWidget *ao_overlay = NULL;
-static GtkWidget *ao_park = NULL; // the GtkFixed inside the clipping scroller
 // The Wails SPA's own WebKitWebView, the widget a claimed chord hands
 // keyboard focus to (ao_wk_focus_app). Weak: it is the window's.
 static GtkWidget *ao_app_view = NULL;
@@ -221,17 +224,20 @@ static AoViewHost *ao_host_for(GtkWidget *view) {
   return host;
 }
 
-// ao_host_detach takes a host out of whichever AO container holds it.
+// ao_host_detach takes a host out of the overlay, on its view's close.
 static void ao_host_detach(AoViewHost *host) {
   GtkWidget *w = GTK_WIDGET(host);
-  GtkWidget *parent = gtk_widget_get_parent(w);
-  if (parent == NULL) {
-    return;
-  }
-  if (parent == ao_park && ao_park != NULL) {
-    gtk_fixed_remove(GTK_FIXED(ao_park), w);
-  } else if (parent == ao_overlay && ao_overlay != NULL) {
+  if (ao_overlay != NULL && gtk_widget_get_parent(w) == ao_overlay) {
     gtk_overlay_remove_overlay(GTK_OVERLAY(ao_overlay), w);
+  }
+}
+
+// ao_host_in_overlay makes a host an overlay child, where it stays until its
+// view closes (see the header for why it never moves).
+static void ao_host_in_overlay(AoViewHost *host) {
+  GtkWidget *w = GTK_WIDGET(host);
+  if (gtk_widget_get_parent(w) != ao_overlay) {
+    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
   }
 }
 
@@ -269,29 +275,11 @@ int ao_wk_host_attach(void *gtk_window) {
   g_object_ref(existing);
   gtk_window_set_child(win, NULL);
   GtkWidget *overlay = gtk_overlay_new();
-
-  GtkWidget *scroller = gtk_scrolled_window_new();
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_EXTERNAL,
-                                 GTK_POLICY_EXTERNAL);
-  gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(scroller), 1);
-  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scroller), 1);
-  gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(scroller), FALSE);
-  gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroller), FALSE);
-  gtk_widget_set_halign(scroller, GTK_ALIGN_START);
-  gtk_widget_set_valign(scroller, GTK_ALIGN_START);
-  gtk_widget_set_size_request(scroller, 1, 1);
-  GtkWidget *fixed = gtk_fixed_new();
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), fixed);
-
-  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), scroller);
   gtk_overlay_set_child(GTK_OVERLAY(overlay), existing);
   g_object_unref(existing);
   gtk_window_set_child(win, overlay);
 
   ao_overlay = overlay;
-  // gtk_scrolled_window_get_child() returns the auto-inserted GtkViewport, not
-  // this GtkFixed, so keep our own pointer.
-  ao_park = fixed;
   // The SPA view sits in the Wails window's child (its box), which is the
   // overlay's main child now; no page view has been added yet.
   ao_app_view = ao_find_web_view(existing);
@@ -331,37 +319,26 @@ int ao_wk_window_active(void *view) {
   return root != NULL && GTK_IS_WINDOW(root) && gtk_window_is_active(GTK_WINDOW(root)) ? 1 : 0;
 }
 
-void ao_wk_host_park(void *view, int slot) {
-  if (ao_park == NULL) {
+void ao_wk_host_park(void *view) {
+  if (ao_overlay == NULL) {
     return;
   }
   AoViewHost *host = ao_host_for(GTK_WIDGET(view));
   GtkWidget *w = GTK_WIDGET(host);
-  // Parked is drawn whole at scale 1 into the clip; the presentation offset
-  // and scale are the overlay's alone.
+  ao_host_in_overlay(host);
+  // Parked is drawn at scale 1 into an empty box; the presentation offset and
+  // scale are a presented host's alone.
+  host->presented = FALSE;
   host->scale = 1.0;
   host->off_x = 0;
   host->off_y = 0;
-  if (gtk_widget_get_parent(w) == ao_park) {
-    gtk_widget_queue_allocate(w);
-    return;
-  }
-  ao_host_detach(host);
   gtk_widget_set_halign(w, GTK_ALIGN_START);
   gtk_widget_set_valign(w, GTK_ALIGN_START);
   gtk_widget_set_margin_start(w, 0);
   gtk_widget_set_margin_top(w, 0);
   gtk_widget_set_margin_end(w, 0);
   gtk_widget_set_margin_bottom(w, 0);
-  // Slots keep parked hosts off one another; the clip hides all of them.
-  gtk_fixed_put(GTK_FIXED(ao_park), w, 0, slot * 10);
-}
-
-void ao_wk_host_unpark(void *view) {
-  AoViewHost *host = ao_view_host_of(GTK_WIDGET(view));
-  if (host != NULL) {
-    ao_host_detach(host);
-  }
+  gtk_widget_queue_allocate(w);
 }
 
 // ao_fill_at is the ONE positioning primitive for a host inside the overlay:
@@ -398,10 +375,8 @@ void ao_wk_host_present(void *view, int clip_left, int clip_top,
   GtkWidget *w = GTK_WIDGET(host);
   int overlay_w = gtk_widget_get_width(ao_overlay);
   int overlay_h = gtk_widget_get_height(ao_overlay);
-  if (gtk_widget_get_parent(w) != ao_overlay) {
-    ao_host_detach(host);
-    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
-  }
+  ao_host_in_overlay(host);
+  host->presented = TRUE;
   // The host is the clip box; the view is drawn inside it at the fitted
   // rect's offset from the clip, scaled (see header).
   ao_fill_at(w, clip_left, clip_top, overlay_w - clip_right, overlay_h - clip_bottom);
@@ -434,23 +409,22 @@ static int ao_release_focus(int held) {
   return ao_wk_focus_app() ? 1 : -1;
 }
 
-int ao_wk_host_hide(void *view, int slot) {
+int ao_wk_host_hide(void *view) {
   // Presentation ends with the park, which resets the offset and scale.
   int held = ao_view_holds_focus(GTK_WIDGET(view));
-  ao_wk_host_park(view, slot);
+  ao_wk_host_park(view);
   return ao_release_focus(held);
 }
 
-// ao_wk_host_presented is read off the WIDGET TREE, never a pointer: a view is
-// presented when its host is an overlay child. More than one view answers yes
-// at a time, which is exactly why no single "the presented view" pointer can
-// live here.
+// ao_wk_host_presented is read off the view's own host, never a pointer: more
+// than one view answers yes at a time, which is exactly why no single "the
+// presented view" pointer can live here.
 int ao_wk_host_presented(void *view) {
   AoViewHost *host = ao_view_host_of(GTK_WIDGET(view));
   if (host == NULL || ao_overlay == NULL) {
     return 0;
   }
-  return gtk_widget_get_parent(GTK_WIDGET(host)) == ao_overlay ? 1 : 0;
+  return host->presented && gtk_widget_get_parent(GTK_WIDGET(host)) == ao_overlay ? 1 : 0;
 }
 
 int ao_wk_view_focus_presented(void *view) {

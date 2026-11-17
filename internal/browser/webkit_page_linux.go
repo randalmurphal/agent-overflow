@@ -54,7 +54,6 @@ type webkitPage struct {
 	handle  string
 	hooks   pageHooks
 	view    unsafe.Pointer
-	slot    int
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -108,13 +107,9 @@ func (p *webkitPage) Close() {
 		return
 	}
 	p.closed = true
-	slot := p.slot
 	p.mu.Unlock()
 	p.discard()
 	p.engine.forgetPane(p.id)
-	if slot >= 0 {
-		p.engine.releaseSlot(slot)
-	}
 	webkitCloseView(p.view)
 }
 

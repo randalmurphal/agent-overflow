@@ -13,7 +13,7 @@ import (
 // hosted engine answers these calls with directives to the launcher, this
 // engine moves its own GTK widgets: present puts the page's host over the
 // pane's clip rect and draws the page scaled to the placement, hide is a
-// re-park into the 1x1 clipping slot, and devtools is the WebKit inspector
+// re-park into an empty box, and devtools is the WebKit inspector
 // (docked in-app; developer extras are enabled at view creation). The page's
 // viewport is never touched here; SetViewport owns it, parked or presented.
 // The page's base color (pageBase) rides the same rect and is pushed to the
@@ -160,7 +160,7 @@ func (e *webkitEngine) HidePage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if unpresent {
-		if err := webkitHideView(p.liveView(), p.slot); err != nil && !errors.Is(err, errViewClosed) {
+		if err := webkitHideView(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
 			log.Printf("browser: hide page %d: %v", p.id, err)
 		}
 	}
