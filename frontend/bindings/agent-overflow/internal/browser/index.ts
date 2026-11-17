@@ -7,5 +7,6 @@ export {
     FindState,
     PageInfo,
     PaneRect,
-    RecentAddress
+    RecentAddress,
+    ThreadDownload
 } from "./models.js";

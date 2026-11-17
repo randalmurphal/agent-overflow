@@ -104,12 +104,17 @@ profile directory. Unsupported platform capabilities return a clear refusal.
 ## Files, downloads, and site data
 
 `browser_open_file` resolves symlinks and accepts regular files within the
-thread workspace or project root unless the explicit outside-workspace setting
-widens access. Use direct `file://` navigation.
+thread workspace or project root, or the workspace's own download directory,
+unless the explicit outside-workspace setting widens access. Use direct
+`file://` navigation.
 
 Downloads use sanitized unique names under AO-owned artifact directories and
 never the user's Downloads directory. Preserve quota reservation, per-download
-bounds, page cancellation, and denial of sensitive website permissions.
+bounds, page cancellation, and denial of sensitive website permissions. Every
+change to a page's download entry goes through `noteDownloadLocked` and
+`publishDownloads` (`downloads_thread.go`), which keep the thread's list the
+pane shows and coalesce byte progress; an engine reports one terminal event
+per download.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and
 ephemeral profiles must remain distinct; a private jar is always ephemeral.

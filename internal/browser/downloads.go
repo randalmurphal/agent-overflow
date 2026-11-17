@@ -2,13 +2,27 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+// The states a DownloadInfo, and the ThreadDownload behind it, moves through.
+const (
+	downloadStateRunning   = "in_progress"
+	downloadStateCompleted = "completed"
+	downloadStateFailed    = "failed"
+	downloadStateCanceled  = "canceled"
+)
+
+// maxPageDownloads bounds one page's download log.
+const maxPageDownloads = 100
 
 // downloadStarted is the quota decision. The engine reports that a download
 // began; whether it is allowed to consume workspace and artifact bytes is
@@ -22,12 +36,17 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 		return false
 	}
 	authority := p.authority
+	source := p.cachedInfo().URL
+	if source == "" || source == "about:blank" {
+		source = event.URL
+	}
 	p.downloadMu.Lock()
 	p.downloadSeq++
 	entry := DownloadInfo{
 		Sequence: p.downloadSeq, ID: event.ID, URL: event.URL,
 		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
-		State:         "in_progress", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), reservedBytes: maxDownloadBytes,
+		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), reservedBytes: maxDownloadBytes,
+		key: fmt.Sprintf("d%d", m.downloadKeys.Add(1)),
 	}
 	scopeReserved := authority != nil && authority.downloadBytes.Add(maxDownloadBytes) <= maxWorkspaceDownloadBytes
 	globalReserved := scopeReserved && m.reserveArtifacts(maxDownloadBytes)
@@ -37,18 +56,68 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 		} else if authority != nil && authority.downloadBytes.Load() > maxWorkspaceDownloadBytes {
 			authority.downloadBytes.Add(-maxDownloadBytes)
 		}
-		entry.State, entry.Error, entry.reservedBytes = "canceled", fmt.Sprintf("workspace downloads exceed %d bytes", maxWorkspaceDownloadBytes), 0
+		entry.State, entry.Error, entry.reservedBytes = downloadStateCanceled, fmt.Sprintf("workspace downloads exceed %d bytes", maxWorkspaceDownloadBytes), 0
 		if scopeReserved && !globalReserved {
 			entry.Error = fmt.Sprintf("browser artifacts exceed %d bytes", maxArtifactRootBytes)
 		}
 	}
 	p.downloads = append(p.downloads, entry)
-	if len(p.downloads) > 100 {
-		p.downloads = append([]DownloadInfo(nil), p.downloads[len(p.downloads)-100:]...)
-	}
+	p.trimDownloadsLocked()
+	note := m.noteDownloadLocked(p, &p.downloads[len(p.downloads)-1], source)
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
-	return entry.State != "canceled"
+	m.publishDownloads(note)
+	return entry.State != downloadStateCanceled
+}
+
+// trimDownloadsLocked keeps the page's log within maxPageDownloads by
+// dropping its oldest settled entries. A running one stays: its progress,
+// its reservation and its cancel all need it, and the quotas bound how many
+// can run. The caller holds p.downloadMu.
+func (p *managedPage) trimDownloadsLocked() {
+	excess := len(p.downloads) - maxPageDownloads
+	if excess <= 0 {
+		return
+	}
+	kept := make([]DownloadInfo, 0, maxPageDownloads)
+	for _, entry := range p.downloads {
+		if excess > 0 && entry.State != downloadStateRunning {
+			excess--
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	p.downloads = kept
+}
+
+// downloadLocked answers the page's entry for an engine download id, nil for
+// none. The pointer is valid until p.downloadMu is released. The caller holds
+// p.downloadMu.
+func (p *managedPage) downloadLocked(id string) *DownloadInfo {
+	for i := len(p.downloads) - 1; i >= 0; i-- {
+		if p.downloads[i].ID == id {
+			return &p.downloads[i]
+		}
+	}
+	return nil
+}
+
+// releaseDownloadLocked returns a download's whole reservation, for one that
+// ends with no file kept. The caller holds p.downloadMu.
+func (m *Manager) releaseDownloadLocked(p *managedPage, entry *DownloadInfo) {
+	if p.authority != nil && entry.reservedBytes > 0 {
+		p.authority.downloadBytes.Add(-entry.reservedBytes)
+		m.settleArtifactReservation(entry.reservedBytes, 0)
+		entry.reservedBytes = 0
+	}
+}
+
+// removePartialDownload removes the handle-named file an engine was
+// streaming a download into, once AO stopped the download.
+func removePartialDownload(scope *jarScope, id string) {
+	if err := os.Remove(filepath.Join(scope.downloadDir, filepath.Base(id))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("browser: remove the partial download %s: %v", id, err)
+	}
 }
 
 func (m *Manager) downloadProgress(event downloadProgress) {
@@ -57,46 +126,38 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		return
 	}
 	p.downloadMu.Lock()
-	index := -1
-	for i := len(p.downloads) - 1; i >= 0; i-- {
-		if p.downloads[i].ID == event.ID {
-			index = i
-			break
-		}
-	}
-	if index < 0 {
-		p.downloadMu.Unlock()
-		return
-	}
-	entry := &p.downloads[index]
-	if entry.State == "canceled" && entry.reservedBytes == 0 {
+	entry := p.downloadLocked(event.ID)
+	// A settled download takes no further report: AO stopped it (a quota,
+	// its size, the user, its page closing) or the engine already ended it.
+	if entry == nil || entry.State != downloadStateRunning {
 		p.downloadMu.Unlock()
 		return
 	}
 	entry.Bytes = int64(event.Received)
+	if event.Total > 0 {
+		entry.TotalBytes = int64(event.Total)
+	}
 	if entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
-		entry.State = "canceled"
+		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
-		if p.authority != nil && entry.reservedBytes > 0 {
-			p.authority.downloadBytes.Add(-entry.reservedBytes)
-			m.settleArtifactReservation(entry.reservedBytes, 0)
-			entry.reservedBytes = 0
-		}
+		m.releaseDownloadLocked(p, entry)
+		note := m.noteDownloadLocked(p, entry, "")
 		p.signalDownloadLocked()
 		p.downloadMu.Unlock()
+		m.publishDownloads(note)
 		if scope != nil {
 			go func() {
-				scope.profile.CancelDownload(event.ID)
-				// A download the engine never finished keeps the handle-named
-				// partial file it was streaming into.
-				_ = os.Remove(filepath.Join(scope.downloadDir, filepath.Base(event.ID)))
+				if err := scope.profile.CancelDownload(event.ID); err != nil {
+					log.Printf("browser: cancel download %s over its size cap: %v", event.ID, err)
+				}
+				removePartialDownload(scope, event.ID)
 			}()
 		}
 		return
 	}
 	switch event.State {
 	case downloadCompleted:
-		entry.State = "completed"
+		entry.State = downloadStateCompleted
 		if p.authority != nil && entry.reservedBytes > 0 {
 			p.authority.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
 			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
@@ -110,7 +171,7 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 				source = filepath.Join(scope.downloadDir, filepath.Base(event.ID))
 			}
 			if !pathInside(scope.downloadDir, source) {
-				entry.State, entry.Error = "failed", "browser returned a download path outside its artifact directory"
+				entry.State, entry.Error = downloadStateFailed, "browser returned a download path outside its artifact directory"
 				break
 			}
 			destination, renameErr := uniqueArtifactPath(p.authority.downloadDir, entry.SuggestedName)
@@ -118,21 +179,29 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 				renameErr = os.Rename(source, destination)
 			}
 			if renameErr != nil {
-				entry.State, entry.Error = "failed", renameErr.Error()
+				entry.State, entry.Error = downloadStateFailed, renameErr.Error()
 			} else {
 				entry.Path = destination
 			}
 		}
 	case downloadCanceled:
-		entry.State = "canceled"
-		if p.authority != nil && entry.reservedBytes > 0 {
-			p.authority.downloadBytes.Add(-entry.reservedBytes)
-			m.settleArtifactReservation(entry.reservedBytes, 0)
-			entry.reservedBytes = 0
+		// An engine reports the cancel AO asked for and its own failures (a
+		// dropped connection, a server error) the same way; only the first
+		// is a cancel.
+		if entry.cancelRequested {
+			entry.State = downloadStateCanceled
+		} else {
+			entry.State, entry.Error = downloadStateFailed, event.Error
+			if entry.Error == "" {
+				entry.Error = "the download stopped before it finished"
+			}
 		}
+		m.releaseDownloadLocked(p, entry)
 	}
+	note := m.noteDownloadLocked(p, entry, "")
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
+	m.publishDownloads(note)
 }
 
 func pathInside(root, path string) bool {
@@ -161,13 +230,7 @@ func (m *Manager) pageForDownload(id string) (*managedPage, *jarScope) {
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			p.downloadMu.Lock()
-			found := false
-			for _, download := range p.downloads {
-				if download.ID == id {
-					found = true
-					break
-				}
-			}
+			found := p.downloadLocked(id) != nil
 			p.downloadMu.Unlock()
 			if found {
 				return p, scope
@@ -185,25 +248,26 @@ func (p *managedPage) signalDownloadLocked() {
 func (m *Manager) cancelPageDownloads(p *managedPage, scope *jarScope) {
 	p.downloadMu.Lock()
 	ids := make([]string, 0)
+	notes := make([]downloadNote, 0)
 	for i := range p.downloads {
 		entry := &p.downloads[i]
-		if entry.State != "in_progress" {
+		if entry.State != downloadStateRunning {
 			continue
 		}
-		entry.State, entry.Error = "canceled", "page closed"
-		if entry.reservedBytes > 0 && p.authority != nil {
-			p.authority.downloadBytes.Add(-entry.reservedBytes)
-			m.settleArtifactReservation(entry.reservedBytes, 0)
-			entry.reservedBytes = 0
-		}
+		entry.State, entry.Error = downloadStateCanceled, "page closed"
+		m.releaseDownloadLocked(p, entry)
+		notes = append(notes, m.noteDownloadLocked(p, entry, ""))
 		ids = append(ids, entry.ID)
 	}
 	if len(ids) > 0 {
 		p.signalDownloadLocked()
 	}
 	p.downloadMu.Unlock()
+	m.publishDownloads(notes...)
 	for _, id := range ids {
-		scope.profile.CancelDownload(id)
+		if err := scope.profile.CancelDownload(id); err != nil {
+			log.Printf("browser: cancel download %s of a closed page: %v", id, err)
+		}
 	}
 }
 
@@ -235,7 +299,7 @@ func waitDownloadPage(ctx context.Context, p *managedPage, after uint64) (Downlo
 	for {
 		p.downloadMu.Lock()
 		for _, download := range p.downloads {
-			if download.Sequence > after && download.State != "in_progress" {
+			if download.Sequence > after && download.State != downloadStateRunning {
 				p.downloadMu.Unlock()
 				return download, nil
 			}

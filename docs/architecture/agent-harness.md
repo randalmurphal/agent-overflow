@@ -204,7 +204,10 @@ An isolated boot pins the browser Manager to the FAKE engine
 (`newIsolatedProviderApp` → `IsolationConfig.MockBrowserEngine`, spec
 `docs/specs/embedded-browser.md` §10). The companion pane's chrome, tab
 strip and host rect all render; nothing is behind them, and every tool
-needing real page content refuses by name. The pin is what keeps
+needing real page content refuses by name. A navigation to
+`https://download.invalid/<name>?bytes=<n>` is a download, held running
+with `&hold` or failed with `&fail` (`internal/browser/fake_downloads.go`),
+so the pane's downloads list can be driven. The pin is what keeps
 `make go-test`, `make e2e` and every unattended boot display-free.
 
 `AO_HARNESS_REAL_BROWSER=1` lifts it — the manual real-engine gate:

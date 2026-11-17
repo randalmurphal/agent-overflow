@@ -152,6 +152,14 @@ type Manager struct {
 	artifactInitMu sync.Mutex
 	artifactReady  bool
 	artifactBytes  atomic.Int64
+	// downloadsMu guards threadDownloads, each thread's downloads as its
+	// pane lists them (downloads_thread.go). It is taken inside m.mu and
+	// inside a page's downloadMu, and never held around either.
+	downloadsMu     sync.Mutex
+	threadDownloads map[string]*threadDownloadList
+	downloadKeys    atomic.Uint64
+	// downloadPushInterval overrides downloadPushInterval when set (tests).
+	downloadPushInterval time.Duration
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
@@ -586,6 +594,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	delete(m.sessions, threadID)
 	delete(m.recent, threadID)
 	m.mu.Unlock()
+	m.forgetThreadDownloads(threadID)
 	return errors.Join(errs...)
 }
 
@@ -687,7 +696,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.scheduleIdleClose()
 		return nil, err
 	}
-	authorityDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(workspace))
+	authorityDir := m.workspaceDownloadDir(workspace)
 	if err := os.MkdirAll(authorityDir, 0o700); err != nil {
 		m.scheduleIdleClose()
 		return nil, fmt.Errorf("browser: create download directory: %w", err)

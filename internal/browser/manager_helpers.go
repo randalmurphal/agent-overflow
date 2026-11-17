@@ -210,7 +210,13 @@ func (m *Manager) authorizeFile(access Access, path string) (string, error) {
 	if allowOutside {
 		return resolved, nil
 	}
-	for _, root := range []string{access.Workspace, access.ProjectRoot} {
+	roots := []string{access.Workspace, access.ProjectRoot}
+	// The workspace's own downloads, which the pane opens in a tab
+	// (OpenThreadDownload).
+	if workspace, err := canonicalRoot(access.Workspace); err == nil && strings.TrimSpace(access.Workspace) != "" {
+		roots = append(roots, m.workspaceDownloadDir(workspace))
+	}
+	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}

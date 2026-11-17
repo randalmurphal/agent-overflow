@@ -674,3 +674,12 @@ func TestConsoleEntryKeepsTheLogFormat(t *testing.T) {
 		})
 	}
 }
+
+// A CDP download's progress carries the size the response announced, which
+// the pane shows as how far it is.
+func TestCDPDownloadProgressCarriesItsTotal(t *testing.T) {
+	got := cdpDownloadProgress(cdpbrowser.EventDownloadProgress{GUID: "G", ReceivedBytes: 10, TotalBytes: 40, State: cdpbrowser.DownloadProgressStateInProgress})
+	if want := (downloadProgress{ID: "G", Received: 10, Total: 40, State: downloadInProgress}); got != want {
+		t.Fatalf("cdpDownloadProgress = %+v, want %+v", got, want)
+	}
+}

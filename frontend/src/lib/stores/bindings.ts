@@ -818,6 +818,7 @@ export {
   PageInfo as BrowserPageInfo,
   PaneRect as BrowserPaneRect,
   RecentAddress as BrowserRecentAddress,
+  ThreadDownload as BrowserDownload,
 } from '../../../bindings/agent-overflow/internal/browser/models.js';
 export {
   Keybinding,

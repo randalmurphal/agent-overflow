@@ -62,6 +62,11 @@ type CompanionEvent struct {
 	// A Kind "teardown" event names ThreadID, PageID and Error: a page that
 	// already left the tab set failed to close or to release its profile.
 	Find *FindState `json:"find,omitempty"`
+	// Downloads rides a Kind "state" event: the thread's downloads, newest
+	// first (downloads_thread.go). Download rides a Kind "download" event:
+	// one download settled other than by the user's cancel, announced once.
+	Downloads []ThreadDownload `json:"downloads,omitempty"`
+	Download  *ThreadDownload  `json:"download,omitempty"`
 	// Seq rides a Kind "state" event: this process's number for the
 	// snapshot, taken under the manager's lock as the snapshot is read.
 	// Snapshots are published after that lock is released, and calls answer
@@ -355,6 +360,10 @@ type ConsoleOptions struct {
 	Limit  int      `json:"limit,omitempty"`
 }
 
+// DownloadInfo is one download in a page's log, as browser_downloads lists
+// it. State is in_progress, completed, failed (the engine stopped it on its
+// own, or the finished file could not be kept) or canceled (AO stopped it:
+// the user, a quota, the page closing).
 type DownloadInfo struct {
 	Sequence      uint64 `json:"sequence"`
 	ID            string `json:"id"`
@@ -363,9 +372,15 @@ type DownloadInfo struct {
 	Path          string `json:"path,omitempty"`
 	State         string `json:"state"`
 	Bytes         int64  `json:"bytes,omitempty"`
+	TotalBytes    int64  `json:"totalBytes,omitempty"`
 	Error         string `json:"error,omitempty"`
 	StartedAt     string `json:"startedAt"`
 	reservedBytes int64
+	// key is the download's entry in its thread's list (downloads_thread.go).
+	key string
+	// cancelRequested is set while the user's cancel is with the engine, so
+	// the engine's report of it reads as canceled rather than failed.
+	cancelRequested bool
 }
 
 type DownloadOptions struct {

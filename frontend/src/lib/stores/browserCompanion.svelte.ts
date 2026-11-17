@@ -250,7 +250,7 @@ function reportBrowserTeardown(event: BrowserCompanionEvent): void {
 }
 
 /** Whether the thread's browser pane is open here, with its banner. */
-function browserPaneOpen(threadId: string): boolean {
+export function browserPaneOpen(threadId: string): boolean {
   const sourcePaneId = sourcePaneIdForThread(threadId);
   return sourcePaneId !== null && !!companionForSource(sourcePaneId, 'browser') && !!store.snapshot(threadId);
 }
@@ -369,7 +369,7 @@ export interface BrowserActionFailure {
  */
 export async function browserCompanionAct(
   threadId: string,
-  action: { kind: string; pageId?: string; address?: string; index?: number },
+  action: { kind: string; pageId?: string; address?: string; index?: number; downloadId?: string },
 ): Promise<BrowserActionFailure | null> {
   return (await runBrowserAction(threadId, action)).failure;
 }
@@ -404,7 +404,7 @@ export function sendBrowserPageFocus(
 
 async function runBrowserAction(
   threadId: string,
-  action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar },
+  action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar; downloadId?: string },
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   noteBrowserActionStarted(threadId);
   noteBrowserActionError(threadId, '');
@@ -417,6 +417,7 @@ async function runBrowserAction(
         address: action.address ?? '',
         index: action.index ?? 0,
         ...(action.jar ? { jar: action.jar } : {}),
+        ...(action.downloadId ? { downloadId: action.downloadId } : {}),
       }),
     );
     applyBrowserCompanionState(state);

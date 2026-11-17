@@ -23,8 +23,8 @@ extern int aoWebKitPagePresented(uint64_t page_id);
 extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
                                     uint64_t download_id, void *download,
                                     char *uri, char *suggested);
-extern void aoWebKitDownloadProgress(uint64_t download_id, double received,
-                                     int state, char *path);
+extern void aoWebKitDownloadProgress(uint64_t download_id, double received, double total,
+                                     int state, char *path, char *error);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
                             int alt, int shift, int held, int composing);
 extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
@@ -500,28 +500,44 @@ static gboolean ao_download_destination(WebKitDownload *download, gchar *suggest
   return TRUE;
 }
 
+// ao_download_total is the size the response announced, 0 when it announced
+// none or has not arrived.
+static double ao_download_total(WebKitDownload *download) {
+  WebKitURIResponse *response = webkit_download_get_response(download);
+  return response ? (double)webkit_uri_response_get_content_length(response) : 0;
+}
+
 static void ao_download_received(WebKitDownload *download, guint64 length, gpointer data) {
   (void)length;
   (void)data;
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           AO_DL_IN_PROGRESS, NULL);
+                           ao_download_total(download), AO_DL_IN_PROGRESS, NULL, NULL);
 }
+
+// WebKit emits "finished" after "failed" as well, so a failed download is
+// marked and its "finished" is not reported as a completion.
+#define AO_DOWNLOAD_FAILED_KEY "ao-download-failed"
 
 static void ao_download_finished(WebKitDownload *download, gpointer data) {
   (void)data;
+  if (g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY) != NULL) {
+    return;
+  }
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
   const char *destination = webkit_download_get_destination(download);
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           AO_DL_COMPLETED, destination ? g_strdup(destination) : NULL);
+                           ao_download_total(download), AO_DL_COMPLETED,
+                           destination ? g_strdup(destination) : NULL, NULL);
 }
 
 static void ao_download_failed(WebKitDownload *download, GError *error, gpointer data) {
-  (void)error;
   (void)data;
+  g_object_set_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY, GINT_TO_POINTER(1));
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           AO_DL_CANCELED, NULL);
+                           ao_download_total(download), AO_DL_CANCELED, NULL,
+                           error && error->message ? g_strdup(error->message) : NULL);
 }
 
 static void ao_session_download_started(WebKitNetworkSession *session,

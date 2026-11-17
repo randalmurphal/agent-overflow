@@ -860,6 +860,12 @@ export class BrowserCompanionAction {
     "mount"?: string;
     "intent"?: number;
 
+    /**
+     * DownloadID names one of the thread's downloads (ThreadDownload.ID)
+     * for "download-cancel", "download-reveal" and "download-open".
+     */
+    "downloadId"?: string;
+
     /** Creates a new BrowserCompanionAction instance. */
     constructor($$source: Partial<BrowserCompanionAction> = {}) {
         if (!("kind" in $$source)) {

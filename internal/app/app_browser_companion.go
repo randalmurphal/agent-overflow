@@ -28,6 +28,9 @@ type BrowserCompanionAction struct {
 	// "focus-page-withdraw": the pane mount and its number for the request.
 	Mount  string `json:"mount,omitempty"`
 	Intent uint64 `json:"intent,omitempty"`
+	// DownloadID names one of the thread's downloads (ThreadDownload.ID)
+	// for "download-cancel", "download-reveal" and "download-open".
+	DownloadID string `json:"downloadId,omitempty"`
 }
 
 func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
@@ -208,6 +211,17 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case "jar":
 		// Closes the live tabs and reopens their addresses in the new jar.
 		err = a.browser.manager.SetJar(access, action.Jar)
+	case "download-cancel":
+		err = a.browser.manager.CancelThreadDownload(access, action.DownloadID)
+	case "download-reveal":
+		err = a.browser.manager.RevealThreadDownload(ctx, access, action.DownloadID)
+	case "download-open":
+		// A new tab showing the finished file.
+		var page appbrowser.PageInfo
+		page, err = a.browser.manager.OpenThreadDownload(ctx, access, action.DownloadID)
+		newPage = page.ID
+	case "downloads-clear":
+		a.browser.manager.ClearThreadDownloads(access)
 	case "focus-page", "focus-page-withdraw":
 		// Keyboard focus moves within the window the native view lives in,
 		// so only that window may ask for it or take the request back.
