@@ -587,7 +587,7 @@ and anti-changes that live only here:
   suggestions or search queries while typing, and no inline completion: the
   typed text is the user's until a row is chosen. Recent addresses are kept
   in memory only, never for a private jar, and are forgotten by a jar
-  switch, Clear site data and closing the thread.
+  switch, Clear site data, turning the browser off and closing the thread.
 - Each thread's browser chooses its cookie jar: this worktree (default),
   the whole project, this browser only, or private. A jar shares sign-ins
   and site data only; file and navigation permissions and download quotas
