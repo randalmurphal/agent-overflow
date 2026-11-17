@@ -391,6 +391,21 @@ func applyBootReadiness(cfg *transport.Config) {
 	cfg.StartupMethods = []string{wsllauncher.RPCShutdownBackend}
 }
 
+// registerAppMethods registers the App's wire surface, with the retired
+// methods windows on the previous release still call
+// (transport.ReleasedMethods) under the App's labels.
+func registerAppMethods(dispatcher *transport.Dispatcher, appService *App, opts transport.RegisterOptions) ([]*transport.Method, error) {
+	methods, err := dispatcher.Register(appService, opts)
+	if err != nil {
+		return nil, err
+	}
+	released, err := dispatcher.Register(&transport.ReleasedMethods{}, transport.RegisterOptions{Package: "main", TypeName: "App"})
+	if err != nil {
+		return nil, fmt.Errorf("register the previous release's retired methods: %w", err)
+	}
+	return append(methods, released...), nil
+}
+
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
 	if !opts.BackendLockHeldBySupervisor {
 		if lockErr := holdBackendLock(bootSettingsDir()); lockErr != nil {
@@ -418,7 +433,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	if opts.HarnessOlderComputer {
 		appOptions.Skip, appOptions.Reshape = olderComputerSurface()
 	}
-	methods, err := dispatcher.Register(appService, appOptions)
+	methods, err := registerAppMethods(dispatcher, appService, appOptions)
 	if err != nil {
 		fatalf("transport: register App methods: %v", err)
 	}

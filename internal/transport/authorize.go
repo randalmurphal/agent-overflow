@@ -44,12 +44,15 @@ const ErrCodeScopeRequired = "scope_required"
 // to ask for a scope.
 const ErrCodeStepUpRequired = "step_up_required"
 
-// methodClassification indexes the generated table by name. Built once —
-// the table is static — so the per-call cost is one map lookup.
+// methodClassification indexes the generated table and releasedMethods by
+// name. Built once — the tables are static — so the per-call cost is one
+// map lookup.
 var methodClassification = func() map[string]MethodMeta {
-	index := make(map[string]MethodMeta, len(GeneratedMethods))
-	for _, method := range GeneratedMethods {
-		index[method.Name] = method
+	index := make(map[string]MethodMeta, len(GeneratedMethods)+len(releasedMethods))
+	for _, table := range [][]MethodMeta{GeneratedMethods, releasedMethods} {
+		for _, method := range table {
+			index[method.Name] = method
+		}
 	}
 	return index
 }()
