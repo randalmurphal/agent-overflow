@@ -100,7 +100,10 @@ page-operation JavaScript in `webkitjs.go` and `pagejs.go`; selectors and user
 text cross as JSON values rather than source fragments.
 
 Hidden native WebKit pages must remain attached to their window in a clipped
-1x1 host at their viewport so layout, animation, and snapshots remain live.
+empty host at their viewport so layout, animation, and snapshots remain live.
+A WebKitGTK page's host keeps one widget parent from its first park to its
+close: a reparent drops the frame WebKit last drew, and a static page shown
+again stays empty.
 Presentation scales the view (a GTK allocation transform, an AppKit bounds
 size) inside a per-page clip. Do not use opacity, natural-size requests, or a
 resize of the page as substitutes.

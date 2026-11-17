@@ -269,11 +269,15 @@ Hidden agent pages are hidden views. Spike-measured: an unmapped view
 runs `setInterval` at ~1Hz and zero rAF, with no API override — so
 background-page tooling is built on snapshots + JS evaluation, never
 on the page animating itself. Loads and JS execution work normally.
-Windows is unaffected. Two hiding traps are load-bearing: background
-views park inside a 1x1 clipping `GtkScrolledWindow` added before the
-SPA overlay (a `GtkFixed` at offscreen coordinates propagates its size
-and ballooned the window to 6280x5837), and `opacity:0` is never used
-to hide (it kills rAF while timers keep running).
+Windows is unaffected. Three hiding traps are load-bearing: a
+background view parks as an empty clipping box among the pane
+overlay's children, which cost the window no size (a `GtkFixed` at
+offscreen coordinates propagates its size and ballooned the window to
+6280x5837); a view never changes widget parent between hidden and
+shown, because a reparent unrealizes it and drops the frame WebKit
+last drew, and a static page draws no other, so it came back empty;
+and `opacity:0` is never used to hide (it kills rAF while timers keep
+running).
 
 ## 7. The pane: chrome, rect sync, airspace
 

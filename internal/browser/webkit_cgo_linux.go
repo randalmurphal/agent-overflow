@@ -429,8 +429,8 @@ func webkitAttachHost(window unsafe.Pointer) error {
 	return nil
 }
 
-func webkitParkView(view unsafe.Pointer, slot int) {
-	gtkDo(func() { C.ao_wk_host_park(view, C.int(slot)) })
+func webkitParkView(view unsafe.Pointer) {
+	gtkDo(func() { C.ao_wk_host_park(view) })
 }
 
 // webkitPresentView shows the view at its placement: the fitted rect, its
@@ -459,9 +459,9 @@ func webkitSetViewBackground(view webkitView, color webkitRGB) error {
 
 // webkitHideView parks the view. A view that held keyboard focus gives it to
 // the SPA's webview; the error says when that handoff failed.
-func webkitHideView(view webkitView, slot int) error {
+func webkitHideView(view webkitView) error {
 	released := 0
-	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_host_hide(view, C.int(slot))) }); err != nil {
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_host_hide(view)) }); err != nil {
 		return err
 	}
 	return focusReleaseError(released)
