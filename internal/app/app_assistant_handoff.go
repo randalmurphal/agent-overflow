@@ -571,15 +571,6 @@ func (a *App) handOffAssistantLocked(oldThreadID, newThreadID string) (store.Ass
 	}
 	carried := a.moveComposerAcrossHandOffLocked(oldThreadID, newThreadID)
 	unlockMutable()
-	// The handoff archived the old thread, and what it owned moved with its
-	// requests, so its archive has nothing to walk and ends here; a crash
-	// before this leaves it for the boot, which finds nothing to walk.
-	a.beginArchiveWalk(oldThreadID)
-	owed, err := a.endArchiveWalkLocked(oldThreadID)
-	if err != nil {
-		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
-	}
-	a.deliverOwnerOps(owed, nil, reachLater)
 	interrupted := a.settleReadRequestsForHandOff(oldThreadID)
 	if sess, ok := a.sessionManager().take(oldThreadID); ok {
 		if err := a.teardownAndCloseSession(oldThreadID, sess); err != nil {

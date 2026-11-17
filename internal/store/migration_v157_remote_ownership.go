@@ -19,15 +19,9 @@ package store
 // `thread_owner_ops` keeps what S still owes D, one row per link, past the
 // spawn row's own delete (no foreign key). idx_thread_requests_remote_spawn_target
 // finds the remote spawn that names a thread there.
-//
-// `threads.archive_cascade` marks an archive that has not finished reaching
-// what its thread owns.
 const remoteOwnershipMigrationVersion = 157
 
 const remoteOwnershipV157SQL = `
-ALTER TABLE threads ADD COLUMN archive_cascade INTEGER NOT NULL DEFAULT 0 CHECK(archive_cascade IN (0,1));
-CREATE INDEX idx_threads_archive_cascade ON threads(id) WHERE archive_cascade = 1;
-
 ALTER TABLE thread_request_receipts ADD COLUMN spawn_link INTEGER NOT NULL DEFAULT 0 CHECK(spawn_link IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN owner_seen_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_request_receipts ADD COLUMN owner_op_seq INTEGER NOT NULL DEFAULT 0;

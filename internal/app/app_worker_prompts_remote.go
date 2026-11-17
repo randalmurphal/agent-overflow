@@ -425,7 +425,7 @@ func (a *App) rerouteRemotePromptsFrom(threadID string) {
 // here. The prompt is kept as returned until that computer stops listing
 // it. The return is best effort: a prompt this computer no longer names as
 // held goes back there when its lease runs out. Nothing is sent for a
-// worker this computer owes an archive or delete (store.OwesWorkerEnd): that
+// worker this computer owes an archive or delete (owesWorkerEnd): that
 // operation ends the prompt with the worker, so the person there is not
 // asked about a worker on its way out, and the lease covers one that
 // cannot arrive.
@@ -443,7 +443,7 @@ func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) {
 	if returned.delivery != "" {
 		a.withdrawRemotePromptWake(returned)
 	}
-	ending, err := a.store.OwesWorkerEnd(returned.spawn.Token)
+	ending, err := a.owesWorkerEnd(returned.spawn.Token)
 	if err != nil {
 		log.Printf("worker prompts: %v", err)
 	}

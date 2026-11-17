@@ -8,12 +8,9 @@ import (
 
 // The archive flag has one writer, setThreadArchivedTx. An archive is
 // durable at its flip, and what the thread owns follows through a walk the
-// app runs after the commit (finishArchive): its owned workers, and the
-// archives owed for its workers on paired computers. The flip therefore
-// marks the archive unfinished (archive_cascade) in its own transaction,
-// the walk's end clears the mark (OweRemoteArchives), and a boot finishes
-// every archive still marked (ListUnfinishedArchives). An unarchive clears
-// the mark, so a thread is marked only while it is archived.
+// app runs after the commit (finishArchive): its owned workers, and at the
+// walk's end the archives owed for its workers on paired computers
+// (OweRemoteArchives).
 
 // workerFence is what an archive or delete of a worker holds through: its
 // owner here, or the link a paired computer's owner reaches it by. The zero
@@ -38,13 +35,9 @@ func (f workerFence) condition() (string, []any) {
 // setThreadArchivedTx writes the archive flag of id in tx and reports
 // whether the flag moved, with the row it wrote when it did.
 //
-// An archive marks the archive unfinished. A fence makes it a worker's,
-// carried out for its owner: a local owner's walk flips the worker only
-// while that owner is archived and owns it, and leaves a worker already
-// archived unmarked, because no walk of its own follows; a link's archive
-// flips the worker only while the link owns it, and marks one already
-// archived, as an archive a person or an agent asks of an archived thread
-// does, so its walk runs again.
+// A fence makes an archive a worker's, carried out for its owner: a local
+// owner's walk flips the worker only while that owner is archived and owns
+// it; a link's archive flips the worker only while the link owns it.
 //
 // An unarchive ends the archive and withdraws what it owed the paired
 // computers (supersedeOwedArchivesTx).
@@ -69,18 +62,7 @@ func setThreadArchivedTx(tx *sql.Tx, id string, archived bool, fence workerFence
 		write.Change += ` AND EXISTS (SELECT 1 FROM threads AS owner WHERE owner.id = ? AND owner.archived = 1)`
 		write.ChangeArgs = append(write.ChangeArgs, fence.owner)
 	}
-	row, changed, err := applyThreadRowWriteTx(tx, write)
-	if err != nil || changed || fence.owner != "" {
-		return row, changed, err
-	}
-	mark := `UPDATE threads SET archive_cascade = 1 WHERE id = ? AND archived = 1`
-	if fenced != "" {
-		mark += ` AND ` + fenced
-	}
-	if _, err := tx.Exec(mark, append([]any{id}, args...)...); err != nil {
-		return Thread{}, false, fmt.Errorf("%s: mark it unfinished: %w", write.Action, err)
-	}
-	return row, false, nil
+	return applyThreadRowWriteTx(tx, write)
 }
 
 // setThreadArchived is setThreadArchivedTx in a transaction of its own.
@@ -100,8 +82,7 @@ func (s *Store) setThreadArchived(id string, archived bool, fence workerFence) (
 	return row, changed, nil
 }
 
-// threadArchivedWrite is the archive flip as a row write: archiving marks
-// the archive unfinished, unarchiving ends it.
+// threadArchivedWrite is the archive flip as a row write.
 func threadArchivedWrite(id string, archived bool) rowWrite {
 	flag, action := "1", "archive"
 	if !archived {
@@ -110,7 +91,7 @@ func threadArchivedWrite(id string, archived bool) rowWrite {
 	return rowWrite{
 		Action:  fmt.Sprintf("store: %s thread %s", action, id),
 		ID:      id,
-		Set:     "archived = " + flag + ", archive_cascade = " + flag + ", updated_at = ?",
+		Set:     "archived = " + flag + ", updated_at = ?",
 		SetArgs: []any{nowMillis()},
 		Change:  "archived IS NOT " + flag,
 	}
@@ -146,29 +127,12 @@ func supersedeOwedArchivesTx(tx *sql.Tx, threadID string, now int64) error {
 	return nil
 }
 
-// unfinishedArchivesSQL lists the threads this computer holds whose
-// archive's walk has not ended.
-const unfinishedArchivesSQL = `SELECT id FROM owned_threads WHERE archive_cascade = 1 AND archived = 1 ORDER BY id`
-
-// ListUnfinishedArchives lists the threads whose archive's walk did not
-// end, for the boot to finish. A thread whose delete committed, a holder
-// and a thread moved to another computer are left out: none is this
-// computer's to walk.
-func (s *Store) ListUnfinishedArchives() ([]string, error) {
-	ids, err := queryIDs(s.reader(), unfinishedArchivesSQL)
-	if err != nil {
-		return nil, fmt.Errorf("store: list unfinished archives: %w", err)
-	}
-	return ids, nil
-}
-
 // ArchiveLinkedWorker archives threadID for its owner on a paired computer:
 // the owner operation seq that owner sent through the link token, from
 // deviceID. In one transaction it refuses a thread the link does not own
 // (ErrWorkerNotOwned), takes seq once, and archives the thread
-// (setThreadArchivedTx with the link's fence), marking an already archived
-// one's archive unfinished so its walk runs again. The seq the link took
-// last, sent again, walks again while the thread is still archived: its
+// (setThreadArchivedTx with the link's fence). The seq the link took last,
+// sent again, walks again while the thread is still archived: its
 // owner keeps it owed until every worker below is archived, and the walk is
 // what archives them. applied is false for an older seq, or the same one
 // once the thread was reopened, which changes nothing; changed is whether
@@ -194,20 +158,16 @@ func (s *Store) ArchiveLinkedWorker(threadID, token, deviceID string, seq int64)
 	fence := workerFence{link: &LinkFence{Token: token, DeviceID: deviceID}}
 	condition, args := fence.condition()
 	if seq == taken {
-		result, err := tx.Exec(`UPDATE threads SET archive_cascade = 1 WHERE id = ? AND archived = 1 AND `+condition,
-			append([]any{threadID}, args...)...)
-		if err != nil {
+		var again bool
+		if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM threads WHERE id = ? AND archived = 1 AND `+condition+`)`,
+			append([]any{threadID}, args...)...).Scan(&again); err != nil {
 			return Thread{}, false, false, fmt.Errorf("%s: walk seq %d again: %w", action, seq, err)
 		}
-		again, err := rowsChanged(result, action)
-		if err != nil || !again {
-			return Thread{}, false, false, err
+		if !again {
+			return Thread{}, false, false, nil
 		}
 		if row, err = getThreadTx(tx, threadID); err != nil {
 			return Thread{}, false, false, fmt.Errorf("%s: %w", action, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return Thread{}, false, false, fmt.Errorf("%s: commit: %w", action, err)
 		}
 		return row, false, true, nil
 	}

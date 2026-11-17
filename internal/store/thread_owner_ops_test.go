@@ -203,8 +203,7 @@ func TestADeleteOverridesAnOwedArchive(t *testing.T) {
 
 // OweRemoteArchives owes an archive for the remote spawns of the owner and
 // of the archived owned threads beneath it, not of an open worker or one
-// with a sidebar row, and only while the owner is archived, whose cascade
-// mark it then clears.
+// with a sidebar row, and only while the owner is archived.
 func TestOweRemoteArchives(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"owner", "archived", "open", "placed", "free"} {
@@ -222,9 +221,6 @@ func TestOweRemoteArchives(t *testing.T) {
 		{"r-owner", "owner"}, {"r-archived", "archived"}, {"r-open", "open"}, {"r-placed", "placed"}, {"r-free", "free"},
 	} {
 		seedRemoteSpawn(t, s, seed.token, seed.caller, "pc", "w-"+seed.token)
-	}
-	if _, err := s.db.Exec(`UPDATE threads SET archive_cascade = 1 WHERE id IN ('owner', 'free')`); err != nil {
-		t.Fatal(err)
 	}
 
 	if owed, err := s.OweRemoteArchives("free"); err != nil || len(owed) != 0 {
@@ -244,13 +240,6 @@ func TestOweRemoteArchives(t *testing.T) {
 	slices.Sort(tokens)
 	if !slices.Equal(tokens, []string{"r-archived", "r-owner"}) {
 		t.Fatalf("owed archives for %v, want [r-archived r-owner]", tokens)
-	}
-	var ownerCascade, freeCascade bool
-	if err := s.db.QueryRow(`SELECT (SELECT archive_cascade FROM threads WHERE id = 'owner'), (SELECT archive_cascade FROM threads WHERE id = 'free')`).Scan(&ownerCascade, &freeCascade); err != nil {
-		t.Fatal(err)
-	}
-	if ownerCascade || !freeCascade {
-		t.Fatalf("cascade marks owner %v free %v; want the archived owner's cleared and the open one's left", ownerCascade, freeCascade)
 	}
 }
 

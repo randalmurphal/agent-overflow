@@ -437,28 +437,10 @@ func TestArchivingAnOwnerReachesTheRemoteWorkerOfItsArchivedWorker(t *testing.T)
 	}
 }
 
-// An archive a crash stopped before it owed anything is finished at the
-// next boot, the other computer's worker included.
-func TestABootFinishesTheRemoteHalfOfAnArchive(t *testing.T) {
-	t.Parallel()
-	p := newOwnerOpPair(t, false)
-	if _, _, err := p.source.store.ArchiveThread(p.caller.ID); err != nil {
-		t.Fatal(err)
-	}
-	if owed := p.owed(t); len(owed) != 0 {
-		t.Fatalf("the flip alone owes %+v", owed)
-	}
-	p.source.finishPendingArchives(t.Context())
-	p.drain(t)
-	if !archivedThere(t, p, p.worker) {
-		t.Fatal("the boot did not finish the archive there")
-	}
-}
-
-// A crash on the other computer after it admitted an archive is finished
-// at its boot, and the archive sent again changes nothing there, a worker
-// reopened since included.
-func TestAnArchiveAdmittedBeforeACrashIsNotAppliedTwice(t *testing.T) {
+// An archive the other computer admitted, whose answer never came back, is
+// sent again after the worker there was reopened, and changes nothing
+// there: the link took its sequence.
+func TestAnArchiveAdmittedWhoseAnswerWasLostIsNotAppliedTwice(t *testing.T) {
 	t.Parallel()
 	p := newOwnerOpPair(t, false)
 	child := p.spawnBelowThere(t, p.worker)
@@ -470,13 +452,14 @@ func TestAnArchiveAdmittedBeforeACrashIsNotAppliedTwice(t *testing.T) {
 	if len(owed) != 1 {
 		t.Fatalf("owed = %+v", owed)
 	}
-	// Admitted, and the crash came before its walk.
-	if _, _, applied, err := p.dest.store.ArchiveLinkedWorker(p.worker, p.token, p.device, owed[0].Seq); err != nil || !applied {
-		t.Fatalf("admit the archive there: %v, %v", applied, err)
+	// Admitted there; its answer is lost.
+	answer, err := p.dest.admitOwnerOp(t.Context(), p.device, p.caller.ID,
+		threadOwnerOpArgs{Spawn: p.token, Seq: owed[0].Seq, Op: store.OwnerOpArchive})
+	if err != nil || answer.Outcome != ownerOpApplied {
+		t.Fatalf("admit the archive there: %+v, %v", answer, err)
 	}
-	p.dest.finishPendingArchives(t.Context())
 	if !archivedThere(t, p, child) {
-		t.Fatal("the boot there did not archive the worker's own worker")
+		t.Fatal("the archive there did not archive the worker's own worker")
 	}
 	if _, err := p.dest.UnarchiveThread(p.worker); err != nil {
 		t.Fatal(err)
