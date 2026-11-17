@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -171,5 +172,29 @@ func TestLiveStateSnapshotDoesNotAllocateIdleThreadIdentity(t *testing.T) {
 	}
 	if router.identityIfPresent("idle") != nil {
 		t.Fatal("live-state read allocated a permanent identity")
+	}
+}
+
+// TestLiveStateSnapshot_ASendStillToOpenItsTurnIsOwed: a direct send is
+// never a composer marker, but from its write until the turn it opens
+// starts, the thread has a turn coming: the snapshot says so, and stops
+// once a turn start has taken the send. A steer joins a running turn and
+// opens none.
+func TestLiveStateSnapshot_ASendStillToOpenItsTurnIsOwed(t *testing.T) {
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
+	r.RegisterPendingSteerSendWithExpectation("t1", "user:0:steer:1", 0, PendingSendExpectation{})
+	if r.LiveStateSnapshotForThread("t1").SendOpensTurn {
+		t.Fatal("a steer reads as a send that opens a turn")
+	}
+	r.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+	snapshot := r.LiveStateSnapshotForThread("t1")
+	if !snapshot.SendOpensTurn || len(snapshot.FlushedItems) != 0 {
+		t.Fatalf("snapshot after a direct send = %+v; want a turn owed and no marker", snapshot)
+	}
+	if _, ok := r.claimTurnOpeningPendingSend("t1"); !ok {
+		t.Fatal("no send to open the turn")
+	}
+	if r.LiveStateSnapshotForThread("t1").SendOpensTurn {
+		t.Fatal("a send whose turn started still reads as owed")
 	}
 }

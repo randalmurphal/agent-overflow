@@ -27,6 +27,11 @@ type LiveStateSnapshot struct {
 	// total wire silence — a reconnect inside it has no upcoming frame
 	// to re-learn the state from. See compaction_status.go.
 	CompactingSinceUnixMs int64
+	// SendOpensTurn is whether a send written to the provider will open a
+	// turn that has not opened yet (pendingSend.canOpenTurn): a direct send,
+	// which FlushedItems never shows, between its write and its turn's
+	// start. The thread is not at rest meanwhile.
+	SendOpensTurn bool
 }
 
 // LiveStateSnapshotForThread copies all frontend-visible live state for one
@@ -103,6 +108,9 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	//   - A flush resend carries neither copy: its row was persisted and
 	//     emitted by the interrupt that produced it. No marker.
 	for _, pending := range st.pendingSends {
+		if pending.canOpenTurn() {
+			snapshot.SendOpensTurn = true
+		}
 		if pending.Shape != sendShapeFlush || pending.AnchoredAtInterrupt {
 			continue
 		}
