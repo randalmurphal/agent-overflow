@@ -313,14 +313,21 @@ func aoWKVPageCrashed(pageID C.uint64_t) {
 }
 
 // aoWKVPopup holds a popup WebKit created and answers its number, zero for
-// one nothing may own.
+// one nothing may own. Its opener is the page openerID, or, while that is
+// zero, the popup openerPopup, held or being adopted, whose handle is the
+// one its adoption keeps (pageHandle).
 //
 //export aoWKVPopup
-func aoWKVPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
+func aoWKVPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := wkTakeString(uri)
-	opener := wkLookupPage(uint64(openerID))
+	var opener string
+	if page := wkLookupPage(uint64(openerID)); page != nil {
+		opener = page.handle
+	} else if openerPopup != 0 {
+		opener = pageHandle(uint64(openerPopup))
+	}
 	profile := wkLookupProfile(uint64(profileID))
-	if opener == nil || profile == nil {
+	if opener == "" || profile == nil {
 		// Nothing can own it, so nothing may keep it alive — but not YET. This
 		// export runs inside -createWebViewWithConfiguration:, which is about to
 		// return this very view to WebKit; releasing it here would hand WebKit a
@@ -329,9 +336,9 @@ func aoWKVPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, 
 		go wkCloseView(view)
 		return 0
 	}
-	n, handle := profile.engine.holdPopup(view, opener.handle)
+	n, handle := profile.engine.holdPopup(view, opener)
 	go profile.engine.events.PopupOpened(enginePopup{
-		Profile: profile.Handle(), Opener: opener.handle, Handle: handle, URL: target,
+		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
 	return C.uint64_t(n)
 }

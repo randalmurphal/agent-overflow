@@ -294,14 +294,21 @@ func aoWebKitPageCrashed(pageID C.uint64_t, reason *C.char) {
 }
 
 // aoWebKitPopup holds a popup WebKit created and answers its number, zero
-// for one nothing may own.
+// for one nothing may own. Its opener is the page openerID, or, while that
+// is zero, the popup openerPopup, held or being adopted, whose handle is
+// the one its adoption keeps (pageHandle).
 //
 //export aoWebKitPopup
-func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
+func aoWebKitPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer, uri *C.char) C.uint64_t {
 	target := webkitTakeString(uri)
-	opener := webkitLookupPage(uint64(openerID))
+	var opener string
+	if page := webkitLookupPage(uint64(openerID)); page != nil {
+		opener = page.handle
+	} else if openerPopup != 0 {
+		opener = pageHandle(uint64(openerPopup))
+	}
 	profile := webkitLookupProfile(uint64(profileID))
-	if opener == nil || profile == nil {
+	if opener == "" || profile == nil {
 		// Nothing can own it, so nothing may keep it alive — but not YET, and
 		// not from here. This export runs on the GTK thread inside `create`,
 		// which is about to return this very widget to WebKit: unreffing it now
@@ -312,9 +319,9 @@ func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointe
 		go webkitCloseView(view)
 		return 0
 	}
-	n, handle := profile.engine.holdPopup(view, opener.handle)
+	n, handle := profile.engine.holdPopup(view, opener)
 	go profile.engine.events.PopupOpened(enginePopup{
-		Profile: profile.Handle(), Opener: opener.handle, Handle: handle, URL: target,
+		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
 	return C.uint64_t(n)
 }

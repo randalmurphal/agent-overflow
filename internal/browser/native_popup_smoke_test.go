@@ -57,3 +57,64 @@ func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
 		}
 	}
 }
+
+// TestNativeEngineRealPopupOpensAChildWhileHeld has a popup's parser script
+// open a child at once, while the Manager still holds the popup from its
+// adoption: the child becomes a tab of the same thread, after its opener.
+func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	holdPopupAdoption(manager, time.Second)
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-popup-child", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	opener, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "opener.html",
+		`<!doctype html><title>opener</title>`), OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the opener: %v", err)
+	}
+	child := writeSmokeFile(t, workspace, "child.html", `<!doctype html><title>child</title>`)
+	parent := writeSmokeFile(t, workspace, "parent.html", fmt.Sprintf(
+		`<!doctype html><title>parent</title><script>window.open(%s)</script>`, jsonString(smokeFileURL(child))))
+	if _, _, err := manager.Evaluate(ctx, access, opener.ID,
+		fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(parent))), nil); err != nil {
+		t.Fatalf("open the parent popup: %v", err)
+	}
+	for {
+		titles := map[string]int{}
+		for _, tab := range manager.CompanionState(access).Pages {
+			titles[tab.Title]++
+		}
+		if titles["parent"] > 0 && titles["child"] > 0 {
+			// One window, one tab.
+			time.Sleep(500 * time.Millisecond)
+			titles = map[string]int{}
+			for _, tab := range manager.CompanionState(access).Pages {
+				titles[tab.Title]++
+			}
+			if titles["parent"] != 1 || titles["child"] != 1 {
+				t.Fatalf("tabs by title %v, want one parent and one child", titles)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the parent's and the child's tabs never both opened: %+v", manager.CompanionState(access).Pages)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}

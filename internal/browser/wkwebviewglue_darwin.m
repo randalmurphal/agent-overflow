@@ -22,7 +22,8 @@ extern void aoWKVDocumentCommitted(uint64_t page_id);
 extern void aoWKVPageLoading(uint64_t page_id, int loading);
 extern void aoWKVPageClosed(uint64_t page_id);
 extern void aoWKVPageCrashed(uint64_t page_id);
-extern uint64_t aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
+extern uint64_t aoWKVPopup(uint64_t opener_page_id, uint64_t opener_popup_id, uint64_t profile_id,
+                           void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
 extern char *aoWKVDownloadDestination(uint64_t profile_id, uint64_t download_id);
 extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t popup_id,
@@ -856,17 +857,21 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // carries its opener's page, profile and download directory: the opener's
   // policy answers until adoption, and a download it starts before then
   // reaches the Go side, which refuses one outside every page. The UI
-  // delegate waits for adoption.
+  // delegate is set now too: a popup can open its own as its first document
+  // parses, before adoption, and names this view by its popup number until
+  // then. Its dialogs and pickers are refused while it has no page id
+  // (aoWKVPagePresented answers no), as a hidden page's are.
   objc_setAssociatedObject(popup, &kAOOpenerIDKey, @(ao_view_policy_page_id(webView)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(popup, &kAOProfileIDKey, @(ao_view_profile_id(webView)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   [popup setNavigationDelegate:ao_delegate()];
+  [popup setUIDelegate:ao_delegate()];
   NSURL *url = [[navigationAction request] URL];
   // Held (the +1 from -alloc) until the Manager adopts or discards it. WebKit
   // does not retain the view it is handed back.
-  uint64_t popup_id = aoWKVPopup(ao_view_page_id(webView), ao_view_profile_id(webView), popup,
-                                 ao_dup([url absoluteString]));
+  uint64_t popup_id = aoWKVPopup(ao_view_page_id(webView), ao_view_popup_id(webView),
+                                 ao_view_profile_id(webView), popup, ao_dup([url absoluteString]));
   // A download the popup starts names it by this (ao_attach_download).
   objc_setAssociatedObject(popup, &kAOPopupIDKey, @(popup_id), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   return popup;

@@ -18,8 +18,8 @@ extern void aoWebKitDocumentCommitted(uint64_t page_id);
 extern void aoWebKitPageLoading(uint64_t page_id, int loading);
 extern void aoWebKitPageClosed(uint64_t page_id);
 extern void aoWebKitPageCrashed(uint64_t page_id, const char *reason);
-extern uint64_t aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
-                              void *view, char *uri);
+extern uint64_t aoWebKitPopup(uint64_t opener_page_id, uint64_t opener_popup_id,
+                              uint64_t profile_id, void *view, char *uri);
 extern int aoWebKitPagePresented(uint64_t page_id);
 extern char *aoWebKitDownloadDestination(uint64_t profile_id, uint64_t download_id);
 extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
@@ -747,10 +747,16 @@ static GtkWidget *ao_create_view(WebKitWebView *view, WebKitNavigationAction *ac
   g_object_set_data(G_OBJECT(popup), AO_OPENER_KEY,
                     GSIZE_TO_POINTER((gsize)ao_view_policy_page_id(view)));
   g_signal_connect(popup, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
+  // A popup can open its own as its first document parses, before the
+  // Manager adopts it: it gets the create handler and the window setting
+  // now, and names this view by its popup number until adoption.
+  g_signal_connect(popup, "create", G_CALLBACK(ao_create_view), NULL);
+  webkit_settings_set_javascript_can_open_windows_automatically(
+      webkit_web_view_get_settings(popup), TRUE);
   WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;
-  uint64_t popup_id = aoWebKitPopup(ao_view_page_id(view), ao_view_profile_id(view), popup,
-                                    uri ? g_strdup(uri) : NULL);
+  uint64_t popup_id = aoWebKitPopup(ao_view_page_id(view), ao_view_popup_id(view),
+                                    ao_view_profile_id(view), popup, uri ? g_strdup(uri) : NULL);
   // A download the popup starts names it by this (ao_download_destination).
   g_object_set_data(G_OBJECT(popup), AO_POPUP_KEY, GSIZE_TO_POINTER((gsize)popup_id));
   return GTK_WIDGET(popup);
@@ -1043,7 +1049,6 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "script-dialog", G_CALLBACK(ao_script_dialog), NULL);
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);
   g_signal_connect(view, "context-menu", G_CALLBACK(ao_context_menu), NULL);
-  g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
   ao_connect_find(view);
 }
 
@@ -1058,9 +1063,11 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
     return NULL;
   }
   g_object_ref_sink(view);
-  // The policy is connected where each view is created, never in
-  // ao_connect_view: a popup needs it before adoption (ao_create_view).
+  // The policy and the create handler are connected where each view is
+  // created, never in ao_connect_view: a popup needs them before adoption
+  // (ao_create_view).
   g_signal_connect(view, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
+  g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
   ao_connect_view(view, page_id, user_script, console_handler);
   return view;
 }

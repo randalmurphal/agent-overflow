@@ -53,7 +53,6 @@ type webkitEngine struct {
 	started bool
 
 	mu        sync.Mutex
-	popupSeq  uint64
 	popups    map[string]heldPopupView
 	profiles  map[uint64]*webkitProfile
 	pane      map[uint64]webkitPaneState
@@ -119,15 +118,15 @@ func (e *webkitEngine) Stop() {
 
 // holdPopup takes ownership of an engine-created view, opened by the page
 // with handle opener, until the Manager adopts or discards it. The engine
-// never decides which. It answers the popup's number, which the view keeps
-// for its downloads, and its handle.
+// never decides which. It answers the popup's number, the page number its
+// adoption gives it, which the view keeps, and its handle.
 func (e *webkitEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string) {
+	n := webkitPageSeq.Add(1)
+	handle := pageHandle(n)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.popupSeq++
-	handle := popupHandle(e.popupSeq)
-	e.popups[handle] = heldPopupView{view: view, opener: opener}
-	return e.popupSeq, handle
+	e.popups[handle] = heldPopupView{view: view, opener: opener, n: n}
+	return n, handle
 }
 
 func (e *webkitEngine) takePopup(handle string) heldPopupView {
@@ -159,7 +158,7 @@ func (p *webkitProfile) downloadStart(page *webkitPage, popup uint64) downloadSt
 			start.Popup, start.Openers = page.popup, []string{page.opener}
 		}
 	case popup != 0:
-		start.Popup = popupHandle(popup)
+		start.Popup = pageHandle(popup)
 		if opener := p.engine.heldOpener(start.Popup); opener != "" {
 			start.Openers = []string{opener}
 		}
@@ -254,7 +253,7 @@ func webkitUserScript() string {
 
 func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
 	script := webkitUserScript()
-	page, err := p.newPageShell(hooks)
+	page, err := p.newPageShell(hooks, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +274,7 @@ func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageH
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
 	}
 	script := webkitUserScript()
-	page, err := p.newPageShell(hooks)
+	page, err := p.newPageShell(hooks, held.n)
 	if err != nil {
 		webkitCloseView(view)
 		return nil, err
@@ -297,20 +296,24 @@ func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageH
 
 // newPageShell allocates the Go half of a page and registers it BEFORE the view
 // exists, so a delegate that fires during construction resolves to a real page
-// instead of being dropped.
-func (p *webkitProfile) newPageShell(hooks pageHooks) (*webkitPage, error) {
+// instead of being dropped. A popup's page takes the number it was held
+// under (holdPopup); zero numbers a new one.
+func (p *webkitProfile) newPageShell(hooks pageHooks, id uint64) (*webkitPage, error) {
 	p.mu.Lock()
 	if p.disposed {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("browser: workspace profile is closed")
 	}
 	p.mu.Unlock()
+	if id == 0 {
+		id = webkitPageSeq.Add(1)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	page := &webkitPage{
-		engine: p.engine, profile: p, id: webkitPageSeq.Add(1),
+		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel,
 	}
-	page.handle = fmt.Sprintf("page-%d", page.id)
+	page.handle = pageHandle(page.id)
 	webkitPageByID.Store(page.id, page)
 	p.mu.Lock()
 	p.pages[page] = struct{}{}

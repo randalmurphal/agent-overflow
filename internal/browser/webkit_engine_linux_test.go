@@ -163,7 +163,7 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 	profile := &webkitProfile{engine: engine, handle: "profile-1"}
 	view := unsafe.Pointer(new(byte))
 	n, handle := engine.holdPopup(view, "page-1")
-	if handle != popupHandle(n) {
+	if handle != pageHandle(n) {
 		t.Fatalf("held as %s, numbered %d", handle, n)
 	}
 	want := downloadStart{Popup: handle, Openers: []string{"page-1"}, Profile: "profile-1"}

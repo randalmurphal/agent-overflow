@@ -98,7 +98,10 @@ become a fallback for an ordinary windowless process.
 
 Every engine reports a page it opened by itself as `PopupOpened`, and the
 Manager alone adopts or discards it (`adoptPopup`). A popup whose opener is
-still being adopted, or not reported yet, waits for it (`awaitOpener`). A
+still being adopted, or not reported yet, waits for it (`awaitOpener`), so
+an engine reports a popup under the handle its adoption keeps; a WebKit
+popup view gets its policy and create handlers when it is made
+(`pageHandle`). A
 download a popup starts before its tab is listed names the popup by the
 handle the Manager adopts it under (`downloadStart.Popup`), and the Manager
 parks it, newest progress only, until the popup's fate lists it in the
