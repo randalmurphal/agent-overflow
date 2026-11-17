@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -265,10 +264,12 @@ func entryOutcome(status int) Outcome {
 }
 
 // applyEntries reads a 207's per-issue results into group. The answer is
-// taken only whole: every entry must name an issue of the group, once,
-// and carry a status; otherwise which issues Jira took is unknown for the
-// whole group. An issue with no entry, or an entry status this package
-// does not know, is unknown. Any unknown issue stops the batch.
+// taken only whole: every entry must match exactly one issue of the
+// group by its ID and key together, no two entries may name the same ID,
+// key or issue, and every entry carries a status; otherwise which issues
+// Jira took is unknown for the whole group. An issue with no entry, or an
+// entry status this package does not know, is unknown. Any unknown issue
+// stops the batch.
 func applyEntries(resp *trackerapi.Response, group []IssueOutcome) error {
 	var v struct {
 		Entries *[]struct {
@@ -290,18 +291,27 @@ func applyEntries(resp *trackerapi.Response, group []IssueOutcome) error {
 		return unknown("has no entries")
 	}
 	found := make([]bool, len(group))
+	seen := map[string]bool{}
 	for _, e := range *v.Entries {
-		i := slices.IndexFunc(group, func(o IssueOutcome) bool {
-			return strings.EqualFold(e.IssueKey, o.Issue) || string(e.IssueID) == o.Issue
-		})
+		id, key := string(e.IssueID), strings.ToUpper(e.IssueKey)
+		var hits []int
+		for i, o := range group {
+			if id != "" && id == o.Issue || key != "" && key == strings.ToUpper(o.Issue) {
+				hits = append(hits, i)
+			}
+		}
 		switch {
-		case i < 0:
+		case len(hits) == 0:
 			return unknown("names an issue not in the request")
-		case found[i]:
-			return unknown("names " + group[i].Issue + " twice")
+		case len(hits) > 1:
+			return unknown("has an entry whose ID and key name different issues of the request")
+		case id != "" && seen["id "+id] || key != "" && seen["key "+key]:
+			return unknown("names " + group[hits[0]].Issue + " twice")
 		case e.Status == nil:
 			return unknown("has an entry without a status")
 		}
+		i := hits[0]
+		seen["id "+id], seen["key "+key] = true, true
 		found[i] = true
 		group[i].Outcome = entryOutcome(*e.Status)
 		if group[i].Outcome != OutcomeDone {

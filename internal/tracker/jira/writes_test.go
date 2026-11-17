@@ -96,14 +96,17 @@ func TestEditAnswers(t *testing.T) {
 		status        int
 		body          string
 		issue         bool
+		key           string // of the issue reported
 		applied, fail bool
 	}{
-		{204, ``, false, false, false},
-		{200, `{"id":"10001","key":"WEB-1","fields":{"description":null}}`, true, false, false},
-		{200, `{"id":"10001","key":"WEB-1","fields":"none"}`, true, true, true},
-		{200, `{"id":"10002","key":"WEB-2","fields":{}}`, false, false, true},
-		{200, `<html>saved</html>`, false, false, true},
-		{201, `{"id":"10001","key":"WEB-1","fields":{}}`, false, false, true},
+		{204, ``, false, "", false, false},
+		{200, `{"id":"10001","key":"WEB-1","fields":{"description":null}}`, true, "WEB-1", false, false},
+		{200, `{"id":"10001","key":"WEB-1","fields":"none"}`, true, "WEB-1", true, true},
+		{200, `{"id":10001,"key":"WEB-1","fields":{}}`, true, "WEB-1", true, true},
+		{200, `{"id":10001,"key":5,"fields":{}}`, true, "", true, true},
+		{200, `{"id":"10002","key":"WEB-2","fields":{}}`, false, "", false, true},
+		{200, `<html>saved</html>`, false, "", false, true},
+		{201, `{"id":"10001","key":"WEB-1","fields":{}}`, false, "", false, true},
 	} {
 		desc := storedDesc(t, nil)
 		f, c := editSite(t, desc)
@@ -125,7 +128,7 @@ func TestEditAnswers(t *testing.T) {
 			t.Errorf("%d %s: got %+v %v", tc.status, tc.body, res, err)
 			continue
 		}
-		if tc.issue && res.Issue.ID != "10001" {
+		if tc.issue && (res.Issue.ID != "10001" || res.Issue.Key != tc.key) {
 			t.Errorf("%d %s: the issue %+v", tc.status, tc.body, res.Issue)
 		}
 		if err == nil {

@@ -4,9 +4,14 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -100,4 +105,73 @@ func TestDialectThroughTransport(t *testing.T) {
 func isAuth(err error) bool {
 	_, ok := errors.AsType[*trackerapi.AuthError](err)
 	return ok
+}
+
+// TestOnAnswerGetsTheRateLimitHeaders proves the answer hook receives
+// exactly the rate limit headers Jira documents, scrubbed of the
+// credential, and no other header.
+func TestOnAnswerGetsTheRateLimitHeaders(t *testing.T) {
+	f := newFake(t)
+	var mu sync.Mutex
+	var got []http.Header
+	c, err := New(Options{
+		BaseURL: f.srv.URL, Version: "test",
+		Credentials: trackerapi.StaticCredentials(trackerapi.Basic("user1@example.com", secret.New([]byte(testToken)))),
+		OnAnswer: func(status int, h http.Header) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, h)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	documented := []string{
+		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-NearLimit",
+		"RateLimit-Reason", "Retry-After", "RateLimit", "RateLimit-Policy",
+		"Beta-RateLimit", "Beta-RateLimit-Policy", "Beta-Retry-After",
+		"X-Beta-RateLimit-Limit", "X-Beta-RateLimit-Remaining", "X-Beta-RateLimit-Reset",
+		"X-Beta-RateLimit-NearLimit", "X-Beta-RateLimit-Reason",
+	}
+	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		for i, name := range documented {
+			w.Header().Set(name, "v"+strconv.Itoa(i))
+		}
+		w.Header().Set("RateLimit-Reason", "jira-burst-based "+testToken)
+		w.Header().Set("Location", "https://example.com/"+testToken)
+		w.Header().Set("Set-Cookie", "session=1")
+		w.Header().Set("X-Request-Id", "abc")
+		reply(200, userOneJSON)(w, r, b)
+	})
+	if _, err := c.Myself(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("%d reports", len(got))
+	}
+	h := got[0]
+	var keys []string
+	for k := range h {
+		keys = append(keys, k)
+	}
+	want := make([]string, len(documented))
+	for i, name := range documented {
+		want[i] = http.CanonicalHeaderKey(name)
+	}
+	slices.Sort(keys)
+	slices.Sort(want)
+	if !slices.Equal(keys, want) {
+		t.Errorf("headers %v\nwant %v", keys, want)
+	}
+	for i, name := range documented {
+		if name != "RateLimit-Reason" && h.Get(name) != "v"+strconv.Itoa(i) {
+			t.Errorf("%s = %q", name, h.Get(name))
+		}
+	}
+	if reason := h.Get("RateLimit-Reason"); strings.Contains(reason, testToken) || !strings.HasPrefix(reason, "jira-burst-based ") {
+		t.Errorf("RateLimit-Reason %q", reason)
+	}
 }

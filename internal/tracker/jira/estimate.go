@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -76,10 +77,12 @@ type EstimateInput struct {
 // value of the other kind than the field takes, is refused before
 // anything is sent. It returns the field ID and the value as Jira stored
 // it, empty for no estimate. The answer is read strictly in its
-// documented form, 200 with {fieldId, value} where value is a string or
-// null: one that names the field but is otherwise malformed is a
-// StepEstimate *StepError whose Applied reports it, with the field ID;
-// any other leaves the outcome unknown and returns nothing.
+// documented form, 200 with {fieldId, value} where fieldId is the field
+// written and value is a string or an explicit null: one that names the
+// field but is otherwise malformed, its value member absent included, is
+// a StepEstimate *StepError whose Applied reports it, with the field ID;
+// any other, one naming another field included, leaves the outcome
+// unknown and returns nothing.
 func (c *Client) SetEstimate(ctx context.Context, in EstimateInput) (fieldID, stored string, err error) {
 	if err := c.admit(ctx); err != nil {
 		return "", "", err
@@ -96,26 +99,41 @@ func (c *Client) SetEstimate(ctx context.Context, in EstimateInput) (fieldID, st
 		return "", "", notSentErr(fmt.Errorf("jira: estimate %s: %w", in.Issue, err))
 	}
 	var j struct {
-		FieldID string  `json:"fieldId"`
-		Value   *string `json:"value"`
+		FieldID string          `json:"fieldId"`
+		Value   json.RawMessage `json:"value"`
 	}
 	req := trackerapi.Request{
 		Method: http.MethodPut, Path: agilePath + "issue/" + url.PathEscape(in.Issue) + "/estimation",
 		Query: url.Values{"boardId": {strconv.FormatInt(in.Board, 10)}},
 		Body:  map[string]any{"value": value},
 	}
-	w, err := c.write(ctx, req, bodyAnswer(namesField, http.StatusOK), &j)
-	if err != nil {
-		return w.text("fieldId"), "", fmt.Errorf("jira: estimate %s: %w", in.Issue, &StepError{Step: StepEstimate, Err: err})
+	w, err := c.write(ctx, req, bodyAnswer(namesField(cfg.Estimation.FieldID), http.StatusOK), &j)
+	if err == nil {
+		if stored, err = estimateValue(j.Value); err == nil {
+			return j.FieldID, stored, nil
+		}
 	}
-	if j.Value == nil {
-		return j.FieldID, "", nil
-	}
-	return j.FieldID, *j.Value, nil
+	return w.text("fieldId"), "", fmt.Errorf("jira: estimate %s: %w", in.Issue, &StepError{Step: StepEstimate, Err: err})
 }
 
-// namesField accepts an estimation answer naming its field.
-func namesField(w written) bool { return w.text("fieldId") != "" }
+// estimateValue reads the value member of an estimation answer that named
+// its field: a string, or an explicit null (which decodes as "") for no
+// estimate. An absent member (raw empty, which does not decode) or any
+// other value is the applied case of an answer that did not decode in
+// full.
+func estimateValue(raw json.RawMessage) (string, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", &AnswerError{Applied: true, Message: "the estimate was stored, but its answer's value is absent or not text"}
+	}
+	return s, nil
+}
+
+// namesField accepts an estimation answer naming field, the field
+// written.
+func namesField(field string) func(written) bool {
+	return func(w written) bool { return w.text("fieldId") == field }
+}
 
 // estimateText is v as the estimation endpoint takes it for cfg's field:
 // a number, minutes ("90m") for original time, or nil to clear.

@@ -227,11 +227,14 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 	// Documented: 200 with the issue when returnIssue is true, or 204.
 	var stored issueJSON
 	req := trackerapi.Request{Method: http.MethodPut, Path: apiPath + "issue/" + url.PathEscape(p.issueID), Query: q, Body: body}
-	_, err = c.write(ctx, req, writeAnswer{empty: []int{http.StatusNoContent}, body: []int{http.StatusOK}, names: namesThisID(p.issueID)}, &stored)
+	w, err := c.write(ctx, req, writeAnswer{empty: []int{http.StatusNoContent}, body: []int{http.StatusOK}, names: namesThisID(p.issueID)}, &stored)
 	if err != nil && !answerApplied(err) {
 		return res, &StepError{Step: StepEdit, Err: fmt.Errorf("jira: edit %s: %w", p.issueKey, err)}
 	}
-	if stored.ID != "" {
+	// A 200 names the issue; its ID is kept even when the typed decode
+	// lost it (a number where a string is due).
+	if id := w.id(); id != "" {
+		stored.ID = id
 		res.Issue = stored.decode()
 	}
 	if err != nil {

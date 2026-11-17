@@ -247,8 +247,9 @@ problem on that record, which stays usable.
 - **Write answers.** A write is applied when its answer is a success form
   the spec documents and names what was written, or is a documented empty
   success such as a 204. One that names it but fails to decode elsewhere
-  is applied and returns what decoded. Any other 2xx is an unknown outcome
-  and reports nothing as created, stored or closed. An edit that asks for
+  is applied and returns what decoded. An update's answer must name the
+  record it changed. Any other 2xx is an unknown outcome and reports
+  nothing as created, stored or closed. An edit that asks for
   nothing is refused, and one that asks only for stored values sends
   nothing and says so.
 - **Identity.** Jira answers some paths with a 404 when the credential is
@@ -258,20 +259,24 @@ problem on that record, which stays usable.
   answers carry the same `CredentialMark`; otherwise the 404 is
   unconfirmed and the caller runs the call again. Concurrent 404s share
   checks; nothing is reused over time.
+- **Rate budget.** `Options.OnAnswer` receives, for every answer, the rate
+  limit headers Atlassian documents for Jira Cloud and nothing else.
 - **Boards.** Boards by project, type and name, a board's configuration
   (columns and their statuses, the done column, the estimation field, the
   rank field), its sprints, and the issues of a board, a backlog, a sprint
   or an epic on the `/rest/software/1.0` paths with token paging. Jira
   counts only a board's issues and its backlog. An estimate is read and
-  set through the board's estimation field.
+  set through the board's estimation field; setting one succeeds only on
+  an answer that names that field.
 - **Ranking and sprints.** Rank before or after an issue, move into a
   future or active sprint, and move to the backlog, with a position only
   on a board's backlog. Each is sent in groups of 50 chained after the
   last issue ranked, stops at the first group not answered in full, and
   reports every issue as done, refused, unknown or not sent. A group's
   answer is read only as a 204 or, for a rank and a board's backlog, a 207
-  whose every entry names an issue of the group once with a status;
-  anything else leaves the whole group unknown. Create, update, start and
+  whose every entry names exactly one issue of the group, by its ID and
+  key together, once, with a status; anything else, conflicting or
+  repeated identities included, leaves the whole group unknown. Create, update, start and
   delete a sprint. Completing reads the sprint, the target and every issue
   first, moves the issues outside the board's done column to the sprint or
   backlog the caller names, lists the sprint again, and closes it only

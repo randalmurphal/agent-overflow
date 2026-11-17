@@ -248,25 +248,25 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	if props != nil {
 		body["properties"] = props
 	}
-	res.Comment, err = c.writeComment(ctx, http.MethodPost, path+"/comment", body)
+	res.Comment, err = c.writeComment(ctx, path+"/comment", "", body)
 	if err != nil {
 		return res, fmt.Errorf("jira: comment on %s: %w", in.Issue, err)
 	}
 	return res, nil
 }
 
-// writeComment sends a comment write, POST (documented: 201) or PUT
-// (200), each answering with the comment, and decodes the comment it
-// stored. A failure is a StepComment *StepError; an Applied one returns
-// what of the comment decoded, its ID at least, and any other returns no
-// comment.
-func (c *Client) writeComment(ctx context.Context, method, path string, body any) (*Comment, error) {
-	status := http.StatusCreated
-	if method == http.MethodPut {
-		status = http.StatusOK
+// writeComment sends a comment write to path and decodes the comment it
+// stored: an add (id empty; documented: POST, 201 with the new comment)
+// or an edit of comment id (PUT, 200 naming that comment). A failure is a
+// StepComment *StepError; an Applied one returns what of the comment
+// decoded, its ID at least, and any other returns no comment.
+func (c *Client) writeComment(ctx context.Context, path, id string, body any) (*Comment, error) {
+	method, want := http.MethodPost, bodyAnswer(namesID, http.StatusCreated)
+	if id != "" {
+		method, want = http.MethodPut, bodyAnswer(namesThisID(id), http.StatusOK)
 	}
 	var stored commentJSON
-	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Body: body}, bodyAnswer(namesID, status), &stored)
+	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Body: body}, want, &stored)
 	if err != nil && !answerApplied(err) {
 		return nil, &StepError{Step: StepComment, Err: err}
 	}
@@ -384,7 +384,7 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 		// A PUT without it would show a restricted comment to everyone.
 		body["visibility"] = cur.Visibility
 	}
-	res.Comment, err = c.writeComment(ctx, http.MethodPut, path, body)
+	res.Comment, err = c.writeComment(ctx, path, in.ID, body)
 	if err != nil {
 		return res, fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err)
 	}

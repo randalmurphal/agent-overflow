@@ -170,6 +170,21 @@ func TestEditComment(t *testing.T) {
 	}
 }
 
+// TestEditCommentAnswerNamesAnother proves an edit answered with another
+// comment is an unknown outcome that reports no comment.
+func TestEditCommentAnswerNamesAnother(t *testing.T) {
+	f, c := editCommentSite(t, adf.Doc(para("old")))
+	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		wantJSON(t, b, `{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"new"}]}]},"visibility":{"type":"role","value":"Developers"}}`)
+		reply(200, `{"id":"901","body":{"type":"doc","version":1,"content":[]}}`)(w, r, b)
+	})
+	res, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: "new"})
+	se, ok := errors.AsType[*StepError](err)
+	if !ok || se.Step != StepComment || se.Applied() || !se.OutcomeUnknown() || res.Comment != nil {
+		t.Fatalf("got %+v %v", res, err)
+	}
+}
+
 func TestEditCommentRefusals(t *testing.T) {
 	f, c := editCommentSite(t, layoutDoc())
 	flattened := strings.NewReplacer("<!-- layout -->\n\n", "", "<!-- column 50% -->\n\n", "", "<!-- /column -->\n\n", "", "<!-- /layout -->\n", "").

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -262,6 +264,72 @@ func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
 	}
 }
 
+// TestRankEntryIdentities proves a 207 entry must match exactly one
+// issue of the group by its ID and key together: an entry whose ID and
+// key name different requested issues, or two entries with the same ID
+// or the same key, leave the whole group unknown and stop the batch. The
+// group names two issues by ID (10001, 10002, whose keys are WEB-1 and
+// WEB-2) and the rest by key; an entry for WEB-n carries ID 10000+n.
+func TestRankEntryIdentities(t *testing.T) {
+	issues := append([]string{"10001", "10002"}, webIssues(3, 60)...)
+	entry := func(id int, key string, status int) string {
+		return fmt.Sprintf(`{"issueId":%d,"issueKey":%q,"status":%d}`, id, key, status)
+	}
+	// normal answers the group's issues from the third on, but drop.
+	normal := func(group []string, drop string) []string {
+		var out []string
+		for _, is := range group[2:] {
+			if is == drop {
+				continue
+			}
+			n, _ := strconv.Atoi(strings.TrimPrefix(is, "WEB-"))
+			out = append(out, entry(10000+n, is, 204))
+		}
+		return out
+	}
+	for name, tc := range map[string]struct {
+		first []string // the entries for 10001 and 10002
+		last  string   // replaces the entry for WEB-50
+		drop  string   // an issue left without its own entry
+		sent  int
+	}{
+		"every entry its own issue":     {[]string{entry(10001, "WEB-1", 204), entry(10002, "WEB-2", 204)}, "", "", 2},
+		"an ID and a key of two issues": {[]string{entry(10001, "WEB-3", 200), entry(10002, "WEB-2", 204)}, "", "WEB-3", 1},
+		"the same key twice":            {[]string{entry(10001, "WEB-1", 204), entry(10002, "WEB-1", 204)}, "", "", 1},
+		"the same ID twice":             {[]string{entry(10001, "WEB-1", 204), entry(10002, "WEB-2", 204)}, entry(10003, "WEB-50", 204), "", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			c := newTestClient(t, f)
+			site := &batchSite{t: t, answer: func(n int, b batchBody) (int, string) {
+				if n > 0 {
+					return http.StatusNoContent, ""
+				}
+				entries := append(slices.Clone(tc.first), normal(b.Issues, tc.drop)...)
+				if tc.last != "" {
+					entries[len(entries)-1] = tc.last
+				}
+				return http.StatusMultiStatus, `{"entries":[` + strings.Join(entries, ",") + `]}`
+			}}
+			f.on("PUT", rankURL, site.handle)
+			res, err := c.Rank(t.Context(), RankInput{Issues: issues, Position: RankBefore("WEB-500")})
+			if want := (batchBody{Issues: issues[:50], Before: "WEB-500"}); len(site.bodies) == 0 || fmt.Sprint(site.bodies[0]) != fmt.Sprint(want) {
+				t.Errorf("sent %v", site.bodies)
+			}
+			if tc.sent == 2 {
+				if err != nil || len(res.Done()) != len(issues) {
+					t.Fatalf("got %+v %v", res, err)
+				}
+				return
+			}
+			be, ok := errors.AsType[*BatchError](err)
+			if !ok || be.Unknown != 50 || be.NotSent != 10 || be.Refused != 0 || len(site.bodies) != 1 || trackerapi.WriteNotApplied(err) {
+				t.Fatalf("got %+v %v", be, err)
+			}
+		})
+	}
+}
+
 // TestRankRefusedGroupAfterAFailedCheck proves a group Jira answered 404
 // is refused even when the sign-in check that follows the 404 fails
 // before it is sent: the outcome is the write's own, not the check's.
@@ -391,87 +459,5 @@ func TestBatchRefusals(t *testing.T) {
 	}
 	if n := len(f.requests()); n != 0 {
 		t.Errorf("%d requests sent", n)
-	}
-}
-
-// TestMoveToBacklog proves the plain move takes no rank fields and the
-// board's backlog takes them.
-func TestMoveToBacklog(t *testing.T) {
-	f := newFake(t)
-	c := newTestClient(t, f)
-	f.on("POST", "/rest/agile/1.0/backlog/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"issues":["WEB-1","WEB-2"]}`)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	f.on("POST", "/rest/agile/1.0/backlog/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"issues":["WEB-1"],"rankBeforeIssue":"WEB-9","rankCustomFieldId":10019}`)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if res, err := c.MoveToBacklog(t.Context(), BacklogMove{Issues: []string{"WEB-1", "WEB-2"}}); err != nil || len(res.Done()) != 2 {
-		t.Fatalf("got %+v %v", res, err)
-	}
-	if _, err := c.MoveToBacklog(t.Context(), BacklogMove{Board: 3, Issues: []string{"WEB-1"}, Position: RankBefore("WEB-9"), RankFieldID: 10019}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestMoveAnswers proves which answers each move takes: a sprint move and
-// the plain backlog move are documented to answer only 204, so a 207 or
-// a 200 leaves them unknown; the board's backlog takes a 207 too.
-func TestMoveAnswers(t *testing.T) {
-	f := newFake(t)
-	c := newTestClient(t, f)
-	f.on("GET", "/rest/agile/1.0/sprint/7", reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
-	both := []string{"WEB-1", "WEB-2"}
-	full := rankEntries(both, rankEntry("WEB-2", 204))
-	moves := map[string]func() (BatchResult, error){
-		"/rest/agile/1.0/sprint/7/issue": func() (BatchResult, error) {
-			return c.MoveToSprint(t.Context(), SprintMove{Sprint: 7, Issues: both})
-		},
-		"/rest/agile/1.0/backlog/issue": func() (BatchResult, error) {
-			return c.MoveToBacklog(t.Context(), BacklogMove{Issues: both})
-		},
-	}
-	for _, status := range []int{207, 200} {
-		for path, move := range moves {
-			f.on("POST", path, func(w http.ResponseWriter, r *http.Request, b []byte) {
-				wantJSON(t, b, `{"issues":["WEB-1","WEB-2"]}`)
-				reply(status, full)(w, r, b)
-			})
-			res, err := move()
-			if be, ok := errors.AsType[*BatchError](err); !ok || be.Unknown != 2 || len(res.Done()) != 0 || trackerapi.WriteNotApplied(err) {
-				t.Errorf("%s answered %d: %+v %v", path, status, res, err)
-			}
-		}
-	}
-	f.on("POST", "/rest/agile/1.0/backlog/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"issues":["WEB-1","WEB-2"]}`)
-		reply(207, rankEntries(both, rankEntry("WEB-2", 400)))(w, r, b)
-	})
-	res, err := c.MoveToBacklog(t.Context(), BacklogMove{Board: 3, Issues: both})
-	if be, ok := errors.AsType[*BatchError](err); !ok || be.Refused != 1 || be.Unknown != 0 || res.Issues[0].Outcome != OutcomeDone {
-		t.Errorf("a board backlog 207: %+v %v", res, err)
-	}
-}
-
-// TestMoveToSprint proves the sprint is read first, a closed one refused
-// before any move, and an open one moved into.
-func TestMoveToSprint(t *testing.T) {
-	f := newFake(t)
-	c := newTestClient(t, f)
-	f.on("GET", "/rest/agile/1.0/sprint/7", reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
-	f.on("GET", "/rest/agile/1.0/sprint/6", reply(200, `{"id":6,"name":"Sprint 0","state":"closed","originBoardId":3}`))
-	f.on("POST", "/rest/agile/1.0/sprint/7/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantJSON(t, b, `{"issues":["WEB-1"],"rankAfterIssue":"WEB-9"}`)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	if res, err := c.MoveToSprint(t.Context(), SprintMove{Sprint: 7, Issues: []string{"WEB-1"}, Position: RankAfter("WEB-9")}); err != nil || len(res.Done()) != 1 {
-		t.Fatalf("got %+v %v", res, err)
-	}
-	if _, err := c.MoveToSprint(t.Context(), SprintMove{Sprint: 6, Issues: []string{"WEB-1"}}); !trackerapi.WriteNotApplied(err) {
-		t.Errorf("a closed sprint: %v", err)
-	}
-	if n := f.count("POST", "/rest/agile/1.0/sprint/6/issue"); n != 0 {
-		t.Errorf("%d moves into a closed sprint", n)
 	}
 }

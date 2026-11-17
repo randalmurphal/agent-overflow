@@ -174,7 +174,7 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 	if tp.props != nil {
 		cbody["properties"] = tp.props
 	}
-	res.Comment, err = c.writeComment(ctx, http.MethodPost, tp.path+"/comment", cbody)
+	res.Comment, err = c.writeComment(ctx, tp.path+"/comment", "", cbody)
 	if err != nil {
 		return res, fmt.Errorf("jira: comment on %s after its move: %w", in.Issue, err)
 	}

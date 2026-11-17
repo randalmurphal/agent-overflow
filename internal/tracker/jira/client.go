@@ -60,8 +60,16 @@ type Options struct {
 	Credentials trackerapi.CredentialSource
 	// Proxy picks the proxy for a request; nil connects directly.
 	Proxy func(*http.Request) (*url.URL, error)
-	// OnAnswer, when set, is told the status and headers of every answer,
-	// as trackerapi.Options.OnAnswer describes.
+	// OnAnswer, when set, is told the status of every answer and those of
+	// its headers that are the rate limit headers Atlassian documents for
+	// Jira Cloud (rateLimitHeaders): X-RateLimit-Limit,
+	// X-RateLimit-Remaining, X-RateLimit-Reset, X-RateLimit-NearLimit,
+	// RateLimit-Reason, Retry-After, RateLimit, RateLimit-Policy,
+	// Beta-RateLimit, Beta-RateLimit-Policy, Beta-Retry-After,
+	// X-Beta-RateLimit-Limit, X-Beta-RateLimit-Remaining,
+	// X-Beta-RateLimit-Reset, X-Beta-RateLimit-NearLimit and
+	// X-Beta-RateLimit-Reason, each scrubbed of the credential. No other
+	// header reaches it. The timing rules are trackerapi.Options.OnAnswer's.
 	OnAnswer func(status int, header http.Header)
 	// MaxUploadBytes bounds one upload request, multipart framing
 	// included, and the local images one write embeds, together; zero
@@ -87,6 +95,20 @@ type Client struct {
 	configs *cache[int64, BoardConfig]
 }
 
+// rateLimitHeaders are the rate limit headers Jira Cloud documents
+// (developer.atlassian.com, Jira Cloud platform, Rate limiting): the
+// current ones, the structured RateLimit and RateLimit-Policy with their
+// Beta- forms, and the legacy beta ones. None holds a URL.
+func rateLimitHeaders() []string {
+	return []string{
+		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-NearLimit",
+		"RateLimit-Reason", "Retry-After",
+		"RateLimit", "RateLimit-Policy", "Beta-RateLimit", "Beta-RateLimit-Policy", "Beta-Retry-After",
+		"X-Beta-RateLimit-Limit", "X-Beta-RateLimit-Remaining", "X-Beta-RateLimit-Reset",
+		"X-Beta-RateLimit-NearLimit", "X-Beta-RateLimit-Reason",
+	}
+}
+
 // New builds a Client and the trackerapi.Client under it. Nothing is
 // sent until the first call. It refuses what trackerapi.New refuses and
 // a negative MaxUploadBytes.
@@ -95,13 +117,14 @@ func New(opts Options) (*Client, error) {
 		return nil, errors.New("jira: Options.MaxUploadBytes is negative")
 	}
 	api, err := trackerapi.New(trackerapi.Options{
-		Name:        "jira",
-		BaseURL:     opts.BaseURL,
-		Version:     opts.Version,
-		Credentials: opts.Credentials,
-		Dialect:     dialect{},
-		Proxy:       opts.Proxy,
-		OnAnswer:    opts.OnAnswer,
+		Name:          "jira",
+		BaseURL:       opts.BaseURL,
+		Version:       opts.Version,
+		Credentials:   opts.Credentials,
+		Dialect:       dialect{},
+		Proxy:         opts.Proxy,
+		OnAnswer:      opts.OnAnswer,
+		ReportHeaders: rateLimitHeaders(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("jira: %w", err)
