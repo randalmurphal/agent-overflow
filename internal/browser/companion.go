@@ -847,6 +847,15 @@ type presentSync struct{ busy, dirty bool }
 
 // presentPanes is one presentation pass of syncPanePresentation.
 //
+// The pass hides every page but the one the thread had selected when it
+// began (its candidate), then decides, in one hold of Manager.mu, whether to
+// show the candidate against the selection, the presenter and the viewport
+// as they are then: a candidate that lost the selection meanwhile (a switch
+// away and back while it was laid out, a restore that finished after the
+// user moved on) is hidden, never shown, and the switch's own request runs
+// the next pass. Only the engine calls after that hold are outside it: a
+// selection made during them is newer than the show and its pass hides it.
+//
 // A page is never newly shown while it lags the thread's viewport (a pane
 // resize lays out only the page shown then, viewport.go): it stays hidden and
 // the drain lays it out and runs another pass. A page already shown stays
@@ -855,12 +864,9 @@ type presentSync struct{ busy, dirty bool }
 func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
-	session, hasSession := m.sessions[threadID]
-	mount, rect, shown := m.presenterLocked(threadID)
-	visible := hasSession && session.Visible && shown
-	previous := m.presented[threadID]
+	candidateID := m.sessions[threadID].ActivePageID
 	var pages []*managedPage
-	var active *managedPage
+	var candidate *managedPage
 	var closing []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
@@ -868,8 +874,8 @@ func (m *Manager) presentPanes(threadID string) {
 				continue
 			}
 			pages = append(pages, p)
-			if p.id == session.ActivePageID {
-				active = p
+			if p.id == candidateID {
+				candidate = p
 			}
 		}
 		for _, c := range scope.closing {
@@ -883,63 +889,36 @@ func (m *Manager) presentPanes(threadID string) {
 	if !ok {
 		return
 	}
-	pageW, pageH := sessionViewport(session)
 	// A closed page is hidden at once; its engine teardown may run a while.
 	// Hiding a page whose driver has since closed is a no-op on every host.
 	for _, p := range closing {
 		host.HidePage(p.driver.Handle())
 	}
-	var placement PanePlacement
-	if visible {
-		// The page keeps the session's viewport; the pane shows it scaled to
-		// fit. A pane too small or too occluded to show any of it presents
-		// nothing rather than a sliver.
-		placement, visible = placePage(rect, pageW, pageH)
-		placement.Mount = mount
-	}
-	lagging := false
-	if visible && active != nil && active.id != previous {
-		want := packViewport(pageW, pageH)
-		if active.viewport.Load() != want && active.viewportFailed.Load() != want {
-			visible, lagging = false, true
-		}
-	}
 	for _, p := range pages {
-		if p == active && visible {
-			continue
+		if p != candidate {
+			host.HidePage(p.driver.Handle())
 		}
-		host.HidePage(p.driver.Handle())
 	}
-	if visible && active != nil {
-		host.SetPageBounds(active.driver.Handle(), placement)
-		host.ShowPage(active.driver.Handle())
+	if m.presentDeciding != nil {
+		m.presentDeciding(threadID, candidate)
+	}
+	show, placement, lagging := m.decidePresentation(threadID, candidate)
+	if candidate != nil {
+		if show {
+			host.SetPageBounds(candidate.driver.Handle(), placement)
+			host.ShowPage(candidate.driver.Handle())
+		} else {
+			host.HidePage(candidate.driver.Handle())
+		}
 	}
 	m.mu.Lock()
 	if m.presented == nil {
 		m.presented = make(map[string]string)
 	}
-	if visible && active != nil {
-		m.presented[threadID] = active.id
+	if show {
+		m.presented[threadID] = candidate.id
 	} else {
 		delete(m.presented, threadID)
-	}
-	delete(m.awaitingLayout, threadID)
-	if lagging {
-		want := packViewport(sessionViewport(m.sessions[threadID]))
-		if active.viewport.Load() == want || active.viewportFailed.Load() == want {
-			// Laid out since the check above, by an apply that found no
-			// page awaiting it: this pass's loop runs another, and no drain
-			// is owed.
-			if st := m.presenting[threadID]; st != nil {
-				st.dirty = true
-			}
-			lagging = false
-		} else {
-			if m.awaitingLayout == nil {
-				m.awaitingLayout = make(map[string]string)
-			}
-			m.awaitingLayout[threadID] = active.id
-		}
 	}
 	m.mu.Unlock()
 	if lagging {
@@ -947,6 +926,46 @@ func (m *Manager) presentPanes(threadID string) {
 	}
 	// A focus intent waits for its page's presentation, never ShowPage.
 	m.applyFocusIntent(threadID)
+}
+
+// decidePresentation is presentPanes' one decision, in one hold of
+// Manager.mu: whether the pass shows its candidate, where, and whether the
+// candidate waits for its layout. A candidate that is no longer the
+// thread's selected live page is not shown. A lagging candidate is recorded
+// as awaiting its layout in the same hold, so the apply that lays it out
+// either is seen here or finds the record (presentLaidOut).
+func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (show bool, placement PanePlacement, lagging bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.awaitingLayout, threadID)
+	session, hasSession := m.sessions[threadID]
+	mount, rect, shown := m.presenterLocked(threadID)
+	if candidate == nil || !hasSession || !session.Visible || !shown || session.ActivePageID != candidate.id {
+		return false, PanePlacement{}, false
+	}
+	if live, _ := m.livePageLocked(candidate.id); live != candidate {
+		return false, PanePlacement{}, false
+	}
+	pageW, pageH := sessionViewport(session)
+	// The page keeps the session's viewport; the pane shows it scaled to
+	// fit. A pane too small or too occluded to show any of it presents
+	// nothing rather than a sliver.
+	placement, show = placePage(rect, pageW, pageH)
+	placement.Mount = mount
+	if !show {
+		return false, PanePlacement{}, false
+	}
+	if candidate.id != m.presented[threadID] {
+		want := packViewport(pageW, pageH)
+		if candidate.viewport.Load() != want && candidate.viewportFailed.Load() != want {
+			if m.awaitingLayout == nil {
+				m.awaitingLayout = make(map[string]string)
+			}
+			m.awaitingLayout[threadID] = candidate.id
+			return false, PanePlacement{}, true
+		}
+	}
+	return true, placement, false
 }
 
 // MoveCompanionPage places one of the thread's tabs, in any state, at
