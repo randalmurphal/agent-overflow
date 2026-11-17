@@ -75,8 +75,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		driver.Close()
 		return
 	}
-	scope.pages[p.id] = p
-	m.listingChangedLocked()
+	m.listPageLocked(scope, p)
 	listed = p
 	// A report made while the popup was adopted joins the listing, whose
 	// push carries it.

@@ -215,8 +215,7 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 		case err == nil && !closed:
 			delete(m.pending, p.id)
 			delete(scope.creating, p)
-			scope.pages[p.id] = p
-			m.listingChangedLocked()
+			m.listPageLocked(scope, p)
 		case err != nil && (closed || !user):
 			delete(m.pending, p.id)
 		case err != nil:

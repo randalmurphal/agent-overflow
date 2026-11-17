@@ -302,8 +302,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			// The record's tab position may have moved while the page loaded.
 			p.tabOrder.Store(rec.tabOrder)
 			delete(m.suspended, rec.id)
-			scope.pages[p.id] = p
-			m.listingChangedLocked()
+			m.listPageLocked(scope, p)
 		}
 		m.mu.Unlock()
 		if closing {

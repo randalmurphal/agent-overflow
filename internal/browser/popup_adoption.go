@@ -107,11 +107,19 @@ func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
 	m.resolveParked(handle, p, opener)
 }
 
+// listPageLocked makes p a tab of scope, the one way a page joins the
+// tabs (a create, a restore, an adoption), and wakes the popups waiting
+// for it as their opener. The caller holds m.mu.
+func (m *Manager) listPageLocked(scope *jarScope, p *managedPage) {
+	scope.pages[p.id] = p
+	m.listingChangedLocked()
+}
+
 // listingChangedLocked wakes the popups waiting for an opener
-// (awaitOpener): a page joined the tabs, a page created or restored will
-// not (abandonPage), or an adoption ended. Every listing (a create, a
-// restore, an adoption) calls it; a listed page's leaving wakes no one,
-// since nothing waits for a listed opener. The caller holds m.mu.
+// (awaitOpener): a page joined the tabs (listPageLocked), a page created
+// or restored will not (abandonPage), or an adoption ended. A listed
+// page's leaving wakes no one, since nothing waits for a listed opener.
+// The caller holds m.mu.
 func (m *Manager) listingChangedLocked() {
 	if m.listingChanged != nil {
 		close(m.listingChanged)
