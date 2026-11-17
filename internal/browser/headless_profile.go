@@ -28,7 +28,7 @@ type headlessProfile struct {
 	downloadDir   string
 	// allow is the jar's navigation policy (profileOptions.Allow), which
 	// connect enables browser-wide.
-	allow func(owners []string, rawURL string) bool
+	allow func(owners []string, rawURL string) (allowed, resolved bool)
 
 	// launchMu serializes ensureBrowser so a burst of concurrent page
 	// creations launches one Chromium rather than one each.
@@ -487,9 +487,12 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 		// A page's main frame id is its target id, so a top-level request
 		// names its page, and a popup's is followed by the openers whose
 		// authority it has until adoption gives it its own. The Manager
-		// resolves a subframe to the page that reported it.
-		owners := targets.owners(string(event.FrameID))
-		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return p.allow(owners, rawURL) })
+		// resolves a subframe to the page that reported it. A frame no page
+		// answers to yet waits for one (awaitRequestOwner).
+		frame := string(event.FrameID)
+		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool {
+			return awaitRequestOwner(browserCtx, p.engine.ownerWait, func() (bool, bool) { return p.allow(targets.owners(frame), rawURL) }, logf)
+		})
 	}); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"agent-overflow/internal/webview2host"
 
@@ -228,30 +229,53 @@ func (e *hostedEngine) forgetPopupLocked(pageID string) {
 	}
 }
 
-// allowRequest is the browser-wide navigation policy: the policy of the
-// profile of the first page the request's owners (its frame, then the
-// pages that opened its page, as the connection's targets name them)
-// resolve to, asked with those owners, or with no page's authority when
-// none resolves.
-func (e *hostedEngine) allowRequest(owners []string, rawURL string) bool {
+// allowRequest is the browser-wide navigation policy for a request paused
+// in frame: the policy of the profile of the first page the request's
+// owners resolve to, asked with those owners, which are the frame, then
+// the pages that opened its page, nearest first, as the connection's
+// targets name them and, past a popup the launcher reported, as its report
+// names its opener (reportedOpenersLocked). It answers unresolved when no
+// owner resolves to a page of the engine's.
+func (e *hostedEngine) allowRequest(targets *cdpTargets, frame, rawURL string) (allowed, resolved bool) {
+	owners := targets.owners(frame)
 	e.mu.Lock()
-	var allow func([]string, string) bool
+	owners = e.reportedOpenersLocked(owners)
+	var allow func([]string, string) (bool, bool)
 	for _, owner := range owners {
 		if pageID, ok := e.ownerPageLocked(owner); ok {
 			allow = e.policies[e.pageProfile[pageID]]
 			break
 		}
 	}
-	if allow == nil {
-		// No page resolves: any profile's policy answers with no
-		// workspace's authority, since none of the owners is its page.
-		for _, policy := range e.policies {
-			allow = policy
-			break
-		}
-	}
 	e.mu.Unlock()
-	return allow != nil && allow(owners, rawURL)
+	if allow == nil {
+		return false, false
+	}
+	return allow(owners, rawURL)
+}
+
+// reportedOpenersLocked extends owners, a frame and the pages that opened
+// it as the connection's targets name them, past each popup the launcher
+// reported with the target of the opener its report names: a window a
+// click opened in a new tab has a target that names no opener. The caller
+// holds e.mu.
+func (e *hostedEngine) reportedOpenersLocked(owners []string) []string {
+	// Each step adds a page not in owners yet, so the chain ends.
+	for {
+		popupID, ok := e.popupByTarget[owners[len(owners)-1]]
+		if !ok {
+			return owners
+		}
+		opener := e.popups[popupID].opener
+		next := e.targetByPage[opener]
+		if pending := e.popups[opener]; pending != nil {
+			next = pending.target
+		}
+		if next == "" || slices.Contains(owners, next) {
+			return owners
+		}
+		owners = append(owners, next)
+	}
 }
 
 // ownerPageLocked answers the page a frame belongs to: the page whose

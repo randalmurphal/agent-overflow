@@ -218,10 +218,12 @@ type profileOptions struct {
 	// frame the request belongs to followed by the pages that opened its
 	// page, nearest first, as far as the engine knows them. The Manager
 	// answers with the authority of the first owner it resolves to one of
-	// its pages, and with no workspace's authority when none resolves
-	// (jarAllows). The WebKit engines need none: their glue names a popup's
-	// opener for every navigation decision.
-	Allow func(owners []string, rawURL string) bool
+	// its pages, and answers resolved false when none resolves (jarAllows);
+	// the engine then asks again as it learns more owners and refuses the
+	// request past requestOwnerWait (awaitRequestOwner). The WebKit engines
+	// need none: their glue names a popup's opener for every navigation
+	// decision.
+	Allow func(owners []string, rawURL string) (allowed, resolved bool)
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry

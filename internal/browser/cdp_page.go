@@ -379,10 +379,13 @@ func answerPausedRequest(lifetime context.Context, session cdp.Session, event fe
 	}
 	requestID, rawURL := event.RequestID, event.Request.URL
 	go func() {
+		// Decided before the answer's own bound starts: the decision may
+		// wait for the request's owner (awaitRequestOwner).
+		allowed := allow(rawURL)
 		ctx, cancel := operationContext(context.Background(), lifetime, 5*time.Second)
 		defer cancel()
 		var err error
-		if allow(rawURL) {
+		if allowed {
 			_, err = cdp.Call(ctx, session, fetch.ContinueRequest, fetch.ContinueRequestParams{RequestID: requestID})
 		} else {
 			_, err = cdp.Call(ctx, session, fetch.FailRequest, fetch.FailRequestParams{RequestID: requestID, ErrorReason: network.ErrorReasonBlockedByClient})
@@ -394,6 +397,42 @@ func answerPausedRequest(lifetime context.Context, session cdp.Session, event fe
 			log.Printf("browser: answer paused request %s: %v", requestID, err)
 		}
 	}()
+}
+
+// requestOwnerWait bounds how long a paused request whose owners no page
+// answers to yet waits for one: its target's creation, which chromedp
+// delivers on a subscription of its own, in no fixed order with the pause;
+// its popup's report from the launcher; or its frame's attach. Past it the
+// request is refused. requestOwnerPoll is how often it asks again.
+const (
+	requestOwnerWait = 2 * time.Second
+	requestOwnerPoll = 5 * time.Millisecond
+)
+
+// awaitRequestOwner answers a paused request with decide's answer once
+// decide resolves an owner, asking again every requestOwnerPoll for up to
+// wait (requestOwnerWait when zero), and refuses it when none resolves by
+// then or lifetime ends. Runs off the event reader (answerPausedRequest).
+func awaitRequestOwner(lifetime context.Context, wait time.Duration, decide func() (allowed, resolved bool), logf func(string, ...any)) bool {
+	if wait <= 0 {
+		wait = requestOwnerWait
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		allowed, resolved := decide()
+		if resolved {
+			return allowed
+		}
+		if !time.Now().Before(deadline) {
+			logf("browser: refuse a request no page answered for within %v", wait)
+			return false
+		}
+		select {
+		case <-lifetime.Done():
+			return false
+		case <-time.After(requestOwnerPoll):
+		}
+	}
 }
 
 // consoleEntry converts one message of chromedp.Console. Uncaught exceptions

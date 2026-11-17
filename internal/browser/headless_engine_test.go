@@ -227,7 +227,7 @@ func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string,
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
-		Allow: func([]string, string) bool { return true },
+		Allow: func([]string, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile for %s: %v", workspace, err)
@@ -732,10 +732,10 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 // it sees a page Chromium opened by itself before the Manager adopts it as
 // well as every page's requests, and answers what it pauses there with the
 // Manager's policy for the jar. In a jar two worktrees share, a request has
-// the authority of the page its frame belongs to, or of its popup's openers;
-// a request whose owner is not resolved (a popup's request before Chromium
+// the authority of the page its frame belongs to, or of its popup's openers.
+// A request whose owner is not resolved (a popup's request before Chromium
 // reports the popup, a subframe no page reported, a popup whose opener
-// closed) may open no workspace's files.
+// closed) waits for one within the owner bound, then is refused.
 func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	manager, jars := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
@@ -758,6 +758,7 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	engine.events.PopupOpened = func(enginePopup) {}
+	engine.ownerWait = 100 * time.Millisecond
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: "project:P", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
 		Allow: jars.profile("project:P").allow,
@@ -815,14 +816,26 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 
 	expect("before the popup is reported", map[string][3]string{
 		"R-early":         {"P-popup", files["one"], "refuse"},
-		"R-early-web":     {"P-popup", "https://example.test/", "allow"},
+		"R-early-web":     {"P-popup", "https://example.test/", "refuse"},
 		"R-unknown-frame": {"F-unknown", files["one"], "refuse"},
 		"R-frame":         {"F-of-A", files["one"], "allow"},
 		"R-frame-other":   {"F-of-A", files["two"], "refuse"},
 	})
 
+	// A request paused before its popup's creation is handled waits for it.
+	browser.send(pausedRequest("R-waits", "P-popup", files["one"]))
+	time.Sleep(20 * time.Millisecond)
 	browser.send(popupCreated("P-popup", openerA))
 	browser.send(popupCreated("P-nested", "P-popup"))
+	expect("a request paused before its popup was known", map[string][3]string{})
+	eventually(t, "the waiting request to be allowed", func() bool {
+		for _, answer := range browserCallParams[requestAnswer](t, browser.calls(), "Fetch.continueRequest") {
+			if answer.RequestID == "R-waits" {
+				return true
+			}
+		}
+		return false
+	})
 	eventually(t, "the popups to be known", func() bool {
 		_, popup := engine.profileForPage("P-popup")
 		_, nested := engine.profileForPage("P-nested")
@@ -1602,7 +1615,7 @@ setTimeout(() => { document.title = typeof __aoDocumentTitle + " by script" }, 3
 	}))
 	defer server.Close()
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) bool { return true },
+		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]string, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
@@ -1676,7 +1689,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []string, url string) bool { return inWorkspace(url) },
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []string, url string) (bool, bool) { return inWorkspace(url), true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

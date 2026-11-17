@@ -118,6 +118,7 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
 	engine.createTimeout = 150 * time.Millisecond
 	engine.attachTimeout = 150 * time.Millisecond
+	engine.ownerWait = 150 * time.Millisecond
 	engine.clearTimeout = 150 * time.Millisecond
 	engine.windowsPath = testWindowsPath
 	return engine, sink
@@ -945,6 +946,7 @@ func assertOnePolicyPause(t *testing.T, calls func() []fakeCDPCall, send func(ma
 	if len(enables) != 1 || enables[0] != "session " {
 		t.Fatalf("Fetch.enable ran on %v, want once on the browser session", enables)
 	}
+	// A frame no page answers for, refused once the owner bound passes.
 	send(pausedRequest("R-once", "F-any", "https://example.test/"))
 	answers := func() int {
 		n := 0

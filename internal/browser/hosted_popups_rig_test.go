@@ -59,6 +59,7 @@ func newPopupLauncher(t *testing.T) *popupLauncher {
 	l.engine = engine
 	engine.logf = t.Logf
 	engine.attachTimeout = 5 * time.Second
+	engine.ownerWait = 150 * time.Millisecond
 	engine.windowsPath = testWindowsPath
 	engine.backendPath = testBackendPath
 	engine.downloadQuiet = time.Hour

@@ -145,20 +145,23 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 // allowed what the first owner that resolves to a page of the jar may open
 // (framePageLocked). So a popup the Manager has not adopted yet has its
 // opener's authority, which is what it is allowed once adopted. A request
-// none of whose owners resolves (a frame no page has reported, a popup seen
-// before its opener is known or after its opener closed) has no workspace's
-// authority: it may open what any page may, never a workspace file.
-func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) bool {
+// none of whose owners resolves (a frame no page has reported yet, a popup
+// seen before its opener is known or after its opener closed) is answered
+// unresolved, and its engine asks again or refuses it.
+func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (allowed, resolved bool) {
 	var access Access
 	m.mu.Lock()
 	for _, owner := range owners {
 		if p := framePageLocked(scope, owner); p != nil {
-			access = p.access
+			access, resolved = p.access, true
 			break
 		}
 	}
 	m.mu.Unlock()
-	return m.navigationAllowed(access, rawURL)
+	if !resolved {
+		return false, false
+	}
+	return m.navigationAllowed(access, rawURL), true
 }
 
 // framePageLocked answers the page of scope, live or being created, that

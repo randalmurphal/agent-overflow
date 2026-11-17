@@ -97,6 +97,9 @@ type headlessEngine struct {
 	// and the popup path address a page by handle with no profile in hand,
 	// and a target this engine never bound must not be closed as one.
 	pageProfile map[string]*headlessProfile
+	// ownerWait bounds a paused request's wait for its owner
+	// (awaitRequestOwner); zero is requestOwnerWait.
+	ownerWait time.Duration
 }
 
 // newHeadlessChromiumEngine resolves the browser or explains why it could

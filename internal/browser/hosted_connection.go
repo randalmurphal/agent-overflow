@@ -197,8 +197,10 @@ func (e *hostedEngine) subscribe(browserCtx context.Context, targets *cdpTargets
 	}
 	session := chromedp.FromContext(browserCtx).Browser
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, e.logf, func(event fetch.EventRequestPaused) {
-		owners := targets.owners(string(event.FrameID))
-		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return e.allowRequest(owners, rawURL) })
+		frame := string(event.FrameID)
+		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool {
+			return awaitRequestOwner(browserCtx, e.ownerWait, func() (bool, bool) { return e.allowRequest(targets, frame, rawURL) }, e.logf)
+		})
 	}); err != nil {
 		return err
 	}

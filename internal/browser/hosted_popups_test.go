@@ -317,29 +317,64 @@ func TestHostedPopupCrashDuringAdoptionReachesItsTab(t *testing.T) {
 	l.settledEngine()
 }
 
-// The browser-wide policy answers a request with the policy of the page its
-// frame belongs to, or, for a popup no page answers to yet, of its openers,
-// nearest first; with no owner resolved, with no page's authority.
-func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
-	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	var asked [][]string
-	policy := func(name string) func([]string, string) bool {
-		return func(owners []string, _ string) bool {
-			asked = append(asked, append([]string{name}, owners...))
-			return name == "a"
-		}
+// policyRecorder stands in for the profiles' policies: each answers
+// resolved, allowing what profile "a" asks, and records the profile asked
+// and the owners it was asked with.
+type policyRecorder struct {
+	mu    sync.Mutex
+	asked [][]string
+}
+
+func (r *policyRecorder) policy(name string) func([]string, string) (bool, bool) {
+	return func(owners []string, _ string) (bool, bool) {
+		r.mu.Lock()
+		r.asked = append(r.asked, append([]string{name}, owners...))
+		r.mu.Unlock()
+		return name == "a", true
 	}
-	engine.policies["prof-a"] = policy("a")
-	engine.policies["prof-b"] = policy("b")
-	bindTestPage(t, engine, "page-a", "T-a")
-	bindTestPage(t, engine, "page-b", "T-b")
+}
+
+func (r *policyRecorder) take() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.asked
+	r.asked = nil
+	return out
+}
+
+// newPolicyEngine answers a hosted engine with page-a (target T-a) in
+// profile prof-a, whose policy allows, and page-b (T-b) in prof-b, whose
+// policy refuses.
+func newPolicyEngine(t *testing.T) (*hostedEngine, *policyRecorder) {
+	t.Helper()
+	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PopupOpened: func(enginePopup) {}})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Stop)
+	r := &policyRecorder{}
+	engine.mu.Lock()
+	engine.policies["prof-a"] = r.policy("a")
+	engine.policies["prof-b"] = r.policy("b")
 	engine.pageProfile["page-a"] = "prof-a"
 	engine.pageProfile["page-b"] = "prof-b"
+	engine.mu.Unlock()
+	bindTestPage(t, engine, "page-a", "T-a")
+	bindTestPage(t, engine, "page-b", "T-b")
+	return engine, r
+}
+
+// The browser-wide policy answers a request with the policy of the page its
+// frame belongs to, or, for a popup no page answers to yet, of its openers,
+// nearest first; with no owner resolved, it answers unresolved and asks no
+// policy.
+func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
+	engine, r := newPolicyEngine(t)
 	engine.currentTargets().created(&target.Info{TargetID: "T-popup", Type: "page", OpenerID: "T-a"}, nil)
 	engine.currentTargets().created(&target.Info{TargetID: "T-grand", Type: "page", OpenerID: "T-popup"}, nil)
 
-	// want is the policy asked, empty for any, then the owners it is asked
-	// with.
+	// want is the policy asked, then the owners it is asked with; none for
+	// an unresolved request.
 	for _, tc := range []struct {
 		frame string
 		want  []string
@@ -347,28 +382,128 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		{"T-a", []string{"a", "T-a"}},
 		{"T-b", []string{"b", "T-b"}},
 		{"T-grand", []string{"a", "T-grand", "T-popup", "T-a"}},
-		{"T-stranger", []string{"", "T-stranger"}},
+		{"T-stranger", nil},
 	} {
-		asked = nil
-		allowed := engine.allowRequest(engine.currentTargets().owners(tc.frame), "https://example.test/")
-		if len(asked) != 1 || tc.want[0] != "" && asked[0][0] != tc.want[0] || !slices.Equal(asked[0][1:], tc.want[1:]) {
-			t.Errorf("%s: asked %v, want %v", tc.frame, asked, tc.want)
-		} else if allowed != (asked[0][0] == "a") {
-			t.Errorf("%s: allowed %v by policy %s", tc.frame, allowed, asked[0][0])
+		allowed, resolved := engine.allowRequest(engine.currentTargets(), tc.frame, "https://example.test/")
+		asked := r.take()
+		switch {
+		case tc.want == nil:
+			if resolved || len(asked) != 0 {
+				t.Errorf("%s: resolved %v, asked %v, want unresolved", tc.frame, resolved, asked)
+			}
+		case !resolved || len(asked) != 1 || !slices.Equal(asked[0], tc.want):
+			t.Errorf("%s: resolved %v, asked %v, want %v", tc.frame, resolved, asked, tc.want)
+		case allowed != (tc.want[0] == "a"):
+			t.Errorf("%s: allowed %v by policy %s", tc.frame, allowed, tc.want[0])
 		}
 	}
 	// A destroyed target's link to its opener goes with it.
 	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "T-popup"})
-	asked = nil
-	engine.allowRequest(engine.currentTargets().owners("T-grand"), "https://example.test/")
-	if len(asked) != 1 || !slices.Equal(asked[0][1:], []string{"T-grand", "T-popup"}) {
-		t.Errorf("after the destroy: asked %v", asked)
+	if _, resolved := engine.allowRequest(engine.currentTargets(), "T-grand", "https://example.test/"); resolved {
+		t.Errorf("after the destroy the popup's popup resolved: %v", r.take())
 	}
-	// With no profile's policy, nothing is allowed.
+	// With no profile's policy, nothing resolves.
+	engine.mu.Lock()
 	clear(engine.policies)
-	if engine.allowRequest(engine.currentTargets().owners("T-a"), "https://example.test/") {
-		t.Error("a request with no policy was allowed")
+	engine.mu.Unlock()
+	if allowed, resolved := engine.allowRequest(engine.currentTargets(), "T-a", "https://example.test/"); allowed || resolved {
+		t.Error("a request with no policy was answered")
 	}
+}
+
+// A popup whose target names no opener (a click that opened a new tab)
+// has the opener the launcher's report names, and so on up its chain.
+func TestHostedBrowserPolicyFollowsTheReportedOpener(t *testing.T) {
+	engine, r := newPolicyEngine(t)
+	engine.currentTargets().created(&target.Info{TargetID: "T-pop", Type: "page"}, nil)
+	engine.currentTargets().created(&target.Info{TargetID: "T-pop2", Type: "page"}, nil)
+	engine.Report("popup-1", webview2host.ReportPopup, `{"opener":"page-a","target":"T-pop"}`)
+	engine.Report("popup-2", webview2host.ReportPopup, `{"opener":"popup-1","target":"T-pop2"}`)
+	for frame, want := range map[string][]string{
+		"T-pop":  {"a", "T-pop", "T-a"},
+		"T-pop2": {"a", "T-pop2", "T-pop", "T-a"},
+	} {
+		allowed, resolved := engine.allowRequest(engine.currentTargets(), frame, "https://example.test/")
+		if asked := r.take(); !allowed || !resolved || len(asked) != 1 || !slices.Equal(asked[0], want) {
+			t.Errorf("%s: allowed %v, resolved %v, asked %v, want %v", frame, allowed, resolved, asked, want)
+		}
+	}
+}
+
+// A subframe resolves to the page that reported it.
+func TestHostedBrowserPolicyResolvesASubframeToItsPage(t *testing.T) {
+	engine, r := newPolicyEngine(t)
+	page := &cdpPage{handle: "T-a", frames: newFrameTracker()}
+	page.frames.attached("F-sub")
+	engine.mu.Lock()
+	engine.drivers["page-a"] = page
+	engine.mu.Unlock()
+	allowed, resolved := engine.allowRequest(engine.currentTargets(), "F-sub", "https://example.test/")
+	if asked := r.take(); !allowed || !resolved || len(asked) != 1 || !slices.Equal(asked[0], []string{"a", "F-sub"}) {
+		t.Fatalf("a subframe of page-a: allowed %v, resolved %v, asked %v", allowed, resolved, asked)
+	}
+}
+
+// A request paused before anything names its owner waits for it, whichever
+// comes second of the pause and its target's creation, or of the pause and
+// the launcher's report of its popup, and is refused when nothing names one
+// within the bound.
+func TestHostedPausedRequestWaitsForItsOwner(t *testing.T) {
+	learn := map[string]func(e *hostedEngine){
+		"target created": func(e *hostedEngine) {
+			e.currentTargets().created(&target.Info{TargetID: "T-pop", Type: "page", OpenerID: "T-a"}, nil)
+		},
+		"popup reported": func(e *hostedEngine) {
+			e.Report("popup-1", webview2host.ReportPopup, `{"opener":"page-a","target":"T-pop"}`)
+		},
+	}
+	for name, learnOwner := range learn {
+		for _, pausedFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, paused first %v", name, pausedFirst), func(t *testing.T) {
+				engine, r := newPolicyEngine(t)
+				engine.ownerWait = hostedTestDeadline
+				if !pausedFirst {
+					learnOwner(engine)
+				}
+				answered := make(chan bool, 1)
+				go func() {
+					answered <- awaitRequestOwner(t.Context(), engine.ownerWait, func() (bool, bool) {
+						return engine.allowRequest(engine.currentTargets(), "T-pop", "https://example.test/")
+					}, t.Logf)
+				}()
+				if pausedFirst {
+					time.Sleep(20 * time.Millisecond)
+					select {
+					case got := <-answered:
+						t.Fatalf("a request with no owner was answered %v at once", got)
+					default:
+					}
+					learnOwner(engine)
+				}
+				if !<-answered {
+					t.Fatalf("the request was refused: asked %v", r.take())
+				}
+				if asked := r.take(); len(asked) != 1 || !slices.Equal(asked[0], []string{"a", "T-pop", "T-a"}) {
+					t.Fatalf("asked %v", asked)
+				}
+			})
+		}
+	}
+	t.Run("nothing names one", func(t *testing.T) {
+		engine, r := newPolicyEngine(t)
+		start := time.Now()
+		if awaitRequestOwner(t.Context(), 50*time.Millisecond, func() (bool, bool) {
+			return engine.allowRequest(engine.currentTargets(), "T-stranger", "https://example.test/")
+		}, t.Logf) {
+			t.Fatal("a request no page answers for was allowed")
+		}
+		if waited := time.Since(start); waited < 50*time.Millisecond {
+			t.Fatalf("refused after %v, before the bound", waited)
+		}
+		if asked := r.take(); len(asked) != 0 {
+			t.Fatalf("asked %v", asked)
+		}
+	})
 }
 
 // A page and a popup attached, the hosted engine still pauses a request
@@ -389,18 +524,22 @@ func TestHostedBrowserPolicyAnswersPausedRequests(t *testing.T) {
 	endpoint := startFakeCDPEndpoint(t, nil, nil)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{})
 	engine.attachTimeout = 5 * time.Second
-	engine.policies["prof"] = func(_ []string, rawURL string) bool { return !strings.HasPrefix(rawURL, "file:") }
+	engine.policies["prof"] = func(_ []string, rawURL string) (bool, bool) { return !strings.HasPrefix(rawURL, "file:"), true }
 	if _, err := engine.ensureBrowser(); err != nil {
 		t.Fatal(err)
 	}
 	defer engine.Interrupt()
+	bindTestPage(t, engine, "page", "T-page")
+	engine.mu.Lock()
+	engine.pageProfile["page"] = "prof"
+	engine.mu.Unlock()
 	if got := browserCallParams[struct {
 		Patterns []json.RawMessage `json:"patterns"`
 	}](t, endpoint.calls(), "Fetch.enable"); len(got) != 1 || len(got[0].Patterns) == 0 {
 		t.Fatalf("Fetch.enable on the browser session: %+v", got)
 	}
-	endpoint.send(pausedRequest("R-1", "T-popup", "https://example.test/"))
-	endpoint.send(pausedRequest("R-2", "T-popup", "file:///etc/passwd"))
+	endpoint.send(pausedRequest("R-1", "T-page", "https://example.test/"))
+	endpoint.send(pausedRequest("R-2", "T-page", "file:///etc/passwd"))
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
 		continued := browserCallParams[requestAnswer](t, endpoint.calls(), "Fetch.continueRequest")

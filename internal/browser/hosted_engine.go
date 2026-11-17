@@ -93,6 +93,9 @@ type hostedEngine struct {
 	createTimeout time.Duration
 	attachTimeout time.Duration
 	clearTimeout  time.Duration
+	// ownerWait bounds a paused request's wait for its owner
+	// (awaitRequestOwner); zero is requestOwnerWait.
+	ownerWait time.Duration
 
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
@@ -139,7 +142,7 @@ type hostedEngine struct {
 	// each live profile's navigation policy (profileOptions.Allow), for a
 	// popup's profile and the browser-wide policy (hosted_popups.go).
 	pageProfile map[string]string
-	policies    map[string]func(owners []string, rawURL string) bool
+	policies    map[string]func(owners []string, rawURL string) (allowed, resolved bool)
 	// popups are the popups the launcher reported that the Manager has not
 	// listed, and popupByTarget their pages by CDP target.
 	popups        map[string]*hostedPopup
@@ -192,7 +195,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		downloads:    newHostedDownloads(),
 
 		pageProfile:   make(map[string]string),
-		policies:      make(map[string]func([]string, string) bool),
+		policies:      make(map[string]func([]string, string) (bool, bool)),
 		popups:        make(map[string]*hostedPopup),
 		popupByTarget: make(map[string]string),
 
