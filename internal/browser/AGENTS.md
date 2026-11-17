@@ -43,11 +43,16 @@ mode. Product behavior and authority are defined in
   selection of a tab is ordered per pane mount by `selection.go` inside
   the lock hold that sets the active tab.
 - Pages start hidden. Present only the selected page for a visible companion
-  pane. The pane uses a native view positioned over the SPA; pixels do not cross
-  the transport. Keyboard focus enters a page's view only by a click or a
-  focus intent (`focus_intent.go`): the pane's request for one page, applied
-  once while its mount presents that page and withdrawn by the user's next
-  focus choice. Every engine checks what it shows and whether the intent is
+  pane. A presentation pass decides its show in one `Manager.mu` hold after
+  its hides and any layout wait (`decidePresentation`), against the
+  selection and live pages as they are then, so a page that lost the
+  selection or its process meanwhile is never shown; the focus intent's
+  presented check also requires the selection. The pane uses a native view
+  positioned over the SPA; pixels do not cross the transport. Keyboard
+  focus enters a page's view only by a click or a focus intent
+  (`focus_intent.go`): the pane's request for one page, applied once while
+  its mount presents that page and withdrawn by the user's next focus
+  choice. Every engine checks what it shows and whether the intent is
   live on its own UI thread, immediately before moving focus.
 - A page always lays out at the thread viewport (`sessionViewport`) whether
   hidden or presented. The viewport follows the mounted pane's size (whole
