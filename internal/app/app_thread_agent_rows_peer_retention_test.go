@@ -68,7 +68,7 @@ func TestRetentionKeepsTheReceiptOfARemoteWorkerThatIsNotAtRest(t *testing.T) {
 			if !pair.request(t, agentPair.spawn.Token).NestedOpen {
 				t.Fatal("the sweep here dropped the spawn's open work")
 			}
-			listing, err := pair.source.peerThreadAgentRows(t.Context(), pair.computer, agentPair.spawn.MadeIn(), child, threadAgentRowDepth-1)
+			listing, err := pair.source.peerThreadAgentRows(t.Context(), agentPair.spawn, threadAgentRowDepth-1)
 			if err != nil || listing.Worker == "" {
 				t.Fatalf("the forwarded listing after the sweeps = %+v, %v; want the worker's state", listing, err)
 			}

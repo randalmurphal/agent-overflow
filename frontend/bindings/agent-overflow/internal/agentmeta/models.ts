@@ -82,9 +82,16 @@ export class OriginWake {
     "threadId"?: string;
 
     /**
-     * Computer names the computer a `completion`'s job ran on.
+     * Computer names the computer a `completion`'s job ran on, or the
+     * paired computer that holds a `question` or `approval` wake's worker.
      */
     "computer"?: string;
+
+    /**
+     * ComputerID is that paired computer's id, which opens the worker
+     * there; empty for a worker on this computer.
+     */
+    "computerId"?: string;
 
     /**
      * Facts is where the message's data is and what its row's header
@@ -112,14 +119,14 @@ export class OriginWake {
      * Creates a new OriginWake instance from a string or object.
      */
     static createFrom($$source: any = {}): OriginWake {
-        const $$createField4_0 = $$createType1;
-        const $$createField5_0 = $$createType3;
+        const $$createField5_0 = $$createType1;
+        const $$createField6_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("facts" in $$parsedSource) {
-            $$parsedSource["facts"] = $$createField4_0($$parsedSource["facts"]);
+            $$parsedSource["facts"] = $$createField5_0($$parsedSource["facts"]);
         }
         if ("report" in $$parsedSource) {
-            $$parsedSource["report"] = $$createField5_0($$parsedSource["report"]);
+            $$parsedSource["report"] = $$createField6_0($$parsedSource["report"]);
         }
         return new OriginWake($$parsedSource as Partial<OriginWake>);
     }

@@ -90,9 +90,13 @@ func (o *PromptOccurrence) UnmarshalText(text []byte) error {
 
 // PromptRoute names the spawner a worker's prompt was delivered to.
 // The prompt stays open in the worker, where the user can still answer it.
+// ComputerID and ComputerName name the paired computer that holds the
+// spawner, empty for a spawner on this computer.
 type PromptRoute struct {
-	ThreadID string `json:"threadId"`
-	Title    string `json:"title"`
+	ThreadID     string `json:"threadId"`
+	Title        string `json:"title"`
+	ComputerID   string `json:"computerId,omitempty"`
+	ComputerName string `json:"computerName,omitempty"`
 }
 
 // ApprovalEvent is the frontend-facing channel payload for approval overlay

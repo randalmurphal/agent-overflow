@@ -184,6 +184,8 @@ export {
     TerminalHandle,
     TerminalOpenOptions,
     TerminalReplay,
+    ThreadAgentPrompt,
+    ThreadAgentPromptApproval,
     ThreadAgentRow,
     ThreadAgentRowRead,
     ThreadAgentRows,

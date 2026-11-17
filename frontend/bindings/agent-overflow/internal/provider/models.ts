@@ -709,10 +709,14 @@ export type PromptOccurrence = string;
 /**
  * PromptRoute names the spawner a worker's prompt was delivered to.
  * The prompt stays open in the worker, where the user can still answer it.
+ * ComputerID and ComputerName name the paired computer that holds the
+ * spawner, empty for a spawner on this computer.
  */
 export class PromptRoute {
     "threadId": string;
     "title": string;
+    "computerId"?: string;
+    "computerName"?: string;
 
     /** Creates a new PromptRoute instance. */
     constructor($$source: Partial<PromptRoute> = {}) {

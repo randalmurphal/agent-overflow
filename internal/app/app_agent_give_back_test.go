@@ -555,7 +555,7 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 				"my own words",
 				builtMessage(t)(renderAgentSendWake("deploy 11 is done")).Text(),
 				builtMessage(t)(renderAgentLoopWake(wake, agentWakeFire{})).Text(),
-				builtMessage(t)(workerPromptMessage("Worker", "worker-thread", &prompt)).Text(),
+				builtMessage(t)(workerPromptMessage(usermessage.Reporter{Label: "Worker", ThreadID: "worker-thread"}, &prompt)).Text(),
 				"the notes are ready",
 			}, agentmeta.JoinSeparator)
 			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})

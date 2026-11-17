@@ -73,6 +73,9 @@ type agentNotice struct {
 	keep func() (bool, error)
 	// withdrawn runs after keep took the notice back out of the queue.
 	withdrawn func()
+	// failed runs after a session start for the notice failed, with the
+	// notice still queued and the thread told why (startFailed).
+	failed func()
 	// startFailed renders what the thread is told when its session could
 	// not be started. The message is already queued by then.
 	startFailed func(error) string
@@ -277,6 +280,9 @@ func (a *App) startAgentNoticeSession(ctx context.Context, notice agentNotice, r
 			"A message is queued for this thread, but the agent was not started for it: the app could not check that the message is still wanted (%v).", checkErr))
 	case startErr != nil:
 		a.emitErrorToThread(notice.threadID, notice.startFailed(startErr))
+		if notice.failed != nil {
+			notice.failed()
+		}
 	case held:
 		// The archive takes it back, or turning assistants on starts it.
 	case !kept:

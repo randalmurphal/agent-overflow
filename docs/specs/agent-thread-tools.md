@@ -1152,12 +1152,12 @@ after the first says so and quotes its role line, the first non-blank
 line of its `instructions.md` after a leading frontmatter block and
 rule lines, read when the message is sent (one cleaned line of at most
 200 characters, the sender's own text). When the sender is the thread
-that spawned the receiver on this computer, the footer says the
-receiver's questions and approval requests go to it rather than to the
-user: after the standing-agent sentence when there is one, else on a
-line of its own after the first. A sender on another computer carries
-its role in the forwarded call; it never routes the receiver's
-questions. A wake starts with one line: reply,
+that spawned the receiver on this computer, or the thread on another
+computer whose spawn's link owns it, the footer says the receiver's
+questions and approval requests go to it rather than to the user: after
+the standing-agent sentence when there is one, else on a line of its
+own after the first. A sender on another computer carries its role in the
+forwarded call. A wake starts with one line: reply,
 finished without replying, errored, cancelled, interrupted (by a restart
 of its computer, its session ending, a move to another computer or
 another interrupt, as its settlement recorded), stopped by the user

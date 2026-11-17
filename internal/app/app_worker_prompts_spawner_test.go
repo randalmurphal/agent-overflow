@@ -233,12 +233,12 @@ func TestAWorkerPromptRoutesOneSpawnUpUnlessTheSpawnerIsArchived(t *testing.T) {
 	if route := ask(grand.ID, "grand-2"); route != nil {
 		t.Fatalf("a worker whose spawner is archived asks %+v, want the user", route)
 	}
-	// A worker a paired computer's spawn owns asks the user here: no
-	// prompt is routed to another computer.
+	// A worker a paired computer's spawn owns asks its spawner there, named
+	// with that computer.
 	remote := noticeTestThread(t, a, "route-remote")
 	if _, _, err := a.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
-		Token: "remote-spawn", OwnerDeviceID: reachableDevice(t, a.store), SourceComputerID: "desk", SourceThreadID: "desk-lead",
-		Kind: store.ThreadRequestSpawn, SpawnLink: true,
+		Token: "remote-spawn", OwnerDeviceID: reachableDevice(t, a.store), SourceComputerID: "desk", SourceComputerName: "Desk",
+		SourceThreadID: "desk-lead", SourceThreadTitle: "the desk lead", Kind: store.ThreadRequestSpawn, SpawnLink: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +248,16 @@ func TestAWorkerPromptRoutesOneSpawnUpUnlessTheSpawnerIsArchived(t *testing.T) {
 	if owned, err := a.store.GetThread(remote.ID); err != nil || owned.Placement != store.PlacementOwned {
 		t.Fatalf("the remote spawn's thread = %s, %v; want owned", owned.Placement, err)
 	}
-	if route := ask(remote.ID, "remote-1"); route != nil {
-		t.Fatalf("a worker a paired computer owns asks %+v, want the user", route)
+	if route := ask(remote.ID, "remote-1"); route == nil ||
+		*route != (provider.PromptRoute{ThreadID: "desk-lead", Title: "the desk lead", ComputerID: "desk", ComputerName: "Desk"}) {
+		t.Fatalf("a worker a paired computer owns asks %+v, want the desk lead on Desk", route)
+	}
+	// Shown in the sidebar here, it asks the user.
+	if _, err := a.store.SetThreadPlacement([]string{remote.ID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if route := ask(remote.ID, "remote-2"); route != nil {
+		t.Fatalf("a worker with a sidebar row here asks %+v, want the user", route)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -30,7 +31,9 @@ import (
 // spawned there, or one reached from it through that computer's own spawn
 // lineage. A computer that predates them answers that they are not thread
 // tools calls; the caller then shows and stops the request and the turn
-// alone, and says so.
+// alone, and says so. An agent_rows call names the spawn it asks about, so
+// the answer also carries the prompts that computer routed to the spawn's
+// thread here (app_worker_prompts_peer.go).
 
 // Forwarded tool names of the Agents rows.
 const (
@@ -67,6 +70,13 @@ type threadAgentPeerArgs struct {
 	// lists the spawn at its last level. It is sent with Depth 1, which a
 	// computer that predates it lists instead.
 	StateOnly bool `json:"state_only,omitempty"`
+	// Spawn is the caller's spawn token, the token of the receipt whose
+	// link owns ThreadID there: an agent_rows answer then lists the prompts
+	// routed to the caller's thread through that link (Prompts).
+	Spawn string `json:"spawn,omitempty"`
+	// Held names the listed prompts the caller holds now: their leases
+	// are renewed.
+	Held []string `json:"held,omitempty"`
 }
 
 // errThreadAgentPeerTimedOut marks a forwarded call that ran out its own
@@ -129,16 +139,16 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	return nil
 }
 
-// peerThreadAgentRows reads the Agents rows of a thread this computer's
-// thread spawned on a paired computer, nested depth levels, or with depth 0
-// the thread's state alone.
-func (a *App) peerThreadAgentRows(ctx context.Context, computerID, sourceThreadID, threadID string, depth int) (ThreadAgentRows, error) {
-	args := threadAgentPeerArgs{ThreadID: threadID, Depth: depth}
+// peerThreadAgentRows reads the Agents rows of the thread spawn made on a
+// paired computer, nested depth levels, or with depth 0 the thread's state
+// alone, and the prompts its worker routed here, renewing those held here.
+func (a *App) peerThreadAgentRows(ctx context.Context, spawn store.ThreadRequest, depth int) (ThreadAgentRows, error) {
+	args := threadAgentPeerArgs{ThreadID: spawn.TargetThreadID, Depth: depth, Spawn: spawn.Token, Held: a.heldRemotePrompts(spawn)}
 	if depth <= 0 {
 		args.Depth, args.StateOnly = 1, true
 	}
 	var rows ThreadAgentRows
-	err := a.callThreadAgentPeer(ctx, "ThreadToolQuery", computerID, sourceThreadID, args, &rows)
+	err := a.callThreadAgentPeer(ctx, "ThreadToolQuery", spawn.TargetComputerID, spawn.MadeIn(), args, &rows)
 	return rows, err
 }
 
@@ -168,7 +178,7 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 	var result any
 	switch call.Tool {
 	case threadAgentPeerRows:
-		listing, err := a.answerThreadAgentRows(ctx, owner, args)
+		listing, err := a.answerThreadAgentRows(ctx, owner, source, args)
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}
@@ -201,8 +211,10 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 // asked for are recorded in it. A call for the state alone asks no other
 // computer: Hidden says whether the thread has rows. It says where the
 // thread is placed here, whether it is archived, and what prompt it waits
-// on, routed back to the asking device's spawner or not (RoutedToAsker).
-func (a *App) answerThreadAgentRows(ctx context.Context, owner string, args threadAgentPeerArgs) (ThreadAgentRows, error) {
+// on, routed back to the asking device's spawner or not (RoutedToAsker),
+// and for a call that names the spawn whose link owns it, the prompts
+// routed to that spawn's thread (peerPromptsOf).
+func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, args threadAgentPeerArgs) (ThreadAgentRows, error) {
 	var listing ThreadAgentRows
 	if !args.StateOnly {
 		depth := args.Depth
@@ -224,6 +236,9 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner string, args thre
 	waiting := a.threadWaitingOn(args.ThreadID)
 	listing.BlockedOn, listing.BlockedDetail, listing.BlockedRoutedTo = waiting.on, waiting.detail, waiting.routedTo()
 	if listing.RoutedToAsker, err = a.routedToAsker(args.ThreadID, waiting.route, owner); err != nil {
+		return ThreadAgentRows{}, err
+	}
+	if listing.Prompts, err = a.peerPromptsOf(owner, source, thread.Title, args); err != nil {
 		return ThreadAgentRows{}, err
 	}
 	rest, err := a.threadRest(args.ThreadID)

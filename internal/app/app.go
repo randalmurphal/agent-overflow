@@ -897,6 +897,10 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// workerPromptLeaseOverride shortens the lease of a prompt routed to a
+	// paired computer (workerPromptLease) for a test. Zero keeps the
+	// product lease.
+	workerPromptLeaseOverride time.Duration
 	// remoteWatchPoll replaces the remote-job watcher's cadence for a
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.

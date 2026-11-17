@@ -228,11 +228,14 @@ type threadWaiting struct {
 // person owns it.
 func (w threadWaiting) routedTo() string { return promptRouteTitle(w.route) }
 
-// promptRouteTitle is the title of the thread a prompt is routed to, empty
-// for the person's.
+// promptRouteTitle names the thread a prompt is routed to, with the paired
+// computer that holds it, empty for the person's.
 func promptRouteTitle(route *provider.PromptRoute) string {
-	if route == nil {
+	switch {
+	case route == nil:
 		return ""
+	case route.ComputerName != "":
+		return route.Title + " on " + route.ComputerName
 	}
 	return route.Title
 }

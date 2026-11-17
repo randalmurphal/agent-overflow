@@ -2057,3 +2057,58 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 		t.Fatalf("stop rows = %q, want [%q]", stopRows, want)
 	}
 }
+
+// A spawn's first message there tells a worker its spawner owns that its
+// questions and approvals go to the spawner, as a spawn on one computer
+// does; one given a sidebar row there is told nothing of the kind.
+func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}, {mockClaudeInitLine}})
+	const routes = "\nThe sender spawned this thread, so your questions and approval requests go to it, not to the user.\n"
+	for _, placement := range []string{"", store.PlacementStandalone} {
+		extra := map[string]any{}
+		if placement != "" {
+			extra["placement"] = placement
+		}
+		ack := pair.spawnThere(t, "work over there", extra)
+		worker := pair.receipt(t, ack.Token).TargetThreadID
+		t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
+		var first string
+		waitUntil(t, 15*time.Second, func() bool {
+			items, err := pair.dest.store.ListItems(worker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range items {
+				if item.Kind == "user_text" {
+					first = item.Summary
+					return true
+				}
+			}
+			return false
+		})
+		if strings.Contains(first, routes) != (placement == "") {
+			t.Fatalf("placement %q: the spawn's message there reads\n%s", placement, first)
+		}
+		if placement != "" {
+			continue
+		}
+		// A send that names the spawner's computer and thread but comes over
+		// another device's pairing is not the link's owner.
+		link := pair.receipt(t, ack.Token)
+		for device, want := range map[string]bool{link.OwnerDeviceID: true, "other-device": false} {
+			message, err := threadToolsApp{app: pair.dest}.requestMessage(threadRequestOrigin{
+				caller:  threadtools.Caller{ComputerID: link.SourceComputerID, ThreadID: link.SourceThreadID, Title: link.SourceThreadTitle},
+				foreign: true, ownerDevice: device,
+			}, "a-send", store.ThreadRequestSend, worker, "one more thing", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(message.Text(), routes) != want {
+				t.Fatalf("a send over device %q reads\n%s\nwant the prompts line: %v", device, message.Text(), want)
+			}
+		}
+	}
+}

@@ -224,6 +224,10 @@ type ThreadAgentRows struct {
 	BlockedDetail   string `json:"blockedDetail,omitempty"`
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
 	RoutedToAsker   bool   `json:"routedToAsker,omitempty"`
+	// Prompts are the listed thread's prompts routed to the asking
+	// computer's spawn thread, answered by agent_rows for a call that names
+	// the spawn whose link owns the thread (peerPromptsOf).
+	Prompts []ThreadAgentPrompt `json:"prompts,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -641,8 +645,7 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 			// answer is the thread's state alone, and that computer asks
 			// none further on.
 			depth := maxDepth - remote[i].depth
-			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.MadeIn(),
-				remote[i].spawn.TargetThreadID, depth)
+			listing, err := a.peerThreadAgentRows(call, remote[i].spawn, depth)
 			answers[i] = a.notePeerAgentRows(remote[i].spawn, listing, err, depth <= 0 && listing.Open != nil)
 		})
 		return answers
@@ -711,8 +714,10 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 		row.OwnerComputerID = slot.spawn.TargetComputerID
 		// The placement stays the one the computer that holds the thread
 		// reported. A prompt routed back to that computer's spawner is
-		// routed to a thread there, not here.
-		row.BlockedRoutedHere = false
+		// routed to a thread there, not here, and named with that computer.
+		if row.BlockedRoutedHere {
+			row.BlockedRoutedTo, row.BlockedRoutedHere = row.BlockedRoutedTo+" on "+parent.Computer, false
+		}
 		switch row.ComputerID {
 		case "":
 			// A thread on that computer.

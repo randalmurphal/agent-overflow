@@ -448,7 +448,9 @@ func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, 
 		answers = append(answers, store.AsyncQuestionAnswer{ItemID: prompt.requestID, Index: index, Answer: strings.Join(response.Answers[q.ID], ", ")})
 	}
 	spawner := usermessage.Sender{ThreadID: prompt.agentID}
-	if agent, err := a.store.GetThread(prompt.agentID); err == nil {
+	if hold := prompt.remote; hold != nil {
+		spawner.Title, spawner.ComputerID, spawner.ComputerName = hold.title, hold.computerID, hold.computerName
+	} else if agent, err := a.store.GetThread(prompt.agentID); err == nil {
 		spawner.Title = agent.Title
 	}
 	sendID := workerAnswerSendIDRoot + prompt.token
