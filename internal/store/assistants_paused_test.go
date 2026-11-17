@@ -118,8 +118,9 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 	}
 }
 
-// While assistants are paused, a thread under an assistant is no message
-// search hit, by title or by message; an ordinary thread still is.
+// While assistants are hidden, a thread under an assistant is no message
+// search hit, by title or by message; an ordinary thread still is. The
+// pause of what runs does not decide it.
 func TestPausedAssistantsAreNoMessageSearchHits(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -135,9 +136,10 @@ func TestPausedAssistantsAreNoMessageSearchHits(t *testing.T) {
 	mustInsertItemForSearch(t, s, "helper", "helper-item", 0, "quokka in helper", 2)
 	mustInsertItemForSearch(t, s, "plain", "plain-item", 0, "quokka in plain", 3)
 
-	threads := func(paused bool) []string {
+	threads := func(hidden bool) []string {
 		t.Helper()
-		s.PauseAssistants(paused)
+		s.HideAssistants(hidden)
+		s.PauseAssistants(!hidden)
 		hits, err := s.SearchThreadMessages("quokka", 10)
 		if err != nil {
 			t.Fatal(err)
@@ -150,10 +152,10 @@ func TestPausedAssistantsAreNoMessageSearchHits(t *testing.T) {
 		return ids
 	}
 	if got, want := threads(true), []string{"item:plain", "title:plain"}; !slices.Equal(got, want) {
-		t.Errorf("paused hits = %v, want %v", got, want)
+		t.Errorf("hidden hits = %v, want %v", got, want)
 	}
 	if got, want := threads(false), []string{"item:helper", "item:ops", "item:plain", "title:ops", "title:plain"}; !slices.Equal(got, want) {
-		t.Errorf("running hits = %v, want %v", got, want)
+		t.Errorf("shown hits = %v, want %v", got, want)
 	}
 }
 

@@ -62,6 +62,9 @@ type Store struct {
 	// assistantsPaused keeps the due reads off the threads that live under
 	// an assistant while assistants are turned off (assistants_paused.go).
 	assistantsPaused atomic.Bool
+	// assistantsHidden keeps those threads out of message search while the
+	// setting is off (assistants_paused.go).
+	assistantsHidden atomic.Bool
 	// writes counts the row writes the writer connection has run; see
 	// WriteCount.
 	writes *atomic.Uint64

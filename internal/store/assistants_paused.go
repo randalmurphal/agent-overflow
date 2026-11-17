@@ -50,6 +50,24 @@ func (s *Store) assistantPauseSQL(column string) string {
 	return "NOT " + threadUnderAssistantSQL(column)
 }
 
+// HideAssistants keeps the threads under an assistant out of message search,
+// or lets them back in. It follows the setting the moment it changes, both
+// ways, while the pause follows the convergence: search is what the person
+// sees, and turning assistants on shows their messages before recovery
+// lets their work run.
+func (s *Store) HideAssistants(hidden bool) {
+	s.assistantsHidden.Store(hidden)
+}
+
+// assistantHiddenSQL is assistantPauseSQL for message search
+// (HideAssistants).
+func (s *Store) assistantHiddenSQL(column string) string {
+	if !s.assistantsHidden.Load() {
+		return "1"
+	}
+	return "NOT " + threadUnderAssistantSQL(column)
+}
+
 // ThreadUnderAssistant reports whether threadID lives under an assistant
 // (threadUnderAssistantSQL).
 func (s *Store) ThreadUnderAssistant(threadID string) (bool, error) {

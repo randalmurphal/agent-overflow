@@ -95,6 +95,7 @@ type assistantsSwitchState struct {
 func (a *App) initAssistantsPause(st *store.Store) {
 	paused := !a.currentSettings().AssistantsEnabled
 	st.PauseAssistants(paused)
+	st.HideAssistants(paused)
 	a.assistantsSwitch.mu.Lock()
 	a.assistantsSwitch.paused = paused
 	a.assistantsSwitch.mu.Unlock()

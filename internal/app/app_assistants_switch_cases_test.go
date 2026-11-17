@@ -153,3 +153,46 @@ func TestAssistantsOffAcrossARestartResumeWhenTurnedOn(t *testing.T) {
 		t.Fatalf("the loop after assistants came back = %+v; want it fired once standing in for 2", row)
 	}
 }
+
+// Message search follows the setting as soon as it is written, both ways,
+// while the pause of what runs waits for the convergence: an open search
+// that requeries on the settings event finds the assistant's messages once
+// they are on again, however long recovery takes, and none once they are
+// off.
+func TestMessageSearchFollowsTheSettingAtOnce(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "search-at-once")
+	testAssistant(t, a, thread.ID)
+	insertUserItem(t, a.store, thread.ID, "search-at-once-item", 0, "quokka in the assistant")
+	found := func() bool {
+		t.Helper()
+		hits, err := a.SearchThreadMessages("quokka", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(hits) > 0
+	}
+	setAssistants(t, a, false)
+	if found() {
+		t.Fatal("a paused assistant's message is a search hit")
+	}
+
+	// The convergence that would release the pause cannot run yet.
+	a.assistantsSwitch.mu.Lock()
+	switchAssistants(t, a, true)
+	shown := found()
+	a.assistantsSwitch.mu.Unlock()
+	if !shown {
+		t.Fatal("the assistant's message is no hit right after assistants were turned on")
+	}
+	awaitAssistants(t, a, true)
+
+	a.assistantsSwitch.mu.Lock()
+	switchAssistants(t, a, false)
+	hidden := !found()
+	a.assistantsSwitch.mu.Unlock()
+	if !hidden {
+		t.Fatal("the assistant's message is still a hit right after assistants were turned off")
+	}
+}

@@ -57,6 +57,11 @@ func (a *App) registerSettingsBroadcast() {
 		return
 	}
 	a.settings.SetChangeObserver(func(changes []settings.TierChange) {
+		// Message search shows or hides assistants before any client hears
+		// of the change and requeries (app_assistants_switch.go).
+		if _, ok := switchRevision(changes, "assistantsEnabled"); ok && a.store != nil {
+			a.store.HideAssistants(!a.currentSettings().AssistantsEnabled)
+		}
 		promptsMoved := false
 		for _, change := range changes {
 			a.emitEvent(eventchan.SettingsUpdated, SettingsUpdatedEvent{

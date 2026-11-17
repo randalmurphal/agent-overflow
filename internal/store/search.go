@@ -71,11 +71,11 @@ func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHi
 	}
 	pattern := likePattern(trimmed)
 	return historyReadSnapshot(context.Background(), s, "search threads", func(q sqlQueryer) ([]ThreadMessageHit, error) {
-		titleHits, err := searchTitleHits(q, pattern, s.assistantPauseSQL("owned_threads.id"), limit)
+		titleHits, err := searchTitleHits(q, pattern, s.assistantHiddenSQL("owned_threads.id"), limit)
 		if err != nil {
 			return nil, err
 		}
-		itemHits, err := searchGlobalItemHits(q, pattern, s.assistantPauseSQL("t.id"), limit)
+		itemHits, err := searchGlobalItemHits(q, pattern, s.assistantHiddenSQL("t.id"), limit)
 		if err != nil {
 			return nil, err
 		}
@@ -326,8 +326,8 @@ func threadFindChanged(q sqlQueryer, threadID, filter string, filterArgs []any, 
 
 // searchTitleHits returns one hit per thread whose title matches — no per-item
 // fan-out. Most-recently-active threads first. paused is the assistants
-// pause filter (assistantPauseSQL): a thread under an assistant is no hit
-// while assistants are off.
+// filter (assistantHiddenSQL): a thread under an assistant is no hit while
+// assistants are off.
 func searchTitleHits(q sqlQueryer, pattern, paused string, limit int) ([]ThreadMessageHit, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{pattern}, hiddenArgs...)
