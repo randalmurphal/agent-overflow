@@ -150,30 +150,47 @@ type paneMount struct {
 	focus *mountFocus
 }
 
-// setInfo replaces the page's info, keeping its label, and reports whether
-// anything the tab shows changed, so a caller pushes state only then.
-func (p *managedPage) setInfo(info PageInfo) bool {
+// A thread's state push shows each of its tabs' info, loading state and
+// favicon. Every write that changes one of them sets the page's unpushed
+// record (pageLoad.unpushed, under metaMu), and only a push to every client
+// clears it (buildThreadState), taking it before it reads the tabs, so a
+// write that lands in between sets it again. publishPages pushes a thread
+// whose pages hold one: a write is never lost whoever publishes next, and an
+// operation that changed nothing pushes nothing.
+
+// setInfo replaces the page's info, keeping its label.
+func (p *managedPage) setInfo(info PageInfo) {
 	p.metaMu.Lock()
 	info.Label = p.info.Label
-	changed := info != p.info
+	if pushedInfo(info) != pushedInfo(p.info) {
+		p.load.unpushed = true
+	}
 	p.info = info
 	p.metaMu.Unlock()
-	return changed
 }
 
-// setHistoryState updates only the back/forward flags and reports whether
-// anything changed, so the async refresh behind an engine info event emits
-// no state push when the answer is the one already shown.
-func (p *managedPage) setHistoryState(canGoBack, canGoForward bool) bool {
+// pushedInfo is info without what only a browser_pages answer means
+// (Selected, LastOpened), which each call rewrites and no tab shows.
+func pushedInfo(info PageInfo) PageInfo {
+	info.Selected, info.LastOpened = false, ""
+	return info
+}
+
+// setHistoryState updates only the back/forward flags.
+func (p *managedPage) setHistoryState(canGoBack, canGoForward bool) {
 	p.metaMu.Lock()
-	changed := p.info.CanGoBack != canGoBack || p.info.CanGoForward != canGoForward
+	if p.info.CanGoBack != canGoBack || p.info.CanGoForward != canGoForward {
+		p.load.unpushed = true
+	}
 	p.info.CanGoBack, p.info.CanGoForward = canGoBack, canGoForward
 	p.metaMu.Unlock()
-	return changed
 }
 
 func (p *managedPage) setLabel(label string) PageInfo {
 	p.metaMu.Lock()
+	if p.info.Label != label {
+		p.load.unpushed = true
+	}
 	p.info.Label = label
 	info := p.info
 	p.metaMu.Unlock()
@@ -187,20 +204,90 @@ func (p *managedPage) cachedInfo() PageInfo {
 	return info
 }
 
-// pageChanged follows a use of p: it counts as a use, a thread with no active
-// page takes p, and the thread's state is pushed when that or the caller's
-// own change (changed) altered it. Every push carries all the thread's tabs
-// with their favicons, so a tool call that changed nothing pushes nothing.
-func (m *Manager) pageChanged(p *managedPage, changed bool) {
+// hasUnpushed reports whether a write to p is not in a push yet.
+func (p *managedPage) hasUnpushed() bool {
+	p.metaMu.RLock()
+	defer p.metaMu.RUnlock()
+	return p.load.unpushed
+}
+
+// threadPagesLocked answers the thread's pages that have a managedPage: the
+// ones being created and the live ones. The caller holds m.mu.
+func (m *Manager) threadPagesLocked(threadID string) []*managedPage {
+	var pages []*managedPage
+	for _, pending := range m.pending {
+		if pending.p.owner == threadID && !pending.closed {
+			pages = append(pages, pending.p)
+		}
+	}
+	for _, scope := range m.scopes {
+		for _, p := range scope.pages {
+			if p.owner == threadID {
+				pages = append(pages, p)
+			}
+		}
+	}
+	return pages
+}
+
+// publishPages pushes the thread's state when a write to one of its pages
+// is not in a push yet.
+func (m *Manager) publishPages(threadID string) {
+	m.mu.Lock()
+	unpushed := false
+	for _, p := range m.threadPagesLocked(threadID) {
+		if p.hasUnpushed() {
+			unpushed = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if unpushed {
+		m.emitThreadState(threadID)
+	}
+}
+
+// pageAdded follows p joining its thread's tabs (created, adopted or
+// restored): a use, the thread's active page when it has none, and a push.
+func (m *Manager) pageAdded(p *managedPage) {
 	p.touch()
-	if m.ensureActivePage(p.owner, p.id) || changed {
+	m.ensureActivePage(p.owner, p.id)
+	m.emitThreadState(p.owner)
+	m.syncPanePresentation(p.owner)
+}
+
+// pageUsed follows an operation on p: a use, the thread's active page when it
+// has none, and a push only when that or a write is not in a push yet.
+func (m *Manager) pageUsed(p *managedPage) {
+	p.touch()
+	if m.ensureActivePage(p.owner, p.id) {
 		m.emitThreadState(p.owner)
+	} else {
+		m.publishPages(p.owner)
 	}
 	m.syncPanePresentation(p.owner)
 }
 
+// threadState is the thread's state for one client's read (an attach, a
+// call's answer). It leaves the unpushed records for the next push.
 func (m *Manager) threadState(threadID string) CompanionEvent {
+	return m.buildThreadState(threadID, false)
+}
+
+// buildThreadState builds the thread's state. For a push to every client
+// (push) it first takes the unpushed records of the thread's pages.
+func (m *Manager) buildThreadState(threadID string, push bool) CompanionEvent {
 	m.mu.Lock()
+	if push {
+		for _, p := range m.threadPagesLocked(threadID) {
+			p.metaMu.Lock()
+			p.load.unpushed = false
+			p.metaMu.Unlock()
+		}
+		if m.pushTaken != nil {
+			m.pushTaken()
+		}
+	}
 	tabs := m.companionTabsLocked(threadID)
 	session, hasSession := m.sessions[threadID]
 	active, _ := m.livePageLocked(session.ActivePageID)
@@ -236,9 +323,10 @@ func (m *Manager) emit(event CompanionEvent) {
 	}
 }
 
+// emitThreadState pushes the thread's state to every client.
 func (m *Manager) emitThreadState(threadID string) {
 	if strings.TrimSpace(threadID) != "" {
-		m.emit(m.threadState(threadID))
+		m.emit(m.buildThreadState(threadID, true))
 	}
 }
 
@@ -357,18 +445,17 @@ func (m *Manager) updatePageInfo(handle, url, title string) {
 		return
 	}
 	previous := found.cachedInfo()
-	// An engine reports the same address and title again (a target info
-	// change that touched neither); that pushes nothing.
-	if found.setInfo(PageInfo{
+	found.setInfo(PageInfo{
 		ID:    found.id,
 		URL:   truncateUTF8(url, maxBrowserURLBytes),
 		Title: truncateUTF8(title, maxBrowserTitleBytes),
 		// The engine event carries no history state; keep what is shown
 		// and let the async refresh below correct it.
 		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
-	}) {
-		m.emitThreadState(found.owner)
-	}
+	})
+	// An engine reports the same address and title again (a target info
+	// change that touched neither); that alone pushes nothing.
+	m.publishPages(found.owner)
 	go m.refreshHistoryState(found)
 }
 
@@ -384,9 +471,8 @@ func (m *Manager) refreshHistoryState(p *managedPage) {
 	if err != nil {
 		return
 	}
-	if p.setHistoryState(back, forward) {
-		m.emitThreadState(p.owner)
-	}
+	p.setHistoryState(back, forward)
+	m.publishPages(p.owner)
 }
 
 func (m *Manager) CompanionState(access Access) CompanionEvent {

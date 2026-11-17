@@ -158,6 +158,10 @@ type Manager struct {
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
 	viewportApplied func(threadID string)
+	// pushTaken is a test seam: called, with m.mu held, between a push's
+	// taking the unpushed records and its reading the tabs. Production
+	// leaves it nil.
+	pushTaken func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -455,9 +459,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer cancel()
 	info, err := m.pageInfo(opCtx, p)
 	if err == nil {
-		changed := p.setInfo(info)
+		p.setInfo(info)
 		info = p.cachedInfo()
-		m.pageChanged(p, changed)
+		m.pageUsed(p)
 	}
 	return info, err
 }
@@ -496,12 +500,11 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	}
 	p.touch()
 	info, err := m.pageInfo(opCtx, p)
-	changed := false
 	if err == nil {
-		changed = p.setInfo(info)
+		p.setInfo(info)
 		info = p.cachedInfo()
 	}
-	m.pageChanged(p, changed)
+	m.pageUsed(p)
 	return info, err
 }
 
@@ -535,6 +538,8 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 			out = append(out, info)
 		}
 	}
+	// What the reads found, the tabs show.
+	m.publishPages(access.ThreadID)
 	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
 	return out, nil
 }
@@ -903,7 +908,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	scope.pages[p.id] = p
 	m.mu.Unlock()
 	// A new tab.
-	m.pageChanged(p, true)
+	m.pageAdded(p)
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}

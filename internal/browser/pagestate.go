@@ -48,6 +48,10 @@ type pageLoad struct {
 	want, reading bool
 	// reads counts the reads begun.
 	reads uint64
+	// unpushed is set by a change to anything the thread's state push shows
+	// of the page (its info, loading or favicon) and cleared by the next push
+	// to every client (companion.go).
+	unpushed bool
 }
 
 // loadState answers the page's loading state and favicon.
@@ -70,16 +74,16 @@ func (m *Manager) pageLoading(p *managedPage, loading bool, order uint64) {
 	}
 	p.load.order = order
 	p.load.reports++
-	changed := p.load.loading != loading
+	if p.load.loading != loading {
+		p.load.unpushed = true
+	}
 	p.load.loading = loading
 	if !loading && pane {
 		p.load.want = true
 	}
 	start := p.load.beginReadLocked()
 	p.metaMu.Unlock()
-	if changed {
-		m.emitThreadState(p.owner)
-	}
+	m.publishPages(p.owner)
 	if start {
 		m.runFaviconReads(p)
 	}
@@ -143,8 +147,9 @@ func (m *Manager) readFaviconOnce(p *managedPage) bool {
 		return false
 	}
 	p.load.favicon = icon
+	p.load.unpushed = true
 	p.metaMu.Unlock()
-	m.emitThreadState(p.owner)
+	m.publishPages(p.owner)
 	return false
 }
 

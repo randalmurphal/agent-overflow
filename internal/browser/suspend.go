@@ -311,7 +311,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			continue
 		}
 		// The tab leaves its suspended state.
-		m.pageChanged(p, true)
+		m.pageAdded(p)
 		if err := m.persistThreads([]string{p.owner}); err != nil {
 			// The page is live; its saved copy still lists it as suspended, which
 			// only brings it back as a suspended page after a crash.

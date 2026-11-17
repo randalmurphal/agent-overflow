@@ -36,6 +36,7 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 		return PageInfo{}, infoErr
 	}
 	p.setInfo(info)
+	m.publishPages(access.ThreadID)
 	return p.cachedInfo(), nil
 }
 

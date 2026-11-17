@@ -137,8 +137,14 @@ per-platform no-op.
   an image data URL within 32 KB, empty when there is none or it is refused.
   Headless Chromium has no pane and reports none.
 - The thread's state is pushed whole, every tab with its favicon, and only
-  by a change: a tool call or an engine report that leaves it as it was
-  pushes nothing.
+  by a change. A write that changes what a tab shows (its info, loading or
+  favicon) marks the page until a push to every client carries it; a push
+  takes the marks before it reads the tabs, and one client's read of the
+  state leaves them. Every writer then publishes, which pushes when any of
+  the thread's pages is marked, so a tool call or an engine report that
+  leaves the state as it was pushes nothing and no write waits for a later
+  change. `browser_pages`' `selected` and `lastOpened` are per call and
+  mark nothing.
 - The chat header's browser button is present wherever the native browser is
   usable for the thread, tabs or not. With no tab it opens the pane on a new
   tab, as a mod-clicked link does on a tab at the link. A new tab the user
