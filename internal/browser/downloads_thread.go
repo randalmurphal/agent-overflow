@@ -256,7 +256,9 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	}
 	p.downloadMu.Lock()
 	entry := p.downloadLocked(item.engineID)
-	if entry == nil || entry.State != downloadStateRunning {
+	if entry == nil || entry.State != downloadStateRunning || entry.cancelRequested {
+		// A cancel already with the engine stays its request: only its own
+		// refusal withdraws it, never a later request's answer.
 		p.downloadMu.Unlock()
 		return nil
 	}
@@ -316,10 +318,19 @@ func (m *Manager) finishedDownloadPath(access Access, id string) (threadDownload
 	}
 	// A name is reused once its file is moved away, so the path alone may
 	// name a later download's file.
-	if item.file == nil || !os.SameFile(item.file, current) {
-		return threadDownload{}, fmt.Errorf("browser: %s was moved or replaced since it downloaded", item.Name)
+	if !sameDownloadedFile(item.file, current) {
+		return threadDownload{}, fmt.Errorf("browser: %s was moved, changed or replaced since it downloaded", item.Name)
 	}
 	return item, nil
+}
+
+// sameDownloadedFile reports whether current is the file a download wrote,
+// as recorded when it finished. Device and inode alone can match a later
+// download that reuses a deleted file's inode; that one cannot also match
+// the size and modification time, which a rename keeps.
+func sameDownloadedFile(recorded, current os.FileInfo) bool {
+	return recorded != nil && os.SameFile(recorded, current) &&
+		recorded.Size() == current.Size() && recorded.ModTime().Equal(current.ModTime())
 }
 
 // RevealThreadDownload opens the OS file manager with a finished download

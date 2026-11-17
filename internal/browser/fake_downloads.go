@@ -96,8 +96,9 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 }
 
 // CancelDownload ends a held download and reports it canceled, as an engine
-// reports the cancel it was asked for. Any other id has already been let
-// go, and its terminal report is out or on the way.
+// reports the cancel it was asked for, releasing its record first as the
+// native engines do. Any other id has already been let go, and its terminal
+// report is out or on the way.
 func (p *fakeProfile) CancelDownload(id string) error {
 	p.mu.Lock()
 	held, ok := p.held[id]
@@ -105,6 +106,9 @@ func (p *fakeProfile) CancelDownload(id string) error {
 	p.mu.Unlock()
 	if !ok {
 		return errDownloadEnded
+	}
+	if released := p.engine.downloadReleased; released != nil {
+		released(id)
 	}
 	if p.engine.events.DownloadProgress != nil {
 		p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(held.total / 2), Total: float64(held.total), State: downloadCanceled})

@@ -497,7 +497,7 @@ func TestADownloadRowActsOnlyOnItsOwnFile(t *testing.T) {
 		}
 		return revealErr
 	}
-	replaced := func(err error) bool { return err != nil && strings.Contains(err.Error(), "moved or replaced") }
+	replaced := func(err error) bool { return err != nil && strings.Contains(err.Error(), "moved, changed or replaced") }
 
 	startDownload(t, manager, access, page, "report.pdf", 10)
 	older := threadDownloads(manager, access)[0]
@@ -534,6 +534,170 @@ func TestADownloadRowActsOnlyOnItsOwnFile(t *testing.T) {
 	}
 	if !slices.Equal(revealed, []string{newerItem.path, olderItem.path}) {
 		t.Fatalf("revealed %q", revealed)
+	}
+}
+
+// Deleting a finished download and downloading the same name again can give
+// the new file the deleted one's inode; the older row must not act on it.
+// The reuse is forced: the older row's record is made to name the newer
+// file's device and inode, once as a same-size download made earlier (the
+// usual redownload) and once at the newer file's time with another size.
+func TestADownloadRowRefusesALaterDownloadOnAReusedInode(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	manager.revealFileInFileManager = func(context.Context, string) error { return nil }
+	startDownload(t, manager, access, page, "report.pdf", 10)
+	older := threadDownloads(manager, access)[0]
+	olderItem, _ := manager.threadDownload(access.ThreadID, older.ID)
+	if err := os.Remove(olderItem.path); err != nil {
+		t.Fatal(err)
+	}
+	// Apart in time, as two downloads are.
+	time.Sleep(10 * time.Millisecond)
+	startDownload(t, manager, access, page, "report.pdf", 10)
+	newer := threadDownloads(manager, access)[0]
+	newerItem, _ := manager.threadDownload(access.ThreadID, newer.ID)
+	if newerItem.path != olderItem.path {
+		t.Fatalf("the second download is at %s, not the freed name %s", newerItem.path, olderItem.path)
+	}
+	if olderItem.file.ModTime().Equal(newerItem.file.ModTime()) {
+		t.Fatal("the two downloads share a modification time")
+	}
+
+	for _, record := range []struct {
+		name    string
+		size    int64
+		modTime time.Time
+	}{
+		{"same size, earlier", olderItem.file.Size(), olderItem.file.ModTime()},
+		{"other size, same time", newerItem.file.Size() + 1, newerItem.file.ModTime()},
+	} {
+		reused := statReshaped(t, newerItem.path, record.size, record.modTime, newerItem.file)
+		current, err := os.Stat(newerItem.path)
+		if err != nil || !os.SameFile(reused, current) {
+			t.Fatalf("%s: the forced record does not share the newer file's inode: %v", record.name, err)
+		}
+		manager.downloadsMu.Lock()
+		manager.threadDownloads[access.ThreadID].find(older.ID).file = reused
+		manager.downloadsMu.Unlock()
+
+		if err := manager.RevealThreadDownload(t.Context(), access, older.ID); err == nil || !strings.Contains(err.Error(), "moved, changed or replaced") {
+			t.Fatalf("%s: the older row on a reused inode answers %v", record.name, err)
+		}
+		if _, err := manager.OpenThreadDownload(t.Context(), access, older.ID); err == nil {
+			t.Fatalf("%s: the older row opened the newer download", record.name)
+		}
+		if err := manager.RevealThreadDownload(t.Context(), access, newer.ID); err != nil {
+			t.Fatalf("%s: the newer row: %v", record.name, err)
+		}
+	}
+}
+
+// statReshaped answers a stat of path taken while it had size and modTime,
+// then puts the file back as it was (the fake engine writes zeros).
+func statReshaped(t *testing.T, path string, size int64, modTime time.Time, was os.FileInfo) os.FileInfo {
+	t.Helper()
+	if err := os.Truncate(path, size); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+	reshaped, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, was.Size()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, was.ModTime(), was.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	return reshaped
+}
+
+// A download that begins while its page is leaving is refused when the page
+// is gone by its admission: the engine is told no, nothing is listed and
+// nothing is reserved. The gate runs the departure between the start's page
+// lookup and its admission.
+func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave func(t *testing.T, manager *Manager, access Access, page PageInfo)
+	}{
+		{"clear site data", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.ClearSiteData(t.Context()); err != nil {
+				t.Error(err)
+			}
+		}},
+		{"close the page", func(t *testing.T, manager *Manager, access Access, page PageInfo) {
+			if err := manager.closeLivePage(t.Context(), access, page.ID); err != nil {
+				t.Error(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, log, access, page := newDownloadManager(t)
+			baseline := manager.artifactBytes.Load()
+			authority := authorityOf(t, manager, access)
+			manager.mu.Lock()
+			p, _ := manager.livePageLocked(page.ID)
+			manager.mu.Unlock()
+			manager.downloadAdmitting = func() { tc.leave(t, manager, access, page) }
+
+			if manager.downloadStarted(downloadStart{Frame: p.driver.Handle(), ID: "late-1", URL: "https://example.test/late.bin", SuggestedName: "late.bin"}) {
+				t.Fatal("a download on a page that left was admitted")
+			}
+			if listed := threadDownloads(manager, access); len(listed) != 0 {
+				t.Fatalf("the thread lists %+v", listed)
+			}
+			p.downloadMu.Lock()
+			entries := len(p.downloads)
+			p.downloadMu.Unlock()
+			if entries != 0 {
+				t.Fatalf("the page that left holds %d download entries", entries)
+			}
+			if authority.downloadBytes.Load() != 0 || manager.artifactBytes.Load() != baseline {
+				t.Fatalf("the workspace reserves %d bytes and the artifacts %d over %d", authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
+			}
+			if n := countKind(log.take(), "download"); n != 0 {
+				t.Fatalf("the refused download was announced %d times", n)
+			}
+		})
+	}
+}
+
+// A second cancel that reaches the engine after it released its record and
+// before it reported the first cancel does not withdraw the first: the
+// download ends canceled, unannounced, with its partial file removed.
+func TestASecondCancelKeepsTheFirstCancel(t *testing.T) {
+	manager, log, access, page := newDownloadManager(t)
+	startDownload(t, manager, access, page, "held.bin", 4096, "hold")
+	listed := threadDownloads(manager, access)
+	item, err := manager.threadDownload(access.ThreadID, listed[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := filepath.Join(fakeProfileOf(t, manager).downloadDir, item.engineID)
+	if _, err := os.Stat(partial); err != nil {
+		t.Fatalf("no partial file: %v", err)
+	}
+	log.take()
+	manager.engine.(*fakeEngine).downloadReleased = func(string) {
+		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+			t.Errorf("the second cancel answers %v", err)
+		}
+	}
+	if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
+		t.Fatalf("the download lists as %+v, want canceled", got)
+	}
+	if n := countKind(log.take(), "download"); n != 0 {
+		t.Fatalf("the user's cancel was announced %d times", n)
+	}
+	if _, err := os.Stat(partial); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the partial file stays: %v", err)
 	}
 }
 

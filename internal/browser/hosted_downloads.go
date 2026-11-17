@@ -48,8 +48,9 @@ import (
 //     it before the Manager moves the download.
 //
 // A refusal never fails the page: the page opens, the reason is logged, and
-// the Manager tells the user once per profile (downloadsUnmanaged). A
-// refused directory, or refused download events, turns the profile's
+// the change is reported to the Manager (DownloadPolicyChanged), which tells
+// the user once per change, whether a page's creation or a later re-set made
+// it. A refused directory, or refused download events, turns the profile's
 // downloads off with deny; each download the browser cancels is reported
 // failed with the reason. Only when deny is refused too does a download
 // reach the system Downloads folder: the user is told so, and AO cancels
@@ -193,6 +194,11 @@ func (e *hostedEngine) setDownloadBehavior(profile *hostedProfile, pageID string
 	e.mu.Unlock()
 	if changed {
 		e.logf("browser: %s", profile.downloadWarning(mode, refusal, denyRefusal))
+		if report := e.events.DownloadPolicyChanged; report != nil {
+			// Off this goroutine: a page close can run under the Manager's
+			// lock, and the Manager reads the current warning anyway.
+			go report(profile.id)
+		}
 	}
 	return true
 }
@@ -227,15 +233,12 @@ func (p *hostedProfile) downloadWarning(mode hostedDownloadMode, refusal, denyRe
 	return ""
 }
 
-// downloadsUnmanaged is the warning for the page's profile, empty while AO
-// manages its downloads. The Manager shows it to the user once per profile.
-func (p *hostedPage) downloadsUnmanaged() string {
+// downloadsWarning is the profile's warning, empty while AO manages its
+// downloads (downloadPolicy).
+func (p *hostedProfile) downloadsWarning() string {
 	p.engine.mu.Lock()
 	defer p.engine.mu.Unlock()
-	if profile := p.engine.pageDownloads[p.id]; profile != nil {
-		return profile.downloadWarning(profile.downloadMode, profile.downloadRefusal, profile.downloadDenyRefusal)
-	}
-	return ""
+	return p.downloadWarning(p.downloadMode, p.downloadRefusal, p.downloadDenyRefusal)
 }
 
 // downloadEvents is the Manager's events with the hosted engine's part of a
