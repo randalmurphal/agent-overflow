@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,6 +159,65 @@ func TestAHeldSpawnSettlesOnceWithItsWorkersLaterMessage(t *testing.T) {
 		t.Fatalf("settled %+v; want finished once with the later turn's message", row)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 1 })
+}
+
+// A person's message to a held worker opens a turn: from the send's write
+// to the turn's published round the worker is not at rest. The real start
+// is held after it claimed the send, with the shell the worker waited on
+// already ended: thread_status does not read it resting, a rest pass does
+// not settle the spawn, and the spawn settles with that turn's message.
+func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	f.holdCallerSession()
+	later := append(restShellDone("bg-6", "task-6"), mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-started","role":"assistant","content":[{"type":"text","text":"Answered."}]}}`,
+		mockClaudeResultLine)
+	installMockClaudeTurns(t, f.app, [][]string{
+		append(restShellLaunch("bg-6", "task-6", "Watching."), mockClaudeResultLine),
+		later,
+	})
+	ack := f.spawnWorker(t, "watch the deploy")
+	f.awaitRestHold(t, ack)
+
+	inStart, proceed := make(chan struct{}), make(chan struct{})
+	var once, released sync.Once
+	letGo := func() { released.Do(func() { close(proceed) }) }
+	f.app.triage.SetTurnRowWrittenGate(func(id string) {
+		if id == ack.ThreadID {
+			once.Do(func() { close(inStart); <-proceed })
+		}
+	})
+	t.Cleanup(func() { letGo(); f.app.triage.SetTurnRowWrittenGate(nil) })
+	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "how is it going?", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	select {
+	case <-inStart:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the worker's turn start never reached the gate")
+	}
+	if work, err := f.app.runningBackgroundWorkForThread(ack.ThreadID, ""); err != nil || len(work) != 0 {
+		t.Fatalf("background work %+v, %v; want the shell ended before the start", work, err)
+	}
+	state, err := f.app.threadTools().threadStateNow(t.Context(), ack.ThreadID)
+	if err != nil || state.Resting {
+		t.Fatalf("thread_status inside the start %+v, %v; want it not resting", state, err)
+	}
+	if atRest, err := f.app.heldThreadAtRest(ack.ThreadID); err != nil || atRest {
+		t.Fatalf("a held request reads the worker at rest inside the start: %v, %v", atRest, err)
+	}
+	f.app.settleRestedReceipts()
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, ack.Token); row.State != store.ThreadRequestRunning {
+		t.Fatalf("request %+v settled while its worker's turn starts", row)
+	}
+	letGo()
+	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if string(row.Answer) != "Answered." || row.Revision != 1 {
+		t.Fatalf("settled %+v; want finished once with the new turn's message", row)
+	}
 }
 
 // gatedTurn is a turn that says text and holds its result until gate

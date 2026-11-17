@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -175,26 +174,40 @@ func TestLiveStateSnapshotDoesNotAllocateIdleThreadIdentity(t *testing.T) {
 	}
 }
 
-// TestLiveStateSnapshot_ASendStillToOpenItsTurnIsOwed: a direct send is
-// never a composer marker, but from its write until the turn it opens
-// starts, the thread has a turn coming: the snapshot says so, and stops
-// once a turn start has taken the send. A steer joins a running turn and
-// opens none.
-func TestLiveStateSnapshot_ASendStillToOpenItsTurnIsOwed(t *testing.T) {
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
+// TestLiveStateSnapshot_ATurnIsOwedFromItsSendUntilItsRoundIsPublished: a
+// direct send is never a composer marker, but from its write until its
+// turn's round is published the thread has a turn coming. The real start
+// is held after it claimed the send and wrote the turns row: the snapshot
+// still owes the turn there, and ActiveTurn takes over once it returns. A
+// steer joins a running turn and opens none.
+func TestLiveStateSnapshot_ATurnIsOwedFromItsSendUntilItsRoundIsPublished(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
 	r.RegisterPendingSteerSendWithExpectation("t1", "user:0:steer:1", 0, PendingSendExpectation{})
-	if r.LiveStateSnapshotForThread("t1").SendOpensTurn {
-		t.Fatal("a steer reads as a send that opens a turn")
+	if r.LiveStateSnapshotForThread("t1").TurnOwed {
+		t.Fatal("a steer reads as a turn owed")
 	}
+	r.ClearPendingSendForFailure("t1", "user:0:steer:1")
 	r.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 	snapshot := r.LiveStateSnapshotForThread("t1")
-	if !snapshot.SendOpensTurn || len(snapshot.FlushedItems) != 0 {
+	if !snapshot.TurnOwed || len(snapshot.FlushedItems) != 0 {
 		t.Fatalf("snapshot after a direct send = %+v; want a turn owed and no marker", snapshot)
 	}
-	if _, ok := r.claimTurnOpeningPendingSend("t1"); !ok {
-		t.Fatal("no send to open the turn")
+	// No wire index: the start claims the send for its turn.
+	held := holdTurnStart(t, r, turnStartEvent("t1", 0), false)
+	if _, unclaimed := r.turnOpeningPendingSend("t1"); unclaimed {
+		t.Fatal("the held start did not claim the send")
 	}
-	if r.LiveStateSnapshotForThread("t1").SendOpensTurn {
-		t.Fatal("a send whose turn started still reads as owed")
+	snapshot = r.LiveStateSnapshotForThread("t1")
+	if !snapshot.TurnOwed || snapshot.ActiveTurn != nil {
+		t.Fatalf("snapshot inside the start = %+v; want the turn owed before its round", snapshot)
+	}
+	held.release()
+	if err := <-held.handled; err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	snapshot = r.LiveStateSnapshotForThread("t1")
+	if snapshot.ActiveTurn == nil || snapshot.ActiveTurn.TurnIndex != 1 || snapshot.TurnOwed {
+		t.Fatalf("snapshot after the start = %+v; want its round active and nothing more owed", snapshot)
 	}
 }

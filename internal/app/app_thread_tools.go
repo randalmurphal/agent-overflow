@@ -257,7 +257,7 @@ func (a *App) threadWaitingOn(threadID string) threadWaiting {
 func threadToolsLiveState(snapshot triage.LiveStateSnapshot) threadtools.LiveState {
 	return threadtools.LiveState{
 		ActiveTurn:        snapshot.ActiveTurn != nil,
-		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems) > 0 || snapshot.SendOpensTurn,
+		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems) > 0 || snapshot.TurnOwed,
 		PendingApprovals:  len(snapshot.Interactive.Approvals),
 		PendingUserInputs: len(snapshot.Interactive.UserInputs),
 	}

@@ -50,6 +50,11 @@ type threadState struct {
 	// when it returns. SampleInterrupt waits on it so an interrupt
 	// never samples the turn between its row and its open turn.
 	turnStarting chan struct{}
+	// turnOpenings counts the turn opens under way (markTurnOpeningLocked),
+	// each from before it claims the send its turn opens, or settles the
+	// round before it, until its round is published, so a live read finds
+	// the turn owed throughout (LiveStateSnapshot.TurnOwed).
+	turnOpenings int
 
 	// interruptQueue holds persistence work deferred behind an active
 	// stream (invariant 11), drained once the thread stops streaming.
