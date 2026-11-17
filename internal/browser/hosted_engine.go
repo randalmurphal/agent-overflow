@@ -58,6 +58,16 @@ const (
 	// user-data folder for up to its own 15s budget while the WebView2
 	// browser process lets go of its file handles.
 	hostClearTimeout = 45 * time.Second
+	// hostClosedFallback bounds how long a page whose CDP target went
+	// waits for the launcher's close before the engine retires it itself.
+	// The launcher reports a closing page's download ends and then its
+	// close on one serial queue, each call bounded at 5 seconds
+	// (wsllauncher's notificationBridgeRPCTimeout), and a finished
+	// download's apply here waits up to hostedPathTimeout, so the close
+	// follows the destroy well within it. Past it the close was lost (the
+	// launcher delivers reports once, with no retry), and a page with no
+	// target must not stay listed.
+	hostClosedFallback = 30 * time.Second
 	// hostProfilePrefix keeps a derived profile id inside
 	// ValidateProfileID's character class whatever the digest looks like.
 	hostProfilePrefix = "ws"
@@ -96,6 +106,11 @@ type hostedEngine struct {
 	// ownerWait bounds a paused request's wait for its owner
 	// (awaitRequestOwner); zero is requestOwnerWait.
 	ownerWait time.Duration
+	// closeFallback bounds the wait for the launcher's close of a page
+	// whose target went (hostClosedFallback), and closeFallbacks are the
+	// pages waiting, each with the timer that retires it at the bound.
+	closeFallback  time.Duration
+	closeFallbacks map[string]*time.Timer
 
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
@@ -181,6 +196,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		createTimeout: hostCreateTimeout,
 		attachTimeout: hostAttachTimeout,
 		clearTimeout:  hostClearTimeout,
+		closeFallback: hostClosedFallback,
 
 		pending:      make(map[string]chan hostReport),
 		pageByTarget: make(map[string]string),
@@ -198,6 +214,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		policies:      make(map[string]func([]string, string) (bool, bool)),
 		popups:        make(map[string]*hostedPopup),
 		popupByTarget: make(map[string]string),
+
+		closeFallbacks: make(map[string]*time.Timer),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
@@ -294,6 +312,9 @@ func (e *hostedEngine) Stop() {
 	}
 	e.popups = make(map[string]*hostedPopup)
 	e.popupByTarget = make(map[string]string)
+	for pageID := range e.closeFallbacks {
+		e.endCloseFallbackLocked(pageID)
+	}
 	e.targets = e.newTargets()
 	e.stopDownloadsLocked()
 	e.mu.Unlock()

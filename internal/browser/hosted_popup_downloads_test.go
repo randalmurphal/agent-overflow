@@ -3,11 +3,14 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/webview2host"
+
+	"github.com/chromedp/cdproto/target"
 )
 
 // awaitDownloads waits until the thread lists downloads in the states want,
@@ -110,6 +113,40 @@ func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
 	l.engine.mu.Unlock()
 	if profiled || ended {
 		t.Fatalf("the engine keeps the closed popup: profile %v, ended downloads %v", profiled, ended)
+	}
+}
+
+// A page's target can go before the launcher's ordered reports of its
+// downloads' ends and of its close arrive. The launcher's close ends the
+// page, so a download it finished after the target went ends completed.
+func TestHostedDownloadEndAfterTheTargetWentIsKept(t *testing.T) {
+	for _, popup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("popup %v", popup), func(t *testing.T) {
+			l := newPopupLauncher(t)
+			access := popupTestAccess(t, "thread")
+			_, page := l.open(access)
+			targetID := "T-" + page
+			if popup {
+				page, targetID = l.popup(page, "https://example.test/popup")
+				l.awaitTab(access.ThreadID, page, true)
+				l.settledEngine()
+			}
+			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
+			l.awaitDownloads(access, downloadStateRunning)
+			l.engine.targetDestroyed(l.engine.currentTargets(), target.EventTargetDestroyed{TargetID: target.ID(targetID)})
+			// Long enough for an early retire to settle the row canceled.
+			time.Sleep(50 * time.Millisecond)
+			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadCompleted, 100))
+			l.report(page, webview2host.ReportClosed, "")
+			l.awaitTabGone(access.ThreadID, page)
+			l.awaitDownloads(access, downloadStateCompleted)
+			l.engine.mu.Lock()
+			waiting := len(l.engine.closeFallbacks)
+			l.engine.mu.Unlock()
+			if waiting != 0 {
+				t.Fatalf("the engine still waits for %d closes", waiting)
+			}
+		})
 	}
 }
 

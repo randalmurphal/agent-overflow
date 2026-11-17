@@ -184,7 +184,9 @@ downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 which it applies one at a time per download, held across the Manager's
 callbacks, and only when newer than the last applied; an answer never
 creates a row, and a download is the Manager's to cancel or ask about only
-once admitted. One status loop asks for a quiet download's snapshot, so a
+once admitted. A hosted page ends at the launcher's close, which follows
+its downloads' ends; its CDP target's destroy ends it only past
+`hostClosedFallback`. One status loop asks for a quiet download's snapshot, so a
 lost report never leaves a row running; headless Chromium's arrive over
 CDP (`headless_downloads.go`). Preserve the denial of sensitive website
 permissions.

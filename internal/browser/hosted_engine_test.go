@@ -477,11 +477,18 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
+	// The launcher's close ends a page whose target went; with none, the
+	// destroy does at the fallback bound.
+	engine.closeFallback = 100 * time.Millisecond
+	destroyed := time.Now()
 	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "TARGET-1"})
 	select {
 	case handle := <-closed:
 		if handle != "page1" {
 			t.Fatalf("PageClosed saw %q", handle)
+		}
+		if waited := time.Since(destroyed); waited < engine.closeFallback {
+			t.Fatalf("the page was retired %v after its target went, before the launcher's close could come", waited)
 		}
 	case <-time.After(hostedTestDeadline):
 		t.Fatal("targetDestroyed did not retire the page")
@@ -1032,6 +1039,9 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 		PageCrashed:     func(handle, reason string) { crashed <- handle + " " + reason },
 	})
 	engine.attachTimeout = 5 * time.Second
+	// No launcher reports the close, so the destroy retires the page at the
+	// fallback bound.
+	engine.closeFallback = 10 * time.Millisecond
 	bindTestPage(t, engine, "page1", "TARGET-1")
 	if _, err := engine.ensureBrowser(); err != nil {
 		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)

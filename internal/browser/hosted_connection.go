@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
@@ -231,10 +232,35 @@ func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
 func (e *hostedEngine) targetDestroyed(targets *cdpTargets, event target.EventTargetDestroyed) {
 	targets.destroyed(event.TargetID, nil)
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
-		// On its own goroutine, as both CDP engines report a closed page:
-		// retirePage ends in the Manager's teardown, which must not hold
-		// the target events queued behind it.
-		go e.retirePage(pageID)
+		e.awaitLauncherClose(pageID)
+	}
+}
+
+// awaitLauncherClose leaves a page whose target went to the launcher's
+// close, which follows the ends of the page's downloads in the launcher's
+// ordered reports, so none of those ends is overtaken. Past
+// closeFallback the engine retires the page itself, on the timer's own
+// goroutine: retirePage ends in the Manager's teardown, which must not
+// hold the target events queued behind this.
+func (e *hostedEngine) awaitLauncherClose(pageID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, waiting := e.closeFallbacks[pageID]; waiting {
+		return
+	}
+	wait := e.closeFallback
+	e.closeFallbacks[pageID] = time.AfterFunc(wait, func() {
+		e.logf("browser: pane page %s lost its target and the launcher reported no close within %v", pageID, wait)
+		e.retirePage(pageID)
+	})
+}
+
+// endCloseFallbackLocked ends the wait for pageID's close, which has come
+// or is no longer needed. The caller holds e.mu.
+func (e *hostedEngine) endCloseFallbackLocked(pageID string) {
+	if timer, waiting := e.closeFallbacks[pageID]; waiting {
+		timer.Stop()
+		delete(e.closeFallbacks, pageID)
 	}
 }
 

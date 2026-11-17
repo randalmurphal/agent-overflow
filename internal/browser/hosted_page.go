@@ -172,11 +172,12 @@ func processFailureCrashes(detail string) bool {
 // is gone. The Manager alone decides what that means for its registry.
 //
 // PageClosed is called inline here because every SYNCHRONOUS caller is the
-// launcher's report path, which is an RPC goroutine of its own. The one
-// caller that reads CDP events starts this on a goroutine instead
-// (targetDestroyed above).
+// launcher's report path, which is an RPC goroutine of its own. A
+// target's destroy, read from CDP events, retires its page only past
+// closeFallback, on a timer's goroutine (awaitLauncherClose).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
+	e.endCloseFallbackLocked(pageID)
 	if pending, cancelAttach := e.retirePendingLocked(pageID); pending {
 		// A popup the Manager has not listed: its close waits for its
 		// listing (popupListed), or goes with its discard.
@@ -303,6 +304,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.pageProfile, pageID)
 	cancelAttach := e.forgetPopupLocked(pageID)
 	e.forgetDownloadsLocked(pageID)
+	e.endCloseFallbackLocked(pageID)
 	e.mu.Unlock()
 	cancelAttach()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
