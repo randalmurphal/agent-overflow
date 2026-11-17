@@ -132,17 +132,14 @@ type DeleteMember struct {
 	Under string
 	Kind  DeleteMemberKind
 	// Depth counts the threads above it through Under.
-	Depth        int
-	ProjectID    string
-	WorktreePath string
+	Depth     int
+	ProjectID string
 	// Holder is a deleted thread kept for the forks that read it.
 	Holder bool
 	// Claim is the delete that claimed it, empty for none.
 	Claim string
-	// Committed is a thread whose delete committed (threads.deleting), and
-	// RemoveWorktrees whether its commit recorded that its destroy removes
-	// its worktree (threads.delete_worktrees).
-	Committed, RemoveWorktrees bool
+	// Committed is a thread whose delete committed (threads.deleting).
+	Committed bool
 }
 
 // ListDeleteFamily lists what deleting the named threads takes, each thread
@@ -183,8 +180,8 @@ func deleteFamily(q sqlQueryer, threadIDs []string) (members []DeleteMember, err
 	var all []reached
 	for rows.Next() {
 		var row reached
-		if err := rows.Scan(&row.member.ThreadID, &row.member.ProjectID, &row.member.WorktreePath, &row.member.Holder,
-			&row.member.Committed, &row.member.Claim, &row.member.RemoveWorktrees, &row.pastOf, &row.helperOf, &row.spawner); err != nil {
+		if err := rows.Scan(&row.member.ThreadID, &row.member.ProjectID, &row.member.Holder,
+			&row.member.Committed, &row.member.Claim, &row.pastOf, &row.helperOf, &row.spawner); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
 		all = append(all, row)
@@ -309,8 +306,8 @@ var deleteFamilyCTE = `WITH RECURSIVE
 // deleteFamilySQL reads each thread the walk reached with what places it
 // in the family: the assistant whose past thread or helper it is, and its
 // owner.
-var deleteFamilySQL = deleteFamilyCTE + `SELECT family.id, COALESCE(threads.project_id, ''), COALESCE(threads.worktree_path, ''),
-		       threads.mode = 'holder', threads.deleting, threads.delete_claim, threads.delete_worktrees,
+var deleteFamilySQL = deleteFamilyCTE + `SELECT family.id, COALESCE(threads.project_id, ''),
+		       threads.mode = 'holder', threads.deleting, threads.delete_claim,
 		       COALESCE((SELECT agents.thread_id FROM agent_past_threads AS past
 		                   CROSS JOIN agents ON agents.id = past.agent_id
 		                  WHERE past.thread_id = family.id), ''),

@@ -4,11 +4,10 @@ import {
   syncRemovedWorktreeThreads,
   TerminalsClosingNote,
   terminalsClosingNote,
-  terminalsClosingNoteForThreadDelete,
   withTerminalsNote,
 } from './worktreeRemoval.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { resetPanesForTest } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -37,36 +36,6 @@ describe('terminalsClosingNote', () => {
     expect(terminalsClosingNote(3)).toBe('3 terminals will close.');
     expect(withTerminalsNote('Delete it.', '')).toBe('Delete it.');
     expect(withTerminalsNote('Delete it.', '1 terminal will close.')).toBe('Delete it. 1 terminal will close.');
-  });
-});
-
-describe('terminalsClosingNoteForThreadDelete', () => {
-  // The delete removes the worktrees it empties, the threads' own and their
-  // workers'. The threads of one computer are one delete there, read as one
-  // set, which counts each worktree once.
-  it('reads the threads of one computer as one set', async () => {
-    const read = setBindingMock('GetDeleteDependents', async () => ({
-      pastThreads: 0, helpers: 0, workers: 1,
-      worktrees: [{ projectId: 'p', worktreePath: '/wt/a', terminals: 2 }, { projectId: 'p', worktreePath: '/wt/worker', terminals: 1 }],
-    }));
-    const note = await terminalsClosingNoteForThreadDelete([
-      makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-      makeThread({ id: 't2', workspacePath: '/repo', worktreePath: '' }),
-    ]);
-    expect(note).toBe('3 terminals will close.');
-    expect(read.mock.calls).toEqual([[['t1', 't2']]]);
-  });
-
-  it('reports a count it cannot read and leaves it out', async () => {
-    setBindingMock('GetDeleteDependents', async () => {
-      throw new Error('database is locked');
-    });
-    const note = await terminalsClosingNoteForThreadDelete([
-      makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-      makeThread({ id: 't2', workspacePath: '/wt/b', worktreePath: '/wt/b' }),
-    ]);
-    expect(note).toBe('');
-    expect(reported).toHaveBeenCalledTimes(1);
   });
 });
 

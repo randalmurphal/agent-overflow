@@ -270,8 +270,8 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
   });
 
   it('disables delete on a terminal thread with the reason', async () => {
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    const del = setBindingMock('DeleteThreadsAndWorktrees', vi.fn(async () => {}));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const del = setBindingMock('DeleteThreads', vi.fn(async () => {}));
     const { getByTestId } = render(ThreadRow, {
       props: { thread: makeThread({ mode: 'terminal' }), pane: createThreadPane() },
     });
@@ -313,8 +313,8 @@ describe('<ThreadRow> terminal delete action', () => {
   it('deletes immediately, without a confirm dialog, when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deletedId: string | null = null;
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    setBindingMock('DeleteThreadsAndWorktrees', async (ids: string[]) => { deletedId = ids[0]; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; });
 
     const thread = makeThread({ id: 'term-off', mode: 'terminal' });
     const pane = createThreadPane();
@@ -333,8 +333,8 @@ describe('<ThreadRow> terminal delete action', () => {
   it('confirms first when confirmDelete is on, deleting only after confirm', async () => {
     await primeSettings({ confirmDelete: true });
     let deletedId: string | null = null;
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    setBindingMock('DeleteThreadsAndWorktrees', async (ids: string[]) => { deletedId = ids[0]; });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async (ids: string[]) => { deletedId = ids[0]; });
 
     const thread = makeThread({ id: 'term-on', mode: 'terminal' });
     const pane = createThreadPane();
@@ -354,9 +354,11 @@ describe('<ThreadRow> terminal delete action', () => {
     expect(deletedId).toBe('term-on');
   });
 
-  it('says how many terminals close when the terminal thread sits on a worktree', async () => {
+  // The delete keeps the worktree, so the terminal row's confirmation says
+  // nothing of it and reads nothing about it.
+  it('says nothing of the worktree a terminal thread sits on', async () => {
     await primeSettings({ confirmDelete: true });
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [{ projectId: 'project-1', worktreePath: '/tmp/wt/term', terminals: 2 }] }));
+    const status = setBindingMock('GitWorktreeStatus', vi.fn(async () => ({ terminals: 2 })));
     const thread = makeThread({
       id: 'term-wt',
       mode: 'terminal',
@@ -368,7 +370,10 @@ describe('<ThreadRow> terminal delete action', () => {
 
     await fireEvent.click(getByTestId('thread-row-delete'));
 
-    await findByText(/This cannot be undone\. 2 terminals will close\./);
+    expect((await findByText(/This cannot be undone\./)).textContent).toBe(
+      'This will remove the terminal from the sidebar and close its shell. This cannot be undone.',
+    );
+    expect(status).not.toHaveBeenCalled();
   });
 });
 

@@ -327,7 +327,6 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 		return ProjectDeletionResult{}, fmt.Errorf("delete project: thread %s could not be deleted, so the project was not removed; remove it again to finish: %s",
 			failed[0].ThreadID, failed[0].Error)
 	}
-	result.RetainedWorktrees = append(result.RetainedWorktrees, outcome.retained...)
 	// The cleanup above frees disk and stops processes; it never touches a row,
 	// because a run record is not litter — it is the history the app is being
 	// asked to forget. It is dropped here, with the project. `work_items` has no

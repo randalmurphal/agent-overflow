@@ -15,14 +15,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/entityid"
-	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/identity"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
 
@@ -38,12 +35,6 @@ type workerChain struct {
 }
 
 func seedWorkerChain(t *testing.T, f *organizeFixture, workerProject string) workerChain {
-	return seedWorkerChainOn(t, f, workerProject, "")
-}
-
-// seedWorkerChainOn is seedWorkerChain with the deepest worker on a
-// worktree.
-func seedWorkerChainOn(t *testing.T, f *organizeFixture, workerProject, deeperWorktree string) workerChain {
 	t.Helper()
 	chain := workerChain{owner: "owner", worker: "worker", deep: "deep", deeper: "deeper", placed: "placed", other: "other", elsewhere: "elsewhere"}
 	f.thread(t, chain.owner)
@@ -51,9 +42,6 @@ func seedWorkerChainOn(t *testing.T, f *organizeFixture, workerProject, deeperWo
 		f.thread(t, id, func(row *store.Thread) {
 			if workerProject != "" {
 				row.ProjectID = workerProject
-			}
-			if id == chain.deeper {
-				row.WorktreePath, row.Branch = deeperWorktree, deeperWorktree
 			}
 		})
 	}
@@ -167,10 +155,10 @@ func TestDeletingAThreadDeletesItsWorkers(t *testing.T) {
 				t.Fatalf("workers not deleted = %+v", result.WorkersNotDeleted)
 			}
 		},
-		"with worktrees": func(t *testing.T, f *organizeFixture, chain workerChain) {
-			result, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{chain.owner})
+		"the sidebar": func(t *testing.T, f *organizeFixture, chain workerChain) {
+			result, err := f.app.DeleteThreads([]string{chain.owner})
 			if err != nil {
-				t.Fatalf("DeleteThreadsAndWorktrees: %v", err)
+				t.Fatalf("DeleteThreads: %v", err)
 			}
 			if len(result.WorkersNotDeleted) > 0 {
 				t.Fatalf("workers not deleted = %+v", result.WorkersNotDeleted)
@@ -597,102 +585,24 @@ func exists(t *testing.T, path string) bool {
 	return err == nil
 }
 
-// A person's delete removes the worktrees it empties, the thread's and its
-// workers', and keeps one a thread it does not take is on.
-func TestADeleteWithWorktreesRemovesTheOnesItEmpties(t *testing.T) {
-	t.Parallel()
-	f := newDeleteWorktreeFixture(t)
-	ownerTree, workerTree, sharedTree := f.worktree(t, "owner-tree"), f.worktree(t, "worker-tree"), f.worktree(t, "shared-tree")
-	owner := f.thread(t, "owner", on(ownerTree))
-	worker := f.thread(t, "worker", on(workerTree))
-	beside := f.thread(t, "beside", on(workerTree))
-	shared := f.thread(t, "shared", on(sharedTree))
-	stranger := f.thread(t, "stranger", on(sharedTree))
-	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
-	recordSpawn(t, f.app, "tok-beside", worker.ID, beside.ID)
-	recordSpawn(t, f.app, "tok-shared", owner.ID, shared.ID)
-	result, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{owner.ID})
-	if err != nil || len(result.WorkersNotDeleted) > 0 || len(result.RetainedWorktrees) > 0 {
-		t.Fatalf("DeleteThreadsAndWorktrees = %+v, %v", result, err)
-	}
-	for _, id := range []string{owner.ID, worker.ID, beside.ID, shared.ID} {
-		if !gone(t, f.app, id) {
-			t.Errorf("%s outlived the delete", id)
-		}
-	}
-	untouched(t, f.app, stranger.ID)
-	if exists(t, ownerTree) || exists(t, workerTree) {
-		t.Error("a worktree the delete emptied is still there")
-	}
-	if !exists(t, sharedTree) {
-		t.Error("the worktree another thread is on was removed")
-	}
-	if got := f.reload(t, stranger.ID); got.WorktreePath != sharedTree {
-		t.Errorf("the other thread on the shared worktree = %q, want it kept there", got.WorktreePath)
-	}
-}
-
-// A caller without git:operate deletes a thread with no worktree to
-// remove, and is refused, with nothing deleted, when there is one.
-func TestADeleteWithWorktreesAsksForGitOperateOnlyForAWorktree(t *testing.T) {
-	t.Parallel()
-	f := newDeleteWorktreeFixture(t)
-	if err := f.app.initIdentity("backend-under-test"); err != nil {
-		t.Fatal(err)
-	}
-	limited := callFrom(pairSessionWithScopes(t, f.app, "delete-limited", []identity.Scope{identity.ScopeThreadsOperate}).ID, false)
-	tree := f.worktree(t, "worker-tree")
-	plain := f.thread(t, "plain")
-	owner := f.thread(t, "owner")
-	worker := f.thread(t, "worker", on(tree))
-	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
-	if _, err := f.app.DeleteThreadsAndWorktrees(limited, []string{plain.ID}); err != nil || !gone(t, f.app, plain.ID) {
-		t.Fatalf("a delete with no worktree to remove = %v, gone %v", err, gone(t, f.app, plain.ID))
-	}
-	_, err := f.app.DeleteThreadsAndWorktrees(limited, []string{owner.ID})
-	wantScopeRefusal(t, err, transport.ScopeGitOperate)
-	untouched(t, f.app, owner.ID, worker.ID)
-	if !exists(t, tree) {
-		t.Error("a refused delete removed the worktree")
-	}
-}
-
-// A delete without a person's worktree removal, as from a tool or the boot,
-// keeps every worktree.
-func TestADeleteKeepsWorktreesUnlessAPersonRemovesThem(t *testing.T) {
-	t.Parallel()
-	f := newDeleteWorktreeFixture(t)
-	tree := f.worktree(t, "worker-tree")
-	owner := f.thread(t, "owner")
-	worker := f.thread(t, "worker", on(tree))
-	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
-	if _, err := f.app.DeleteThread(owner.ID); err != nil {
-		t.Fatal(err)
-	}
-	if !gone(t, f.app, worker.ID) || !exists(t, tree) {
-		t.Errorf("worker gone %v, worktree kept %v; want both", gone(t, f.app, worker.ID), exists(t, tree))
-	}
-}
-
 // A worker given a sidebar row by another client after the confirmation
 // read what the delete takes is the person's: the delete leaves its
-// session and worktree alone.
+// session alone.
 func TestADeleteLeavesAWorkerPlacedAfterItsConfirmation(t *testing.T) {
 	t.Parallel()
-	f := newDeleteWorktreeFixture(t)
-	tree := f.worktree(t, "worker-tree")
+	f := newDeleteFixture(t)
 	owner := f.thread(t, "owner")
-	worker := f.thread(t, "worker", on(tree))
+	worker := f.thread(t, "worker")
 	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
 	runningSession(t, f.app, worker.ID)
 	preview, err := f.app.GetDeleteDependents([]string{owner.ID})
-	if err != nil || preview.Workers != 1 || len(preview.Worktrees) != 1 {
-		t.Fatalf("GetDeleteDependents = %+v, %v; want the worker and its worktree", preview, err)
+	if err != nil || preview.Workers != 1 {
+		t.Fatalf("GetDeleteDependents = %+v, %v; want the worker", preview, err)
 	}
 	if _, err := f.app.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{owner.ID}); err != nil {
+	if _, err := f.app.DeleteThreads([]string{owner.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if !gone(t, f.app, owner.ID) {
@@ -702,82 +612,11 @@ func TestADeleteLeavesAWorkerPlacedAfterItsConfirmation(t *testing.T) {
 	if _, live := f.app.sessionManager().get(worker.ID); !live {
 		t.Error("the placed worker's session was stopped")
 	}
-	if !exists(t, tree) {
-		t.Error("the placed worker's worktree was removed")
-	}
-}
-
-// A worktree with unsaved work that the delete would empty refuses the whole
-// delete before anything stops, whichever thread of the family is on it.
-func TestAWorktreeWithUnsavedWorkRefusesTheDelete(t *testing.T) {
-	t.Parallel()
-	for _, whose := range []string{"a worker's", "the named thread's"} {
-		t.Run(whose, func(t *testing.T) {
-			t.Parallel()
-			f := newDeleteWorktreeFixture(t)
-			ownerTree, workerTree := f.worktree(t, "owner-tree"), f.worktree(t, "worker-tree")
-			owner := f.thread(t, "owner", on(ownerTree))
-			worker := f.thread(t, "worker", on(workerTree))
-			under := f.thread(t, "under")
-			recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
-			recordSpawn(t, f.app, "tok-under", worker.ID, under.ID)
-			runningSession(t, f.app, worker.ID)
-			dirtyTree := workerTree
-			if whose == "the named thread's" {
-				dirtyTree = ownerTree
-			}
-			dirty(t, dirtyTree)
-			_, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{owner.ID})
-			if err == nil || !strings.Contains(err.Error(), "unsaved work") || !strings.Contains(err.Error(), "Nothing was deleted: the worktree "+dirtyTree+", which this delete would remove, has unsaved work.") {
-				t.Fatalf("DeleteThreadsAndWorktrees = %v, want it refused naming the worktree", err)
-			}
-			if code, _, ok := errorsx.PublicDetails(err); !ok || code != "delete_worktree_unsaved" {
-				t.Errorf("the refusal = code %q public %v, want the sentence every client shows", code, ok)
-			}
-			untouched(t, f.app, owner.ID, worker.ID, under.ID)
-			if !exists(t, ownerTree) || !exists(t, workerTree) {
-				t.Error("a refused delete removed a worktree")
-			}
-			if _, live := f.app.sessionManager().get(worker.ID); !live {
-				t.Error("a refused delete stopped the worker")
-			}
-		})
-	}
-}
-
-// A worktree that gained unsaved work after the delete checked it is left
-// on disk and named in the result; its threads are still deleted.
-func TestAWorktreeThatCannotBeRemovedAtTheDestroyIsLeftAndNamed(t *testing.T) {
-	t.Parallel()
-	f := newDeleteWorktreeFixture(t)
-	stuckTree, cleanTree := f.worktree(t, "stuck-tree"), f.worktree(t, "clean-tree")
-	owner := f.thread(t, "owner")
-	stuck := f.thread(t, "stuck", on(stuckTree))
-	sibling := f.thread(t, "sibling", on(cleanTree))
-	recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
-	recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
-	f.app.deleteCommittedForTest = func([]string) { dirty(t, stuckTree) }
-	result, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{owner.ID})
-	if err != nil || len(result.WorkersNotDeleted) > 0 {
-		t.Fatalf("DeleteThreadsAndWorktrees = %+v, %v; want the threads deleted", result, err)
-	}
-	if len(result.RetainedWorktrees) != 1 || result.RetainedWorktrees[0].Path != stuckTree || !strings.Contains(result.RetainedWorktrees[0].Reason, "unsaved work") {
-		t.Fatalf("retained worktrees = %+v, want the stuck one with its reason", result.RetainedWorktrees)
-	}
-	for _, id := range []string{owner.ID, stuck.ID, sibling.ID} {
-		if !gone(t, f.app, id) {
-			t.Errorf("%s outlived the delete", id)
-		}
-	}
-	if !exists(t, stuckTree) || exists(t, cleanTree) {
-		t.Errorf("stuck tree kept %v, clean tree kept %v; want only the stuck one", exists(t, stuckTree), exists(t, cleanTree))
-	}
 }
 
 // What a delete confirmation counts is what the delete takes: an
-// assistant's past thread, the worker that past thread spawned, and the
-// worktree that worker is on with the terminals open in it; the delete
-// removes that worktree and closes those terminals.
+// assistant's past thread and the worker that past thread spawned. The
+// delete closes the worker's terminals and keeps the worktree it was on.
 func TestTheDeleteConfirmationCountsWhatTheDeleteTakes(t *testing.T) {
 	t.Parallel()
 	f := newDeleteWorktreeFixture(t)
@@ -815,20 +654,20 @@ func TestTheDeleteConfirmationCountsWhatTheDeleteTakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := DeleteDependents{PastThreads: 1, Workers: 1, Worktrees: []DeleteWorktree{{ProjectID: f.project.ID, WorktreePath: tree, Terminals: 2}}}
+	want := DeleteDependents{PastThreads: 1, Workers: 1}
 	if gotJSON, wantJSON := mustJSON(t, got), mustJSON(t, want); gotJSON != wantJSON {
 		t.Fatalf("GetDeleteDependents = %s, want %s", gotJSON, wantJSON)
 	}
-	if result, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{current.ID}); err != nil || len(result.WorkersNotDeleted) > 0 {
-		t.Fatalf("DeleteThreadsAndWorktrees = %+v, %v", result, err)
+	if result, err := f.app.DeleteThreads([]string{current.ID}); err != nil || len(result.WorkersNotDeleted) > 0 {
+		t.Fatalf("DeleteThreads = %+v, %v", result, err)
 	}
 	for _, id := range []string{current.ID, past.ID, worker.ID} {
 		if !gone(t, f.app, id) {
 			t.Errorf("%s outlived the delete", id)
 		}
 	}
-	if exists(t, tree) {
-		t.Error("the past thread's worker's worktree is still there")
+	if !exists(t, tree) {
+		t.Error("the delete removed the worktree the past thread's worker was on")
 	}
 	if open := f.app.terminals.Matching(func(terminal.SessionSummary) bool { return true }); len(open) != 0 {
 		t.Errorf("terminals after the delete = %+v, want none", open)
@@ -836,11 +675,11 @@ func TestTheDeleteConfirmationCountsWhatTheDeleteTakes(t *testing.T) {
 }
 
 // What a delete confirmation counts: the workers under the thread at any
-// depth, archived ones included, and the worktrees they are on.
+// depth, archived ones included.
 func TestGetDeleteDependentsCountsTheWorkers(t *testing.T) {
 	t.Parallel()
 	f := newDeleteFixture(t)
-	chain := seedWorkerChainOn(t, f, "", "/wt/deeper")
+	chain := seedWorkerChain(t, f, "")
 	got, err := f.app.GetDeleteDependents([]string{chain.owner})
 	if err != nil {
 		t.Fatal(err)
@@ -848,10 +687,7 @@ func TestGetDeleteDependentsCountsTheWorkers(t *testing.T) {
 	if got.Workers != 3 || got.PastThreads != 0 || got.Helpers != 0 {
 		t.Errorf("dependents = %+v, want three workers", got)
 	}
-	if len(got.Worktrees) != 1 || got.Worktrees[0].ProjectID != f.project.ID || got.Worktrees[0].WorktreePath != "/wt/deeper" {
-		t.Errorf("worktrees = %+v", got.Worktrees)
-	}
-	if got, err := f.app.GetDeleteDependents([]string{chain.placed}); err != nil || got.Workers != 0 || len(got.Worktrees) != 0 {
+	if got, err := f.app.GetDeleteDependents([]string{chain.placed}); err != nil || got.Workers != 0 {
 		t.Errorf("a thread with no workers = %+v, %v", got, err)
 	}
 }

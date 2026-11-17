@@ -738,7 +738,7 @@ func (s *Store) ListThreadWorkspaceRefsByProject(projectID string) ([]ThreadWork
 
 // threadWorkspaceRefColumns is a ThreadWorkspaceRef's columns of the
 // threads row aliased t, in queryThreadWorkspaceRefs' scan order.
-const threadWorkspaceRefColumns = `t.id, t.workspace_path, COALESCE(t.worktree_path, ''), t.delete_claim, t.deleting`
+const threadWorkspaceRefColumns = `t.id, t.workspace_path, COALESCE(t.worktree_path, '')`
 
 // queryThreadWorkspaceRefs runs a query selecting threadWorkspaceRefColumns
 // and scans its rows.
@@ -750,7 +750,7 @@ func (s *Store) queryThreadWorkspaceRefs(query string, args ...any) (refs []Thre
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath, &ref.Delete.Claim, &ref.Delete.Committed); err != nil {
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		refs = append(refs, ref)

@@ -259,8 +259,8 @@ its path.
 
 Every thread delete is one family delete (`deleteThreads`,
 `app_thread_delete.go`): claim, verify, commit, destroy. Refusals belong to
-verify, before anything stops; after the commit a delete only goes forward. A
-door that runs, moves or changes a thread refuses one a delete claimed, through
+verify, before anything stops; after the commit a delete only goes forward.
+A delete never removes, checks or waits for a worktree. A door that runs, moves or changes a thread refuses one a delete claimed, through
 `CheckMutable`, `admitWork` or the store write's own check. A claimed thread
 takes app messages into its queue (`LockDeliverable`), and a start the app
 makes for it, a notice's session start or a queue dispatch, waits for the

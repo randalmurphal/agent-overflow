@@ -7,11 +7,6 @@
   import { ListArchivedThreads, UnarchiveThread } from '../../stores/bindings';
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
-  import {
-    TerminalsClosingNote,
-    terminalsClosingNoteForThreadDelete,
-    withTerminalsNote,
-  } from '../../stores/worktreeRemoval.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
@@ -21,7 +16,7 @@
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
   import { ThreadDeleteNote, hiddenAssistantThread, withDeleteNote } from '../../stores/assistants.svelte';
-  import { deleteThreadWithWorktrees, reportDeleteLeftovers } from '../sidebar/threadRowActions';
+  import { deleteThread, reportDeleteLeftovers } from '../sidebar/threadRowActions';
 
   let archivedThreads: Thread[] = $state([]);
   // An archived assistant's threads are not listed while assistants are off.
@@ -29,7 +24,6 @@
   let loading = $state(true);
   let loadError: string | null = $state(null);
   let deleteTarget: Thread | null = $state(null);
-  const deleteTerminalsNote = new TerminalsClosingNote();
   const deleteNote = new ThreadDeleteNote();
 
   $effect(() => {
@@ -63,7 +57,7 @@
 
   async function handleDelete(thread: Thread): Promise<void> {
     try {
-      const { backend, result } = await deleteThreadWithWorktrees(thread);
+      const { backend, result } = await deleteThread(thread);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);
       addToast('info', `Deleted "${thread.title || 'thread'}".`);
@@ -76,13 +70,11 @@
 
   function confirmDelete(thread: Thread): void {
     deleteTarget = thread;
-    deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
     deleteNote.load([thread]);
   }
 
   function cancelDelete(): void {
     deleteTarget = null;
-    deleteTerminalsNote.clear();
     deleteNote.clear();
   }
 
@@ -90,7 +82,6 @@
     if (!deleteTarget) return;
     const target = deleteTarget;
     deleteTarget = null;
-    deleteTerminalsNote.clear();
     deleteNote.clear();
     void handleDelete(target);
   }
@@ -164,10 +155,10 @@
 <ConfirmDialog
   open={deleteTarget !== null}
   title={deleteTarget?.agentId ? 'Delete Archived Assistant' : 'Delete Archived Thread'}
-  description={withDeleteNote(withTerminalsNote(
+  description={withDeleteNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
-    deleteTerminalsNote.note,
-  ), deleteNote.note)}
+    deleteNote.note,
+  )}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={executeDelete}

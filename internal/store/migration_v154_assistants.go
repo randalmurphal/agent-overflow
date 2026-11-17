@@ -38,10 +38,8 @@ import (
 //
 // threads gains the phases of a family delete (thread_delete.go): a
 // thread's `delete_claim` is the id of the delete that claimed it, empty
-// for none, and its `delete_worktrees` whether the commit of that delete
-// (`deleting`) recorded that its destroy removes its worktree. A claimed
-// thread stays listed and refuses execution and every move;
-// idx_threads_delete_claim holds the claimed ones, for the boot that
+// for none. A claimed thread stays listed and refuses execution and every
+// move; idx_threads_delete_claim holds the claimed ones, for the boot that
 // releases the claims no delete committed. `spawn_instructions` is the text
 // a thread_spawn appended to the thread's system prompt for its life, and
 // `spawn_level` the sub-thread level a paired computer's spawn or ask
@@ -227,7 +225,6 @@ CREATE TABLE session_start_failures (
 );
 
 ALTER TABLE threads ADD COLUMN delete_claim TEXT NOT NULL DEFAULT '';
-ALTER TABLE threads ADD COLUMN delete_worktrees INTEGER NOT NULL DEFAULT 0 CHECK(delete_worktrees IN (0,1));
 CREATE INDEX idx_threads_delete_claim ON threads(delete_claim) WHERE delete_claim <> '';
 ALTER TABLE threads ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN spawn_level INTEGER NOT NULL DEFAULT 0 CHECK(spawn_level >= 0);

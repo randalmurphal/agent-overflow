@@ -731,9 +731,8 @@ Ruling 36, as built:
   (`familyDelete`): each owned thread whose spawn link names it as
   caller, archived or not, down the lineage, and for an assistant's
   current thread its past threads and helpers and their workers. One
-  store projection lists them (`ListDeleteFamily`); the delete, its
-  confirmation's counts, worktrees and terminals note
-  (`GetDeleteDependents`) all read it, and archive's walk takes the same
+  store projection lists them (`ListDeleteFamily`); the delete and its
+  confirmation's counts (`GetDeleteDependents`) both read it, and archive's walk takes the same
   owned edge (`ownedStepSQL`). Every door that deletes runs it: the
   sidebar's delete and bulk delete, the archived threads list, a project
   removal, a delete the boot finishes, the retention sweep, an ended
@@ -791,26 +790,15 @@ Ruling 36, as built:
   not remove, an ended terminal's own check, and for a project removal a
   running thread inside the project or out. The threads that claim
   added go the same way, so the family is read once per pass whatever
-  its size. A family that keeps growing refuses the delete. A delete
-  that removes worktrees then asks for `git:operate` and runs the
-  loss-of-work gate of exactly the worktrees it would empty, and of
-  none when there are none. Nothing is stopped. A refusal releases
-  every claim in one transaction (`ReleaseDeleteClaim`), so a refused
-  delete changes nothing. Commit: one transaction marks every claimed
-  thread deleting (`threads.deleting`, `CommitDeleteClaim`) and records
-  on each thread on a worktree verify checked that its destroy removes
-  it (`threads.delete_worktrees`), unless the same transaction finds a
-  thread outside the delete on it, which keeps it and is named. Clients
-  are told the rows are gone. From here the delete only goes forward.
-  Destroy: each committed thread, once every thread under it is gone,
-  under its own action lock, is torn down (`threadapp.TearDown`), its
-  worktree is removed when its commit recorded that and no other thread
-  is on it, and its row is dropped (`threadapp.Drop`). Another thread
-  of the delete recorded to remove the same worktree removes it when
-  its own destroy comes; any other thread on it then keeps it, named.
-  The boot finishes a thread with what its commit recorded and removes
-  no other worktree. No delete holds one action lock while it takes
-  another.
+  its size. A family that keeps growing refuses the delete. Nothing is
+  stopped. A refusal releases every claim in one transaction
+  (`ReleaseDeleteClaim`), so a refused delete changes nothing. Commit:
+  one transaction marks every claimed thread deleting
+  (`threads.deleting`, `CommitDeleteClaim`). Clients are told the rows
+  are gone. From here the delete only goes forward. Destroy: each
+  committed thread, once every thread under it is gone, is torn down and
+  its row dropped under its own action lock (`threadapp.Destroy`). No
+  delete holds one action lock while it takes another.
 - A thread whose destroy fails keeps its commit with the threads above
   it, and is never rolled back: the named thread's own failure is the
   delete's error; another's is named beside it
@@ -819,35 +807,16 @@ Ruling 36, as built:
   and finishes them. A project removal with any such thread keeps the
   project and says to remove it again; a door with no one waiting logs
   it. The boot releases the claims no delete committed and finishes
-  every committed family with its recorded policy, dependents first
+  every committed family, dependents first
   (`startPendingThreadDeletes`).
-- A delete from the sidebar or the archived threads list
-  (`DeleteThreadsAndWorktrees`, which needs `git:operate` when there is a
-  worktree to remove) also removes each worktree the family is on that no
-  thread outside it is on, through Remove Worktree's remover and its
-  loss-of-work gate, after the last thread on it is torn down and before
-  its row drops. Threads selected together are one such delete per
-  computer, so a worktree only they are on counts and goes once. A
-  worktree with unsaved work refuses the whole delete at its verify,
-  with nothing stopped. The threads on a worktree and how far a delete
-  has gone with each are one read. A worktree a thread outside the
-  delete is on stays; when every such thread is one another delete has
-  claimed or committed, the two deletes would each leave it to the other, so their
-  claims are compared (delete ids sort in the order the deletes began):
-  the younger is refused, naming that thread ("is being deleted. Delete
-  again when that ends"), and its retry, once the older ended, finds the
-  worktree its own; the older goes ahead and keeps the worktree, named.
-  A delete that removes no worktrees is never refused for this. A
-  worktree kept this way, one a thread outside the delete reached after
-  its verify, and one that cannot be removed when the destroy reaches
-  it, unsaved work that appeared since, is left on disk and named
-  (`DeleteThreadResult.RetainedWorktrees`); its threads are still
-  deleted. A worktree removed whose cleanup after the removal failed, a
-  terminal opened in it that would not close, is named with that error
-  (`DeleteThreadResult.WorktreeCleanupFailures`), and the window says so
-  in a toast. The window stops no session and removes no worktree for a
-  delete. The cleanup of a thread moved to another computer deletes
-  none of the workers it left here.
+- A delete never removes, checks or waits for a worktree
+  ([decisions](../decisions.md)): every worktree its threads were on stays on disk
+  with its work, for Remove Worktree to remove. The sidebar, a
+  selection, the archived threads list and the compact layout delete
+  through `DeleteThreads` (`threads:operate`); threads selected together
+  are one delete per computer. The window stops no session for a delete.
+  The cleanup of a thread moved to another computer deletes none of the
+  workers it left here.
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it

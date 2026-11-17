@@ -3,12 +3,13 @@
 // worker on a worktree of its own and an archived worker that owns one of
 // its own, and has placed a standalone spawn in the sidebar. Deleting the
 // thread from its sidebar row says in the confirmation that its three
-// workers go with it. While the running worker's worktree has unsaved work
-// the delete is refused with nothing stopped or deleted; once it is clean
-// the running worker's session ends, its worktree is removed, all three are
-// gone, the standalone spawn stays and runs on, and nothing starts a session
-// for a deleted thread afterwards. Screenshots are dark mode.
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+// workers go with it, and nothing of the worktree. With unsaved work on the
+// running worker's worktree the delete goes through: the running worker's
+// session ends, all three are gone, the worktree stays with its unsaved
+// work and is still listed for the worktree actions, the standalone spawn
+// stays and runs on, and nothing starts a session for a deleted thread
+// afterwards. Screenshots are dark mode.
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { Page } from '@playwright/test';
@@ -25,6 +26,7 @@ import {
   threadToolsScenario,
 } from './thread-tools-helpers.js';
 import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
+import { listWorktrees, samePath } from './worktree-removal-helpers.js';
 import { chooseRowMenuItem, projectItem, projectRow, rowIn, type Layout } from './sidebar-sections-helpers.js';
 
 const turn = (text: string) => [{ userText: text, items: [{ kind: 'assistant_text', summary: 'ready' }] }];
@@ -124,28 +126,24 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
     else await confirm.tap();
   };
 
-  // ---- Unsaved work on the running worker's worktree refuses the whole
-  // delete: every thread stays, and the worker keeps running.
+  // ---- Unsaved work on the running worker's worktree changes nothing: the
+  // delete goes through, and the worktree stays with the work.
   const unsaved = join(runningTree, 'unsaved.txt');
   writeFileSync(unsaved, 'work in progress\n');
   await confirmDelete(`${tag}-confirm.png`);
-  await expect(page.getByText(/Nothing was deleted: the worktree .* has unsaved work/).first()).toBeVisible();
-  await expect(rowIn(page, lead)).not.toHaveCount(0);
-  for (const id of [lead, running, archived, nested]) await harness.rpc('GetThread', id);
-  expect(existsSync(runningTree)).toBe(true);
-  expect(exited()).toBe(0);
-
-  // ---- Once the worktree is clean, the delete goes ahead.
-  rmSync(unsaved);
-  await confirmDelete();
 
   await expect(rowIn(page, lead)).toHaveCount(0);
   await expect.poll(exited, { timeout: 15_000 }).toBe(1);
   for (const id of [lead, running, archived, nested]) {
     await expect(harness.rpc('GetThread', id), `${id} outlived its owner`).rejects.toThrow();
   }
-  await expect.poll(() => existsSync(runningTree), { message: "the running worker's worktree outlived it" }).toBe(false);
   await expect(page.getByTestId('toast').filter({ hasText: 'was not deleted' })).toHaveCount(0);
+  expect(readFileSync(unsaved, 'utf8')).toBe('work in progress\n');
+  // Still a worktree of its project, listed where the workspace picker
+  // reads it and offers to remove it.
+  const listed = await listWorktrees(harness, ownedProject.projectId, ownedProject.path);
+  const stillListed = await Promise.all(listed.map((item) => samePath(item.path, runningTree)));
+  expect(stillListed.some(Boolean), `the running worker's worktree is no longer listed: ${JSON.stringify(listed)}`).toBe(true);
 
   // ---- The placed spawn stays and finishes its turn.
   await expect(projectRow(page, loose)).toBeVisible();

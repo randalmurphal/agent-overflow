@@ -100,7 +100,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
-	4153346978: 'home', // DeleteThreadsAndWorktrees
+	362983967: 'home', // DeleteThreads
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources
 	1061100039: 'selected', // DisallowPreviewPort

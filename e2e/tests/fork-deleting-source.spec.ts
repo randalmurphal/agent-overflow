@@ -19,12 +19,13 @@
 // fork_lineage_test.go). This level shows the refusal crossing the wire and
 // reaching the user from each entry point, with no fork created.
 import { expect, test, type SeedResult } from './fixtures.js';
+import { methodIdByName } from './offhost-helpers.js';
 import { threadRows } from './thread-tools-helpers.js';
 
 const SOURCE_TITLE = 'Deleting source';
 const REFUSAL = 'This thread was deleted, so it cannot be forked.';
-// methodRoutes.ts: DeleteThreadsAndWorktrees, the sidebar's delete.
-const DELETE_THREAD = 4153346978;
+// The sidebar's delete.
+const DELETE_THREAD = methodIdByName('DeleteThreads');
 
 interface ThreadEvent {
   action: string;

@@ -698,8 +698,8 @@ describe('thread archive/delete command safety', () => {
 
   it('routes thread.delete through the confirmation flow before deleting', () => {
     const pane = readyPane();
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    const deleteMock = setBindingMock('DeleteThreadsAndWorktrees', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const deleteMock = setBindingMock('DeleteThreads', async () => {});
     registerFixtureCommands(pane);
 
     runCommand('thread.delete', makeCommandContext(pane, {}));
@@ -712,8 +712,8 @@ describe('thread archive/delete command safety', () => {
 
   it('deletes directly when delete confirmations are disabled', async () => {
     const pane = readyPane();
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    const deleteMock = setBindingMock('DeleteThreadsAndWorktrees', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const deleteMock = setBindingMock('DeleteThreads', async () => {});
     setBindingMock('StopSession', async () => {});
     setBindingMock('GetSettings', async () => ({ confirmDelete: false }));
     await loadSettings();

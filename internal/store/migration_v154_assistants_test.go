@@ -148,7 +148,7 @@ func TestMigrationV154Schema(t *testing.T) {
 			"spawn_instructions|TEXT|1|''|0",
 		},
 		"async_questions": {"revision|INTEGER|1|1|0"},
-		"threads":         {"delete_claim|TEXT|1|''|0", "delete_worktrees|INTEGER|1|0|0", "spawn_instructions|TEXT|1|''|0", "spawn_level|INTEGER|1|0|0"},
+		"threads":         {"delete_claim|TEXT|1|''|0", "spawn_instructions|TEXT|1|''|0", "spawn_level|INTEGER|1|0|0"},
 	}
 	for _, table := range ledger {
 		got := columns(table)
@@ -197,7 +197,6 @@ func TestMigrationV154Schema(t *testing.T) {
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('x', 'lead', 'loop', 'l', 'paused', 1)`,
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, long_running, state, created_at) VALUES ('x', 'lead', 'watch', 'l', 2, 'armed', 1)`,
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('x', 'missing', 'loop', 'l', 'armed', 1)`,
-		`UPDATE threads SET delete_worktrees = 2 WHERE id = 'lead'`,
 		`UPDATE threads SET delete_claim = NULL WHERE id = 'lead'`,
 		`UPDATE thread_requests SET lineage_only = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET superseded = 2 WHERE token = 'spawn'`,

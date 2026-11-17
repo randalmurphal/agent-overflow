@@ -59,16 +59,13 @@ func TestListDeleteFamily(t *testing.T) {
 	if err := s.BeginThreadDelete("marked"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/deeper' WHERE id = 'deeper'`); err != nil {
-		t.Fatal(err)
-	}
 	members, err := s.ListDeleteFamily([]string{"owner"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, member := range members {
-		if member.ThreadID == "deeper" && (member.WorktreePath != "/wt/deeper" || member.ProjectID == "") {
-			t.Errorf("deeper = %+v, want its project and worktree", member)
+		if member.ThreadID == "deeper" && member.ProjectID == "" {
+			t.Errorf("deeper = %+v, want its project", member)
 		}
 		if member.Committed != (member.ThreadID == "marked") {
 			t.Errorf("%s committed = %v", member.ThreadID, member.Committed)
@@ -230,12 +227,12 @@ func TestLineageThreadsAreOwnedThreadsAndTheirDeletes(t *testing.T) {
 	}
 }
 
-func deleteClaimOf(t *testing.T, s *Store, id string) (claim string, committed, removeWorktrees bool) {
+func deleteClaimOf(t *testing.T, s *Store, id string) (claim string, committed bool) {
 	t.Helper()
-	if err := s.db.QueryRow(`SELECT delete_claim, deleting, delete_worktrees FROM threads WHERE id = ?`, id).Scan(&claim, &committed, &removeWorktrees); err != nil {
+	if err := s.db.QueryRow(`SELECT delete_claim, deleting FROM threads WHERE id = ?`, id).Scan(&claim, &committed); err != nil {
 		t.Fatal(err)
 	}
-	return claim, committed, removeWorktrees
+	return claim, committed
 }
 
 func familyIDs(members []DeleteMember) []string {
@@ -250,8 +247,7 @@ func familyIDs(members []DeleteMember) []string {
 // nothing, a family another delete holds a claim in. Claiming again claims
 // what joined the family since. A claimed thread is still listed, and runs
 // and moves nothing; a release frees every claim at once. A commit marks
-// the claimed threads deleting with the delete's worktree policy, and a
-// later delete joins a committed thread instead of refusing it. The boot
+// the claimed threads deleting, and a later delete joins a committed thread instead of refusing it. The boot
 // takes back the claims no delete committed.
 func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	s := newTestStore(t)
@@ -270,11 +266,11 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 		t.Fatalf("claimed = %v", got)
 	}
 	for _, id := range []string{"owner", "owned", "deep"} {
-		if claim, committed, _ := deleteClaimOf(t, s, id); claim != "op-1" || committed {
+		if claim, committed := deleteClaimOf(t, s, id); claim != "op-1" || committed {
 			t.Errorf("%s = claim %q committed %v, want op-1's claim", id, claim, committed)
 		}
 	}
-	if claim, _, _ := deleteClaimOf(t, s, "placed"); claim != "" {
+	if claim, _ := deleteClaimOf(t, s, "placed"); claim != "" {
 		t.Errorf("the placed spawn was claimed by %q", claim)
 	}
 	if ids := catalogIDsOf(t, s); !slices.Contains(ids, "owner") {
@@ -336,7 +332,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"owner", "owned", "deep", "late"} {
-		if claim, _, _ := deleteClaimOf(t, s, id); claim != "" {
+		if claim, _ := deleteClaimOf(t, s, id); claim != "" {
 			t.Errorf("%s after the release = claim %q", id, claim)
 		}
 	}
@@ -350,22 +346,18 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/owned' WHERE id = 'owned'`); err != nil {
-		t.Fatal(err)
-	}
-	commit, err := s.CommitDeleteClaim("op-2", siteWorktrees("/wt/owned", "owned", "deep"))
+	committedIDs, err := s.CommitDeleteClaim("op-2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	slices.Sort(commit.Threads)
-	if !slices.Equal(commit.Threads, []string{"deep", "owned"}) {
-		t.Fatalf("committed = %v", commit.Threads)
+	slices.Sort(committedIDs)
+	if !slices.Equal(committedIDs, []string{"deep", "owned"}) {
+		t.Fatalf("committed = %v", committedIDs)
 	}
-	if _, committed, remove := deleteClaimOf(t, s, "owned"); !committed || !remove || !commit.RemoveWorktrees["owned"] {
-		t.Errorf("owned = committed %v remove worktrees %v, want both", committed, remove)
-	}
-	if _, committed, remove := deleteClaimOf(t, s, "deep"); !committed || remove || commit.RemoveWorktrees["deep"] {
-		t.Errorf("deep, on no worktree the delete removes = committed %v remove worktrees %v, want committed alone", committed, remove)
+	for _, id := range committedIDs {
+		if _, committed := deleteClaimOf(t, s, id); !committed {
+			t.Errorf("%s is not committed", id)
+		}
 	}
 	if ids := catalogIDsOf(t, s); slices.Contains(ids, "owned") {
 		t.Errorf("catalog = %v, want the committed thread gone", ids)
@@ -378,7 +370,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 		if want := member.ThreadID == "owned" || member.ThreadID == "deep"; member.Committed != want {
 			t.Errorf("%s committed = %v", member.ThreadID, member.Committed)
 		}
-		if member.Committed && (member.Claim != "op-2" || member.RemoveWorktrees != (member.ThreadID == "owned")) {
+		if member.Committed && member.Claim != "op-2" {
 			t.Errorf("%s = %+v, want op-2's commit kept", member.ThreadID, member)
 		}
 	}
@@ -386,87 +378,10 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 		t.Fatalf("the boot's release = %d, %v; want the owner and late", released, err)
 	}
 	for id, want := range map[string]string{"owner": "", "late": "", "owned": "op-2", "deep": "op-2"} {
-		if claim, _, _ := deleteClaimOf(t, s, id); claim != want {
+		if claim, _ := deleteClaimOf(t, s, id); claim != want {
 			t.Errorf("%s after the boot's release = claim %q, want %q", id, claim, want)
 		}
 	}
-}
-
-// siteWorktrees is a delete's DeleteWorktrees for the one worktree site,
-// compared as stored, with inside its threads.
-func siteWorktrees(site string, inside ...string) DeleteWorktrees {
-	return DeleteWorktrees{
-		Site: func(path string) string {
-			if path == site {
-				return site
-			}
-			return ""
-		},
-		Inside: func(id string) bool { return slices.Contains(inside, id) },
-	}
-}
-
-// A commit records a worktree removal only on its threads on a worktree the
-// delete authorized that no thread outside it is on, read in the commit's
-// own transaction: a thread outside the delete on it, by its worktree or
-// its workspace, keeps it, and the commit names that thread. A commit that
-// authorized no worktree records none.
-func TestACommitRecordsOnlyTheWorktreeRemovalsItChecked(t *testing.T) {
-	for _, outside := range []string{"", "worktree", "workspace"} {
-		t.Run("outside on its "+outside, func(t *testing.T) {
-			s := newTestStore(t)
-			for _, id := range []string{"a", "b", "c"} {
-				mustCreateThread(t, s, id)
-			}
-			if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/y' WHERE id IN ('a', 'b')`); err != nil {
-				t.Fatal(err)
-			}
-			switch outside {
-			case "worktree":
-				_, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/y' WHERE id = 'c'`)
-				if err != nil {
-					t.Fatal(err)
-				}
-			case "workspace":
-				_, err := s.db.Exec(`UPDATE threads SET workspace_path = '/wt/y' WHERE id = 'c'`)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := s.ClaimDeleteFamily("op", []string{"a", "b"}); err != nil {
-				t.Fatal(err)
-			}
-			commit, err := s.CommitDeleteClaim("op", siteWorktrees("/wt/y", "a", "b"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := outside == ""
-			for _, id := range []string{"a", "b"} {
-				if _, committed, remove := deleteClaimOf(t, s, id); !committed || remove != want || commit.RemoveWorktrees[id] != want {
-					t.Errorf("%s = committed %v remove worktrees %v (%v), want committed, remove %v", id, committed, remove, commit.RemoveWorktrees[id], want)
-				}
-			}
-			if got := commit.Occupied["/wt/y"]; (got == "c") == want {
-				t.Errorf("occupied = %v", commit.Occupied)
-			}
-		})
-	}
-	t.Run("nothing authorized", func(t *testing.T) {
-		s := newTestStore(t)
-		mustCreateThread(t, s, "a")
-		if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/y' WHERE id = 'a'`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.ClaimDeleteFamily("op", []string{"a"}); err != nil {
-			t.Fatal(err)
-		}
-		if commit, err := s.CommitDeleteClaim("op", DeleteWorktrees{}); err != nil || len(commit.RemoveWorktrees) != 0 {
-			t.Fatalf("commit = %+v, %v", commit, err)
-		}
-		if _, committed, remove := deleteClaimOf(t, s, "a"); !committed || remove {
-			t.Errorf("a = committed %v remove worktrees %v, want committed alone", committed, remove)
-		}
-	})
 }
 
 // A worker's claim takes its owner as its fence: it holds only while that
@@ -566,51 +481,6 @@ func TestAClaimKeepsWhatIsDue(t *testing.T) {
 	}
 	if wakeDue() {
 		t.Fatal("an agent wake of a committed thread is due")
-	}
-}
-
-// Every workspace-reference read carries, from the same row, what
-// ThreadDeleteClaim reads: a claim, a commit, or neither.
-func TestThreadWorkspaceRefsCarryEachThreadsDelete(t *testing.T) {
-	s := newTestStore(t)
-	for _, id := range []string{"claimed", "committed", "free"} {
-		mustCreateThread(t, s, id)
-	}
-	if _, err := s.ClaimDeleteFamily("op-1", []string{"claimed"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.BeginThreadDelete("committed"); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]ThreadDeleteHold{"claimed": {Claim: "op-1"}, "committed": {Committed: true}, "free": {}}
-	for id, hold := range want {
-		claim, committed, err := s.ThreadDeleteClaim(id)
-		if err != nil || claim != hold.Claim || committed != hold.Committed {
-			t.Fatalf("%s one at a time = %q %v %v; want %+v", id, claim, committed, err, hold)
-		}
-	}
-	all, err := s.ListThreadWorkspaceRefs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	thread, err := s.GetThread("free")
-	if err != nil {
-		t.Fatal(err)
-	}
-	byProject, err := s.ListThreadWorkspaceRefsByProject(thread.ProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, refs := range map[string][]ThreadWorkspaceRef{"all": all, "by project": byProject} {
-		got := make(map[string]ThreadDeleteHold, len(refs))
-		for _, ref := range refs {
-			got[ref.ID] = ref.Delete
-		}
-		for id, hold := range want {
-			if got[id] != hold {
-				t.Errorf("%s: %s = %+v, want %+v", name, id, got[id], hold)
-			}
-		}
 	}
 }
 

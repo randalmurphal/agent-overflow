@@ -152,7 +152,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteSoundFile", ID: 2725195951, Scope: "settings:write", Route: "home"},                                                        // main.App.DeleteSoundFile
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                                        // main.App.DeleteThread
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                                     // main.App.DeleteThreadGroup
-	{Name: "DeleteThreadsAndWorktrees", ID: 4153346978, Scope: "threads:operate", Route: "home"},                                             // main.App.DeleteThreadsAndWorktrees
+	{Name: "DeleteThreads", ID: 362983967, Scope: "threads:operate", Route: "home"},                                                          // main.App.DeleteThreads
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                                       // main.App.DevicePairingStatus
 	{Name: "DictationSources", ID: 1721991996, Scope: "threads:operate", Route: "selected"},                                                  // main.App.DictationSources
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                                                  // main.App.DisallowPreviewPort
