@@ -80,13 +80,16 @@
   let errors = $derived([recentError, machine?.loadError ?? ''].filter((text) => text !== ''));
   let shown = $derived(open && (items.length > 0 || errors.length > 0));
 
-  // What the field and the list are for: the thread, its tab, and its
-  // cookie jar. Another tab or thread replaces the field's text, so the list
-  // described what was typed for the one that left; and the recent
-  // addresses were the old owner's (a jar switch, or a close of every page,
-  // has the Manager forget them). Any change drops them and any read in
-  // flight, and reads again while the field has focus.
-  let owner = $derived(`${threadId ?? ''}\n${activePageId}\n${browser?.jar ?? ''}`);
+  // What the field and the list are for: the thread, its tab, and the
+  // Manager's forget generation of recent addresses (internal/browser/
+  // recent.go), which every forget advances, so a round trip of jar names
+  // cannot hide one. Another tab or thread replaces the field's text, so the
+  // list described what was typed for the one that left; and a forgotten
+  // list is not the Manager's any more. Any change drops it and any read in
+  // flight, and reads again while the field has focus. The generation is
+  // Manager-wide: a forget on another thread costs one re-read here at the
+  // next push.
+  let owner = $derived(`${threadId ?? ''}\n${activePageId}\n${browser?.recentGen ?? ''}`);
   let ownedBy = '';
   $effect(() => {
     const key = owner;
