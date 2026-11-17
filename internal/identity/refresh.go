@@ -496,10 +496,13 @@ func hashRefreshSecret(secret string) [sha256.Size]byte {
 // are never touched, because they are the reuse detector's evidence.
 func (s *Sessions) PruneCredentials(keep time.Duration) {
 	before := s.now().Add(-keep).UnixMilli()
-	if dropped, _, err := s.store.DeleteSessionsExpiredBefore(before); err != nil {
+	if dropped, released, err := s.store.DeleteSessionsExpiredBefore(before); err != nil {
 		log.Printf("identity: prune expired sessions: %v", err)
-	} else if dropped > 0 {
-		log.Printf("identity: pruned %d expired sessions", dropped)
+	} else {
+		if dropped > 0 {
+			log.Printf("identity: pruned %d expired sessions", dropped)
+		}
+		s.linksReleased(released)
 	}
 	if _, err := s.store.DeleteRefreshSecretsExpiredBefore(before); err != nil {
 		log.Printf("identity: prune expired refresh secrets: %v", err)
