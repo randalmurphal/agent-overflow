@@ -318,10 +318,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// path as the sweep, and is joined beside it for the same reasons.
 	a.waitPendingThreadDeletes()
 	record("stop pending thread deletes", nil)
-	// The boot-time completion of interrupted archives archives workers,
-	// which stops their sessions, so it is joined beside it.
-	a.waitPendingArchives()
-	record("stop pending archives", nil)
 	// Terminal thread ends delete through the same path and are joined
 	// for the same reasons. Stopping them before Step 6 closes the PTYs
 	// also keeps a quit from deleting terminal threads; the next boot

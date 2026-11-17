@@ -15,9 +15,8 @@ import (
 )
 
 // An owner operation reaches its spawn's link whatever became of the
-// receipt around it, answers gone only when no worker can appear for the
-// token, and stays owed until every worker below it there is archived or
-// deleted (docs/specs/standing-agents.md, Owned workers).
+// receipt around it, and stays owed until every worker below it there is
+// archived or deleted (docs/specs/standing-agents.md, Owned workers).
 
 // lineageOnly moves the pair's spawn receipt there past the retention
 // floor, its link standing: the receipt is settled, its owner reached it
@@ -94,66 +93,6 @@ func TestAnOwnerOpReachesALinkKeptAsLineage(t *testing.T) {
 			t.Fatalf("the supersede = %s, want applied", got)
 		}
 	})
-}
-
-// An owner operation that arrives before the spawn it names, here a
-// delete sent while the spawn is still on its way, fences the token: the
-// spawn then creates nothing there, and its receipt says why.
-func TestAnOwnerOpBeforeItsSpawnArrivesFencesTheSpawn(t *testing.T) {
-	t.Parallel()
-	p := newOwnerOpPair(t, false)
-	arrived, release := make(chan ThreadPeerCall, 1), make(chan struct{})
-	var once, freed sync.Once
-	free := func() { freed.Do(func() { close(release) }) }
-	t.Cleanup(free)
-	hold := func(call ThreadPeerCall) {
-		once.Do(func() {
-			arrived <- call
-			<-release
-		})
-	}
-	p.peer.spawning.Store(&hold)
-	spawned := make(chan error, 1)
-	go func() {
-		_, err := p.adapter().Spawn(t.Context(), p.callerIdentity(),
-			threadtools.SpawnCall{Prompt: "more work", ComputerID: p.computer, ProjectID: p.project})
-		spawned <- err
-	}()
-	call := within(t, "the spawn on its way", arrived)
-	answer, err := p.source.callOwnerOp(t.Context(), store.OwnerOp{
-		Token: call.Token, Seq: 1, Op: store.OwnerOpDelete, ComputerID: p.computer, SourceThreadID: p.caller.ID,
-	})
-	if err != nil || answer.Outcome != ownerOpGone {
-		t.Fatalf("the delete ahead of its spawn = %+v, %v; want gone", answer, err)
-	}
-	free()
-	if err := within(t, "the spawn", spawned); err == nil || !strings.Contains(err.Error(), "cancelled before its thread was created") {
-		t.Fatalf("the fenced spawn = %v, want it refused with the fence's answer", err)
-	}
-	rows, err := p.dest.store.ListThreads()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].ID != p.worker {
-		t.Fatalf("the threads there = %d, want only the first worker: the fenced spawn made one", len(rows))
-	}
-	receipt := p.receipt(t, call.Token)
-	if receipt.State != store.ThreadReceiptCancelled || receipt.TargetThreadID != "" || receipt.OwnerOpSeq != 1 {
-		t.Fatalf("the fenced receipt = %+v, want cancelled under the delete with no thread", receipt)
-	}
-	// Another device's or thread's operation fences nothing.
-	for name, op := range map[string]struct{ device, source string }{
-		"another device": {"another-device", p.caller.ID},
-		"another source": {p.device, entityid.New()},
-	} {
-		got, err := p.dest.admitOwnerOp(t.Context(), op.device, op.source, threadOwnerOpArgs{Spawn: call.Token, Seq: 2, Op: store.OwnerOpArchive})
-		if err != nil || got.Outcome != ownerOpGone {
-			t.Errorf("%s: %+v, %v; want gone", name, got, err)
-		}
-	}
-	if receipt := p.receipt(t, call.Token); receipt.OwnerDeviceID != p.device || receipt.OwnerOpSeq != 1 {
-		t.Fatalf("another caller's operation changed the fence: %+v", receipt)
-	}
 }
 
 // A retry that settles a spawn while its first attempt is still making

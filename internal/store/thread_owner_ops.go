@@ -108,9 +108,8 @@ func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []
 
 // OweRemoteArchives owes an archive for the remote spawns of ownerID and of
 // the archived threads it owns at any depth through owned threads already
-// archived (ListOwnedWorkersToArchive's walk), and then clears ownerID's
-// archive_cascade: its archive has reached everything it owns. It owes
-// nothing and clears nothing once ownerID is no longer archived. One
+// archived (ListOwnedWorkersToArchive's walk), at the end of ownerID's
+// archive walk. It owes nothing once ownerID is no longer archived. One
 // transaction.
 func (s *Store) OweRemoteArchives(ownerID string) (owed []OwnerOp, err error) {
 	action := fmt.Sprintf("store: owe the remote archives of %s", ownerID)
@@ -135,9 +134,6 @@ func (s *Store) OweRemoteArchives(ownerID string) (owed []OwnerOp, err error) {
 	}
 	if owed, err = oweRemoteOpsTx(tx, callers, OwnerOpArchive, nowMillis()); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	if _, err := tx.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = ? AND archived = 1 AND archive_cascade = 1`, ownerID); err != nil {
-		return nil, fmt.Errorf("%s: clear its cascade: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("%s: commit: %w", action, err)
@@ -180,22 +176,21 @@ const hasRemoteSpawnsSQL = `SELECT EXISTS (SELECT 1 FROM json_each(?1) AS caller
 	  CROSS JOIN thread_requests ON thread_requests.caller_thread_id = caller.value
 	 WHERE thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> '')`
 
-// OwesWorkerEnd reports whether an archive or delete is owed, or about to
-// be, to the worker the spawn token made on a paired computer: its
-// spawner's archive or delete is on its way there, and ends that worker's
-// prompts with it. An archive of the spawn's caller that has not finished
-// (archive_cascade) owes its archive when it does (OweRemoteArchives). Two
-// primary key probes.
-func (s *Store) OwesWorkerEnd(token string) (bool, error) {
-	var owed bool
+// OwesWorkerEnd reports whether an archive or delete is owed to the worker
+// the spawn token made on a paired computer (owed): its spawner's archive
+// or delete is on its way there, and ends that worker's prompts with it.
+// archivedCaller is the spawn's caller while it is archived, whose archive
+// walk, while it runs, owes that archive at its end (OweRemoteArchives);
+// empty otherwise. Two primary key probes.
+func (s *Store) OwesWorkerEnd(token string) (owed bool, archivedCaller string, err error) {
 	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_owner_ops
-		 WHERE token = ?1 AND op IN ('archive', 'delete'))
-		 OR EXISTS (SELECT 1 FROM thread_requests JOIN threads ON threads.id = thread_requests.caller_thread_id
+		 WHERE token = ?1 AND op IN ('archive', 'delete')),
+		 COALESCE((SELECT threads.id FROM thread_requests JOIN threads ON threads.id = thread_requests.caller_thread_id
 		 WHERE thread_requests.token = ?1 AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> ''
-		   AND threads.archived = 1 AND threads.archive_cascade = 1)`, token).Scan(&owed); err != nil {
-		return false, fmt.Errorf("store: probe the operation owed for spawn %s: %w", token, err)
+		   AND threads.archived = 1), '')`, token).Scan(&owed, &archivedCaller); err != nil {
+		return false, "", fmt.Errorf("store: probe the operation owed for spawn %s: %w", token, err)
 	}
-	return owed, nil
+	return owed, archivedCaller, nil
 }
 
 // dueOwnerOpsSQL reads up to limit owed operations due by ?, the earliest

@@ -1,33 +1,45 @@
 package app
 
 import (
-	"context"
-	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
-	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 )
 
 // An archive is durable at its flip, and what it owns follows through a
-// walk that runs after it (finishArchive). The flip marks the archive
-// unfinished in its own transaction (archive_cascade), the walk's end
-// clears the mark, and a boot finishes every archive a crash stopped
-// before its walk ended (startPendingArchives).
+// walk that runs after it (finishArchive). From the flip until the walk's
+// end, the archive's remote archives are on their way (owesWorkerEnd):
+// unfinished, as these tests name it.
 
-// unfinishedArchives lists the threads whose archive a boot would finish.
+// unfinishedArchives lists the archived threads with an archive walk under
+// way: those whose remote workers' archives owesWorkerEnd counts as on
+// their way.
 func unfinishedArchives(t *testing.T, app *App) []string {
 	t.Helper()
-	ids, err := app.store.ListUnfinishedArchives()
-	if err != nil {
-		t.Fatal(err)
+	app.archiveWalks.mu.Lock()
+	var walking []string
+	for id, walks := range app.archiveWalks.running {
+		if walks > 0 {
+			walking = append(walking, id)
+		}
 	}
+	app.archiveWalks.mu.Unlock()
+	var ids []string
+	for _, id := range walking {
+		row, err := app.store.GetThread(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Archived {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
 	return ids
 }
 
@@ -42,155 +54,6 @@ func archivedIs(t *testing.T, app *App, step string, want map[string]bool) {
 			t.Errorf("%s: %s archived = %v, want %v", step, id, row.Archived, archived)
 		}
 	}
-}
-
-// archiveCrash is a computer whose owner owns a worker that owns a
-// worker, every one open, on a database a second boot reopens.
-type archiveCrash struct {
-	app  *App
-	path string
-}
-
-func newArchiveCrash(t *testing.T) archiveCrash {
-	t.Helper()
-	_, path := newTestAppWithStorePath(t)
-	return newArchiveCrashAt(t, path)
-}
-
-// newArchiveCrashAt is newArchiveCrash on the migrated database at path.
-func newArchiveCrashAt(t *testing.T, path string) archiveCrash {
-	t.Helper()
-	app := newTestAppAtStorePath(t, path)
-	project := store.Project{ID: "archive-project", Path: t.TempDir(), Name: "Archive", CreatedAt: 1, UpdatedAt: 1}
-	if _, err := app.store.CreateProject(project); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"owner", "worker", "deep"} {
-		if err := app.store.CreateThread(store.Thread{
-			ID: id, ProjectID: project.ID, Title: "Thread " + id, Provider: string(provider.Claude), Model: "claude-opus-4-7",
-			Mode: threadmode.ModeChat, WorkspacePath: project.Path, RuntimeMode: string(provider.RuntimeApprovalRequired),
-			CreatedAt: 1000, UpdatedAt: 1000,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	recordSpawn(t, app, "tok-worker", "owner", "worker")
-	recordSpawn(t, app, "tok-deep", "worker", "deep")
-	return archiveCrash{app: app, path: path}
-}
-
-// reboot closes the crashed computer's database and opens it again as a
-// boot does, running the boot's archive resume to its end.
-func (c archiveCrash) reboot(t *testing.T) *App {
-	t.Helper()
-	c.app.appCancel()
-	if err := c.app.store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	boot := newTestAppAtStorePath(t, c.path)
-	boot.maintenance.firstReadsFallback = time.Millisecond
-	boot.startPendingArchives()
-	boot.waitPendingArchives()
-	return boot
-}
-
-// An archive a crash cut after its flip, before its walk ended, is finished
-// by the next boot through each door that archives: the owner's workers at
-// every depth are archived and no archive is left unfinished. A repeated
-// archive of an archived owner whose worker was reopened is finished the
-// same way, and an owner reopened before the crash leaves its workers open.
-func TestABootFinishesAnArchiveACrashCut(t *testing.T) {
-	t.Parallel()
-	cases := map[string]struct {
-		crash func(t *testing.T, app *App)
-		want  map[string]bool
-	}{
-		"ArchiveThread": {
-			crash: func(t *testing.T, app *App) {
-				if _, err := app.archiveThreadLocked("owner", ""); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: map[string]bool{"owner": true, "worker": true, "deep": true},
-		},
-		"thread_update with a title": {
-			crash: func(t *testing.T, app *App) {
-				patch := threadapp.OrganizePatch{Archived: boolPtr(true), Title: stringPtr("Archived owner")}
-				if _, _, err := app.applyThreadOrganizePatchLocked(t.Context(), "owner", patch); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: map[string]bool{"owner": true, "worker": true, "deep": true},
-		},
-		"an archived owner archived again": {
-			crash: func(t *testing.T, app *App) {
-				if _, err := app.ArchiveThread("owner"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := app.UnarchiveThread("deep"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := app.archiveThreadLocked("owner", ""); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: map[string]bool{"owner": true, "worker": true, "deep": true},
-		},
-		"an owner reopened before the crash": {
-			crash: func(t *testing.T, app *App) {
-				if _, err := app.archiveThreadLocked("owner", ""); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := app.UnarchiveThread("owner"); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: map[string]bool{"owner": false, "worker": false, "deep": false},
-		},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			crash := newArchiveCrash(t)
-			tc.crash(t, crash.app)
-			boot := crash.reboot(t)
-			archivedIs(t, boot, "after the boot", tc.want)
-			if left := unfinishedArchives(t, boot); len(left) != 0 {
-				t.Errorf("unfinished archives after the boot = %v", left)
-			}
-		})
-	}
-}
-
-// The boot's own start resumes an unfinished archive, with no client
-// attached and nothing running.
-func TestTheBootStartResumesUnfinishedArchives(t *testing.T) {
-	a := newBootTestApp(t)
-	path := filepath.Join(a.dataDirOverride, "agent-overflow", databaseFileName)
-	migratedDatabaseAt(t, path)
-	crash := newArchiveCrashAt(t, path)
-	if _, err := crash.app.archiveThreadLocked("owner", ""); err != nil {
-		t.Fatal(err)
-	}
-	crash.app.appCancel()
-	if err := crash.app.store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	a.maintenance.firstReadsFallback = time.Millisecond
-	t.Cleanup(func() {
-		if err := a.Shutdown(context.Background()); err != nil {
-			t.Errorf("Shutdown: %v", err)
-		}
-	})
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	waitUntil(t, 30*time.Second, func() bool {
-		ids, err := a.store.ListUnfinishedArchives()
-		return err == nil && len(ids) == 0
-	})
-	archivedIs(t, a, "after the boot", map[string]bool{"owner": true, "worker": true, "deep": true})
 }
 
 // Through either door, alone or with a title or a group, an archive is
@@ -290,7 +153,7 @@ func TestAnArchiveIsUnfinishedUntilItsWalkEnds(t *testing.T) {
 
 // A walk that ends while a newer archive of the same thread still has its
 // walk to run leaves the archive unfinished: only the last walk to end
-// ends it, so a crash in between still finishes the newer one.
+// ends it.
 func TestOnlyTheLastWalkEndsAnArchive(t *testing.T) {
 	t.Parallel()
 	doors := map[string]func(t *testing.T, app *App, id string) restingThreadWork{
@@ -335,22 +198,6 @@ func TestOnlyTheLastWalkEndsAnArchive(t *testing.T) {
 				archivedIs(t, f.app, "after both walks", map[string]bool{owner.ID: true, before.ID: true, after.ID: true})
 			})
 		}
-	}
-}
-
-// An assistant's handoff archives its old thread, whose spawns moved to the
-// successor, so its archive has nothing to walk and ends with the handoff.
-func TestAHandOffLeavesNoUnfinishedArchive(t *testing.T) {
-	t.Parallel()
-	a, old := remoteJobAssistant(t)
-	successor, err := a.nextAssistantThread(t.Context(), old.ID, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a.waitAgentNoticeWork()
-	archivedIs(t, a, "after the handoff", map[string]bool{old.ID: true, successor.ID: false})
-	if left := unfinishedArchives(t, a); len(left) != 0 {
-		t.Fatalf("unfinished after the handoff = %v", left)
 	}
 }
 
@@ -418,4 +265,64 @@ func TestAnArchiveMadeAsAnOlderWalkEndsStaysUnfinished(t *testing.T) {
 	if left := unfinishedArchives(t, f.app); !slices.Equal(left, []string{owner.ID}) {
 		t.Fatalf("unfinished = %v, want the second archive, whose walk has not ended", left)
 	}
+}
+
+// The archive of a worker's spawner on another computer is on its way from
+// the spawner's flip, through its walk's end, until the ledger holds it: the
+// walk stops counting only after it owed the archive. A spawner reopened
+// while its walk runs, and a supersede, owe nothing.
+func TestAWalkKeepsItsRemoteArchivesOnTheirWay(t *testing.T) {
+	t.Parallel()
+	f := newOrganizeFixture(t)
+	owner := f.thread(t, "owner")
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "tok-remote", CallerThreadID: owner.ID, Kind: store.ThreadRequestSpawn,
+		TargetComputerID: "pc-there", TargetThreadID: "worker-there", State: store.ThreadRequestFinished,
+		CreatedAt: 1, UpdatedAt: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owes := func(want bool, step string) {
+		t.Helper()
+		if got, err := f.app.owesWorkerEnd("tok-remote"); err != nil || got != want {
+			t.Fatalf("%s: owesWorkerEnd = %v, %v; want %v", step, got, err, want)
+		}
+	}
+	owes(false, "before the archive")
+	work, err := f.app.archiveThreadLocked(owner.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owes(true, "after the flip")
+	ended := false
+	f.app.archiveWalkEndingForTest = func(id string) {
+		if id == owner.ID {
+			ended = true
+			owes(true, "as the walk ends, before it owes")
+		}
+	}
+	f.app.finishArchive(work, reachLater)
+	if !ended {
+		t.Fatal("the walk's end never ran")
+	}
+	f.app.archiveWalkEndingForTest = nil
+	if walking := f.app.archiveWalking(owner.ID); walking {
+		t.Fatal("the walk is still counted after it ended")
+	}
+	owes(true, "with the archive owed")
+
+	if _, err := f.app.UnarchiveThread(owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	owes(false, "with a supersede owed")
+	work, err = f.app.archiveThreadLocked(owner.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.UnarchiveThread(owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	owes(false, "reopened while its walk runs")
+	f.app.finishArchive(work, reachLater)
+	owes(false, "after the late walk of a reopened spawner")
 }

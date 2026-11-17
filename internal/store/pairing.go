@@ -241,26 +241,21 @@ func (s *Store) CancelPairingLink(id string, at int64) (PairingLink, error) {
 // RetirePendingPairings runs before a restarted host serves credentials. An
 // unfinished screen comparison cannot survive the process that owned it; an
 // already-confirmed device is deliberately outside both update predicates.
-// released names the threads whose links the revocation released
-// (session_end.go).
-func (s *Store) RetirePendingPairings(at int64) (released []string, err error) {
+func (s *Store) RetirePendingPairings(at int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: retire pending pairings: %w", err)
+		return fmt.Errorf("store: retire pending pairings: %w", err)
 	}
 	defer tx.Rollback()
-	if _, released, err = endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
+	if _, _, err = endSessionsTx(tx, revokeSessions, at, nil, `activated_at IS NULL
 		AND id IN (SELECT session_id FROM pairing_links WHERE confirmed_at IS NULL)`); err != nil {
-		return nil, fmt.Errorf("store: retire pending pairing sessions: %w", err)
+		return fmt.Errorf("store: retire pending pairing sessions: %w", err)
 	}
 	if _, err = tx.Exec(`UPDATE pairing_links SET canceled_at = ?
 		WHERE confirmed_at IS NULL AND canceled_at IS NULL`, at); err != nil {
-		return nil, fmt.Errorf("store: retire pending pairing links: %w", err)
+		return fmt.Errorf("store: retire pending pairing links: %w", err)
 	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	return released, nil
+	return tx.Commit()
 }
 
 // GetPairingLink reads one link by id. sql.ErrNoRows when it does not

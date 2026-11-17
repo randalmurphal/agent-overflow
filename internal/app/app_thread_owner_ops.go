@@ -130,20 +130,12 @@ func (a *App) serveThreadOwnerOp(ctx context.Context, owner string, call ThreadP
 // its thread source, for the spawn args names. Only that device's spawn,
 // from that thread, is reached (store.ReachSpawnLink, the lineage the
 // retention floor kept included); any other is gone, which tells the caller
-// nothing it did not know. A spawn with no receipt here yet is fenced
-// (store.FenceSpawn): its acceptance, if it still arrives, creates nothing,
-// so gone is answered only when no worker can appear for the token.
+// nothing it did not know.
 func (a *App) admitOwnerOp(_ context.Context, owner, source string, args threadOwnerOpArgs) (threadOwnerOpAnswer, error) {
 	now := time.Now().UnixMilli()
 	reach, found, err := a.store.ReachSpawnLink(args.Spawn, owner, source, now)
 	if err != nil {
 		return threadOwnerOpAnswer{}, err
-	}
-	if !found && args.Op != store.OwnerOpSupersede {
-		reach, found, err = a.store.FenceSpawn(args.Spawn, owner, source, args.Seq, now)
-		if err != nil {
-			return threadOwnerOpAnswer{}, err
-		}
 	}
 	if !found {
 		return threadOwnerOpAnswer{Outcome: ownerOpGone}, nil
@@ -155,9 +147,8 @@ func (a *App) admitOwnerOp(_ context.Context, owner, source string, args threadO
 			// settlement and discards it (store.SetThreadReceiptTarget).
 			return threadOwnerOpAnswer{Outcome: ownerOpPending}, nil
 		}
-		// Settled with no thread, which nothing can name now: fenced,
-		// interrupted before it named one, or its thread was deleted or
-		// moved away.
+		// Settled with no thread, which nothing can name now: interrupted
+		// before it named one, or its thread was deleted or moved away.
 		return threadOwnerOpAnswer{Outcome: ownerOpGone}, nil
 	}
 	held, err := a.ownerOpReachesThread(worker, args.Op)

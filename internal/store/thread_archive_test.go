@@ -2,33 +2,23 @@ package store
 
 import (
 	"errors"
-	"slices"
-	"strings"
 	"testing"
 )
 
-// archiveStateOf reads a thread's archived flag and its unfinished-archive
-// mark.
-func archiveStateOf(t *testing.T, s *Store, id string) (archived, cascade bool) {
+func requireArchiveState(t *testing.T, s *Store, step, id string, archived bool) {
 	t.Helper()
-	if err := s.db.QueryRow(`SELECT archived, archive_cascade FROM threads WHERE id = ?`, id).Scan(&archived, &cascade); err != nil {
-		t.Fatalf("read the archive state of %s: %v", id, err)
+	var got bool
+	if err := s.db.QueryRow(`SELECT archived FROM threads WHERE id = ?`, id).Scan(&got); err != nil {
+		t.Fatalf("%s: read the archive flag of %s: %v", step, id, err)
 	}
-	return archived, cascade
-}
-
-func requireArchiveState(t *testing.T, s *Store, step, id string, archived, cascade bool) {
-	t.Helper()
-	if gotArchived, gotCascade := archiveStateOf(t, s, id); gotArchived != archived || gotCascade != cascade {
-		t.Fatalf("%s: %s archived %v cascade %v, want %v %v", step, id, gotArchived, gotCascade, archived, cascade)
+	if got != archived {
+		t.Fatalf("%s: %s archived %v, want %v", step, id, got, archived)
 	}
 }
 
-// Every write of the archive flag marks an archive whose walk has not run,
-// a request to archive an archived thread included, and every unarchive
-// clears the mark; a worker its owner's walk finds already archived is left
-// unmarked, because no walk of its own follows.
-func TestEveryArchiveWriterMarksAnUnfinishedArchive(t *testing.T) {
+// Every archive writer flips the flag once: an archive of an archived
+// thread, or of a worker whose owner is open, changes nothing.
+func TestEveryArchiveWriterFlipsTheFlagOnce(t *testing.T) {
 	archiveDoors := map[string]func(s *Store, id string) (bool, error){
 		"ArchiveThread": func(s *Store, id string) (bool, error) {
 			_, changed, err := s.ArchiveThread(id)
@@ -59,18 +49,15 @@ func TestEveryArchiveWriterMarksAnUnfinishedArchive(t *testing.T) {
 				if changed, err := archive(s, "t"); err != nil || !changed {
 					t.Fatalf("archive: %v, %v", changed, err)
 				}
-				requireArchiveState(t, s, "archived", "t", true, true)
-				if _, err := s.db.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = 't'`); err != nil {
-					t.Fatal(err)
-				}
+				requireArchiveState(t, s, "archived", "t", true)
 				if changed, err := archive(s, "t"); err != nil || changed {
 					t.Fatalf("archive again: %v, %v; want no change", changed, err)
 				}
-				requireArchiveState(t, s, "archived again", "t", true, true)
+				requireArchiveState(t, s, "archived again", "t", true)
 				if changed, err := unarchive(s, "t"); err != nil || !changed {
 					t.Fatalf("unarchive: %v, %v", changed, err)
 				}
-				requireArchiveState(t, s, "unarchived", "t", false, false)
+				requireArchiveState(t, s, "unarchived", "t", false)
 			})
 		}
 	}
@@ -85,24 +72,21 @@ func TestEveryArchiveWriterMarksAnUnfinishedArchive(t *testing.T) {
 		if _, _, err := s.ArchiveThread("done"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = 'done'`); err != nil {
-			t.Fatal(err)
-		}
 		if _, changed, err := s.ArchiveOwnedWorker("worker", "owner"); err != nil || changed {
 			t.Fatalf("a worker of an open owner: %v, %v; want no change", changed, err)
 		}
-		requireArchiveState(t, s, "owner open", "worker", false, false)
+		requireArchiveState(t, s, "owner open", "worker", false)
 		if _, _, err := s.ArchiveThread("owner"); err != nil {
 			t.Fatal(err)
 		}
 		if _, changed, err := s.ArchiveOwnedWorker("worker", "owner"); err != nil || !changed {
 			t.Fatalf("archive the worker: %v, %v", changed, err)
 		}
-		requireArchiveState(t, s, "worker archived", "worker", true, true)
+		requireArchiveState(t, s, "worker archived", "worker", true)
 		if _, changed, err := s.ArchiveOwnedWorker("done", "owner"); err != nil || changed {
 			t.Fatalf("an archived worker: %v, %v; want no change", changed, err)
 		}
-		requireArchiveState(t, s, "archived worker", "done", true, false)
+		requireArchiveState(t, s, "archived worker", "done", true)
 	})
 
 	t.Run("HandOffAssistant", func(t *testing.T) {
@@ -121,13 +105,13 @@ func TestEveryArchiveWriterMarksAnUnfinishedArchive(t *testing.T) {
 		if !handOff.Old.Archived {
 			t.Fatalf("the old thread = %+v, want it archived", handOff.Old)
 		}
-		requireArchiveState(t, s, "handed off", "old", true, true)
-		requireArchiveState(t, s, "successor", "next", false, false)
+		requireArchiveState(t, s, "handed off", "old", true)
+		requireArchiveState(t, s, "successor", "next", false)
 	})
 }
 
-// A whole-row thread write from a stale struct cannot archive, unarchive
-// or end an unfinished archive: the flag has one writer.
+// A whole-row thread write from a stale struct cannot archive or
+// unarchive: the flag has one writer.
 func TestUpdateThreadLeavesTheArchiveAlone(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "open")
@@ -146,13 +130,12 @@ func TestUpdateThreadLeavesTheArchiveAlone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	requireArchiveState(t, s, "open after UpdateThread", "open", false, false)
-	requireArchiveState(t, s, "closed after UpdateThread", "closed", true, true)
+	requireArchiveState(t, s, "open after UpdateThread", "open", false)
+	requireArchiveState(t, s, "closed after UpdateThread", "closed", true)
 }
 
-// A deleted thread a fork still reads is kept as a holder, unarchived, and
-// with no archive left to finish.
-func TestAHolderHasNoUnfinishedArchive(t *testing.T) {
+// A deleted thread a fork still reads is kept as a holder, unarchived.
+func TestAHolderIsNotArchived(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 1)
 	mustPointerFork(t, s, "S", "F", ForkCut{})
@@ -163,7 +146,7 @@ func TestAHolderHasNoUnfinishedArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireHolder(t, s, "S", "Thread S")
-	requireArchiveState(t, s, "holder", "S", false, false)
+	requireArchiveState(t, s, "holder", "S", false)
 }
 
 // Reopening a thread withdraws the archives owed for the paired computers'
@@ -251,8 +234,7 @@ func TestUnarchivingSupersedesTheArchivesOwedForItsLinks(t *testing.T) {
 
 // A paired computer's archive of its worker here holds only through the
 // link it names, is taken once per sequence, walks again when its sequence
-// is sent again while the worker is still archived, and marks the worker's
-// own archive unfinished whether or not it flipped the row.
+// is sent again while the worker is still archived.
 func TestArchiveLinkedWorker(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"worker", "placed", "local", "spawner"} {
@@ -274,7 +256,7 @@ func TestArchiveLinkedWorker(t *testing.T) {
 		if _, _, _, err := s.ArchiveLinkedWorker(call.id, call.token, call.device, 1); !errors.Is(err, ErrWorkerNotOwned) {
 			t.Errorf("%s: %v, want ErrWorkerNotOwned", name, err)
 		}
-		requireArchiveState(t, s, name, call.id, false, false)
+		requireArchiveState(t, s, name, call.id, false)
 	}
 	if _, _, _, err := s.ArchiveLinkedWorker("missing", "tok", "dev", 1); !errors.Is(err, ErrWorkerNotOwned) {
 		t.Errorf("a thread the link does not name: %v, want ErrWorkerNotOwned", err)
@@ -287,7 +269,7 @@ func TestArchiveLinkedWorker(t *testing.T) {
 	if err != nil || !changed || !applied || !row.Archived {
 		t.Fatalf("archive: %+v, %v, %v, %v", row, changed, applied, err)
 	}
-	requireArchiveState(t, s, "archived", "worker", true, true)
+	requireArchiveState(t, s, "archived", "worker", true)
 	if seq := receiptLink(t, s, "tok").OwnerOpSeq; seq != 2 {
 		t.Fatalf("the link's seq = %d, want 2", seq)
 	}
@@ -295,14 +277,11 @@ func TestArchiveLinkedWorker(t *testing.T) {
 		t.Fatalf("an older seq: %v, %v, %v; want nothing done", changed, applied, err)
 	}
 	// The same seq again, while the worker is archived under it, walks
-	// again: its walk ended and is unfinished once more.
-	if _, err := s.db.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = 'worker'`); err != nil {
-		t.Fatal(err)
-	}
+	// again.
 	if row, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 2); err != nil || changed || !applied || !row.Archived {
 		t.Fatalf("a replay of seq 2: %+v, %v, %v, %v; want its walk again", row, changed, applied, err)
 	}
-	requireArchiveState(t, s, "replayed", "worker", true, true)
+	requireArchiveState(t, s, "replayed", "worker", true)
 	if seq := receiptLink(t, s, "tok").OwnerOpSeq; seq != 2 {
 		t.Fatalf("the replay moved the link's seq to %d", seq)
 	}
@@ -310,16 +289,12 @@ func TestArchiveLinkedWorker(t *testing.T) {
 		t.Fatalf("another device's replay: %v, want ErrWorkerNotOwned", err)
 	}
 
-	// The archive's walk ended; the person reopened nothing, and the owner
-	// archives again under a newer sequence: the archive is unfinished
-	// again with no flip.
-	if _, err := s.db.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = 'worker'`); err != nil {
-		t.Fatal(err)
-	}
+	// The person reopened nothing, and the owner archives again under a
+	// newer sequence: applied with no flip.
 	if _, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 3); err != nil || changed || !applied {
 		t.Fatalf("archive again: %v, %v, %v; want applied with no flip", changed, applied, err)
 	}
-	requireArchiveState(t, s, "archived again", "worker", true, true)
+	requireArchiveState(t, s, "archived again", "worker", true)
 
 	// A supersede that arrived first makes an older archive a replay.
 	if _, _, err := s.UnarchiveThread("worker"); err != nil {
@@ -329,41 +304,12 @@ func TestArchiveLinkedWorker(t *testing.T) {
 	if _, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 3); err != nil || changed || applied {
 		t.Fatalf("a replay after a reopen: %v, %v, %v; want nothing done", changed, applied, err)
 	}
-	requireArchiveState(t, s, "a replay after a reopen", "worker", false, false)
+	requireArchiveState(t, s, "a replay after a reopen", "worker", false)
 	if found, err := s.SupersedeLink("tok", "dev", "lead-tok", 5); err != nil || !found {
 		t.Fatalf("supersede: %v, %v", found, err)
 	}
 	if _, changed, applied, err := s.ArchiveLinkedWorker("worker", "tok", "dev", 4); err != nil || changed || applied {
 		t.Fatalf("an archive older than the supersede: %v, %v, %v; want nothing done", changed, applied, err)
 	}
-	requireArchiveState(t, s, "after the superseded archive", "worker", false, false)
-}
-
-// The boot resumes the archives whose walk did not finish, of threads this
-// computer still holds, through the partial index.
-func TestListUnfinishedArchives(t *testing.T) {
-	s := newTestStore(t)
-	for _, id := range []string{"done", "unfinished", "deleting", "moved", "open"} {
-		mustCreateThread(t, s, id)
-	}
-	for _, id := range []string{"done", "unfinished", "deleting", "moved"} {
-		if _, _, err := s.ArchiveThread(id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := s.OweRemoteArchives("done"); err != nil {
-		t.Fatal(err)
-	}
-	seedTransfer(t, s, "moved", "outgoing", "move", "complete", 128)
-	commitDelete(t, s, "op", "deleting")
-	ids, err := s.ListUnfinishedArchives()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(ids, []string{"unfinished"}) {
-		t.Fatalf("unfinished archives = %v, want [unfinished]", ids)
-	}
-	if got := explainWakeCarrierPlan(t, s.db, unfinishedArchivesSQL); !strings.Contains(got, "idx_threads_archive_cascade") {
-		t.Errorf("unfinished archives plan = %q, want idx_threads_archive_cascade", got)
-	}
+	requireArchiveState(t, s, "after the superseded archive", "worker", false)
 }

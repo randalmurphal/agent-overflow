@@ -42,7 +42,7 @@ func TestRetirePendingPairingsRollsBackIfLinkRetirementFails(t *testing.T) {
 	if _, err := s.db.Exec(`CREATE TRIGGER reject_pairing_retirement BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RetirePendingPairings(3000); err == nil {
+	if err := s.RetirePendingPairings(3000); err == nil {
 		t.Fatal("injected transaction failure was ignored")
 	}
 	after, err := s.GetSession(session.ID)
@@ -52,7 +52,7 @@ func TestRetirePendingPairingsRollsBackIfLinkRetirementFails(t *testing.T) {
 	if _, err := s.db.Exec(`DROP TRIGGER reject_pairing_retirement`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RetirePendingPairings(3001); err != nil {
+	if err := s.RetirePendingPairings(3001); err != nil {
 		t.Fatal(err)
 	}
 	after, err = s.GetSession(session.ID)

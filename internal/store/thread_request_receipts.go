@@ -304,9 +304,8 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 }
 
 // openReceiptSQL holds for a receipt that can still name its thread: a
-// settled one, cancelled by its owner's operation before its thread existed
-// (FenceSpawn) or settled by a retry that found it unnamed, names none, so
-// the creation that lost to it discards what it made.
+// settled one, settled by a retry that found it unnamed, names none, so the
+// creation that lost to it discards what it made.
 const openReceiptSQL = `state IN ('` + ThreadReceiptAccepted + `', '` + ThreadReceiptRunning + `')`
 
 // insertThreadReceiptSQL writes a receipt. A link is written only while its

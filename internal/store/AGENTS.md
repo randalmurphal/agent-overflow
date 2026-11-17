@@ -199,8 +199,8 @@ an atomic persistence decision; they must not become a business-logic layer.
   not a read of this computer's state. The commit owes the paired computers
   its threads spawned on in the same transaction (`thread_owner_ops.go`).
 - `threads.archived` has one writer, `setThreadArchivedTx`
-  (`thread_archive.go`): it marks the archive unfinished and an unarchive
-  withdraws what the archive owed, in the flip's transaction. A new path
+  (`thread_archive.go`): an unarchive withdraws what the archive owed, in
+  the flip's transaction. A new path
   that archives or reopens a thread calls it with its fence.
 - A paired computer's call about its spawn is authenticated by one reader,
   `ReachSpawnLink` (`spawn_links.go`): the receipt for the token, device

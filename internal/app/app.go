@@ -279,11 +279,9 @@ type App struct {
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
 	pendingThreadDeletes pendingThreadDeletes
-	// pendingArchives completes interrupted archives at boot, and
 	// archiveWalks counts the archive walks under way
-	// (app_pending_archives.go).
-	pendingArchives pendingArchives
-	archiveWalks    archiveWalks
+	// (app_archive_walks.go).
+	archiveWalks archiveWalks
 	// ownerOps delivers what archives and deletes owe the paired computers
 	// their threads spawned on (app_thread_owner_ops.go).
 	ownerOps ownerOpDelivery

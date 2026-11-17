@@ -403,63 +403,85 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 
 // A send from a thread other than the worker's spawner, which wakes the
 // worker into a prompt routed to that spawner, is not routed to the
-// sender: its row names the spawner, and the prompt is still picked up at
-// the poll's pace through the spawn.
+// sender: its row names the thread that holds the prompt here, the one its
+// wake went to, and the prompt is still picked up at the poll's pace
+// through the spawn. After the spawner's handoff that is its successor, by
+// the successor's name now, though the worker's computer still names the
+// spawner the link came from.
 func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 	t.Parallel()
-	remotetest.Require(t)
-	pair := newReachPair(t)
-	routeWorkerPromptsOn(pair.dest, pair.destBus)
-	pair.source.startSessionFn = func(string) error { return nil }
-	installMockClaudeTurns(t, pair.dest, [][]string{
-		{mockClaudeInitLine, `{"type":"result","subtype":"success","is_error":false}`},
-		{remoteApproveLine},
-	})
-	ack := pair.spawnThere(t, "work over there", map[string]any{"runtime_mode": string(provider.RuntimeApprovalRequired)})
-	worker := pair.receipt(t, ack.Token).TargetThreadID
-	t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
-	waitUntil(t, 15*time.Second, func() bool {
-		pair.poll(t)
-		return threadRequestSettled(pair.request(t, ack.Token))
-	})
-	pair.source.retireThreadRequestPoll(ack.Token)
-	sibling, err := createTestThread(t, pair.source, pair.caller.Provider, t.TempDir(), pair.caller.Model, pair.caller.Mode)
-	if err != nil {
-		t.Fatal(err)
-	}
-	from := pair.callerIdentity()
-	from.ThreadID, from.Title = sibling.ID, sibling.Title
-	send, err := threadToolsApp{app: pair.source}.Send(t.Context(), from, threadtools.SendCall{
-		ThreadID: worker, ComputerID: pair.computer, Message: "one more thing", Notify: true,
-	})
-	if err != nil {
-		t.Fatalf("the sibling's send: %v", err)
-	}
-	waitUntil(t, 15*time.Second, func() bool {
-		pending := pair.dest.triage.PendingInteractiveRequests(worker).Approvals
-		return len(pending) == 1 && pending[0].RoutedTo != nil && pending[0].RoutedTo.ThreadID == pair.caller.ID
-	})
-	state, err := pair.dest.threadPeerRequestState(t.Context(), pair.receipt(t, ack.Token).OwnerDeviceID, send.Token)
-	if err != nil || !state.Blocked || state.BlockedRoutedToCaller || state.BlockedRoutedToThread != pair.caller.ID {
-		t.Fatalf("the send's state there = %+v, %v; want blocked, routed to the spawner and not to the sender", state, err)
-	}
-	waitUntil(t, 15*time.Second, func() bool {
-		pair.poll(t)
-		if err := pair.source.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
-			t.Fatal(err)
-		}
-		pair.source.waitAgentNoticeWork()
-		return len(remoteWakes(t, pair.source, pair.caller.ID)) == 1
-	})
-	if wakes := remoteWakes(t, pair.source, sibling.ID); len(wakes) != 0 {
-		t.Fatalf("the sender holds %+v", wakes)
-	}
-	rows, err := pair.source.ListThreadAgentRows(t.Context(), sibling.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	row, found := agentRowByToken(rows.Rows, send.Token)
-	if !found || !row.BlockedRoutedHere || row.BlockedRoutedTo != pair.caller.Title {
-		t.Fatalf("the sender's row = %+v (found %v); want it routed here to %q", row, found, pair.caller.Title)
+	for name, handoff := range map[string]bool{"the spawner": false, "the spawner's successor": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			remotetest.Require(t)
+			pair := newReachPair(t)
+			routeWorkerPromptsOn(pair.dest, pair.destBus)
+			pair.source.startSessionFn = func(string) error { return nil }
+			installMockClaudeTurns(t, pair.dest, [][]string{
+				{mockClaudeInitLine, `{"type":"result","subtype":"success","is_error":false}`},
+				{remoteApproveLine},
+			})
+			ack := pair.spawnThere(t, "work over there", map[string]any{"runtime_mode": string(provider.RuntimeApprovalRequired)})
+			worker := pair.receipt(t, ack.Token).TargetThreadID
+			t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
+			waitUntil(t, 15*time.Second, func() bool {
+				pair.poll(t)
+				return threadRequestSettled(pair.request(t, ack.Token))
+			})
+			pair.source.retireThreadRequestPoll(ack.Token)
+			holder := pair.caller
+			if handoff {
+				testAssistant(t, pair.source, pair.caller.ID)
+				successor := handOffOn(t, pair.source, pair.caller.ID)
+				if err := pair.source.RenameThread(successor.ID, "Successor"); err != nil {
+					t.Fatal(err)
+				}
+				if holder, err := pair.source.store.GetThread(successor.ID); err != nil || holder.Title != "Successor" {
+					t.Fatalf("the successor = %+v, %v", holder, err)
+				}
+				holder.ID, holder.Title = successor.ID, "Successor"
+			}
+			sibling, err := createTestThread(t, pair.source, pair.caller.Provider, t.TempDir(), pair.caller.Model, pair.caller.Mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			from := pair.callerIdentity()
+			from.ThreadID, from.Title = sibling.ID, sibling.Title
+			send, err := threadToolsApp{app: pair.source}.Send(t.Context(), from, threadtools.SendCall{
+				ThreadID: worker, ComputerID: pair.computer, Message: "one more thing", Notify: true,
+			})
+			if err != nil {
+				t.Fatalf("the sibling's send: %v", err)
+			}
+			waitUntil(t, 15*time.Second, func() bool {
+				pending := pair.dest.triage.PendingInteractiveRequests(worker).Approvals
+				return len(pending) == 1 && pending[0].RoutedTo != nil && pending[0].RoutedTo.ThreadID == pair.caller.ID
+			})
+			state, err := pair.dest.threadPeerRequestState(t.Context(), pair.receipt(t, ack.Token).OwnerDeviceID, send.Token)
+			if err != nil || !state.Blocked || state.BlockedRoutedToCaller || state.BlockedRoutedToThread != pair.caller.ID {
+				t.Fatalf("the send's state there = %+v, %v; want blocked, routed to the spawner and not to the sender", state, err)
+			}
+			waitUntil(t, 15*time.Second, func() bool {
+				pair.poll(t)
+				if err := pair.source.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
+					t.Fatal(err)
+				}
+				pair.source.waitAgentNoticeWork()
+				return len(remoteWakes(t, pair.source, holder.ID)) == 1
+			})
+			for _, other := range []string{sibling.ID, pair.caller.ID} {
+				if wakes := remoteWakes(t, pair.source, other); other != holder.ID && len(wakes) != 0 {
+					t.Fatalf("%s holds %+v; want the wake on %s alone", other, wakes, holder.ID)
+				}
+			}
+			rows, err := pair.source.ListThreadAgentRows(t.Context(), sibling.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, found := agentRowByToken(rows.Rows, send.Token)
+			if !found || !row.BlockedRoutedHere || row.BlockedRoutedTo != holder.Title {
+				t.Fatalf("the sender's row = %+v (found %v); want it routed here to %q, which holds the wake", row, found, holder.Title)
+			}
+		})
 	}
 }

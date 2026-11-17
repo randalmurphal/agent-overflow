@@ -761,21 +761,37 @@ func (a *App) peerSpawnBlocked(row *ThreadAgentRow, listing ThreadAgentRows) {
 	row.BlockedOn, row.BlockedDetail, row.BlockedRoutedTo = listing.BlockedOn, listing.BlockedDetail, listing.BlockedRoutedTo
 	row.BlockedRoutedHere = listing.RoutedToAsker
 	if listing.RoutedToAsker {
-		row.BlockedRoutedTo = a.routedHereTitle(row.CallerThreadID, listing.BlockedRoutedTo)
+		row.BlockedRoutedTo = a.routedHereTitle(row.ComputerID, row.ThreadID, row.CallerThreadID, listing.BlockedRoutedTo)
 	}
 }
 
-// routedHereTitle names the thread here a paired computer routed a prompt
-// back to: the spawn's holder, callerThreadID, by its title here, or by
-// the name that computer gave when the title cannot be read, so the row
-// still reads as routed rather than the person's.
-func (a *App) routedHereTitle(callerThreadID, reported string) string {
-	thread, err := a.store.GetThread(callerThreadID)
-	if err != nil {
-		log.Printf("agent rows: read the title of %s, whose worker's prompt came back to it: %v", callerThreadID, err)
-		return cmp.Or(reported, callerThreadID)
+// routedHereTitle names the thread here that holds the prompt the paired
+// computer computerID routed back here for its thread workerID: the thread
+// that prompt's wake goes to, the caller now of the spawn from here that
+// made the worker (store.RemoteSpawnLinkTo, store.RemotePromptHolder, as
+// deliverRemotePrompt reads it), which a handoff moves. While no thread
+// here can take it, which sends it back, it names named, the thread that
+// computer reported, by its title here; and the name that computer gave
+// when no title can be read, so the row still reads as routed rather than
+// the person's.
+func (a *App) routedHereTitle(computerID, workerID, named, reported string) string {
+	spawn, found, err := a.store.RemoteSpawnLinkTo(computerID, workerID)
+	if err == nil && found {
+		var title string
+		_, title, found, err = a.store.RemotePromptHolder(spawn.Token)
+		if err == nil && found && title != "" {
+			return title
+		}
 	}
-	return cmp.Or(thread.Title, reported, callerThreadID)
+	if err != nil {
+		log.Printf("agent rows: read the thread here that holds the prompt of %s on %s: %v", workerID, computerID, err)
+	}
+	thread, err := a.store.GetThread(named)
+	if err != nil {
+		log.Printf("agent rows: read the title of %s, whose worker's prompt came back to it: %v", named, err)
+		return cmp.Or(reported, named)
+	}
+	return cmp.Or(thread.Title, reported, named)
 }
 
 // pastPeerSpawnCounts sets the counts of the paired spawns on a page of
@@ -986,13 +1002,16 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		// spawner here.
 		if state.State == threadtools.RequestBlocked {
 			out.BlockedOn, out.BlockedRoutedTo = "person", remote.routedTo
-			switch {
-			case remote.routedToCaller:
-				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(row.CallerThreadID, remote.routedTo), true
-			case remote.routedToThread != "":
-				// Another thread here holds it: the spawner of the thread
-				// this row's request went to.
-				out.BlockedRoutedTo, out.BlockedRoutedHere = v.app.routedHereTitle(remote.routedToThread, remote.routedTo), true
+			if remote.routedHere() {
+				// That computer names the thread the link came from: this
+				// row's caller, or another thread here, the spawner of the
+				// thread this row's request went to.
+				named := remote.routedToThread
+				if remote.routedToCaller {
+					named = row.CallerThreadID
+				}
+				out.BlockedRoutedTo = v.app.routedHereTitle(row.TargetComputerID, row.TargetThreadID, named, remote.routedTo)
+				out.BlockedRoutedHere = true
 			}
 		}
 		out.Activity = rest.detail

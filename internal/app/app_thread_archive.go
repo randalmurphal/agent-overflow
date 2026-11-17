@@ -114,8 +114,8 @@ func (a *App) finishArchive(work restingThreadWork, reach ownerOpReach) archiveO
 // its owner's archive (ArchiveOwnedWorker), so a cleanup that runs late
 // leaves alone a worker moved since, and every worker of an owner reopened
 // since. Then the archive ends (endArchiveWalk), returning what it owes the
-// paired computers: until it ends, the next boot finishes it. A worker's
-// own walk owes what the owner's end owes again, under a newer sequence.
+// paired computers. A worker's own walk owes what the owner's end owes
+// again, under a newer sequence.
 func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.OwnerOp) {
 	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
 	for _, worker := range work.workers {
@@ -146,22 +146,12 @@ func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error)
 	return a.runArchive(id, archiveRequest{ownerID: ownerID})
 }
 
-// resumeArchiveLocked carries out, under id's action lock, an archive that
-// committed and did not finish (startPendingArchives): the same capture,
-// stop and walk as the archive itself, of whatever of the thread's work
-// still exists, and none of it once the thread was reopened.
-func (a *App) resumeArchiveLocked(id string) (restingThreadWork, error) {
-	return a.runArchive(id, archiveRequest{resume: true})
-}
-
 // archiveRequest is which archive runArchive carries out: a person's or an
 // agent's (the zero value), a worker's for its owner's archive (ownerID),
-// a worker's for its owner on a paired computer (link), or the resume of
-// one already committed (resume).
+// or a worker's for its owner on a paired computer (link).
 type archiveRequest struct {
 	ownerID string
 	link    *linkedArchive
-	resume  bool
 }
 
 // linkedArchive is the archive a paired computer's owner sent through the
@@ -176,9 +166,9 @@ type linkedArchive struct {
 var errOwnerOpTaken = errors.New("that owner operation was already taken")
 
 // runArchive is the one archive: commit, capture, session stop and the
-// read of the workers its walk goes on to archive. A fenced archive, a
-// worker's or a resume, that captured nothing stops nothing and walks
-// nothing: the thread is no longer that archive's to stop.
+// read of the workers its walk goes on to archive. A worker's archive for
+// its owner here that captured nothing stops nothing and walks nothing:
+// the thread is no longer that archive's to stop.
 func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, error) {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
@@ -199,7 +189,7 @@ func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, erro
 	// from its sidebar too; re-archiving an already-archived thread
 	// changes nothing and says nothing.
 	a.announceThreadIfChanged(triage.ThreadActionUnlisted, id, changed)
-	if !work.captured && (req.ownerID != "" || req.resume) {
+	if !work.captured && req.ownerID != "" {
 		return work, nil
 	}
 	a.beginArchiveWalk(id)
@@ -232,10 +222,7 @@ func (a *App) readArchivedWorkers(work *restingThreadWork) {
 // not reentrant. A worker's archive, ownerID set, flips the row only while
 // its owner is archived and still owns it (store.ArchiveOwnedWorker); a
 // linked one only while the link owns it, and once per operation
-// (store.ArchiveLinkedWorker), walking again a worker already archived. A
-// resume flips nothing: it captures while the thread is still archived, in
-// the same critical section an unarchive's write takes, so a thread
-// reopened before it keeps its new work.
+// (store.ArchiveLinkedWorker), walking again a worker already archived.
 func (a *App) commitArchive(id string, req archiveRequest) (restingThreadWork, bool, error) {
 	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), id)
 	if err != nil {
@@ -244,17 +231,6 @@ func (a *App) commitArchive(id string, req archiveRequest) (restingThreadWork, b
 	defer unlock()
 	var changed bool
 	switch {
-	case req.resume:
-		row, err := a.threadApplication().Get(id)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			return restingThreadWork{threadID: id}, false, nil
-		case err != nil:
-			return restingThreadWork{}, false, err
-		case !row.Archived:
-			return restingThreadWork{threadID: id}, false, nil
-		}
-		return a.captureRestingThreadWork(id, archiveRest), false, nil
 	case req.link != nil:
 		var applied bool
 		_, changed, applied, err = a.threadApplication().ArchiveLinkedWorker(id, req.link.token, req.link.device, req.link.seq)
