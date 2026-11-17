@@ -59,8 +59,12 @@ type OriginWake struct {
 	Label string `json:"label,omitempty"`
 	// ThreadID is the worker of a `question` or `approval` wake.
 	ThreadID string `json:"threadId,omitempty"`
-	// Computer names the computer a `completion`'s job ran on.
+	// Computer names the computer a `completion`'s job ran on, or the
+	// paired computer that holds a `question` or `approval` wake's worker.
 	Computer string `json:"computer,omitempty"`
+	// ComputerID is that paired computer's id, which opens the worker
+	// there; empty for a worker on this computer.
+	ComputerID string `json:"computerId,omitempty"`
 	// Facts is where the message's data is and what its row's header
 	// says, written with the text (usermessage.Report).
 	Facts *threadtools.MessageFacts `json:"facts,omitempty"`

@@ -354,6 +354,28 @@ const spawnOwnerRemoteSQL = `SELECT rlink.source_thread_id, rlink.source_thread_
 	  FROM thread_request_receipts AS rlink CROSS JOIN threads ON threads.id = rlink.target_thread_id
 	 WHERE rlink.target_thread_id = ?1 AND rlink.spawn_link = 1 AND threads.placement = 'owned'`
 
+// RemotePromptHolder names the thread here that answers the prompts of the
+// worker this computer's spawn token made on a paired computer: the
+// spawn's caller now (a handoff moves it), while that thread can take a
+// prompt, the rule SpawnOwnerOf applies to a local spawner and more: held
+// here (owned_threads, so neither a moved thread's cache nor a thread a
+// delete committed), not archived, and not under an assistant while
+// assistants are paused. Found is false for any other spawn and when its
+// caller can take no prompt.
+func (s *Store) RemotePromptHolder(token string) (threadID, title string, found bool, err error) {
+	err = s.reader().QueryRow(`SELECT t.id, t.title FROM thread_requests AS r
+		JOIN owned_threads AS t ON t.id = r.caller_thread_id
+		WHERE r.token = ? AND r.kind = 'spawn' AND r.target_computer_id <> '' AND t.archived = 0 AND `+
+		s.assistantPauseSQL("t.id"), token).Scan(&threadID, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("store: read the thread that answers the prompts of spawn %s: %w", token, err)
+	}
+	return threadID, title, true, nil
+}
+
 // AssistantListing is one assistant as the thread tools list and address
 // it: the record, its name and whether its current thread is archived.
 type AssistantListing struct {

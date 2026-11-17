@@ -247,11 +247,13 @@ func DecodeStored(text, origin string, thread *agentmeta.OriginThread, wake *age
 
 // Reporter is what a Report is from, as its row names it: the loop or watch
 // label, the worker's title and thread, the remote job's label and computer,
-// the workflow's id, or the assistant's name. An outside send has none.
+// the workflow's id, or the assistant's name. An outside send has none. A
+// worker on a paired computer is named with that computer and its id.
 type Reporter struct {
-	Label    string
-	ThreadID string
-	Computer string
+	Label      string
+	ThreadID   string
+	Computer   string
+	ComputerID string
 }
 
 // HeadlineBytes bounds the header line a Report's facts carry.
@@ -283,6 +285,7 @@ func Report(kind agentmeta.ReportKind, from Reporter, notice, data, headline str
 		facts.Body = []threadtools.Span{{Start: start, End: len(text)}}
 	}
 	return AgentMessage{text: text, origin: agentmeta.OriginAgentWake, wake: &agentmeta.OriginWake{
-		Kind: string(kind), Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, Facts: &facts,
+		Kind: string(kind), Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, ComputerID: from.ComputerID,
+		Facts: &facts,
 	}}, nil
 }
