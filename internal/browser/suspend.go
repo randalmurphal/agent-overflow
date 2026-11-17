@@ -390,13 +390,17 @@ func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage
 	if err != nil || target == "" {
 		return scope, err
 	}
+	// The page is in no thread's tabs yet, so no operation reaches it and no
+	// engine report finds it (pageByHandleLocked): the load's read is the
+	// only commit, and the registration push carries it.
 	p.setInfo(PageInfo{ID: p.id, URL: target, Title: title})
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	err = p.driver.Navigate(opCtx, target)
 	if err == nil {
+		since := p.infoGeneration()
 		var info PageInfo
 		if info, err = m.pageInfo(opCtx, p); err == nil {
-			p.setInfo(info)
+			m.commitRead(p, info, since)
 		}
 	}
 	cancel()

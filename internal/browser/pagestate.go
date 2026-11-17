@@ -7,8 +7,47 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// infoReports delivers a native view's address and title reports
+// (engineEvents.PageInfoChanged) off its UI thread in the order the view
+// made them. Each report carries the view's whole info, so a report that
+// arrives while one is being delivered replaces any still waiting, and one
+// goroutine at a time delivers the newest: two reports never land in the
+// Manager reversed, which a goroutine per report allowed.
+type infoReports struct {
+	mu                  sync.Mutex
+	pending, delivering bool
+	url, title          string
+}
+
+// report is called on the UI thread and returns at once.
+func (r *infoReports) report(url, title string, deliver func(url, title string)) {
+	r.mu.Lock()
+	r.url, r.title, r.pending = url, title, true
+	if r.delivering {
+		r.mu.Unlock()
+		return
+	}
+	r.delivering = true
+	r.mu.Unlock()
+	go func() {
+		for {
+			r.mu.Lock()
+			if !r.pending {
+				r.delivering = false
+				r.mu.Unlock()
+				return
+			}
+			url, title := r.url, r.title
+			r.pending = false
+			r.mu.Unlock()
+			deliver(url, title)
+		}
+	}()
+}
 
 // A page's loading state and favicon, for the companion's tab strip.
 //

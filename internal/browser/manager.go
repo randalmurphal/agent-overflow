@@ -170,10 +170,13 @@ type Manager struct {
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
 	viewportApplied func(threadID string)
-	// pushTaken is a test seam: called, with m.mu held, between a push's
-	// taking the unpushed records and its reading the tabs. Production
-	// leaves it nil.
-	pushTaken func()
+	// pushCopied is a test seam: called, with m.mu held, once a push has
+	// taken the unpushed records and copied the tabs. Production leaves it
+	// nil.
+	pushCopied func()
+	// infoRead is a test seam: called between a read of a page's info (or
+	// history state) and its commit. Production leaves it nil.
+	infoRead func(p *managedPage)
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -288,6 +291,8 @@ type managedPage struct {
 	tabOrder atomic.Int64
 	metaMu   sync.RWMutex
 	info     PageInfo
+	// infoGen counts commits to info, under metaMu (commitRead).
+	infoGen uint64
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load         pageLoad
@@ -489,9 +494,10 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
+	since := p.infoGeneration()
 	info, err := m.pageInfo(opCtx, p)
 	if err == nil {
-		p.setInfo(info)
+		m.commitRead(p, info, since)
 		info = p.cachedInfo()
 		m.pageUsed(p)
 	}
@@ -531,9 +537,10 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 		return PageInfo{}, err
 	}
 	p.touch()
+	since := p.infoGeneration()
 	info, err := m.pageInfo(opCtx, p)
 	if err == nil {
-		p.setInfo(info)
+		m.commitRead(p, info, since)
 		info = p.cachedInfo()
 		m.recordRecentAddress(p, info)
 	}
@@ -560,14 +567,19 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
+		since := p.infoGeneration()
 		info, err := m.pageInfo(opCtx, p)
 		cancel()
+		selected := p.id == activePageID
+		lastOpened := time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
+		if err == nil {
+			info.Selected, info.LastOpened = selected, lastOpened
+			m.commitRead(p, info, since)
+		}
 		p.mu.Unlock()
 		if err == nil {
-			info.Selected = p.id == activePageID
-			info.LastOpened = time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
-			p.setInfo(info)
 			info = p.cachedInfo()
+			info.Selected, info.LastOpened = selected, lastOpened
 			out = append(out, info)
 		}
 	}

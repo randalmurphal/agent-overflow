@@ -20,6 +20,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	since := p.infoGeneration()
 	snapshot, err := p.driver.Snapshot(opCtx)
 	if err != nil {
 		return Snapshot{}, err
@@ -28,7 +29,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
-	p.setInfo(snapshot.PageInfo)
+	m.commitRead(p, snapshot.PageInfo, since)
 	m.pageUsed(p)
 	return snapshot, nil
 }
@@ -351,20 +352,25 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 	return value, caveat + note, nil
 }
 
+// finishPageOperation reads and commits p's info after an operation. The
+// caller holds the page-operation lock.
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
+	since := p.infoGeneration()
 	info, err := m.pageInfo(ctx, p)
 	if err == nil {
-		p.setInfo(info)
+		m.commitRead(p, info, since)
 		info = p.cachedInfo()
 	}
 	m.pageUsed(p)
 	return info, err
 }
 
+// refreshPageAfterOperation is finishPageOperation with no answer.
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
+	since := p.infoGeneration()
 	info, err := m.pageInfo(ctx, p)
 	if err == nil {
-		p.setInfo(info)
+		m.commitRead(p, info, since)
 	}
 	m.pageUsed(p)
 }

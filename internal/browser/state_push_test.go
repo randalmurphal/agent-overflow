@@ -146,25 +146,28 @@ func retitle(t *testing.T, m *Manager, access Access, pageID, title string) *man
 	return p
 }
 
+// infoReaders are the calls that read a page's info only to store it.
+var infoReaders = []struct {
+	name string
+	read func(*testing.T, *Manager, Access, string)
+}{
+	{"SelectPage", func(t *testing.T, m *Manager, access Access, pageID string) {
+		if _, err := m.SelectPage(t.Context(), access, pageID); err != nil {
+			t.Error(err)
+		}
+	}},
+	{"Pages", func(t *testing.T, m *Manager, access Access, _ string) {
+		if _, err := m.Pages(t.Context(), access); err != nil {
+			t.Error(err)
+		}
+	}},
+}
+
 // A call that reads a page's info and stores it (SelectPage, Pages) pushes
 // what it stored, so the engine's later report of the same title, which
 // changes nothing, never leaves the tabs showing the old one.
 func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		read func(*testing.T, *Manager, Access, string)
-	}{
-		{"SelectPage", func(t *testing.T, m *Manager, access Access, pageID string) {
-			if _, err := m.SelectPage(t.Context(), access, pageID); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"Pages", func(t *testing.T, m *Manager, access Access, _ string) {
-			if _, err := m.Pages(t.Context(), access); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
+	for _, tc := range infoReaders {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, _ := newLifecycleManager(t)
 			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -217,8 +220,9 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 	}
 }
 
-// A write that lands while a push builds the state, after the push took the
-// page's record, keeps its record set, so its writer's own publish pushes it.
+// A write that lands while a push builds the state, after the push copied
+// the page, is not in that push; its record stays set, so its writer's own
+// publish pushes it.
 func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 	manager, _ := newLifecycleManager(t)
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -228,15 +232,24 @@ func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 		t.Fatal(err)
 	}
 	pushes := countStatePushes(manager)
-	var once sync.Once
-	manager.pushTaken = func() {
-		once.Do(func() { p.setInfo(PageInfo{ID: p.id, URL: page.URL, Title: "Written mid-push"}) })
+	written := false
+	manager.pushCopied = func() {
+		if !written {
+			written = true
+			p.setInfo(PageInfo{ID: p.id, URL: page.URL, Title: "Written mid-push"})
+		}
 	}
 	manager.emitThreadState(access.ThreadID)
+	if !written {
+		t.Fatal("no push copied the page")
+	}
+	if got := pushes.shownTitle(page.ID); got != page.Title {
+		t.Fatalf("the push the write raced shows %q, want the title it copied, %q", got, page.Title)
+	}
 	// The writer publishes after its write, as every writer does.
 	manager.publishPages(access.ThreadID)
 	if got := pushes.shownTitle(page.ID); got != "Written mid-push" {
-		t.Fatalf("the newest push shows %q, want the write made during the build", got)
+		t.Fatalf("after the writer's publish the newest push shows %q, want the write", got)
 	}
 }
 
