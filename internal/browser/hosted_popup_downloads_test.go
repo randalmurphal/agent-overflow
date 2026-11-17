@@ -70,6 +70,49 @@ func TestCompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
 	l.settledEngine()
 }
 
+// A popup the launcher reports with no target (it went before the launcher
+// read it) is never offered for adoption. The engine keeps it as the owner
+// of the downloads the launcher reports for it until its close, which lists
+// them in its opener's tab, as they are, and the engine keeps nothing of it
+// after.
+func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := popupTestAccess(t, "thread")
+	_, opener := l.open(access)
+	offered := make(chan string, 1)
+	adopt := l.engine.events.PopupOpened
+	l.engine.events.PopupOpened = func(popup enginePopup) {
+		select {
+		case offered <- popup.Handle:
+		default:
+		}
+		adopt(popup)
+	}
+	const popupID = "popup-gone"
+	l.reportPopup(popupID, webview2host.PopupReport{Opener: opener, URL: "https://example.test/file.bin"})
+	reportDownload(t, l.engine, popupID, snapshot("dl-1", webview2host.DownloadRunning, 10))
+	reportDownload(t, l.engine, popupID, snapshot("dl-1", webview2host.DownloadCompleted, 100))
+	reportDownload(t, l.engine, popupID, snapshot("dl-2", webview2host.DownloadRunning, 10))
+	l.report(popupID, webview2host.ReportClosed, "")
+	l.awaitDownloads(access, downloadStateCanceled, downloadStateCompleted)
+	if got := l.pageDownloads(access.ThreadID, opener); !slices.Equal(got, []string{downloadStateCompleted, downloadStateCanceled}) {
+		t.Fatalf("the opener's tab lists %v", got)
+	}
+	select {
+	case handle := <-offered:
+		t.Fatalf("the targetless popup %s was offered for adoption", handle)
+	default:
+	}
+	l.settledEngine()
+	l.engine.mu.Lock()
+	_, profiled := l.engine.pageProfile[popupID]
+	_, ended := l.engine.downloads.ended[popupID]
+	l.engine.mu.Unlock()
+	if profiled || ended {
+		t.Fatalf("the engine keeps the closed popup: profile %v, ended downloads %v", profiled, ended)
+	}
+}
+
 // A popup that closes while its attach is under way ends the attach at
 // once, and what it downloaded settles in its opener's tab; an attach that
 // never answers ends at the engine's attach bound.

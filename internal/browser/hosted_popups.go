@@ -33,10 +33,12 @@ import (
 // order once it is listed (Adopted); a close also reaches the Manager at
 // once, so what the popup downloaded is listed while its opener still is.
 // A popup reported with no target (one that went before the launcher read
-// it) is never attached: the Manager discards it, and its downloads go to
-// its opener. A popup's target is on its opener's browser connection, so
-// it is attached on that connection or not at all, and a popup whose
-// opener has no live connection is refused at its report. Its attach is
+// it) is never offered for adoption: the engine keeps it, as the owner of
+// the downloads the launcher reports for it, until the launcher's close,
+// which lists them in its nearest listed opener's tab and ends the
+// engine's record of it. A popup's target is on its opener's browser
+// connection, so it is attached on that connection or not at all, and a
+// popup whose opener has no live connection is refused at its report. Its attach is
 // bounded by the engine's attach timeout and ends at its close, its
 // discard or Stop; its downloads are settled by the close, not the attach.
 //
@@ -144,9 +146,12 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 	}
 	e.pageProfile[pageID] = profile
 	e.mu.Unlock()
-	if report.Target != "" {
-		e.takeTargetInfo(pageID, report.Target)
+	if report.Target == "" {
+		// Nothing to attach: it stays the owner of its downloads until its
+		// close (pendingClosed).
+		return
 	}
+	e.takeTargetInfo(pageID, report.Target)
 	// On its own goroutine, as every engine reports a popup: the Manager
 	// adopts it through AttachPage, a CDP round trip, and the launcher's
 	// reports must not wait behind it.
@@ -284,10 +289,19 @@ func (e *hostedEngine) retirePendingLocked(pageID string) (bool, func()) {
 // canceled its running downloads with the page, so they end here, and the
 // Manager hears of the close now, which lists what the popup downloaded
 // while its opener is still listed. The popup's listing, if its adoption
-// is still under way, delivers the close again (popupListed).
+// is still under way, delivers the close again (popupListed). A popup with
+// no target was never offered for adoption, so nothing else ends it: the
+// engine forgets it here, after its downloads' fate.
 func (e *hostedEngine) pendingClosed(pageID string) {
 	e.joinDownloadReports(pageID, popupClosedReason)
 	e.events.PageClosed(pageID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if popup := e.popups[pageID]; popup != nil && popup.target == "" {
+		delete(e.popups, pageID)
+		delete(e.pageProfile, pageID)
+		e.forgetDownloadsLocked(pageID)
+	}
 }
 
 // forgetPopupLocked drops a popup the Manager discarded and answers the
