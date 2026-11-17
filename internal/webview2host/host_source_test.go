@@ -11,7 +11,7 @@ import (
 // reparented after creation can present stale or blank strips while scrolling;
 // CI on macOS/Linux still needs to enforce the creation order that prevents it.
 func TestWindowsControllerIsCreatedUnderFinalClipParent(t *testing.T) {
-	source, err := os.ReadFile("host_windows.go")
+	source, err := os.ReadFile("host_create_windows.go")
 	if err != nil {
 		t.Fatal(err)
 	}

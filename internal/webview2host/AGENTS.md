@@ -69,6 +69,8 @@ later turn goes through `Config.Post`. A close a page asks for itself is
 posted and rereads the page's downloads when it runs. A page whose
 required handlers (downloads, the download dialog, new windows) cannot be
 subscribed, or whose dialog state cannot be read, is not created.
+Creation is `host_create_windows.go`, close and teardown
+`host_close_windows.go`, directive application `host_apply_windows.go`.
 
 Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
 reference-count, UTF-16 ownership, and callback-lifetime handling. Close the

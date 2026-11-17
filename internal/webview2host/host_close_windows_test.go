@@ -8,8 +8,8 @@ import (
 )
 
 // A page is looked up and used, or taken from the registry and torn down,
-// in one UI-thread turn (host_windows.go), against stand-in WebView2
-// objects.
+// in one UI-thread turn (host_apply_windows.go, host_close_windows.go),
+// against stand-in WebView2 objects.
 
 // A directive whose page a close it asked for took first touches nothing,
 // whichever of the directive's UI-thread turns the close runs before: it
