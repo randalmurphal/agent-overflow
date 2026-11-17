@@ -334,11 +334,7 @@ func ownedBySQL(owner string) string {
 // archived, is left as it is and reported unchanged; a missing one is
 // sql.ErrNoRows.
 func (s *Store) ArchiveOwnedWorker(workerID, ownerID string) (Thread, bool, error) {
-	write := threadArchivedWrite(workerID, true)
-	write.Change += ` AND ` + ownedBySQL("?") + `
-		  AND EXISTS (SELECT 1 FROM threads AS owner WHERE owner.id = ? AND owner.archived = 1)`
-	write.ChangeArgs = []any{ownerID, ownerID}
-	return s.applyThreadRowWrite(write)
+	return s.setThreadArchived(workerID, true, workerFence{owner: ownerID})
 }
 
 // MaxPastThreadsPage bounds one page of an assistant's past threads.

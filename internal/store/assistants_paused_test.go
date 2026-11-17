@@ -78,9 +78,9 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 			t.Errorf("paused=%v DueThreadReminders = %v, want %v", paused, tokens, reminders)
 		}
 		// A worker's questions go to its spawner only while that one runs.
-		spawner, _, found, err := s.SpawnerOf("worker")
+		spawner, _, found, err := localSpawnerOf(s, "worker")
 		if err != nil || found == paused || (found && spawner != "ops") {
-			t.Errorf("paused=%v SpawnerOf(worker) = %q found=%v err=%v", paused, spawner, found, err)
+			t.Errorf("paused=%v SpawnOwnerOf(worker) = %q found=%v err=%v", paused, spawner, found, err)
 		}
 		schedule, err := s.NextThreadRequestWork()
 		if err != nil {

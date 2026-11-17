@@ -616,7 +616,7 @@ func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 		}); err != nil || !settled {
 			t.Fatalf("settle: %v %v", settled, err)
 		}
-		if _, err := f.app.store.DeleteThreadRequestsBefore(time.Now().UnixMilli()); err != nil {
+		if _, _, err := f.app.store.DeleteThreadRequestsBefore(time.Now().UnixMilli()); err != nil {
 			t.Fatal(err)
 		}
 		if _, found, err := f.app.store.GetThreadRequest("lead-worker"); err != nil || found {

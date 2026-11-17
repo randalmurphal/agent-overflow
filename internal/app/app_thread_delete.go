@@ -575,7 +575,7 @@ func (op *familyDelete) commit() error {
 	// The starts waiting for the decision find the threads committed and
 	// start nothing; their queues are their teardowns'.
 	op.app.deleteDecisions.decide(op.id, true)
-	for _, id := range committed {
+	for _, id := range committed.Threads {
 		i, ok := op.index[id]
 		if !ok {
 			continue
@@ -595,7 +595,7 @@ func (op *familyDelete) commit() error {
 		}
 	}
 	if hook := op.app.deleteCommittedForTest; hook != nil {
-		hook(committed)
+		hook(committed.Threads)
 	}
 	return nil
 }

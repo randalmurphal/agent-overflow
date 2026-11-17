@@ -297,29 +297,62 @@ func (s *Store) PlaceThreadInHome(threadID, home string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: place thread %s in %s: no such thread outside every assistant", threadID, home))
 }
 
-// SpawnerOf names the thread that spawned a thread on this computer, the
-// one its questions and approvals go to: the caller of its spawn link
-// (spawnerOfSQL), while that caller is not archived. Any thread can be the spawner, an assistant, an ordinary thread
+// SpawnOwner is the thread that owns a worker, the one its questions and
+// approvals go to: a thread on this computer, or one on a paired computer,
+// named by the link that computer's spawn made here.
+type SpawnOwner struct {
+	// ThreadID and Title are the local spawner, or the link's source thread
+	// and the title its spawn carried.
+	ThreadID, Title string
+	// ComputerID, ComputerName, DeviceID and Token name a paired
+	// computer's link: the source computer, the device it authenticated as
+	// and the spawn's token. All empty for a local owner.
+	ComputerID, ComputerName, DeviceID, Token string
+}
+
+// SpawnOwnerOf names the owner of a thread on this computer. A local owner
+// is the caller of its spawn link (spawnerOfSQL), while that caller is not
+// archived. Any thread can be the spawner, an assistant, an ordinary thread
 // or another worker. A handoff moves its predecessors' spawn rows to the
 // current thread, so a worker an earlier thread of an assistant spawned
-// names the current one. Found is false for a thread no local spawn made
-// and for one whose spawner is archived. A worker past the request ledger's
-// retention still names its spawner: the sweep keeps its spawn row as
-// lineage (spawnLineageSQL), so its prompts keep routing there. While
-// assistants are paused, a spawner that lives under one takes no prompt
-// either (assistants_paused.go): the worker asks the user.
-func (s *Store) SpawnerOf(threadID string) (spawnerThreadID, title string, found bool, err error) {
+// names the current one. A worker past the request ledger's retention
+// still names its spawner: the sweep keeps its spawn row as lineage
+// (spawnLineageSQL), so its prompts keep routing there. While assistants
+// are paused, a spawner that lives under one takes no prompt either
+// (assistants_paused.go): the worker asks the user. A thread no local spawn
+// reaches is owned remotely while it is owned and a paired computer's link
+// reaches it; only that computer knows whether its thread can take a
+// prompt. Found is false for any other thread and for one whose local
+// spawner is archived.
+func (s *Store) SpawnOwnerOf(threadID string) (SpawnOwner, bool, error) {
+	var owner SpawnOwner
 	var archived bool
-	err = s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM threads t
-		WHERE t.id = `+spawnerOfSQL("?")+` AND `+s.assistantPauseSQL("t.id"), threadID).Scan(&spawnerThreadID, &title, &archived)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && archived) {
-		return "", "", false, nil
+	err := s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM threads t
+		WHERE t.id = `+spawnerOfSQL("?")+` AND `+s.assistantPauseSQL("t.id"), threadID).Scan(&owner.ThreadID, &owner.Title, &archived)
+	switch {
+	case err == nil && archived:
+		return SpawnOwner{}, false, nil
+	case err == nil:
+		return owner, true, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return SpawnOwner{}, false, fmt.Errorf("store: read the thread that spawned %s: %w", threadID, err)
+	}
+	err = s.reader().QueryRow(spawnOwnerRemoteSQL, threadID).Scan(
+		&owner.ThreadID, &owner.Title, &owner.ComputerID, &owner.ComputerName, &owner.DeviceID, &owner.Token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SpawnOwner{}, false, nil
 	}
 	if err != nil {
-		return "", "", false, fmt.Errorf("store: read the thread that spawned %s: %w", threadID, err)
+		return SpawnOwner{}, false, fmt.Errorf("store: read the link that owns %s: %w", threadID, err)
 	}
-	return spawnerThreadID, title, true, nil
+	return owner, true, nil
 }
+
+// spawnOwnerRemoteSQL reads the link that owns thread ?1.
+const spawnOwnerRemoteSQL = `SELECT rlink.source_thread_id, rlink.source_thread_title, rlink.source_computer_id,
+	    rlink.source_computer_name, rlink.owner_device_id, rlink.token
+	  FROM thread_request_receipts AS rlink CROSS JOIN threads ON threads.id = rlink.target_thread_id
+	 WHERE rlink.target_thread_id = ?1 AND rlink.spawn_link = 1 AND threads.placement = 'owned'`
 
 // AssistantListing is one assistant as the thread tools list and address
 // it: the record, its name and whether its current thread is archived.
@@ -619,7 +652,7 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 	if handOff.MovedRequests, err = moved.RowsAffected(); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: move the requests: %w", action, err)
 	}
-	if handOff.Old, _, err = applyThreadRowWriteTx(tx, threadArchivedWrite(oldThreadID, true)); err != nil {
+	if handOff.Old, _, err = setThreadArchivedTx(tx, oldThreadID, true, workerFence{}); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: archive the old thread: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {

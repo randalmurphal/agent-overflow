@@ -567,7 +567,7 @@ func (t threadToolsApp) acceptRequest(
 		}
 		target = thread.ID
 		if origin.foreign {
-			_, listing, err = t.app.store.SetThreadReceiptTarget(token, target)
+			_, listing, err = t.app.store.SetThreadReceiptTarget(token, target, own)
 		} else {
 			if hook := t.app.spawnNamingForTest; hook != nil {
 				hook(origin.caller.ThreadID)
@@ -1101,13 +1101,13 @@ func (t threadToolsApp) requestMessage(
 	}
 	if !origin.foreign {
 		// A worker's questions and approvals reach the thread that spawned
-		// it on this computer (store.SpawnerOf); a sender on another
+		// it on this computer (store.SpawnOwnerOf); a sender on another
 		// computer never routes them.
-		spawner, _, found, err := t.app.store.SpawnerOf(targetThreadID)
+		owner, found, err := t.app.store.SpawnOwnerOf(targetThreadID)
 		if err != nil {
 			return usermessage.AgentMessage{}, err
 		}
-		footer.RoutesPrompts = found && spawner == caller.ThreadID
+		footer.RoutesPrompts = found && owner.ComputerID == "" && owner.ThreadID == caller.ThreadID
 	}
 	// The body is the sender's text and the footer is this computer's; a
 	// body line that opens like the footer is quoted so only the footer

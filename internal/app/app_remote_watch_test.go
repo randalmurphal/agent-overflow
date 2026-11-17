@@ -288,8 +288,7 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 			}
 			switch mode {
 			case "archived":
-				thread.Archived = true
-				if err := source.store.UpdateThread(thread); err != nil {
+				if _, _, err := source.store.ArchiveThread(thread.ID); err != nil {
 					t.Fatal(err)
 				}
 			case "deleted":

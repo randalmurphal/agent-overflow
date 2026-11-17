@@ -439,7 +439,7 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 	if sessionID == "" {
 		return false, nil
 	}
-	moved, err := s.store.RevokeSession(sessionID, s.now().UnixMilli())
+	moved, _, err := s.store.RevokeSession(sessionID, s.now().UnixMilli())
 	if err != nil {
 		return false, err
 	}
@@ -580,7 +580,7 @@ func (s *Sessions) ForgetDevice(deviceID string) (bool, error) {
 	if device.RevokedAt == 0 {
 		return false, ErrDeviceNotRevoked
 	}
-	forgotten, err := s.store.DeleteDevice(deviceID)
+	forgotten, _, err := s.store.DeleteDevice(deviceID)
 	if err != nil {
 		return false, err
 	}

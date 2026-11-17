@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -267,11 +268,11 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMemb
 		if member.Committed || member.Claim == op {
 			continue
 		}
-		owner := ""
+		fence := workerFence{}
 		if member.Kind == DeleteWorker {
-			owner = member.Under
+			fence.owner = member.Under
 		}
-		if err := claimThreadDeleteTx(tx, op, member.ThreadID, owner); err != nil {
+		if err := claimThreadDeleteTx(tx, op, member.ThreadID, fence); err != nil {
 			return nil, err
 		}
 		members[i].Claim = op
@@ -283,17 +284,19 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMemb
 }
 
 // claimThreadDeleteTx claims id for the delete op. For a worker its owner's
-// delete takes, owner names that owner and fences the claim: it holds only
-// while owner still owns the thread (ErrWorkerNotOwned), so a delete
-// admitted from elsewhere claims a worker only through its owner here. A
-// thread committed or claimed by another delete is not claimed
-// (ErrThreadDeleting).
-func claimThreadDeleteTx(tx *sql.Tx, op, id, owner string) error {
-	query := `UPDATE threads SET delete_claim = ?1 WHERE id = ?2 AND deleting = 0 AND delete_claim IN ('', ?1)`
-	args := []any{op, id}
-	if owner != "" {
-		query += ` AND ` + ownedBySQL("?3")
-		args = append(args, owner)
+// delete takes, fence names that owner, or the link of an owner on a paired
+// computer, and the claim holds only while that owner still owns the
+// thread (ErrWorkerNotOwned), so a delete admitted from elsewhere claims a
+// worker only through its owner. A thread committed or claimed by another
+// delete is not claimed (ErrThreadDeleting).
+func claimThreadDeleteTx(tx *sql.Tx, op, id string, fence workerFence) error {
+	query := `UPDATE threads SET delete_claim = ? WHERE id = ? AND deleting = 0 AND delete_claim IN ('', ?)`
+	args := []any{op, id, op}
+	condition, fenceArgs := fence.condition()
+	fenced := condition != ""
+	if fenced {
+		query += ` AND ` + condition
+		args = append(args, fenceArgs...)
 	}
 	result, err := tx.Exec(query, args...)
 	if err != nil {
@@ -307,7 +310,7 @@ func claimThreadDeleteTx(tx *sql.Tx, op, id, owner string) error {
 	if err := checkThreadNotDeleting(tx, id); err != nil {
 		return err
 	}
-	if owner != "" {
+	if fenced {
 		return ErrWorkerNotOwned
 	}
 	return fmt.Errorf("store: claim the delete of thread %s: %w", id, sql.ErrNoRows)
@@ -322,17 +325,89 @@ func (s *Store) ReleaseDeleteClaim(op string) error {
 	return nil
 }
 
+// DeleteCommit is what CommitDeleteClaim committed.
+type DeleteCommit struct {
+	// Threads are the threads it marked deleting.
+	Threads []string
+	// OwedOps are the owner operations the commit owed the paired
+	// computers its threads spawned on (thread_owner_ops.go).
+	OwedOps []OwnerOp
+}
+
 // CommitDeleteClaim commits every thread the delete op claimed, in one
 // transaction: each is marked deleting, and is gone to every listing from
-// here (owned_threads). It returns the threads it marked.
-func (s *Store) CommitDeleteClaim(op string) (_ []string, err error) {
+// here (owned_threads). In the same transaction it owes each paired
+// computer a committed thread spawned on a delete of that spawn's thread,
+// or a release when the committed thread was given to another computer: the
+// cleanup of a thread moved away deletes none of the workers it left.
+func (s *Store) CommitDeleteClaim(op string) (commit DeleteCommit, err error) {
 	action := fmt.Sprintf("store: commit delete %s", op)
-	ids, err := queryIDs(s.db, `UPDATE threads SET deleting = 1
-		 WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0 RETURNING id`, op)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return DeleteCommit{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	return ids, nil
+	defer rollbackAgentWakeTx(tx, action, &err)
+	if commit.Threads, err = queryIDs(tx, `UPDATE threads SET deleting = 1
+		 WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0 RETURNING id`, op); err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if commit.OwedOps, err = oweCommittedRemoteOpsTx(tx, commit.Threads); err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return DeleteCommit{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return commit, nil
+}
+
+// oweCommittedRemoteOpsTx owes, for the remote spawns of the committed
+// threads, a delete, or a release for a thread given to another computer
+// (lineageThreadSQL), in the commit's transaction.
+func oweCommittedRemoteOpsTx(tx *sql.Tx, committed []string) (owed []OwnerOp, err error) {
+	if len(committed) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(committed)
+	if err != nil {
+		return nil, fmt.Errorf("encode the committed threads: %w", err)
+	}
+	rows, err := tx.Query(`SELECT threads.id, `+lineageThreadSQL("threads")+` FROM json_each(?) AS committed
+		CROSS JOIN threads ON threads.id = committed.value`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+	}
+	defer closeAgentWakeRows(rows, "store: read the committed threads' lineage", &err)
+	var deleted, released []string
+	for rows.Next() {
+		var id string
+		var lineage bool
+		if err := rows.Scan(&id, &lineage); err != nil {
+			return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+		}
+		if lineage {
+			deleted = append(deleted, id)
+		} else {
+			released = append(released, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("read the committed threads' lineage: %w", err)
+	}
+	now := nowMillis()
+	for _, owe := range []struct {
+		op      string
+		callers []string
+	}{{OwnerOpDelete, deleted}, {OwnerOpRelease, released}} {
+		ops, err := oweRemoteOpsTx(tx, owe.callers, owe.op, now)
+		if err != nil {
+			return nil, err
+		}
+		owed = append(owed, ops...)
+	}
+	return owed, nil
 }
 
 // ReleaseUndecidedDeleteClaims takes back, at boot, every claim no delete

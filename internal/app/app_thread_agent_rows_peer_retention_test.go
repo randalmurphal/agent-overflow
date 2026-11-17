@@ -58,7 +58,7 @@ func TestRetentionKeepsTheReceiptOfARemoteWorkerThatIsNotAtRest(t *testing.T) {
 			agentPair, child := start(t, pair)
 			floor := time.Now().Add(time.Minute).UnixMilli()
 			for _, app := range []*App{pair.source, pair.dest} {
-				if _, err := app.store.DeleteThreadRequestsBefore(floor); err != nil {
+				if _, _, err := app.store.DeleteThreadRequestsBefore(floor); err != nil {
 					t.Fatalf("sweep: %v", err)
 				}
 			}
@@ -157,7 +157,7 @@ func sweepPastTheFloor(t *testing.T, pair *reachPair, token string) {
 	execOnStore(t, pair.dbPath, `UPDATE thread_requests SET settled_at = settled_at - 3600000 WHERE token = '`+token+`'`)
 	floor := time.Now().Add(time.Minute).UnixMilli()
 	for _, app := range []*App{pair.source, pair.dest} {
-		if _, err := app.store.DeleteThreadRequestsBefore(floor); err != nil {
+		if _, _, err := app.store.DeleteThreadRequestsBefore(floor); err != nil {
 			t.Fatalf("sweep: %v", err)
 		}
 	}

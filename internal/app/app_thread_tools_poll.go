@@ -913,10 +913,17 @@ func (a *App) expireThreadRequests(now time.Time) {
 		log.Printf("thread tools: dropped %d uncollected answer(s) past their hold", dropped)
 	}
 	floor := now.AddDate(0, 0, -store.ThreadRequestRetentionDays).UnixMilli()
-	if swept, err := a.store.DeleteThreadRequestsBefore(floor); err != nil {
+	if swept, released, err := a.store.DeleteThreadRequestsBefore(floor); err != nil {
 		logThreadRequestSweep("delete requests past retention", err)
-	} else if swept > 0 {
-		log.Printf("thread tools: deleted or cleared %d request row(s) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
+	} else {
+		if swept > 0 {
+			log.Printf("thread tools: deleted or cleared %d request row(s) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
+		}
+		// A worker whose paired owner went silent past the floor was
+		// released to a sidebar row here.
+		for _, threadID := range released {
+			a.announcePlaced(threadID)
+		}
 	}
 	if swept, err := a.store.DeleteRemoteWatchesBefore(floor); err != nil {
 		logThreadRequestSweep("delete remote job watches past retention", err)

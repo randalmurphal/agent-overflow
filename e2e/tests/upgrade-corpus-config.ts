@@ -755,6 +755,14 @@ export const coverageAllowlist: CoverageAllowance[] = [
     },
     reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed or stopped request or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
   },
+  {
+    table: 'thread_request_receipts',
+    columns: ['spawn_link', 'owner_op_seq'],
+    values: { spawn_link: [1] },
+    reason: "the link of a paired computer's owned spawn and the owner operations it admitted (v157), which need a second computer",
+  },
+  { table: 'thread_requests', columns: ['owner_op_seq'], reason: 'the owner operations owed for a spawn on a paired computer (v157), which need a second computer' },
+  { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v157), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },
   {
@@ -803,6 +811,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'threads', columns: ['history_bulk_load', 'fork_preparing', 'fork_cut_turn_index', 'deleting', 'delete_claim', 'created_remote_url', 'worktree_setup_state'], reason: 'fork-in-progress, delete-in-progress and worktree-setup-in-progress markers, which rest at their defaults; the remote a thread was created from needs a forge remote' },
   { table: 'threads', values: { reasoning_effort: ['none', 'minimal'] }, reason: 'efforts no catalog model declares' },
   { table: 'threads', columns: ['spawn_level'], reason: "the level a paired computer's spawn carries, which needs a second computer" },
+  { table: 'threads', columns: ['archive_cascade'], values: { archive_cascade: [1] }, reason: 'an archive still reaching what its thread owns (v157), which its walk clears when it ends' },
   { table: 'threads', values: { attention_kind: ['decision', 'problem'] }, reason: "the other kinds of an agent's thread_attention flag; the top-up's one flag is a review" },
   { table: 'subagent_aggregates', columns: ['state', 'transcript_count', 'transcript_newest_turn', 'transcript_newest_item'], reason: 'a subagent still running or failed when its thread rested, and transcript cursors of Codex children' },
   { table: 'work_items', columns: ['wake_signature', 'pending_guidance', 'auto_resume_at', 'budget', 'triage_thread_id', 'origin_thread_id', 'disposition', 'parent_item_id', 'parent_phase_id', 'parent_unit_id', 'parent_attempt', 'call_depth', 'soft_stop', 'source_ref'], values: { state: ['running', 'needs-human', 'failed'], workflow_scope: ['shared'], source: ['agent', 'call'], reason: ['gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted', 'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted', 'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed', 'taken-over', 'unit-failed', 'child-failed', 'paused', 'checkpoint'] }, reason: 'running and needs-human are states a run passes through; the rest are failures, budgets, child runs, shared-scope and agent-started runs the top-up does not stage; source_ref is set only on a run a phase started or a call phase invoked' },

@@ -1894,6 +1894,14 @@ export class Thread {
     "spawnedByThreadId"?: string;
 
     /**
+     * SpawnedByComputerID names the paired computer whose owned spawn made
+     * this thread, read from its link (spawn_links.go), or "" for none.
+     * Derived, as SpawnedByThreadID is; set whatever the placement, so a
+     * linked thread given a sidebar row can be owned again.
+     */
+    "spawnedByComputerId"?: string;
+
+    /**
      * SpawnInstructions is the text a thread_spawn appended to this
      * thread's system prompt for its whole life: its profile's
      * instructions, then the spawn's own (migration v154). Every session

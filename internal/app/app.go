@@ -279,6 +279,11 @@ type App struct {
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
 	pendingThreadDeletes pendingThreadDeletes
+	// pendingArchives completes interrupted archives at boot, and
+	// archiveWalks counts the archive walks under way
+	// (app_pending_archives.go).
+	pendingArchives pendingArchives
+	archiveWalks    archiveWalks
 	// deleteDecisions are the running deletes' decision gates, which the
 	// app's own starts wait at (app_thread_delete.go).
 	deleteDecisions deleteDecisions

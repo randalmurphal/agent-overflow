@@ -346,10 +346,11 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}); err != nil {
 		t.Fatal(err)
 	}
-	committedIDs, err := s.CommitDeleteClaim("op-2")
+	commit, err := s.CommitDeleteClaim("op-2")
 	if err != nil {
 		t.Fatal(err)
 	}
+	committedIDs := commit.Threads
 	slices.Sort(committedIDs)
 	if !slices.Equal(committedIDs, []string{"deep", "owned"}) {
 		t.Fatalf("committed = %v", committedIDs)
@@ -399,17 +400,17 @@ func TestAWorkersClaimIsFencedByItsOwner(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	for id, owner := range map[string]string{"placed": "owner", "owned": "other"} {
-		if err := claimThreadDeleteTx(tx, "op", id, owner); !errors.Is(err, ErrWorkerNotOwned) {
+		if err := claimThreadDeleteTx(tx, "op", id, workerFence{owner: owner}); !errors.Is(err, ErrWorkerNotOwned) {
 			t.Errorf("claim %s for %s = %v, want ErrWorkerNotOwned", id, owner, err)
 		}
 	}
-	if err := claimThreadDeleteTx(tx, "op", "missing", ""); !errors.Is(err, sql.ErrNoRows) {
+	if err := claimThreadDeleteTx(tx, "op", "missing", workerFence{}); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("claim a missing thread = %v, want sql.ErrNoRows", err)
 	}
-	if err := claimThreadDeleteTx(tx, "op", "owned", "owner"); err != nil {
+	if err := claimThreadDeleteTx(tx, "op", "owned", workerFence{owner: "owner"}); err != nil {
 		t.Errorf("claim the owner's worker = %v", err)
 	}
-	if err := claimThreadDeleteTx(tx, "op-2", "owned", "owner"); !errors.Is(err, ErrThreadDeleting) {
+	if err := claimThreadDeleteTx(tx, "op-2", "owned", workerFence{owner: "owner"}); !errors.Is(err, ErrThreadDeleting) {
 		t.Errorf("claim a claimed worker for another delete = %v, want ErrThreadDeleting", err)
 	}
 }

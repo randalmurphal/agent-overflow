@@ -649,8 +649,10 @@ func TestImportedLineageUpdatesExistingRowsWithoutRelistingThem(t *testing.T) {
 	parent := mustCreateBroadcastThread(t, app)
 	child := mustCreateBroadcastThread(t, app)
 	child.ForkedFromThreadID = parent.ID
-	child.Archived = true
 	if err := app.store.UpdateThread(child); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := app.store.ArchiveThread(child.ID); err != nil {
 		t.Fatal(err)
 	}
 	broadcasts := captureThreadBroadcasts(t, app)
