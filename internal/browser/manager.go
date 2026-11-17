@@ -132,8 +132,10 @@ type Manager struct {
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq  uint64
 	sessions map[string]SessionInfo
-	// recent is each thread's recent addresses (recent.go).
-	recent map[string][]RecentAddress
+	// recent is each thread's recent addresses, and recentGen their forget
+	// generation (recent.go).
+	recent    map[string][]RecentAddress
+	recentGen uint64
 	// viewportSyncs serializes viewport application per thread (viewport.go).
 	viewportSyncs map[string]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and
@@ -350,6 +352,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:   findActionTimeout,
+		recentGen:     uint64(time.Now().UnixNano()),
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
@@ -437,8 +440,12 @@ func (m *Manager) Reconfigure(config Config) error {
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
 	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
 	m.mu.Lock()
-	m.recent = nil
+	threads := m.forgetAllRecentLocked()
 	m.mu.Unlock()
+	// The closes pushed state before the forget; these carry its generation.
+	for _, threadID := range threads {
+		m.emitThreadState(threadID)
+	}
 	return err
 }
 
@@ -576,7 +583,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	// Forgotten here for a close that stops early, and again with the
 	// session below, after any open the closing pages were running.
-	delete(m.recent, threadID)
+	m.forgetRecentLocked(threadID)
 	m.mu.Unlock()
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
@@ -596,7 +603,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
-	delete(m.recent, threadID)
+	m.forgetRecentLocked(threadID)
 	m.mu.Unlock()
 	return errors.Join(errs...)
 }

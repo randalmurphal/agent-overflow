@@ -46,6 +46,13 @@ export class CompanionEvent {
     "jar"?: string;
 
     /**
+     * RecentGen rides a Kind "state" event: the Manager's forget generation
+     * of recent addresses (recent.go). A client holding a thread's list
+     * drops it when this changes.
+     */
+    "recentGen"?: number;
+
+    /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
      * while the thread's page view held keyboard focus, for the frontend to
      * dispatch as if the SPA had received it.
@@ -104,17 +111,17 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
-        const $$createField12_0 = $$createType3;
-        const $$createField16_0 = $$createType5;
+        const $$createField13_0 = $$createType3;
+        const $$createField17_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
-            $$parsedSource["accelerator"] = $$createField12_0($$parsedSource["accelerator"]);
+            $$parsedSource["accelerator"] = $$createField13_0($$parsedSource["accelerator"]);
         }
         if ("find" in $$parsedSource) {
-            $$parsedSource["find"] = $$createField16_0($$parsedSource["find"]);
+            $$parsedSource["find"] = $$createField17_0($$parsedSource["find"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }

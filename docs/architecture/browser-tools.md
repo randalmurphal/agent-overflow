@@ -220,7 +220,11 @@ behave as a desktop browser's:
   and reloads add nothing. A private jar keeps none; a jar switch, Clear
   site data, turning the browser off or changing site-data persistence,
   and deleting or archiving the thread forget them, and an open those
-  overtook records nothing.
+  overtook records nothing. Every forget advances one Manager-wide
+  generation that each thread's state push carries (`recentGen`); the
+  field drops its copy of the list, and any read in flight, when the
+  generation, the thread or the active tab changes, and reads again while
+  it has focus.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
   lock, so it stops an address-bar navigation in flight. Once the engine
   has stopped, the navigation it interrupted (not one queued behind it)

@@ -40,6 +40,10 @@ type CompanionEvent struct {
 	// Jar rides a Kind "state" event: the cookie jar the thread's pages
 	// open in (SessionInfo.Jar).
 	Jar string `json:"jar,omitempty"`
+	// RecentGen rides a Kind "state" event: the Manager's forget generation
+	// of recent addresses (recent.go). A client holding a thread's list
+	// drops it when this changes.
+	RecentGen uint64 `json:"recentGen,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.

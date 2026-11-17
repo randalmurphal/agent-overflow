@@ -16,7 +16,12 @@ function page(id: string, url: string, title = id) {
 const PAGES = [page('a', 'https://example.test/a', 'Page a'), page('b', 'http://localhost:5173/settings', 'Settings')];
 
 function seed(activePageId = 'a') {
-  applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId, visible: true, jar: 'worktree', pages: PAGES } as never);
+  push('worktree', 1, activePageId);
+}
+
+/** The thread's state push, with the Manager's recent-address forget generation. */
+function push(jar: string, recentGen: number, activePageId = 'a'): void {
+  applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId, visible: true, jar, recentGen, pages: PAGES } as never);
 }
 
 function mount(activePage = PAGES[0]) {
@@ -236,7 +241,7 @@ describe('<BrowserAddressSuggestions>', () => {
     await tick();
     // A tab push puts a row above the highlighted one.
     applyBrowserCompanionState({
-      kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree',
+      kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 1,
       pages: [...PAGES, page('g', 'https://github.test/other', 'Other')],
     } as never);
     await tick();
@@ -249,7 +254,7 @@ describe('<BrowserAddressSuggestions>', () => {
 
   it('goes back to the typed text when the highlighted row leaves the list', async () => {
     const other = page('d', 'https://d.test/settings', 'More settings');
-    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', pages: [...PAGES, other] } as never);
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 1, pages: [...PAGES, other] } as never);
     const { input, onAct } = mount();
     input.focus();
     await type(input, 'settings');
@@ -258,7 +263,7 @@ describe('<BrowserAddressSuggestions>', () => {
     await tick();
     expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['true', 'false']);
     // The highlighted tab closes, and the other slides into its place.
-    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', pages: [PAGES[0], other] } as never);
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 1, pages: [PAGES[0], other] } as never);
     await tick();
     expect(rowText()).toEqual(['tab https://d.test/settings']);
     expect(rows()[0].getAttribute('aria-selected')).toBe('false');
@@ -280,13 +285,13 @@ describe('<BrowserAddressSuggestions>', () => {
     await waitFor(() => expect(rowText()).toEqual(['recent https://two.test/']));
   });
 
-  it('drops the recent addresses, and a read in flight, when the jar changes', async () => {
+  it('drops the recent addresses, and a read in flight, when the Manager forgets them', async () => {
     const answers: ((list: { url: string; title: string }[]) => void)[] = [];
     recent.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
     const { input } = mount();
     input.focus();
     await waitFor(() => expect(answers.length).toBe(1));
-    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'thread', pages: PAGES } as never);
+    push('thread', 2);
     await waitFor(() => expect(answers.length).toBe(2));
     // The old jar's read answers last, with what the Manager has forgotten.
     answers[1]([]);
@@ -302,7 +307,7 @@ describe('<BrowserAddressSuggestions>', () => {
     input.focus();
     await waitFor(() => expect(answers.length).toBe(1));
     input.blur();
-    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'project', pages: PAGES } as never);
+    push('project', 3);
     await tick();
     answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
     await tick();
@@ -319,11 +324,39 @@ describe('<BrowserAddressSuggestions>', () => {
     await type(input, 'github');
     await waitFor(() => expect(rows().length).toBe(1));
     input.blur();
-    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'private', pages: PAGES } as never);
+    push('private', 4);
     await tick();
     expect(answers.length).toBe(1);
     // A focus reads again (pending here); until it answers nothing is offered.
     input.focus();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+  });
+
+  it('drops them after a jar round trip that ends on the same jar in one batch', async () => {
+    const answers: ((list: { url: string; title: string }[]) => void)[] = [];
+    recent.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const { input } = mount();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await type(input, 'github');
+    await waitFor(() => expect(rows().length).toBe(1));
+    // A read in flight when the batch lands.
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(2));
+    // worktree -> private -> worktree, applied together as a socket batch
+    // is, with the same tab: only the generation says the list was forgotten.
+    push('private', 2);
+    push('worktree', 3);
+    await waitFor(() => expect(answers.length).toBe(3));
+    answers[1]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await tick();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+    answers[2]([]);
+    await tick();
     await type(input, 'github');
     expect(rows()).toEqual([]);
   });

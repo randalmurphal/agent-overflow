@@ -197,6 +197,7 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	active, _ := m.livePageLocked(session.ActivePageID)
 	m.stateSeq++
 	seq := m.stateSeq
+	recentGen := m.recentGen
 	m.mu.Unlock()
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), Seq: seq}
 	if active != nil && active.owner == threadID {
@@ -215,6 +216,7 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	event.ViewportWidth, event.ViewportHeight = sessionViewport(session)
 	event.ViewportSet = session.ViewportSet
 	event.Jar = jarKindOf(session)
+	event.RecentGen = recentGen
 	return event
 }
 
