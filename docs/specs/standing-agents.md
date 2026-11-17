@@ -847,7 +847,9 @@ Ruling 36, as built:
   operation, in its own transaction (`thread_owner_ops`): the archive's
   end an `archive` (`OweRemoteArchives`), the delete's commit a `delete`,
   or a `release` for a moved thread's cache, and an unarchive a
-  `supersede` of an archive already sent. The sidebar's doors and
+  `supersede` while an archive sent for the spawn may still land there,
+  through every reopen until that computer answers an operation above
+  it. The sidebar's doors and
   `thread_update` make one attempt, all of them within 5 s, before they
   return: a worker whose computer has not taken it is named pending with
   its computer (`WorkerFailure.pending`, `computer`), and one on a
