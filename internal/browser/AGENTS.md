@@ -51,8 +51,9 @@ mode. Product behavior and authority are defined in
   selection or its process meanwhile is never shown; the focus intent's
   presented check also requires the selection. A page's base color is the
   page's own, applied shown or hidden by `applyPageBase` whenever its
-  address, its pane's color or its listing changes; a presentation
-  carries geometry only. The pane uses a native view
+  address, its pane's color or its listing changes, and by the pass
+  before it shows a page, so a show never overtakes one under way; a
+  presentation carries geometry only. The pane uses a native view
   positioned over the SPA; pixels do not cross the transport. Keyboard
   focus enters a page's view only by a click or a focus intent
   (`focus_intent.go`): the pane's request for one page, applied once while

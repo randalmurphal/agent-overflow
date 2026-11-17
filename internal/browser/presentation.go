@@ -72,6 +72,12 @@ type presentSync struct{ busy, dirty bool }
 // the drain lays it out and runs another pass. A page already shown stays
 // shown through its own resize, whose drain is under way, and a page that
 // refused the size is shown anyway, under the error that refusal raised.
+//
+// A page is never shown on a base older than its inputs: the pass applies
+// the candidate's base (applyPageBase) before its bounds and its show, so a
+// show waits for a base application already under way and then carries
+// whatever the address and the pane's color call for at that moment. No
+// Manager.mu is held there, and nothing holding a page's baseMu runs a pass.
 func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
@@ -116,6 +122,9 @@ func (m *Manager) presentPanes(threadID string) {
 	show, placement, lagging := m.decidePresentation(threadID, candidate)
 	if candidate != nil {
 		if show {
+			// The base the inputs call for now lands first: an application
+			// another goroutine has under way finishes before this one reads.
+			m.applyPageBase(candidate)
 			host.SetPageBounds(candidate.driver.Handle(), placement)
 			host.ShowPage(candidate.driver.Handle())
 		} else {
