@@ -51,7 +51,7 @@ func (f *requestFixture) expectChainOpen(t *testing.T, threads []store.Thread, t
 	if got := f.workerSummary(t, f.caller.ID); got.Open != threadAgentRowDepth {
 		t.Fatalf("summary %+v; want the %d workers shown counted", got, threadAgentRowDepth)
 	}
-	reads, err := f.app.GetThreadAgentRows(f.caller.ID, tokens[:1])
+	reads, err := f.app.GetThreadAgentRows(t.Context(), f.caller.ID, tokens[:1])
 	if err != nil || len(reads) != 1 || !reads[0].Listed || reads[0].Row.Worker != workerWaiting {
 		t.Fatalf("named read %+v, %v; want the top link open", reads, err)
 	}

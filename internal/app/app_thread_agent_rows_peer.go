@@ -277,6 +277,7 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 		}
 		listing.Hidden = state.Rows
 	}
+	a.withholdApprovalDetail(ctx, &listing)
 	return listing, nil
 }
 

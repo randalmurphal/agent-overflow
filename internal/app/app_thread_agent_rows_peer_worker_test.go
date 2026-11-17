@@ -90,7 +90,7 @@ func (p *agentPeerPair) expectRemoteRowOpen(t *testing.T, row ThreadAgentRow, wa
 	if got, err := p.source.GetThreadWorkerSummary(t.Context(), p.caller.ID); err != nil || got.Open != 1 {
 		t.Fatalf("summary %+v, %v; want the remote worker counted", got, err)
 	}
-	if past, err := p.source.ListThreadPastAgentRows(p.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
+	if past, err := p.source.ListThreadPastAgentRows(t.Context(), p.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
 		t.Fatalf("past = %+v, %v; want the remote worker kept out", past, err)
 	}
 }
@@ -148,7 +148,7 @@ func TestAFailedReadOfAPairedComputerKeepsItsWorkerOpen(t *testing.T) {
 		t.Fatalf("StopSession here: %v", err)
 	}
 	agentPair.askAgainUntilRow(t, func(_ ThreadAgentRow, listed bool) bool { return !listed })
-	if past, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
+	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("past = %+v, %v; want the rested worker's spawn", past, err)
 	}
 }
@@ -258,7 +258,7 @@ func TestARemoteWorkerAtTheListingsLastLevelKeepsItsState(t *testing.T) {
 		t.Fatalf("root's summary %+v, %v; want the three links and the remote worker counted", got, err)
 	}
 	for _, thread := range []string{root.ID, pair.caller.ID} {
-		if past, err := pair.source.ListThreadPastAgentRows(thread, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
+		if past, err := pair.source.ListThreadPastAgentRows(t.Context(), thread, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 0 {
 			t.Fatalf("past of %s = %+v, %v; want the open work kept out", thread, past, err)
 		}
 	}
@@ -275,7 +275,7 @@ func TestARemoteWorkerAtTheListingsLastLevelKeepsItsState(t *testing.T) {
 		pair.source.threadRequestsWG.Wait()
 		return len(rootRows()) == 0
 	})
-	if past, err := pair.source.ListThreadPastAgentRows(root.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
+	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), root.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("root's past = %+v, %v; want its link back", past, err)
 	}
 }

@@ -60,7 +60,7 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 	agentPair := &agentPeerPair{reachPair: pair, spawn: pair.request(t, ack.Token)}
 	rested := func(_ ThreadAgentRow, listed bool) bool { return !listed }
 	agentPair.askAgainUntilRow(t, rested)
-	if past, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
+	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("past = %+v, %v; want the rested worker's spawn", past, err)
 	}
 	// Nothing of that answer is kept: the sweep's asking holds no answer
@@ -96,7 +96,7 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 		t.Fatalf("StopSession there: %v", err)
 	}
 	agentPair.askAgainUntilRow(t, rested)
-	if past, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
+	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("past = %+v, %v; want the spawn back", past, err)
 	}
 }

@@ -958,7 +958,11 @@ Ruling 36, as built:
   it would read it, whatever rows the answer has room for. It carries the
   thread's placement and archive state there and the prompt it waits on
   (`blockedOn`, `blockedDetail`, `blockedRoutedTo`), with `routedToAsker`
-  when that prompt went to the asking thread, whose link owns it. The sweep keeps
+  when that prompt went to the asking thread, whose link owns it. An
+  approval's `blockedDetail` quotes its command, so a session without
+  `approvals:respond` is answered without it, here and by every Agents
+  rows read of a window; a question's stays, as `provider:user_input` is
+  `threads:read`. The sweep keeps
   asking while it is (`thread_requests.nested_open`). A remote spawn at
   the listing's last level asks for that state alone, which lists no rows
   and asks no computer further on, so a chain of computers is asked no

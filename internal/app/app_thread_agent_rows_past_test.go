@@ -68,7 +68,7 @@ func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
 	var rows []ThreadAgentRow
 	after := store.PastAgentRowsCursor{}
 	for range 5 {
-		page, err := a.ListThreadPastAgentRows(lead.ID, after, 2)
+		page, err := a.ListThreadPastAgentRows(t.Context(), lead.ID, after, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +162,7 @@ func TestAgentRowsGiveNoPlacementToAThreadThatTakesNone(t *testing.T) {
 	if len(listing.Rows) != 1 || listing.Rows[0].Token != "helper-open" || listing.Rows[0].Placement != "" {
 		t.Errorf("open helper rows = %+v, want no placement", listing.Rows)
 	}
-	page, err := a.ListThreadPastAgentRows(lead.ID, store.PastAgentRowsCursor{}, 8)
+	page, err := a.ListThreadPastAgentRows(t.Context(), lead.ID, store.PastAgentRowsCursor{}, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestAgentRowsPresentAnAskAsTheThreadAsked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := a.ListThreadPastAgentRows(lead.ID, store.PastAgentRowsCursor{}, 8)
+	page, err := a.ListThreadPastAgentRows(t.Context(), lead.ID, store.PastAgentRowsCursor{}, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
