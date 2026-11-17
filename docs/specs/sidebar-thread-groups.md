@@ -339,7 +339,7 @@ Names are trimmed and non-empty; a blank rename is rejected.
   hid members or can show less; collapsed and expanded flatten shapes;
   search by group name pulls all members; a focused member remains
   visible under its collapsed group;
-  `sameSidebarVisibleNodes` distinguishes a group from a thread node at
+  `sameSidebarVisibleRows` distinguishes a group from a thread node at
   the same index.
 - Component tests: group row renders count when collapsed and members
   when expanded; context menus show the right items for top-level,

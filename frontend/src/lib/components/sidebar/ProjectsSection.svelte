@@ -91,7 +91,7 @@
   // Both maps are re-minted per derivation, and the ROWS inside them are
   // stable references. A bucket whose rows did not change keeps its array,
   // so a thread change rebuilds only its own project's tree; the identity
-  // cutoffs downstream (visibleProjects here, sameSidebarVisibleNodes in
+  // cutoffs downstream (visibleProjects here, sameSidebarVisibleRows in
   // SidebarTreeList) keep a streaming beat off the DOM. The assistants'
   // rows keep their array the same way, so a project thread's change does
   // not rebuild the Assistants section's tree.
