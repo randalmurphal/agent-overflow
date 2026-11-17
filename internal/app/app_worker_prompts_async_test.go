@@ -650,7 +650,7 @@ func TestAWrittenAnswerWithdrawnAfterAFailedRestoreStaysWithdrawn(t *testing.T) 
 		t.Fatalf("withdraw = %+v, %v", stop, err)
 	}
 	f.app.triage.CleanupThread(f.worker.ID)
-	f.app.requeueUnconfirmedFlushItems(f.worker.ID, requeued)
+	f.app.requeueUnconfirmedFlushItems(f.worker.ID, requeued, queueRestoredReasonSessionDied)
 	f.app.triage.FlushQueuedItems(f.worker.ID)
 	f.app.flushDispatch.wg.Wait()
 	f.drain(t)
@@ -758,7 +758,7 @@ func (f asyncQuestionFixture) resendAfterWithdrawal(t *testing.T, requeued []tri
 	}
 	if teardown {
 		f.app.triage.CleanupThread(f.worker.ID)
-		f.app.requeueUnconfirmedFlushItems(f.worker.ID, requeued)
+		f.app.requeueUnconfirmedFlushItems(f.worker.ID, requeued, queueRestoredReasonSessionDied)
 	}
 	f.app.triage.FlushQueuedItems(f.worker.ID)
 	f.app.flushDispatch.wg.Wait()

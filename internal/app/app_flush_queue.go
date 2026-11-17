@@ -436,7 +436,7 @@ func (a *App) requeueWantedFlushItems(threadID string, items []triage.QueuedFlus
 	}
 	err := a.retireWithdrawnCopies(threadID, withdrawn)
 	unlock()
-	a.emitRequeueFailures(threadID, requeueFailures{retire: err})
+	a.finishRequeue(threadID, requeueOutcome{retire: err})
 }
 
 // retireWithdrawnCopies takes out of the timeline the rows that copies of
@@ -494,7 +494,7 @@ func (a *App) commitFlushGroup(threadID string, generation uint64, group []triag
 	a.flushDispatch.mu.Unlock()
 	retireErr := a.retireWithdrawnCopies(threadID, withdrawn)
 	unlock()
-	a.emitRequeueFailures(threadID, requeueFailures{retire: retireErr})
+	a.finishRequeue(threadID, requeueOutcome{retire: retireErr})
 	return sending, nil
 }
 
@@ -2069,7 +2069,7 @@ func (a *App) removeQueuedItemWith(ctx context.Context, threadID, sendID string,
 	if err := deleteRow(row); err != nil {
 		return queueRemovalAbsent, fmt.Errorf("remove queued item: %w", err)
 	}
-	a.emitRequeueFailures(threadID, requeueFailures{retire: a.retireWithdrawnCopies(threadID, a.forgetUnsentCopies(threadID, row.ID))})
+	a.finishRequeue(threadID, requeueOutcome{retire: a.retireWithdrawnCopies(threadID, a.forgetUnsentCopies(threadID, row.ID))})
 	a.emitQueueStateChanged(threadID)
 	return queueRemovalRemoved, nil
 }

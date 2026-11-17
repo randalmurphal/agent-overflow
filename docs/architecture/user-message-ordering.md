@@ -126,7 +126,11 @@ is gone was withdrawn, and is dropped; an answer keeps its row until its
 echo. A joined message decides for each message it carries: a withdrawn
 one is cut out of its text and the rest kept, and a requeue puts each one
 that still has its row back as its own queue item, the rest as one, so a
-later withdrawal takes it alone; the dispatch joins them again. A dropped
+later withdrawal takes it alone; the dispatch joins them again. One whose
+parts do not describe its text, or whose row does not decode, cannot be cut
+where either has to: it goes to the composer whole, as any join that does
+not split, and is not queued or sent again (`withoutQueueMembers`,
+`writeFlushDraft`); a failed composer write is a thread error. A dropped
 copy takes with it the timeline row an earlier dispatch left
 (`QueuedFlushItem.StaleUserItemID`). Every handoff carries the dispatch generation it was made in
 (`QueuedFlushItem.DispatchGeneration`): one a recovery overtook goes where

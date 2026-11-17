@@ -1033,7 +1033,7 @@ func (d reviewDispatch) requeue(t *testing.T, failure reviewRequeueFailure) {
 		if _, ok := d.app.triage.RemoveQueuedFlushItem(d.thread.ID, "queue:review"); !ok {
 			t.Fatal("the restore did not put the message back on the queue")
 		}
-		d.app.requeueUnconfirmedFlushItems(d.thread.ID, requeued)
+		d.app.requeueUnconfirmedFlushItems(d.thread.ID, requeued, queueRestoredReasonSessionDied)
 	}
 	undo()
 }

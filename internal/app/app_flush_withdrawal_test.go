@@ -2,16 +2,21 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // A withdrawn queued message is not sent, queued or restored whatever copy
@@ -771,7 +776,7 @@ func TestAMessageWithdrawnAroundAFailedRestoreStaysWithdrawn(t *testing.T) {
 				withdraw()
 				// What a session's teardown does once its cleanup wiped the queue.
 				f.app.triage.CleanupThread(f.caller.ID)
-				f.app.requeueUnconfirmedFlushItems(f.caller.ID, requeued)
+				f.app.requeueUnconfirmedFlushItems(f.caller.ID, requeued, queueRestoredReasonSessionDied)
 			}
 			after := "after-" + entityid.New()
 			queueTestWake(t, f.app, f.caller.ID, after)
@@ -826,7 +831,7 @@ func TestAWithdrawalWaitsForARequeueThatReadItsRow(t *testing.T) {
 			if by == "a re-registration" {
 				f.app.triage.CleanupThread(f.caller.ID)
 				f.app.requeueRowsReadForTest = hook
-				f.app.requeueUnconfirmedFlushItems(f.caller.ID, requeued)
+				f.app.requeueUnconfirmedFlushItems(f.caller.ID, requeued, queueRestoredReasonSessionDied)
 			}
 			within(t, "the withdrawal", removed)
 			if removalErr != nil || removal != queueRemovalRemoved {
@@ -856,7 +861,7 @@ func TestARequeuedUnconfirmedSendIsWithdrawnLikeAQueuedOne(t *testing.T) {
 		QueueItemID: "queue:handed", Message: "handed over", EnqueuedAt: 1,
 		QueueMembers: []triage.FlushQueueMember{{QueueItemID: "queue:handed", NoRow: true}},
 		Payload:      flushQueuePayloadJSON(t, flushQueuePayload{SendID: sendID}),
-	}})
+	}}, queueRestoredReasonSessionDied)
 	unlock()
 	if failures.persist != nil || failures.retire != nil {
 		t.Fatalf("requeue: %+v", failures)
@@ -872,11 +877,178 @@ func TestARequeuedUnconfirmedSendIsWithdrawnLikeAQueuedOne(t *testing.T) {
 	}
 	// What a session's teardown does once its cleanup wiped the queue.
 	app.triage.CleanupThread(thread.ID)
-	app.requeueUnconfirmedFlushItems(thread.ID, requeued)
+	app.requeueUnconfirmedFlushItems(thread.ID, requeued, queueRestoredReasonSessionDied)
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("durable rows after the re-registration = %+v, want the withdrawal to stand", rows)
 	}
 	if queued := app.triage.QueuedFlushItems(thread.ID); len(queued) != 0 {
 		t.Fatalf("queued after the re-registration = %+v, want nothing", queued)
+	}
+}
+
+// A joined message one of whose messages was withdrawn, and which does not
+// split by message (its parts do not describe its text, or its row does not
+// decode), goes to the composer whole, the withdrawn text with it, as any
+// join that does not split: it is not queued or sent again, its timeline row
+// goes, and the withdrawn message is not owed again. When the composer write
+// fails the thread says so, and nothing is queued either.
+func TestAnUnsplittableJoinWithAWithdrawnMessageGoesToTheComposerWhole(t *testing.T) {
+	t.Parallel()
+	const own, wakeText = "my own words", "The board loop fired."
+	content := own + agentmeta.JoinSeparator + wakeText
+	for _, variant := range []string{"corrupt parts in the row", "corrupt parts in the payload", "undecodable meta"} {
+		for _, entry := range []string{"a session end's restore", "a requeue"} {
+			for _, draftFails := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, %s, draft write fails %v", variant, entry, draftFails), func(t *testing.T) {
+					t.Parallel()
+					q := newCodexQueue(t)
+					wake, err := q.app.store.RegisterAgentWake(store.AgentWake{
+						ID: "wake-" + entityid.New(), ThreadID: q.thread.ID, Kind: store.AgentWakeLoop, Label: "board",
+						IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					person, wakeSend := "person-"+entityid.New(), agentWakeSendID(wake.ID, 1000)
+					sendIDs := []string{person, wakeSend}
+					parts := []agentmeta.JoinedPart{{SendID: person, Bytes: len(own)}, {SendID: wakeSend, Bytes: len(wakeText)}}
+					corrupt := slices.Clone(parts)
+					corrupt[0].Bytes = 3
+					item := triage.UnconfirmedFlushItem{
+						Message: content, EnqueuedAt: 1,
+						QueueMembers: []triage.FlushQueueMember{
+							// The wake's row is gone: it was withdrawn.
+							{QueueItemID: "queue:wake", SendID: wakeSend},
+							{QueueItemID: "queue:person", SendID: person, NoRow: true},
+						},
+					}
+					row := store.Item{
+						ID: "user:0:flush:joined", ThreadID: q.thread.ID, Kind: "user_text", Role: "user", Status: "completed",
+						Summary: content, CreatedAt: 1, UpdatedAt: 1,
+					}
+					switch variant {
+					case "corrupt parts in the row":
+						if row.Meta, err = usermessage.MarshalMeta(usermessage.Meta{SendID: person, JoinedSendIDs: sendIDs, JoinedParts: corrupt}); err != nil {
+							t.Fatal(err)
+						}
+					case "corrupt parts in the payload":
+						item.Payload = flushQueuePayloadJSON(t, flushQueuePayload{SendID: person, JoinedSendIDs: sendIDs, JoinedParts: corrupt})
+					default:
+						row.Meta = `{"joinedSendIds":5}`
+						item.JoinedParts = parts
+					}
+					if item.Payload == nil {
+						if _, err := q.app.store.AppendItem(row); err != nil {
+							t.Fatal(err)
+						}
+						item.UserItemID, item.QuietItem = row.ID, &row
+					}
+					if draftFails {
+						execOnStore(t, q.dbPath, `CREATE TRIGGER refuse_draft_insert BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
+						execOnStore(t, q.dbPath, `CREATE TRIGGER refuse_draft_update BEFORE UPDATE ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
+					}
+					var settled atomic.Int32
+					item.Settlement = triage.NewFlushSettlement(func(string) { settled.Add(1) })
+
+					if entry == "a requeue" {
+						item.StaleUserItemID = item.UserItemID
+						q.app.requeueUnconfirmedFlushItems(q.thread.ID, []triage.UnconfirmedFlushItem{item}, queueRestoredReasonSessionDied)
+					} else if requeued := q.app.restoreFlushItemsToDraftLocked(q.thread.ID, []triage.UnconfirmedFlushItem{item}, queueRestoredReasonSessionDied); len(requeued) != 0 {
+						t.Fatalf("requeued %+v, want nothing", requeued)
+					}
+
+					if queued := q.app.triage.QueuedFlushItems(q.thread.ID); len(queued) != 0 {
+						t.Fatalf("queued = %+v, want nothing", queued)
+					}
+					if rows := durableQueueRows(t, q.app, q.thread.ID); len(rows) != 0 {
+						t.Fatalf("durable rows = %+v, want none", rows)
+					}
+					if settled.Load() != 1 {
+						t.Fatalf("settled %d times, want once: the message is not coming back", settled.Load())
+					}
+					failures := threadErrorRows(t, q.app.store, q.thread.ID, "Could not restore queued messages")
+					if draftFails {
+						if len(failures) == 0 {
+							t.Fatal("the failed composer write left the thread no error")
+						}
+						return
+					}
+					if len(failures) != 0 {
+						t.Fatalf("errors %q, want none", failures)
+					}
+					requireDraft(t, q.app, q.thread.ID, content)
+					if _, found, err := q.app.store.GetThreadItem(q.thread.ID, row.ID); err != nil || found {
+						t.Fatalf("the message's row is still in the timeline: found %v, %v", found, err)
+					}
+					if saved, found, err := q.app.store.GetAgentWake(wake.ID); err != nil || !found || saved.Undelivered != "" {
+						t.Fatalf("the withdrawn wake was owed again: %+v, found %v, %v", saved, found, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+// A requeue splits a worker's answer that keeps its row from the joined
+// message it was sent in, so a later withdrawal can take it alone. When the
+// rest does not split from it, none of it is queued again, where a
+// withdrawal could not take the answer alone: all of it goes to the composer,
+// and the answer goes back to its questions, as any join that does not split.
+func TestARequeuedJoinThatDoesNotSplitFromItsAnswerGoesToTheComposerWhole(t *testing.T) {
+	t.Parallel()
+	q := newCodexQueue(t)
+	const own, answer = "my own words", "Question: Which scope?\nAnswer: One"
+	content := own + agentmeta.JoinSeparator + answer
+	person, answerSend := "person-"+entityid.New(), workerAnswerSendIDRoot+entityid.New()
+	execOnStore(t, q.dbPath, `INSERT INTO async_questions (thread_id, item_id, question_index, title, options, state, answer, send_id, created_at)
+		VALUES ('`+q.thread.ID+`', 'question:ask', 0, 'Which scope?', '[]', 'submitted', 'One', '`+answerSend+`', 1)`)
+	if err := q.app.store.InsertFlushQueueItem(store.FlushQueueItem{ID: "queue:answer", ThreadID: q.thread.ID, SendID: answerSend, Message: answer, EnqueuedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := usermessage.MarshalMeta(usermessage.Meta{SendID: person, JoinedSendIDs: []string{person, answerSend}, JoinedParts: []agentmeta.JoinedPart{
+		{SendID: person, Bytes: 3}, {SendID: answerSend, Bytes: len(answer)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := store.Item{
+		ID: "user:0:flush:joined", ThreadID: q.thread.ID, Kind: "user_text", Role: "user", Status: "completed",
+		Summary: content, Meta: meta, CreatedAt: 1, UpdatedAt: 1,
+	}
+	if _, err := q.app.store.AppendItem(row); err != nil {
+		t.Fatal(err)
+	}
+
+	q.app.requeueUnconfirmedFlushItems(q.thread.ID, []triage.UnconfirmedFlushItem{{
+		UserItemID: row.ID, Message: content, EnqueuedAt: 1, QuietItem: &row, StaleUserItemID: row.ID,
+		QueueMembers: []triage.FlushQueueMember{
+			{QueueItemID: "queue:answer", SendID: answerSend},
+			{QueueItemID: "queue:person", SendID: person, NoRow: true},
+		},
+	}}, queueRestoredReasonSessionDied)
+
+	if queued := q.app.triage.QueuedFlushItems(q.thread.ID); len(queued) != 0 {
+		t.Fatalf("queued = %+v, want nothing", queued)
+	}
+	if rows := durableQueueRows(t, q.app, q.thread.ID); len(rows) != 0 {
+		t.Fatalf("durable rows = %+v, want none", rows)
+	}
+	requireDraft(t, q.app, q.thread.ID, content)
+	if _, found, err := q.app.store.GetThreadItem(q.thread.ID, row.ID); err != nil || found {
+		t.Fatalf("the message's row is still in the timeline: found %v, %v", found, err)
+	}
+	if questions, err := q.app.store.ListAsyncQuestions(q.thread.ID, "question:ask"); err != nil || len(questions) != 1 || questions[0].State != "unanswered" {
+		t.Fatalf("questions = %+v, %v; want the answer's question unanswered again", questions, err)
+	}
+}
+
+// A teardown joins its requeue's outcome to the restore's: the composer
+// restores of both are finished, so neither's failure goes unreported.
+func TestARequeueOutcomeJoinKeepsBothComposerRestores(t *testing.T) {
+	t.Parallel()
+	first, second := errors.New("first"), errors.New("second")
+	joined := requeueOutcome{composer: []flushRestore{{failed: first}}}.join(requeueOutcome{composer: []flushRestore{{failed: second}}})
+	if len(joined.composer) != 2 || joined.composer[0].failed != first || joined.composer[1].failed != second {
+		t.Fatalf("joined composer restores = %+v, want both", joined.composer)
 	}
 }

@@ -1388,7 +1388,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 				// funnel flush still finds them (round-13, D13-1). When the
 				// cleanup was skipped, the queue was never wiped and they
 				// are still registered.
-				a.requeueUnconfirmedFlushItems(threadID, requeued)
+				a.requeueUnconfirmedFlushItems(threadID, requeued, queueRestoredReasonSessionDied)
 				a.emitQueueStateChanged(threadID)
 			}
 		}
@@ -1560,8 +1560,8 @@ func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue 
 		// The cleanup wiped the queue these re-entered: they are queued
 		// again under the same hold of the mutation lock as the restore
 		// read their rows, and finishFlushRestore announces the queue.
-		var failures requeueFailures
-		restore.requeued, failures = a.requeueUnconfirmedFlushItemsLocked(threadID, restore.requeued)
+		var failures requeueOutcome
+		restore.requeued, failures = a.requeueUnconfirmedFlushItemsLocked(threadID, restore.requeued, queueRestoredReasonSessionDied)
 		restore.requeueFailed = restore.requeueFailed.join(failures)
 	}
 	return held, requests, restore

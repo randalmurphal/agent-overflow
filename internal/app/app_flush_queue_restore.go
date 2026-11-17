@@ -169,7 +169,7 @@ type flushRestore struct {
 	// failed is why the composer write failed; requeueFailed is what the
 	// requeue that replaced it could not write.
 	failed        error
-	requeueFailed requeueFailures
+	requeueFailed requeueOutcome
 	// restored is set when the composer write committed.
 	restored bool
 	owed     []notTakenIn
@@ -181,7 +181,7 @@ type flushRestore struct {
 // tells the thread why a failed one queued them again. The caller holds the
 // thread action lock and not its mutation lock.
 func (a *App) finishFlushRestore(threadID string, restore flushRestore) {
-	a.emitRequeueFailures(threadID, restore.requeueFailed)
+	a.finishRequeue(threadID, restore.requeueFailed)
 	if restore.failed != nil {
 		a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+restore.failed.Error())
 		a.emitQueueStateChanged(threadID)
@@ -204,7 +204,7 @@ func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.Un
 	drained, withdrawnRows := a.withoutWithdrawnQueued(threadID, drained)
 	if len(drained) == 0 {
 		// The rows of messages wholly withdrawn leave the timeline even so.
-		return flushRestore{requeueFailed: requeueFailures{retire: a.retireWithdrawnRows(threadID, withdrawnRows)}}
+		return flushRestore{requeueFailed: requeueOutcome{retire: a.retireWithdrawnRows(threadID, withdrawnRows)}}
 	}
 	// The composer write, the queue rows' removal and the retire of every
 	// row the messages have (a quiet row, a stale row a requeue carries, or
@@ -217,7 +217,28 @@ func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.Un
 	// the row before persisting a fresh one (round-11, R11-1). Requeued
 	// items caught still-queued by a LATER death re-enter here through
 	// StaleUserItemID.
-	retire := slices.Clone(withdrawnRows)
+	restore, err := a.writeFlushDraft(threadID, drained, withdrawnRows, reason)
+	if err != nil {
+		log.Printf("flush queue: restore draft (%s) for %s: %v — requeueing the messages", reason, threadID, err)
+		// Queued again under the same hold of the mutation lock as the rows
+		// were read, so a withdrawal is either seen by that read or finds
+		// them queued.
+		requeued, outcome := a.requeueUnconfirmedFlushItemsLocked(threadID, drained, reason)
+		outcome.retire = errors.Join(outcome.retire, a.retireWithdrawnRows(threadID, withdrawnRows))
+		return flushRestore{requeued: requeued, failed: err, requeueFailed: outcome}
+	}
+	return restore
+}
+
+// writeFlushDraft is a restore's composer write: the messages' text, less
+// what the app wrote (agentPartsNotTakenIn), goes to the composer, and their
+// queue rows and timeline rows, with retire, go, in one store transaction
+// (restoreQueuedDraft). It returns the restore owed once it committed, or
+// the write's error, with nothing changed. It stamps each message with the
+// timeline row its restore retires (StaleUserItemID), for a requeue that
+// replaces a failed write.
+func (a *App) writeFlushDraft(threadID string, drained []triage.UnconfirmedFlushItem, retire []string, reason string) (flushRestore, error) {
+	retire = slices.Clone(retire)
 	var queueItemIDs, userItemIDs []string
 	parts := make([]composerdraft.Part, 0, len(drained))
 	settlements := make([]*triage.FlushSettlement, 0, len(drained))
@@ -249,13 +270,7 @@ func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.Un
 		if err := a.restoreQueuedDraft(threadID, parts, store.QueueDraftRestore{
 			QueueItemIDs: queueItemIDs, RetireItemIDs: retire,
 		}); err != nil {
-			log.Printf("flush queue: restore draft (%s) for %s: %v — requeueing the messages", reason, threadID, err)
-			// Queued again under the same hold of the mutation lock as the
-			// rows were read, so a withdrawal is either seen by that read or
-			// finds them queued.
-			requeued, failures := a.requeueUnconfirmedFlushItemsLocked(threadID, drained)
-			failures.retire = errors.Join(failures.retire, a.retireWithdrawnRows(threadID, withdrawnRows))
-			return flushRestore{requeued: requeued, failed: err, requeueFailed: failures}
+			return flushRestore{}, err
 		}
 	}
 	for _, settlement := range settlements {
@@ -266,7 +281,7 @@ func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.Un
 		Reason:       reason,
 		QueueItemIDs: queueItemIDs,
 		UserItemIDs:  userItemIDs,
-	}}
+	}}, nil
 }
 
 // lockForQueuedRows takes the thread's mutation lock when drained holds a
@@ -333,8 +348,10 @@ func (a *App) withoutWithdrawnQueued(threadID string, drained []triage.Unconfirm
 	kept := make([]triage.UnconfirmedFlushItem, 0, len(drained))
 	var withdrawnRows []string
 	for _, item := range drained {
-		rest, ok := withoutQueueMembers(threadID, item, withdrawnMembers(item, func(id string) bool { return present[id] }))
-		if ok {
+		// A message that does not split by message goes to the composer
+		// whole, as the restore takes any such join (agentPartsNotTakenIn).
+		rest, cut := withoutQueueMembers(threadID, item, withdrawnMembers(item, func(id string) bool { return present[id] }))
+		if cut != cutGone {
 			kept = append(kept, rest)
 		} else if row := unconfirmedRowID(item); row != "" {
 			withdrawnRows = append(withdrawnRows, row)
@@ -355,17 +372,29 @@ func (a *App) retireWithdrawnRows(threadID string, rows []string) error {
 	return errors.Join(failed...)
 }
 
+// memberCut is what withoutQueueMembers left of an item.
+type memberCut int
+
+const (
+	// cutKept: the item, less the messages withdrawn.
+	cutKept memberCut = iota
+	// cutGone: nothing; every message it carries was withdrawn.
+	cutGone
+	// cutWhole: a joined message that does not split by message, which goes
+	// to the composer whole (wholeToComposer).
+	cutWhole
+)
+
 // withoutQueueMembers is item less the queued messages gone names by queue
-// id, which were withdrawn. ok is false when nothing is left: every message
-// it carries is gone, or a joined message whose text its parts do not
-// describe could not be told apart by message, so none of it is restored or
-// sent again. Otherwise a joined message keeps the rest, its text, parts and
-// send ids rebuilt from theirs, wherever the item holds them (its row, its
-// payload, its pending send's parts); the row keeps its id, which a restore
-// retires.
-func withoutQueueMembers(threadID string, item triage.UnconfirmedFlushItem, gone map[string]bool) (triage.UnconfirmedFlushItem, bool) {
+// id, which were withdrawn. A joined message keeps the rest, its text, parts
+// and send ids rebuilt from theirs, wherever the item holds them (its row,
+// its payload, its pending send's parts); the row keeps its id, which a
+// restore retires. One whose parts do not describe its text, or whose row
+// does not decode, cannot be told apart by message and goes to the composer
+// whole (cutWhole).
+func withoutQueueMembers(threadID string, item triage.UnconfirmedFlushItem, gone map[string]bool) (triage.UnconfirmedFlushItem, memberCut) {
 	if len(gone) == 0 {
-		return item, true
+		return item, cutKept
 	}
 	var survivors []triage.FlushQueueMember
 	var goneSendIDs []string
@@ -377,10 +406,10 @@ func withoutQueueMembers(threadID string, item triage.UnconfirmedFlushItem, gone
 		survivors = append(survivors, member)
 	}
 	if len(goneSendIDs) == 0 {
-		return item, true
+		return item, cutKept
 	}
 	if len(survivors) == 0 {
-		return item, false
+		return item, cutGone
 	}
 	row := unconfirmedRow(&item)
 	text := item.Message
@@ -389,20 +418,20 @@ func withoutQueueMembers(threadID string, item triage.UnconfirmedFlushItem, gone
 	}
 	cut, ok := cutJoinedParts(text, unconfirmedMembersOf(item).parts, goneSendIDs)
 	if !ok {
-		log.Printf("flush queue: a joined message of %s does not split into the messages it carries; dropping it with its withdrawn %v", threadID, goneSendIDs)
-		return item, false
+		log.Printf("flush queue: a joined message of %s does not split into the messages it carries; it goes to the composer whole", threadID)
+		return wholeToComposer(item, goneSendIDs), cutWhole
 	}
 	if row != nil {
 		meta, err := usermessage.FromItem(*row)
 		if err != nil {
-			log.Printf("flush queue: decode the row of a joined message of %s: %v; dropping it with its withdrawn %v", threadID, err, goneSendIDs)
-			return item, false
+			log.Printf("flush queue: decode the row of a joined message of %s: %v; it goes to the composer whole", threadID, err)
+			return wholeToComposer(item, goneSendIDs), cutWhole
 		}
 		cut.apply(&meta.SendID, &meta.JoinedSendIDs, &meta.JoinedParts, &meta.Origin, &meta.OriginThread, &meta.OriginWake, &meta.TextBeforeReviewComments)
 		encoded, err := usermessage.MarshalMeta(meta)
 		if err != nil {
-			log.Printf("flush queue: encode the row of a joined message of %s: %v; dropping it with its withdrawn %v", threadID, err, goneSendIDs)
-			return item, false
+			log.Printf("flush queue: encode the row of a joined message of %s: %v; it goes to the composer whole", threadID, err)
+			return wholeToComposer(item, goneSendIDs), cutWhole
 		}
 		rebuilt := *row
 		rebuilt.Summary, rebuilt.Meta = cut.text, encoded
@@ -423,7 +452,40 @@ func withoutQueueMembers(threadID string, item triage.UnconfirmedFlushItem, gone
 	if gone[item.QueueItemID] {
 		item.QueueItemID = survivors[0].QueueItemID
 	}
-	return item, true
+	return item, cutKept
+}
+
+// wholeToComposer is a joined message that does not split by message, as
+// the composer takes it: its text whole, the withdrawn messages' included,
+// for the person to read, since none of it can be told apart; it is never
+// sent or queued again. Like any join that does not split
+// (agentPartsNotTakenIn), what the app wrote among the rest is owed what it
+// is owed, so the send ids it names lose the withdrawn ones, which their
+// withdrawal answered already.
+func wholeToComposer(item triage.UnconfirmedFlushItem, goneSendIDs []string) triage.UnconfirmedFlushItem {
+	withdrawn := func(id string) bool { return slices.Contains(goneSendIDs, id) }
+	if row := unconfirmedRow(&item); row != nil {
+		if meta, err := usermessage.FromItem(*row); err == nil {
+			meta.JoinedSendIDs = slices.DeleteFunc(slices.Clone(meta.JoinedSendIDs), withdrawn)
+			if withdrawn(meta.SendID) {
+				meta.SendID = ""
+			}
+			if encoded, err := usermessage.MarshalMeta(meta); err == nil {
+				row.Meta = encoded
+			}
+		}
+	}
+	var payload flushQueuePayload
+	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil {
+		payload.JoinedSendIDs = slices.DeleteFunc(payload.JoinedSendIDs, withdrawn)
+		if withdrawn(payload.SendID) {
+			payload.SendID = ""
+		}
+		if encoded, err := json.Marshal(payload); err == nil {
+			item.Payload = encoded
+		}
+	}
+	return item
 }
 
 // unconfirmedRow is the timeline row an unconfirmed item holds, a copy the
@@ -863,7 +925,7 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 	}
 	retireFailed := a.retireWithdrawnRows(threadID, withdrawnRows)
 	unlock()
-	a.emitRequeueFailures(threadID, requeueFailures{retire: retireFailed})
+	a.finishRequeue(threadID, requeueOutcome{retire: retireFailed})
 	a.emitQueueStateChanged(threadID)
 }
 
@@ -1055,11 +1117,11 @@ func unconfirmedFlushRestoreScore(item triage.UnconfirmedFlushItem) int {
 
 // requeueUnconfirmedFlushItems is requeueUnconfirmedFlushItemsLocked taking
 // the lock it needs, and telling the thread what it could not write.
-func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.UnconfirmedFlushItem) {
+func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.UnconfirmedFlushItem, reason string) {
 	unlock := a.lockForQueuedRows(threadID, items)
-	_, failures := a.requeueUnconfirmedFlushItemsLocked(threadID, items)
+	_, outcome := a.requeueUnconfirmedFlushItemsLocked(threadID, items, reason)
 	unlock()
-	a.emitRequeueFailures(threadID, failures)
+	a.finishRequeue(threadID, outcome)
 }
 
 // requeueUnconfirmedFlushItemsLocked puts messages a restore could not
@@ -1086,16 +1148,24 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 // row as its durable copy instead and is queued without a queue row
 // (triage.QueuedFlushItem.NoRow): the boot restore takes an unconfirmed row
 // back with its text, so a queue row as well would put the message in the
-// composer twice. The failures name the rows that could not be written, whose
-// messages stay queued without one, and those that could not be retired.
+// composer twice.
+//
+// A joined message that cannot be told apart by message where it has to be,
+// one of its messages withdrawn or still holding its own row, is never sent
+// again: it goes to the composer whole (cutWhole), for reason, in its own
+// composer write (writeFlushDraft), whose failure the thread is told of.
+//
+// The outcome names the rows that could not be written, whose messages stay
+// queued without one, and those that could not be retired, and holds the
+// restore of the messages that went to the composer (finishRequeue).
 //
 // The caller holds the thread's mutation lock when one of items has its row
 // (lockForQueuedRows), so no withdrawal fits between the read and the
 // queueing it guards.
-func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage.UnconfirmedFlushItem) ([]triage.UnconfirmedFlushItem, requeueFailures) {
-	var failures requeueFailures
+func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage.UnconfirmedFlushItem, reason string) ([]triage.UnconfirmedFlushItem, requeueOutcome) {
+	var outcome requeueOutcome
 	if a.triage == nil {
-		return nil, failures
+		return nil, outcome
 	}
 	rows, read := a.queueRowsOf(threadID, queueRowIDs(items))
 	if hook := a.requeueRowsReadForTest; hook != nil {
@@ -1103,8 +1173,13 @@ func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage
 	}
 	requeued := make([]triage.UnconfirmedFlushItem, 0, len(items))
 	var persistFailed, retireFailed []error
+	var whole []triage.UnconfirmedFlushItem
 	for _, item := range items {
-		parts, withdrawnRow := requeueParts(threadID, item, rows, read)
+		parts, withdrawnRow, unsplit := requeueParts(threadID, item, rows, read)
+		if unsplit != nil {
+			whole = append(whole, *unsplit)
+			continue
+		}
 		if withdrawnRow != "" {
 			if _, err := a.cleanupStaleFlushRow(threadID, withdrawnRow); err != nil {
 				retireFailed = append(retireFailed, fmt.Errorf("%s: %w", withdrawnRow, err))
@@ -1124,8 +1199,21 @@ func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage
 			requeued = append(requeued, unconfirmedFromQueued(queued))
 		}
 	}
-	failures.persist, failures.retire = errors.Join(persistFailed...), errors.Join(retireFailed...)
-	return requeued, failures
+	outcome.persist, outcome.retire = errors.Join(persistFailed...), errors.Join(retireFailed...)
+	if len(whole) > 0 {
+		restore, err := a.writeFlushDraft(threadID, whole, nil, reason)
+		if err != nil {
+			log.Printf("flush queue: restore draft (%s) for %s: %v — joined messages that do not split stay out of the queue", reason, threadID, err)
+			// Not queued again either: what is owed for their delivery is
+			// settled now.
+			for _, item := range whole {
+				item.Settlement.Settle("")
+			}
+			restore = flushRestore{failed: err}
+		}
+		outcome.composer = append(outcome.composer, restore)
+	}
+	return requeued, outcome
 }
 
 // requeuePart is one queue item a requeue registers: rowless when it has no
@@ -1136,14 +1224,18 @@ type requeuePart struct {
 }
 
 // requeueParts is what of item a requeue queues again
-// (requeueUnconfirmedFlushItemsLocked), and the timeline row to retire now
-// when nothing of it is left. rows are the queue rows its messages keep, by
-// id; read is false when they could not be read.
-func requeueParts(threadID string, item triage.UnconfirmedFlushItem, rows map[string]store.FlushQueueItem, read bool) ([]requeuePart, string) {
+// (requeueUnconfirmedFlushItemsLocked), the timeline row to retire now when
+// nothing of it is left, or, when it does not split where it has to, the
+// item as it goes to the composer whole instead. rows are the queue rows its
+// messages keep, by id; read is false when they could not be read.
+func requeueParts(threadID string, item triage.UnconfirmedFlushItem, rows map[string]store.FlushQueueItem, read bool) ([]requeuePart, string, *triage.UnconfirmedFlushItem) {
 	if read {
-		rest, ok := withoutQueueMembers(threadID, item, withdrawnMembers(item, func(id string) bool { _, ok := rows[id]; return ok }))
-		if !ok {
-			return nil, unconfirmedRowID(item)
+		rest, cut := withoutQueueMembers(threadID, item, withdrawnMembers(item, func(id string) bool { _, ok := rows[id]; return ok }))
+		switch cut {
+		case cutGone:
+			return nil, unconfirmedRowID(item), nil
+		case cutWhole:
+			return nil, "", &rest
 		}
 		item = rest
 	}
@@ -1158,9 +1250,9 @@ func requeueParts(threadID string, item triage.UnconfirmedFlushItem, rows map[st
 	if len(own) == 0 {
 		queued, ok := queuedFlushItemFromUnconfirmed(item)
 		if !ok {
-			return nil, ""
+			return nil, "", nil
 		}
-		return []requeuePart{{queued: queued, rowless: !hasQueueRow(item), handed: !item.Queued}}, ""
+		return []requeuePart{{queued: queued, rowless: !hasQueueRow(item), handed: !item.Queued}}, "", nil
 	}
 	// The rest, as one message, from the item less the messages with rows.
 	var rest *requeuePart
@@ -1169,14 +1261,12 @@ func requeueParts(threadID string, item triage.UnconfirmedFlushItem, rows map[st
 		for _, member := range own {
 			gone[member.QueueItemID] = true
 		}
-		remainder, ok := withoutQueueMembers(threadID, item, gone)
-		if !ok {
-			// Not told apart by message: it goes back whole, as one.
-			queued, ok := queuedFlushItemFromUnconfirmed(item)
-			if !ok {
-				return nil, ""
-			}
-			return []requeuePart{{queued: queued, rowless: !hasQueueRow(item), handed: !item.Queued}}, ""
+		remainder, cut := withoutQueueMembers(threadID, item, gone)
+		if cut == cutWhole {
+			// Not told apart by message, so a later withdrawal of one could
+			// not take it alone: it goes to the composer whole, its messages
+			// with their rows included.
+			return nil, "", &item
 		}
 		if queued, ok := queuedFlushItemFromUnconfirmed(remainder); ok {
 			rest = &requeuePart{queued: queued, rowless: true, handed: !item.Queued}
@@ -1205,7 +1295,7 @@ func requeueParts(threadID string, item triage.UnconfirmedFlushItem, rows map[st
 	if rest == nil && len(parts) > 0 {
 		parts[0].queued.StaleUserItemID = item.StaleUserItemID
 	}
-	return parts, ""
+	return parts, "", nil
 }
 
 // queueRowsOf reads the queue rows of threadID named by ids. ok is false
@@ -1251,24 +1341,36 @@ func (a *App) persistRequeuedFlushItem(threadID string, queued triage.QueuedFlus
 	return nil
 }
 
-// requeueFailures is what a requeue could not write
-// (requeueUnconfirmedFlushItemsLocked): the durable rows of messages it
-// queued again, and the timeline rows of messages withdrawn meanwhile.
-type requeueFailures struct {
+// requeueOutcome is what a requeue owes once the mutation lock is released
+// (requeueUnconfirmedFlushItemsLocked): what it could not write, the durable
+// rows of messages it queued again (persist) and the timeline rows of
+// messages withdrawn meanwhile (retire), and the restores of the joined
+// messages it sent to the composer whole instead (composer).
+type requeueOutcome struct {
 	persist, retire error
+	composer        []flushRestore
 }
 
-func (f requeueFailures) join(other requeueFailures) requeueFailures {
-	return requeueFailures{persist: errors.Join(f.persist, other.persist), retire: errors.Join(f.retire, other.retire)}
+func (f requeueOutcome) join(other requeueOutcome) requeueOutcome {
+	return requeueOutcome{
+		persist:  errors.Join(f.persist, other.persist),
+		retire:   errors.Join(f.retire, other.retire),
+		composer: append(slices.Clone(f.composer), other.composer...),
+	}
 }
 
-// emitRequeueFailures tells the thread what a requeue could not write.
-func (a *App) emitRequeueFailures(threadID string, f requeueFailures) {
+// finishRequeue tells the thread what a requeue could not write, and
+// finishes its composer restores (finishFlushRestore). The caller holds the
+// thread action lock and not its mutation lock.
+func (a *App) finishRequeue(threadID string, f requeueOutcome) {
 	if f.persist != nil {
 		a.emitErrorToThread(threadID, "Saving a queued message failed. It stays queued but will not survive an app restart: "+f.persist.Error())
 	}
 	if f.retire != nil {
 		a.emitErrorToThread(threadID, "A withdrawn message could not be removed from the timeline: "+f.retire.Error())
+	}
+	for _, restore := range f.composer {
+		a.finishFlushRestore(threadID, restore)
 	}
 }
 
