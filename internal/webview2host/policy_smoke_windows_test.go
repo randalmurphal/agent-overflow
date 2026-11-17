@@ -89,6 +89,7 @@ func TestPolicySmokeOneBrowserWideInterception(t *testing.T) {
 		HostWindow: func() uintptr { return ui.hwnd }, UserDataDir: dataDir, Logf: t.Logf,
 		Report: func(pageID string, kind ReportKind, detail string) { reports <- smokeReport{pageID, kind, detail} },
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)

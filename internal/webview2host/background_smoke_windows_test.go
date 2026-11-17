@@ -48,6 +48,7 @@ func TestBackgroundSmokeReachesAHiddenPageWithNoBounds(t *testing.T) {
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,9 +71,8 @@ func TestBackgroundSmokeReachesAHiddenPageWithNoBounds(t *testing.T) {
 			t.Fatal("no created report")
 		}
 	}
-	host.mu.Lock()
-	page := host.pages["page-1"]
-	host.mu.Unlock()
+	var page *hostPage
+	ui.do(func() { page = host.pages["page-1"] })
 	if page == nil || page.controller2 == nil {
 		t.Fatal("the runtime has no ICoreWebView2Controller2")
 	}

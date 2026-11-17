@@ -54,6 +54,7 @@ func TestProcessSmokeBrowserExitsWithItsLastController(t *testing.T) {
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,9 +82,9 @@ func TestProcessSmokeBrowserExitsWithItsLastController(t *testing.T) {
 		}
 	}
 	viewOf := func(pageID string) *iCoreWebView2 {
-		host.mu.Lock()
-		defer host.mu.Unlock()
-		return host.pages[pageID].view
+		var view *iCoreWebView2
+		ui.do(func() { view = host.pages[pageID].view })
+		return view
 	}
 
 	host.Apply(Directive{Op: OpCreate, PageID: "page-1", ProfileID: "smoke"})

@@ -39,12 +39,14 @@ func (r *popupRig) awaitReports(want int) []rigReport {
 	r.t.Helper()
 	var got []rigReport
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		r.pump()
 		got = append(got, r.takeReports()...)
 		if len(got) >= want {
 			break
 		}
 	}
 	time.Sleep(20 * time.Millisecond)
+	r.pump()
 	return append(got, r.takeReports()...)
 }
 

@@ -40,7 +40,7 @@ import (
 // The backend knows a popup's opener only once the opener is announced, so
 // a popup is announced after its opener, by its opener's announcement if
 // its own target came first. A page that goes takes its popups that are not
-// announced yet with it (takeLocked), and every popup that goes leaves the
+// announced yet with it (take), and every popup that goes leaves the
 // same way (departPopup).
 
 // popupStage is where a popup is between its request and its announcement.
@@ -94,20 +94,25 @@ func (p *hostPage) unannounced() bool {
 	return p.popup != nil && p.popup.stage != popupAnnounced
 }
 
-// watchWindows takes every window the page opens and its own close.
-func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) {
+// watchWindows takes every window the page opens and its own close. A page
+// it fails for is not created (controllerCompleted): a window it opened
+// would be WebView2's own.
+func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) error {
 	opened := newNewWindowRequestedHandler(func(args *iNewWindowRequestedEventArgs) { h.newWindowRequested(page, args) })
 	page.newWindow = opened
-	if _, err := view.addNewWindowRequested(opened); err != nil {
-		h.config.Logf("browser host: page %s new-window subscription: %v; a window it opens is WebView2's own", page.id, err)
-	}
+	_, err := view.addNewWindowRequested(opened)
 	opened.ref.release()
+	if err != nil {
+		return fmt.Errorf("new-window subscription: %w", err)
+	}
 	closing := newViewEventHandler(func() { h.windowCloseRequested(page) })
 	page.closeRequested = closing
-	if _, err := view.addWindowCloseRequested(closing); err != nil {
-		h.config.Logf("browser host: page %s close-request subscription: %v", page.id, err)
-	}
+	_, err = view.addWindowCloseRequested(closing)
 	closing.ref.release()
+	if err != nil {
+		return fmt.Errorf("close-request subscription: %w", err)
+	}
+	return nil
 }
 
 // newWindowRequested makes the window a page asks for a popup page of the
@@ -141,18 +146,13 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 		popup: &popupState{openerID: opener.id, request: popupRequest{args: args, deferral: deferral}, uri: args.uri()},
 	}
 	h.pendingPopups++
-	h.mu.Lock()
-	why := ""
-	switch {
-	case h.pages[opener.id] != opener:
-		why = "its page is closing"
-	case len(h.pages) >= MaxHostPages:
-		why = fmt.Sprintf("the pane has %d pages", len(h.pages))
-	default:
-		h.pages[page.id] = page
+	why := "its page is closing"
+	if h.pages[opener.id] == opener {
+		why = h.admit(page.id)
 	}
-	h.mu.Unlock()
-	if why != "" {
+	if why == "" {
+		h.pages[page.id] = page
+	} else {
 		h.config.Logf("browser host: page %s: refuse a new window: %s", opener.id, why)
 		h.answerNoWindow(page)
 		return
@@ -201,11 +201,9 @@ func (h *Host) answerNoWindow(page *hostPage) {
 // has then. The view starts at its opener's bounds, hidden, so the window
 // lays out at its opener's size until the backend sets its viewport.
 func (h *Host) popupReady(page *hostPage, view *iCoreWebView2) {
-	h.mu.Lock()
 	opener := h.pages[page.popup.openerID]
-	h.mu.Unlock()
 	if opener == nil || opener.controller == nil {
-		// A page that goes takes its popups (takeLocked), so this one is
+		// A page that goes takes its popups (take), so this one is
 		// already going; its teardown answers the request.
 		h.discardCreated(page, "its opener closed")
 		return
@@ -249,9 +247,7 @@ func (h *Host) popupReady(page *hostPage, view *iCoreWebView2) {
 // this one.
 func (h *Host) popupTargeted(page *hostPage, targetID string) {
 	page.popup.target, page.popup.stage = targetID, popupTargeted
-	h.mu.Lock()
 	opener := h.pages[page.popup.openerID]
-	h.mu.Unlock()
 	if opener != nil && opener.unannounced() {
 		return
 	}
@@ -265,14 +261,12 @@ func (h *Host) announcePopup(page *hostPage) {
 		h.discardCreated(page, err.Error())
 		return
 	}
-	h.mu.Lock()
 	var waiting []*hostPage
 	for _, child := range h.pages {
 		if child.popup != nil && child.popup.openerID == page.id && child.popup.stage == popupTargeted {
 			waiting = append(waiting, child)
 		}
 	}
-	h.mu.Unlock()
 	for _, child := range waiting {
 		h.announcePopup(child)
 	}
@@ -383,22 +377,25 @@ func (h *Host) pageReport(page *hostPage, kind ReportKind, detail string) {
 }
 
 // windowCloseRequested closes a page whose document asked to close
-// (window.close()), as every engine closes a view that asks. WebView2 also
-// asks to close a popup whose navigation became a download; closing the
-// page then would cancel the download, so a page with a download running
-// closes once its last download ends (endDownload).
+// (window.close()), as every engine closes a view that asks.
 func (h *Host) windowCloseRequested(page *hostPage) {
-	if len(page.downloads) > 0 {
-		h.config.Logf("browser host: page %s asked to close while it downloads; it closes when its downloads end", page.id)
-		page.closeAfterDownloads = true
-		return
-	}
 	h.closeAsked(page)
 }
 
-// closeAsked closes a page that asked to close. Off the caller's callback:
-// closePages runs on the UI thread through OnMain, and a controller must
-// not be closed inside its own event.
+// closeAsked closes a page that asked to close, in a UI-thread turn posted
+// after the caller's event, since a controller must not be closed inside
+// its own event. The turn decides on the page as it is then: one already
+// gone, its downloads retired, is not in the registry to take, and one
+// with a download running stays open until its last download ends
+// (endDownload), as WebView2 also asks to close a popup whose navigation
+// became a download and closing the page would cancel it.
 func (h *Host) closeAsked(page *hostPage) {
-	go h.closePages(func(p *hostPage) bool { return p == page })
+	h.config.Post(func() {
+		if len(page.downloads) > 0 {
+			h.config.Logf("browser host: page %s asked to close while it downloads; it closes when its downloads end", page.id)
+			page.closeAfterDownloads = true
+			return
+		}
+		h.closeTaken(h.take(func(p *hostPage) bool { return p == page }), nil)
+	})
 }

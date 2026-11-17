@@ -69,6 +69,7 @@ setTimeout(() => { document.open(); document.write("<!doctype html><title>Rewrit
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)

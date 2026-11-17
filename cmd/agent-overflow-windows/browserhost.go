@@ -137,7 +137,11 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 		// WebView2 requires every COM and window call on the thread owning
 		// the host window, which is the thread Wails runs its message pump
 		// on.
-		OnMain:   application.InvokeSync,
+		OnMain: application.InvokeSync,
+		// Wails runs InvokeAsync inline when called on the UI thread; from
+		// another goroutine it posts to the pump, so a post made inside a
+		// WebView2 event runs after the event returns.
+		Post:     func(fn func()) { go application.InvokeAsync(fn) },
 		Geometry: a.paneGeometry,
 		Focus:    a.paneFocus,
 	})

@@ -3,6 +3,8 @@
 package webview2host
 
 import (
+	"errors"
+	"fmt"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -90,36 +92,45 @@ func (v *iCoreWebView2_9) closeDownloadDialog() error {
 }
 
 // watchDownloadDialog closes the page's default download dialog whenever
-// WebView2 opens it. A runtime without the API has no way to say so, and
-// the dialog stays until the user closes it.
-func (h *Host) watchDownloadDialog(page *hostPage, view *iCoreWebView2) {
+// WebView2 opens it. A page whose runtime cannot say so, or whose dialog
+// state cannot be read, is not created (controllerCompleted): a dialog
+// WebView2 opened on it would stay.
+func (h *Host) watchDownloadDialog(page *hostPage, view *iCoreWebView2) error {
 	view9 := view.queryWebView9()
 	if view9 == nil {
-		h.config.Logf("browser host: page %s: the runtime has no default download dialog API; a dialog WebView2 opens on its own stays open", page.id)
-		return
+		return errors.New("the runtime has no default download dialog API")
 	}
 	defer view9.release()
 	handler := newViewEventHandler(func() { h.closeDownloadDialog(page) })
 	page.dialogOpened = handler
-	if err := view9.addDownloadDialogOpenChanged(handler); err != nil {
-		h.config.Logf("browser host: page %s download dialog subscription: %v", page.id, err)
-	}
+	err := view9.addDownloadDialogOpenChanged(handler)
 	handler.ref.release()
+	if err != nil {
+		return fmt.Errorf("download dialog subscription: %w", err)
+	}
+	if _, err := view9.downloadDialogOpen(); err != nil {
+		return fmt.Errorf("read the download dialog state: %w", err)
+	}
+	return nil
 }
 
 // closeDownloadDialog closes the page's default download dialog if it is
-// open. Runs on the UI thread, in the event that says it changed.
+// open, or, when its state cannot be read, closes it anyway. Runs on the UI
+// thread, in the event that says it changed.
 func (h *Host) closeDownloadDialog(page *hostPage) {
 	if page.view == nil {
 		return
 	}
 	view9 := page.view.queryWebView9()
 	if view9 == nil {
+		h.config.Logf("browser host: page %s: the download dialog changed on a view without its API", page.id)
 		return
 	}
 	defer view9.release()
 	open, err := view9.downloadDialogOpen()
-	if err != nil || !open {
+	if err != nil {
+		h.config.Logf("browser host: page %s: read the download dialog state: %v; close it anyway", page.id, err)
+	} else if !open {
 		return
 	}
 	if err := view9.closeDownloadDialog(); err != nil {

@@ -157,7 +157,7 @@ func newFakeController() *fakeController {
 }
 
 // fakeView is ICoreWebView2 through ICoreWebView2_9, the view the host
-// queries for the download dialog.
+// queries for downloads and the download dialog.
 type fakeView struct {
 	vtbl *iCoreWebView2_9Vtbl
 	refs int
@@ -167,10 +167,17 @@ type fakeView struct {
 	devtools   []*iDevToolsCompletedHandler
 	dialogOpen bool
 	dialogShut int
+	// subErr fails the subscription to an event, and dialogErr the read of
+	// whether the download dialog is open.
+	subErr    map[string]uintptr
+	dialogErr uintptr
 }
 
 func fakeSubscribeView(event string) comProc {
 	return newComProc(func(this *fakeView, handler *comObject, _ *eventRegistrationToken) uintptr {
+		if hr := this.subErr[event]; hr != 0 {
+			return hr
+		}
 		addRefObject(handler)
 		this.subs[event] = append(this.subs[event], handler)
 		return 0
@@ -180,7 +187,7 @@ func fakeSubscribeView(event string) comProc {
 var fakeViewVtbl = func() iCoreWebView2_9Vtbl {
 	var v iCoreWebView2_9Vtbl
 	v.QueryInterface = newComProc(func(this *fakeView, riid *windows.GUID, out *uintptr) uintptr {
-		if *riid != iidWebView2_9 {
+		if *riid != iidWebView2_9 && *riid != iidWebView2_4 {
 			*out = 0
 			return 0x80004002 // E_NOINTERFACE
 		}
@@ -188,6 +195,9 @@ var fakeViewVtbl = func() iCoreWebView2_9Vtbl {
 		*out = uintptr(unsafe.Pointer(this))
 		return 0
 	})
+	// add_DownloadStarting is slot 75 (iCoreWebView2_4Vtbl), inside the
+	// slots iCoreWebView2_9Vtbl leaves unnamed.
+	*(*comProc)(unsafe.Add(unsafe.Pointer(&v), unsafe.Offsetof(iCoreWebView2_4Vtbl{}.AddDownloadStarting))) = fakeSubscribeView("download-starting")
 	v.AddRef = newComProc(func(this *fakeView) uintptr { this.refs++; return uintptr(this.refs) })
 	v.Release = newComProc(func(this *fakeView) uintptr { this.refs--; return uintptr(this.refs) })
 	v.AddProcessFailed = fakeSubscribeView("process-failed")
@@ -200,6 +210,9 @@ var fakeViewVtbl = func() iCoreWebView2_9Vtbl {
 		return 0
 	})
 	v.GetIsDefaultDownloadDialogOpen = newComProc(func(this *fakeView, out *int32) uintptr {
+		if this.dialogErr != 0 {
+			return this.dialogErr
+		}
 		*out = 0
 		if this.dialogOpen {
 			*out = 1
@@ -347,15 +360,22 @@ type rigReport struct {
 	detail string
 }
 
-// popupRig is a Host over a fakeEnv10, whose UI thread is the caller's.
+// popupRig is a Host over a fakeEnv10, whose UI thread is the test's: a
+// call to OnMain from any other thread waits in queue, with every Post,
+// until the test pumps it there.
 type popupRig struct {
-	t    *testing.T
-	host *Host
-	env  *fakeEnv10
-	base int
+	t     *testing.T
+	host  *Host
+	env   *fakeEnv10
+	base  int
+	owner uint32
+	// beforeMain, when set, runs as each OnMain on the test's thread
+	// starts, before its function, until it answers true.
+	beforeMain func() bool
 
 	mu      sync.Mutex
 	reports []rigReport
+	queue   []func()
 }
 
 func newPopupRig(t *testing.T) *popupRig {
@@ -363,20 +383,28 @@ func newPopupRig(t *testing.T) *popupRig {
 	// The host's windows are the test thread's.
 	runtime.LockOSThread()
 	t.Cleanup(runtime.UnlockOSThread)
-	r := &popupRig{t: t, env: &fakeEnv10{vtbl: &fakeEnv10Vtbl}, base: comRootCount()}
+	r := &popupRig{t: t, env: &fakeEnv10{vtbl: &fakeEnv10Vtbl}, base: comRootCount(), owner: windows.GetCurrentThreadId()}
 	hwnd := messageWindow(t)
-	var onMain sync.Mutex
 	r.host = &Host{
 		pages:         map[string]*hostPage{},
 		downloadToken: "t",
+		foreground:    func(uintptr) bool { return false },
 		config: Config{
 			Logf:       t.Logf,
 			HostWindow: func() uintptr { return hwnd },
 			OnMain: func(fn func()) {
-				onMain.Lock()
-				defer onMain.Unlock()
-				fn()
+				if windows.GetCurrentThreadId() == r.owner {
+					if before := r.beforeMain; before != nil && before() {
+						r.beforeMain = nil
+					}
+					fn()
+					return
+				}
+				done := make(chan struct{})
+				r.post(func() { defer close(done); fn() })
+				<-done
 			},
+			Post: r.post,
 			Report: func(pageID string, kind ReportKind, detail string) {
 				r.mu.Lock()
 				r.reports = append(r.reports, rigReport{pageID, kind, detail})
@@ -419,6 +447,63 @@ func (r *popupRig) takeReports() []rigReport {
 	return out
 }
 
+// post queues fn for the test's thread.
+func (r *popupRig) post(fn func()) {
+	r.mu.Lock()
+	r.queue = append(r.queue, fn)
+	r.mu.Unlock()
+}
+
+// pump runs on the test's thread what is queued for it, and what that
+// queues, and answers how many it ran.
+func (r *popupRig) pump() int {
+	ran := 0
+	for {
+		r.mu.Lock()
+		if len(r.queue) == 0 {
+			r.mu.Unlock()
+			return ran
+		}
+		fn := r.queue[0]
+		r.queue = r.queue[1:]
+		r.mu.Unlock()
+		fn()
+		ran++
+	}
+}
+
+// awaitQueued waits a moment for work queued for the test's thread.
+func (r *popupRig) awaitQueued() {
+	r.t.Helper()
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		r.mu.Lock()
+		n := len(r.queue)
+		r.mu.Unlock()
+		if n > 0 {
+			return
+		}
+	}
+	r.t.Fatal("nothing was queued for the UI thread")
+}
+
+// awaitReport pumps until page reports kind, and answers the reports until
+// then, that one last.
+func (r *popupRig) awaitReport(page string, kind ReportKind) []rigReport {
+	r.t.Helper()
+	var got []rigReport
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		r.pump()
+		for _, report := range r.takeReports() {
+			got = append(got, report)
+			if report.page == page && report.kind == kind {
+				return got
+			}
+		}
+	}
+	r.t.Fatalf("no %s report of %s in %+v", kind, page, got)
+	return nil
+}
+
 // createPage creates a backend page through its directive and answers its
 // controller and target.
 func (r *popupRig) createPage(id, profile string, ephemeral bool) (*hostPage, *fakeController) {
@@ -439,9 +524,9 @@ func (r *popupRig) createPage(id, profile string, ephemeral bool) (*hostPage, *f
 	return page, controller
 }
 
+// page answers the page registered under id. Runs on the test's thread,
+// the host's UI thread.
 func (r *popupRig) page(id string) *hostPage {
-	r.host.mu.Lock()
-	defer r.host.mu.Unlock()
 	return r.host.pages[id]
 }
 
@@ -485,6 +570,7 @@ func closed(t *testing.T, controller *fakeController) {
 func (r *popupRig) done() {
 	r.t.Helper()
 	r.host.Close()
+	r.pump()
 	for len(r.env.pending) > 0 {
 		r.env.complete(r.t, 0x80004004, nil) // E_ABORT
 	}

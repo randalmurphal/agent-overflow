@@ -570,6 +570,7 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 			s.reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: s.ui.do,
+		Post:   s.ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -608,9 +609,9 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 }
 
 func (s *downloadSmoke) page() *hostPage {
-	s.host.mu.Lock()
-	defer s.host.mu.Unlock()
-	return s.host.pages["page-1"]
+	var page *hostPage
+	s.ui.do(func() { page = s.host.pages["page-1"] })
+	return page
 }
 
 // serve answers /cd/<name>?size=n as an attachment, /slow/<name> as one

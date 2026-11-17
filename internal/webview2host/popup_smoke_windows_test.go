@@ -279,6 +279,7 @@ func startPopupSmoke(t *testing.T) *popupSmoke {
 			s.reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: s.ui.do,
+		Post:   s.ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -640,7 +641,7 @@ func (s *popupSmoke) noDialog(pageID string) {
 }
 
 func (s *popupSmoke) page(pageID string) *hostPage {
-	s.host.mu.Lock()
-	defer s.host.mu.Unlock()
-	return s.host.pages[pageID]
+	var page *hostPage
+	s.ui.do(func() { page = s.host.pages[pageID] })
+	return page
 }

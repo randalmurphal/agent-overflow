@@ -5,6 +5,8 @@ package webview2host
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -66,19 +68,20 @@ func downloadID(host string, n uint64) string {
 // watchDownloads takes every download the page starts, so WebView2's own
 // download dialog never opens for it. A runtime without DownloadStarting
 // keeps WebView2's dialog and the pane lists nothing.
-func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) {
+func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) error {
 	view4 := view.queryWebView4()
 	if view4 == nil {
-		h.config.Logf("browser host: page %s: the runtime has no DownloadStarting; its downloads show WebView2's dialog and are not listed", page.id)
-		return
+		return errors.New("the runtime has no DownloadStarting")
 	}
 	defer view4.release()
 	handler := newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { h.downloadStarting(page, args) })
 	page.downloadStarting = handler
-	if _, err := view4.addDownloadStarting(handler); err != nil {
-		h.config.Logf("browser host: page %s download subscription: %v", page.id, err)
-	}
+	_, err := view4.addDownloadStarting(handler)
 	handler.ref.release()
+	if err != nil {
+		return fmt.Errorf("download subscription: %w", err)
+	}
+	return nil
 }
 
 // downloadStarting takes one download: WebView2's dialog stays closed, the
@@ -374,14 +377,7 @@ func (h *Host) settleCancelAfter(d *hostDownload) {
 	if after == nil {
 		after = func(wait time.Duration, fn func()) { time.AfterFunc(wait, fn) }
 	}
-	after(downloadCancelBound, func() {
-		h.mu.Lock()
-		live := h.pages[d.page.id] == d.page
-		h.mu.Unlock()
-		if live {
-			h.config.OnMain(func() { h.settleCancel(d) })
-		}
-	})
+	after(downloadCancelBound, func() { h.config.OnMain(func() { h.settleCancel(d) }) })
 }
 
 // settleCancel ends a download the backend canceled that WebView2 has not

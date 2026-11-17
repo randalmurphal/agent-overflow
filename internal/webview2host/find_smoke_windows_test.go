@@ -66,6 +66,7 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,9 +95,8 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	host.Apply(Directive{Op: OpBounds, PageID: "page-1", X: 0, Y: 0, W: 640, H: 480})
 	host.Apply(Directive{Op: OpShow, PageID: "page-1"})
 
-	host.mu.Lock()
-	page := host.pages["page-1"]
-	host.mu.Unlock()
+	var page *hostPage
+	ui.do(func() { page = host.pages["page-1"] })
 	ui.do(func() {
 		html := "<p>alpha beta</p><p>gamma ALPHA delta</p>"
 		if err := smokeNavigateToString(page.view, html); err != nil {
@@ -201,13 +201,25 @@ const (
 // message pump that also runs queued functions.
 type smokeUIThread struct {
 	hwnd  uintptr
+	tid   uint32
 	queue chan func()
 }
 
+// do runs fn on the UI thread and returns once it has run, inline when
+// called there, as the launcher's OnMain does.
 func (u *smokeUIThread) do(fn func()) {
+	if windows.GetCurrentThreadId() == u.tid {
+		fn()
+		return
+	}
 	done := make(chan struct{})
 	u.queue <- func() { defer close(done); fn() }
 	<-done
+}
+
+// post queues fn without waiting, from any thread, the UI thread too.
+func (u *smokeUIThread) post(fn func()) {
+	go func() { u.queue <- fn }()
 }
 
 func startSmokeUIThread(t *testing.T) *smokeUIThread {
@@ -233,7 +245,7 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 			return
 		}
 		defer destroyWindow(hwnd)
-		ui.hwnd = hwnd
+		ui.hwnd, ui.tid = hwnd, windows.GetCurrentThreadId()
 		ready <- nil
 		var msg [smokeMessageWords]uint64 // MSG is 48 bytes on 64-bit
 		for {

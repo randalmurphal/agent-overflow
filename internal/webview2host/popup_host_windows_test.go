@@ -5,7 +5,6 @@ package webview2host
 import (
 	"slices"
 	"testing"
-	"time"
 	"unsafe"
 )
 
@@ -26,14 +25,12 @@ func (r *popupRig) openPopup(opener *fakeController, args *fakeWindowArgs) (*hos
 	}
 	controller := newFakeController()
 	r.env.complete(r.t, 0, controller)
-	r.host.mu.Lock()
 	var popup *hostPage
 	for _, page := range r.host.pages {
 		if unsafe.Pointer(page.controller) == unsafe.Pointer(controller) {
 			popup = page
 		}
 	}
-	r.host.mu.Unlock()
 	if popup == nil {
 		r.t.Fatal("the popup's page is not registered")
 	}
@@ -104,16 +101,10 @@ func TestPopupOfAPopup(t *testing.T) {
 	second, secondController := r.openPopup(controller, args)
 	settled(t, args, secondController.view)
 	secondController.view.answerDevTools(t, 0, `{"targetInfo":{"targetId":"second-target"}}`)
-	got := r.takeReports()
-	if len(got) == 0 || got[0].kind != ReportPopup {
-		t.Fatalf("reports %+v, want the second popup's", got)
-	}
-	parsed, err := ParsePopupReport(got[0].detail)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parsed.Opener != popup.id || second.profileID != "prof" || second.id == popup.id {
-		t.Errorf("second popup %s of %s in %s, want a new page opened by %s in prof", second.id, parsed.Opener, second.profileID, popup.id)
+	sameReports(t, "the popup's popup", kinds(t, r.takeReports()),
+		second.id+":popup("+popup.id+",second-target)", second.id+":find-unavailable")
+	if second.profileID != "prof" || second.id == popup.id {
+		t.Errorf("second popup %s in %s, want a new page in prof", second.id, second.profileID)
 	}
 	r.done()
 	closed(t, opener)
@@ -246,12 +237,10 @@ func TestPopupRequestRefusals(t *testing.T) {
 	t.Run("past the page bound", func(t *testing.T) {
 		r := newPopupRig(t)
 		_, opener := r.createPage("opener", "prof", false)
-		r.host.mu.Lock()
 		for i := len(r.host.pages); i < MaxHostPages; i++ {
 			id := popupPageID("filler", uint64(i))
 			r.host.pages[id] = &hostPage{id: id}
 		}
-		r.host.mu.Unlock()
 		args := newFakeWindowArgs(popupURL)
 		opener.view.requestWindow(args)
 		// The deferral is taken before the bound is read under the lock.
@@ -273,18 +262,14 @@ func TestPopupRequestRefusals(t *testing.T) {
 	t.Run("from a page leaving the registry", func(t *testing.T) {
 		r := newPopupRig(t)
 		openerPage, opener := r.createPage("opener", "prof", false)
-		r.host.mu.Lock()
 		delete(r.host.pages, openerPage.id)
-		r.host.mu.Unlock()
 		args := newFakeWindowArgs(popupURL)
 		opener.view.requestWindow(args)
 		settled(t, args, nil)
 		if len(r.env.pending) != 0 {
 			t.Error("a controller was created for a page that is going")
 		}
-		r.host.mu.Lock()
 		r.host.pages[openerPage.id] = openerPage
-		r.host.mu.Unlock()
 		r.done()
 	})
 	t.Run("from a closed page", func(t *testing.T) {
@@ -312,12 +297,7 @@ func TestWindowCloseRequestClosesThePage(t *testing.T) {
 	page, controller := r.createPage("page", "prof", false)
 	awaitClosed := func(what string) {
 		t.Helper()
-		var got []rigReport
-		for deadline := time.Now().Add(5 * time.Second); len(got) == 0 && time.Now().Before(deadline); {
-			time.Sleep(time.Millisecond)
-			got = r.takeReports()
-		}
-		if len(got) != 1 || got[0] != (rigReport{"page", ReportClosed, ""}) {
+		if got := r.awaitReport("page", ReportClosed); len(got) != 1 {
 			t.Fatalf("%s reported %+v, want closed", what, got)
 		}
 	}
@@ -325,12 +305,12 @@ func TestWindowCloseRequestClosesThePage(t *testing.T) {
 	second := &hostDownload{id: "dl-2", page: page}
 	page.downloads = map[string]*hostDownload{first.id: first, second.id: second}
 	controller.view.raise("close-requested")
-	time.Sleep(50 * time.Millisecond)
+	r.pump()
 	if got := r.takeReports(); len(got) != 0 || r.page("page") == nil {
 		t.Fatalf("a downloading page closed on its close request: %+v", got)
 	}
 	r.host.endDownload(first, DownloadReport{ID: first.id, State: DownloadCompleted})
-	time.Sleep(50 * time.Millisecond)
+	r.pump()
 	if got := r.takeReports(); len(got) != 1 || got[0].kind != ReportDownload || r.page("page") == nil {
 		t.Fatalf("a page closed with a download running: %+v", got)
 	}
@@ -360,6 +340,12 @@ func TestDownloadDialogIsClosedWhenItOpens(t *testing.T) {
 	controller.view.raise("dialog")
 	if controller.view.dialogOpen || controller.view.dialogShut != 1 {
 		t.Error("an open dialog stayed open")
+	}
+	// A dialog whose state cannot be read is closed anyway.
+	controller.view.dialogOpen, controller.view.dialogErr = true, 0x80004005
+	controller.view.raise("dialog")
+	if controller.view.dialogOpen || controller.view.dialogShut != 2 {
+		t.Error("a dialog whose state could not be read stayed open")
 	}
 	r.done()
 	closed(t, controller)

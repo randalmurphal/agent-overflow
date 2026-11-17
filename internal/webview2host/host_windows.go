@@ -28,6 +28,12 @@ import (
 // through Config.OnMain, and every completion handler body runs INLINE on
 // the UI thread (WebView2 invokes them from the message pump) and
 // therefore must never call OnMain itself.
+//
+// The registry (pages) is the UI thread's alone. A page is looked up,
+// checked and used, or taken out and torn down, in one UI-thread turn, so
+// whatever holds a page in a turn holds a live one, and a page out of the
+// registry has no controller left but an asynchronous create's, which its
+// completion closes.
 type Host struct {
 	config Config
 
@@ -35,10 +41,15 @@ type Host struct {
 	// starts a new generation (environment.go).
 	env *paneEnvironment[paneEnv]
 
-	mu    sync.Mutex
-	pages map[string]*hostPage
-	// accelerators is the bound-chord set every page's key events are gated
-	// on (accelerators_windows.go). Replaced whole by OpAccelerators.
+	// pages are the live pages by id, and closed is set by Close, after
+	// which no page is admitted (admit). UI thread only.
+	pages  map[string]*hostPage
+	closed bool
+
+	// mu guards accelerators, the bound-chord set every page's key events
+	// are gated on (accelerators_windows.go), replaced whole by
+	// OpAccelerators on the bridge goroutine.
+	mu           sync.Mutex
 	accelerators keybindings.AcceleratorSet
 
 	cdpPort int
@@ -81,8 +92,14 @@ type Config struct {
 	Logf func(string, ...any)
 	// Report posts one BrowserHostReport back to the backend.
 	Report func(pageID string, kind ReportKind, detail string)
-	// OnMain runs fn on the UI thread and returns once it has run.
+	// OnMain runs fn on the UI thread and returns once it has run, inline
+	// when called there.
 	OnMain func(fn func())
+	// Post runs fn on the UI thread later, never inside the caller's call,
+	// and returns at once; it may be called on the UI thread. A page's own
+	// close request is posted, so the controller is not closed inside its
+	// own event.
+	Post func(fn func())
 	// Geometry holds the SPA's own pane geometry reports (geometry.go). A
 	// page bound to a mount with a report there is placed from it; nil, or
 	// no report, places pages from the backend's bounds alone.
@@ -197,8 +214,8 @@ func New(config Config) (*Host, error) {
 	if config.UserDataDir == "" {
 		return nil, errors.New("browser host user data folder is required")
 	}
-	if config.OnMain == nil {
-		return nil, errors.New("browser host main-thread dispatcher is required")
+	if config.OnMain == nil || config.Post == nil {
+		return nil, errors.New("browser host main-thread dispatchers are required")
 	}
 	if err := ValidateExtraBrowserArgs(config.ExtraBrowserArgs); err != nil {
 		return nil, err
@@ -331,13 +348,7 @@ func (h *Host) ApplyGeometry(reports []PaneGeometry) {
 	for _, report := range reports {
 		mounts[report.Mount] = true
 	}
-	h.mu.Lock()
-	pages := make([]*hostPage, 0, len(h.pages))
 	for _, page := range h.pages {
-		pages = append(pages, page)
-	}
-	h.mu.Unlock()
-	for _, page := range pages {
 		if page.controller != nil && page.pres.mount != "" && mounts[page.pres.mount] {
 			h.present(page, false)
 		}
@@ -461,54 +472,74 @@ func (h *Host) applyBackground(page *hostPage, bg string) {
 	page.bg = bg
 }
 
-// Close tears every controller down. The environment itself is released
-// with the process.
+// Close tears every controller down, a page's whose own close request is
+// still queued among them, and admits no page after. The environment
+// itself is released with the process. A controller whose create is still
+// in flight is closed by its completion.
 func (h *Host) Close() {
-	h.closePages(func(*hostPage) bool { return true })
+	h.config.OnMain(func() {
+		h.closed = true
+		h.closeTaken(h.take(func(*hostPage) bool { return true }), nil)
+	})
 }
 
-// withPage runs fn on the UI thread with the named page, or logs that it
-// is gone. A directive for a page that already died is normal (the
-// backend's view lags a process failure), not an error.
+// withPage runs fn on the UI thread with the named page, found in the same
+// turn, or logs that it is gone. A directive for a page that already died
+// is normal (the backend's view lags a process failure), not an error.
 func (h *Host) withPage(pageID string, fn func(*hostPage)) {
-	h.mu.Lock()
-	page := h.pages[pageID]
-	h.mu.Unlock()
-	if page == nil || page.controller == nil {
-		h.config.Logf("browser host: no live page %s", pageID)
-		return
-	}
-	h.config.OnMain(func() { fn(page) })
+	h.config.OnMain(func() {
+		page := h.pages[pageID]
+		if page == nil || page.controller == nil {
+			h.config.Logf("browser host: no live page %s", pageID)
+			return
+		}
+		fn(page)
+	})
 }
 
 // closePages closes the pages match selects, with every popup of theirs
-// not announced yet (takeLocked), and reports closed for each the backend
-// knows: a popup before its opener, so the backend still knows the opener
-// when it hears of the popup.
+// not announced yet, in one UI-thread turn.
 func (h *Host) closePages(match func(*hostPage) bool) {
-	h.mu.Lock()
-	closing := h.takeLocked(match)
-	h.mu.Unlock()
-	if len(closing) == 0 {
-		return
+	h.config.OnMain(func() { h.closeTaken(h.take(match), nil) })
+}
+
+// closeTaken settles the pages taken from the registry together, tears
+// them down and reports closed for each the backend knows but uncreated,
+// a backend page whose create failed: a popup before its opener, so the
+// backend still knows the opener when it hears of the popup. Runs on the
+// UI thread, in the turn that took them.
+func (h *Host) closeTaken(taken []*hostPage, uncreated *hostPage) {
+	reported := h.departTaken(taken)
+	for _, page := range taken {
+		h.teardown(page)
 	}
-	var reported []*hostPage
-	h.config.OnMain(func() {
-		reported = h.departTaken(closing)
-		for _, page := range closing {
-			h.teardown(page)
-		}
-	})
 	for i := len(reported) - 1; i >= 0; i-- {
-		h.config.Report(reported[i].id, ReportClosed, "")
+		if reported[i] != uncreated {
+			h.config.Report(reported[i].id, ReportClosed, "")
+		}
 	}
 }
 
-// takeLocked removes from the registry the pages match selects and, with
-// each, every popup of its not announced yet, transitively: the backend
-// cannot hear of a popup whose opener it has stopped knowing. It answers
-// them each after the openers taken with it. The caller holds h.mu.
-func (h *Host) takeLocked(match func(*hostPage) bool) []*hostPage {
+// admit answers why a new page cannot be registered under id, or "" when
+// it can. Every page, a backend create's and a popup's, is admitted here
+// alone. Runs on the UI thread.
+func (h *Host) admit(id string) string {
+	switch {
+	case h.closed:
+		return "the browser host is closed"
+	case h.pages[id] != nil:
+		return "page id already exists"
+	case len(h.pages) >= MaxHostPages:
+		return fmt.Sprintf("the pane has %d pages", len(h.pages))
+	}
+	return ""
+}
+
+// take removes from the registry the pages match selects and, with each,
+// every popup of its not announced yet, transitively: the backend cannot
+// hear of a popup whose opener it has stopped knowing. It answers them
+// each after the openers taken with it. Runs on the UI thread.
+func (h *Host) take(match func(*hostPage) bool) []*hostPage {
 	var taken []*hostPage
 	for id, page := range h.pages {
 		if match(page) {
@@ -574,8 +605,9 @@ func (h *Host) departTaken(taken []*hostPage) []*hostPage {
 }
 
 // teardown lets go of a page taken from the registry: its handlers, view
-// and controller, and the clip container once the controller is closed.
-// Runs on the UI thread.
+// and controller, and the clip container once the controller is closed,
+// each cleared as it goes, so a late use is a nil check. Runs on the UI
+// thread, in the turn that took the page.
 func (h *Host) teardown(page *hostPage) {
 	h.retireHandlers(page)
 	if page.view != nil {
@@ -787,31 +819,14 @@ func (h *Host) create(directive Directive) {
 		h.config.Report(directive.PageID, ReportCreateFailed, TruncateDetail(err.Error()))
 		return
 	}
-	env10 := env.env10
-	h.mu.Lock()
-	if _, exists := h.pages[directive.PageID]; exists {
-		h.mu.Unlock()
-		h.config.Report(directive.PageID, ReportCreateFailed, "page id already exists")
-		return
-	}
-	page := &hostPage{id: directive.PageID, profileID: directive.ProfileID, ephemeral: directive.Ephemeral}
-	h.pages[directive.PageID] = page
-	h.mu.Unlock()
-
-	hwnd := h.config.HostWindow()
-	if hwnd == 0 {
-		h.failUncreated(page, "launcher window is not available")
-		return
-	}
-
 	h.config.OnMain(func() {
-		// close/close-profile may have retired the page while this UI-thread
-		// hop was queued. Do not start a controller whose id is already
-		// settled and may already have been reused by a newer create.
-		if !h.pageRegistered(page) {
+		if why := h.admit(directive.PageID); why != "" {
+			h.config.Report(directive.PageID, ReportCreateFailed, why)
 			return
 		}
-		h.startController(page, env10, hwnd)
+		page := &hostPage{id: directive.PageID, profileID: directive.ProfileID, ephemeral: directive.Ephemeral}
+		h.pages[directive.PageID] = page
+		h.startController(page, env.env10, h.config.HostWindow())
 	})
 }
 
@@ -952,9 +967,12 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
 	keyHandler.ref.release()
-	h.watchDownloads(page, view)
-	h.watchDownloadDialog(page, view)
-	h.watchWindows(page, view)
+	for _, watch := range []func(*hostPage, *iCoreWebView2) error{h.watchDownloads, h.watchDownloadDialog, h.watchWindows} {
+		if err := watch(page, view); err != nil {
+			h.discardCreated(page, err.Error())
+			return
+		}
+	}
 
 	// A runtime without the find API has to be known before the page is
 	// used, so its report precedes created; a popup's follows its popup
@@ -1001,12 +1019,10 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 // pointer comparison keeps a late callback from deleting or reporting failure
 // for a newer page that reused the same id after this one was closed.
 func (h *Host) failUncreated(page *hostPage, detail string) {
-	h.mu.Lock()
 	mine := h.pages[page.id] == page
 	if mine {
 		delete(h.pages, page.id)
 	}
-	h.mu.Unlock()
 	destroyWindow(page.container)
 	page.container = 0
 	if page.popup != nil {
@@ -1024,10 +1040,8 @@ func (h *Host) failUncreated(page *hostPage, detail string) {
 // pageRegistered reports whether page is still the registry's entry for
 // its id. A page that lost a race with close or close-profile is already
 // settled: its report went out and its teardown belongs to whoever
-// removed it.
+// removed it. Runs on the UI thread.
 func (h *Host) pageRegistered(page *hostPage) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	return h.pages[page.id] == page
 }
 
@@ -1036,33 +1050,26 @@ func (h *Host) pageRegistered(page *hostPage) bool {
 // a window no directive can ever address. Runs on the UI thread, like
 // every caller.
 func (h *Host) discardCreated(page *hostPage, detail string) {
-	// Take the registry entry atomically: whichever of this and
-	// closePages removes the page owns its teardown, so the controller
-	// can never be closed twice. A popup takes its own popups with it.
-	h.mu.Lock()
-	var taken []*hostPage
-	if h.pages[page.id] == page {
-		taken = h.takeLocked(func(p *hostPage) bool { return p == page })
-	}
-	h.mu.Unlock()
+	// Whichever of this and a close takes the page owns its teardown, so
+	// the controller can never be closed twice. A popup takes its own
+	// popups with it.
+	taken := h.take(func(p *hostPage) bool { return p == page })
 	if len(taken) == 0 {
 		// Already settled by close or close-profile; their teardown owns
 		// the controller and their closed report is the final word.
 		return
 	}
-	reported := h.departTaken(taken)
 	for _, p := range taken {
 		if p.popup != nil {
 			h.config.Logf("browser host: popup %s of page %s: %s", p.id, p.popup.openerID, detail)
 		}
-		h.teardown(p)
 	}
-	for i := len(reported) - 1; i >= 0; i-- {
-		h.config.Report(reported[i].id, ReportClosed, "")
+	if page.popup != nil {
+		h.closeTaken(taken, nil)
+		return
 	}
-	if page.popup == nil {
-		h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
-	}
+	h.closeTaken(taken, page)
+	h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
 }
 
 // retireHandlers detaches the callbacks of a page that is going, so a late
