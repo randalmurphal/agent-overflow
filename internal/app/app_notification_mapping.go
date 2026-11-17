@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/serialqueue"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 )
@@ -309,6 +310,24 @@ func (a *App) notifySessionStartFailed(threadID string) {
 func (a *App) withdrawSessionStartFailed(threadID string) {
 	a.queueNotification(func() (notify.Notification, bool) {
 		return notify.MapSessionStarted(notify.SessionStarted{ThreadID: threadID, FailureRaised: true})
+	})
+}
+
+// notifyAgentWatchFailing tells the person that a watch keeps failing. The
+// episode that raises it is app_agent_watch_failure.go's.
+func (a *App) notifyAgentWatchFailing(row store.AgentWake, failure notify.WatchFailure) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapWatchFailing(notify.WatchFailing{
+			Thread: a.notificationThreadRef(row.ThreadID), WakeID: row.ID, Label: row.Label, Failure: failure,
+		})
+	})
+}
+
+// withdrawAgentWatchFailing takes back the notification
+// notifyAgentWatchFailing raised.
+func (a *App) withdrawAgentWatchFailing(wakeID string) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapWatchRecovered(notify.WatchRecovered{WakeID: wakeID})
 	})
 }
 

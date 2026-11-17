@@ -124,7 +124,7 @@ func TestMigrationV154Schema(t *testing.T) {
 			"command|TEXT|1|''|0", "cwd|TEXT|1|''|0", "interval_seconds|INTEGER|0|NULL|0", "timeout_seconds|INTEGER|0|NULL|0",
 			"long_running|INTEGER|1|0|0", "next_at|INTEGER|0|NULL|0", "last_run_at|INTEGER|0|NULL|0", "last_outcome|TEXT|1|''|0",
 			"last_output|TEXT|1|''|0", "undelivered|TEXT|1|''|0", "missed|INTEGER|1|0|0", "state|TEXT|1|NULL|0",
-			"created_at|INTEGER|1|NULL|0", "last_stderr|TEXT|1|''|0",
+			"created_at|INTEGER|1|NULL|0", "last_stderr|TEXT|1|''|0", "failure_noticed_at|INTEGER|0|NULL|0",
 		},
 		"session_start_failures": {"thread_id|TEXT|0|NULL|1", "failed_at|INTEGER|1|NULL|0"},
 	} {

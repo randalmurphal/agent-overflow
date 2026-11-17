@@ -117,6 +117,7 @@ export interface DbWake {
   state: string;
   last_outcome: string;
   next_at: number | null;
+  last_run_at: number;
   last_stderr: string;
 }
 
@@ -125,7 +126,7 @@ export function dbWake(dataDir: string, thread: string, label: string): DbWake |
   try {
     return db
       .prepare(
-        `SELECT id, state, last_outcome, next_at, last_stderr
+        `SELECT id, state, last_outcome, next_at, COALESCE(last_run_at, 0) AS last_run_at, last_stderr
            FROM agent_wakes WHERE thread_id = ? AND label = ? AND state <> 'cancelled'`,
       )
       .get(thread, label) as DbWake | undefined;

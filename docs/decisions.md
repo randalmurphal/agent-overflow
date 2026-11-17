@@ -510,6 +510,17 @@ Mechanism in
   never the agent's reason. Any thread may flag itself (ruling
   2026-10-22, [standing agents](specs/standing-agents.md) rulings 9 and
   41, [attention](specs/standing-agents.md#attention)).
+- A watch that keeps failing notifies the person once per failure
+  episode, at once when its process cannot start and otherwise at a
+  failed run five minutes after the episode's first, and its next clean
+  run withdraws it; it never wakes the agent and adds no retry. The
+  assistant instructions say workers implement project changes while the
+  assistant may build tools in its home, that a worker's evidence is
+  checked before work is reported done, that a working procedure is saved
+  and reused, and that the opening settles a first task before any
+  recurring work. An Instructions action on the assistant is declined
+  for now (owner ruling 2026-11-17,
+  [wake supervisor](specs/standing-agents.md#wake-supervisor)).
 - In an assistant's thread, Stop is two actions: Interrupt (stop the
   turn, keep the session) and End Session (end the process and its
   background items); a workflow run's Pause keeps its members' sessions

@@ -1,7 +1,9 @@
 package notify
 
 import (
+	"fmt"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -21,7 +23,8 @@ import (
 // lock screen a room full of people can read, so the same line holds for
 // both. What a notification may say is a bounded thread TITLE — the label the
 // user chose or the app generated for the thread, already visible in the
-// sidebar — plus a fixed phrase from this file.
+// sidebar — plus a fixed phrase from this file, which may name a tool or a
+// watch by its bounded name.
 //
 // One consequence worth stating: the mapping cannot explain a failure, only
 // report one. That is the intended trade. The detail is one click away in the
@@ -147,12 +150,13 @@ const (
 	// mid-word.
 	MaxTitleRunes = 80
 	// MaxBodyRunes bounds the fixed phrase plus the one variable token a
-	// body ever carries (a tool name).
+	// body ever carries (a tool name or a watch's label).
 	MaxBodyRunes = 120
 	// MaxToolNameRunes bounds the one provider-supplied token that reaches a
 	// body. A tool NAME is not content — it names a capability, not what the
 	// capability was asked to do — but it is still provider-supplied text,
-	// so it is clipped like everything else that crosses this line.
+	// so it is clipped like everything else that crosses this line. A
+	// watch's label, the name an agent gave it, is clipped to the same.
 	MaxToolNameRunes = 40
 )
 
@@ -267,6 +271,71 @@ type SessionStarted struct {
 	FailureRaised bool
 }
 
+// WatchFailing is an assistant's watch that keeps failing: its process
+// could not start, or its runs kept failing for long enough that it is no
+// passing fault (the app's episode rule, app_agent_watch_failure.go). A
+// watch reports only through the wakes its script prints, so a broken one
+// is otherwise silent.
+type WatchFailing struct {
+	Thread ThreadRef
+	WakeID string
+	// Label is the watch's name in its thread, as the background tray shows
+	// it: a name the agent chose, like a thread's title, never what the
+	// script printed.
+	Label   string
+	Failure WatchFailure
+}
+
+// WatchFailure is how a watch's latest run failed, in the app's own words.
+// It has no room for the script's output or an error's text: those stay on
+// the watch's row in the thread.
+type WatchFailure struct {
+	Cause WatchFailureCause
+	// ExitCode is the status of a WatchExitStatus run.
+	ExitCode int
+	// Timeout is the bound a WatchTimedOut run reached.
+	Timeout time.Duration
+}
+
+// WatchFailureCause is what ended a failed run of a watch.
+type WatchFailureCause int
+
+const (
+	// WatchErrored is a run that ended with an error of the app's own,
+	// such as output it could not read.
+	WatchErrored WatchFailureCause = iota
+	// WatchNotStarted is a process that could not be started at all.
+	WatchNotStarted
+	// WatchExitStatus is an exit with a nonzero status.
+	WatchExitStatus
+	// WatchTimedOut is an interval run stopped at its timeout.
+	WatchTimedOut
+	// WatchExited is a long-running watch's process exiting on its own.
+	WatchExited
+)
+
+func (f WatchFailure) phrase() string {
+	switch f.Cause {
+	case WatchNotStarted:
+		return "could not start"
+	case WatchExitStatus:
+		return fmt.Sprintf("exit status %d", f.ExitCode)
+	case WatchTimedOut:
+		return "timed out after " + f.Timeout.String()
+	case WatchExited:
+		return "exited"
+	default:
+		return "ended with an error"
+	}
+}
+
+// WatchRecovered is the end of a watch's failure: a clean run, or the watch
+// cancelled, replaced or stopped. The caller sends it only for a watch whose
+// failure was raised.
+type WatchRecovered struct {
+	WakeID string
+}
+
 // ApprovalMoment is an approval request or its answer — the two actions of
 // the `provider:approval` transition.
 type ApprovalMoment struct {
@@ -326,6 +395,10 @@ func threadNotificationID(threadID string) string { return "thread:" + threadID 
 // that completion (a session restarts after a settings change with the
 // completion still unread).
 func sessionStartNotificationID(threadID string) string { return "session-start:" + threadID }
+
+// watchNotificationID is per watch: two watches of one thread fail and
+// recover apart, and a turn or a session start says nothing about either.
+func watchNotificationID(wakeID string) string { return "watch:" + wakeID }
 
 // approvalNotificationID is per REQUEST, not per thread: two approvals can
 // be outstanding in one thread (a subagent's and the main agent's), each
@@ -432,6 +505,32 @@ func MapSessionStarted(started SessionStarted) (Notification, bool) {
 	}
 	return Notification{Send: Send{
 		ID:      sessionStartNotificationID(started.ThreadID),
+		Kind:    KindError,
+		Retract: true,
+	}}, true
+}
+
+// MapWatchFailing maps a watch that keeps failing. Its id is the watch's
+// own, so it neither replaces nor is withdrawn by anything said about its
+// thread.
+func MapWatchFailing(failing WatchFailing) (Notification, bool) {
+	if failing.Thread.ID == "" || failing.WakeID == "" {
+		return Notification{}, false
+	}
+	label := SummaryLine(failing.Label, MaxToolNameRunes)
+	notification := threadNotification(KindError, failing.Thread,
+		`The watch "`+label+`" is failing: `+failing.Failure.phrase()+". Open the thread to see why.")
+	notification.Send.ID = watchNotificationID(failing.WakeID)
+	return notification, true
+}
+
+// MapWatchRecovered retracts a watch's failure.
+func MapWatchRecovered(recovered WatchRecovered) (Notification, bool) {
+	if recovered.WakeID == "" {
+		return Notification{}, false
+	}
+	return Notification{Send: Send{
+		ID:      watchNotificationID(recovered.WakeID),
 		Kind:    KindError,
 		Retract: true,
 	}}, true

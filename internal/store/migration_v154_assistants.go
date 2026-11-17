@@ -30,7 +30,10 @@ import (
 // sweep rebuilds its schedule from them at every boot. `last_output` keeps
 // the body of a watch's most recent wake that never reached the agent,
 // `undelivered` that wake's outcome until a later wake tells the agent, and
-// `last_stderr` the tail of the watch's last stderr for the activity rail.
+// `last_stderr` the tail of the watch's last stderr for the activity rail,
+// and `failure_noticed_at` when the notification that the watch keeps
+// failing was raised, until it is withdrawn, so a run that ends the failure
+// after a restart still withdraws it.
 // `session_start_failures` marks a thread whose session, started for a
 // message the app queued, failed to start and raised the start-failure
 // notification, so the first start that succeeds withdraws it even after a
@@ -215,7 +218,8 @@ CREATE TABLE agent_wakes (
     missed           INTEGER NOT NULL DEFAULT 0,
     state            TEXT NOT NULL CHECK(state IN ('armed','running','cancelled')),
     created_at       INTEGER NOT NULL,
-    last_stderr      TEXT NOT NULL DEFAULT ''
+    last_stderr      TEXT NOT NULL DEFAULT '',
+    failure_noticed_at INTEGER
 );
 CREATE INDEX idx_agent_wakes_due ON agent_wakes(state, next_at);
 CREATE INDEX idx_agent_wakes_thread ON agent_wakes(thread_id, state);
