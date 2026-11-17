@@ -93,7 +93,7 @@ func TestCrashedPageStaysAFailedTabUntilItsReload(t *testing.T) {
 func TestPageInfoWithNoAddressKeepsTheTabsAddress(t *testing.T) {
 	m, _, access, firstID, _ := newPaneHostManager(t)
 	p := livePage(t, m, access, firstID)
-	m.updatePageInfo(p.driver.Handle(), "", "")
+	m.updatePageInfo(p.driver.Handle(), "", "", 1<<40)
 	m.pageCrashed(p.driver.Handle(), "terminated")
 	if tab, _ := findTab(m, access, firstID); tab.URL != "https://example.test/first" || tab.Title == "" {
 		t.Fatalf("tab = %+v, want the page's last address and title", tab)

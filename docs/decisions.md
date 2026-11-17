@@ -611,7 +611,10 @@ and anti-changes that live only here:
   Show in folder, a failed one with its reason. Clearing the list deletes
   no file; files stay in AO's artifact directory under its quotas and
   seven-day pruning. Downloads never open with the system's default app.
-  `docs/architecture/browser-tools.md`.
+  A browser that refuses AO's download directory still opens its pages:
+  the user is told once per browser profile, and its downloads are stopped
+  and listed as failed with the reason rather than saved to the user's
+  Downloads folder. `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

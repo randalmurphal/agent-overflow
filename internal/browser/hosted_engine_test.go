@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -104,12 +105,20 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	engine.createTimeout = 150 * time.Millisecond
 	engine.attachTimeout = 150 * time.Millisecond
 	engine.clearTimeout = 150 * time.Millisecond
+	engine.windowsPath = testWindowsPath
 	return engine, sink
 }
 
+// testWindowsPath stands in for `wslpath -w`.
+func testWindowsPath(_ context.Context, path string) (string, error) {
+	return `\\wsl.localhost\Test` + strings.ReplaceAll(path, "/", `\`), nil
+}
+
+const testDownloadDir = "/home/dev/.ao/downloads/jar"
+
 func testProfile(t *testing.T, engine *hostedEngine) *hostedProfile {
 	t.Helper()
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", DownloadDir: testDownloadDir, Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -400,15 +409,22 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	// closure it lands in has to be synchronized like the real one.
 	closed := make(chan string, 4)
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageClosed:      func(handle string) { closed <- handle },
-		PageInfoChanged: func(handle, url, title string) { infos = append(infos, handle+" "+url+" "+title) },
+		PageClosed: func(handle string) { closed <- handle },
+		PageInfoChanged: func(handle, url, title string, order uint64) {
+			infos = append(infos, fmt.Sprintf("%s %s %s %d", handle, url, title, order))
+		},
 	})
 	engine.bind("page1", "TARGET-1")
 
 	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
 	}})
-	if len(infos) != 1 || infos[0] != "page1 https://example.test/ Example" {
+	// The reports are numbered in the browser's order, which the Manager
+	// keeps the highest of.
+	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Retitled",
+	}})
+	if len(infos) != 2 || infos[0] != "page1 https://example.test/ Example 1" || infos[1] != "page1 https://example.test/ Retitled 2" {
 		t.Fatalf("PageInfoChanged saw %v", infos)
 	}
 	// A target this engine never created is dropped rather than reported
@@ -416,7 +432,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-9", Type: "page", URL: "https://elsewhere.test/",
 	}})
-	if len(infos) != 1 {
+	if len(infos) != 2 {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
@@ -433,7 +449,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 
 func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", DownloadDir: testDownloadDir, Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -709,6 +725,12 @@ func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL s
 	return endpoint.wsURL, endpoint.calls
 }
 
+// fakeCDPError, returned by respond, answers the command with a CDP error.
+type fakeCDPError struct {
+	Code    int
+	Message string
+}
+
 // fakeCDPEndpoint is a started fake CDP server. announce, when set, returns
 // the events to send before the reply to one command, as {method, params}
 // maps, the order Chromium uses: the targets Target.setDiscoverTargets
@@ -790,6 +812,9 @@ func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, anno
 				}
 			}
 			frame := map[string]any{"id": msg.ID, "result": result}
+			if refusal, ok := result.(fakeCDPError); ok {
+				frame = map[string]any{"id": msg.ID, "error": map[string]any{"code": refusal.Code, "message": refusal.Message}}
+			}
 			if msg.SessionID != "" {
 				frame["sessionId"] = msg.SessionID
 			}
@@ -881,7 +906,7 @@ func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
 	closed := make(chan string, 1)
 	crashed := make(chan string, 1)
 	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		PageInfoChanged: func(handle, url, title string) { infos <- handle + " " + url + " " + title },
+		PageInfoChanged: func(handle, url, title string, _ uint64) { infos <- handle + " " + url + " " + title },
 		PageClosed:      func(handle string) { closed <- handle },
 		PageCrashed:     func(handle, reason string) { crashed <- handle + " " + reason },
 	})

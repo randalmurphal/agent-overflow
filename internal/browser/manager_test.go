@@ -123,6 +123,55 @@ func TestFakeEngineHistoryWalksBackAndForward(t *testing.T) {
 	}
 }
 
+// A snapshot and an engine info report carry the page's address and title
+// but no back/forward state; neither turns off the pane's Back button, and
+// the snapshot the agent gets says what the pane shows.
+func TestPageInfoWithoutHistoryKeepsTheHistoryShown(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	first := mustOpen(t, manager, access, "https://example.test/first")
+	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: first.ID}); err != nil {
+		t.Fatalf("second navigation: %v", err)
+	}
+	p, _, err := manager.lookupOwnedPage(access, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := p.driver.(*fakePage)
+	fake.mu.Lock()
+	fake.snapshot = func(context.Context) (Snapshot, error) {
+		// What every engine's snapshot script answers: the address and
+		// title, nothing of the session history.
+		return Snapshot{PageInfo: PageInfo{URL: "https://example.test/second", Title: "Second"}}, nil
+	}
+	fake.mu.Unlock()
+	backShown := func(state string) {
+		t.Helper()
+		tab, ok := findTab(manager, access, first.ID)
+		if !ok || !tab.CanGoBack || tab.CanGoForward {
+			t.Fatalf("%s: the pane's tab is %+v, want Back on and Forward off", state, tab)
+		}
+	}
+	backShown("navigated twice")
+
+	snapshot, err := manager.Snapshot(t.Context(), access, first.ID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	backShown("after a snapshot")
+	if !snapshot.CanGoBack || snapshot.Title != "Second" {
+		t.Fatalf("the snapshot says %+v, want the title it read and Back on", snapshot.PageInfo)
+	}
+
+	manager.updatePageInfo(p.driver.Handle(), "https://example.test/second", "Retitled", 1)
+	backShown("after an engine info report")
+}
+
 // Content operations REFUSE on the fake engine rather than inventing a page,
 // so a test that thinks it is driving a renderer fails loudly.
 func TestFakeEngineRefusesPageContentByName(t *testing.T) {

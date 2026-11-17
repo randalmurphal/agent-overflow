@@ -166,6 +166,8 @@ type fakePage struct {
 	viewports [][2]int
 	// screenshot, when set, answers Screenshot instead of the no-page error.
 	screenshot func(context.Context) ([]byte, error)
+	// snapshot, when set, answers Snapshot instead of the no-page error.
+	snapshot func(context.Context) (Snapshot, error)
 	// evaluate, when set, answers Evaluate instead of the no-page error.
 	evaluate func(ctx context.Context, source string, readOnly bool) (json.RawMessage, error)
 	// viewportErr, when set, makes SetViewport fail so a test can drive the
@@ -371,7 +373,13 @@ func (p *fakePage) NavigationMark(context.Context) (navigationMark, error) {
 	return navigationMark{URL: p.url, Loader: fmt.Sprint(p.index)}, nil
 }
 
-func (p *fakePage) Snapshot(context.Context) (Snapshot, error) {
+func (p *fakePage) Snapshot(ctx context.Context) (Snapshot, error) {
+	p.mu.Lock()
+	capture := p.snapshot
+	p.mu.Unlock()
+	if capture != nil {
+		return capture(ctx)
+	}
 	return Snapshot{}, errFakeEngineHasNoPage
 }
 

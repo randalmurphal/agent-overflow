@@ -177,10 +177,13 @@ type Manager struct {
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
 	viewportApplied func(threadID string)
-	// pushTaken is a test seam: called, with m.mu held, between a push's
-	// taking the unpushed records and its reading the tabs. Production
-	// leaves it nil.
-	pushTaken func()
+	// pushCopied is a test seam: called, with m.mu held, once a push has
+	// taken the unpushed records and copied the tabs. Production leaves it
+	// nil.
+	pushCopied func()
+	// infoRead is a test seam: called between a read of a page's info (or
+	// history state) and its commit. Production leaves it nil.
+	infoRead func(p *managedPage)
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -266,6 +269,9 @@ type jarScope struct {
 	// downloadDir is where the engine writes this jar's downloads before
 	// they move to their workspace's directory.
 	downloadDir string
+	// downloadsWarned is whether the user was told downloads in this jar's
+	// profile are not managed. Guarded by m.mu.
+	downloadsWarned bool
 }
 
 type managedPage struct {
@@ -291,7 +297,14 @@ type managedPage struct {
 	// sorts run outside m.mu.
 	tabOrder atomic.Int64
 	metaMu   sync.RWMutex
-	info     PageInfo
+	// info is what the page's tab shows; once the page is in its thread's
+	// tabs only commitInfo changes it.
+	info PageInfo
+	// infoGen counts commits of the address and history, and infoReport is
+	// the order of the newest engine report committed, both under metaMu
+	// (commitInfo).
+	infoGen    uint64
+	infoReport uint64
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load         pageLoad
@@ -504,10 +517,8 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
-	info, err := m.pageInfo(opCtx, p)
+	info, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
-		p.setInfo(info)
-		info = p.cachedInfo()
 		m.pageUsed(p)
 	}
 	return info, err
@@ -546,10 +557,8 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 		return PageInfo{}, err
 	}
 	p.touch()
-	info, err := m.pageInfo(opCtx, p)
+	info, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
-		p.setInfo(info)
-		info = p.cachedInfo()
 		m.recordRecentAddress(p, info)
 	}
 	m.pageUsed(p)
@@ -575,14 +584,12 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-		info, err := m.pageInfo(opCtx, p)
+		listing := pageListing{Selected: p.id == activePageID, LastOpened: time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)}
+		info, err := m.readInfo(opCtx, p, listing)
 		cancel()
 		p.mu.Unlock()
 		if err == nil {
-			info.Selected = p.id == activePageID
-			info.LastOpened = time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
-			p.setInfo(info)
-			info = p.cachedInfo()
+			info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
 			out = append(out, info)
 		}
 	}
@@ -845,11 +852,25 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	if err != nil {
 		return err
 	}
+	warn := ""
+	if unmanaged, ok := driver.(downloadsUnmanaged); ok {
+		warn = unmanaged.downloadsUnmanaged()
+	}
 	// Under m.mu: the jar's policy resolves a request to the page being
 	// created (jarAllows) while it loads, before it is registered.
 	m.mu.Lock()
 	p.attach(driver)
+	if warn != "" {
+		// Once per profile: every page of it would say the same.
+		if scope.downloadsWarned {
+			warn = ""
+		}
+		scope.downloadsWarned = true
+	}
 	m.mu.Unlock()
+	if warn != "" {
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: "Downloads are off in this browser profile: " + warn})
+	}
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return err

@@ -274,6 +274,14 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
+// downloadsUnmanaged is the optional half of a page driver whose engine can
+// fail to keep the page's downloads in AO's directory without failing the
+// page: it answers why, empty when downloads are managed. The Manager tells
+// the user once per jar profile.
+type downloadsUnmanaged interface {
+	downloadsUnmanaged() string
+}
+
 // pageFind is the optional find-in-page half of a page driver: the engine's
 // own text search, never one AO runs in the document. A driver without it
 // has no find. The Manager owns the session (which page, its query, the
@@ -411,8 +419,13 @@ type engineEvents struct {
 	// The engine page still exists and the Manager closes it (crash.go).
 	// Never called on a UI thread (it takes Manager locks and closes the
 	// page's driver).
-	PageCrashed     func(handle, reason string)
-	PageInfoChanged func(handle, url, title string)
+	PageCrashed func(handle, reason string)
+	// PageInfoChanged reports a page's address and title. order is the
+	// engine's count of the reports it has made, stamped where the engine
+	// orders them (its UI thread or its event stream), which only grows for
+	// a page: the Manager keeps the report with the highest order, so
+	// reports delivered out of order settle on the engine's latest.
+	PageInfoChanged func(handle, url, title string, order uint64)
 	// DownloadStarted reports whether the download may continue. The engine
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool

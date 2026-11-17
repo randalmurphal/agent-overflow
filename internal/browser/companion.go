@@ -158,42 +158,112 @@ type paneMount struct {
 // whose pages hold one: a write is never lost whoever publishes next, and an
 // operation that changed nothing pushes nothing.
 
-// setInfo replaces the page's info, keeping its label.
-func (p *managedPage) setInfo(info PageInfo) {
+// A page's info has two kinds of writer. An engine report (updatePageInfo)
+// carries the engine's state as it changed, numbered in the engine's order;
+// it is committed unless a newer report already was. A read asks the engine
+// and commits what it was answered (commitRead) only if no other commit
+// landed while it asked: that commit is an engine report as new as the read
+// or newer, or a read that began later, and it stands. A read run for an
+// operation holds the page-operation lock from the read through its commit,
+// so no other operation's read lands in between.
+
+// pageUpdate is one write of a page's cached info. commitInfo applies it,
+// and nothing else changes the info of a page in its thread's tabs.
+type pageUpdate struct {
+	// Location is the address and title; nil keeps them (a history refresh,
+	// a label).
+	Location *pageLocation
+	// History is the back/forward state; nil when the source does not know
+	// it (an engine report, a snapshot script), and the tab keeps the state
+	// it shows rather than turn its buttons off.
+	History *pageHistory
+	// Listing is what only a browser_pages answer means; a write with a
+	// Location replaces it, so any other read clears it.
+	Listing pageListing
+	// Label, when set, replaces the label; nil keeps it.
+	Label *string
+	// Report is an engine report's order (engineEvents.PageInfoChanged),
+	// zero for any other write. A report is committed only if newer than
+	// every report committed before it.
+	Report uint64
+	// ReadSince, for a read's answer, is the commit count the read began at
+	// (infoGeneration); the answer is committed only if no commit landed
+	// since. Nil commits unconditionally: an engine report, a label, or a
+	// page not yet in its thread's tabs (openAndLoad).
+	ReadSince *uint64
+}
+
+type pageLocation struct{ URL, Title string }
+
+type pageHistory struct{ CanGoBack, CanGoForward bool }
+
+// pageListing is PageInfo.Selected and LastOpened, which each browser_pages
+// call rewrites and no tab shows.
+type pageListing struct {
+	Selected   bool
+	LastOpened string
+}
+
+// commitInfo applies u unless it is older than what the page holds (Report,
+// ReadSince), bounding the address and title. A commit of the address or
+// history counts toward infoGeneration, and one that changes what the tab
+// shows sets the page's unpushed record. It answers the page's info after
+// and whether u was committed.
+func (p *managedPage) commitInfo(u pageUpdate) (PageInfo, bool) {
 	p.metaMu.Lock()
-	info.Label = p.info.Label
+	defer p.metaMu.Unlock()
+	if u.ReadSince != nil && *u.ReadSince != p.infoGen {
+		return p.info, false
+	}
+	if u.Report != 0 {
+		if u.Report <= p.infoReport {
+			return p.info, false
+		}
+		p.infoReport = u.Report
+	}
+	info := p.info
+	if u.Location != nil {
+		info.URL = truncateUTF8(u.Location.URL, maxBrowserURLBytes)
+		info.Title = truncateUTF8(u.Location.Title, maxBrowserTitleBytes)
+		info.Selected, info.LastOpened = u.Listing.Selected, u.Listing.LastOpened
+	}
+	if u.History != nil {
+		info.CanGoBack, info.CanGoForward = u.History.CanGoBack, u.History.CanGoForward
+	}
+	if u.Label != nil {
+		info.Label = *u.Label
+	}
 	if pushedInfo(info) != pushedInfo(p.info) {
 		p.load.unpushed = true
 	}
 	p.info = info
-	p.metaMu.Unlock()
+	if u.Location != nil || u.History != nil {
+		p.infoGen++
+	}
+	return info, true
 }
 
-// pushedInfo is info without what only a browser_pages answer means
-// (Selected, LastOpened), which each call rewrites and no tab shows.
+// infoGeneration answers how many commits the page's address and history
+// have had; a read takes it before it asks the engine.
+func (p *managedPage) infoGeneration() uint64 {
+	p.metaMu.RLock()
+	defer p.metaMu.RUnlock()
+	return p.infoGen
+}
+
+// commitRead commits u, the answer of a read that began at generation since,
+// unless another commit landed during the read (commitInfo).
+func (m *Manager) commitRead(p *managedPage, u pageUpdate, since uint64) (PageInfo, bool) {
+	if m.infoRead != nil {
+		m.infoRead(p)
+	}
+	u.ReadSince = &since
+	return p.commitInfo(u)
+}
+
+// pushedInfo is info without its listing (pageListing).
 func pushedInfo(info PageInfo) PageInfo {
 	info.Selected, info.LastOpened = false, ""
-	return info
-}
-
-// setHistoryState updates only the back/forward flags.
-func (p *managedPage) setHistoryState(canGoBack, canGoForward bool) {
-	p.metaMu.Lock()
-	if p.info.CanGoBack != canGoBack || p.info.CanGoForward != canGoForward {
-		p.load.unpushed = true
-	}
-	p.info.CanGoBack, p.info.CanGoForward = canGoBack, canGoForward
-	p.metaMu.Unlock()
-}
-
-func (p *managedPage) setLabel(label string) PageInfo {
-	p.metaMu.Lock()
-	if p.info.Label != label {
-		p.load.unpushed = true
-	}
-	p.info.Label = label
-	info := p.info
-	p.metaMu.Unlock()
 	return info
 }
 
@@ -284,11 +354,11 @@ func (m *Manager) buildThreadState(threadID string, push bool) CompanionEvent {
 			p.load.unpushed = false
 			p.metaMu.Unlock()
 		}
-		if m.pushTaken != nil {
-			m.pushTaken()
-		}
 	}
 	tabs := m.companionTabsLocked(threadID)
+	if push && m.pushCopied != nil {
+		m.pushCopied()
+	}
 	session, hasSession := m.sessions[threadID]
 	active, _ := m.livePageLocked(session.ActivePageID)
 	closedTabs := len(m.closedTabs[threadID])
@@ -441,44 +511,50 @@ func (m *Manager) AcceleratorsChanged() {
 	}
 }
 
-func (m *Manager) updatePageInfo(handle, url, title string) {
+// updatePageInfo is engineEvents.PageInfoChanged.
+func (m *Manager) updatePageInfo(handle, url, title string, order uint64) {
 	m.mu.Lock()
 	found := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
-	if found == nil || url == "" {
-		// No address is the engine losing its document (WebKitGTK clears
-		// a view's URI when its web process ends), never a navigation: the
-		// tab keeps the page's last address, which a crash restores.
+	if found == nil {
 		return
 	}
-	previous := found.cachedInfo()
-	found.setInfo(PageInfo{
-		ID:    found.id,
-		URL:   truncateUTF8(url, maxBrowserURLBytes),
-		Title: truncateUTF8(title, maxBrowserTitleBytes),
-		// The engine event carries no history state; keep what is shown
-		// and let the async refresh below correct it.
-		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
-	})
+	if url == "" {
+		// No address is the engine losing its document (WebKitGTK clears
+		// a view's URI when its web process ends), never a navigation: the
+		// tab keeps the page's last address, which a crash restores. The
+		// report still takes its place in the engine's order.
+		found.commitInfo(pageUpdate{Report: order})
+		return
+	}
+	// The report carries no history state: the tab keeps what it shows
+	// until the refresh below.
+	if _, committed := found.commitInfo(pageUpdate{Location: &pageLocation{URL: url, Title: title}, Report: order}); !committed {
+		// A newer report was committed first and runs its own refresh.
+		return
+	}
+	since := found.infoGeneration()
 	// An engine reports the same address and title again (a target info
 	// change that touched neither); that alone pushes nothing.
 	m.publishPages(found.owner)
-	go m.refreshHistoryState(found)
+	go m.refreshHistoryState(found, since)
 }
 
 // refreshHistoryState re-reads one page's back/forward availability after an
 // engine announced a navigation, off the engine's event goroutine — the read
 // is a driver round trip, and blocking the event dispatcher on it could
-// deadlock an engine whose events and commands share a loop. A late answer
-// only ever disables a button one push later; the next state emission wins.
-func (m *Manager) refreshHistoryState(p *managedPage) {
+// deadlock an engine whose events and commands share a loop. It runs without
+// the page-operation lock, so its answer is committed only if nothing else
+// committed since the report it follows (since): a later report runs its own
+// refresh, and an operation's read carries the history state itself.
+func (m *Manager) refreshHistoryState(p *managedPage, since uint64) {
 	ctx, cancel := operationContext(context.Background(), p.driver.Lifetime(), operationTimeout)
 	defer cancel()
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
 		return
 	}
-	p.setHistoryState(back, forward)
+	m.commitRead(p, pageUpdate{History: &pageHistory{CanGoBack: back, CanGoForward: forward}}, since)
 	m.publishPages(p.owner)
 }
 
@@ -903,7 +979,7 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, address, label
 	if label != "" {
 		// The tab was pushed without it; a navigation that fails before
 		// its operation would not push it.
-		p.setLabel(label)
+		p.commitInfo(pageUpdate{Label: &label})
 		m.publishPages(p.owner)
 	}
 	if strings.TrimSpace(address) != "" {
