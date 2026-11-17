@@ -127,11 +127,12 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 	item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
 	item.Openable = item.State == downloadStateCompleted && downloadOpensInPage(item.Name)
 	note := downloadNote{threadID: p.owner}
+	// The user's own cancel is not announced; a finish that beat it is.
+	userCanceled := item.State == downloadStateCanceled && entry.cancelRequested
 	switch {
 	case !started && item.State == downloadStateRunning:
 		note.progress = true
-	case item.State != downloadStateRunning && wasRunning && !(item.State == downloadStateCanceled && entry.cancelRequested):
-		// The user's own cancel is not announced; a finish that beat it is.
+	case item.State != downloadStateRunning && wasRunning && !userCanceled:
 		announced := item.ThreadDownload
 		note.announce = &announced
 	}

@@ -173,6 +173,9 @@ type hostedEngine struct {
 	// downloadEventsRefusal is why the connection reports no downloads,
 	// empty when it does.
 	downloadEventsRefusal string
+	// downloadLeaving holds the pages whose session is about to go, which
+	// no longer set their profile's download behavior.
+	downloadLeaving map[string]bool
 
 	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
 	// to stand in for the CDP evaluate.
@@ -209,17 +212,18 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		attachTimeout: hostAttachTimeout,
 		clearTimeout:  hostClearTimeout,
 
-		pending:       make(map[string]chan hostReport),
-		pageByTarget:  make(map[string]string),
-		targetByPage:  make(map[string]string),
-		shown:         make(map[string]bool),
-		bounds:        make(map[string]PanePlacement),
-		drivers:       make(map[string]*cdpPage),
-		ratios:        make(map[string]pageRatio),
-		scales:        make(map[string]*viewScaleState),
-		noFind:        make(map[string]bool),
-		pageDownloads: make(map[string]*hostedProfile),
-		downloads:     newBoundedMap[string, *hostedProfile](orderSlack),
+		pending:         make(map[string]chan hostReport),
+		pageByTarget:    make(map[string]string),
+		targetByPage:    make(map[string]string),
+		shown:           make(map[string]bool),
+		bounds:          make(map[string]PanePlacement),
+		drivers:         make(map[string]*cdpPage),
+		ratios:          make(map[string]pageRatio),
+		scales:          make(map[string]*viewScaleState),
+		noFind:          make(map[string]bool),
+		pageDownloads:   make(map[string]*hostedProfile),
+		downloadLeaving: make(map[string]bool),
+		downloads:       newBoundedMap[string, *hostedProfile](orderSlack),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
@@ -306,6 +310,7 @@ func (e *hostedEngine) Stop() {
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
 	e.pageDownloads = make(map[string]*hostedProfile)
+	e.downloadLeaving = make(map[string]bool)
 	e.downloads = newBoundedMap[string, *hostedProfile](orderSlack)
 	e.mu.Unlock()
 	if browserCancel != nil {
@@ -479,13 +484,13 @@ type hostedProfile struct {
 	// downloadDir is the Windows view of the jar's AO download directory,
 	// backendDownloadDir the same directory as the backend sees it.
 	downloadDir, backendDownloadDir string
-	// behaviorMu orders the profile's download-behavior calls, so the page
-	// recorded as downloadKeeper is the one whose call WebView2 ran last.
+	// behaviorMu serializes the profile's download-behavior calls.
 	behaviorMu sync.Mutex
-	// downloadKeeper is the page holding the profile's download setting,
-	// and downloadRefusal why downloads in it are not managed (empty when
-	// they are). Guarded by engine.mu (hosted_downloads.go).
-	downloadKeeper, downloadRefusal string
+	// downloadMode is what the profile does with a download, downloadRefusal
+	// why AO's directory is not used and downloadDenyRefusal why denying
+	// was refused too. Guarded by engine.mu (hosted_downloads.go).
+	downloadMode                         hostedDownloadMode
+	downloadRefusal, downloadDenyRefusal string
 }
 
 func (p *hostedProfile) Handle() string { return p.id }
@@ -562,7 +567,7 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.mu.Unlock()
 		// Before the Manager has the page, so nothing it loads can download
 		// anywhere but the jar's directory.
-		e.keepDownloads(pageID, cdp, profile)
+		e.addDownloadPage(pageID, cdp, profile)
 	}
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
@@ -754,10 +759,8 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 // caller that reads CDP events starts this on a goroutine instead
 // (targetDestroyed above).
 func (e *hostedEngine) retirePage(pageID string) {
-	// The page is already gone, so the setting it held may have fallen back
-	// to WebView2's own; another page of its profile takes it back.
-	handover := e.downloadHandover(pageID)
 	e.mu.Lock()
+	profile := e.pageDownloads[pageID]
 	targetID, known := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
@@ -768,9 +771,12 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
 	delete(e.pageDownloads, pageID)
+	delete(e.downloadLeaving, pageID)
 	e.mu.Unlock()
-	if handover != nil {
-		go handover()
+	if profile != nil {
+		// The page is already gone, so the behavior it set may have fallen
+		// back to WebView2's own; another page of its profile sets it again.
+		go e.reassertDownloads(profile)
 	}
 	if !known {
 		return
@@ -831,9 +837,7 @@ func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
 // the close a page's own Close already accounted for must not be reported
 // to the Manager twice.
 func (e *hostedEngine) closePage(pageID string) {
-	if handover := e.downloadHandover(pageID); handover != nil {
-		handover()
-	}
+	e.leaveDownloads(pageID)
 	e.mu.Lock()
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
@@ -845,6 +849,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
 	delete(e.pageDownloads, pageID)
+	delete(e.downloadLeaving, pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
@@ -1202,12 +1207,10 @@ func (p *hostedPage) FindStop(context.Context) error {
 
 var _ pageFind = (*hostedPage)(nil)
 
-// Close hands the profile's download setting to another page first: it
-// falls back to WebView2's own when the session that set it last goes.
+// Close has the profile's other pages set its download behavior again
+// before the page's session goes (leaveDownloads).
 func (p *hostedPage) Close() {
-	if handover := p.engine.downloadHandover(p.id); handover != nil {
-		handover()
-	}
+	p.engine.leaveDownloads(p.id)
 	p.pageDriver.Close()
 	p.closeOnce.Do(func() { p.engine.closePage(p.id) })
 }

@@ -253,10 +253,14 @@ behave as a desktop browser's:
   directory through its Windows view (`internal/browser/hosted_downloads.go`,
   which records the protocol real WebView2 accepts; `TestDownloadSmoke` in
   `internal/webview2host` runs it on the real runtime). A refusal does not
-  fail the page: it is logged with the engine's message, the user gets one
-  error toast per browser profile (a Kind `downloads-unmanaged` event), and
-  each download that starts in that profile is cancelled and listed as
-  failed with the reason.
+  fail the page: it is logged with the engine's message and the user gets
+  one error toast per browser profile (a Kind `downloads-unmanaged` event,
+  repeated only if the profile's state changes). A refused directory or
+  refused download events turn the profile's downloads off (`deny`), and
+  each download the browser then cancels is listed as failed with the
+  reason. If turning them off is refused too, the toast says downloads in
+  that profile go to the system Downloads folder, and AO cancels each one
+  that starts and lists it as possibly saved there.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,

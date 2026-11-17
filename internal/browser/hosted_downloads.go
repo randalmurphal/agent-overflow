@@ -35,19 +35,25 @@ import (
 //     behavior of the page's whole profile; the file is the download's GUID
 //     in the directory, and Browser.downloadProgress reports its path.
 //   - When the page whose session set it last goes away, the profile falls
-//     back to WebView2's own behavior (the user's Downloads folder), so that
-//     page hands the setting to another page of the profile first
-//     (handOverDownloads).
+//     back to WebView2's own behavior (the user's Downloads folder). Setting
+//     it again from another page first keeps it, so every leaving page has
+//     the profile's other live pages set it again (leaveDownloads).
 //   - Browser.cancelDownload with no browser context cancels a download of
-//     any profile, and Chromium removes the partial file.
+//     any profile, and Chromium removes the partial file. A cancel of a
+//     download that already finished is accepted and reports nothing.
+//   - Page.setDownloadBehavior deny holds for the profile: a download is
+//     reported begun and then canceled, and no file is written.
 //   - WebView2 writes a `<guid>:Zone.Identifier` stream beside a finished
 //     file, which on the WSL filesystem is a second file; the engine removes
 //     it before the Manager moves the download.
 //
-// A refusal never fails the page: the page opens, the reason is logged, the
-// Manager tells the user once per profile (downloadsUnmanaged), and every
-// download that starts in the profile is cancelled and reported failed with
-// the reason, so nothing lands in the user's Downloads folder unaccounted.
+// A refusal never fails the page: the page opens, the reason is logged, and
+// the Manager tells the user once per profile (downloadsUnmanaged). A
+// refused directory, or refused download events, turns the profile's
+// downloads off with deny; each download the browser cancels is reported
+// failed with the reason. Only when deny is refused too does a download
+// reach the system Downloads folder: the user is told so, and AO cancels
+// each download that starts and reports it as possibly saved there.
 // Whether WebView2's own download flyout opens has no CDP signal and is not
 // checked.
 
@@ -82,33 +88,124 @@ func (e *hostedEngine) enableDownloadEvents(browserCtx context.Context) {
 	e.mu.Unlock()
 }
 
-// keepDownloads points the downloads of the page's profile at the profile's
-// AO directory, from the page's own session, and makes the page the one
-// that holds the setting. Without download events it turns downloads off
-// instead. Either refusal is recorded on the profile, never returned.
-func (e *hostedEngine) keepDownloads(pageID string, page *cdpPage, profile *hostedProfile) {
+// hostedDownloadMode is what a profile does with a download.
+type hostedDownloadMode int
+
+const (
+	// downloadsManaged: the download lands in the profile's AO directory.
+	downloadsManaged hostedDownloadMode = iota
+	// downloadsDenied: AO's directory or the download events were refused
+	// and the profile denies downloads; the browser cancels each one itself.
+	downloadsDenied
+	// downloadsUncontained: denying was refused too, so WebView2 saves a
+	// download to the system Downloads folder unless AO's cancel wins.
+	downloadsUncontained
+)
+
+// addDownloadPage registers a new page's downloads under its profile and
+// sets the profile's download behavior from the page's own session. Called
+// before the Manager has the page, so nothing it loads downloads anywhere
+// else.
+func (e *hostedEngine) addDownloadPage(pageID string, page *cdpPage, profile *hostedProfile) {
 	profile.behaviorMu.Lock()
 	defer profile.behaviorMu.Unlock()
 	e.mu.Lock()
-	refusal := e.downloadEventsRefusal
 	e.pageDownloads[pageID] = profile
 	e.mu.Unlock()
-	if refusal != "" {
-		if err := setPageDownloadBehavior(page, cdpbrowser.SetDownloadBehaviorBehaviorDeny, ""); err != nil {
-			refusal += fmt.Sprintf("; turning them off was refused too: %v", err)
-		}
-	} else if err := setPageDownloadBehavior(page, cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, profile.downloadDir); err != nil {
-		refusal = fmt.Sprintf("the pane browser refused AO's download directory %s: %v", profile.downloadDir, err)
-	}
+	e.setDownloadBehavior(profile, pageID, page)
+}
+
+// leaveDownloads is called once per page before its session goes. The
+// profile's behavior belongs to the session that set it last and falls back
+// to WebView2's own (the system Downloads folder) when that session goes, so
+// the profile's other live pages are asked, in turn, to set it again until
+// one does. Whichever page set it last, the last page asked is one that was
+// not leaving when it was asked, and every leaving page walks after it is
+// marked; the walks are serialized per profile.
+func (e *hostedEngine) leaveDownloads(pageID string) {
 	e.mu.Lock()
-	profile.downloadRefusal = refusal
-	if refusal == "" {
-		profile.downloadKeeper = pageID
+	profile := e.pageDownloads[pageID]
+	first := profile != nil && !e.downloadLeaving[pageID]
+	if first {
+		e.downloadLeaving[pageID] = true
 	}
 	e.mu.Unlock()
-	if refusal != "" {
-		e.logf("browser: downloads in pane profile %s are not managed: %s", profile.id, refusal)
+	if first {
+		e.reassertDownloads(profile)
 	}
+}
+
+// reassertDownloads sets the profile's download behavior from the first of
+// its live pages, not leaving, that takes the call. A page that went away
+// meanwhile is skipped; only a live page's refusal changes the profile.
+func (e *hostedEngine) reassertDownloads(profile *hostedProfile) {
+	profile.behaviorMu.Lock()
+	defer profile.behaviorMu.Unlock()
+	type candidate struct {
+		id   string
+		page *cdpPage
+	}
+	var candidates []candidate
+	e.mu.Lock()
+	for pageID, owner := range e.pageDownloads {
+		if page := e.drivers[pageID]; owner == profile && page != nil && !e.downloadLeaving[pageID] {
+			candidates = append(candidates, candidate{pageID, page})
+		}
+	}
+	e.mu.Unlock()
+	for _, c := range candidates {
+		if e.setDownloadBehavior(profile, c.id, c.page) {
+			return
+		}
+	}
+}
+
+// setDownloadBehavior sets the profile's download behavior from page's
+// session: AO's directory while the profile is managed, deny once AO's
+// directory or the connection's download events were refused. It answers
+// false when the page went away before the browser answered, which says
+// nothing about the profile. Called under profile.behaviorMu.
+func (e *hostedEngine) setDownloadBehavior(profile *hostedProfile, pageID string, page *cdpPage) bool {
+	e.mu.Lock()
+	refusal := profile.downloadRefusal
+	if refusal == "" {
+		refusal = e.downloadEventsRefusal
+	}
+	e.mu.Unlock()
+	if refusal == "" {
+		err := setPageDownloadBehavior(page, cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, profile.downloadDir)
+		if err == nil {
+			return true
+		}
+		// A page that went away refuses deny too, and is skipped there.
+		refusal = fmt.Sprintf("the pane browser refused AO's download directory %s: %v", profile.downloadDir, err)
+	}
+	mode, denyRefusal := downloadsDenied, ""
+	if err := setPageDownloadBehavior(page, cdpbrowser.SetDownloadBehaviorBehaviorDeny, ""); err != nil {
+		if !e.downloadPageLive(pageID, page) {
+			return false
+		}
+		mode, denyRefusal = downloadsUncontained, err.Error()
+	}
+	e.mu.Lock()
+	changed := profile.downloadMode != mode || profile.downloadRefusal != refusal
+	profile.downloadMode, profile.downloadRefusal, profile.downloadDenyRefusal = mode, refusal, denyRefusal
+	e.mu.Unlock()
+	if changed {
+		e.logf("browser: %s", profile.downloadWarning(mode, refusal, denyRefusal))
+	}
+	return true
+}
+
+// downloadPageLive reports whether page is still the engine's live page
+// pageID, so its refusal is the browser's answer and not its going away.
+func (e *hostedEngine) downloadPageLive(pageID string, page *cdpPage) bool {
+	if page.ctx.Err() != nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.drivers[pageID] == page
 }
 
 func setPageDownloadBehavior(page *cdpPage, behavior cdpbrowser.SetDownloadBehaviorBehavior, dir string) error {
@@ -118,85 +215,51 @@ func setPageDownloadBehavior(page *cdpPage, behavior cdpbrowser.SetDownloadBehav
 	return err
 }
 
-// downloadHandover answers the call that moves the profile's download
-// setting off pageID onto another live page of the profile, nil when pageID
-// does not hold it or no other page is left (the profile then has no page to
-// download from). It must be taken while pageID is still bound; run it
-// before the page's session goes when the page is closed on purpose.
-func (e *hostedEngine) downloadHandover(pageID string) func() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	profile := e.pageDownloads[pageID]
-	if profile == nil || profile.downloadKeeper != pageID {
-		return nil
+// downloadWarning is what the user is told about a profile whose downloads
+// AO does not manage.
+func (p *hostedProfile) downloadWarning(mode hostedDownloadMode, refusal, denyRefusal string) string {
+	switch mode {
+	case downloadsDenied:
+		return "Downloads are off in this browser profile: " + refusal
+	case downloadsUncontained:
+		return "Downloads in this browser profile go to the system Downloads folder, outside AO: " + refusal + "; turning downloads off was refused too: " + denyRefusal
 	}
-	profile.downloadKeeper = ""
-	for heirID, owner := range e.pageDownloads {
-		heir := e.drivers[heirID]
-		if heirID == pageID || owner != profile || heir == nil {
-			continue
-		}
-		return func() { e.handOverDownloads(profile, heirID, heir) }
-	}
-	return nil
+	return ""
 }
 
-func (e *hostedEngine) handOverDownloads(profile *hostedProfile, heirID string, heir *cdpPage) {
-	profile.behaviorMu.Lock()
-	defer profile.behaviorMu.Unlock()
-	e.mu.Lock()
-	// A page created since has set it; it holds the setting now.
-	taken := profile.downloadKeeper != "" || profile.downloadRefusal != ""
-	e.mu.Unlock()
-	if taken {
-		return
-	}
-	err := setPageDownloadBehavior(heir, cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, profile.downloadDir)
-	e.mu.Lock()
-	if err != nil {
-		profile.downloadRefusal = fmt.Sprintf("the pane browser refused AO's download directory %s: %v", profile.downloadDir, err)
-	} else if _, live := e.drivers[heirID]; live {
-		profile.downloadKeeper = heirID
-	}
-	refusal := profile.downloadRefusal
-	e.mu.Unlock()
-	if refusal != "" {
-		e.logf("browser: downloads in pane profile %s are not managed: %s", profile.id, refusal)
-	}
-}
-
-// downloadsUnmanaged is why downloads in the page's profile are not
-// managed, empty when they are. The Manager tells the user once per profile.
+// downloadsUnmanaged is the warning for the page's profile, empty while AO
+// manages its downloads. The Manager shows it to the user once per profile.
 func (p *hostedPage) downloadsUnmanaged() string {
 	p.engine.mu.Lock()
 	defer p.engine.mu.Unlock()
 	if profile := p.engine.pageDownloads[p.id]; profile != nil {
-		return profile.downloadRefusal
+		return profile.downloadWarning(profile.downloadMode, profile.downloadRefusal, profile.downloadDenyRefusal)
 	}
 	return ""
 }
 
 // downloadEvents is the Manager's events with the hosted engine's part of a
-// download in front: the start notes the download's profile and stops one
-// the profile cannot account for, and progress checks the path the engine
-// reports and removes the Zone.Identifier stream file.
+// download in front: the start notes the download's profile, progress says
+// why a denied profile's browser canceled it, checks the path the engine
+// reports and removes the Zone.Identifier stream file. In a profile that
+// could not be made to deny downloads, the start cancels the download and
+// reports it failed as possibly saved to the system Downloads folder.
 func (e *hostedEngine) downloadEvents() engineEvents {
 	events := e.events
 	started, progress := events.DownloadStarted, events.DownloadProgress
 	events.DownloadStarted = func(start downloadStart) bool {
 		profile := e.frameDownloadProfile(start.Frame)
-		refusal := ""
+		mode, refusal := downloadsManaged, ""
 		if profile != nil {
 			e.mu.Lock()
 			e.downloads.put(start.ID, profile)
-			refusal = profile.downloadRefusal
+			mode, refusal = profile.downloadMode, profile.downloadRefusal
 			e.mu.Unlock()
 		}
 		allowed := started(start)
-		if allowed && refusal != "" {
-			// WebView2 would save it to its own folder.
+		if allowed && mode == downloadsUncontained {
 			go refusedDownloadCanceler(e.cancelDownload, e.logf)(start.ID)
-			progress(downloadProgress{ID: start.ID, State: downloadCanceled, Error: "downloads are off in this browser profile: " + refusal})
+			progress(downloadProgress{ID: start.ID, State: downloadCanceled, Error: "AO could not keep this download out of the system Downloads folder, where the browser may have saved it: " + refusal})
 		}
 		return allowed
 	}
@@ -205,6 +268,9 @@ func (e *hostedEngine) downloadEvents() engineEvents {
 		profile, ok := e.downloads.get(event.ID)
 		if downloadSettled(event.State) {
 			e.downloads.delete(event.ID)
+		}
+		if ok && event.State == downloadCanceled && event.Error == "" && profile.downloadMode == downloadsDenied {
+			event.Error = "downloads are off in this browser profile: " + profile.downloadRefusal
 		}
 		e.mu.Unlock()
 		if ok && downloadSettled(event.State) {

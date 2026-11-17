@@ -280,8 +280,8 @@ type pageDriver interface {
 
 // downloadsUnmanaged is the optional half of a page driver whose engine can
 // fail to keep the page's downloads in AO's directory without failing the
-// page: it answers why, empty when downloads are managed. The Manager tells
-// the user once per jar profile.
+// page: it answers the user-facing warning, empty when downloads are
+// managed. The Manager shows each distinct warning once per jar profile.
 type downloadsUnmanaged interface {
 	downloadsUnmanaged() string
 }

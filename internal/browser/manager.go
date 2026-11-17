@@ -251,9 +251,9 @@ type jarScope struct {
 	// downloadDir is where the engine writes this jar's downloads before
 	// they move to their workspace's directory.
 	downloadDir string
-	// downloadsWarned is whether the user was told downloads in this jar's
-	// profile are not managed. Guarded by m.mu.
-	downloadsWarned bool
+	// downloadsWarned is what the user was last told about downloads in
+	// this jar's profile not being managed. Guarded by m.mu.
+	downloadsWarned string
 }
 
 type managedPage struct {
@@ -800,15 +800,17 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	m.mu.Lock()
 	p.attach(driver)
 	if warn != "" {
-		// Once per profile: every page of it would say the same.
-		if scope.downloadsWarned {
+		// Once per profile: every page of it says the same until the
+		// profile's state changes.
+		if scope.downloadsWarned == warn {
 			warn = ""
+		} else {
+			scope.downloadsWarned = warn
 		}
-		scope.downloadsWarned = true
 	}
 	m.mu.Unlock()
 	if warn != "" {
-		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: "Downloads are off in this browser profile: " + warn})
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: warn})
 	}
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
