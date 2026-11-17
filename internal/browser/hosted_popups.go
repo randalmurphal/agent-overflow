@@ -33,7 +33,9 @@ import (
 // once, so what the popup downloaded is listed while its opener still is.
 // A popup reported with no target (one that went before the launcher read
 // it) is never attached: the Manager discards it, and its downloads go to
-// its opener.
+// its opener. A popup's target is on its opener's browser connection, so
+// it is attached on that connection or not at all, and a popup whose
+// opener has no live connection is refused at its report.
 //
 // The popup navigates as soon as the launcher hands its view over, before
 // the engine has heard of it. The engine answers the navigation policy
@@ -56,6 +58,9 @@ type hostedPopup struct {
 	profile string
 	// opener is the page id of the page that opened it.
 	opener string
+	// conn is its opener's browser connection, the one its target is on;
+	// nil for a popup with no target.
+	conn context.Context
 	// crashed is the reason its page crashed, and closed says it closed.
 	crashed string
 	closed  bool
@@ -88,6 +93,10 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 	profile, known := e.pageProfile[report.Opener]
 	_, taken = e.pageProfile[pageID]
 	_, claimed := e.targetPageLocked(report.Target)
+	conn := e.pageConn[report.Opener]
+	if pending := e.popups[report.Opener]; pending != nil {
+		conn = pending.conn
+	}
 	switch {
 	case taken:
 		e.mu.Unlock()
@@ -105,8 +114,14 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 		// keeps pages.
 		e.closePage(pageID)
 		return
+	case report.Target != "" && (conn == nil || conn.Err() != nil):
+		e.mu.Unlock()
+		// Its target is on its opener's connection, which has ended.
+		e.logf("browser: pane host reported popup %s of %s, which has no connection", pageID, report.Opener)
+		e.closePage(pageID)
+		return
 	}
-	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: report.Opener}
+	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: report.Opener, conn: conn}
 	if report.Target != "" {
 		e.popupByTarget[report.Target] = pageID
 	}
@@ -121,14 +136,16 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 	go e.events.PopupOpened(enginePopup{Profile: profile, Opener: report.Opener, Handle: pageID, URL: report.URL})
 }
 
-// attachPopup attaches chromedp to a pending popup of profile.
+// attachPopup attaches chromedp to a pending popup of profile, on its
+// opener's connection; bind refuses it if that connection ended meanwhile.
 func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks pageHooks) (pageDriver, error) {
 	e.mu.Lock()
 	popup := e.popups[handle]
 	var targetID string
 	var closed bool
+	var browserCtx context.Context
 	if popup != nil && popup.profile == profile.id {
-		targetID, closed = popup.target, popup.closed
+		targetID, closed, browserCtx = popup.target, popup.closed, popup.conn
 	}
 	e.mu.Unlock()
 	switch {
@@ -136,10 +153,8 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 		return nil, fmt.Errorf("browser: the pane host reported no popup %s with a target in this profile", handle)
 	case closed:
 		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
-	}
-	browserCtx, err := e.ensureBrowser()
-	if err != nil {
-		return nil, err
+	case browserCtx.Err() != nil:
+		return nil, fmt.Errorf("browser: popup %s: its opener's connection to the pane browser was lost", handle)
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
 	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)

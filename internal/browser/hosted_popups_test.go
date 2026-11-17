@@ -256,6 +256,53 @@ func TestHostedPopupAttachOnALostConnectionIsClosed(t *testing.T) {
 	l.settledEngine()
 }
 
+// A popup's target lives on its opener's connection: once that connection
+// ends, the popup is never attached, even when another connection is up
+// by then; and a popup whose opener has no connection is refused at its
+// report.
+func TestHostedPopupAttachesOnlyOnItsOpenersConnection(t *testing.T) {
+	l := newPopupLauncher(t)
+	l.engine.events.PopupOpened = func(enginePopup) {}
+	access := popupTestAccess(t, "thread")
+	_, opener := l.open(access)
+	l.engine.mu.Lock()
+	profile := &hostedProfile{engine: l.engine, id: l.engine.pageProfile[opener]}
+	first := l.engine.browserCtx
+	l.engine.mu.Unlock()
+	popupID, _ := l.popup(opener, "https://example.test/popup")
+
+	l.endpoint.hangUp()
+	<-first.Done()
+	if _, err := l.engine.ensureBrowser(); err != nil {
+		t.Fatal(err)
+	}
+	if driver, err := l.engine.attachPopup(profile, popupID, pageHooks{}); err == nil {
+		driver.Close()
+		t.Fatal("a popup of a lost connection was attached on its replacement")
+	}
+
+	// Openers the engine knows, one whose connection ended and one bound
+	// to none (its connection claimed it).
+	ended, end := context.WithCancel(context.Background())
+	end()
+	bindTestPage(t, l.engine, "ended", "T-ended")
+	l.engine.mu.Lock()
+	l.engine.pageConn["ended"] = ended
+	for _, id := range []string{"ended", "unbound"} {
+		l.engine.pageProfile[id] = profile.id
+	}
+	l.engine.mu.Unlock()
+	for _, opener := range []string{"ended", "unbound"} {
+		orphan, _ := l.popup(opener, "https://example.test/orphan")
+		l.engine.mu.Lock()
+		kept := l.engine.popups[orphan] != nil
+		l.engine.mu.Unlock()
+		if kept || !l.closed(orphan) {
+			t.Fatalf("a popup of %s: kept %v, closed %v", opener, kept, l.closed(orphan))
+		}
+	}
+}
+
 // What a popup reports while it is adopted reaches its tab once it is
 // listed: its address and title in order, its downloads, then its close.
 func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
