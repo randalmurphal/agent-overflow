@@ -73,6 +73,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		return
 	}
 	scope.pages[p.id] = p
+	m.listingChangedLocked()
 	listed = p
 	// A report made while the popup was adopted joins the listing, whose
 	// push carries it.

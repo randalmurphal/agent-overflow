@@ -303,6 +303,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			p.tabOrder.Store(rec.tabOrder)
 			delete(m.suspended, rec.id)
 			scope.pages[p.id] = p
+			m.listingChangedLocked()
 		}
 		m.mu.Unlock()
 		if closing {

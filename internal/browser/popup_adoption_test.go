@@ -400,6 +400,98 @@ func TestAPopupClosedPubliclyBeforeItsDownloadsAreListedLeavesThemWithItsOpener(
 	wantDownloads(t, manager, opener, "dl-1 completed 100")
 }
 
+// A popup whose opener is still being created or restored waits for its
+// opener's listing and goes on as it is listed, or is discarded as its
+// opener's creation closes, not at the opener wait's bound: any page
+// joining the tabs, or a creation that will not, wakes the waiters, not
+// only a finished adoption.
+func TestAPopupOfAnOpenerNotListedYetGoesOnAtItsListing(t *testing.T) {
+	for _, name := range []string{"created", "restored", "closed while created"} {
+		restored, closing := name == "restored", name == "closed while created"
+		t.Run(name, func(t *testing.T) {
+			manager, engine := newLifecycleManager(t)
+			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			var pageID string
+			if restored {
+				page := mustOpen(t, manager, access, "https://example.test/")
+				p, _, err := manager.lookupOwnedPage(access, page.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if moved, err := manager.suspendPage(t.Context(), p); err != nil || !moved {
+					t.Fatalf("suspend: %v, %v", moved, err)
+				}
+				pageID = page.ID
+			}
+			handles := make(chan string, 1)
+			hold := make(chan struct{})
+			var once sync.Once
+			release := func() { once.Do(func() { close(hold) }) }
+			defer release()
+			// The engine page exists and the tab is not listed yet.
+			engine.onNewFakePage = func(page *fakePage) {
+				handles <- page.handle
+				<-hold
+			}
+			opened := make(chan error, 1)
+			go func() {
+				var err error
+				if restored {
+					_, err = manager.Pages(context.Background(), access)
+					if err == nil {
+						_, _, err = manager.Evaluate(context.Background(), access, pageID, "1", nil)
+					}
+				} else {
+					_, err = manager.Open(context.Background(), access, "https://example.test/", OpenOptions{})
+				}
+				opened <- err
+			}()
+			var opener string
+			select {
+			case opener = <-handles:
+			case <-time.After(hostedTestDeadline):
+				t.Fatal("the opener's engine page was never made")
+			}
+			listed := make(chan bool, 1)
+			go func() { listed <- manager.awaitOpener(opener) }()
+			time.Sleep(50 * time.Millisecond)
+			if closing {
+				tabs := manager.CompanionState(access).Pages
+				if len(tabs) != 1 {
+					t.Fatalf("tabs %+v", tabs)
+				}
+				// The close waits for the creation it marks.
+				go func() { _ = manager.ClosePage(context.Background(), access, tabs[0].ID) }()
+				for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+					manager.mu.Lock()
+					pending := manager.pending[tabs[0].ID]
+					marked := pending != nil && pending.closed
+					manager.mu.Unlock()
+					if marked {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("the creating tab was never closed")
+					}
+				}
+			}
+			start := time.Now()
+			release()
+			if err := <-opened; (err != nil) != closing {
+				t.Fatalf("open: %v", err)
+			}
+			select {
+			case ok := <-listed:
+				if ok == closing {
+					t.Fatalf("the popup's opener was taken as listed %v", ok)
+				}
+			case <-time.After(popupOpenerWait / 4):
+				t.Fatalf("the popup still waited for its opener %v after the opener was listed or closed", time.Since(start))
+			}
+		})
+	}
+}
+
 // A popup whose opener left before the popup's report is handled is
 // discarded at once.
 func TestAPopupOfAnOpenerThatLeftIsDiscardedAtOnce(t *testing.T) {

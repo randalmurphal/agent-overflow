@@ -192,12 +192,12 @@ type Manager struct {
 	// decided to push, before the push.
 	publishDecided func()
 	// adopting is each popup whose adoption runs, by handle, unlisted the
-	// newest handles that will not be listed again, and adoptionsChanged,
-	// when set, closes as the next adoption ends (popup_adoption.go).
-	// Guarded by mu.
-	adopting         map[string]struct{}
-	unlisted         *boundedMap[string, struct{}]
-	adoptionsChanged chan struct{}
+	// newest handles that will not be listed again, and listingChanged,
+	// when set, closes as the next page joins or leaves the tabs or an
+	// adoption ends (listingChangedLocked). Guarded by mu.
+	adopting       map[string]struct{}
+	unlisted       *boundedMap[string, struct{}]
+	listingChanged chan struct{}
 	// parked holds the downloads of popups not listed yet, by popup
 	// handle, parkedIDs each one's popup by download id, and popupFates
 	// what became of the newest popups. Guarded by parkMu, which is taken

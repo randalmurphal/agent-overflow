@@ -101,12 +101,22 @@ func (m *Manager) finishAdoption(handle, opener string, p *managedPage) {
 		m.unlistedLocked().put(handle, struct{}{})
 		m.heldInfo.delete(handle)
 	}
-	if m.adoptionsChanged != nil {
-		close(m.adoptionsChanged)
-		m.adoptionsChanged = nil
-	}
+	m.listingChangedLocked()
 	m.mu.Unlock()
 	m.resolveParked(handle, p, opener)
+}
+
+// listingChangedLocked wakes the popups waiting for an opener
+// (awaitOpener): a page joined the tabs, a page being created will not, or
+// an adoption ended. Every listing (a create, a restore, an adoption) and
+// a creation closed before its listing call it; a listed page's leaving
+// wakes no one, since nothing waits for a listed opener. The caller holds
+// m.mu.
+func (m *Manager) listingChangedLocked() {
+	if m.listingChanged != nil {
+		close(m.listingChanged)
+		m.listingChanged = nil
+	}
 }
 
 // awaitOpener waits until opener, a page handle, is listed, or will not be
@@ -126,10 +136,10 @@ func (m *Manager) awaitOpener(opener string) bool {
 			m.mu.Unlock()
 			return false
 		}
-		if m.adoptionsChanged == nil {
-			m.adoptionsChanged = make(chan struct{})
+		if m.listingChanged == nil {
+			m.listingChanged = make(chan struct{})
 		}
-		changed := m.adoptionsChanged
+		changed := m.listingChanged
 		m.mu.Unlock()
 		select {
 		case <-changed:

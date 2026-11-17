@@ -211,6 +211,12 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 			m.abandonStale(scope, stale, p)
 			continue
 		}
+		if (err != nil || closed) && p.driver != nil {
+			// Never listed, so a popup its engine page opened is not
+			// adopted (awaitOpener).
+			m.unlistedLocked().put(p.driver.Handle(), struct{}{})
+		}
+		m.listingChangedLocked()
 		switch {
 		case err == nil && !closed:
 			delete(m.pending, p.id)
