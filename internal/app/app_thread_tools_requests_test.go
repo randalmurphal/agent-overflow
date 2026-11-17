@@ -2373,7 +2373,7 @@ func owedWakeSeeds() []struct {
 			if err != nil {
 				t.Fatalf("Remind: %v", err)
 			}
-			if !f.app.settleThreadReminder(f.request(t, ack.Token), time.Now()) {
+			if owed, err := f.app.settleThreadReminder(f.request(t, ack.Token), time.Now()); err != nil || !owed {
 				t.Fatal("the reminder fired owing no wake")
 			}
 			return ack.Token

@@ -31,13 +31,14 @@ func switchAssistants(t *testing.T, a *App, on bool) {
 	}
 }
 
-// awaitAssistants waits until this computer has converged on on.
+// awaitAssistants waits until this computer has converged on on: the
+// convergence applied it and the pause matches.
 func awaitAssistants(t *testing.T, a *App, on bool) {
 	t.Helper()
 	waitUntil(t, 20*time.Second, func() bool {
 		a.assistantsSwitch.mu.Lock()
 		defer a.assistantsSwitch.mu.Unlock()
-		return a.assistantsSwitch.paused == !on
+		return a.assistantsSwitch.paused == !on && a.assistantsPaused() == !on
 	})
 }
 
@@ -52,12 +53,7 @@ func agentWake(t *testing.T, a *App, id string) store.AgentWake {
 }
 
 // agentWakeRunning reports whether the supervisor runs anything of the row.
-func agentWakeRunning(a *App, id string) bool {
-	a.agentWakes.mu.Lock()
-	defer a.agentWakes.mu.Unlock()
-	_, running := a.agentWakes.runs[id]
-	return running
-}
+func agentWakeRunning(a *App, id string) bool { return a.agentWakeRegistered(id) }
 
 // Off with a running turn, a request open on the assistant, a watch script
 // mid-run, a loop and a reminder come due: the turn is cut and the session
@@ -98,7 +94,7 @@ func TestAssistantsOffPausesTheirWorkAndOnResumesIt(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !a.fireAgentWake(watch, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+	if err := a.fireAgentWake(watch, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}); err != nil {
 		t.Fatal("the watch did not start")
 	}
 	for deadline := time.Now().Add(10 * time.Second); len(a.agentWatchDirs(target.ID)) != 1; time.Sleep(20 * time.Millisecond) {

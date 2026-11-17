@@ -130,7 +130,7 @@ func TestALoopFireDuringARefusedDeleteIsDelivered(t *testing.T) {
 			}
 			fire := func() {
 				now := time.Now()
-				if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+				if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 					t.Error("the fire did not start")
 					return
 				}

@@ -19,9 +19,11 @@ import (
 // under an assistant (its current thread, its past threads and its helpers)
 // keep every row they have, and while it lasts:
 //
-//   - nothing scheduled for them comes due: the store's due reads leave them
-//     out (store.PauseAssistants), which is where every loop, watch and
-//     reminder fire is decided;
+//   - nothing scheduled for them runs: a loop or watch fire, a Wake now and
+//     a long-running watch's process start are refused where the row is
+//     claimed (fireAgentWake, admitAgentWatchProcess), a reminder where it
+//     settles (settleThreadReminder), and the store's due reads leave them
+//     out so the sweep neither selects nor wakes for them;
 //   - no session starts for them: an app-written message for one waits in
 //     its queue (flushStartFenced, startAgentNoticeSession), any other start
 //     is refused (startSession), and they admit no new work (admitWork);
@@ -31,9 +33,10 @@ import (
 // watch scripts and processes end with their rows armed again, a request
 // open on one settles as a Stop of it does, and a running session ends with
 // its turn cut and the messages queued behind it back in the composer.
-// Turning them on starts the long-running watches again, lets the sweep
-// serve every fire that came due meanwhile once with its count, and starts
-// the session of a thread with messages waiting.
+// Turning them on recovers what a quit left running while the pause still
+// holds, then releases it: the long-running watches start again, the sweep
+// serves every fire that came due meanwhile once with its count, and a
+// thread with messages waiting starts its session.
 
 // assistantsOffMessage is what a person or an agent is told when something
 // it asked for needs assistants.
@@ -68,12 +71,19 @@ func assistantsOffStop() restStop {
 
 // assistantsSwitchState serializes the convergences on the setting.
 type assistantsSwitchState struct {
-	mu sync.Mutex
+	// pauseMu orders the writes of the store's pause against reads of the
+	// setting, so the pause is never cleared after the setting turned off.
+	pauseMu sync.Mutex
+	mu      sync.Mutex
 	// paused is what the last convergence applied, set at boot from the
 	// setting before anything runs.
 	paused bool
 	// convergedForTest, when set, runs after each convergence.
 	convergedForTest func(paused bool)
+	// resumeReadForTest, when set, runs as turning assistants on reads
+	// their loops and watches: before the read with read false, and after
+	// it with read true.
+	resumeReadForTest func(read bool)
 }
 
 // initAssistantsPause sets the pause from the setting at boot, once the
@@ -87,36 +97,67 @@ func (a *App) initAssistantsPause(st *store.Store) {
 	a.assistantsSwitch.mu.Unlock()
 }
 
-// onAssistantsSettingChanged is the settings observer's hook. The pause of
-// the due reads follows the setting at once; the rest converges off the
+// onAssistantsSettingChanged is the settings observer's hook. Off takes
+// effect at once: every admission refuses from here, before the convergence
+// stops what runs. On waits for the convergence, which clears the pause only
+// once what the pause left is recovered. The convergence runs off the
 // observer's goroutine, since ending sessions takes a while.
 func (a *App) onAssistantsSettingChanged() {
 	if a.store == nil {
 		return
 	}
-	a.store.PauseAssistants(!a.currentSettings().AssistantsEnabled)
-	a.nudgeThreadRequestSweep()
+	a.holdAssistantsPause()
 	if !a.threadRequestsWG.Go(a.convergeAssistants) {
 		log.Printf("assistants: shutting down; the setting applies at the next start")
 	}
 }
 
+// holdAssistantsPause sets the pause if the setting is off.
+func (a *App) holdAssistantsPause() {
+	a.assistantsSwitch.pauseMu.Lock()
+	defer a.assistantsSwitch.pauseMu.Unlock()
+	if !a.currentSettings().AssistantsEnabled {
+		a.store.PauseAssistants(true)
+	}
+}
+
+// releaseAssistantsPause clears the pause unless the setting turned off
+// meanwhile, and reports whether it did.
+func (a *App) releaseAssistantsPause() bool {
+	a.assistantsSwitch.pauseMu.Lock()
+	defer a.assistantsSwitch.pauseMu.Unlock()
+	if !a.currentSettings().AssistantsEnabled {
+		return false
+	}
+	a.store.PauseAssistants(false)
+	return true
+}
+
 // convergeAssistants brings this computer to the setting as it reads now,
-// and again while a change landed during a convergence, so toggling twice
-// quickly ends in the state the setting ends in.
+// and again while a change landed during a convergence, so toggling quickly
+// ends in the state the setting ends in. A pause the observer set for an off
+// this convergence never saw is resumed like any other: an admission it
+// refused meanwhile left its row for the resume to start.
 func (a *App) convergeAssistants() {
 	a.assistantsSwitch.mu.Lock()
 	defer a.assistantsSwitch.mu.Unlock()
 	for {
-		paused := !a.currentSettings().AssistantsEnabled
-		a.store.PauseAssistants(paused)
-		if paused == a.assistantsSwitch.paused {
-			return
-		}
-		if paused {
+		var paused bool
+		switch {
+		case !a.currentSettings().AssistantsEnabled:
+			a.holdAssistantsPause()
+			if a.assistantsSwitch.paused {
+				return
+			}
 			a.pauseAssistants()
-		} else {
-			a.resumeAssistants()
+			paused = true
+		case a.assistantsSwitch.paused || a.store.AssistantsPaused():
+			if !a.resumeAssistants() {
+				// Turned off again before the pause was released.
+				continue
+			}
+		default:
+			return
 		}
 		a.assistantsSwitch.paused = paused
 		if hook := a.assistantsSwitch.convergedForTest; hook != nil {
@@ -271,27 +312,40 @@ func (a *App) endPausedAssistantSession(threadID string) error {
 	return errors.Join(errs...)
 }
 
-// resumeAssistants lets this computer's assistants run again: their
-// long-running watches start, a run a quit cut while they were off runs
-// again, and the sweep serves every interval fire that came due meanwhile
-// once, with how many it missed. A thread with messages waiting in its
-// queue starts its session for them.
-func (a *App) resumeAssistants() {
+// resumeAssistants lets this computer's assistants run again, and reports
+// false, having started nothing, when the setting turned off before the pause
+// was released. While the pause still holds, so nothing of theirs is
+// admitted, a run a quit cut while they were off is recorded; then the pause
+// is released, their long-running watches start, the cut runs run again, and
+// the sweep serves every interval fire that came due meanwhile once, with
+// how many it missed. A thread with messages waiting in its queue starts its
+// session for them.
+func (a *App) resumeAssistants() bool {
+	if hook := a.assistantsSwitch.resumeReadForTest; hook != nil {
+		hook(false)
+	}
 	rows, err := a.store.ListLiveAssistantAgentWakes()
+	if hook := a.assistantsSwitch.resumeReadForTest; hook != nil {
+		hook(true)
+	}
 	if err != nil {
 		log.Printf("assistants: turning them on: %v", err)
-	} else {
-		a.recoverAgentWakes(rows, false)
 	}
+	recovered := a.recoverOrphanedAgentWakes(rows)
+	if !a.releaseAssistantsPause() {
+		return false
+	}
+	a.restartAgentWakes(recovered, false)
 	a.nudgeThreadRequestSweep()
 	threads, err := a.store.ListThreadsUnderAssistants()
 	if err != nil {
 		log.Printf("assistants: turning them on: %v", err)
-		return
+		return true
 	}
 	for _, threadID := range threads {
 		a.startWaitingAssistantSession(threadID)
 	}
+	return true
 }
 
 // startWaitingAssistantSession starts the session of a thread that has

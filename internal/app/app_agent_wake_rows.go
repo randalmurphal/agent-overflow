@@ -291,8 +291,12 @@ func (a *App) WakeThreadWakeNow(ctx context.Context, threadID, kind, id string) 
 		return err
 	}
 	now := time.Now()
-	if a.fireAgentWake(row, now, agentWakeFire{at: now.UnixMilli(), missed: carriedMissed(row)}) {
-		return nil
+	err = a.fireAgentWake(row, now, agentWakeFire{at: now.UnixMilli(), missed: carriedMissed(row)})
+	if err == nil || errors.Is(err, errAssistantsOff) {
+		return err
+	}
+	if !errors.Is(err, errAgentWakeNotFired) {
+		log.Printf("agent wakes: wake now %s %q on %s: %v", row.Kind, row.Label, threadID, err)
 	}
 	// The claim lost to the sweep, a cancel or a run, or could not be
 	// written: the row as it stands now says which.
@@ -330,7 +334,9 @@ func (a *App) wakeThreadReminderNow(threadID, token string) error {
 	if row.State != store.ThreadRequestAccepted {
 		return errors.New("the reminder has already fired")
 	}
-	a.fireThreadReminder(row, time.Now())
+	if err := a.fireThreadReminder(row, time.Now()); err != nil {
+		return err
+	}
 	current, found, err := a.store.GetThreadRequest(token)
 	switch {
 	case err != nil:

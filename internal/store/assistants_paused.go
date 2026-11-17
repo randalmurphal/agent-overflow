@@ -13,8 +13,11 @@ import (
 // their registration and next fire; turning assistants on makes them due
 // again, and a fire that came due meanwhile is served once with its count.
 //
-// This is the one rule the pause has: a fire is decided by these reads, so
-// no path fires a paused row without going through one.
+// These reads are scheduling only: they keep the sweep from selecting or
+// waking for a paused row. A selection read before the pause, a Wake now and
+// a process start reach a row without them, so the app refuses a paused
+// assistant's row where it claims it (fireAgentWake, admitAgentWatchProcess,
+// settleThreadReminder).
 
 // threadUnderAssistantSQL is true for a thread that lives under an
 // assistant: its current thread, one of its past threads or one of its

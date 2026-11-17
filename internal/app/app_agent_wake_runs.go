@@ -125,7 +125,10 @@ func (a *App) fireDueAgentWakes(now time.Time) {
 		elapsed, _ := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
 		// The fire being served is one of the elapsed ones; the rest were
 		// overtaken: the computer slept, or a run outlived its interval.
-		a.fireAgentWake(row, now, agentWakeFire{at: now.UnixMilli(), missed: elapsed - 1 + carriedMissed(row)})
+		err := a.fireAgentWake(row, now, agentWakeFire{at: now.UnixMilli(), missed: elapsed - 1 + carriedMissed(row)})
+		if err != nil && !errors.Is(err, errAgentWakeNotFired) && !errors.Is(err, errAssistantsOff) {
+			logThreadRequestSweep("fire "+row.Kind+" "+row.ID, err)
+		}
 	}
 }
 
@@ -134,24 +137,37 @@ func (a *App) fireDueAgentWakes(now time.Time) {
 // `cancelled-by-quit` and runs again now, an interval row whose fire came due
 // while the app was closed fires once with how many it missed, and every
 // long-running watch starts from scratch. The rows of paused assistants wait
-// for assistants to be turned on (resumeAssistantWakes).
+// for assistants to be turned on (resumeAssistants).
 func (a *App) recoverAgentWakesAtBoot() {
 	rows, err := a.store.ListLiveAgentWakes()
 	if err != nil {
 		logThreadRequestSweep("read loops and watches at boot", err)
 		return
 	}
-	a.recoverAgentWakes(rows, true)
+	a.restartAgentWakes(a.recoverOrphanedAgentWakes(rows), true)
 }
 
-// recoverAgentWakes applies the restart rules to rows the supervisor is not
-// running: at boot, or when assistants are turned on again. Only at boot
-// does an interval row whose fire came due fire here, as one that stands in
-// for the fires missed while the app was closed; otherwise the sweep serves
-// it as any due fire, counting what it missed.
-func (a *App) recoverAgentWakes(rows []store.AgentWake, boot bool) {
-	now := time.Now()
+// recoveredAgentWake is a live row as orphan recovery left it, and whether
+// recovery recorded a cut run on it.
+type recoveredAgentWake struct {
+	row store.AgentWake
+	cut bool
+}
+
+// recoverOrphanedAgentWakes records `cancelled-by-quit` on each of rows left
+// `running` by a run that is gone, and arms it again. A row a registered run
+// holds is live, not an orphan, and a row whose recovery does not apply
+// changed after it was read, so whatever changed it owns it; both are left
+// out. Under the wake lifecycle lock, so no run registers between the check
+// and the write.
+func (a *App) recoverOrphanedAgentWakes(rows []store.AgentWake) []recoveredAgentWake {
+	a.agentWakes.lifecycle.Lock()
+	defer a.agentWakes.lifecycle.Unlock()
+	recovered := make([]recoveredAgentWake, 0, len(rows))
 	for _, row := range rows {
+		if a.agentWakeRegistered(row.ID) {
+			continue
+		}
 		cut := row.State == store.AgentWakeRunning
 		if cut {
 			outcome := agentWakeOutcomeCutByQuit
@@ -159,56 +175,94 @@ func (a *App) recoverAgentWakes(rows []store.AgentWake, boot bool) {
 				// What was lost is the more useful thing to show.
 				outcome = row.LastOutcome
 			}
-			if _, err := a.store.RecoverAgentWake(row.ID, outcome); err != nil {
+			applied, err := a.store.RecoverAgentWake(row.ID, outcome)
+			if err != nil {
 				logThreadRequestSweep("recover "+row.Kind+" "+row.ID, err)
+				continue
+			}
+			if !applied {
 				continue
 			}
 			a.emitAgentWakeChanged(row.ThreadID, row.ID)
 			row.State, row.LastOutcome = store.AgentWakeArmed, outcome
 		}
+		recovered = append(recovered, recoveredAgentWake{row: row, cut: cut})
+	}
+	return recovered
+}
+
+// restartAgentWakes starts what orphan recovery left: every long-running
+// watch's process, and the run of each row whose run was cut. Only at boot
+// does an interval row whose fire came due fire here, as one that stands in
+// for the fires missed while the app was closed; otherwise the sweep serves
+// it as any due fire, counting what it missed. A fire the sweep claimed
+// first loses its claim here, so the row runs once.
+func (a *App) restartAgentWakes(recovered []recoveredAgentWake, boot bool) {
+	now := time.Now()
+	for _, r := range recovered {
+		row := r.row
 		if row.LongRunning {
 			a.startAgentWatchProcess(row)
 			continue
 		}
 		elapsed, _ := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
-		if !cut && (elapsed == 0 || !boot) {
+		if !r.cut && (elapsed == 0 || !boot) {
 			continue
 		}
-		a.fireAgentWake(row, now, agentWakeFire{
-			at: now.UnixMilli(), missed: elapsed + carriedMissed(row), closed: elapsed > 0, rerun: cut,
-		})
+		if err := a.fireAgentWake(row, now, agentWakeFire{
+			at: now.UnixMilli(), missed: elapsed + carriedMissed(row), closed: elapsed > 0, rerun: r.cut,
+		}); err != nil && !errors.Is(err, errAgentWakeNotFired) && !errors.Is(err, errAssistantsOff) {
+			logThreadRequestSweep("fire "+row.Kind+" "+row.ID, err)
+		}
 	}
 }
 
+// agentWakeRegistered reports whether the supervisor runs something of the
+// row.
+func (a *App) agentWakeRegistered(id string) bool {
+	a.agentWakes.mu.Lock()
+	defer a.agentWakes.mu.Unlock()
+	_, running := a.agentWakes.runs[id]
+	return running
+}
+
+// errAgentWakeNotFired is a fire that did not start: its claim lost to a
+// cancel, a re-registration or another run, or the app is shutting down.
+var errAgentWakeNotFired = errors.New("the fire did not start")
+
 // fireAgentWake claims one interval row and runs it off the sweep's
 // goroutine: a watch script can take minutes, and a loop's delivery takes the
-// thread's lock and can start its session. It reports whether the run
-// started: false is a lost claim, a failed one (logged) or a shutdown. The
-// claim and the run's registration are one step under the wake lifecycle
-// lock, so a cancel never lands between them.
-func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFire) bool {
+// thread's lock and can start its session. Nil is a started run,
+// errAgentWakeNotFired a lost claim or a shutdown, and errAssistantsOff a
+// paused assistant's row. The admission, the claim and the run's
+// registration are one step under the wake lifecycle lock, so a cancel never
+// lands between them, and the pause's stop pass, which takes the lock after
+// the pause is set, either finds the run registered or was seen here.
+func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFire) error {
 	_, next := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
 	if next <= now.UnixMilli() {
 		next = now.UnixMilli() + row.IntervalSeconds*1000
 	}
 	a.agentWakes.lifecycle.Lock()
 	defer a.agentWakes.lifecycle.Unlock()
+	if err := a.refusePausedAssistantThread(row.ThreadID); err != nil {
+		return err
+	}
 	claimedRow, claimed, err := a.store.ClaimAgentWake(row, now.UnixMilli(), next, fire.missed)
 	if err != nil {
-		logThreadRequestSweep("claim "+row.Kind+" "+row.ID, err)
-		return false
+		return fmt.Errorf("claim %s %s: %w", row.Kind, row.ID, err)
 	}
 	if !claimed {
-		return false
+		return errAgentWakeNotFired
 	}
 	a.emitAgentWakeRow(row.ThreadID, claimedRow)
 	row = claimedRow
 	if a.agentWakeClaimedForTest != nil {
 		a.agentWakeClaimedForTest(row)
 	}
-	// False when shutting down: the row stays `running`, and the next
-	// boot records the cut and runs it again.
-	return a.registerAgentWakeRunLocked(row, func(ctx context.Context, run *agentWakeRun) {
+	// Not registered when shutting down: the row stays `running`, and the
+	// next boot records the cut and runs it again.
+	if !a.registerAgentWakeRunLocked(row, func(ctx context.Context, run *agentWakeRun) {
 		select {
 		case a.agentWakeSlots() <- struct{}{}:
 		case <-ctx.Done():
@@ -216,7 +270,10 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 		}
 		defer func() { <-a.agentWakeSlots() }()
 		a.runAgentWakeFire(ctx, run, row, fire)
-	})
+	}) {
+		return errAgentWakeNotFired
+	}
+	return nil
 }
 
 // currentAgentWake reads a row as it stands now, for what its previous wake
@@ -465,12 +522,11 @@ func (a *App) superviseAgentWatch(ctx context.Context, run *agentWakeRun, wakeID
 			logThreadRequestSweep("read long-running watch "+wakeID, err)
 			return
 		}
-		if !found || row.State == store.AgentWakeCancelled || !row.LongRunning || run.wasStopped() {
+		if !found || row.State == store.AgentWakeCancelled || !row.LongRunning {
 			return
 		}
-		started, err := a.store.StartAgentWakeProcess(row.ID, time.Now().UnixMilli())
-		if err != nil || !started {
-			if err != nil {
+		if started, err := a.admitAgentWatchProcess(run, row); err != nil || !started {
+			if err != nil && !errors.Is(err, errAssistantsOff) {
 				logThreadRequestSweep("start long-running watch "+wakeID, err)
 			}
 			return
@@ -492,6 +548,29 @@ func (a *App) superviseAgentWatch(ctx context.Context, run *agentWakeRun, wakeID
 		}
 		backoff = min(backoff*2, agentWakeRestartCap)
 	}
+}
+
+// admitAgentWatchProcess marks a long-running watch's process started unless
+// its run was stopped or its thread is a paused assistant's, under the wake
+// lifecycle lock the pause's stop pass takes: a start the pause did not
+// refuse is a run it stops. A refused restart arms the row with the pause's
+// outcome, as the stop pass does, so turning assistants on starts it again.
+func (a *App) admitAgentWatchProcess(run *agentWakeRun, row store.AgentWake) (bool, error) {
+	a.agentWakes.lifecycle.Lock()
+	defer a.agentWakes.lifecycle.Unlock()
+	if run.wasStopped() {
+		return false, nil
+	}
+	if err := a.refusePausedAssistantThread(row.ThreadID); err != nil {
+		if errors.Is(err, errAssistantsOff) && row.State == store.AgentWakeRunning {
+			if _, armErr := a.store.PauseAgentWakeRun(row.ID, agentWakeOutcomePaused); armErr != nil {
+				return false, armErr
+			}
+			a.emitAgentWakeChanged(row.ThreadID, row.ID)
+		}
+		return false, err
+	}
+	return a.store.StartAgentWakeProcess(row.ID, time.Now().UnixMilli())
 }
 
 func (a *App) noteAgentWakeOutcome(run *agentWakeRun, wakeID, outcome string, carry store.AgentWakeCarry) {

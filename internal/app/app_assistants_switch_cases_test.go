@@ -103,8 +103,8 @@ func TestAssistantsToggledTwiceQuicklyEndOn(t *testing.T) {
 
 // Off, then a restart, then on: the boot leaves a paused assistant's rows
 // alone, a run a quit cut among them included, and turning assistants on
-// records the cut and runs it again, while the sweep serves the loop that
-// came due once, with its count.
+// recovers the cut run and runs it again once, while the sweep serves the
+// loop that came due once, with its count.
 func TestAssistantsOffAcrossARestartResumeWhenTurnedOn(t *testing.T) {
 	t.Parallel()
 	first, dbPath := newTestAppWithStorePath(t)
@@ -112,7 +112,8 @@ func TestAssistantsOffAcrossARestartResumeWhenTurnedOn(t *testing.T) {
 	testAssistant(t, first, thread.ID)
 	now := time.Now()
 	loop := registerTestWake(t, first, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 3600, NextAt: now.Add(-150 * time.Minute).UnixMilli()})
-	watch := registerTestWake(t, first, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "quiet", Command: "true", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: now.Add(time.Hour).UnixMilli()})
+	command, marker := markerWatch(t)
+	watch := registerTestWake(t, first, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "quiet", Command: command, IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: now.Add(time.Hour).UnixMilli()})
 	// The quit cut this run.
 	if _, claimed, err := first.store.ClaimAgentWake(watch, now.UnixMilli(), now.Add(time.Hour).UnixMilli(), 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
@@ -140,9 +141,13 @@ func TestAssistantsOffAcrossARestartResumeWhenTurnedOn(t *testing.T) {
 	}
 
 	setAssistants(t, a, true)
-	waitUntil(t, 10*time.Second, func() bool {
-		return agentWake(t, a, watch.ID).LastOutcome == agentWakeOutcomeCutByQuit
-	})
+	// The rerun's own outcome replaces the cut's, so the run is what shows
+	// the cut was recovered: the claim that reruns it needs the row armed.
+	waitUntil(t, 10*time.Second, func() bool { return markerRuns(t, marker) == 1 })
+	awaitNoAgentWakeRun(t, a, watch.ID)
+	if runs, row := markerRuns(t, marker), agentWake(t, a, watch.ID); runs != 1 || row.State != store.AgentWakeArmed || row.LastRunAt <= now.UnixMilli() {
+		t.Fatalf("the cut watch after assistants came back ran %d times: %+v; want it run again once", runs, row)
+	}
 	a.fireDueAgentWakes(time.Now())
 	if row := agentWake(t, a, loop.ID); row.LastRunAt == 0 || row.Missed != 2 {
 		t.Fatalf("the loop after assistants came back = %+v; want it fired once standing in for 2", row)

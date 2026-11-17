@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"agent-overflow/internal/errorsx"
@@ -75,27 +76,37 @@ func (a *App) fireDueThreadReminders(now time.Time) {
 		return
 	}
 	for _, row := range rows {
-		a.fireThreadReminder(row, now)
+		if err := a.fireThreadReminder(row, now); err != nil && !errors.Is(err, errAssistantsOff) {
+			logThreadRequestSweep("settle reminder "+row.Token, err)
+		}
 	}
 }
 
-func (a *App) fireThreadReminder(row store.ThreadRequest, now time.Time) {
-	if a.settleThreadReminder(row, now) {
+// fireThreadReminder settles one due reminder and delivers its wake.
+// errAssistantsOff is a paused assistant's reminder, left waiting.
+func (a *App) fireThreadReminder(row store.ThreadRequest, now time.Time) error {
+	owed, err := a.settleThreadReminder(row, now)
+	if owed {
 		// Off the sweep's goroutine: the delivery takes the caller
 		// thread's own lock and can start its session, and the reminders
 		// behind this one are due now.
 		a.deliverThreadWakeDetached(row.Token, false)
 	}
+	return err
 }
 
 // settleThreadReminder settles one due reminder under its settle lock and
 // reports whether its wake is owed. The wake itself is delivered by the
 // caller with the lock released, because delivery takes the caller thread's
-// own locks.
-func (a *App) settleThreadReminder(row store.ThreadRequest, now time.Time) bool {
+// own locks. A paused assistant's reminder is refused here, whatever
+// selected it, so one read before the pause does not fire after it.
+func (a *App) settleThreadReminder(row store.ThreadRequest, now time.Time) (bool, error) {
 	unlock := a.threadRequestSettleLock(row.Token)
 	defer unlock()
 
+	if err := a.refusePausedAssistantThread(row.CallerThreadID); err != nil {
+		return false, err
+	}
 	settled, err := a.store.SettleThreadRequest(row.Token, []string{store.ThreadRequestAccepted}, store.ThreadRequestSettlement{
 		State:      store.ThreadRequestFinished,
 		Answer:     row.Answer,
@@ -103,18 +114,17 @@ func (a *App) settleThreadReminder(row store.ThreadRequest, now time.Time) bool 
 		SettledAt:  now.UnixMilli(),
 	})
 	if err != nil {
-		logThreadRequestSweep("settle reminder "+row.Token, err)
-		return false
+		return false, err
 	}
 	if !settled {
 		// Cancelled or already fired while this sweep was reading.
-		return false
+		return false, nil
 	}
 	a.emitThreadReminderChanged(row.CallerThreadID, row.Token)
 	// The collector re-reads the row under the settle lock: thread_status
 	// can have disarmed the wake since the sweep listed this row, and the
 	// collector is the one place that decides whether a message is owed.
-	return a.finishThreadRequestCollection(row.Token, false)
+	return a.finishThreadRequestCollection(row.Token, false), nil
 }
 
 // dropThreadReminder cancels a reminder that has not fired. A reminder is
