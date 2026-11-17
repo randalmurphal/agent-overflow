@@ -150,9 +150,8 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 	}
 }
 
-// Every kind that selects a tab carries its mount and number to the Manager:
-// one the user made before a selection already applied from the same mount
-// selects nothing, and a tab it opens stays in the background.
+// Every kind that selects a tab carries its mount and number to the Manager,
+// which admits each number once: a number already admitted does nothing.
 func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -176,19 +175,21 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seq := uint64(10)
+	before := do(BrowserCompanionAction{Kind: "activate", PageID: first, Mount: mount.ID, Select: 1})
+	// Number 1 was admitted: each kind sent again as number 1 is passed and
+	// does nothing.
 	for _, late := range []BrowserCompanionAction{
 		{Kind: "activate", PageID: second},
 		{Kind: "step", Index: 1},
 		{Kind: "new"},
 		{Kind: "duplicate", PageID: second},
 		{Kind: "reopen"},
+		{Kind: "download-open", DownloadID: "none"},
 	} {
-		seq += 2
-		do(BrowserCompanionAction{Kind: "activate", PageID: first, Mount: mount.ID, Select: seq})
-		late.Mount, late.Select = mount.ID, seq-1
-		if state := do(late); state.ActivePageID != first {
-			t.Fatalf("an overtaken %s selected %s, want %s", late.Kind, state.ActivePageID, first)
+		late.Mount, late.Select = mount.ID, 1
+		state := do(late)
+		if state.ActivePageID != first || len(state.Pages) != len(before.Pages) || state.ClosedTabs != before.ClosedTabs {
+			t.Fatalf("a passed %s changed the tabs: %+v", late.Kind, state)
 		}
 	}
 }

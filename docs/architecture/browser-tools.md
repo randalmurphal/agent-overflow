@@ -144,21 +144,25 @@ per-platform no-op.
   `restoring` until its reload ends. The pane's own request to restore the
   suspended tab it shows (`restore`) selects nothing and acts only while that
   tab is still the active one.
-- The user's last tab selection wins whatever order the actions arrive in
-  (`selection.go`); the transport runs each call on its own goroutine. Every
-  pane action that selects a tab (`activate`, `step`, and the `new`,
-  `reopen`, `duplicate` and `download-open` that select the tab they open)
-  carries the pane's mount and a number the client takes when the user acts,
-  rising for the life of the page. In the same lock hold that sets the
-  active tab the Manager skips a selection numbered at or below the newest
-  tab chosen outright from that mount: it answers success, selects and
-  restores nothing, and a tab it opened stays in the background. Steps
-  compose by addition in any order, so two forward steps move two tabs; a
-  tab chosen outright that arrives after newer steps lands where those steps
-  move it. A selection with no number (an older client) or no live mount of
-  the thread, an agent's `browser_select_page`, the chat header's show and
-  selections from another mount keep arrival order. Closing the active tab
-  reselects as a repair, unnumbered: it replaces only a tab that is gone.
+- A pane's tab selections take effect in the order the user made them
+  (`selection.go`), though the transport runs each call on its own
+  goroutine. Every pane action that selects a tab (`activate`, `step`, and
+  the `new`, `reopen`, `duplicate` and `download-open` that select the tab
+  they open) carries the pane's mount and a number the client takes when
+  the user acts, consecutive from 1 in each mount; a re-attach is a new
+  mount and starts again at 1. The Manager admits a mount's numbers in
+  order: the next one selects at once, a later one waits for its
+  predecessors' selection (never their restore or load), and each then
+  does what it says and restores the tab it selected. A number missing for
+  a second with no progress (its request failed in transit) is given up
+  and the count moves past it. A number already passed or repeated, one
+  from a mount the Manager does not have (detached, or another thread's),
+  and a waiter whose mount detaches answer success and select, open and
+  restore nothing. More than 256 waiting in one mount are refused with an
+  error. A selection with no number (an older client) or no mount, an
+  agent's `browser_select_page` and the chat header's show apply in
+  arrival order and never wait. Closing the active tab reselects only when
+  that tab is gone.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
   `loading`). When a load stops, an engine with a pane reads the favicon in
@@ -392,7 +396,7 @@ behave as a desktop browser's:
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
   its own order and selection (`StepCompanionPage`), so presses faster than
-  the state push each move one tab, in any arrival order.
+  the state push each move one tab.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
   before the SPA sees the key. While the browser pane is focused and the
   effective keybindings run a command for `mod+r` there, the SPA asks over

@@ -105,8 +105,14 @@ func (s *closedTabs) push(tab closedTab) {
 
 // ReopenClosedTab reopens the thread's most recently closed tab at its
 // position, selected, and loads its address as the address bar would. With
-// none to reopen it does nothing.
+// none to reopen, or with ctx's numbered selection passed (selection.go), it
+// does nothing.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
+	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
+	if err != nil || turn.passed {
+		return err
+	}
+	defer m.finishSelectionTurn(turn)
 	m.mu.Lock()
 	stack := m.closedTabs[access.ThreadID]
 	if stack == nil || len(stack.tabs) == 0 {
@@ -116,7 +122,7 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 	tab := stack.tabs[len(stack.tabs)-1]
 	stack.tabs = stack.tabs[:len(stack.tabs)-1]
 	m.mu.Unlock()
-	info, err := m.openUserTab(ctx, access, tab.url, tab.label, tab.index)
+	info, err := m.openUserTab(ctx, access, turn, tab.url, tab.label, tab.index)
 	if err != nil && info.ID == "" {
 		if m.reopenRefused != nil {
 			m.reopenRefused()
@@ -135,9 +141,15 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 }
 
 // DuplicateCompanionPage opens a new tab right after pageID, selected, at
-// pageID's address. A tab with no address yet opens a blank one.
+// pageID's address. A tab with no address yet opens a blank one. With ctx's
+// numbered selection passed (selection.go) it does nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
+	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
+	if err != nil || turn.passed {
+		return err
+	}
+	defer m.finishSelectionTurn(turn)
 	m.mu.Lock()
 	index, address := -1, ""
 	for i, tab := range m.companionTabsLocked(access.ThreadID) {
@@ -152,7 +164,7 @@ func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pag
 	if index < 0 {
 		return errPageNotFound
 	}
-	_, err := m.openUserTab(ctx, access, address, "", index)
+	_, err = m.openUserTab(ctx, access, turn, address, "", index)
 	return err
 }
 
