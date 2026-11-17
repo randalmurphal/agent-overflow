@@ -437,8 +437,11 @@ behave as a desktop browser's:
   listed when the popup's fate is known: in the popup's tab when it is
   adopted, and otherwise in the tab of its nearest opener still listed, as
   it is, finished or running, or canceled with the reason when the popup's
-  close ended it (WebView2 cancels a closing page's downloads). With no
-  opener listed it is canceled. Past 16 such downloads of a popup, or 64
+  close ended it (WebView2 cancels a closing page's downloads). A popup
+  whose window went before the launcher reported it is never a tab; its
+  downloads are listed at its close. With no opener listed, or over its
+  workspace's quota, it is canceled, and the file AO keeps for it (headless
+  Chromium's artifact, WebKit's staged file) is removed. Past 16 such downloads of a popup, or 64
   popups holding some, a download is refused and canceled. When a popup's first navigation is
   a download, WebView2 asks to close the popup, which closes when the
   download ends, and opens its own download dialog over the opener, which
