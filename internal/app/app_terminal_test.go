@@ -367,7 +367,8 @@ func newAppWithReportedTerminalExitsAt(t *testing.T) (*App, <-chan string, strin
 // connection, as the tests that inject a failed delete do.
 func execOnStore(t *testing.T, path, statement string) {
 	t.Helper()
-	raw, err := sql.Open("sqlite", path)
+	// It waits out the app's writer as the app's own connections do.
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatal(err)
 	}

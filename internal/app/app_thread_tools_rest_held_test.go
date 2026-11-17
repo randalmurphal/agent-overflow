@@ -234,7 +234,14 @@ func TestNoHeldSpawnSettlesBeforeTheBootRestoredItsWorkersQuestion(t *testing.T)
 	f.app.configureTriageQueueCallbacks()
 	f.holdCallerSession()
 	workerGate := filepath.Join(t.TempDir(), "worker")
-	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(workerGate, "Asked which board.")})
+	// The question is recorded while the turn waits, before the message it
+	// ends with, so the message is the thread's last.
+	installMockClaudeTurns(t, f.app, [][]string{{
+		mockClaudeInitLine,
+		testutil.MockWaitForFile(workerGate),
+		`{"type":"assistant","message":{"id":"msg-asked","role":"assistant","content":[{"type":"text","text":"Asked which board."}]}}`,
+		mockClaudeResultLine,
+	}})
 	ack := f.spawnWorker(t, "run the board")
 	f.awaitTurnRunning(t, ack.Token)
 	if _, err := f.app.store.RecordAsyncQuestions(store.Item{ID: "question:ask", ThreadID: ack.ThreadID, Kind: "assistant_text", Role: "assistant",

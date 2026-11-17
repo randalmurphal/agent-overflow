@@ -19,7 +19,7 @@ import (
 // func restores it.
 func (f *requestFixture) failRestSource(t *testing.T) (restore func()) {
 	t.Helper()
-	db, err := sql.Open("sqlite", f.dbPath)
+	db, err := sql.Open("sqlite", "file:"+f.dbPath+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatal(err)
 	}
