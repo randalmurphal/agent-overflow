@@ -125,6 +125,28 @@ func TestReopenClosedTabPutsItBackWhereItWas(t *testing.T) {
 	}
 }
 
+// A reopened tab whose label another tab took meanwhile comes back without
+// it, so the thread's labels stay unique.
+func TestReopenedTabLeavesATakenLabel(t *testing.T) {
+	m, access, ids := newTabsManager(t, addr("a"), addr("b"))
+	if _, err := m.LabelPage(t.Context(), access, ids[0], "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CloseCompanionPage(t.Context(), access, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.LabelPage(t.Context(), access, ids[1], "DOCS"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopenTab(t, m, access); err != nil {
+		t.Fatal(err)
+	}
+	pages := m.CompanionState(access).Pages
+	if len(pages) != 2 || pages[0].Label != "" || pages[1].Label != "DOCS" {
+		t.Fatalf("tabs = %+v, want the reopened tab unlabelled and the other keeping DOCS", pages)
+	}
+}
+
 // A reopened tab's label reaches the clients even when its address no
 // longer opens.
 func TestReopenedTabsLabelIsPushedWhenItsAddressFails(t *testing.T) {

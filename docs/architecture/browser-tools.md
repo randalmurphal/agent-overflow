@@ -124,7 +124,8 @@ per-platform no-op.
   the last 10, for http, https and `file:` addresses of a tab that finished
   opening; an agent's close is not kept. The close that takes the tab out of
   the tab set records it, so racing closes record it once. Reopen pops the
-  newest into a new tab at that position; a reopen that fails before the
+  newest into a new tab at that position, without its label if another tab
+  took it meanwhile, since labels stay unique; a reopen that fails before the
   tab exists puts the entry back unless a forget ran meanwhile. The state
   carries `closedTabs`, the stack's depth. The stack is browsing history,
   forgotten with the recent addresses below by the same helpers and

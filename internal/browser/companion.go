@@ -977,9 +977,14 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, address, label
 		return PageInfo{}, err
 	}
 	if label != "" {
-		// The tab was pushed without it; a navigation that fails before
-		// its operation would not push it.
-		p.commitInfo(pageUpdate{Label: &label})
+		// A closed tab's label, unless another tab took it meanwhile, which
+		// keeps it (labelHolderLocked). The tab was pushed without it, and
+		// a navigation that fails before its operation would not push it.
+		m.mu.Lock()
+		if m.labelHolderLocked(p.owner, p.id, label) == "" {
+			p.commitInfo(pageUpdate{Label: &label})
+		}
+		m.mu.Unlock()
 		m.publishPages(p.owner)
 	}
 	if strings.TrimSpace(address) != "" {
