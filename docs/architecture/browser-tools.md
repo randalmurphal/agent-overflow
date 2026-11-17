@@ -195,11 +195,16 @@ per-platform no-op.
   `Runtime.addBinding` binding (`cdp_page.go`), and that title is the tab's
   while the tab shows that address, whichever of the two arrives first.
   The watcher starts when it is evaluated, so no page event handling can
-  stop it, and observes only the nodes a title change passes through (the
-  Document's and the root's children, the head's children, the title
-  element's subtree), re-pointed when one is replaced: `document.write`
-  replacing the document, a replaced root and an SVG title all report,
-  and a busy body costs it nothing. A
+  stop it. It follows the title element `document.title` reads (the first
+  HTML title in tree order, or an SVG root's own title) and observes only
+  the nodes a title change passes through (the Document's and the root's
+  children, the head's children, that title element's subtree), looked up
+  again on each observed change and each report: `document.write`
+  replacing the document, a replaced root, a title before the head's or in
+  the body, and an SVG title all report, and a busy body costs it nothing.
+  Its stated limit is a title a script inserts into or removes from the
+  body after load while nothing observed changes; a read asks the document
+  and is right. A
   read (an
   operation's, `browser_pages`', a selection's, the history refresh after a
   report) is stamped before it asks; the address and the back/forward state
