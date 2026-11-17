@@ -544,6 +544,27 @@ func TestUpdateReportsWorkersAnArchiveLeftOpen(t *testing.T) {
 	}
 }
 
+// TestUpdateSaysAPendingWorkerElsewhereIsSentAgain: a worker on another
+// computer that has not taken the archive yet is named pending with its
+// computer, and the note says the archive is sent again, not to retry it.
+func TestUpdateSaysAPendingWorkerElsewhereIsSentAgain(t *testing.T) {
+	p := newPair(t)
+	p.local.addThread(Thread{ID: localThreadID, Title: "Local"})
+	pending := []WorkerNotArchived{{ThreadID: "worker", Error: "Desk did not answer in time", Computer: "Desk", Pending: true}}
+	p.local.updated = []ThreadUpdateResult{{ThreadID: localThreadID, Updated: true, WorkersNotArchived: pending}}
+
+	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`"],"archived":true}`)
+	list := rows(t, result["results"])
+	workers, _ := list[0].(map[string]any)["workers_not_archived"].([]any)
+	if len(workers) != 1 || field(t, workers[0], "pending") != true || field(t, workers[0], "computer") != "Desk" {
+		t.Fatalf("row = %v, want the worker pending on Desk", list[0])
+	}
+	note, _ := result["note"].(string)
+	if !strings.Contains(note, "sent again until") || strings.Contains(note, "Archive them again") {
+		t.Errorf("note = %q", note)
+	}
+}
+
 // TestGroupNamesOneGroupAndDoesOneThingToIt.
 func TestGroupNamesOneGroupAndDoesOneThingToIt(t *testing.T) {
 	app := newFakeApp("Laptop")

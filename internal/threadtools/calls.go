@@ -391,6 +391,11 @@ type WorkerNotArchived struct {
 	ThreadID  string `json:"thread_id"`
 	Error     string `json:"error"`
 	ErrorCode string `json:"error_code,omitempty"`
+	// Computer names the computer of a worker on another computer.
+	Computer string `json:"computer,omitempty"`
+	// Pending is a worker on another computer that has not taken the
+	// archive yet; it is sent again until it does.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // GroupReport is what thread_group returns.

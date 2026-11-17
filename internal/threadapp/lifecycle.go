@@ -57,6 +57,17 @@ func (s *Service) ArchiveWorker(threadID, ownerID string) (store.Thread, bool, e
 	return database.ArchiveOwnedWorker(threadID, ownerID)
 }
 
+// ArchiveLinkedWorker archives threadID for its owner on a paired computer,
+// only while the link token from deviceID owns it, and takes that owner's
+// operation seq once (store.ArchiveLinkedWorker).
+func (s *Service) ArchiveLinkedWorker(threadID, token, deviceID string, seq int64) (row store.Thread, changed, applied bool, err error) {
+	database, err := s.database("archive linked worker")
+	if err != nil {
+		return store.Thread{}, false, false, err
+	}
+	return database.ArchiveLinkedWorker(threadID, token, deviceID, seq)
+}
+
 func (s *Service) Unarchive(threadID string) (store.Thread, bool, error) {
 	database, err := s.database("unarchive thread")
 	if err != nil {

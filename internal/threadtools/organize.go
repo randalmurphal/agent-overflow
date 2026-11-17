@@ -105,11 +105,18 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 			break
 		}
 	}
+	var open, pending bool
 	for _, row := range results {
-		if len(row.WorkersNotArchived) > 0 {
-			notes = append(notes, "Some archived threads have workers that could not be archived and are still open; workers_not_archived names them and why. Archive them again once the reason is gone.")
-			break
+		for _, worker := range row.WorkersNotArchived {
+			pending = pending || worker.Pending
+			open = open || !worker.Pending
 		}
+	}
+	if open {
+		notes = append(notes, "Some archived threads have workers that could not be archived and are still open; workers_not_archived names them and why. Archive them again once the reason is gone.")
+	}
+	if pending {
+		notes = append(notes, "Some workers on other computers, marked pending in workers_not_archived, have not taken the archive yet; it is sent again until they do.")
 	}
 	result.Note = strings.Join(notes, " ")
 	return result, nil
