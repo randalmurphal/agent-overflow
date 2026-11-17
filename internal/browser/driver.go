@@ -125,8 +125,10 @@ type engineProfile interface {
 	// error the Manager discards the page, which is a no-op for an engine
 	// that already closed it.
 	AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error)
-	// CancelDownload aborts one in-flight download by its engine id.
-	CancelDownload(id string)
+	// CancelDownload aborts one in-flight download by its engine id. An
+	// error means the engine refused or could not be asked, and the
+	// download may still be running.
+	CancelDownload(id string) error
 	// Dispose destroys the profile and every page still in it.
 	Dispose(ctx context.Context) error
 }
@@ -380,12 +382,16 @@ type downloadStart struct {
 	SuggestedName string
 }
 
-// downloadProgress is an engine download advancing.
+// downloadProgress is an engine download advancing. Total is the size the
+// response announced, zero when unknown. Error is the engine's reason for a
+// download it stopped on its own (a network failure), when it reports one.
 type downloadProgress struct {
 	ID       string
 	Received float64
+	Total    float64
 	State    string
 	FilePath string
+	Error    string
 }
 
 // The states downloadProgress.State may carry.

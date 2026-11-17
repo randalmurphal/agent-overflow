@@ -354,14 +354,16 @@ func aoWKVDownloadStarted(profileID, pageID, downloadID C.uint64_t, download uns
 		if !profile.engine.events.DownloadStarted(downloadStart{
 			Frame: frame, ID: handle, URL: target, SuggestedName: name,
 		}) {
-			profile.CancelDownload(handle)
+			if err := profile.CancelDownload(handle); err != nil {
+				log.Printf("browser: cancel refused download %s: %v", handle, err)
+			}
 		}
 	}()
 }
 
 //export aoWKVDownloadFinished
-func aoWKVDownloadFinished(downloadID C.uint64_t, received C.double, state C.int, path *C.char) {
-	filePath := wkTakeString(path)
+func aoWKVDownloadFinished(downloadID C.uint64_t, received C.double, state C.int, path, failure *C.char) {
+	filePath, reason := wkTakeString(path), wkTakeString(failure)
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
 	// The profile that started the download owns the whole of its progress, so a
 	// report arriving after that profile is disposed is a lookup miss rather
@@ -370,7 +372,7 @@ func aoWKVDownloadFinished(downloadID C.uint64_t, received C.double, state C.int
 	if profile == nil {
 		return
 	}
-	progress := downloadProgress{ID: handle, Received: float64(received), State: downloadCompleted, FilePath: filePath}
+	progress := downloadProgress{ID: handle, Received: float64(received), State: downloadCompleted, FilePath: filePath, Error: reason}
 	if int(state) == 2 {
 		progress.State = downloadCanceled
 	}
@@ -745,20 +747,25 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 	}
 }
 
-func wkCancelDownload(download unsafe.Pointer) {
-	wkDo(func() { C.ao_wkv_download_cancel(download) })
+// wkCancelDownload reports false when the main thread could not run it.
+func wkCancelDownload(download unsafe.Pointer) bool {
+	return wkDo(func() { C.ao_wkv_download_cancel(download) })
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
 	wkDo(func() { C.ao_wkv_download_release(download) })
 }
 
-// wkDownloadReceived samples one download's NSProgress. WKDownload reports no
-// per-chunk callback, so the profile polls this while a download is live; that
-// sample is what lets the Manager cancel one that outgrows its byte cap before
-// the whole file is on disk.
-func wkDownloadReceived(download unsafe.Pointer) float64 {
-	var received C.double
-	wkDo(func() { received = C.ao_wkv_download_received(download) })
-	return float64(received)
+// wkDownloadProgress samples one download's NSProgress: the bytes received and
+// the size expected, 0 when unknown. WKDownload reports no per-chunk callback,
+// so the profile polls this while a download is live; that sample is what
+// lets the Manager cancel one that outgrows its byte cap before the whole
+// file is on disk.
+func wkDownloadProgress(download unsafe.Pointer) (received, total float64) {
+	var r, t C.double
+	wkDo(func() {
+		r = C.ao_wkv_download_received(download)
+		t = C.ao_wkv_download_total(download)
+	})
+	return float64(r), float64(t)
 }

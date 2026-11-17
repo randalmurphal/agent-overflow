@@ -469,18 +469,19 @@ func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriv
 	return nil, errors.New("browser: the pane host does not report engine-opened popups")
 }
 
-func (p *hostedProfile) CancelDownload(id string) { p.engine.cancelDownload(id) }
+func (p *hostedProfile) CancelDownload(id string) error { return p.engine.cancelDownload(id) }
 
 // cancelDownload keeps the CDP path. Browser.cancelDownload's support in
 // WebView2 is unverified; a refusal leaves the download running.
-func (e *hostedEngine) cancelDownload(id string) {
+func (e *hostedEngine) cancelDownload(id string) error {
 	browserCtx, ok := e.browser()
 	if !ok {
-		return
+		return errors.New("browser: the pane browser is not connected")
 	}
 	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
-		e.logf("browser: cancel download %s: %v", id, err)
+		return fmt.Errorf("browser: cancel download %s: %w", id, err)
 	}
+	return nil
 }
 
 func (p *hostedProfile) Dispose(context.Context) error {
@@ -635,7 +636,7 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 func (e *hostedEngine) subscribe(browserCtx context.Context) error {
 	// Downloads carry no engine identity (the GUID is the handle on every
 	// CDP engine), so the shared tracker translates them.
-	if err := newDownloadTracker(e.events, e.cancelDownload).subscribe(browserCtx, e.logf); err != nil {
+	if err := newDownloadTracker(e.events, refusedDownloadCanceler(e.cancelDownload, e.logf)).subscribe(browserCtx, e.logf); err != nil {
 		return err
 	}
 	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {

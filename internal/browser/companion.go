@@ -195,10 +195,11 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	tabs := m.companionTabsLocked(threadID)
 	session, hasSession := m.sessions[threadID]
 	active, _ := m.livePageLocked(session.ActivePageID)
+	downloads := m.threadDownloadsLocked(threadID)
 	m.stateSeq++
 	seq := m.stateSeq
 	m.mu.Unlock()
-	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), Seq: seq}
+	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), Downloads: downloads, Seq: seq}
 	if active != nil && active.owner == threadID {
 		event.FindMode = findModeOf(active)
 	}

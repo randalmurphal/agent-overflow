@@ -6,5 +6,6 @@ export {
     CompanionSubscription,
     FindState,
     PageInfo,
-    PaneRect
+    PaneRect,
+    ThreadDownload
 } from "./models.js";
