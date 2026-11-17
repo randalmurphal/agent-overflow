@@ -67,6 +67,7 @@ describe('<ArchivedThreads> delete whose cleanup failed', () => {
     const { findByLabelText, getByRole, queryByText, findByText } = render(ArchivedThreads);
     await findByText('Old work');
     await fireEvent.click(await findByLabelText('Delete permanently'));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(getToasts().map((t) => [t.type, t.message])).toEqual([['error', message]]));
