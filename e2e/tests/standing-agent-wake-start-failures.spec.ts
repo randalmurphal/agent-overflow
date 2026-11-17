@@ -11,8 +11,10 @@
 // restart withdrawn by the first start after it; archiving a thread whose
 // start failed withdrawing its held wake and send, and returning a finished
 // remote job's held completion to its watch for delivery after the
-// unarchive; and a Stop on a held remote completion's incoming row
-// dismissing it for good.
+// unarchive; a Stop on a held remote completion's incoming row
+// dismissing it for good; and a watch whose script keeps exiting nonzero
+// notifying once until a fixed script withdraws it (compact:
+// compact-standing-agent-broken-watch.spec.ts).
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -46,6 +48,7 @@ import {
   completionRows,
   shoot,
   dbWakes,
+  brokenWatchNotifiesUntilFixed,
   type NotificationSend,
 } from './standing-agent-wake-helpers.js';
 
@@ -305,6 +308,13 @@ echo "the report nobody could read"
     }
   });
 }
+
+// A watch's own failure is the person's to hear about too: its script
+// keeps exiting nonzero, which wakes nothing.
+test('a watch whose script keeps failing notifies once until it is fixed', async ({ page }) => {
+  test.setTimeout(150_000);
+  await brokenWatchNotifiesUntilFixed(page, 'desktop');
+});
 
 // A failed start does not stall the agent. Each later run of the watch
 // tries the start again, and the one whose start works delivers the held
