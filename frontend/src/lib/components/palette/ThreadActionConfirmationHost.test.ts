@@ -26,22 +26,18 @@ beforeEach(() => {
 afterEach(() => resetThreadActionConfirmationsForTest());
 
 describe('<ThreadActionConfirmationHost>', () => {
-  it('says how many terminals deleting a thread on a worktree closes', async () => {
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [{ projectId: 'project-1', worktreePath: '/tmp/wt/palette', terminals: 1 }] }));
+  // The delete keeps the worktree, so the confirmation says nothing of it
+  // and reads nothing about it.
+  it('says nothing of the worktree of a thread on one', async () => {
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    const status = setBindingMock('GitWorktreeStatus', vi.fn(async () => ({ terminals: 1 })));
     const { findByText } = render(ThreadActionConfirmationHost);
 
     requestThreadActionConfirmation('delete', ctxFor({ workspacePath: '/tmp/wt/palette', worktreePath: '/tmp/wt/palette' }));
 
-    await findByText(/This action cannot be undone\. 1 terminal will close\./);
-  });
-
-  it('adds nothing for a thread at the project root', async () => {
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    const { findByText, queryByText } = render(ThreadActionConfirmationHost);
-
-    requestThreadActionConfirmation('delete', ctxFor({ worktreePath: '' }));
-
-    await findByText(/This action cannot be undone\./);
-    expect(queryByText(/will close/)).toBeNull();
+    expect((await findByText(/This action cannot be undone\./)).textContent).toBe(
+      'This will permanently delete this thread and all its messages. This action cannot be undone.',
+    );
+    expect(status).not.toHaveBeenCalled();
   });
 });

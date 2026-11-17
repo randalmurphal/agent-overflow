@@ -16,7 +16,7 @@ import { withForkProgress } from '../../stores/forkPreparation.svelte';
 import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
 import {
   ArchiveThread,
-  DeleteThreadsAndWorktrees,
+  DeleteThreads,
   ForkThread,
   PinThread,
   RenameThread,
@@ -39,7 +39,6 @@ import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
-import { retainedNotice } from '../../utils/projectCleanup';
 import { isAssistantNameTaken } from '../../stores/assistants.svelte';
 import type { ArchiveThreadResult, DeleteThreadResult, Thread, WorkerFailure } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
@@ -242,7 +241,7 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
 export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
     if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
-    const { backend, result } = await deleteThreadWithWorktrees(ctx.thread);
+    const { backend, result } = await deleteThread(ctx.thread);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
     reportDeleteLeftovers(backend, ctx.thread.title, result, [ctx.thread.id]);
@@ -254,11 +253,10 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 /**
  * Deletes threads selected together the way the sidebar deletes one, as
- * one delete per computer they are on: a worktree only they are on is
- * removed once, and a selected thread that lives under another selected
- * thread is deleted once. A computer's refusal deletes nothing there and
- * is reported through reportError; the other computers' deletes stand.
- * True when every computer's delete went through.
+ * one delete per computer they are on: a selected thread that lives under
+ * another selected thread is deleted once. A computer's refusal deletes
+ * nothing there and is reported through reportError; the other computers'
+ * deletes stand. True when every computer's delete went through.
  */
 export async function deleteThreadsAction(
   threads: readonly Pick<Thread, 'id' | 'title'>[],
@@ -279,7 +277,7 @@ export async function deleteThreadsAction(
   for (const [backend, group] of byBackend) {
     const ids = group.map((thread) => thread.id);
     try {
-      const result = (await withBackendTarget(backend, () => DeleteThreadsAndWorktrees(ids))) ?? {};
+      const result = (await withBackendTarget(backend, () => DeleteThreads(ids))) ?? {};
       for (const id of ids) {
         removeThread(id);
         closePanesShowingThread(id);
@@ -296,18 +294,17 @@ export async function deleteThreadsAction(
 }
 
 /**
- * Deletes a thread the way the sidebar does: the backend deletes it with
- * everything under it and removes the worktrees the delete empties, after
- * stopping the sessions on them (DeleteThreadsAndWorktrees;
- * docs/specs/standing-agents.md, "Owned workers"). Returns the computer the
- * thread is on, captured before the first await, and what the delete left
- * undone.
+ * Deletes a thread the way the sidebar does: the backend stops and deletes
+ * it with everything under it (DeleteThreads; docs/specs/standing-agents.md,
+ * "Owned workers"), and the worktrees they were on stay. Returns the
+ * computer the thread is on, captured before the first await, and what the
+ * delete left undone.
  */
-export async function deleteThreadWithWorktrees(
+export async function deleteThread(
   thread: Pick<Thread, 'id'>,
 ): Promise<{ backend: BackendKey; result: DeleteThreadResult }> {
   const backend = requireEntityBackend(threadOwner(thread.id));
-  const result = await withBackendTarget(backend, () => DeleteThreadsAndWorktrees([thread.id]));
+  const result = await withBackendTarget(backend, () => DeleteThreads([thread.id]));
   return { backend, result: result ?? {} };
 }
 
@@ -315,14 +312,12 @@ export async function deleteThreadWithWorktrees(
  * What a delete that went through left undone. A thread under the deleted
  * ones whose delete failed keeps itself and the threads above it hidden
  * and unfinished; the toast deletes `seeds`, what the delete named, again,
- * which finishes them. A worktree that could not be removed is left on
- * disk and named. A worktree removed whose cleanup after the removal
- * failed is named with what failed.
+ * which finishes them.
  */
 export function reportDeleteLeftovers(
   backend: BackendKey,
   title: string,
-  result: Pick<DeleteThreadResult, 'workersNotDeleted' | 'retainedWorktrees' | 'worktreeCleanupFailures'>,
+  result: Pick<DeleteThreadResult, 'workersNotDeleted'>,
   seeds: readonly string[],
 ): void {
   const workers = result.workersNotDeleted ?? [];
@@ -334,16 +329,11 @@ export function reportDeleteLeftovers(
       run: () => void deleteAgain(backend, title, seeds),
     });
   }
-  const notice = retainedNotice(result.retainedWorktrees ?? []);
-  if (notice) addToast('warning', `Deleted "${title}". ${notice}`, 12000);
-  for (const failure of result.worktreeCleanupFailures ?? []) {
-    addToast('warning', `Deleted "${title}". The worktree ${failure.path} was removed, but cleaning up after it failed: ${failure.error}`, 12000);
-  }
 }
 
 async function deleteAgain(backend: BackendKey, title: string, seeds: readonly string[]): Promise<void> {
   try {
-    const result = (await withBackendTarget(backend, () => DeleteThreadsAndWorktrees([...seeds]))) ?? {};
+    const result = (await withBackendTarget(backend, () => DeleteThreads([...seeds]))) ?? {};
     reportDeleteLeftovers(backend, title, result, seeds);
   } catch (err) {
     console.error('Failed to delete again:', err);

@@ -413,7 +413,7 @@ describe('remote tool results', () => {
     const view = aoResultView(REMOTE_TOOLS_SERVER, 'remote_computers', json([
       {
         id: 'c1', name: 'Build box', enabled: true,
-        projects: [{ id: 'p1', name: 'app', path: '/w/app', worktrees: [] }],
+        projects: [{ id: 'p1', name: 'app', path: '/w/app' }],
         environment: { executionOS: 'linux', architecture: 'amd64', hostOS: 'windows', environment: 'wsl', distribution: 'Ubuntu', executables: { git: '/usr/bin/git', go: '/usr/bin/go' } },
       },
       { id: 'c2', name: 'Laptop', enabled: true, projects: [], error: 'The computer is not reachable.' },
