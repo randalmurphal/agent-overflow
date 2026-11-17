@@ -7,10 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -199,59 +197,6 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 			})
 		}
 	}
-}
-
-// smokePopups lists the thread's pages besides the opener.
-func smokePopups(ctx context.Context, t *testing.T, manager *Manager, access Access, openerID string) []string {
-	t.Helper()
-	pages, err := manager.Pages(ctx, access)
-	if err != nil {
-		t.Fatalf("list pages: %v", err)
-	}
-	var popups []string
-	for _, page := range pages {
-		if page.ID != openerID {
-			popups = append(popups, page.ID)
-		}
-	}
-	return popups
-}
-
-// smokePopupsShow reports whether any popup's document shows text.
-func smokePopupsShow(ctx context.Context, t *testing.T, manager *Manager, access Access, openerID, text string) bool {
-	t.Helper()
-	for _, id := range smokePopups(ctx, t, manager, access, openerID) {
-		value, _, err := manager.Evaluate(ctx, access, id, `document.body ? document.body.innerText : ""`, nil)
-		if err != nil {
-			t.Fatalf("read popup %s: %v", id, err)
-		}
-		if s, _ := value.(string); strings.Contains(s, text) {
-			return true
-		}
-	}
-	return false
-}
-
-func resolvedTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-func writeSmokeFile(t *testing.T, dir, name, content string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func smokeFileURL(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
 }
 
 // TestNativeEngineRealEvaluateSemantics holds this engine to the evaluate
