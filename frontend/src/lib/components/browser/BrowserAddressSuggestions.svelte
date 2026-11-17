@@ -2,6 +2,7 @@
   import AppWindow from '@lucide/svelte/icons/app-window';
   import Clock from '@lucide/svelte/icons/clock';
   import Server from '@lucide/svelte/icons/server';
+  import { untrack } from 'svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { BrowserCompanionRecentAddresses, type BrowserRecentAddress } from '../../stores/bindings';
   import { browserCompanionState } from '../../stores/browserCompanion.svelte';
@@ -39,10 +40,14 @@
 
   let query = $state('');
   let open = $state(false);
-  let highlight = $state(-1);
+  // The highlighted row by its key, so a list that changes under it (a tab
+  // push, a dev-server scan) never moves Enter to another row; a key no
+  // longer listed is no highlight, which is the typed text.
+  let highlightKey = $state<string | null>(null);
 
   // The recent addresses are read when the field takes focus, not carried by
-  // every state push: only a focused field reads them.
+  // every state push: only a focused field reads them. They belong to the
+  // owner below and are never shown for another.
   let recent = $state.raw<readonly BrowserRecentAddress[]>([]);
   let recentError = $state('');
   let readSeq = 0;
@@ -71,17 +76,35 @@
         })
       : [],
   );
+  let highlight = $derived(highlightKey === null ? -1 : items.findIndex((item) => item.key === highlightKey));
   let errors = $derived([recentError, machine?.loadError ?? ''].filter((text) => text !== ''));
   let shown = $derived(open && (items.length > 0 || errors.length > 0));
 
-  // Another tab, or another thread, replaces the field's text; the list
-  // described what was typed for the one that left.
-  let shownFor = '';
+  // What the field and the list are for: the thread, its tab, and its
+  // cookie jar. Another tab or thread replaces the field's text, so the list
+  // described what was typed for the one that left; and the recent
+  // addresses were the old owner's (a jar switch, or a close of every page,
+  // has the Manager forget them). Any change drops them and any read in
+  // flight, and reads again while the field has focus.
+  let owner = $derived(`${threadId ?? ''}\n${activePageId}\n${browser?.jar ?? ''}`);
+  let ownedBy = '';
   $effect(() => {
-    const key = `${threadId ?? ''}\n${activePageId}`;
-    if (key !== shownFor) close();
-    shownFor = key;
+    const key = owner;
+    if (key === ownedBy) return;
+    ownedBy = key;
+    untrack(() => {
+      close();
+      recent = [];
+      recentError = '';
+      readSeq++;
+      if (threadId && fieldFocused()) void readRecent(threadId);
+    });
   });
+
+  function fieldFocused(): boolean {
+    const active = document.activeElement;
+    return !!anchor && !!active && (anchor === active || anchor.contains(active));
+  }
 
   const listId = `browser-address-suggestions-${randomId()}`;
   const optionId = (index: number) => `${listId}-${index}`;
@@ -101,12 +124,12 @@
   export function input(text: string): void {
     query = text;
     open = text.trim() !== '';
-    highlight = -1;
+    highlightKey = null;
   }
 
   export function close(): void {
     open = false;
-    highlight = -1;
+    highlightKey = null;
   }
 
   /** The field's attributes naming the list and its highlighted row. */
@@ -141,7 +164,8 @@
       event.preventDefault();
       // -1 is the typed text itself, between the last row and the first.
       const step = event.key === 'ArrowDown' ? 1 : -1;
-      highlight = ((highlight + 1 + step + count + 1) % (count + 1)) - 1;
+      const next = ((highlight + 1 + step + count + 1) % (count + 1)) - 1;
+      highlightKey = next >= 0 ? items[next].key : null;
       return true;
     }
     if (isLocalEnter(event) && highlight >= 0 && highlight < count) {
@@ -176,7 +200,7 @@
               class="flex cursor-pointer select-none items-center gap-2 px-2.5 py-1 text-[0.75rem] {highlight === index ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:bg-surface-2/40 hover:text-fg'} compact:py-2"
               title={item.address}
               onmousedown={(event) => event.preventDefault()}
-              onmousemove={() => (highlight = index)}
+              onmousemove={() => (highlightKey = item.key)}
               onclick={() => pick(item)}
             >
               <Icon icon={ICONS[item.kind]} size={13} class="shrink-0 text-fg-muted" />
