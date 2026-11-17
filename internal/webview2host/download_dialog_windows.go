@@ -13,13 +13,17 @@ import (
 // the dialog has nothing of AO's to show, yet WebView2 opens it on its own
 // in one case: a popup whose first navigation is a download asks to close
 // (WindowCloseRequested) and WebView2 then opens its opener's dialog for
-// that download. Measured on the real runtime (popup_smoke_windows_test.go),
-// nothing a host sets prevents it: neither Handled on either page's
-// DownloadStarting, nor closing the popup inside its close request, and a
-// margin that would place the dialog off its page is clamped onto the
-// screen. So every page closes its dialog as soon as WebView2 says it
-// opened; it shows for a moment and WebView2's own close animation, about
-// 0.2 s, and nothing on it can be used.
+// that download. Measured on the real runtime (popup_smoke_windows_test.go,
+// runtime 157), nothing a host sets prevents it. DownloadStarting is raised
+// on the popup's view only, whose handler, like every handler of the view,
+// is attached before put_NewWindow and before the deferral completes, and
+// reads Handled back as set; the opener raises none for it. Closing the
+// popup inside its close request changes nothing, and a margin that would
+// place the dialog off its page is clamped onto the screen. So every page
+// closes its dialog as soon as WebView2 says it opened: about 35 ms after
+// the popup's close request, and closed about 6 ms later, it shows through
+// WebView2's own close animation, about 0.22 s, and nothing on it can be
+// used.
 
 // iCoreWebView2_9Vtbl is the flattened chain through ICoreWebView2_9 (C
 // vtable ICoreWebView2_9Vtbl in WebView2.h, SDK 1.0.3405.78): slots 0-60 are

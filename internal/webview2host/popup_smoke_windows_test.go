@@ -39,7 +39,8 @@ import (
 //     a popup whose first navigation is a download asks to close, stays
 //     open while the download runs and closes when it ends, and the
 //     download dialog WebView2 opens on its opener meanwhile is closed at
-//     once.
+//     once; one whose download ends at once is reported first, then its
+//     finished download, then its close.
 //
 // Every file it makes carries a per-run prefix, and exactly those files are
 // deleted from the Downloads folder when it ends.
@@ -165,6 +166,14 @@ func TestPopupSmokeMakesEveryWindowAPage(t *testing.T) {
 		close(s.release)
 		s.downloaded(popup.id, "first.bin")
 		s.report(popup.id, ReportClosed)
+		s.noDialog("page-1")
+	})
+	// The same with a download that ends at once: the popup closes as soon
+	// as it asks, maybe before its target is read, and is still reported
+	// first, then its finished download, then its close.
+	s.step("a popup whose first navigation is a download that ends at once", s.dialogFlash, func() {
+		s.eval(s.opener, `String(window.open("/cd/fast.bin") !== null)`, true)
+		s.fastDownloadPopup("fast.bin")
 		s.noDialog("page-1")
 	})
 	for id, kind := range s.firstKind {
@@ -571,6 +580,52 @@ func (s *popupSmoke) downloaded(pageID, name string) {
 			s.t.Fatalf("the downloaded file: %v", err)
 		}
 		return
+	}
+}
+
+// fastDownloadPopup waits for a popup of page-1 whose download of name
+// ends at once: reported first, then its download completed with the
+// file, then closed, and no page of the launcher's after.
+func (s *popupSmoke) fastDownloadPopup(name string) {
+	s.t.Helper()
+	var popupID string
+	completed := false
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		report, ok := s.next(time.Until(deadline))
+		if !ok {
+			s.t.Fatalf("the popup %q never ended: completed %v", popupID, completed)
+		}
+		s.t.Logf("report %s %s %.200s", report.pageID, report.kind, report.detail)
+		switch {
+		case popupID == "" && report.kind == ReportPopup:
+			parsed, err := ParsePopupReport(report.detail)
+			if err != nil || parsed.Opener != "page-1" {
+				s.t.Fatalf("popup report %+v: %v", parsed, err)
+			}
+			popupID = report.pageID
+		case popupID == "" || report.pageID != popupID:
+			s.t.Fatalf("a report of %s before the popup's: %s", report.pageID, report.kind)
+		case report.kind == ReportDownload:
+			parsed, err := ParseDownloadReport(report.detail)
+			if err != nil {
+				s.t.Fatal(err)
+			}
+			if parsed.State == DownloadCompleted {
+				if filepath.Base(parsed.Path) != s.prefix+name || parsed.Received != 2048 {
+					s.t.Fatalf("the download completed %+v", parsed)
+				}
+				completed = true
+			}
+		case report.kind == ReportClosed:
+			if !completed {
+				s.t.Fatal("the popup closed before its download completed")
+			}
+			if s.page(popupID) != nil {
+				s.t.Fatal("the closed popup is still a page")
+			}
+			return
+		}
 	}
 }
 

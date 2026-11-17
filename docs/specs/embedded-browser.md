@@ -175,14 +175,22 @@ Spike-verified recipes, all load-bearing:
   opens, and `window.opener` and `postMessage` work. The view gets a new
   CDP target at the completion, naming the opener, which the launcher
   reports (`ReportPopup`) under a page id it mints before any other
-  report of the page; the backend adopts or closes it like any page.
+  report of the page and after its opener's; the backend adopts or closes
+  it like any page. A popup that goes before its report is reported then,
+  with its downloads and its close, only when it has downloads to
+  report.
   `Handled` with no new window opens nothing (`window.open` answers
   null). `window.close()` raises `WindowCloseRequested`. A popup's
   downloads reach its own `DownloadStarting`. A popup whose first
-  navigation is a download asks to close, and WebView2 then opens the
-  opener's default download dialog whatever the host does; the launcher
-  closes it on `IsDefaultDownloadDialogOpenChanged`, about 0.2 s later.
-  Measured by `popup_smoke_windows_test.go`.
+  navigation is a download asks to close, and about 35 ms later WebView2
+  opens the opener's default download dialog whatever the host does: the
+  popup's `DownloadStarting`, attached before `put_NewWindow` and before
+  the deferral completes, sets `Handled` and reads it back set, the opener
+  raises no `DownloadStarting` for it, and closing the popup inside its
+  close request changes nothing. The launcher closes the dialog on
+  `IsDefaultDownloadDialogOpenChanged` about 6 ms after it opens; it shows
+  about 0.22 s, WebView2's close animation. Measured by
+  `popup_smoke_windows_test.go` on runtime 157.
 - The spike patched two real go-webview2 bugs the launcher-side
   implementation must not reinherit: `int64(res) < 0` never detects a
   failed HRESULT on 64-bit, and `environmentOptions` was hard-wired

@@ -622,7 +622,8 @@ and anti-changes that live only here:
   quotas, caps and pruning. An agent may open a finished download of its
   workspace's, never the folder around it. On WebView2 the mark of the web
   stays. A popup is a tab on every engine, so its downloads are listed like
-  any other; the download dialog WebView2 opens by itself for a popup whose
+  any other, and one that never becomes a tab leaves them in its nearest
+  opener's tab; the download dialog WebView2 opens by itself for a popup whose
   first navigation is a download is closed as it opens.
   `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel

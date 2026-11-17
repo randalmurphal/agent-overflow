@@ -321,8 +321,9 @@ func TestDownloadSmokeAStalledDownloadsCancelSettles(t *testing.T) {
 	s := startDownloadSmoke(t)
 	a, b, own := stallBesideAResumed(t, s)
 	close(s.twinGo)
+	// The two finish in either order.
+	s.settleAll(a, own)
 	for _, d := range []*smokeDownload{a, own} {
-		s.settleAmong(d, a.id, own.id)
 		if d.final.State != DownloadCompleted {
 			t.Fatalf("%s ended %+v", d.id, d.final)
 		}
@@ -383,6 +384,47 @@ func (s *downloadSmoke) waitRequests(name string, n int) {
 }
 
 // settleAmong is settle, letting running reports of the other ids pass.
+// settleAll waits for every one of ds to end, in any order, failing on a
+// report of any other download.
+func (s *downloadSmoke) settleAll(ds ...*smokeDownload) {
+	s.t.Helper()
+	deadline := time.After(60 * time.Second)
+	for {
+		var running *smokeDownload
+		for _, d := range ds {
+			if d.final.ID == "" {
+				running = d
+			}
+		}
+		if running == nil {
+			return
+		}
+		select {
+		case report := <-s.reports:
+			r, ok := s.downloadReport(report)
+			if !ok {
+				continue
+			}
+			i := slices.IndexFunc(ds, func(d *smokeDownload) bool { return d.id == r.ID })
+			if i < 0 {
+				s.t.Fatalf("waiting for %d downloads to end, the launcher reported %+v", len(ds), r)
+			}
+			d := ds[i]
+			if r.Seq <= d.seq {
+				s.t.Fatalf("%s reported snapshot %d after %d", d.id, r.Seq, d.seq)
+			}
+			d.seq = r.Seq
+			if !r.Terminal() {
+				d.progress++
+				continue
+			}
+			d.final, d.path = r, r.Path
+		case <-deadline:
+			s.t.Fatalf("%s never ended", running.id)
+		}
+	}
+}
+
 func (s *downloadSmoke) settleAmong(d *smokeDownload, others ...string) {
 	s.t.Helper()
 	deadline := time.After(60 * time.Second)
