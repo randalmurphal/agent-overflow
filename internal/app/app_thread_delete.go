@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // Deleting a thread deletes what lives under it: for an assistant's current
@@ -145,8 +146,10 @@ type DeleteDependents struct {
 	Workers     int `json:"workers"`
 	// RemoteWorkers is whether any of them spawned a thread on another
 	// computer, which the delete deletes there too: a worker there that
-	// still belongs to its spawner. Not counted, because only that computer
-	// knows which do.
+	// still belongs to its spawner. A worker that computer last said has a
+	// sidebar row there stays and is left out (peerWorkerStandalone); one
+	// whose placement is not known here is in. Not counted, because only
+	// that computer knows which belong.
 	RemoteWorkers bool `json:"remoteWorkers"`
 }
 
@@ -173,10 +176,23 @@ func (a *App) GetDeleteDependents(threadIDs []string) (DeleteDependents, error) 
 			dependents.Workers++
 		}
 	}
-	if dependents.RemoteWorkers, err = a.store.HasRemoteSpawns(ids); err != nil {
+	remote, err := a.store.ListRemoteSpawnTokens(ids)
+	if err != nil {
 		return DeleteDependents{}, err
 	}
+	dependents.RemoteWorkers = slices.ContainsFunc(remote, func(token string) bool { return !a.peerWorkerStandalone(token) })
 	return dependents, nil
+}
+
+// peerWorkerStandalone reports whether the last agent_rows answer for the
+// spawn token says its thread there has a sidebar row, which keeps it out
+// of its spawner's delete there (store.LinkFence). Unknown is false.
+func (a *App) peerWorkerStandalone(token string) bool {
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.entries[token]
+	return entry != nil && entry.err == nil && entry.listing.Placement == threadtools.PlacementStandalone
 }
 
 // deleteThread is DeleteThread for the app's own deletes, which have no

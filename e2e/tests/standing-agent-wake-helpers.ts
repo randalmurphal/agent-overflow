@@ -293,7 +293,12 @@ exit 3
     const raises = () => harness.countEvents<NotificationSend>('notification:send', notice(false));
     const retracts = () => harness.countEvents<NotificationSend>('notification:send', notice(true));
 
-    // The first failed runs say nothing; one past the window notifies.
+    // The first failed run says nothing: its outcome is on the row and no
+    // notice is out. One past the window notifies.
+    await expect
+      .poll(() => wakeRow(agent.dataDir, agent.thread, 'mail')?.last_outcome ?? '', { timeout: 30_000, intervals: [50] })
+      .toMatch(/^error: /);
+    expect(raises(), 'the first failed run raised a notice').toBe(0);
     const raised = await harness.waitForEvent<NotificationSend>('notification:send', notice(false), 60_000);
     expect(raised).toMatchObject({
       kind: 'error',
@@ -309,7 +314,8 @@ exit 3
     expect(raises()).toBe(1);
     expect(retracts()).toBe(0);
 
-    // The notice opens the thread, whose watch row has the detail.
+    // The notice targets the thread (checked above); opened from the
+    // sidebar, its watch row has the detail.
     await harness.open(page);
     await openTray(page, 'Mail agent');
     const row = trayRow(page, 'watch', 'mail');

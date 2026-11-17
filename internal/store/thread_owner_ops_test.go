@@ -184,7 +184,7 @@ func TestADeleteOverridesAnOwedArchive(t *testing.T) {
 	for name, write := range map[string]func() (bool, error){
 		"settle":     func() (bool, error) { return s.SettleOwnerOp("r", 1) },
 		"mark":       func() (bool, error) { return s.MarkOwnerOpSent("r", 1) },
-		"reschedule": func() (bool, error) { return s.RescheduleOwnerOp("r", 1, 9_000_000, "late") },
+		"reschedule": func() (bool, error) { return s.RescheduleOwnerOp("r", 1, 9_000_000) },
 	} {
 		if changed, err := write(); err != nil || changed {
 			t.Errorf("%s of the older seq changed the row: %v, %v", name, changed, err)
@@ -259,7 +259,7 @@ func TestOwnerOpsDueList(t *testing.T) {
 	}
 	now := ownerOps(t, s)["a"].NextAt
 	for token, next := range map[string]int64{"a": now + 30, "b": now + 10, "c": now + 20} {
-		if moved, err := s.RescheduleOwnerOp(token, 1, next, "unreachable"); err != nil || !moved {
+		if moved, err := s.RescheduleOwnerOp(token, 1, next); err != nil || !moved {
 			t.Fatalf("reschedule %s: %v, %v", token, moved, err)
 		}
 	}
@@ -267,7 +267,7 @@ func TestOwnerOpsDueList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := []string{due[0].Token, due[1].Token}; len(due) != 2 || !slices.Equal(got, []string{"b", "c"}) || due[0].LastError != "unreachable" {
+	if got := []string{due[0].Token, due[1].Token}; len(due) != 2 || !slices.Equal(got, []string{"b", "c"}) {
 		t.Fatalf("due = %+v, want b then c", due)
 	}
 	if page, err := s.DueOwnerOps(now+100, 1); err != nil || len(page) != 1 || page[0].Token != "b" {
@@ -299,7 +299,7 @@ func TestNextThreadRequestWorkReportsOwnerOps(t *testing.T) {
 	if _, err := s.OweRemoteArchives("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RescheduleOwnerOp("r", 1, 4242, ""); err != nil {
+	if _, err := s.RescheduleOwnerOp("r", 1, 4242); err != nil {
 		t.Fatal(err)
 	}
 	if schedule, err := s.NextThreadRequestWork(); err != nil || schedule.OwnerOp != (ScheduledMoment{At: 4242, Set: true}) {

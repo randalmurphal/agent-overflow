@@ -418,7 +418,7 @@ func (a *App) resumeAssistants() bool {
 	}
 	a.restartAgentWakes(recovered, false)
 	a.nudgeThreadRequestSweep()
-	threads, err := a.store.ListThreadsUnderAssistants()
+	threads, err := a.store.ListQueuedThreadsUnderAssistants()
 	if err != nil {
 		log.Printf("assistants: turning them on: %v", err)
 		return true

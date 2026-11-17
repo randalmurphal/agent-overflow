@@ -678,19 +678,3 @@ func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string, ahead i
 	}
 	return nil
 }
-
-// ThreadHasLiveWorkflowRun reports whether a workflow run that has not ended
-// is bound to the thread: as the thread it reports back to, or as the thread
-// one of its phases or fan-out units runs in.
-func (s *Store) ThreadHasLiveWorkflowRun(threadID string) (bool, error) {
-	var live bool
-	err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM work_items
-		WHERE state NOT IN ('done','failed','cancelled')
-		  AND (origin_thread_id = ?1
-		       OR id IN (SELECT item_id FROM work_item_phases WHERE thread_id = ?1)
-		       OR id IN (SELECT item_id FROM work_item_units WHERE thread_id = ?1)))`, threadID).Scan(&live)
-	if err != nil {
-		return false, fmt.Errorf("store: read live workflow runs of %s: %w", threadID, err)
-	}
-	return live, nil
-}

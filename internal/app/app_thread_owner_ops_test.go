@@ -232,7 +232,7 @@ func TestAnUnansweredArchiveIsPendingUntilTheComputerAnswers(t *testing.T) {
 	retriedWithin := func(attempts int, wait time.Duration, before time.Time) {
 		t.Helper()
 		owed := p.owed(t)
-		if len(owed) != 1 || owed[0].Op != store.OwnerOpArchive || !owed[0].Sent || owed[0].LastError == "" || owed[0].Attempts != attempts {
+		if len(owed) != 1 || owed[0].Op != store.OwnerOpArchive || !owed[0].Sent || owed[0].Attempts != attempts {
 			t.Fatalf("owed = %+v, want the archive, tried %d times", owed, attempts)
 		}
 		next := time.UnixMilli(owed[0].NextAt)
@@ -341,7 +341,7 @@ func TestTheSweepWakesForAnOwedOperation(t *testing.T) {
 		t.Fatalf("owed %+v, %v", owed, err)
 	}
 	due := time.Now().Add(3 * time.Second)
-	if _, err := f.app.store.RescheduleOwnerOp(owed[0].Token, owed[0].Seq, due.UnixMilli(), "asleep"); err != nil {
+	if _, err := f.app.store.RescheduleOwnerOp(owed[0].Token, owed[0].Seq, due.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if delay := f.app.threadRequestSweepDelay(time.Now()); delay > 3*time.Second {
@@ -534,6 +534,52 @@ func TestDeletingASpawnerDeletesItsWorkersOnAnotherComputer(t *testing.T) {
 	}
 	if owed := p.owed(t); len(owed) != 0 {
 		t.Fatalf("the delete still owes %+v", owed)
+	}
+}
+
+// A spawner deleted after its worker's computer was forgotten owes that
+// computer nothing past the one attempt: the pairing ended, so the
+// operation settles and the worker is reported on a computer no longer
+// connected, not pending.
+func TestDeletingASpawnerAfterItsWorkersComputerWasForgottenSettles(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	if err := p.source.RemoveBackend(p.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	result, err := p.source.DeleteThread(p.caller.ID)
+	if err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if len(result.WorkersNotDeleted) != 1 {
+		t.Fatalf("WorkersNotDeleted = %+v, want the worker there", result.WorkersNotDeleted)
+	}
+	if failure := result.WorkersNotDeleted[0]; failure.Pending || failure.ThreadID != p.worker || !strings.Contains(failure.Error, "no longer connected") {
+		t.Fatalf("the worker there is reported %+v, want it not pending, on a computer no longer connected", failure)
+	}
+	if owed := p.owed(t); len(owed) != 0 {
+		t.Fatalf("the delete still owes %+v to a forgotten computer", owed)
+	}
+}
+
+// A delete owed to a computer that was asleep is dropped when that
+// computer is forgotten.
+func TestForgettingAComputerDropsTheDeleteOwedToIt(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	p.peer.asleep.Store(true)
+	result, err := p.source.DeleteThread(p.caller.ID)
+	if err != nil || len(result.WorkersNotDeleted) != 1 || !result.WorkersNotDeleted[0].Pending {
+		t.Fatalf("DeleteThread = %+v, %v; want the worker there pending", result, err)
+	}
+	if owed := p.owed(t); len(owed) != 1 {
+		t.Fatalf("owed = %+v, want the delete", owed)
+	}
+	if err := p.source.RemoveBackend(p.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	if owed := p.owed(t); len(owed) != 0 {
+		t.Fatalf("forgetting the computer left %+v owed", owed)
 	}
 }
 
@@ -758,6 +804,32 @@ func TestTheDeleteConfirmationSaysWhenWorkersOnOtherComputersGoToo(t *testing.T)
 	}
 	if got, err := p.source.GetDeleteDependents([]string{other.ID}); err != nil || got.RemoteWorkers {
 		t.Fatalf("a thread with no remote spawn = %+v, %v", got, err)
+	}
+}
+
+// A worker the person gave a sidebar row on its computer stays when its
+// spawner is deleted, so the confirmation leaves it out once this computer
+// has heard that placement; until it has, the confirmation says so.
+func TestTheDeleteConfirmationLeavesOutAWorkerWithASidebarRowThere(t *testing.T) {
+	t.Parallel()
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	ack := pair.spawnThere(t, "for the user", map[string]any{"placement": threadtools.PlacementStandalone})
+	if got, err := pair.source.GetDeleteDependents([]string{pair.caller.ID}); err != nil || !got.RemoteWorkers {
+		t.Fatalf("GetDeleteDependents before the placement is known = %+v, %v; want workers on other computers", got, err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		if _, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID); err != nil {
+			t.Fatal(err)
+		}
+		c := &pair.source.threadAgentPeers
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		entry := c.entries[ack.Token]
+		return entry != nil && entry.listing.Placement == threadtools.PlacementStandalone
+	})
+	if got, err := pair.source.GetDeleteDependents([]string{pair.caller.ID}); err != nil || got.RemoteWorkers {
+		t.Fatalf("GetDeleteDependents = %+v, %v; want no workers on other computers", got, err)
 	}
 }
 

@@ -109,15 +109,6 @@ func (s *Service) CloseEngine() error {
 	return err
 }
 
-func (s *Service) AbortEngine() error {
-	err := s.CloseEngine()
-	s.runtimeMu.Lock()
-	s.engine = nil
-	s.runner = nil
-	s.runtimeMu.Unlock()
-	return err
-}
-
 func (s *Service) queueAutoDisposition(itemID string) {
 	if s.deps.Lifecycle.AutoDispose == nil {
 		return

@@ -200,7 +200,7 @@ func TestARemoteArchiveIsOwedUntilEveryWorkerBelowIsArchived(t *testing.T) {
 		t.Fatal("want the worker archived there and the one below it not")
 	}
 	owed := p.owed(t)
-	if len(owed) != 1 || owed[0].Op != store.OwnerOpArchive || !strings.Contains(owed[0].LastError, "not all archived") {
+	if len(owed) != 1 || owed[0].Op != store.OwnerOpArchive {
 		t.Fatalf("owed = %+v, want the archive, naming what it did not reach", owed)
 	}
 	// Sent again while the worker below still refuses: still owed.

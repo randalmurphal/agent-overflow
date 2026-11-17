@@ -118,7 +118,7 @@ func supersedeOwedArchivesTx(tx *sql.Tx, threadID string, now int64) error {
 	}
 	if _, err := tx.Exec(`UPDATE thread_owner_ops SET op = 'supersede',
 		     seq = (SELECT owner_op_seq FROM thread_requests WHERE thread_requests.token = thread_owner_ops.token),
-		     sent = 0, owed_at = ?1, next_at = ?1, attempts = 0, last_error = ''
+		     sent = 0, owed_at = ?1, next_at = ?1, attempts = 0
 		 WHERE op = 'archive' AND token IN (
 		   SELECT token FROM thread_requests WHERE caller_thread_id = ?2 AND kind = 'spawn' AND target_computer_id <> '')`,
 		now, threadID); err != nil {

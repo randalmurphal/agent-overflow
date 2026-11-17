@@ -59,10 +59,10 @@ func TestALinkedDeleteClaimsItsWorkerThroughTheLink(t *testing.T) {
 	}
 }
 
-// What a delete's confirmation reads of the threads it takes: whether any
-// of them spawned a thread on another computer, its spawn's acceptance
-// unanswered or not. A spawn here is not one.
-func TestHasRemoteSpawns(t *testing.T) {
+// What a delete's confirmation reads of the threads it takes: the spawns
+// they made on other computers, their acceptance unanswered or not. A spawn
+// here is not one.
+func TestListRemoteSpawnTokens(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "worker", "local-only", "alone"} {
 		mustCreateThread(t, s, id)
@@ -80,9 +80,9 @@ func TestHasRemoteSpawns(t *testing.T) {
 		{[]string{"local-only", "alone"}, false},
 		{nil, false},
 	} {
-		got, err := s.HasRemoteSpawns(tc.ids)
-		if err != nil || got != tc.want {
-			t.Errorf("HasRemoteSpawns(%v) = %v, %v; want %v", tc.ids, got, err, tc.want)
+		got, err := s.ListRemoteSpawnTokens(tc.ids)
+		if err != nil || (len(got) == 1 && got[0] == "r-lost") != tc.want || (!tc.want && len(got) != 0) {
+			t.Errorf("ListRemoteSpawnTokens(%v) = %v, %v; want r-lost %v", tc.ids, got, err, tc.want)
 		}
 	}
 }

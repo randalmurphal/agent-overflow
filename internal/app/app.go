@@ -221,7 +221,7 @@ type App struct {
 	// ready. See app_thread_tools_wait.go.
 	threadRequests threadRequestState
 	// threadAgentEmits coalesces the Agents rows' change frames
-	// (app_thread_agent_rows.go).
+	// (app_thread_agent_rows_emit.go).
 	threadAgentEmits threadAgentEmits
 	// liveWorkers is the threads last found not at rest, which keep the
 	// local spawn that made each open (app_thread_agent_live.go).

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"os"
 	"regexp"
 	"strconv"
@@ -69,7 +71,7 @@ func TestGeneratedWailsBindingsKeepTransportMethodIDs(t *testing.T) {
 // at `make go-test` time rather than at `--harness` boot.
 func TestProductionReceiversRegisterWithoutCollision(t *testing.T) {
 	dispatcher := transport.NewDispatcher()
-	if _, err := dispatcher.Register(&App{}, transport.RegisterOptions{
+	if _, err := registerAppMethods(dispatcher, &App{}, transport.RegisterOptions{
 		Package:   "main",
 		TypeName:  "App",
 		AllowList: transport.NewMethodAllowList(),
@@ -83,5 +85,46 @@ func TestProductionReceiversRegisterWithoutCollision(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("register Harness: %v", err)
+	}
+}
+
+// TestPreviousReleaseWindowsGetEmptyRetiredAnswers calls retired methods by
+// the ids v0.0.19's generated table gives them, as a window on that release
+// attached to this computer does.
+func TestPreviousReleaseWindowsGetEmptyRetiredAnswers(t *testing.T) {
+	dispatcher := transport.NewDispatcher()
+	if _, err := registerAppMethods(dispatcher, &App{}, transport.RegisterOptions{
+		Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
+	}); err != nil {
+		t.Fatalf("register App: %v", err)
+	}
+	for _, released := range []struct {
+		name   string
+		id     uint32
+		scope  string
+		params []json.RawMessage
+		want   string
+	}{
+		{"ListDiscussionsForThread", 2502562885, "threads:read", []json.RawMessage{json.RawMessage(`"thread-1"`)}, `[]`},
+	} {
+		method, frameErr := dispatcher.ResolveForOrigin(released.id, "", false)
+		if frameErr != nil {
+			t.Errorf("%s: %s", released.name, frameErr.Message)
+			continue
+		}
+		if method.Name != released.name {
+			t.Errorf("id %d resolves to %s, want %s", released.id, method.Name, released.name)
+		}
+		if refused := transport.AuthorizeSessionMethod([]string{released.scope}, method.Name, transport.CallerProof{}); refused != nil {
+			t.Errorf("%s with %s: %s", released.name, released.scope, refused.Message)
+		}
+		answer, frameErr := dispatcher.Invoke(context.Background(), method, released.params)
+		if frameErr != nil || string(answer) != released.want {
+			t.Errorf("%s answers %s (%v), want %s", released.name, answer, frameErr, released.want)
+		}
+	}
+	// The retired Discussions settings page's list stays unanswered.
+	if _, frameErr := dispatcher.ResolveForOrigin(942288562, "ListDiscussions", false); frameErr == nil || frameErr.Code != transport.ErrCodeMethodNotFound {
+		t.Errorf("ListDiscussions resolves (%v), want %s", frameErr, transport.ErrCodeMethodNotFound)
 	}
 }

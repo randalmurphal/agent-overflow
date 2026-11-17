@@ -281,7 +281,7 @@ func ownerOpRefusal(verb, threadID string, err error) threadOwnerOpAnswer {
 // here unless something else owns it, and the prompts its link held for
 // the spawner go where its prompts route now (handBackLinkPrompts). Every
 // write that ends links hands what it released here: a session end
-// (identity's OnLinksReleased, and the boot's BootstrapResult), the
+// (identity's OnLinksReleased), the
 // retention sweep's staleness release, and an owner's release or a delete
 // that found its worker given a sidebar row.
 func (a *App) announceReleasedWorkers(threadIDs []string) {
@@ -307,8 +307,8 @@ type ownerOpAttempt struct {
 	settled bool
 	// older: the computer predates owner operations; dropped.
 	older bool
-	// busy: another attempt at the same spawn was under way.
-	busy bool
+	// unpaired: the pairing with the computer ended; dropped.
+	unpaired bool
 	// reason says why a pending operation did not land, in a person's words.
 	reason string
 	// members are the workers below its worker that an unfinished operation
@@ -346,7 +346,7 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 				defer func() { <-limit }()
 				attempts[i] = a.deliverOwnerOp(ctx, op)
 			case <-ctx.Done():
-				attempts[i] = ownerOpAttempt{busy: true}
+				attempts[i] = ownerOpAttempt{}
 			}
 		}()
 	}
@@ -371,10 +371,12 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 		}
 		target := targets[op.Token]
 		failure := workerFailure{threadID: target.TargetThreadID, title: target.TargetThreadTitle, computer: computer, computerID: op.ComputerID,
-			pending: !attempt.older}
+			pending: !attempt.older && !attempt.unpaired}
 		switch {
 		case attempt.older:
 			failure.err = fmt.Errorf("%s runs an older version, so the worker there was not %s", computer, ownerOpVerb(op.Op))
+		case attempt.unpaired:
+			failure.err = fmt.Errorf("%s is no longer connected, so the worker there was not %s", computer, ownerOpVerb(op.Op))
 		case attempt.reason != "":
 			failure.err = fmt.Errorf("%s: %s; it is %s there once that computer takes it", computer, attempt.reason, ownerOpVerb(op.Op))
 		default:
@@ -406,13 +408,14 @@ func (a *App) ownerOpTargets(ops []store.OwnerOp) map[string]store.ThreadRequest
 }
 
 // deliverOwnerOp makes one attempt at op: marked sent before its call, and
-// settled when its computer answered it for good or predates owner
-// operations, rescheduled on the retry ladder otherwise. An attempt that
+// settled when its computer answered it for good, predates owner operations
+// or is no longer paired (threadPairingEnded), rescheduled on the retry
+// ladder otherwise. An attempt that
 // finds another under way for the spawn, or op replaced by a newer
 // operation, does nothing.
 func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttempt {
 	if !a.beginOwnerOpSend(op.Token) {
-		return ownerOpAttempt{busy: true}
+		return ownerOpAttempt{}
 	}
 	defer a.endOwnerOpSend(op.Token)
 	marked, err := a.store.MarkOwnerOpSent(op.Token, op.Seq)
@@ -424,12 +427,20 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 		return ownerOpAttempt{settled: true}
 	}
 	answer, err := a.callOwnerOp(ctx, op)
+	var code string
+	if err != nil {
+		code, _, _ = threadErrorDetails("owner operation", err)
+	}
 	switch {
 	case errors.Is(err, errThreadAgentPeerOlder):
 		a.settleOwnerOp(op)
 		return ownerOpAttempt{older: true}
+	case err != nil && threadPairingEnded(code):
+		// Nothing can deliver it until the person pairs the computer again.
+		a.settleOwnerOp(op)
+		return ownerOpAttempt{unpaired: true}
 	case err != nil:
-		a.rescheduleOwnerOp(op, err.Error())
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{}
 	}
 	switch answer.Outcome {
@@ -442,18 +453,18 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 			names = append(names, cmp.Or(failure.Title, failure.ThreadID))
 		}
 		reason := fmt.Sprintf("the threads under it there were not all %s yet (%s)", ownerOpVerb(op.Op), strings.Join(names, ", "))
-		a.rescheduleOwnerOp(op, reason)
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: reason, members: answer.Failures}
 	case ownerOpPending:
-		a.rescheduleOwnerOp(op, "its thread there is still being made")
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: "its thread there is still being made"}
 	case ownerOpRefused:
 		reason := "refused for now: " + answer.Reason
-		a.rescheduleOwnerOp(op, reason)
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: reason}
 	default:
 		reason := fmt.Sprintf("answered %q", answer.Outcome)
-		a.rescheduleOwnerOp(op, reason)
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: reason}
 	}
 }
@@ -491,7 +502,7 @@ func (a *App) settleOwnerOp(op store.OwnerOp) {
 
 // rescheduleOwnerOp sets op's next attempt on the retry ladder: 5 s after
 // the first, doubling to threadPollLateCap.
-func (a *App) rescheduleOwnerOp(op store.OwnerOp, reason string) {
+func (a *App) rescheduleOwnerOp(op store.OwnerOp) {
 	delay := threadPollNormalDelay
 	for range op.Attempts {
 		if delay *= 2; delay >= threadPollLateCap {
@@ -499,7 +510,7 @@ func (a *App) rescheduleOwnerOp(op store.OwnerOp, reason string) {
 			break
 		}
 	}
-	if _, err := a.store.RescheduleOwnerOp(op.Token, op.Seq, time.Now().Add(delay).UnixMilli(), reason); err != nil {
+	if _, err := a.store.RescheduleOwnerOp(op.Token, op.Seq, time.Now().Add(delay).UnixMilli()); err != nil {
 		log.Printf("thread tools: reschedule owner operation %s for spawn %s: %v", op.Op, op.Token, err)
 	}
 }

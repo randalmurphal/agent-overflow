@@ -1226,7 +1226,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         }, { timeout: 30_000 })
         .toBe(true);
       const quiet = tick();
-      console.log(`${provider}: after a quiet run: ${JSON.stringify({ ...quiet, last_output: undefined })}`);
 
       // Mended between two runs: the next run's start works and its wake
       // reaches the thread behind the held one.
@@ -1249,7 +1248,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const input = event.report.input ?? '';
       // A Claude session may take both queued wakes as one message.
       const own = input.split('Watch "tick" reported.').find((part) => part.includes('"report 3"')) ?? '';
-      console.log(`${provider}: the wake after the quiet run: ${JSON.stringify(own.split('\n').slice(0, 3))}`);
       expect(own).toContain('The previous wake of this watch did not reach you');
       const missed = /missed (\d+) since the previous wake/.exec(own);
       expect(missed, 'the wake counts the fire it missed').not.toBeNull();
