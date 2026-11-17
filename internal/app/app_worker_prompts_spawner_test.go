@@ -88,6 +88,8 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 	if err := app.SendMessage(context.Background(), worker.ID, "go", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
+	// A prompt's wake is queued before its start is launched, so both are
+	// awaited: the queued tokens alone can be read in between.
 	var tokens []string
 	waitUntil(t, 10*time.Second, func() bool {
 		if err := app.drainWorkerPrompts(context.Background(), 5*time.Second); err != nil {
@@ -95,7 +97,9 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 		}
 		app.waitAgentNoticeWork()
 		tokens = workerPromptTokens(t, app, spawner.ID)
-		return len(tokens) == 2
+		mu.Lock()
+		defer mu.Unlock()
+		return len(tokens) == 2 && slices.Contains(woken, spawner.ID)
 	})
 	pending := app.triage.PendingInteractiveRequests(worker.ID)
 	if len(pending.Approvals) != 1 || len(pending.UserInputs) != 1 {
