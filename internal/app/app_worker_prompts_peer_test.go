@@ -409,7 +409,7 @@ func TestALinkThatEndsHandsItsPromptsBack(t *testing.T) {
 		if err != nil || !slices.Contains(revocation.ReleasedThreads, f.workers[0].ID) {
 			t.Fatalf("revoke: %+v, %v", revocation, err)
 		}
-		f.app.handBackLinkPrompts(revocation.ReleasedThreads)
+		f.app.announceReleasedWorkers(revocation.ReleasedThreads)
 		f.drain(t)
 		if f.route(t, f.workers[0].ID) != nil || !f.handedToPerson(f.workers[0].ID) {
 			t.Fatal("the revoked device's prompt is still routed to its spawner there")

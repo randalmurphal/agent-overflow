@@ -264,14 +264,17 @@ func ownerOpRefusal(verb, threadID string, err error) threadOwnerOpAnswer {
 
 // announceReleasedWorkers announces the threads whose spawn links ended:
 // each is no paired computer's worker any more, and has its sidebar row
-// here unless something else owns it. Every write that ends links hands
-// what it released here: a session end (identity's OnLinksReleased), the
+// here unless something else owns it, and the prompts its link held for
+// the spawner go where its prompts route now (handBackLinkPrompts). Every
+// write that ends links hands what it released here: a session end
+// (identity's OnLinksReleased, and the boot's BootstrapResult), the
 // retention sweep's staleness release, and an owner's release or a delete
 // that found its worker given a sidebar row.
 func (a *App) announceReleasedWorkers(threadIDs []string) {
 	for _, threadID := range threadIDs {
 		a.announcePlaced(threadID)
 	}
+	a.handBackLinkPrompts(threadIDs)
 }
 
 // --- The spawner's computer: delivering what is owed ---

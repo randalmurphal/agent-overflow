@@ -35,7 +35,7 @@ import (
 //     computer that stops answering, or keeps answering without taking
 //     the prompt, leaves it with the person here.
 //   - A link that ends hands its prompts back at once
-//     (handBackLinkPrompts).
+//     (handBackLinkPrompts, through announceReleasedWorkers).
 //
 // One binding (remotePromptFor) is the only door for a renewal, an answer
 // and a return.
@@ -320,10 +320,9 @@ func (a *App) servePeerPrompt(ctx context.Context, owner string, call ThreadPeer
 }
 
 // handBackLinkPrompts hands back at once the prompts held for paired
-// computers by the workers among threadIDs, whose links just ended: the
-// device lost access, or its owner was silent past the retention floor.
-// Each goes where its worker's prompts route now, the person for a worker
-// no link owns.
+// computers by the workers among threadIDs, whose links just ended
+// (announceReleasedWorkers, its only caller). Each goes where its worker's
+// prompts route now, the person for a worker no link owns.
 func (a *App) handBackLinkPrompts(threadIDs []string) {
 	if len(threadIDs) == 0 {
 		return

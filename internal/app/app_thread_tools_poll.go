@@ -947,7 +947,6 @@ func (a *App) expireThreadRequests(now time.Time) {
 		// A worker whose paired owner went silent past the floor was
 		// released to a sidebar row here, and its prompts are the person's.
 		a.announceReleasedWorkers(released)
-		a.handBackLinkPrompts(released)
 	}
 	if swept, err := a.store.DeleteRemoteWatchesBefore(floor); err != nil {
 		logThreadRequestSweep("delete remote job watches past retention", err)

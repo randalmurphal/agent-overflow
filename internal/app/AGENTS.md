@@ -253,9 +253,9 @@ computer's thread. The worker's computer holds each under a lease
 wake to the spawn's caller and forwards its `thread_reply`
 (`app_worker_prompts_remote.go`). Every renewal, answer and return passes
 one binding (`remotePromptFor`), and each delivery has its own wake send
-id. A link that ends hands its prompts back (`handBackLinkPrompts`): the
-retention sweep calls it, and so must every other path that releases a
-link's thread, beside its announcement.
+id. A link that ends hands its prompts back (`handBackLinkPrompts`) through
+`announceReleasedWorkers`, the one place every write that releases a
+link's thread reports it; do not call either part alone.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
