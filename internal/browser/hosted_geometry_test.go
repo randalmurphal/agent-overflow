@@ -31,7 +31,7 @@ func (r *hostedScaleRecorder) count() int {
 func newHostedGeometryEngine(t *testing.T) (*hostedEngine, *directiveSink, *hostedScaleRecorder) {
 	t.Helper()
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	recorder := &hostedScaleRecorder{}
 	engine.mu.Lock()
 	engine.drivers["page1"] = &cdpPage{ctx: t.Context()}

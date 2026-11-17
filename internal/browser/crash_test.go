@@ -180,7 +180,7 @@ func TestHostedEngineReportsAProcessFailureByKind(t *testing.T) {
 				PageCrashed: func(handle, reason string) { crashed = append(crashed, handle+" "+reason) },
 				PageClosed:  func(handle string) { closed = append(closed, handle) },
 			})
-			engine.bind("page1", "TARGET-1")
+			bindTestPage(t, engine, "page1", "TARGET-1")
 			engine.Report("page1", webview2host.ReportProcessFailed, tc.detail)
 			if len(closed) != 0 {
 				t.Fatalf("a process failure retired the page: %v", closed)
