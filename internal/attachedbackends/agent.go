@@ -125,7 +125,7 @@ const (
 // two carry different authority: a thread call never runs a shell.
 var threadPeerMethods = map[string]struct{}{
 	"ThreadToolResolve": {}, "ThreadToolQuery": {}, "ThreadToolCall": {},
-	"ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {},
+	"ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {}, "ThreadToolWatch": {},
 }
 
 // CallThreadPeer makes one authenticated RPC call for the agent thread

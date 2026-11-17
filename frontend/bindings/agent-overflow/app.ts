@@ -6603,6 +6603,22 @@ export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $Cancellabl
 }
 
 /**
+ * ThreadToolWatch runs one thread_status wait on thread ids forwarded from a
+ * paired computer, and ends with its caller: a wait the calling computer
+ * gave up on stops reading this computer's live state at once rather than
+ * at the end of its slice. It is ThreadToolQuery's thread_status narrowed to
+ * the branch that reads threads, which reaches only store reads, live state
+ * and an in-memory wait registration, so it can be caller-bound; every
+ * other read stays on ThreadToolQuery. A computer on v0.0.19 does not serve
+ * it, and the caller asks that one through ThreadToolQuery.
+ */
+export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
+    return $Call.ByID(515024442, call).then(($result: any) => {
+        return $$createType253($result);
+    });
+}
+
+/**
  * TriggerMcpAuth drives the provider-side OAuth handshake for an
  * http/sse / streamable_http MCP server. The thread must be live
  * because the OAuth listener is owned by the provider process; if no

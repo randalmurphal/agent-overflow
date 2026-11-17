@@ -912,6 +912,8 @@ In `app_thread_tools_peer.go`, all `//ao:route selected`:
 - `ThreadToolResolve(ctx, prefix string)` `//ao:scope threads:read`
 - `ThreadToolQuery(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
   (`thread_search`, `thread_show`, `thread_item`, `thread_options`)
+- `ThreadToolWatch(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
+  `//ao:callerbound` (a `thread_status` wait on `thread_ids`)
 - `ThreadToolCall(ctx, call ThreadPeerCall)` `//ao:scope terminal:operate`
   (`spawn` including `from_thread`, `send`, `ask`, `cancel`,
   `thread_update`, `thread_group`)
@@ -927,7 +929,7 @@ TS mirror.
 
 `attachedbackends.CallThreadPeer` shares `callAgentPeer`'s body with a
 capability parameter (`CapabilityThreadTools`) and its own allowlist of
-the five names, without the agent-computer opt-in check, because reach
+the peer method names, without the agent-computer opt-in check, because reach
 is pairing alone. `CapabilityThreadTools = "thread-tools.v1"` is
 appended to every `serverCapabilities` variant. An older peer:
 `thread_unsupported` with the update hint.

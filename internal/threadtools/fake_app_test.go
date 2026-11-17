@@ -477,6 +477,11 @@ func (p *serverPeer) Invoke(ctx context.Context, name string, args json.RawMessa
 	return p.run(ctx, name, args)
 }
 
+func (p *serverPeer) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	p.queries = append(p.queries, "thread_status")
+	return p.run(ctx, "thread_status", args)
+}
+
 // FetchExport stands in for the copy a real peer client makes: the
 // destination's export id becomes a path on the calling computer.
 func (p *serverPeer) FetchExport(_ context.Context, file ExportFile) (ExportFile, error) {
@@ -506,6 +511,9 @@ func (p brokenPeer) Query(context.Context, string, json.RawMessage) (json.RawMes
 	return nil, p.err
 }
 func (p brokenPeer) Invoke(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return nil, p.err
+}
+func (p brokenPeer) Watch(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, p.err
 }
 func (p brokenPeer) FetchExport(context.Context, ExportFile) (ExportFile, error) {

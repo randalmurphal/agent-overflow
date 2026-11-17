@@ -77,6 +77,10 @@ var budgetReachMethodBoundaries = map[string]map[string]string{
 		"(*agent-overflow/internal/threadtools.session).spawn":        "a write tool; the method refuses every tool but the reads",
 		"(*agent-overflow/internal/threadtools.session).newAssistant": "a write tool; the method refuses every tool but the reads",
 	},
+	"ThreadToolWatch": {
+		"(*agent-overflow/internal/threadtools.session).spawn":        "a write tool; the method refuses every tool but a thread_status wait",
+		"(*agent-overflow/internal/threadtools.session).newAssistant": "a write tool; the method refuses every tool but a thread_status wait",
+	},
 	"CreateAssistant": {
 		"(agent-overflow/internal/threadapp.Workspace).CreateWorktree": "an assistant's thread is made in its home with no worktree cut (createThreadRow)",
 	},

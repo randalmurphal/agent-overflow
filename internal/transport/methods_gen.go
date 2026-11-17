@@ -556,6 +556,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ThreadToolQuery", ID: 2624544009, Scope: "threads:read", Route: "selected", Budget: 1 * time.Minute},                             // main.App.ThreadToolQuery
 	{Name: "ThreadToolRequestStatus", ID: 4150382574, Scope: "threads:read", Route: "selected"},                                              // main.App.ThreadToolRequestStatus
 	{Name: "ThreadToolResolve", ID: 1018082581, Scope: "threads:read", Route: "selected", CallerBound: true},                                 // main.App.ThreadToolResolve
+	{Name: "ThreadToolWatch", ID: 515024442, Scope: "threads:read", Route: "selected", CallerBound: true, Budget: 1 * time.Minute},           // main.App.ThreadToolWatch
 	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write", Route: "thread", Budget: 90 * time.Second},                             // main.App.TriggerMcpAuth
 	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274, Scope: "settings:write", Route: "selected", Budget: 90 * time.Second},                   // main.App.TriggerWorkspaceMcpAuth
 	{Name: "UnapprovePR", ID: 2161888729, Scope: "git:operate", Route: "selected"},                                                           // main.App.UnapprovePR

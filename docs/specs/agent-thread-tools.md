@@ -693,7 +693,11 @@ running without having sent it anything. A wait returns as soon as any
 listed request settles or any listed thread rests, or as soon as any
 target becomes blocked on a person (a pending approval or a question
 to the user), with the request still open; duplicates and the caller's
-own thread are refused. A thread rests when it is at rest
+own thread are refused. A wait over threads on several computers
+reports what it observed: a computer that does not answer has its
+threads read `unavailable` and is named under `errors`, while the
+others keep waiting and are reported as they stand. The call fails
+only when no computer answered. A thread rests when it is at rest
 ([at rest](standing-agents.md#at-rest)): its turn over and nothing it
 started still running; one whose turn is over and is not reports
 `resting: false` with what it waits on (`waiting_on`), and an async
@@ -1831,7 +1835,10 @@ in the manifest so an older destination fails as `thread_unsupported`
 ("Update Agent Overflow on that computer") rather than with a confusing
 method error. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
 leaves that capability out of its hello, which is how an end-to-end test
-stands up such a destination; no other boot honors it. The destination
+stands up such a destination; no other boot honors it. A `thread_ids`
+wait is forwarded over `ThreadToolWatch`, which ends there when the
+caller's call ends here; a computer on v0.0.19 does not serve it and is
+asked through its read call instead. The destination
 authorizes every call with the
 authenticated device of the originating computer (the same principal
 that owns remote jobs there) and runs the handler with a caller scope

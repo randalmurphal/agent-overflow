@@ -100,14 +100,16 @@ type statusResult struct {
 	Requests []RequestState `json:"requests,omitempty"`
 	// Wakes is the caller's loops and watches, on the first page of a
 	// listing only.
-	Wakes    []WakeState   `json:"wakes,omitempty"`
-	Threads  []ThreadState `json:"threads,omitempty"`
-	WokeOn   string        `json:"woke_on,omitempty"`
-	TimedOut bool          `json:"timed_out,omitempty"`
-	More     bool          `json:"more,omitempty"`
-	Cursor   string        `json:"cursor,omitempty"`
-	File     *ExportFile   `json:"file,omitempty"`
-	Note     string        `json:"note,omitempty"`
+	Wakes   []WakeState   `json:"wakes,omitempty"`
+	Threads []ThreadState `json:"threads,omitempty"`
+	// Errors names each computer a thread_ids wait could not read.
+	Errors   []errorRow  `json:"errors,omitempty"`
+	WokeOn   string      `json:"woke_on,omitempty"`
+	TimedOut bool        `json:"timed_out,omitempty"`
+	More     bool        `json:"more,omitempty"`
+	Cursor   string      `json:"cursor,omitempty"`
+	File     *ExportFile `json:"file,omitempty"`
+	Note     string      `json:"note,omitempty"`
 }
 
 func (c *session) status(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -280,14 +282,14 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	if duplicate, found := dedupe(ids); found {
 		return nil, invalidf("thread %s is listed twice. Each thread may appear once per call.", duplicate)
 	}
-	states, woke, err := c.watchThreadGroups(ctx, targets, groupTargetsByComputer(targets), wait, args.AfterRevision)
+	watched, err := c.watchThreadGroups(ctx, targets, groupTargetsByComputer(targets), wait, args.AfterRevision)
 	if err != nil {
 		return nil, err
 	}
 	// A wait of zero is a read, not a wait that ran out.
-	result := statusResult{WokeOn: woke, TimedOut: woke == "" && wait > 0}
-	byID := make(map[string]ThreadState, len(states))
-	for _, state := range states {
+	result := statusResult{WokeOn: watched.wokeOn, TimedOut: watched.wokeOn == "" && wait > 0, Errors: watched.failures}
+	byID := make(map[string]ThreadState, len(watched.threads))
+	for _, state := range watched.threads {
 		byID[state.ThreadID] = state
 	}
 	// The rows come back in the order the call listed them, whichever
@@ -306,6 +308,9 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	if result.TimedOut {
 		result.Note = "None of those threads rested or became blocked within the wait. They are still as reported."
 	}
+	if len(result.Errors) > 0 {
+		result.Note = appendNote(result.Note, "A computer under errors did not answer, so its threads read unavailable; the other threads are as their computers reported them.")
+	}
 	return result, nil
 }
 
@@ -323,6 +328,18 @@ type threadWatchAnswer struct {
 	threads []ThreadState
 	wokeOn  string
 	err     error
+	// cancelled marks a group whose wait this call ended because another
+	// group woke it, rather than one that failed on its own.
+	cancelled bool
+}
+
+// watchedThreads is what a wait over several computers observed: the
+// wake, every thread that was read, and the computers that did not answer,
+// whose threads read StateUnavailable.
+type watchedThreads struct {
+	threads  []ThreadState
+	wokeOn   string
+	failures []errorRow
 }
 
 // watchThreadGroups runs every group's wait at once and ends the call on
@@ -330,11 +347,11 @@ type threadWatchAnswer struct {
 // wants the one that rested, not the one it happened to list first. The
 // groups that were still waiting are cancelled and read once more without
 // a wait, so every thread the call named is still reported.
-func (c *session) watchThreadGroups(ctx context.Context, targets []Target, groups []targetGroup, wait int, after int64) ([]ThreadState, string, error) {
-	if len(groups) == 1 {
-		answer := c.watchThreadGroup(ctx, targets, groups[0], wait, after)
-		return answer.threads, answer.wokeOn, answer.err
-	}
+//
+// A group that fails costs the call only that group: its threads read
+// unavailable beside what the others observed, and the others keep
+// waiting. The call fails only when no group answered at all.
+func (c *session) watchThreadGroups(ctx context.Context, targets []Target, groups []targetGroup, wait int, after int64) (watchedThreads, error) {
 	racing, cancel := context.WithCancel(ctx)
 	defer cancel()
 	answers := make([]threadWatchAnswer, len(groups))
@@ -345,40 +362,42 @@ func (c *session) watchThreadGroups(ctx context.Context, targets []Target, group
 			finished <- slot
 		}(index, group)
 	}
-	var failure error
-	woke := ""
+	watched := watchedThreads{}
 	for range groups {
 		slot := <-finished
-		answer := answers[slot]
 		switch {
-		case answer.err != nil:
-			// A failure this call caused by cancelling the group is not a
-			// failure of the call: that group is read again below.
-			if failure == nil && racing.Err() == nil {
-				failure = answer.err
-				cancel()
-			}
-		case answer.wokeOn != "" && woke == "":
-			woke = answer.wokeOn
+		case answers[slot].err != nil:
+			answers[slot].cancelled = racing.Err() != nil && ctx.Err() == nil
+		case answers[slot].wokeOn != "" && watched.wokeOn == "":
+			watched.wokeOn = answers[slot].wokeOn
 			cancel()
 		}
 	}
-	if failure != nil {
-		return nil, "", failure
-	}
-	states := make([]ThreadState, 0, len(groups))
+	var failure error
 	for index := range answers {
-		if answers[index].err != nil {
-			// Cancelled mid-wait. Its threads are read as they stand now,
-			// on the call's own context rather than the cancelled one.
+		if answers[index].cancelled {
+			// Ended mid-wait by another group's wake. Its threads are read
+			// as they stand now, on the call's own context rather than the
+			// cancelled one.
 			answers[index] = c.watchThreadGroup(ctx, targets, groups[index], 0, after)
-			if answers[index].err != nil {
-				return nil, "", answers[index].err
-			}
 		}
-		states = append(states, answers[index].threads...)
+		if err := answers[index].err; err != nil {
+			if failure == nil {
+				failure = err
+			}
+			watched.failures = append(watched.failures, newErrorRow(groups[index].computer, err))
+			for _, id := range threadIDs(targets, groups[index]) {
+				watched.threads = append(watched.threads, c.stampThreads(groups[index].computer,
+					[]ThreadState{{ThreadID: id, State: StateUnavailable}})...)
+			}
+			continue
+		}
+		watched.threads = append(watched.threads, answers[index].threads...)
 	}
-	return states, woke, nil
+	if len(watched.failures) == len(groups) {
+		return watchedThreads{}, failure
+	}
+	return watched, nil
 }
 
 // watchThreadGroup answers one group: this computer's threads through the
@@ -410,7 +429,7 @@ func (c *session) watchThreadGroup(ctx context.Context, targets []Target, group 
 		if err != nil {
 			return threadWatchAnswer{err: err}
 		}
-		raw, err := peer.Query(ctx, "thread_status", args)
+		raw, err := peer.Watch(ctx, args)
 		if err != nil {
 			return threadWatchAnswer{err: err}
 		}

@@ -504,6 +504,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2624544009: 'selected', // ThreadToolQuery
 	4150382574: 'selected', // ThreadToolRequestStatus
 	1018082581: 'selected', // ThreadToolResolve
+	515024442: 'selected', // ThreadToolWatch
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2161888729: 'selected', // UnapprovePR
@@ -617,6 +618,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2692607191: 600000, // SubmitPRReview
 	894716875: 780000, // ThreadToolCall
 	2624544009: 60000, // ThreadToolQuery
+	515024442: 60000, // ThreadToolWatch
 	1291217507: 90000, // TriggerMcpAuth
 	417766274: 90000, // TriggerWorkspaceMcpAuth
 	1792283305: 1320000, // WorkflowCreateItemPR

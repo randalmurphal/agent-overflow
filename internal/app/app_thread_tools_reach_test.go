@@ -502,6 +502,25 @@ type peerFaults struct {
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
 	stall chan struct{}
+	// watchEnded, when set, is told each time a forwarded thread_status
+	// wait returns here, whichever peer method carried it.
+	watchEnded chan struct{}
+}
+
+func (p *peerFaults) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	defer p.endWatch(call)
+	return p.App.ThreadToolQuery(ctx, call)
+}
+
+func (p *peerFaults) ThreadToolWatch(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	defer p.endWatch(call)
+	return p.App.ThreadToolWatch(ctx, call)
+}
+
+func (p *peerFaults) endWatch(call ThreadPeerCall) {
+	if p.watchEnded != nil && call.Tool == "thread_status" {
+		p.watchEnded <- struct{}{}
+	}
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
