@@ -364,11 +364,6 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) error {
 				return fmt.Errorf("store: set thread group for %s: %w", id, err)
 			}
 		}
-		// A group move files the thread in the sidebar, which ends a
-		// delegation a paired computer carried to it.
-		if err := endCarriedLevelTx(tx, id); err != nil {
-			return err
-		}
 	}
 	return nil
 }

@@ -64,15 +64,23 @@ func TestSubThreadLevelCountsTheOwnedLineage(t *testing.T) {
 	}
 }
 
-// A paired computer's spawn carries its level, and the threads it spawns
-// here count from it.
-func TestSubThreadLevelAddsTheLevelAPairedSpawnCarried(t *testing.T) {
-	s := newTestStore(t)
-	remote := makeThread("remote", "claude")
-	remote.SpawnLevel = 2
-	if err := s.CreateThread(remote); err != nil {
+// createCarried creates a thread with the level a paired computer's spawn
+// or ask carried to it, as the destination's creation writes it.
+func createCarried(t *testing.T, s *Store, id, mode string, level int) {
+	t.Helper()
+	thread := makeThread(id, "claude")
+	thread.Mode, thread.SpawnLevel = mode, level
+	if err := s.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A paired computer's owned spawn carries its level, and the threads it
+// spawns here count from it.
+func TestSubThreadLevelAddsTheLevelAPairedSpawnCarried(t *testing.T) {
+	s := newTestStore(t)
+	createCarried(t, s, "remote", "chat", 2)
+	acceptLink(t, s, "link", "dev-s", "remote", 1000)
 	createDraftCleanupThread(t, s, "below", "chat")
 	spawnOwned(t, s, "t1", "remote", "below")
 	requireLevel(t, s, "remote", 2)
@@ -91,9 +99,11 @@ func TestSpawnInstructionsLiveWithTheThreadAndTheCarriedLevelWithItsDelegation(t
 	if err := s.CreateThread(worker); err != nil {
 		t.Fatal(err)
 	}
+	acceptLink(t, s, "link", "dev-s", "worker", 1000)
+	requireLevel(t, s, "worker", 2)
 	got, err := s.GetThread("worker")
-	if err != nil || got.SpawnInstructions != "Review only." || got.SpawnLevel != 2 {
-		t.Fatalf("the stored worker = %q, %d, %v", got.SpawnInstructions, got.SpawnLevel, err)
+	if err != nil || got.SpawnInstructions != "Review only." {
+		t.Fatalf("the stored worker = %q, %v", got.SpawnInstructions, err)
 	}
 	if fork := BuildForkedThread(got); fork.SpawnInstructions != "Review only." || fork.SpawnLevel != 0 {
 		t.Fatalf("the fork = %q, %d; want the instructions and no carried level", fork.SpawnInstructions, fork.SpawnLevel)
@@ -169,43 +179,54 @@ func TestAnAgentsAskCopyIsOneLevelBelowItsAsker(t *testing.T) {
 	requireLevel(t, s, "side-chat", 0)
 }
 
-// A paired computer's spawn or ask carries its level to a thread that has
-// no link here, and that level ends where its delegation does: when the
-// thread is filed in a group or made standalone. Nothing puts it back:
-// owning the thread needs a spawn link here, which it does not have. An ask
-// copy's carried level counts like a spawn's.
-func TestACarriedLevelEndsWhereItsDelegationEnds(t *testing.T) {
+// A paired computer's spawn or ask carries its level, and the level is the
+// link's: it counts while the thread is owned through that computer's
+// link, or is an ask copy, and not while the thread has a sidebar row or a
+// group. Show in Sidebar and a group end it, Remove from Sidebar restores
+// it, and a released link ends it for good, since nothing can own the
+// thread again. A carried level on a thread no link owns counts nothing.
+func TestACarriedLevelCountsWhileItsDelegationLasts(t *testing.T) {
 	s := newTestStore(t)
-	carried := func(id, mode string) {
-		thread := makeThread(id, "claude")
-		thread.Mode, thread.SpawnLevel = mode, 2
-		if err := s.CreateThread(thread); err != nil {
-			t.Fatal(err)
-		}
-		requireLevel(t, s, id, 2)
+	createCarried(t, s, "worker", "chat", 2)
+	acceptLink(t, s, "link", "dev-s", "worker", 1000)
+	requireLevel(t, s, "worker", 2)
+
+	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementStandalone); err != nil {
+		t.Fatal(err)
 	}
-	carried("grouped", "chat")
+	requireLevel(t, s, "worker", 0)
+	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementOwned); err != nil {
+		t.Fatal(err)
+	}
+	requireLevel(t, s, "worker", 2)
+
 	group, err := s.CreateThreadGroup(defaultTestProjectID, "Mine")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetThreadGroup([]string{"grouped"}, group.ID); err != nil {
+	if _, err := s.SetThreadGroup([]string{"worker"}, group.ID); err != nil {
 		t.Fatal(err)
 	}
-	requireLevel(t, s, "grouped", 0)
-
-	carried("standalone", "chat")
-	if _, err := s.SetThreadPlacement([]string{"standalone"}, PlacementStandalone); err != nil {
+	requireLevel(t, s, "worker", 0)
+	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementOwned); err != nil {
 		t.Fatal(err)
 	}
-	requireLevel(t, s, "standalone", 0)
-	if _, err := s.SetThreadPlacement([]string{"standalone"}, PlacementOwned); !errors.Is(err, ErrThreadNotSpawned) {
-		t.Fatalf("owning a thread no spawn here made = %v", err)
-	}
-	requireLevel(t, s, "standalone", 0)
+	requireLevel(t, s, "worker", 2)
 
-	carried("remote-ask", "scratch")
-	if err := s.InsertScratchThread(ScratchThread{ThreadID: "remote-ask", SourceThreadID: "standalone", ReturnMode: "chat", RequestToken: "their-token"}); err != nil {
+	if _, err := s.ReleaseSpawnLink("link", "dev-s", "lead-link"); err != nil {
+		t.Fatal(err)
+	}
+	requireLevel(t, s, "worker", 0)
+	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementOwned); !errors.Is(err, ErrThreadNotSpawned) {
+		t.Fatalf("owning a thread whose link ended = %v", err)
+	}
+	requireLevel(t, s, "worker", 0)
+
+	createCarried(t, s, "unlinked", "chat", 2)
+	requireLevel(t, s, "unlinked", 0)
+
+	createCarried(t, s, "remote-ask", "scratch", 2)
+	if err := s.InsertScratchThread(ScratchThread{ThreadID: "remote-ask", SourceThreadID: "worker", ReturnMode: "chat", RequestToken: "their-token"}); err != nil {
 		t.Fatal(err)
 	}
 	requireLevel(t, s, "remote-ask", 2)

@@ -263,9 +263,13 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
-	// A paired computer's spawn has no spawn row here to own it, so its
-	// thread is standalone, or grouped by its group.
-	create.owned = call.Placement == threadtools.PlacementOwned && !origin.foreign
+	// A paired computer's owned spawn is owned here through its receipt, the
+	// link, when it carries its level: a computer that sends no level
+	// predates ownership across computers, and the placement alone cannot
+	// tell, since an omitted one resolves to owned. Any other is standalone,
+	// or grouped by its group.
+	link := origin.foreign && call.Placement == threadtools.PlacementOwned && call.Level >= 1
+	create.owned = call.Placement == threadtools.PlacementOwned && (!origin.foreign || link)
 	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
@@ -338,7 +342,7 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 		TargetThreadID: target.ID,
 		Notify:         call.Notify,
 		State:          store.ThreadRequestAccepted,
-	}, threadReceiptFor(origin, token, store.ThreadRequestSend, target.ID)); err != nil {
+	}, threadReceiptFor(origin, token, store.ThreadRequestSend, target.ID, false)); err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSend, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
@@ -519,13 +523,15 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 // the existing acceptance and `create` never runs again, which is what makes
 // a lost reply safe to retry with no second spawn, fork or message. `fresh`
 // is false for exactly that retry, so the dispatch does not run twice
-// either. A local token is fresh, so it is never a retry.
+// either. A local token is fresh, so it is never a retry. own places the
+// thread owned by the naming write: a local spawn's through its request, a
+// paired computer's through its receipt, which is then its link.
 func (t threadToolsApp) acceptRequest(
 	origin threadRequestOrigin, request store.ThreadRequest,
 	create func() (store.Thread, error), own bool,
 ) (target string, fresh bool, err error) {
 	token, kind := request.Token, request.Kind
-	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID)
+	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID, origin.foreign && own)
 	var receipt store.ThreadRequestReceipt
 	created := true
 	if origin.foreign {
@@ -620,10 +626,12 @@ func (t threadToolsApp) discardUnnamedThread(threadID string, cause error) error
 
 // threadReceiptFor is the receipt origin's request token is accepted
 // under: owned by the device that sent it, and naming its source for the
-// footer and the sender an agent row names.
-func threadReceiptFor(origin threadRequestOrigin, token, kind, targetThreadID string) store.ThreadRequestReceipt {
+// footer and the sender an agent row names. link marks a paired computer's
+// owned spawn, whose receipt owns its thread here.
+func threadReceiptFor(origin threadRequestOrigin, token, kind, targetThreadID string, link bool) store.ThreadRequestReceipt {
 	caller := origin.caller
 	return store.ThreadRequestReceipt{
+		SpawnLink:          link,
 		Token:              token,
 		OwnerDeviceID:      origin.ownerDevice,
 		SourceComputerID:   caller.ComputerID,

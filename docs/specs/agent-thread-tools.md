@@ -384,8 +384,10 @@ source's group unless `group` names one. A thread outside every
 project, a helper or a fork of a thread under an assistant, is shown
 only as its spawner's worker: it takes no `group` or `placement`, and a
 spawn from another computer cannot fork one. A thread spawned on another
-computer is a plain row there unless grouped, whatever `placement`
-says. Placement is organization only: the spawn record, the reply path
+computer takes its placement there too: owned, it is the caller's worker
+on that computer, with no sidebar row there; a computer from before
+this gives it a sidebar row, and the reply's note says so
+([standing agents](standing-agents.md#owned-workers)). Placement is organization only: the spawn record, the reply path
 and the read mark
 on an answer are the same in every placement. `from_thread` forks that thread's history at its tail
 (the same fork `thread_ask` uses, visible instead of hidden) and sends
@@ -414,8 +416,10 @@ discovery tool is needed. Provider, model, mode and runtime mode still
 default to the caller's and are validated on the destination: a
 provider or model that computer does not offer is refused with the list
 it does. The destination's own account runs and bills the thread. The
-thread is created on the destination, appears in its sidebar and in
-every frontend attached to it, and has no special marking there either.
+thread is created on the destination with no special marking there
+either. Owned, the default, it is in no sidebar there; grouped or
+standalone, it appears in that computer's sidebar in every frontend
+attached to it.
 
 `wait_seconds` and `notify` are described under Waiting.
 
@@ -545,14 +549,17 @@ The tool list is fixed when a session starts. A change to the setting,
 or a placement that moves a thread up or down, applies at the next
 start of each session; a `thread_spawn` that reaches a thread already
 at the limit, from a session started before the change, is refused
-naming the level and the limit. An owned spawn or an ask to a paired
-computer carries the caller's level plus one (`level`), stored on the
-new thread or copy (`threads.spawn_level`) and counted beneath it; the
-destination refuses one past its own limit. A spawn given a sidebar row
-carries level 0. A computer from before levels ignores the field and
-behaves as before. A carried level ends where the delegation does: when
-an existing thread is placed in a group or as a standalone row, and when
-it is copied or moved to another computer. A spawn is made in the group
+naming the level and the limit. An owned spawn, a fork included, or an
+ask to a paired computer carries the caller's level plus one (`level`),
+stored on the new thread or copy (`threads.spawn_level`) and counted
+beneath it; the destination refuses one past its own limit. The level is
+also what makes the spawn owned there: one that arrives without it is a
+sidebar row. A spawn given a sidebar row carries level 0. A computer
+from before levels ignores the field and behaves as before. A carried
+level counts while its delegation lasts, while the thread is owned or is
+the copy: a group or a standalone row there ends it, Remove from Sidebar
+restores it, a link that ends ends it for good, and a copy or move to
+another computer drops it. A spawn is made in the group
 and placement it ends with (a fork is made outside its source's group,
 in the one the spawn names if any), so creating one is not such a
 placement.

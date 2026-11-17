@@ -52,7 +52,7 @@ func spawnSchema(shape Shape) map[string]any {
 			"maxLength":   MaxTitleRunes,
 			"description": "Sidebar group to put the new thread in, by name inside the thread's own project, created when it does not exist. The same name in another project is a different group. Put your own thread there with thread_update to keep a sweep of threads together. Implies placement grouped.",
 		},
-		"placement": placementProperty("Whether the user sees the new thread in the sidebar. owned, the default: it is your worker, with no sidebar row; the user reaches it from your thread. standalone gives it a plain row in its own project, and grouped, which group implies, a row in that group. Give it a row when the thread is for the user to read or continue themselves. A thread spawned on another computer has a row there."),
+		"placement": placementProperty("Whether the user sees the new thread in the sidebar. owned, the default: it is your worker, with no sidebar row; the user reaches it from your thread. standalone gives it a plain row in its own project, and grouped, which group implies, a row in that group. Give it a row when the thread is for the user to read or continue themselves. On another computer it applies there."),
 		"provider": map[string]any{
 			"type":        "string",
 			"description": spawnDefaultText("Provider for the new thread", defaults.Provider) + " A provider given without a model uses that provider's default model. A provider the target computer does not offer is refused with the list it does; thread_options lists them. With from_thread it must be the source thread's provider, which a fork resumes.",
@@ -249,7 +249,7 @@ func updateSchema(shape Shape) map[string]any {
 			"type":        []string{"string", "null"},
 			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups, leaving the thread standalone. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Joining or leaving a group unpins the thread; a pin in the same call applies after the move. Implies placement grouped.",
 		},
-		"placement": placementProperty("Whether the user sees a thread in the sidebar: standalone as a plain row in its own project or grouped (with group, unless it is in a group already) gives it a row, and owned takes it out, back to the thread that spawned it. owned is refused for a thread no thread on this computer spawned and for an assistant's own thread. Changing it unpins the thread."),
+		"placement": placementProperty("Whether the user sees a thread in the sidebar: standalone as a plain row in its own project or grouped (with group, unless it is in a group already) gives it a row, and owned takes it out, back to the thread that spawned it. owned is refused for a thread no thread spawned as its worker, on this computer or another, and for an assistant's own thread. Changing it unpins the thread."),
 	}
 	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, group them, or place them, many at once. Set at least one of title, archived, pin, group or placement. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. An archive also archives the thread's workers; one it could not archive is named in workers_not_archived on the thread's row, still open."
 	if shape.Paired() {

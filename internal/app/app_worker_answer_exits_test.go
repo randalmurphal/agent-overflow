@@ -156,8 +156,8 @@ func TestARevertsQueueClearReturnsASpawnerAnswer(t *testing.T) {
 	if token, _ := f.wake(t, f.spawner.ID); workerAnswerSendIDRoot+token == sendID {
 		t.Fatal("the returned question went back to the spawner under its old token")
 	}
-	if _, routedTo, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || routedTo != f.spawner.Title {
-		t.Fatalf("the returned question is routed to %q (%v), want the spawner", routedTo, asking)
+	if _, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || promptRouteTitle(route) != f.spawner.Title {
+		t.Fatalf("the returned question is routed to %q (%v), want the spawner", promptRouteTitle(route), asking)
 	}
 }
 

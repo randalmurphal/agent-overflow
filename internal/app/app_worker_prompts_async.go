@@ -324,10 +324,10 @@ func (a *App) rerouteAsyncQuestions(from string, refs []triage.PromptRef, reject
 }
 
 // asyncQuestionBlocked says what threadID's open async questions ask, for
-// threadWaitingOn: the first question of its earliest prompt and the thread
-// it is routed to, empty when it is the person's. Found is false when it
-// has none open.
-func (a *App) asyncQuestionBlocked(threadID string) (detail, routedTo string, found bool) {
+// threadWaitingOn: the first question of its earliest prompt and the route
+// it took, nil when it is the person's. Found is false when it has none
+// open.
+func (a *App) asyncQuestionBlocked(threadID string) (detail string, route *provider.PromptRoute, found bool) {
 	routes := &a.workerPrompts.async
 	routes.mu.Lock()
 	defer routes.mu.Unlock()
@@ -341,15 +341,12 @@ func (a *App) asyncQuestionBlocked(threadID string) (detail, routedTo string, fo
 		first = &copied
 	}
 	if first == nil {
-		return "", "", false
+		return "", nil, false
 	}
 	if len(first.request.Questions) > 0 {
 		detail = first.request.Questions[0].Question
 	}
-	if first.route != nil {
-		routedTo = first.route.Title
-	}
-	return detail, routedTo, true
+	return detail, first.route, true
 }
 
 // dismissRestingAsyncQuestions dismisses the async questions of a thread a

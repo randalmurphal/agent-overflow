@@ -249,6 +249,10 @@ type RequestAck struct {
 	// when the spawn named its thread, so the reply and the spawn's row say
 	// the same whatever happens to the thread later.
 	Instructions string `json:"instructions,omitempty"`
+	// Notice is a sentence the reply's note opens with: what the request
+	// came to that the caller did not ask for, such as a computer too old
+	// to keep an owned spawn as the caller's worker.
+	Notice string `json:"-"`
 }
 
 // ReplyAck is what thread_reply returns.

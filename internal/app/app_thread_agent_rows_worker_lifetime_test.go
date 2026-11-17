@@ -428,7 +428,9 @@ func TestAWorkerHoldingAQueuedMessageIsOpenUntilARestart(t *testing.T) {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
 	row := f.awaitWorker(t, f.caller.ID, "queued-spawn", workerQueued)
-	if live := threadToolsLiveState(f.app.triage.LiveStateSnapshotForThread(worker.ID)); live.ActiveTurn || !live.PendingSends {
+	// Queued anywhere in the queue's handoff chain, as the row reads it: a
+	// batch the dispatcher holds has left triage's queue.
+	if live := f.app.threadWaitingOn(worker.ID).live; live.ActiveTurn || !live.PendingSends {
 		t.Fatalf("worker live state %+v; this test needs a queued message and no turn", live)
 	}
 	if !row.open() || row.State != threadtools.RequestReplied {

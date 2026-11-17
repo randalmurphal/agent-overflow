@@ -750,7 +750,8 @@ and anti-changes that live only here:
   at 0, and an agent cannot move a thread on its own chain there. The
   level travels with an owned spawn or ask to a paired computer and
   ends when that thread leaves the delegation (grouped, made standalone,
-  copied or moved). `docs/specs/agent-thread-tools.md`, Sub-thread
+  copied or moved): it counts only while the thread is owned there or
+  is the ask copy, so Remove from Sidebar restores it. `docs/specs/agent-thread-tools.md`, Sub-thread
   depth.
 - AO tool rows (thread, workflow, browser, remote) present as sentences
   with structured results, never raw JSON (2026-10-13). The header says

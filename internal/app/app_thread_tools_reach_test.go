@@ -1924,8 +1924,8 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 
 // A fork of a grouped thread on the paired computer is made there, and the
 // source forwards an omitted placement as omitted: the destination resolves
-// it as a spawn's default, which leaves the source's group, and with no
-// local spawner there to own it the fork is a standalone row, whoever asked.
+// it as a spawn's default, which leaves the source's group, and the fork is
+// owned there through its link, whoever asked.
 func TestThreadToolsReachForkLeavesItsSourcesGroup(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -1960,12 +1960,12 @@ func TestThreadToolsReachForkLeavesItsSourcesGroup(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the fork on the destination (%v): %v", result, err)
 			}
-			if fork.Placement != store.PlacementStandalone || fork.GroupID != "" {
-				t.Errorf("fork = %s in group %q, want standalone in no group", fork.Placement, fork.GroupID)
+			if fork.Placement != store.PlacementOwned || fork.GroupID != "" {
+				t.Errorf("fork = %s in group %q, want owned in no group", fork.Placement, fork.GroupID)
 			}
 			// Leaving the source's group is how the fork is made, not a
-			// person filing it: it keeps the level its spawn carried, and at
-			// the destination's limit starts without spawning tools of
+			// person filing it: it counts the level its spawn carried, and
+			// at the destination's limit starts without spawning tools of
 			// either kind.
 			if fork.SpawnLevel != 1 {
 				t.Errorf("the fork carries level %d, want 1", fork.SpawnLevel)

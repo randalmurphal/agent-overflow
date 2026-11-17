@@ -661,7 +661,9 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 		wakes, err := a.settleUnknownRemoteRequest(row)
 		return 0, wakes, err
 	}
-	a.noteRemoteRequestBlocked(token, remoteBlocked{blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo, waitingOn: answer.WaitingOn})
+	a.noteRemoteRequestBlocked(token, remoteBlocked{
+		blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo, routedToCaller: answer.BlockedRoutedToCaller, waitingOn: answer.WaitingOn,
+	})
 	if target := threadPeerTarget(row, answer); target != "" {
 		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title, answer.Provider); err != nil {
 			return 0, nil, err

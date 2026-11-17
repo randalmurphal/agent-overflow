@@ -168,7 +168,7 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 	var result any
 	switch call.Tool {
 	case threadAgentPeerRows:
-		listing, err := a.answerThreadAgentRows(ctx, args)
+		listing, err := a.answerThreadAgentRows(ctx, owner, args)
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}
@@ -199,8 +199,10 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 // of it here would read it (store.ReadThreadAgentState). That is read
 // after the rows, so the answers of computers further on that the rows
 // asked for are recorded in it. A call for the state alone asks no other
-// computer: Hidden says whether the thread has rows.
-func (a *App) answerThreadAgentRows(ctx context.Context, args threadAgentPeerArgs) (ThreadAgentRows, error) {
+// computer: Hidden says whether the thread has rows. It says where the
+// thread is placed here, whether it is archived, and what prompt it waits
+// on, routed back to the asking device's spawner or not (RoutedToAsker).
+func (a *App) answerThreadAgentRows(ctx context.Context, owner string, args threadAgentPeerArgs) (ThreadAgentRows, error) {
 	var listing ThreadAgentRows
 	if !args.StateOnly {
 		depth := args.Depth
@@ -218,6 +220,12 @@ func (a *App) answerThreadAgentRows(ctx context.Context, args threadAgentPeerArg
 		return ThreadAgentRows{}, fmt.Errorf("read thread %s: %w", args.ThreadID, err)
 	}
 	listing.ThreadProvider = thread.Provider
+	listing.Placement, listing.Archived = thread.Placement, thread.Archived
+	waiting := a.threadWaitingOn(args.ThreadID)
+	listing.BlockedOn, listing.BlockedDetail, listing.BlockedRoutedTo = waiting.on, waiting.detail, waiting.routedTo()
+	if listing.RoutedToAsker, err = a.routedToAsker(args.ThreadID, waiting.route, owner); err != nil {
+		return ThreadAgentRows{}, err
+	}
 	rest, err := a.threadRest(args.ThreadID)
 	if err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read whether thread %s is at rest: %w", args.ThreadID, err)

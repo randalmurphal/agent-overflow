@@ -125,6 +125,15 @@ type ThreadPeerRequest struct {
 	// spawner), as the Agents row there names it. Empty when the person
 	// owns the prompt, and from a computer that does not send it.
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
+	// BlockedRoutedToCaller is set when that prompt went back to the
+	// asking computer, to the thread whose link owns the target there
+	// (routedToAsker): the caller's own spawner, not a thread on that
+	// computer.
+	BlockedRoutedToCaller bool `json:"blockedRoutedToCaller,omitempty"`
+	// Placement is the target thread's placement there: owned, grouped or
+	// standalone. A computer that predates ownership across computers
+	// sends none, and its spawn's thread has a sidebar row there.
+	Placement string `json:"placement,omitempty"`
 	// WaitingOn is what the target still waits on while its request waits
 	// for its rest: a spawn, or a send from the thread that spawned it,
 	// whose turn ended with work of its own left (restSettlement). Live,
@@ -625,11 +634,15 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 		if thread, err := a.store.GetThread(receipt.TargetThreadID); err == nil {
 			state.Title = thread.Title
 			state.Provider = thread.Provider
+			state.Placement = thread.Placement
 		}
 		if receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning {
 			// The same reading this computer's own Agents row makes.
 			waiting := a.threadWaitingOn(receipt.TargetThreadID)
-			state.Blocked, state.BlockedRoutedTo = waiting.live.Blocked(), waiting.routedTo
+			state.Blocked, state.BlockedRoutedTo = waiting.live.Blocked(), waiting.routedTo()
+			if state.BlockedRoutedToCaller, err = a.routedToAsker(receipt.TargetThreadID, waiting.route, owner); err != nil {
+				return ThreadPeerRequest{}, err
+			}
 			if a.restHeld(receipt.TargetThreadID, token) {
 				rest, err := a.threadRest(receipt.TargetThreadID)
 				if err != nil {
