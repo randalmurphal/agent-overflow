@@ -725,7 +725,7 @@ describe('numbering the user\'s tab selections', () => {
 
   const order = (action: Action) => ({ kind: action.kind, mount: action.mount ?? '', select: action.select ?? 0 });
 
-  it('numbers each selection in its mount when the user acts, before any answer, across a reconnect', async () => {
+  it('numbers selections consecutively per mount when the user acts, from 1 again after a reconnect', async () => {
     let pane = attachBrowserCompanion(THREAD);
     await vi.waitFor(() => expect(pane.current).not.toBeNull());
     void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
@@ -747,14 +747,18 @@ describe('numbering the user\'s tab selections', () => {
       { kind: 'restore', mount: '', select: 0 },
     ]);
 
-    // The connection drops and the pane attaches again as a new mount; the
-    // numbers keep rising.
+    // The connection drops and the pane attaches again as a new mount, which
+    // the backend counts from 1.
     pane.release();
     pane = attachBrowserCompanion(THREAD);
     await vi.waitFor(() => expect(pane.current).not.toBeNull());
     sent = [];
     void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
-    expect(sent.map(order)).toEqual([{ kind: 'activate', mount: 'mount-2', select: 7 }]);
+    void browserCompanionAct(THREAD, { kind: 'step', index: -1 });
+    expect(sent.map(order)).toEqual([
+      { kind: 'activate', mount: 'mount-2', select: 1 },
+      { kind: 'step', mount: 'mount-2', select: 2 },
+    ]);
     pane.release();
   });
 

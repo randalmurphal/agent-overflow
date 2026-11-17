@@ -12,8 +12,9 @@
 // through the address row's picker, by search and from the folder view,
 // without typing its path. A tab's menu duplicates it and closes the others
 // or those to its right, and the menu or mod+shift+t reopens the last closed
-// tab where it was. Of two tabs clicked with no gap the second stays
-// selected even when the backend receives the clicks in reverse order.
+// tab where it was. The user's last selection wins when the backend
+// receives two in reverse order: of two tabs clicked with no gap the
+// second, and a click then next tab one past the clicked tab.
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -257,34 +258,35 @@ test('the tab menu duplicates and closes tabs, and a closed tab reopens where it
 });
 
 const BROWSER_COMPANION_DO = 197228034;
+// How long the socket keeps a held selection after sending the one the user
+// made next, so the backend has that one before the held one arrives.
+const REVERSED_DELIVERY_MS = 300;
 
-test('the last of two tabs clicked with no gap stays selected when the clicks arrive reversed', async ({ harness, page }) => {
-  // The socket holds the first click's activation until the second's has
-  // answered, so the backend runs the two in reverse order every round.
+test('the user\'s last tab selection wins when two arrive reversed', async ({ harness, page }) => {
+  // The socket holds the first of two selections (a click or a step) and
+  // sends it only after the second, so the backend receives the two in
+  // reverse order every round.
   let held: { id: string; message: string } | null = null;
-  let secondId = '';
   let settledRounds = 0;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
-      if (frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO && frame.params?.[1]?.kind === 'activate') {
+      const kind = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1]?.kind : '';
+      if (kind === 'activate' || kind === 'step') {
         if (held === null) {
           held = { id: frame.id, message: String(message) };
           return;
         }
-        secondId = frame.id;
+        const first = held.message;
+        setTimeout(() => server.send(first), REVERSED_DELIVERY_MS);
       }
       server.send(message);
     });
     server.onMessage((message) => {
       socket.send(message);
       const frame = JSON.parse(String(message));
-      if (frame.type !== 'rpc' || held === null) return;
-      if (frame.id === secondId) {
-        secondId = '';
-        server.send(held.message);
-      } else if (frame.id === held.id) {
+      if (frame.type === 'rpc' && held !== null && frame.id === held.id) {
         held = null;
         settledRounds++;
       }
@@ -298,20 +300,32 @@ test('the last of two tabs clicked with no gap stays selected when the clicks ar
   }
   await harness.open(page);
   await page.getByText('Browser tab clicks').click();
-  const tabs = page.getByTestId('browser-pane').getByTestId('browser-tab');
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
   await expect(tabs).toHaveCount(3);
+  let round = 0;
+  const settled = async (want: number) => {
+    // Both selections have answered, the first one last.
+    await expect.poll(() => settledRounds, { message: `round ${round} settled` }).toBe(round + 1);
+    expect(await activeURL(harness, threadId), `round ${round}`).toBe(urls[want]);
+    await expect(tabs.nth(want)).toHaveAttribute('aria-selected', 'true');
+    round++;
+  };
 
   // Every ordered pair of the three tabs, each clicked in one task.
-  const pairs = [[0, 1], [1, 2], [2, 0], [1, 0], [2, 1], [0, 2]];
-  for (const [round, [first, second]] of pairs.entries()) {
+  for (const [first, second] of [[0, 1], [1, 2], [2, 0], [1, 0], [2, 1], [0, 2]]) {
     await tabs.evaluateAll((elements, [a, b]) => {
       (elements[a] as HTMLElement).click();
       (elements[b] as HTMLElement).click();
     }, [first, second]);
-    // Both activations have answered, the first one last.
-    await expect.poll(() => settledRounds, { message: `round ${round} settled` }).toBe(round + 1);
-    expect(await activeURL(harness, threadId), `round ${round}`).toBe(urls[second]);
-    await expect(tabs.nth(second)).toHaveAttribute('aria-selected', 'true');
+    await settled(second);
+  }
+
+  // A click and then next tab end one past the clicked tab.
+  await pane.getByRole('textbox', { name: 'Address' }).click();
+  for (const clicked of [0, 1, 2]) {
+    await tabs.nth(clicked).click();
+    await page.keyboard.press('Control+Tab');
+    await settled((clicked + 1) % 3);
   }
 });
-

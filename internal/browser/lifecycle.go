@@ -132,12 +132,19 @@ func (m *Manager) goLife(fn func()) bool {
 // engine is asked, and a failure stays on the tab. A tab closed meanwhile
 // answers errClosedWhileCreating.
 func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*managedPage, error) {
-	return m.createPageAt(ctx, access, user, -1)
+	var turn *selectionTurn
+	if user {
+		turn = &selectionTurn{}
+	}
+	return m.createPageAt(ctx, access, turn, -1)
 }
 
 // createPageAt is createPage with the new tab placed at index in the
-// thread's tab order from the start; a negative index appends it.
-func (m *Manager) createPageAt(ctx context.Context, access Access, user bool, index int) (*managedPage, error) {
+// thread's tab order from the start; a negative index appends it. A tab the
+// user opens has the turn its selection was admitted in (selection.go),
+// which the hold that adds and selects the tab ends; an agent's has none.
+func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int) (*managedPage, error) {
+	user := turn != nil
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
 	createCtx, cancel := context.WithCancel(ctx)
@@ -161,21 +168,10 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, user bool, in
 	}
 	if user {
 		info := m.sessionLocked(owner)
-		info.Visible = true
-		// The new tab is the user's selection unless a newer one from the
-		// same mount overtook it (selection.go); then it opens behind.
-		tabs := m.companionTabsLocked(owner)
-		for i := range tabs {
-			if tabs[i].id != p.id {
-				continue
-			}
-			if at, ok := m.orderSelectionLocked(owner, selectionOf(ctx), tabs, i, 0); ok {
-				info.ActivePageID = tabs[at].id
-			}
-			break
-		}
+		info.ActivePageID, info.Visible = p.id, true
 		info.UpdatedAt = time.Now()
 		m.sessions[owner] = info
+		turn.landedLocked()
 	}
 	m.mu.Unlock()
 	m.emitThreadState(owner)

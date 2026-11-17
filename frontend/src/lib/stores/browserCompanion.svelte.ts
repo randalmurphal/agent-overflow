@@ -156,6 +156,7 @@ const store = createEntityStore<BrowserCompanionView, void>({
     apply(emptyView(admitState(result.state) || !held ? result.state : held));
     return async () => {
       if (paneIds.get(key) === result.id) paneIds.delete(key);
+      selectionSeqs.delete(result.id);
       for (const observer of observers) observer.mountEnded?.(result.id);
       await BrowserCompanionPaneDetach(result.id);
     };
@@ -403,25 +404,27 @@ export function sendBrowserPageFocus(
 }
 
 // The action kinds that select a tab: the user's selections, which the
-// backend orders per pane mount (internal/browser/selection.go).
+// backend admits per pane mount in the user's order
+// (internal/browser/selection.go).
 const SELECTING_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open']);
 
-// selectionSeq numbers the user's selections. One count for every mount is
-// still increasing per mount, and neither a mount's end nor a reconnect
-// resets it, so numbers only rise for the life of the page.
-let selectionSeq = 0;
+// The last selection number given in each live mount. The backend counts
+// a mount from 1 and waits for every number in turn, so the numbers are
+// consecutive per mount and a new mount (a re-attach) starts again at 1.
+const selectionSeqs = new Map<string, number>();
 
 /**
  * The mount and number of a selecting action, taken when the user acted:
- * actions run concurrently on the backend, which applies a selection only
- * if no newer one from the same mount was applied. With no mount the
- * selection carries neither and applies in arrival order.
+ * actions run concurrently on the backend, which admits a mount's
+ * selections in this order. With no mount the selection carries neither
+ * and applies in arrival order.
  */
 function selectionOrder(threadId: string, kind: string): { mount: string; select: number } | null {
   const mount = browserPaneMountId(threadId);
   if (!mount || !SELECTING_KINDS.has(kind)) return null;
-  selectionSeq += 1;
-  return { mount, select: selectionSeq };
+  const select = (selectionSeqs.get(mount) ?? 0) + 1;
+  selectionSeqs.set(mount, select);
+  return { mount, select };
 }
 
 async function runBrowserAction(
@@ -549,7 +552,7 @@ addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 export function resetBrowserCompanionForTest(): void {
   for (const observer of observers) observer.resetForTest?.();
   browserActionCounts.clear();
-  selectionSeq = 0;
+  selectionSeqs.clear();
   paneIds.clear();
   stateOrder.reset();
   liveStates.reset();

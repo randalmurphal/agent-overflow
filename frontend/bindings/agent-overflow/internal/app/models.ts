@@ -863,10 +863,10 @@ export class BrowserCompanionAction {
     /**
      * Select numbers a user's tab selection made in Mount ("activate",
      * "step", and the "new", "reopen", "duplicate" and "download-open" that
-     * select the tab they open), increasing per mount in the order the user
-     * acted. The Manager applies a selection only if no newer one from the
-     * same mount was applied (internal/browser/selection.go). Zero, from an
-     * older client, applies in arrival order.
+     * select the tab they open), consecutive from 1 in each mount in the
+     * order the user acted. The Manager admits a mount's selections in that
+     * order (internal/browser/selection.go). Zero, from an older client,
+     * applies in arrival order.
      */
     "select"?: number;
 

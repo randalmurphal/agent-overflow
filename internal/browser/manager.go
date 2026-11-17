@@ -192,6 +192,10 @@ type Manager struct {
 	// and its putting the closed tab back (ReopenClosedTab). Production
 	// leaves it nil.
 	reopenRefused func()
+	// selectionGapTimer starts one wait of a selection for its predecessors
+	// (awaitSelectionTurn) and answers its expiry and stop. A test seam;
+	// production uses newSelectionGapTimer.
+	selectionGapTimer func() (<-chan time.Time, func() bool)
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -390,6 +394,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		agentLinger:   agentActivityLinger,
 		recentGen:     uint64(time.Now().UnixNano()),
 	}
+	m.selectionGapTimer = newSelectionGapTimer
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
 		PopupOpened:       m.adoptPopup,

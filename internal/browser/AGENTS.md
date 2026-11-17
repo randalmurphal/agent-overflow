@@ -39,9 +39,11 @@ mode. Product behavior and authority are defined in
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab
-  stack and the tab menu's actions are `companion_tabs.go`. Every user
-  selection of a tab is ordered per pane mount by `selection.go` inside
-  the lock hold that sets the active tab.
+  stack and the tab menu's actions are `companion_tabs.go`. A pane's tab
+  selections are admitted per mount in the user's order (`selection.go`):
+  each takes its turn before the lock hold that sets the active tab and
+  ends it in that hold, so page work never delays the next, and the one
+  function that selects answers the tab its caller may restore.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. A presentation pass decides its show in one `Manager.mu` hold after
   its hides and any layout wait (`decidePresentation`), against the

@@ -1,38 +1,42 @@
 package browser
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+)
 
 // The order of the user's tab selections. Each companion action runs on its
 // own goroutine, so two selections made in a row can reach the Manager in
-// either order. A selection the user makes in a pane carries that pane's
-// mount and the number the client gave it when the user acted, increasing
-// per mount (Selection). The Manager keeps, per mount, the newest selection
-// it applied, and decides each numbered selection against it in the same
-// m.mu hold that sets the active tab (orderSelectionLocked):
+// either order. A pane's selecting actions (a tab chosen, a step, and the
+// new, reopen, duplicate and download-open that select the tab they open)
+// carry the pane's mount and a number the client gave when the user acted,
+// consecutive from 1 in each mount (Selection). The Manager admits them in
+// that order, so each does what it says and nothing is replayed or skipped
+// by rule:
 //
-//   - An absolute selection (a tab chosen by id, or the new tab a "new",
-//     "reopen", "duplicate" or "download-open" opens) older than the newest
-//     absolute selection applied is overtaken: it changes nothing and its
-//     restore work does not run; its call still succeeds. A new tab it
-//     opened stays, in the background.
-//   - A step (next or previous tab) is relative, so steps compose by
-//     addition in any order: each applies to the active tab as it finds it,
-//     and two forward steps delivered in either order move two tabs. A step
-//     older than the newest absolute selection is overtaken. An absolute
-//     selection that arrives after newer steps applied selects its tab moved
-//     by those steps, so a click and then a next-tab end one tab past the
-//     clicked tab whichever arrives first.
+//   - The next number takes its turn at once; its selection part (the
+//     m.mu hold that picks and records the active tab, and for an opening
+//     the hold that adds the tab) runs, and the count advances. Page work,
+//     a restore or a navigation, runs after the turn, outside it.
+//   - A higher number waits for its predecessors' selection parts, never for
+//     their page work. A predecessor that never arrives (its request failed
+//     in transit) is given up on once no turn has been taken for
+//     selectionGapWait: the count moves to the lowest number waiting, and
+//     the numbers skipped are passed.
+//   - A number already passed, a repeat of one admitted or waiting, and any
+//     number from a mount the Manager does not have (detached, never
+//     attached, or another thread's) is a quiet success that selects,
+//     opens and restores nothing: that pane is gone or the action already
+//     happened. A detach releases the mount's waiters the same way.
+//   - Past maxSelectionWaiters waiting in one mount a selection is refused
+//     with an error and selects nothing; its number then becomes a gap.
 //
-// A selection with no mount or number (an older client, a connected browser
-// that mounts no pane, the chat header's show), one naming a mount that is
-// gone or belongs to another thread, an agent's browser_select_page, and a
-// selection from another mount are applied in arrival order. Closing the
-// active tab reselects another (repairActivePage); that is a repair, not a
-// selection: it carries no number, so a selection the user made before the
-// close still applies when it arrives after, and it replaces only an active
-// tab that is gone, so it never undoes a newer selection. Nor does the
-// pane's restore of the tab it shows (RestoreActiveCompanionPage), which
-// selects nothing.
+// A selection with no number (an older client) or no mount, an agent's
+// browser_select_page, the chat header's show, the pane's restore of the
+// tab it shows (RestoreActiveCompanionPage), which selects nothing, and
+// closing the active tab, which reselects only when the active tab is gone
+// (repairActivePage), keep arrival order and never wait for a numbered one.
 
 // Selection is a user's tab selection, numbered in the pane mount it was
 // made in. A zero Seq is unnumbered.
@@ -44,8 +48,8 @@ type Selection struct {
 type selectionKey struct{}
 
 // WithSelection returns ctx carrying the user's numbered selection, which
-// every Manager call that selects a tab reads (ActivateCompanionPage,
-// StepCompanionPage, and the user's tab openings).
+// every Manager call that selects a tab for the user reads
+// (ActivateCompanionPage, StepCompanionPage, and the user's tab openings).
 func WithSelection(ctx context.Context, sel Selection) context.Context {
 	return context.WithValue(ctx, selectionKey{}, sel)
 }
@@ -55,61 +59,164 @@ func selectionOf(ctx context.Context) Selection {
 	return sel
 }
 
-// maxSelectionSteps bounds the steps a mount keeps above its newest absolute
-// selection; past it the oldest are forgotten, which matters only to an
-// absolute selection overtaken by that many newer steps.
-const maxSelectionSteps = 64
+const (
+	// selectionGapWait is how long waiting selections wait, with no turn
+	// taken, for a predecessor before giving it up.
+	selectionGapWait = time.Second
+	// maxSelectionWaiters bounds the selections waiting in one mount.
+	maxSelectionWaiters = 256
+)
 
-// mountSelection is one mount's selection order: the newest absolute
-// selection applied and the steps applied after it in number, which an
-// absolute selection arriving late replays from its own tab.
+// mountSelection is one mount's admission state. Guarded by Manager.mu.
 type mountSelection struct {
-	absolute uint64
-	steps    []numberedStep
+	// next is the number admitted next.
+	next uint64
+	// taken is set while next holds its turn: admitted, its selection part
+	// not yet done.
+	taken bool
+	// waiting holds the numbers above next waiting for their turn.
+	waiting map[uint64]struct{}
+	// gone is set when the mount detached.
+	gone bool
+	// changed is closed, and replaced, on every change a waiter waits for.
+	changed chan struct{}
 }
 
-type numberedStep struct {
-	seq   uint64
-	delta int
+func (o *mountSelection) wakeLocked() {
+	close(o.changed)
+	o.changed = make(chan struct{})
 }
 
-// orderSelectionLocked decides the user's selection sel, of the tab at index
-// pick in tabs (absolute, step 0) or of step tabs from the active one
-// (step != 0, pick being that tab), against its mount's record, and answers
-// the tab to select, or false when sel is overtaken. An unnumbered or
-// unattributable selection answers pick. The caller holds m.mu, has checked
-// pick is in tabs, and selects the answer in the same hold.
-func (m *Manager) orderSelectionLocked(threadID string, sel Selection, tabs []threadTab, pick, step int) (int, bool) {
+// lowestWaitingLocked is the lowest number waiting, 0 for none.
+func (o *mountSelection) lowestWaitingLocked() uint64 {
+	var low uint64
+	for seq := range o.waiting {
+		if low == 0 || seq < low {
+			low = seq
+		}
+	}
+	return low
+}
+
+// selectionTurn is an admitted selection's turn. The selecting m.mu hold
+// ends it (landedLocked); the caller ends it anyway once it is done
+// (finishSelectionTurn), so a selection that failed before selecting still
+// lets the next one in. A turn with no order is an unordered selection.
+type selectionTurn struct {
+	order  *mountSelection
+	seq    uint64
+	passed bool
+	done   bool
+}
+
+// landedLocked ends the turn: the next number may take its own. The caller
+// holds m.mu. Repeated calls do nothing.
+func (t *selectionTurn) landedLocked() {
+	if t == nil || t.order == nil || t.done {
+		return
+	}
+	t.done = true
+	if o := t.order; o.taken && o.next == t.seq {
+		o.taken = false
+		o.next = t.seq + 1
+		o.wakeLocked()
+	}
+}
+
+func (m *Manager) finishSelectionTurn(t *selectionTurn) {
+	if t == nil || t.order == nil {
+		return
+	}
+	m.mu.Lock()
+	t.landedLocked()
+	m.mu.Unlock()
+}
+
+// awaitSelectionTurn admits sel, a selection for threadID: it answers once
+// sel's turn has come, or at once with a passed turn, which must select
+// nothing, or for an unordered selection. The caller selects in an m.mu
+// hold that calls the turn's landedLocked, and calls finishSelectionTurn
+// when done. ctx ends a wait with its error.
+func (m *Manager) awaitSelectionTurn(ctx context.Context, threadID string, sel Selection) (*selectionTurn, error) {
+	if sel.Seq == 0 || sel.Mount == "" {
+		return &selectionTurn{}, nil
+	}
+	passed := &selectionTurn{passed: true}
+	m.mu.Lock()
 	mount, ok := m.panes[sel.Mount]
-	if sel.Seq == 0 || !ok || mount.threadID != threadID {
-		return pick, true
+	if !ok || mount.threadID != threadID {
+		m.mu.Unlock()
+		return passed, nil
 	}
 	order := mount.selection
 	if order == nil {
-		order = &mountSelection{}
+		order = &mountSelection{next: 1, waiting: make(map[uint64]struct{}), changed: make(chan struct{})}
 		mount.selection = order
 		m.panes[sel.Mount] = mount
 	}
-	if sel.Seq <= order.absolute {
-		return 0, false
+	_, repeat := order.waiting[sel.Seq]
+	if sel.Seq < order.next || (sel.Seq == order.next && order.taken) || repeat {
+		m.mu.Unlock()
+		return passed, nil
 	}
-	if step != 0 {
-		order.steps = append(order.steps, numberedStep{seq: sel.Seq, delta: step})
-		if len(order.steps) > maxSelectionSteps {
-			order.steps = order.steps[len(order.steps)-maxSelectionSteps:]
+	if sel.Seq > order.next {
+		if len(order.waiting) >= maxSelectionWaiters {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("browser: too many tab selections waiting in this pane")
 		}
-		return pick, true
+		order.waiting[sel.Seq] = struct{}{}
 	}
-	order.absolute = sel.Seq
-	newer, moved := order.steps[:0], 0
-	for _, s := range order.steps {
-		if s.seq > sel.Seq {
-			newer = append(newer, s)
-			moved += s.delta
+	for sel.Seq != order.next || order.taken {
+		changed := order.changed
+		m.mu.Unlock()
+		expired, stop := m.selectionGapTimer()
+		var err error
+		select {
+		case <-changed:
+		case <-expired:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		stop()
+		m.mu.Lock()
+		if err != nil || order.gone {
+			delete(order.waiting, sel.Seq)
+			m.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			return passed, nil
+		}
+		select {
+		case <-changed:
+		default:
+			// No turn was taken for the whole wait: the predecessors
+			// missing below the lowest number waiting are given up.
+			if low := order.lowestWaitingLocked(); !order.taken && low > order.next {
+				order.next = low
+				order.wakeLocked()
+			}
 		}
 	}
-	order.steps = newer
-	return wrapTab(pick+moved, len(tabs)), true
+	delete(order.waiting, sel.Seq)
+	order.taken = true
+	m.mu.Unlock()
+	return &selectionTurn{order: order, seq: sel.Seq}, nil
+}
+
+// endSelectionLocked releases a detaching mount's waiters as passed. The
+// caller holds m.mu.
+func (mount paneMount) endSelectionLocked() {
+	if o := mount.selection; o != nil && !o.gone {
+		o.gone = true
+		o.wakeLocked()
+	}
+}
+
+// newSelectionGapTimer is the default Manager.selectionGapTimer.
+func newSelectionGapTimer() (<-chan time.Time, func() bool) {
+	timer := time.NewTimer(selectionGapWait)
+	return timer.C, timer.Stop
 }
 
 // wrapTab is index i of a strip of n tabs, wrapping both ways.

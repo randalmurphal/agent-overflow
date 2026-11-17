@@ -348,8 +348,14 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id st
 
 // OpenThreadDownload shows a finished download in a new tab of the thread's
 // browser, for a type a tab shows (downloadOpensInPage). A page may open
-// its workspace's downloads (authorizeFile).
+// its workspace's downloads (authorizeFile). With ctx's numbered selection
+// passed (selection.go) it opens nothing.
 func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id string) (PageInfo, error) {
+	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
+	if err != nil || turn.passed {
+		return PageInfo{}, err
+	}
+	defer m.finishSelectionTurn(turn)
 	item, err := m.finishedDownloadPath(access, id)
 	if err != nil {
 		return PageInfo{}, err
@@ -357,7 +363,7 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if !downloadOpensInPage(item.path) {
 		return PageInfo{}, fmt.Errorf("browser: a browser tab does not show %s; use Show in folder", item.Name)
 	}
-	return m.NewCompanionPage(ctx, access, item.path)
+	return m.openUserTab(ctx, access, turn, item.path, "", -1)
 }
 
 // downloadOpensInPage is whether every engine shows a file of this name in a

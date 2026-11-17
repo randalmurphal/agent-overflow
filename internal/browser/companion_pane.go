@@ -147,8 +147,8 @@ type paneMount struct {
 	findSeq uint64
 	// focus is the mount's page focus intent (focus_intent.go).
 	focus *mountFocus
-	// selection is the order of the tab selections made in the mount
-	// (selection.go).
+	// selection admits the tab selections made in the mount in the user's
+	// order (selection.go).
 	selection *mountSelection
 }
 
@@ -183,6 +183,8 @@ func (m *Manager) DetachPane(id string) {
 	resize := false
 	if ok {
 		delete(m.panes, id)
+		// The mount's waiting selections are passed.
+		mount.endSelectionLocked()
 		// Unmounting is a focus choice: a request in flight must not land.
 		if mount.focus != nil && mount.focus.intent != nil {
 			mount.focus.intent.withdrawn.Store(true)
