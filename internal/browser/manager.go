@@ -139,9 +139,13 @@ type Manager struct {
 	// on first use, and an idle thread's entry is removed.
 	presenting map[string]*presentSync
 	// presented is, per thread, the page the last presentation pass showed
-	// and the base it painted under it (presentPanes); a thread showing none
-	// has no entry. Guarded by mu.
-	presented map[string]presentedPage
+	// (presentPanes); a thread showing none has no entry. Guarded by mu.
+	presented map[string]string
+	// paneColors is, per thread, the newest color its presenting pane
+	// reported (SetPaneRect), which a blank page shows as its base
+	// (applyPageBase). Kept while no pane is mounted; removed with the
+	// thread. Guarded by mu.
+	paneColors map[string]string
 	// awaitingLayout is, per thread, the active page the last presentation
 	// pass held hidden because it lagged the thread viewport. Whichever
 	// apply lays it out first (applyViewportLocked) asks for the pass that
@@ -296,6 +300,10 @@ type managedPage struct {
 	// under metaMu (commitInfo).
 	infoStamp, locationStamp, historyStamp uint64
 	infoReport                             uint64
+	// baseMu orders the page's base applications, and base is the base
+	// color its engine was last told (applyPageBase).
+	baseMu sync.Mutex
+	base   string
 	// docTitle is the newest title the page's document reported of itself
 	// and the address it was at (pageHooks.DocumentTitle), bounded as info
 	// is, under metaMu (commitInfo).

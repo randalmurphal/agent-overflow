@@ -1,7 +1,5 @@
 package browser
 
-import "strings"
-
 // syncPanePresentation decides WHICH of a thread's pages is presented and
 // whether the pane is showing at all, then tells the engine the outcome. The
 // decision itself stays here, in the Manager: an engine is told the outcome,
@@ -57,60 +55,6 @@ func (m *Manager) syncPanePresentation(threadID string) {
 // presentSync is one thread's presentation passes: busy while one runs,
 // dirty when another was asked for. Guarded by Manager.mu.
 type presentSync struct{ busy, dirty bool }
-
-// presentedPage is the page a presentation pass showed, and whether it
-// painted the document base under it (pageBase).
-type presentedPage struct {
-	id       string
-	document bool
-}
-
-// documentBase is the base color under a page that shows a document: the
-// white every browser paints where a document leaves its own background
-// transparent. A page whose address carries no document (a blank new tab)
-// shows the pane's own color instead.
-const documentBase = "#ffffff"
-
-// pageShowsDocument answers whether a page at url shows a document. A blank
-// new tab, and a page the engine has not given an address yet, show none.
-func pageShowsDocument(url string) bool {
-	switch {
-	case url == "", url == "about:blank":
-		return false
-	case strings.HasPrefix(url, "about:blank#"), strings.HasPrefix(url, "about:blank?"):
-		return false
-	}
-	return true
-}
-
-// pageBase is the color an engine paints under a presented page: the
-// document base when the page shows a document, and the pane's own color
-// (the host rect's Background) when it shows none, so an empty tab is the
-// pane and a page without a background of its own reads as it does in any
-// browser. The decision is the Manager's because only it knows the page's
-// address; a host paints what it is told.
-func pageBase(document bool, pane string) string {
-	if document {
-		return documentBase
-	}
-	return pane
-}
-
-// presentAddressCommitted follows a committed change of p's address: when p
-// is the page its thread's pane shows and the address changed whether it
-// shows a document, the pane is presented again so the engine paints the
-// base the new address calls for. A pass under way when the address was
-// committed may have read the old one, so it is asked for another.
-func (m *Manager) presentAddressCommitted(p *managedPage) {
-	document := pageShowsDocument(p.cachedInfo().URL)
-	m.mu.Lock()
-	shown, ok := m.presented[p.owner]
-	stale := m.presenting[p.owner] != nil || ok && shown.id == p.id && shown.document != document
-	m.mu.Unlock()
-	if stale {
-		m.syncPanePresentation(p.owner)
-	}
-}
 
 // presentPanes is one presentation pass of syncPanePresentation.
 //
@@ -170,11 +114,8 @@ func (m *Manager) presentPanes(threadID string) {
 		m.presentDeciding(threadID, candidate)
 	}
 	show, placement, lagging := m.decidePresentation(threadID, candidate)
-	document := false
 	if candidate != nil {
 		if show {
-			document = pageShowsDocument(candidate.cachedInfo().URL)
-			placement.Rect.Background = pageBase(document, placement.Rect.Background)
 			host.SetPageBounds(candidate.driver.Handle(), placement)
 			host.ShowPage(candidate.driver.Handle())
 		} else {
@@ -183,10 +124,10 @@ func (m *Manager) presentPanes(threadID string) {
 	}
 	m.mu.Lock()
 	if m.presented == nil {
-		m.presented = make(map[string]presentedPage)
+		m.presented = make(map[string]string)
 	}
 	if show {
-		m.presented[threadID] = presentedPage{id: candidate.id, document: document}
+		m.presented[threadID] = candidate.id
 	} else {
 		delete(m.presented, threadID)
 	}
@@ -225,7 +166,7 @@ func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (s
 	if !show {
 		return false, PanePlacement{}, false
 	}
-	if candidate.id != m.presented[threadID].id {
+	if candidate.id != m.presented[threadID] {
 		want := packViewport(pageW, pageH)
 		if candidate.viewport.Load() != want && candidate.viewportFailed.Load() != want {
 			if m.awaitingLayout == nil {

@@ -296,10 +296,14 @@ positioned over.
   slides this one sideways without resizing it, which no observer or
   event reports) and reports it over a binding, together with the
   VISIBLE CLIP INTERSECTION and the pane's resolved background color.
-  The Manager decides the base color painted under the page from the
-  page's address (`pageBase`): white under a document, as in any
-  browser, and the pane's color under a blank tab; an address change
-  between the two re-presents the shown page. The Manager also fits the page's viewport into that rect (`placePage`:
+  A page's base color, painted wherever its document leaves the
+  background transparent, is a property of the page, not of where it
+  sits (`applyPageBase`): white under a document, as in any browser, and
+  the presenting pane's color under a blank tab (the engine's white
+  while the thread's pane never reported one). The Manager applies it,
+  shown or hidden, when the page joins its tabs, when its committed
+  address changes between a document and none, and when the pane's color
+  changes; geometry carries no color. The Manager also fits the page's viewport into that rect (`placePage`:
   scale = min(rect/viewport, 1), centered by whole CSS pixels so a page
   that follows the pane starts at the rect's origin, clip intersected) and the
   platform host positions the native view at the fitted rect, drawn

@@ -76,29 +76,6 @@ func TestPaneBackgroundParsesSixDigitHexAndRefusesAnythingElse(t *testing.T) {
 	}
 }
 
-// A background is pushed once per change, never per reported rect: the frontend
-// reports a rect every changed frame, and a GTK dispatch per frame is exactly
-// what the pane dedupe exists to avoid.
-func TestPaneBackgroundIsPushedOnlyWhenItChanges(t *testing.T) {
-	var st webkitPaneState
-	if _, paint := st.takeBackground(PaneRect{}); paint {
-		t.Fatal("a rect with no background must not push a color")
-	}
-	color, paint := st.takeBackground(PaneRect{Background: "#102030"})
-	if !paint || color != (webkitRGB{16.0 / 255, 32.0 / 255, 48.0 / 255}) {
-		t.Fatalf("first background = %v, %v", color, paint)
-	}
-	if _, paint := st.takeBackground(PaneRect{Background: "#102030"}); paint {
-		t.Fatal("an unchanged background must not push again")
-	}
-	if _, paint := st.takeBackground(PaneRect{}); paint {
-		t.Fatal("a rect that stopped carrying a background must leave the last color alone")
-	}
-	if _, paint := st.takeBackground(PaneRect{Background: "#405060"}); !paint {
-		t.Fatal("a changed background must push")
-	}
-}
-
 // The dedupe compares the whole placement, so a clip that moves while the rect
 // holds still, or a scale that changes, still re-presents. Losing that would
 // freeze the crop against a scroll.
@@ -112,11 +89,6 @@ func TestPaneDedupeSeesAClipThatMovedUnderAStillRect(t *testing.T) {
 	st.placement.Rect.ClipY, st.placement.Rect.ClipHeight = 60, 360
 	if webkitPaneApplied(st) {
 		t.Fatal("a moved clip must not be treated as already applied")
-	}
-	st.placement = placement
-	st.placement.Rect.Background = "#101010"
-	if webkitPaneApplied(st) {
-		t.Fatal("a changed background must not be treated as already applied")
 	}
 	st.placement = placement
 	st.placement.Scale = 0.25

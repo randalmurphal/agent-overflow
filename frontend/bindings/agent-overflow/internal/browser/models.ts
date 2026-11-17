@@ -399,9 +399,8 @@ export class PageInfo {
  * the engine crops it: the view keeps the full rect's size (the page must not
  * relayout because it scrolled half behind the sidebar) and the host clips its
  * presentation to the clip rect. An unclipped pane reports clip == rect.
- * Background is the pane surface's resolved CSS color ("#rrggbb"). The
- * Manager decides from it the base color painted under a presented page
- * (pageBase).
+ * Background is the pane surface's resolved CSS color ("#rrggbb"): the
+ * presenting pane's is the base of its thread's blank pages (pageBase).
  * 
  * DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
  * webview zoom. An engine whose page renders at the OS scale alone (the

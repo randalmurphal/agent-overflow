@@ -84,11 +84,22 @@ func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
 		CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
 		VW: rect.ViewportWidth, VH: rect.ViewportHeight,
 		DPR:   rect.DevicePixelRatio,
-		Bg:    rect.Background,
 		Mount: placement.Mount, PageW: placement.PageWidth, PageH: placement.PageHeight,
 		Seq: rect.Seq,
 	})
 	e.syncViewScale(handle)
+}
+
+// SetPageBase sends the page's base to the launcher, which paints it as the
+// controller's default background whether or not the page has bounds or is
+// shown. It rides the page's lane, so it lands after the page's create.
+func (e *hostedEngine) SetPageBase(handle, color string) {
+	e.mu.Lock()
+	_, known := e.targetByPage[handle]
+	e.mu.Unlock()
+	if known {
+		e.dispatch(webview2host.Directive{Op: webview2host.OpBackground, PageID: handle, Bg: color})
+	}
 }
 
 // syncViewScale asks the page's override for the scale its presentation

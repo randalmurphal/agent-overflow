@@ -7,6 +7,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"os/exec"
@@ -147,6 +148,89 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 	painted("4-blank-tab-navigated-to-the-document", white)
 	navigateItself(blank2.ID, "about:blank")
 	painted("5-document-navigated-itself-to-blank", pane)
+}
+
+// TestNativeEngineRealHiddenPageBase presents a blank tab on the pane's
+// color, hides the pane, navigates the hidden tab to a document with no
+// background of its own and reads it with Manager.Screenshot: white, as in
+// any browser. A base that only a presentation sets keeps the pane's color
+// under the hidden document. The shown blank tab's own screenshot is read
+// first, so the snapshot is known to include the base.
+func TestNativeEngineRealHiddenPageBase(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-hidden-base", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	file := writeSmokeFile(t, workspace, "plain.html", `<!doctype html><title>plain</title>`)
+	blank, err := manager.NewCompanionPage(ctx, access, "")
+	if err != nil {
+		t.Fatalf("open a blank tab: %v", err)
+	}
+	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A view that never loaded cannot be snapshotted.
+	if err := p.driver.Navigate(ctx, "about:blank"); err != nil {
+		t.Fatalf("load about:blank: %v", err)
+	}
+	show := true
+	if _, err := manager.Visibility(ctx, access, &show, blank.ID); err != nil {
+		t.Fatalf("show the pane: %v", err)
+	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("mount a pane: %v", err)
+	}
+	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	if err := manager.SetPaneRect(mount.ID, PaneRect{
+		X: 200, Y: 100, Width: 640, Height: 400, ClipX: 200, ClipY: 100, ClipWidth: 640, ClipHeight: 400,
+		ViewportWidth: 1280, ViewportHeight: 800, Visible: true, Background: "#1e1e2e",
+	}); err != nil {
+		t.Fatalf("place the pane: %v", err)
+	}
+	shot := func(step string, want color.RGBA) {
+		t.Helper()
+		var share float64
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+			raw, err := manager.Screenshot(ctx, access, ScreenshotOptions{PageID: blank.ID})
+			if err != nil {
+				t.Fatalf("%s: screenshot: %v", step, err)
+			}
+			img, err := jpeg.Decode(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatalf("%s: decode the screenshot: %v", step, err)
+			}
+			if share = shareNear(img, want); share > 0.99 {
+				return
+			}
+		}
+		t.Fatalf("%s: %.0f%% of the screenshot is %v", step, share*100, want)
+	}
+	shot("shown blank tab", color.RGBA{0x1e, 0x1e, 0x2e, 0xff})
+	hide := false
+	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
+		t.Fatalf("hide the pane: %v", err)
+	}
+	if _, err := manager.NavigateCompanion(ctx, access, blank.ID, smokeFileURL(file)); err != nil {
+		t.Fatalf("navigate the hidden tab: %v", err)
+	}
+	shot("hidden document", color.RGBA{0xff, 0xff, 0xff, 0xff})
 }
 
 // TestNativeEngineRealStaticPageShowsAgain hides a static page (one solid
@@ -339,6 +423,26 @@ func boundsOf(img image.Image, want color.RGBA) image.Rectangle {
 		}
 	}
 	return out
+}
+
+// shareNear answers the share of img's pixels within a JPEG's error of want.
+func shareNear(img image.Image, want color.RGBA) float64 {
+	near := func(a uint32, b uint8) bool { return max(int(a>>8), int(b))-min(int(a>>8), int(b)) <= 8 }
+	n, hit := 0, 0
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			n++
+			r, g, bl, _ := img.At(x, y).RGBA()
+			if near(r, want.R) && near(g, want.G) && near(bl, want.B) {
+				hit++
+			}
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return float64(hit) / float64(n)
 }
 
 // shareOf answers the share of region's pixels that are want.

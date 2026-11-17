@@ -71,7 +71,7 @@ func TestASwitchAwayAndBackNeverShowsTheLeftTab(t *testing.T) {
 		}
 	}
 	manager.mu.Lock()
-	presented := manager.presented[access.ThreadID].id
+	presented := manager.presented[access.ThreadID]
 	manager.mu.Unlock()
 	if presented != secondID {
 		t.Fatalf("presented %q, want the selected tab %q (calls %v)", presented, secondID, calls)
@@ -123,7 +123,7 @@ func TestARestoreFinishingAfterANewerSelectionIsNotShown(t *testing.T) {
 		t.Fatalf("the second tab did not restore: %v", err)
 	}
 	manager.mu.Lock()
-	presented := manager.presented[access.ThreadID].id
+	presented := manager.presented[access.ThreadID]
 	manager.mu.Unlock()
 	if presented != firstID {
 		t.Fatalf("presented %q, want the selected tab %q (calls %v)", presented, firstID, calls)

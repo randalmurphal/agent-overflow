@@ -37,9 +37,8 @@ const (
 // the engine crops it: the view keeps the full rect's size (the page must not
 // relayout because it scrolled half behind the sidebar) and the host clips its
 // presentation to the clip rect. An unclipped pane reports clip == rect.
-// Background is the pane surface's resolved CSS color ("#rrggbb"). The
-// Manager decides from it the base color painted under a presented page
-// (pageBase).
+// Background is the pane surface's resolved CSS color ("#rrggbb"): the
+// presenting pane's is the base of its thread's blank pages (pageBase).
 //
 // DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
 // webview zoom. An engine whose page renders at the OS scale alone (the
@@ -74,9 +73,8 @@ type PaneRect struct {
 // than the pane scales down. Rect is the FITTED rect in the SPA's CSS pixels
 // (paneplace.Fit), with its clip already intersected with the host rect's
 // visible clip. Rect's viewport and device pixel ratio are the host rect's
-// own; its Background is the page's base (pageBase), which an engine paints
-// wherever the page's document leaves its own background transparent or
-// has not painted yet. Mount is the pane mount whose rect it was placed in, which
+// own, and it carries no color: a page's base is set apart from where it
+// sits (applyPageBase). Mount is the pane mount whose rect it was placed in, which
 // lets a host that measures the mount itself place the page from its own,
 // newer rect (the Windows launcher).
 type PanePlacement struct {
@@ -101,6 +99,7 @@ func placePage(rect PaneRect, pageW, pageH int) (PanePlacement, bool) {
 	fitted := rect
 	fitted.X, fitted.Y, fitted.Width, fitted.Height = fit.X, fit.Y, fit.W, fit.H
 	fitted.ClipX, fitted.ClipY, fitted.ClipWidth, fitted.ClipHeight = fit.ClipX, fit.ClipY, fit.ClipW, fit.ClipH
+	fitted.Background = ""
 	return PanePlacement{Rect: fitted, PageWidth: pageW, PageHeight: pageH, Scale: scale}, true
 }
 
@@ -176,11 +175,12 @@ func (m *Manager) AttachPane(access Access) (CompanionSubscription, error) {
 // with a presented native view hides it rather than painting over whatever
 // replaced the pane. A mount that remains for the thread becomes the
 // presenter if this one was it (presenterLocked) and hands the pages its
-// own size.
+// own size and color.
 func (m *Manager) DetachPane(id string) {
 	m.mu.Lock()
 	mount, ok := m.panes[id]
 	resize := false
+	var recolor []*managedPage
 	if ok {
 		delete(m.panes, id)
 		// Unmounting is a focus choice: a request in flight must not land.
@@ -190,10 +190,14 @@ func (m *Manager) DetachPane(id string) {
 		if next, _, _ := m.presenterLocked(mount.threadID); next != "" {
 			if other := m.panes[next]; other.hasRect {
 				resize = m.notePaneSizeLocked(other.threadID, other.rect)
+				recolor = m.notePaneColorLocked(other.threadID, other.rect)
 			}
 		}
 	}
 	m.mu.Unlock()
+	for _, p := range recolor {
+		m.applyPageBase(p)
+	}
 	if ok {
 		if resize {
 			m.scheduleViewport(mount.threadID)
@@ -242,20 +246,26 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	m.mu.Lock()
 	mount, ok := m.panes[strings.TrimSpace(id)]
 	resize := false
+	var recolor []*managedPage
 	if ok {
 		mount.rect = rect
 		mount.hasRect = true
 		m.panes[strings.TrimSpace(id)] = mount
 		// The size is tracked whether or not the rect is paintable: a drag
 		// hides the view and the page must already be at the new size when
-		// the drop shows it again. Only the presenter's rect sizes the pages.
+		// the drop shows it again. Only the presenter's rect sizes the pages
+		// and colors their blank bases.
 		if presenter, _, _ := m.presenterLocked(mount.threadID); presenter == strings.TrimSpace(id) {
 			resize = m.notePaneSizeLocked(mount.threadID, rect)
+			recolor = m.notePaneColorLocked(mount.threadID, rect)
 		}
 	}
 	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("browser: pane mount not found")
+	}
+	for _, p := range recolor {
+		m.applyPageBase(p)
 	}
 	if resize {
 		m.scheduleViewport(mount.threadID)

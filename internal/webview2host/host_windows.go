@@ -102,13 +102,11 @@ type hostPage struct {
 	// which case the pane falls back to the unclipped, directly-parented
 	// behaviour.
 	container uintptr
-	// bg is the last colour actually applied, so a bounds directive — which
-	// arrives on every scroll and resize — pays for a COM call only when
-	// the pane surface's colour really changed.
+	// bg is the last colour actually applied (applyBackground).
 	bg string
 	// bgUnsupported records that this page has already logged a missing
 	// ICoreWebView2Controller2, so an old runtime costs one line, not one
-	// per bounds directive.
+	// per background directive.
 	bgUnsupported bool
 	// failHandler, keyHandler and targetInfo are the page's callbacks that
 	// WebView2 holds; retireHandlers detaches them when the page goes.
@@ -216,6 +214,8 @@ func (h *Host) Apply(directive Directive) {
 			page.pres.noteBounds(directive)
 			h.present(page, false)
 		})
+	case OpBackground:
+		h.withPage(directive.PageID, func(page *hostPage) { h.applyBackground(page, directive.Bg) })
 	case OpShow:
 		h.withPage(directive.PageID, func(page *hostPage) {
 			page.pres.backendShown = true
@@ -356,8 +356,7 @@ func (h *Host) hidePage(page *hostPage) {
 	h.releaseFocus(page, held)
 }
 
-// applyBounds positions one page and paints its surface colour. Runs on
-// the UI thread.
+// applyBounds positions one page. Runs on the UI thread.
 //
 // The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
 // it was measured under (deviceScale). BOTH rects are scaled by that one
@@ -389,19 +388,12 @@ func (h *Host) applyBounds(page *hostPage, b paneBounds) {
 	if err := page.controller.putBounds(bounds); err != nil {
 		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
 	}
-	h.applyBackground(page, b.Bg)
 }
 
-// applyBackground sets the controller's default background colour when it
-// changed. Bounds directives arrive on every scroll and resize, so the
-// comparison is what keeps this off the hot path.
-//
-// An empty Bg leaves whatever is already set, including the engine
-// default: the wire contract says "leave the engine default", and a pane
-// that has been told a colour once should not lose it because a later
-// directive omitted one.
+// applyBackground sets the controller's default background colour (an
+// OpBackground's) when it changed. Runs on the UI thread, shown or hidden.
 func (h *Host) applyBackground(page *hostPage, bg string) {
-	if bg == "" || bg == page.bg {
+	if bg == page.bg {
 		return
 	}
 	if page.controller2 == nil {
@@ -776,9 +768,9 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	}
 	page.controller = controller
 	// ICoreWebView2Controller2 is the whole background-colour surface.
-	// Querying once here keeps every bounds directive off QueryInterface;
-	// a nil result is reported the first time a colour is actually asked
-	// for, not now, so a runtime that never sees a Bg stays quiet.
+	// Querying once here keeps every background directive off
+	// QueryInterface; a nil result is reported the first time a colour is
+	// actually asked for, not now.
 	page.controller2 = controller.queryController2()
 
 	// Pages start hidden: the clip container is created unshown, and

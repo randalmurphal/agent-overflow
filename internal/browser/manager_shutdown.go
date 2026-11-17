@@ -57,6 +57,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
+	delete(m.paneColors, threadID)
 	m.forgetBrowsingLocked(threadID)
 	m.mu.Unlock()
 	m.forgetThreadDownloads(threadID)
