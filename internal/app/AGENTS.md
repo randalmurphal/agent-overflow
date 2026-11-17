@@ -171,11 +171,13 @@ fire tries it again. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
 worker's queue. A decision on rest that cannot be taken back, a held
 request settling `finished` (`heldThreadAtRest`) or the retention sweep
-clearing a spawn (`reassessSpawnsPastFloor`), first reassesses every thread
-a spawn reached below from its sources (`reassessSpawnedBelow`), then reads
-the listing's predicate over that; a failed read decides nothing that
-pass. `liveWorkers` and the `open_below_*` marks otherwise only draw rows,
-frames, summaries and Stop All's selection.
+clearing a spawn (`restedSpawnsPastFloor`), reads its subtree's own
+sources (`readRest`, `app_thread_rest_assess.go`) and writes only if no
+change to a thread it read was signalled since. An owner of a rest source
+signals each change after its write through the rest change notes, which
+the Agents rows' notes raise; a new source needs its note.
+`liveWorkers` and the `open_below_*` marks only draw rows, frames,
+summaries and Stop All's selection.
 
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,

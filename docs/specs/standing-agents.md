@@ -921,7 +921,7 @@ Ruling 36, as built:
   (`agent_wakes`), no reminder that has not fired, no workflow run that
   reports to it running or owing it its report (from the run's rest until
   that rest's wake job ends, whatever it did with the report:
-  `workflowapp.Service.ReportingRuns`), no answer on its way to it (a request it made
+  `workflowapp.Service.OwedReports`), no answer on its way to it (a request it made
   settled with its answer owed as a message, not yet echoed by the turn
   that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
@@ -935,19 +935,35 @@ Ruling 36, as built:
   take. A read of both, `threadRest`, is what `thread_status` with
   `thread_ids`, a paired computer's answers and every rest pass take: the
   thread's own sources read then, the work below it over the memory record
-  below. A decision that cannot be taken back reads both fresh, by the
-  same rule: before a held request settles `finished`
-  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)),
-  and before the retention sweep clears a spawn past the floor, every
-  thread a local spawn reached below the thread in question is
-  re-evaluated from its sources (`reassessSpawnedBelow`), the spawn's own
-  thread too for the sweep, and the listing's answer is read over that.
-  The settlement waits while it says open work; the sweep leaves whole a
-  spawn the listing keeps open (`agentTargetOpenSQL`) and a receipt whose
-  thread it reads not at rest (`agentThreadOpenSQL`). A read that fails
-  decides nothing until the next pass. Otherwise the memory record and
-  the counts below only draw rows, frames, summaries and Stop All's
-  selection, which the next change corrects.
+  below.
+
+  A decision that cannot be taken back has one rule of its own: a held
+  request settling `finished`
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)), and
+  the retention sweep clearing a spawn past the floor or its receipt, are
+  taken only when the thread in question and every thread a local spawn
+  link reaches below it are at rest by their own sources, by the rule
+  `workerUnrest` applies, and none has open work outstanding: a request
+  it made that is open, a remote spawn its computer last listed open work
+  under (`nested_open`), or a send or ask of it a tool call is parked on.
+  The durable sources of those threads are read in one snapshot, walked
+  from the thread by spawn link (`ReadSubtreeRest`), and their background
+  work and memory sources per thread, so the read costs the subtree and
+  nothing of the computer's other threads, requests, parked calls or
+  workflow runs. It reads neither the memory record (`liveWorkers`) nor
+  the counts below, and writes neither. Every owner of a source signals
+  each change after its write, and the decision is written only when no
+  change to a thread it read was signalled since the read began
+  (`restRead.stillAtRest`), compared under the request's settle lock for
+  a settlement and inside the sweep's write transaction for retention; a
+  change elsewhere does not stop it. A settlement the compare stops waits
+  for the pass the change asks for. A read that fails holds the request,
+  is logged, and is read again by each pass of the request sweep, with no
+  new event, until it reads or the request settles another way; the sweep
+  leaves whole each spawn it could not read at rest and reads it again on
+  its next pass. Otherwise the memory record and the counts below only
+  draw rows, frames, summaries and Stop All's selection, which the next
+  change corrects.
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
   a thread a paired computer's spawn made here included,
   each with its spawn link and what its durable sources last said, and
@@ -1241,9 +1257,11 @@ Mechanics, as built:
   and while the thread it created exists the thread-request retention
   sweep keeps a spawn row past the floor as `lineage_only`, local or
   remote ("Owned workers"), its answer, late reply and wake cleared, once
-  its thread rests:
-  a spawn the Agents segment keeps open, local or remote, waits for its
-  thread's work to end, so the floor never takes rows out of a tree. The
+  its thread rests: a local spawn waits until its thread and every thread
+  below it read at rest by the rule for decisions that cannot be taken
+  back ([owned workers](#owned-workers)), and a remote one while its
+  computer last listed open work under it (`nested_open`), so the floor
+  never takes rows out of a tree. The
   ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
   (`SpawnOwnerOf`) and the Agents tree still find the row, so work a
