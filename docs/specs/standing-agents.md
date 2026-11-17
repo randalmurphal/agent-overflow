@@ -133,8 +133,12 @@ user changes it.
     spawner answers through `thread_reply` or escalates by asking the
     user itself, as one question with the context. The user can still
     open the worker and answer directly, which settles the wake. A
-    worker whose spawner is archived, or that was spawned from another
-    computer, asks the user, and a prompt left open when its spawner is
+    worker a thread on a paired computer spawned and owns (its spawn's
+    link) asks that spawn's caller there, named with this computer; a
+    prompt that computer does not say it holds for two minutes, or
+    whose link ends, goes back to the user here. A worker whose spawner
+    is archived, or that another computer spawned without owning it,
+    asks the user, and a prompt left open when its spawner is
     archived or deleted goes back to the user, whether or not the
     spawner had read it; one whose spawner was unarchived again before
     that cleanup ran stays with it. A prompt open when the worker's
@@ -660,7 +664,7 @@ standing agent reads and writes:
 
 | Surface | What the receiver lacked | Now |
 |---|---|---|
-| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. A frontmatter block that is never closed is not skipped, so its first key line is the role. When the sender, standing agent or not, spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes |
+| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. A frontmatter block that is never closed is not skipped, so its first key line is the role. When the sender, standing agent or not, spawned the receiver on this computer, or is the thread on another computer whose spawn's link owns it, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call |
 | A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)) |
 | Wake of a reply, final message or failure | Whether the answering thread is an agent | A standing agent is named with its role line on the line after the status line, as it was when the answer that wake carries was written, the first answer and the late reply each recording their own: the answering computer's receipt records it then, and the request row copies it when it collects the answer, from this computer or another, so the wake reads the same on either. A role is bounded again where it is collected, and bounding a bounded role changes nothing. A computer that reports none answered from an ordinary thread |
 | `thread_search`, `thread_show` | Which rows are agents and whose workers | `assistant` and `spawned_by` on every row |
