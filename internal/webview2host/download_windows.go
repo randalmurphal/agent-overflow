@@ -112,6 +112,13 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		h.config.Logf("browser host: page %s: a download has no operation: %v", page.id, err)
 		return
 	}
+	path, uri := args.resultFilePath(), op.uri()
+	if reason := op.interruptReason(); reason != 0 {
+		if d := page.resumedDownload(uri); d != nil {
+			h.resumeDownload(d, args, op, path, reason)
+			return
+		}
+	}
 	if page.popupDownloadRefused() {
 		h.config.Logf("browser host: page %s: cancel a download past the %d a popup may start before it is reported", page.id, maxHeldPopupDownloads)
 		if err := op.cancel(); err != nil {
@@ -119,13 +126,6 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		}
 		op.release()
 		return
-	}
-	path, uri := args.resultFilePath(), op.uri()
-	if reason := op.interruptReason(); reason != 0 {
-		if d := page.resumedDownload(uri); d != nil {
-			h.resumeDownload(d, args, op, path, reason)
-			return
-		}
 	}
 	h.downloadSeq++
 	d := &hostDownload{id: downloadID(h.downloadToken, h.downloadSeq), page: page, path: path, uri: uri}

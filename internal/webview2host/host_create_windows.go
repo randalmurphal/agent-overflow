@@ -99,13 +99,22 @@ func (h *Host) startController(page *hostPage, env10 *iCoreWebView2Environment10
 	}
 
 	handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
+		if page.popup != nil {
+			h.pendingPopups--
+		}
 		h.controllerCompleted(page, hwnd, hr, controller)
 	})
 	// WebView2 holds its own reference until it calls back; this is the
 	// constructor's. The handler is not detached when the page closes:
 	// its completion closes a controller that outlived the page.
 	defer handler.ref.release()
+	if page.popup != nil {
+		h.pendingPopups++
+	}
 	if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
+		if page.popup != nil {
+			h.pendingPopups--
+		}
 		h.failUncreated(page, "create controller: "+err.Error())
 	}
 }

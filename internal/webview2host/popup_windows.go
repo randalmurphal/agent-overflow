@@ -31,8 +31,8 @@ import (
 // A popup's life from its request to its announcement is one state
 // (popupState.stage), changed only here:
 //
-//   - requested: its controller is being created, its window request open
-//     and counted in pendingPopups (newWindowRequested);
+//   - requested: its controller is being created and its window request
+//     is open (newWindowRequested);
 //   - created: its view answered the request, its target is being read
 //     (popupReady);
 //   - targeted: its target is known, and it waits for its opener to be
@@ -43,8 +43,8 @@ import (
 // The backend knows a popup's opener only once the opener is announced, so
 // a popup is announced after its opener, by its opener's announcement if
 // its own target came first. A page that goes takes its popups that are not
-// announced yet with it (take), and every popup that goes leaves the
-// same way (departPopup).
+// announced yet with it (take). A departing popup whose opener still
+// awaits announcement leaves its downloads with that opener (departTaken).
 
 // popupStage is where a popup is between its request and its announcement.
 type popupStage int
@@ -95,17 +95,12 @@ type heldReports struct {
 // a runtime reports is held.
 const maxHeldProcessFailures = 16
 
-// maxHeldPopupDownloads bounds the downloads a popup starts before its
-// announcement, one target-info round trip after its view is up. A download
-// past it is canceled as it starts, so nothing is saved that the backend
-// would not hear of.
+// maxHeldPopupDownloads bounds the snapshots a popup keeps before its
+// announcement. The host cancels new downloads past the bound and logs
+// snapshots it cannot keep from departing descendants.
 const maxHeldPopupDownloads = 16
 
-// popupCreateBound bounds how long a window request stays open while its
-// popup's controller is created, the opener's script waiting in
-// window.open meanwhile. Past it the request is answered with no window
-// (popupExpired). A controller create takes well under a second once the
-// environment is up.
+// popupCreateBound bounds controller creation and target discovery together.
 const popupCreateBound = 10 * time.Second
 
 // unannounced reports whether page is a popup the backend has not heard of.
@@ -160,14 +155,18 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 	}
 	args.addRef()
 	h.popupSeq++
+	uri := strings.ToValidUTF8(args.uri(), "\uFFFD")
+	prefix := truncateUTF8(uri, MaxPopupURLBytes)
+	if len(prefix) < len(uri) {
+		prefix = strings.Clone(prefix)
+	}
 	page := &hostPage{
 		id: popupPageID(h.downloadToken, h.popupSeq), profileID: opener.profileID, ephemeral: opener.ephemeral,
 		popup: &popupState{
 			openerID: opener.id, request: popupRequest{args: args, deferral: deferral},
-			uri: truncateUTF8(strings.ToValidUTF8(args.uri(), "\uFFFD"), MaxPopupURLBytes),
+			uri: prefix,
 		},
 	}
-	h.pendingPopups++
 	why := "its page is closing"
 	if h.pages[opener.id] == opener {
 		why = h.admit(page.id)
@@ -184,31 +183,23 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 	h.after(popupCreateBound, func() { h.config.Post(func() { h.popupExpired(id) }) })
 }
 
-// popupExpired answers the window request of a popup whose controller is
-// not up by popupCreateBound with no window, which frees its place; the
-// popup goes unheard, and the create's late completion closes what it
-// made. A popup that came up meanwhile, or went, is left alone. The bound
-// keeps the popup's id, never the page, so a page that went is not kept
-// until it passes; a popup id is never reused.
+// popupExpired discards a popup that still has no target, answering any
+// open window request with no window. The timer retains only the popup id.
 func (h *Host) popupExpired(id string) {
 	page := h.pages[id]
-	if page == nil || page.popup == nil || page.popup.stage != popupRequested {
+	if page == nil || page.popup == nil || page.popup.stage >= popupTargeted {
 		return
 	}
-	h.discardCreated(page, fmt.Sprintf("its controller was not up within %v", popupCreateBound))
+	h.discardCreated(page, fmt.Sprintf("its target was not available within %v", popupCreateBound))
 }
 
-// settlePopup answers page's window request once: with view as the new
-// window, or, with view nil or one put_NewWindow refuses, with no window.
-// It completes the deferral, lets the request go and frees its place under
-// MaxPendingPopups, and is a no-op for a page with no request open.
+// settlePopup answers an open window request exactly once and releases it.
 func (h *Host) settlePopup(page *hostPage, view *iCoreWebView2) error {
 	if page.popup == nil || page.popup.request.args == nil {
 		return nil
 	}
 	request := page.popup.request
 	page.popup.request = popupRequest{}
-	h.pendingPopups--
 	var errs []error
 	if view != nil {
 		if err := request.args.putNewWindow(view); err != nil {
@@ -355,17 +346,9 @@ func (h *Host) ReportUndelivered(pageID string, kind ReportKind) {
 	})
 }
 
-// departPopup is how every popup goes, by its page's close, its opener's,
-// the host's, a failed create or the backend's close, once it is out of the
-// registry. Its window request is answered if still open, which frees its
-// place at once (a late controller completion then only closes what it
-// created). The backend hears closed of an announced popup. One it has not
-// heard of that made a download, or with announce set (departTaken), is
-// announced, with its held reports, then closed, so a download is never
-// saved unlisted, under the target it has, or none when it went before its
-// target was read, which the backend never attaches; any other goes
-// unheard. Runs on the UI thread before the page's handlers retire, and
-// answers whether to report it closed.
+// departPopup answers any open request. An announced popup needs a closed
+// report. An unannounced popup with downloads, or needed to announce a
+// descendant (departTaken), first reports its popup and held snapshots.
 func (h *Host) departPopup(page *hostPage, announce bool) bool {
 	h.answerNoWindow(page)
 	if !page.unannounced() {
@@ -374,16 +357,20 @@ func (h *Host) departPopup(page *hostPage, announce bool) bool {
 	if !announce && len(page.popup.held.downloads) == 0 {
 		return false
 	}
-	// The page's teardown cancels what still runs and reports nothing; the
-	// backend, which never listed the page, would settle none of it.
-	for _, d := range page.downloads {
-		h.holdDownload(page, d.snapshot(DownloadInterrupted, PopupGoneReason))
-	}
+	h.finishHeldDownloads(page)
 	if err := h.reportPopup(page); err != nil {
 		h.config.Logf("browser host: popup %s: announce it as it goes: %v; its downloads are not listed", page.id, err)
 		return false
 	}
 	return true
+}
+
+// finishHeldDownloads records terminal snapshots before teardown cancels
+// the popup's running downloads.
+func (h *Host) finishHeldDownloads(page *hostPage) {
+	for _, d := range page.downloads {
+		h.holdDownload(page, d.snapshot(DownloadInterrupted, PopupGoneReason))
+	}
 }
 
 // holdReport keeps one report of a popup the backend has not heard of,
@@ -413,8 +400,8 @@ func (h *Host) holdReport(page *hostPage, kind ReportKind, detail string) bool {
 }
 
 // holdDownload keeps a download snapshot of a popup the backend has not
-// heard of, in place of the download's older one, and reports whether it
-// held it.
+// heard of, replacing its older snapshot. True means the report must
+// stay local, even if the held set is full.
 func (h *Host) holdDownload(page *hostPage, r DownloadReport) bool {
 	if !page.unannounced() {
 		return false
@@ -424,6 +411,10 @@ func (h *Host) holdDownload(page *hostPage, r DownloadReport) bool {
 			page.popup.held.downloads[i] = r
 			return true
 		}
+	}
+	if page.popupDownloadRefused() {
+		h.config.Logf("browser host: page %s: drop download %s past %d held snapshots", page.id, r.ID, maxHeldPopupDownloads)
+		return true
 	}
 	page.popup.held.downloads = append(page.popup.held.downloads, r)
 	return true

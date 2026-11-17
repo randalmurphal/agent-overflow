@@ -95,18 +95,20 @@ the launcher mints, paired with the CDP target its view has after the
 deferral completes, and only after its opener's report; its other reports
 wait for that one (`pageReport`, `heldReports`: each kind of process
 failure once, up to `maxHeldProcessFailures`, and the newest snapshot per
-download), and its address is bounded to `MaxPopupURLBytes` and dropped at
-the announcement. A popup still waiting for its controller after
-`popupCreateBound` is discarded. A `ReportPopup` the launcher could not
-deliver closes the popup (`ReportUndelivered`), and with it its popups not
-yet announced. A middle, Ctrl or Shift click opens a popup whose target
-names no opener. A popup keeps its opener as a page id, never a pointer. Every
-way a popup goes runs `departPopup`: it answers the request, freeing the
-slot, and a popup not yet announced that has download reports is announced
-then (with an empty target when it has none yet), its held reports sent,
-its running downloads ended with `PopupGoneReason`, then closed; one with
-nothing to report leaves no trace. A page that goes takes its unannounced
-popups with it, closed popups first. A handler detached from its page still
+download). The launcher copies an address shortened to `MaxPopupURLBytes`
+and drops it at announcement. `popupCreateBound` discards a popup still
+waiting for a controller or target. A native controller create occupies
+one of `MaxPendingPopups` until its callback or synchronous failure,
+including after the window request was answered. A `ReportPopup` the
+launcher could not deliver closes the popup (`ReportUndelivered`), and
+with it its unannounced descendants. A middle, Ctrl or Shift click opens
+a popup whose target names no opener. A departing popup answers any open
+request. A departing unannounced popup ends its held running downloads
+with `PopupGoneReason`. If its opener is a live unannounced popup, held
+snapshots pass to that opener, up to `maxHeldPopupDownloads`.
+Otherwise an unannounced popup with downloads is announced and closed
+with its held reports, after any departing opener it needs. A popup with
+nothing to report leaves no trace. A handler detached from its page still
 refuses a late request. A page's `WindowCloseRequested` closes it, once its
 downloads end if any run.
 
@@ -129,8 +131,9 @@ running download from that address reads so (`resumedDownload`): it is set
 back to that download's file, and the operations it replaced are kept,
 detached, until the download ends, because releasing them stops the new
 one's reports. Otherwise it is a row of its own and nothing running is
-touched. A cancel always settles: WebView2's report ends it, or the
-launcher does after `downloadCancelBound` (`settleCancel`). A download
+touched. The held snapshot cap applies only to new downloads. A cancel
+settles through WebView2's report or after `downloadCancelBound`
+(`settleCancel`). A download
 ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
 (`retireDownloads`), which cancels it and reports nothing. What the real

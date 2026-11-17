@@ -57,10 +57,9 @@ type Host struct {
 	// (download.go); downloadSeq is UI thread only.
 	downloadToken string
 	downloadSeq   uint64
-	// popupSeq numbers the popups' page ids (popupPageID), and
-	// pendingPopups counts the window requests whose deferral is open
-	// (MaxPendingPopups). UI thread only.
-	popupSeq      uint64
+	// popupSeq numbers popup page ids. UI thread only.
+	popupSeq uint64
+	// pendingPopups counts outstanding native popup controller creates. UI thread only.
 	pendingPopups int
 	// afterFunc runs fn after wait, on a goroutine of its own (after); nil
 	// is time.AfterFunc. A test stands in its own.

@@ -581,6 +581,9 @@ func (r *popupRig) done() {
 	for len(r.env.pending) > 0 {
 		r.env.complete(r.t, 0x80004004, nil) // E_ABORT
 	}
+	if r.host.pendingPopups != 0 {
+		r.t.Errorf("%d native popup creates still counted after all completions", r.host.pendingPopups)
+	}
 	if n := comRootCount(); n != r.base {
 		r.t.Errorf("%d COM objects rooted after the host closed, want %d", n, r.base)
 	}
