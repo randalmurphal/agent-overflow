@@ -18,18 +18,29 @@ import (
 )
 
 // The backend's hosted engine keeps a pane page's downloads in the jar's AO
-// directory with Browser.setDownloadBehavior on the page's own browser
-// context (internal/browser/hosted_downloads.go). This runs those calls on
-// the real runtime the way the engine does, on a named profile's page:
-// the context's id from Target.getTargetInfo, allowAndName into a directory
-// with events enabled, a download that must land as its GUID there, and a
-// Browser.cancelDownload naming the context that must cancel a held one.
+// directory (internal/browser/hosted_downloads.go). This runs the engine's
+// protocol on the real runtime, on pages of a named profile, and proves:
 //
-// AO_WEBVIEW2_DOWNLOAD_SMOKE_DIR names the directory, for example the
-// `wslpath -w` view of a WSL directory (\\wsl.localhost\<distro>\...); a
-// fresh temporary directory otherwise. Whether WebView2's own download
-// flyout opens is visible in the smoke window, which stays up for
-// AO_WEBVIEW2_DOWNLOAD_SMOKE_HOLD (a Go duration) after the download.
+//   - Browser.setDownloadBehavior with no browser context and behavior
+//     "default" is accepted and turns on Browser.download* events on the
+//     connection, for downloads in every profile;
+//   - Page.setDownloadBehavior allowAndName on a page's own session is
+//     accepted and holds for its whole profile; set again from page 1
+//     before page 2, which set it last, closes, it still holds after the
+//     close (without that WebView2 falls back to the user's Downloads
+//     folder, observed 2026-11-16, which is why the engine hands it over);
+//   - a download lands as its GUID in that directory (a \\wsl.localhost
+//     path when AO_WEBVIEW2_DOWNLOAD_SMOKE_DIR names one), never in the
+//     user's Downloads folder, and Browser.downloadProgress reports that
+//     path; two downloads with one suggested name are two files;
+//   - Browser.cancelDownload with no browser context cancels a download of
+//     the named profile and leaves no file behind.
+//
+// Browser.setDownloadBehavior naming the profile's browser context is
+// refused ("Failed to find browser context"), so the engine never sends it.
+// Whether WebView2's own download flyout opens has no CDP signal; the smoke
+// window stays up for AO_WEBVIEW2_DOWNLOAD_SMOKE_HOLD (a Go duration) after
+// the first download for a look.
 //
 //	AO_NATIVE_BROWSER_SMOKE=1 go test -run TestDownloadSmoke ./internal/webview2host
 func TestDownloadSmokeKeepsAProfilesDownloadsInItsDirectory(t *testing.T) {
@@ -48,9 +59,12 @@ func TestDownloadSmokeKeepsAProfilesDownloadsInItsDirectory(t *testing.T) {
 			t.Errorf("remove %s: %v", dataDir, err)
 		}
 	})
-	downloadDir := os.Getenv("AO_WEBVIEW2_DOWNLOAD_SMOKE_DIR")
-	if downloadDir == "" {
-		downloadDir = t.TempDir()
+	downloadDir := t.TempDir()
+	if base := os.Getenv("AO_WEBVIEW2_DOWNLOAD_SMOKE_DIR"); base != "" {
+		downloadDir = base + `\` + fmt.Sprint(time.Now().UnixNano())
+		if err := os.Mkdir(downloadDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var hold time.Duration
 	if raw := os.Getenv("AO_WEBVIEW2_DOWNLOAD_SMOKE_HOLD"); raw != "" {
@@ -58,16 +72,19 @@ func TestDownloadSmokeKeepsAProfilesDownloadsInItsDirectory(t *testing.T) {
 			t.Fatalf("AO_WEBVIEW2_DOWNLOAD_SMOKE_HOLD: %v", err)
 		}
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	userDownloads := filepath.Join(home, "Downloads")
+	stamp := fmt.Sprint(time.Now().UnixNano())
 
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+strings.TrimPrefix(r.URL.Path, "/")+`"`)
-		switch r.URL.Path {
-		case "/file.bin":
-			w.Header().Set("Content-Length", "4096")
-			_, _ = w.Write(make([]byte, 4096))
-		case "/slow.bin":
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		if strings.HasPrefix(name, "slow") {
 			w.Header().Set("Content-Length", "1048576")
 			_, _ = w.Write(make([]byte, 1024))
 			w.(http.Flusher).Flush()
@@ -75,9 +92,10 @@ func TestDownloadSmokeKeepsAProfilesDownloadsInItsDirectory(t *testing.T) {
 			case <-release:
 			case <-r.Context().Done():
 			}
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		w.Header().Set("Content-Length", "4096")
+		_, _ = w.Write(make([]byte, 4096))
 	}))
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(release) })
@@ -100,95 +118,122 @@ func TestDownloadSmokeKeepsAProfilesDownloadsInItsDirectory(t *testing.T) {
 		host.Close()
 		ui.do(host.env.release)
 	})
-
-	host.Apply(Directive{Op: OpCreate, PageID: "page-1", ProfileID: "smoke"})
-	var targetID string
-	for targetID == "" {
-		select {
-		case report := <-reports:
-			switch report.kind {
-			case ReportCreated:
-				targetID = report.detail
-			case ReportFindUnavailable:
-			default:
-				t.Fatalf("create answered %+v", report)
+	create := func(pageID string) string {
+		t.Helper()
+		host.Apply(Directive{Op: OpCreate, PageID: pageID, ProfileID: "smoke"})
+		for {
+			select {
+			case report := <-reports:
+				if report.pageID != pageID || report.kind == ReportFindUnavailable {
+					continue
+				}
+				if report.kind != ReportCreated {
+					t.Fatalf("create %s answered %+v", pageID, report)
+				}
+				return report.detail
+			case <-time.After(60 * time.Second):
+				t.Fatalf("no created report for %s", pageID)
 			}
-		case <-time.After(60 * time.Second):
-			t.Fatal("no created report")
 		}
 	}
+	target1 := create("page-1")
 	host.Apply(Directive{Op: OpBounds, PageID: "page-1", X: 0, Y: 0, W: 640, H: 480})
 	host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+	target2 := create("page-2")
 
-	cdp := &smokeCDP{t: t, conn: smokeDialCDP(t, host.CDPPort()), next: 100}
-	t.Cleanup(func() { cdp.conn.CloseNow() })
-
-	var info struct {
-		TargetInfo struct {
-			BrowserContextID string `json:"browserContextId"`
-		} `json:"targetInfo"`
+	cdp := newSmokeCDP(t, smokeDialCDP(t, host.CDPPort()))
+	cdp.call("Browser.setDownloadBehavior", map[string]any{"behavior": "default", "eventsEnabled": true}, "", nil)
+	attach := func(targetID string) string {
+		var attached struct {
+			SessionID string `json:"sessionId"`
+		}
+		cdp.call("Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true}, "", &attached)
+		cdp.call("Page.setDownloadBehavior", map[string]any{"behavior": "allowAndName", "downloadPath": downloadDir}, attached.SessionID, nil)
+		return attached.SessionID
 	}
-	cdp.call("Target.getTargetInfo", map[string]any{"targetId": targetID}, "", &info)
-	contextID := info.TargetInfo.BrowserContextID
-	t.Logf("named profile page %s is in browser context %q", targetID, contextID)
-
-	cdp.call("Browser.setDownloadBehavior", map[string]any{
-		"behavior": "allowAndName", "browserContextId": contextID,
-		"downloadPath": downloadDir, "eventsEnabled": true,
-	}, "", nil)
-
-	var attached struct {
-		SessionID string `json:"sessionId"`
+	session1 := attach(target1)
+	download := func(name string) smokeDownloadProgress {
+		t.Helper()
+		cdp.call("Page.navigate", map[string]any{"url": server.URL + "/" + name}, session1, nil)
+		guid := cdp.downloadBegan(name)
+		finished := cdp.downloadSettled(guid)
+		if finished.State != "completed" {
+			t.Fatalf("%s ended %s", name, finished.State)
+		}
+		want := downloadDir + `\` + guid
+		if _, err := os.Stat(filepath.Join(userDownloads, name)); err == nil {
+			// Removed before failing, so a failed run leaves nothing there.
+			_ = os.Remove(filepath.Join(userDownloads, name))
+			t.Fatalf("%s was saved to %s", name, userDownloads)
+		}
+		if !strings.EqualFold(finished.FilePath, want) {
+			t.Fatalf("%s reported %q, want %q", name, finished.FilePath, want)
+		}
+		stat, err := os.Stat(want)
+		if err != nil || stat.Size() != 4096 {
+			t.Fatalf("%s is not 4096 bytes at %s: %v", name, want, err)
+		}
+		t.Logf("%s landed at %s", name, finished.FilePath)
+		return finished
 	}
-	cdp.call("Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true}, "", &attached)
-
-	// A finished download is the GUID-named file in the directory.
-	cdp.call("Page.navigate", map[string]any{"url": server.URL + "/file.bin"}, attached.SessionID, nil)
-	guid := cdp.downloadBegan("file.bin")
-	finished := cdp.downloadSettled(guid)
-	if finished.State != "completed" {
-		t.Fatalf("file.bin ended %s", finished.State)
+	download("solo-" + stamp + ".bin")
+	// Page 2 holds the setting now. Closing it would put the profile back on
+	// WebView2's own behavior, so page 1 takes the setting first, as the
+	// engine's hand-over does.
+	attach(target2)
+	cdp.call("Page.setDownloadBehavior", map[string]any{"behavior": "allowAndName", "downloadPath": downloadDir}, session1, nil)
+	host.Apply(Directive{Op: OpClose, PageID: "page-2"})
+	for closed := false; !closed; {
+		select {
+		case report := <-reports:
+			closed = report.pageID == "page-2" && report.kind == ReportClosed
+		case <-time.After(30 * time.Second):
+			t.Fatal("page-2 never closed")
+		}
 	}
-	t.Logf("file.bin reported filePath %q", finished.FilePath)
-	stat, err := os.Stat(filepath.Join(downloadDir, guid))
-	if err != nil {
-		t.Fatalf("the download is not its GUID in %s: %v", downloadDir, err)
-	}
-	if stat.Size() != 4096 {
-		t.Fatalf("the download holds %d bytes, want 4096", stat.Size())
-	}
-	if !strings.EqualFold(filepath.Base(finished.FilePath), guid) {
-		t.Fatalf("the reported path %q does not name the GUID %s", finished.FilePath, guid)
-	}
+	download("afterclose-" + stamp + ".bin")
+	first := download("same-" + stamp + ".bin")
 	if hold > 0 {
-		t.Logf("holding the window %s: check whether WebView2's download flyout opened", hold)
+		t.Logf("holding the window %s: look for WebView2's download flyout", hold)
 		time.Sleep(hold)
 	}
+	if second := download("same-" + stamp + ".bin"); second.GUID == first.GUID {
+		t.Fatal("two downloads share one GUID")
+	}
+	// The backend removes this stream file before moving the download.
+	if _, err := os.Stat(downloadDir + `\` + first.GUID + ":Zone.Identifier"); err == nil {
+		t.Logf("WebView2 wrote a Zone.Identifier stream beside %s", first.GUID)
+	}
 
-	// A cancel naming the context cancels a download in it.
-	cdp.call("Page.navigate", map[string]any{"url": server.URL + "/slow.bin"}, attached.SessionID, nil)
-	slow := cdp.downloadBegan("slow.bin")
-	cdp.call("Browser.cancelDownload", map[string]any{"guid": slow, "browserContextId": contextID}, "", nil)
+	cdp.call("Page.navigate", map[string]any{"url": server.URL + "/slow-" + stamp + ".bin"}, session1, nil)
+	slow := cdp.downloadBegan("slow-" + stamp + ".bin")
+	cdp.call("Browser.cancelDownload", map[string]any{"guid": slow}, "", nil)
 	if canceled := cdp.downloadSettled(slow); canceled.State != "canceled" {
-		t.Fatalf("slow.bin ended %s after the cancel", canceled.State)
+		t.Fatalf("the held download ended %s after the cancel", canceled.State)
+	}
+	if _, err := os.Stat(downloadDir + `\` + slow); err == nil {
+		t.Fatalf("the canceled download left %s behind", slow)
 	}
 }
 
-// smokeCDP is a browser-level CDP connection read on the test goroutine:
-// replies answer calls, and events wait in order for the download reads.
+// smokeCDP is a browser-level CDP connection. One goroutine reads it, since
+// a read that times out closes a coder/websocket connection; replies answer
+// calls, and events wait in order for the download reads.
 type smokeCDP struct {
 	t      *testing.T
 	conn   *websocket.Conn
 	next   int64
+	feed   chan smokeCDPMessage
 	events []smokeCDPMessage
 }
 
 type smokeCDPMessage struct {
-	ID     int64           `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
+	ID        int64           `json:"id"`
+	Method    string          `json:"method"`
+	SessionID string          `json:"sessionId"`
+	Params    json.RawMessage `json:"params"`
+	Result    json.RawMessage `json:"result"`
+	Error     *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
@@ -199,19 +244,39 @@ type smokeDownloadProgress struct {
 	FilePath string `json:"filePath"`
 }
 
+func newSmokeCDP(t *testing.T, conn *websocket.Conn) *smokeCDP {
+	c := &smokeCDP{t: t, conn: conn, next: 100, feed: make(chan smokeCDPMessage, 256)}
+	t.Cleanup(func() { conn.CloseNow() })
+	go func() {
+		defer close(c.feed)
+		for {
+			_, payload, err := conn.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var message smokeCDPMessage
+			if err := json.Unmarshal(payload, &message); err != nil {
+				t.Errorf("CDP frame %q: %v", payload, err)
+				return
+			}
+			c.feed <- message
+		}
+	}()
+	return c
+}
+
 func (c *smokeCDP) read(what string, deadline time.Time) smokeCDPMessage {
 	c.t.Helper()
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	_, payload, err := c.conn.Read(ctx)
-	if err != nil {
-		c.t.Fatalf("waiting for %s: %v", what, err)
+	select {
+	case message, ok := <-c.feed:
+		if !ok {
+			c.t.Fatalf("the CDP connection closed waiting for %s", what)
+		}
+		return message
+	case <-time.After(time.Until(deadline)):
+		c.t.Fatalf("no %s within the deadline", what)
 	}
-	var message smokeCDPMessage
-	if err := json.Unmarshal(payload, &message); err != nil {
-		c.t.Fatalf("CDP frame %q: %v", payload, err)
-	}
-	return message
+	return smokeCDPMessage{}
 }
 
 // call sends one command and fails the test with the browser's own message
@@ -257,34 +322,35 @@ func (c *smokeCDP) call(method string, params any, sessionID string, result any)
 
 // event answers the first browser-level event match accepts, buffered or
 // next to arrive.
-func (c *smokeCDP) event(what string, match func(smokeCDPMessage) bool) smokeCDPMessage {
+func (c *smokeCDP) event(what string, match func(smokeCDPMessage) bool) {
 	c.t.Helper()
 	for i, message := range c.events {
-		if match(message) {
+		if message.SessionID == "" && match(message) {
 			c.events = append(c.events[:i], c.events[i+1:]...)
-			return message
+			return
 		}
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		message := c.read(what, deadline)
-		if message.Method != "" && match(message) {
-			return message
+		if message.Method == "" {
+			continue
 		}
-		if message.Method != "" {
-			c.events = append(c.events, message)
+		if message.SessionID == "" && match(message) {
+			return
 		}
+		c.events = append(c.events, message)
 	}
 }
 
-// downloadBegan answers the GUID of the download of name.
+// downloadBegan answers the GUID of the next browser-level download of name.
 func (c *smokeCDP) downloadBegan(name string) string {
 	c.t.Helper()
 	var begin struct {
 		GUID              string `json:"guid"`
 		SuggestedFilename string `json:"suggestedFilename"`
 	}
-	c.event(fmt.Sprintf("Browser.downloadWillBegin for %s (events were not enabled for this context)", name), func(message smokeCDPMessage) bool {
+	c.event("Browser.downloadWillBegin for "+name, func(message smokeCDPMessage) bool {
 		if message.Method != "Browser.downloadWillBegin" {
 			return false
 		}
@@ -296,7 +362,7 @@ func (c *smokeCDP) downloadBegan(name string) string {
 	return begin.GUID
 }
 
-// downloadSettled answers the terminal progress of guid.
+// downloadSettled answers the terminal browser-level progress of guid.
 func (c *smokeCDP) downloadSettled(guid string) smokeDownloadProgress {
 	c.t.Helper()
 	var progress smokeDownloadProgress

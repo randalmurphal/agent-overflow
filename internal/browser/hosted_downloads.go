@@ -2,12 +2,16 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
-	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -19,85 +23,204 @@ import (
 // There is no copy step: the Manager renames the finished GUID-named file
 // into the workspace directory exactly as it does for headless Chromium.
 //
-// Each WebView2 profile is its own CDP browser context, so the behavior is
-// set per context: createPage reads its target's context and calls
-// Browser.setDownloadBehavior (allowAndName, events enabled) with it before
-// the Manager has the page, so nothing the page loads can download elsewhere.
-// A refusal fails the page's creation with the engine's message; WebView2's
-// default (the user's Downloads folder, no events) is never kept silently.
-// Browser.cancelDownload carries the download's context for the same reason.
+// The protocol is what real WebView2 accepts for a named profile
+// (TestDownloadSmoke in internal/webview2host runs it):
 //
-// NOT YET RUN AGAINST REAL WEBVIEW2. Three facts are unverified:
-//   - whether WebView2 honors Browser.setDownloadBehavior through the
-//     launcher's CDP relay for a named profile's context (Chromium's
-//     DevTools delegate resolves a context id only for the default profile
-//     and contexts DevTools created, so it may refuse, which fails every
-//     pane page loudly until fixed);
-//   - whether WebView2's own download flyout still appears;
-//   - whether Chromium writes to the UNC path and reports it in the form the
-//     mapping produced.
+//   - Browser.setDownloadBehavior naming a profile's browser context is
+//     refused ("Failed to find browser context"), so the engine never sends
+//     it. Once per connection it sends the call with no context and behavior
+//     "default": the default profile, which AO never opens, keeps WebView2's
+//     behavior, and Browser.download* events are reported for every profile.
+//   - Page.setDownloadBehavior allowAndName on a page's own session sets the
+//     behavior of the page's whole profile; the file is the download's GUID
+//     in the directory, and Browser.downloadProgress reports its path.
+//   - When the page whose session set it last goes away, the profile falls
+//     back to WebView2's own behavior (the user's Downloads folder), so that
+//     page hands the setting to another page of the profile first
+//     (handOverDownloads).
+//   - Browser.cancelDownload with no browser context cancels a download of
+//     any profile, and Chromium removes the partial file.
+//   - WebView2 writes a `<guid>:Zone.Identifier` stream beside a finished
+//     file, which on the WSL filesystem is a second file; the engine removes
+//     it before the Manager moves the download.
 //
-// The manual smoke in internal/webview2host (TestWebView2DownloadSmoke)
-// answers all three.
+// A refusal never fails the page: the page opens, the reason is logged, the
+// Manager tells the user once per profile (downloadsUnmanaged), and every
+// download that starts in the profile is cancelled and reported failed with
+// the reason, so nothing lands in the user's Downloads folder unaccounted.
+// Whether WebView2's own download flyout opens has no CDP signal and is not
+// checked.
 
-// hostedDownloadScope is where one page's downloads land: its CDP browser
-// context and the Windows view of its jar's AO download directory.
-type hostedDownloadScope struct {
-	context cdp.BrowserContextID
-	dir     string
+// pageSetDownloadBehavior is Page.setDownloadBehavior, which cdproto no
+// longer generates (the protocol marks it deprecated) and WebView2 is the
+// one engine that needs.
+var pageSetDownloadBehavior = cdp.Command[pageSetDownloadBehaviorParams, cdp.Empty]{Method: "Page.setDownloadBehavior"}
+
+type pageSetDownloadBehaviorParams struct {
+	Behavior     cdpbrowser.SetDownloadBehaviorBehavior `json:"behavior"`
+	DownloadPath string                                 `json:"downloadPath,omitempty"`
 }
 
-// keepDownloads points the downloads of targetID's browser context at the
-// profile's AO directory and turns on the events the Manager accounts with.
-func (e *hostedEngine) keepDownloads(browserCtx context.Context, targetID string, profile *hostedProfile) (hostedDownloadScope, error) {
-	info, err := chromedp.CallBrowser(browserCtx, target.GetTargetInfo, target.GetTargetInfoParams{TargetID: target.ID(targetID)})
+// hostedDownloadCallTimeout bounds one download-behavior call.
+const hostedDownloadCallTimeout = 10 * time.Second
+
+// enableDownloadEvents turns on Browser.download* events for the connection.
+// A refusal is kept: no page can then account for its downloads.
+func (e *hostedEngine) enableDownloadEvents(browserCtx context.Context) {
+	ctx, cancel := context.WithTimeout(browserCtx, hostedDownloadCallTimeout)
+	defer cancel()
+	_, err := chromedp.CallBrowser(ctx, cdpbrowser.SetDownloadBehavior, cdpbrowser.SetDownloadBehaviorParams{
+		Behavior: cdpbrowser.SetDownloadBehaviorBehaviorDefault, EventsEnabled: new(true),
+	})
+	refusal := ""
 	if err != nil {
-		return hostedDownloadScope{}, fmt.Errorf("browser: read the pane page's browser context: %w", err)
+		refusal = fmt.Sprintf("the pane browser does not report downloads: %v", err)
+		e.logf("browser: %s", refusal)
 	}
-	if info.TargetInfo == nil {
-		return hostedDownloadScope{}, fmt.Errorf("browser: the pane browser reported no target %s", targetID)
+	e.mu.Lock()
+	e.downloadEventsRefusal = refusal
+	e.mu.Unlock()
+}
+
+// keepDownloads points the downloads of the page's profile at the profile's
+// AO directory, from the page's own session, and makes the page the one
+// that holds the setting. Without download events it turns downloads off
+// instead. Either refusal is recorded on the profile, never returned.
+func (e *hostedEngine) keepDownloads(pageID string, page *cdpPage, profile *hostedProfile) {
+	profile.behaviorMu.Lock()
+	defer profile.behaviorMu.Unlock()
+	e.mu.Lock()
+	refusal := e.downloadEventsRefusal
+	e.pageDownloads[pageID] = profile
+	e.mu.Unlock()
+	if refusal != "" {
+		if err := setPageDownloadBehavior(page, cdpbrowser.SetDownloadBehaviorBehaviorDeny, ""); err != nil {
+			refusal += fmt.Sprintf("; turning them off was refused too: %v", err)
+		}
+	} else if err := setPageDownloadBehavior(page, cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, profile.downloadDir); err != nil {
+		refusal = fmt.Sprintf("the pane browser refused AO's download directory %s: %v", profile.downloadDir, err)
 	}
-	scope := hostedDownloadScope{context: info.TargetInfo.BrowserContextID, dir: profile.downloadDir}
-	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.SetDownloadBehavior, cdpbrowser.SetDownloadBehaviorParams{
-		Behavior:         cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName,
-		BrowserContextID: scope.context,
-		DownloadPath:     scope.dir,
-		EventsEnabled:    new(true),
-	}); err != nil {
-		return hostedDownloadScope{}, fmt.Errorf("browser: keep the pane's downloads in %s: %w", scope.dir, err)
+	e.mu.Lock()
+	profile.downloadRefusal = refusal
+	if refusal == "" {
+		profile.downloadKeeper = pageID
 	}
-	return scope, nil
+	e.mu.Unlock()
+	if refusal != "" {
+		e.logf("browser: downloads in pane profile %s are not managed: %s", profile.id, refusal)
+	}
+}
+
+func setPageDownloadBehavior(page *cdpPage, behavior cdpbrowser.SetDownloadBehaviorBehavior, dir string) error {
+	ctx, cancel := context.WithTimeout(page.ctx, hostedDownloadCallTimeout)
+	defer cancel()
+	_, err := chromedp.Call(ctx, pageSetDownloadBehavior, pageSetDownloadBehaviorParams{Behavior: behavior, DownloadPath: dir})
+	return err
+}
+
+// downloadHandover answers the call that moves the profile's download
+// setting off pageID onto another live page of the profile, nil when pageID
+// does not hold it or no other page is left (the profile then has no page to
+// download from). It must be taken while pageID is still bound; run it
+// before the page's session goes when the page is closed on purpose.
+func (e *hostedEngine) downloadHandover(pageID string) func() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	profile := e.pageDownloads[pageID]
+	if profile == nil || profile.downloadKeeper != pageID {
+		return nil
+	}
+	profile.downloadKeeper = ""
+	for heirID, owner := range e.pageDownloads {
+		heir := e.drivers[heirID]
+		if heirID == pageID || owner != profile || heir == nil {
+			continue
+		}
+		return func() { e.handOverDownloads(profile, heirID, heir) }
+	}
+	return nil
+}
+
+func (e *hostedEngine) handOverDownloads(profile *hostedProfile, heirID string, heir *cdpPage) {
+	profile.behaviorMu.Lock()
+	defer profile.behaviorMu.Unlock()
+	e.mu.Lock()
+	// A page created since has set it; it holds the setting now.
+	taken := profile.downloadKeeper != "" || profile.downloadRefusal != ""
+	e.mu.Unlock()
+	if taken {
+		return
+	}
+	err := setPageDownloadBehavior(heir, cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, profile.downloadDir)
+	e.mu.Lock()
+	if err != nil {
+		profile.downloadRefusal = fmt.Sprintf("the pane browser refused AO's download directory %s: %v", profile.downloadDir, err)
+	} else if _, live := e.drivers[heirID]; live {
+		profile.downloadKeeper = heirID
+	}
+	refusal := profile.downloadRefusal
+	e.mu.Unlock()
+	if refusal != "" {
+		e.logf("browser: downloads in pane profile %s are not managed: %s", profile.id, refusal)
+	}
+}
+
+// downloadsUnmanaged is why downloads in the page's profile are not
+// managed, empty when they are. The Manager tells the user once per profile.
+func (p *hostedPage) downloadsUnmanaged() string {
+	p.engine.mu.Lock()
+	defer p.engine.mu.Unlock()
+	if profile := p.engine.pageDownloads[p.id]; profile != nil {
+		return profile.downloadRefusal
+	}
+	return ""
 }
 
 // downloadEvents is the Manager's events with the hosted engine's part of a
-// download in front: the start notes the download's scope, and progress
-// trades the Windows path the engine reports for the Manager's own view.
+// download in front: the start notes the download's profile and stops one
+// the profile cannot account for, and progress checks the path the engine
+// reports and removes the Zone.Identifier stream file.
 func (e *hostedEngine) downloadEvents() engineEvents {
 	events := e.events
 	started, progress := events.DownloadStarted, events.DownloadProgress
 	events.DownloadStarted = func(start downloadStart) bool {
-		if scope, ok := e.frameDownloadScope(start.Frame); ok {
+		profile := e.frameDownloadProfile(start.Frame)
+		refusal := ""
+		if profile != nil {
 			e.mu.Lock()
-			e.downloads.put(start.ID, scope)
+			e.downloads.put(start.ID, profile)
+			refusal = profile.downloadRefusal
 			e.mu.Unlock()
 		}
-		return started(start)
+		allowed := started(start)
+		if allowed && refusal != "" {
+			// WebView2 would save it to its own folder.
+			go refusedDownloadCanceler(e.cancelDownload, e.logf)(start.ID)
+			progress(downloadProgress{ID: start.ID, State: downloadCanceled, Error: "downloads are off in this browser profile: " + refusal})
+		}
+		return allowed
 	}
 	events.DownloadProgress = func(event downloadProgress) {
 		e.mu.Lock()
-		scope, ok := e.downloads.get(event.ID)
+		profile, ok := e.downloads.get(event.ID)
 		if downloadSettled(event.State) {
 			e.downloads.delete(event.ID)
 		}
 		e.mu.Unlock()
+		if ok && downloadSettled(event.State) {
+			stream := filepath.Join(profile.backendDownloadDir, filepath.Base(event.ID)+":Zone.Identifier")
+			if err := os.Remove(stream); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				e.logf("browser: remove %s: %v", stream, err)
+			}
+		}
 		if ok && event.FilePath != "" {
-			if hostedDownloadLanded(scope.dir, event.ID, event.FilePath) {
+			if hostedDownloadLanded(profile.downloadDir, event.ID, event.FilePath) {
 				// The Manager finds the file by its GUID in the jar directory.
 				event.FilePath = ""
 			} else {
 				// Left as reported, which the Manager refuses as outside the
 				// artifact directory; the log keeps where it went.
-				e.logf("browser: pane download %s was written to %s, not %s", event.ID, event.FilePath, scope.dir)
+				e.logf("browser: pane download %s was written to %s, not %s", event.ID, event.FilePath, profile.downloadDir)
 			}
 		}
 		progress(event)
@@ -105,14 +228,14 @@ func (e *hostedEngine) downloadEvents() engineEvents {
 	return events
 }
 
-// frameDownloadScope answers the scope of the page owning frame. A page's
-// main frame id is its target id; a subframe is asked of each page.
-func (e *hostedEngine) frameDownloadScope(frame string) (hostedDownloadScope, bool) {
+// frameDownloadProfile answers the profile of the page owning frame. A
+// page's main frame id is its target id; a subframe is asked of each page.
+func (e *hostedEngine) frameDownloadProfile(frame string) *hostedProfile {
 	e.mu.Lock()
 	if pageID, ok := e.pageByTarget[frame]; ok {
-		scope, found := e.pageDownloads[pageID]
+		profile := e.pageDownloads[pageID]
 		e.mu.Unlock()
-		return scope, found
+		return profile
 	}
 	drivers := make(map[string]*cdpPage, len(e.drivers))
 	for pageID, driver := range e.drivers {
@@ -124,11 +247,11 @@ func (e *hostedEngine) frameDownloadScope(frame string) (hostedDownloadScope, bo
 			continue
 		}
 		e.mu.Lock()
-		scope, found := e.pageDownloads[pageID]
+		profile := e.pageDownloads[pageID]
 		e.mu.Unlock()
-		return scope, found
+		return profile
 	}
-	return hostedDownloadScope{}, false
+	return nil
 }
 
 // hostedDownloadLanded reports whether a Windows path is the GUID-named file
@@ -144,16 +267,14 @@ func hostedDownloadLanded(dir, id, windowsPath string) bool {
 	return normalize(windowsPath) == normalize(dir)+`\`+strings.ToLower(id)
 }
 
-// cancelDownload cancels a download in the browser context it runs in.
+// cancelDownload cancels a download. WebView2 finds it by GUID alone; the
+// call naming the profile's browser context is the one it refuses.
 func (e *hostedEngine) cancelDownload(id string) error {
 	browserCtx, ok := e.browser()
 	if !ok {
 		return fmt.Errorf("browser: the pane browser is not connected")
 	}
-	e.mu.Lock()
-	scope, _ := e.downloads.get(id)
-	e.mu.Unlock()
-	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id, BrowserContextID: scope.context}); err != nil {
+	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
 		return fmt.Errorf("browser: cancel download %s: %w", id, err)
 	}
 	return nil

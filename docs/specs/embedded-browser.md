@@ -367,7 +367,7 @@ mechanism:
 | wait / history / evaluate / evaluate_readonly | as today | JS + load-event delegates; readonly is best-effort; evaluate does not use page `eval`, so a page CSP without `'unsafe-eval'` allows it |
 | clipboard (isolated per tab) | AO-managed, engine-agnostic | same |
 | console_logs | CDP Runtime/Log | injected capture |
-| downloads | Browser.setDownloadBehavior per page browser context (allowAndName into the jar's AO dir, Windows view on WSL; a refusal fails the page) and Browser.download events → AO artifact dirs; unverified on real WebView2 | WebKitDownload delegate → same dirs |
+| downloads | Browser.download events → AO artifact dirs. WebView2: Page.setDownloadBehavior allowAndName on each page's session (per profile, into the jar's AO dir's Windows view) and Browser.setDownloadBehavior with no context for the events; a named profile's context id is refused. A refusal leaves the page open and the profile's downloads unmanaged (`internal/browser/hosted_downloads.go`) | WebKitDownload delegate → same dirs |
 | assets | as today | JS inventory + fetch-in-page bundling |
 
 New behavior the engines give for free (previously impossible): file

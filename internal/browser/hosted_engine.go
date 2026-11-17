@@ -168,8 +168,11 @@ type hostedEngine struct {
 	noFind map[string]bool
 	// pageDownloads is where each page's downloads land, and downloads the
 	// same for each download in flight, by guid (hosted_downloads.go).
-	pageDownloads map[string]hostedDownloadScope
-	downloads     *boundedMap[string, hostedDownloadScope]
+	pageDownloads map[string]*hostedProfile
+	downloads     *boundedMap[string, *hostedProfile]
+	// downloadEventsRefusal is why the connection reports no downloads,
+	// empty when it does.
+	downloadEventsRefusal string
 
 	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
 	// to stand in for the CDP evaluate.
@@ -215,8 +218,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		ratios:        make(map[string]pageRatio),
 		scales:        make(map[string]*viewScaleState),
 		noFind:        make(map[string]bool),
-		pageDownloads: make(map[string]hostedDownloadScope),
-		downloads:     newBoundedMap[string, hostedDownloadScope](orderSlack),
+		pageDownloads: make(map[string]*hostedProfile),
+		downloads:     newBoundedMap[string, *hostedProfile](orderSlack),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
@@ -302,8 +305,8 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
-	e.pageDownloads = make(map[string]hostedDownloadScope)
-	e.downloads = newBoundedMap[string, hostedDownloadScope](orderSlack)
+	e.pageDownloads = make(map[string]*hostedProfile)
+	e.downloads = newBoundedMap[string, *hostedProfile](orderSlack)
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -333,7 +336,7 @@ func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (eng
 	// Site data is the engine's own (spec §4): a hosted profile is a real
 	// browser profile on disk and WebView2 persists it, so AO seeds nothing
 	// into it and reads nothing out of it.
-	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral, downloadDir: downloadDir}, nil
+	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral, downloadDir: downloadDir, backendDownloadDir: opts.DownloadDir}, nil
 }
 
 // hostedProfileID is the WebView2 profile name of a jar. A worktree jar's
@@ -473,8 +476,16 @@ type hostedProfile struct {
 	engine    *hostedEngine
 	id        string
 	ephemeral bool
-	// downloadDir is the Windows view of the jar's AO download directory.
-	downloadDir string
+	// downloadDir is the Windows view of the jar's AO download directory,
+	// backendDownloadDir the same directory as the backend sees it.
+	downloadDir, backendDownloadDir string
+	// behaviorMu orders the profile's download-behavior calls, so the page
+	// recorded as downloadKeeper is the one whose call WebView2 ran last.
+	behaviorMu sync.Mutex
+	// downloadKeeper is the page holding the profile's download setting,
+	// and downloadRefusal why downloads in it are not managed (empty when
+	// they are). Guarded by engine.mu (hosted_downloads.go).
+	downloadKeeper, downloadRefusal string
 }
 
 func (p *hostedProfile) Handle() string { return p.id }
@@ -544,22 +555,14 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.closePage(pageID)
 		return nil, err
 	}
-	// Before the Manager has the page, so nothing it loads can download
-	// anywhere but the jar's directory.
-	scope, err := e.keepDownloads(browserCtx, targetID, profile)
-	if err != nil {
-		pageCancel()
-		e.closePage(pageID)
-		return nil, err
-	}
-	e.mu.Lock()
-	e.pageDownloads[pageID] = scope
-	e.mu.Unlock()
 	e.bind(pageID, targetID)
 	if cdp, ok := driver.(*cdpPage); ok {
 		e.mu.Lock()
 		e.drivers[pageID] = cdp
 		e.mu.Unlock()
+		// Before the Manager has the page, so nothing it loads can download
+		// anywhere but the jar's directory.
+		e.keepDownloads(pageID, cdp, profile)
 	}
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
@@ -629,6 +632,7 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 		allocCancel()
 		return nil, fmt.Errorf("browser: attach to the pane browser: %w", attachCtx.Err())
 	}
+	e.enableDownloadEvents(browserCtx)
 	e.mu.Lock()
 	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
 	e.mu.Unlock()
@@ -750,6 +754,9 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 // caller that reads CDP events starts this on a goroutine instead
 // (targetDestroyed above).
 func (e *hostedEngine) retirePage(pageID string) {
+	// The page is already gone, so the setting it held may have fallen back
+	// to WebView2's own; another page of its profile takes it back.
+	handover := e.downloadHandover(pageID)
 	e.mu.Lock()
 	targetID, known := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
@@ -762,6 +769,9 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.noFind, pageID)
 	delete(e.pageDownloads, pageID)
 	e.mu.Unlock()
+	if handover != nil {
+		go handover()
+	}
 	if !known {
 		return
 	}
@@ -821,6 +831,9 @@ func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
 // the close a page's own Close already accounted for must not be reported
 // to the Manager twice.
 func (e *hostedEngine) closePage(pageID string) {
+	if handover := e.downloadHandover(pageID); handover != nil {
+		handover()
+	}
 	e.mu.Lock()
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
@@ -1189,7 +1202,12 @@ func (p *hostedPage) FindStop(context.Context) error {
 
 var _ pageFind = (*hostedPage)(nil)
 
+// Close hands the profile's download setting to another page first: it
+// falls back to WebView2's own when the session that set it last goes.
 func (p *hostedPage) Close() {
+	if handover := p.engine.downloadHandover(p.id); handover != nil {
+		handover()
+	}
 	p.pageDriver.Close()
 	p.closeOnce.Do(func() { p.engine.closePage(p.id) })
 }
