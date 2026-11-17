@@ -8158,7 +8158,9 @@ export class ThreadAgentRow {
      * counts its agent's, its own native agents' left to their rows; and
      * the time its turns ran, the open one's so far.
      * TurnOpen says a turn is open, whose time goes on from RuntimeMs as
-     * read. Read here, or reported by the paired computer that holds it;
+     * read, and TurnStartedAt which turn: its start on the computer that
+     * holds the thread, an identity a later read is compared with, never a
+     * time this computer's clock is compared with. Read here, or reported by the paired computer that holds it;
      * zero for every other kind and from a computer that does not report
      * them, and for a paired spawn under Past whose computer has not
      * answered, NestedUnavailable then saying why when it could not.
@@ -8167,6 +8169,7 @@ export class ThreadAgentRow {
     "tokens"?: number;
     "runtimeMs"?: number;
     "turnOpen"?: boolean;
+    "turnStartedAt"?: number;
 
     /**
      * RestUnreported marks a request settled `finished` by a paired
@@ -8322,7 +8325,7 @@ export class ThreadAgentRows {
     "open"?: boolean | null;
 
     /**
-     * Activity, ToolCalls, Tokens, RuntimeMs and TurnOpen are the listed
+     * Activity, ToolCalls, Tokens, RuntimeMs, TurnOpen and TurnStartedAt are the listed
      * thread's own, answered by agent_rows for the spawn row on the
      * computer that asked (ThreadAgentRow). A computer that predates them
      * sends none.
@@ -8332,6 +8335,7 @@ export class ThreadAgentRows {
     "tokens"?: number;
     "runtimeMs"?: number;
     "turnOpen"?: boolean;
+    "turnStartedAt"?: number;
 
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
