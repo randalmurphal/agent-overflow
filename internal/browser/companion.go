@@ -150,6 +150,9 @@ type paneMount struct {
 	findSeq uint64
 	// focus is the mount's page focus intent (focus_intent.go).
 	focus *mountFocus
+	// selection is the order of the tab selections made in the mount
+	// (selection.go).
+	selection *mountSelection
 }
 
 // A thread's state push shows each of its tabs' info, loading state and
@@ -971,6 +974,15 @@ func (m *Manager) presentAddressCommitted(p *managedPage) {
 
 // presentPanes is one presentation pass of syncPanePresentation.
 //
+// The pass hides every page but the one the thread had selected when it
+// began (its candidate), then decides, in one hold of Manager.mu, whether to
+// show the candidate against the selection, the presenter and the viewport
+// as they are then: a candidate that lost the selection meanwhile (a switch
+// away and back while it was laid out, a restore that finished after the
+// user moved on) is hidden, never shown, and the switch's own request runs
+// the next pass. Only the engine calls after that hold are outside it: a
+// selection made during them is newer than the show and its pass hides it.
+//
 // A page is never newly shown while it lags the thread's viewport (a pane
 // resize lays out only the page shown then, viewport.go): it stays hidden and
 // the drain lays it out and runs another pass. A page already shown stays
@@ -979,12 +991,9 @@ func (m *Manager) presentAddressCommitted(p *managedPage) {
 func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
-	session, hasSession := m.sessions[threadID]
-	mount, rect, shown := m.presenterLocked(threadID)
-	visible := hasSession && session.Visible && shown
-	previous := m.presented[threadID].id
+	candidateID := m.sessions[threadID].ActivePageID
 	var pages []*managedPage
-	var active *managedPage
+	var candidate *managedPage
 	var closing []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
@@ -992,8 +1001,8 @@ func (m *Manager) presentPanes(threadID string) {
 				continue
 			}
 			pages = append(pages, p)
-			if p.id == session.ActivePageID {
-				active = p
+			if p.id == candidateID {
+				candidate = p
 			}
 		}
 		for _, c := range scope.closing {
@@ -1007,66 +1016,39 @@ func (m *Manager) presentPanes(threadID string) {
 	if !ok {
 		return
 	}
-	pageW, pageH := sessionViewport(session)
 	// A closed page is hidden at once; its engine teardown may run a while.
 	// Hiding a page whose driver has since closed is a no-op on every host.
 	for _, p := range closing {
 		host.HidePage(p.driver.Handle())
 	}
-	var placement PanePlacement
-	if visible {
-		// The page keeps the session's viewport; the pane shows it scaled to
-		// fit. A pane too small or too occluded to show any of it presents
-		// nothing rather than a sliver.
-		placement, visible = placePage(rect, pageW, pageH)
-		placement.Mount = mount
-	}
-	lagging := false
-	if visible && active != nil && active.id != previous {
-		want := packViewport(pageW, pageH)
-		if active.viewport.Load() != want && active.viewportFailed.Load() != want {
-			visible, lagging = false, true
-		}
-	}
 	for _, p := range pages {
-		if p == active && visible {
-			continue
+		if p != candidate {
+			host.HidePage(p.driver.Handle())
 		}
-		host.HidePage(p.driver.Handle())
 	}
+	if m.presentDeciding != nil {
+		m.presentDeciding(threadID, candidate)
+	}
+	show, placement, lagging := m.decidePresentation(threadID, candidate)
 	document := false
-	if visible && active != nil {
-		document = pageShowsDocument(active.cachedInfo().URL)
-		placement.Rect.Background = pageBase(document, rect.Background)
-		host.SetPageBounds(active.driver.Handle(), placement)
-		host.ShowPage(active.driver.Handle())
+	if candidate != nil {
+		if show {
+			document = pageShowsDocument(candidate.cachedInfo().URL)
+			placement.Rect.Background = pageBase(document, placement.Rect.Background)
+			host.SetPageBounds(candidate.driver.Handle(), placement)
+			host.ShowPage(candidate.driver.Handle())
+		} else {
+			host.HidePage(candidate.driver.Handle())
+		}
 	}
 	m.mu.Lock()
 	if m.presented == nil {
 		m.presented = make(map[string]presentedPage)
 	}
-	if visible && active != nil {
-		m.presented[threadID] = presentedPage{id: active.id, document: document}
+	if show {
+		m.presented[threadID] = presentedPage{id: candidate.id, document: document}
 	} else {
 		delete(m.presented, threadID)
-	}
-	delete(m.awaitingLayout, threadID)
-	if lagging {
-		want := packViewport(sessionViewport(m.sessions[threadID]))
-		if active.viewport.Load() == want || active.viewportFailed.Load() == want {
-			// Laid out since the check above, by an apply that found no
-			// page awaiting it: this pass's loop runs another, and no drain
-			// is owed.
-			if st := m.presenting[threadID]; st != nil {
-				st.dirty = true
-			}
-			lagging = false
-		} else {
-			if m.awaitingLayout == nil {
-				m.awaitingLayout = make(map[string]string)
-			}
-			m.awaitingLayout[threadID] = active.id
-		}
 	}
 	m.mu.Unlock()
 	if lagging {
@@ -1074,6 +1056,46 @@ func (m *Manager) presentPanes(threadID string) {
 	}
 	// A focus intent waits for its page's presentation, never ShowPage.
 	m.applyFocusIntent(threadID)
+}
+
+// decidePresentation is presentPanes' one decision, in one hold of
+// Manager.mu: whether the pass shows its candidate, where, and whether the
+// candidate waits for its layout. A candidate that is no longer the
+// thread's selected live page is not shown. A lagging candidate is recorded
+// as awaiting its layout in the same hold, so the apply that lays it out
+// either is seen here or finds the record (presentLaidOut).
+func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (show bool, placement PanePlacement, lagging bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.awaitingLayout, threadID)
+	session, hasSession := m.sessions[threadID]
+	mount, rect, shown := m.presenterLocked(threadID)
+	if candidate == nil || !hasSession || !session.Visible || !shown || session.ActivePageID != candidate.id {
+		return false, PanePlacement{}, false
+	}
+	if live, _ := m.livePageLocked(candidate.id); live != candidate {
+		return false, PanePlacement{}, false
+	}
+	pageW, pageH := sessionViewport(session)
+	// The page keeps the session's viewport; the pane shows it scaled to
+	// fit. A pane too small or too occluded to show any of it presents
+	// nothing rather than a sliver.
+	placement, show = placePage(rect, pageW, pageH)
+	placement.Mount = mount
+	if !show {
+		return false, PanePlacement{}, false
+	}
+	if candidate.id != m.presented[threadID].id {
+		want := packViewport(pageW, pageH)
+		if candidate.viewport.Load() != want && candidate.viewportFailed.Load() != want {
+			if m.awaitingLayout == nil {
+				m.awaitingLayout = make(map[string]string)
+			}
+			m.awaitingLayout[threadID] = candidate.id
+			return false, PanePlacement{}, true
+		}
+	}
+	return true, placement, false
 }
 
 // MoveCompanionPage places one of the thread's tabs, in any state, at
@@ -1173,11 +1195,29 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, address, label
 
 // ActivateCompanionPage is the user selecting a tab in the pane. It is
 // presented first (selectTab); a suspended page is then restored, and the
-// call answers when it is. A tab closed while it restored is no error.
+// call answers when it is. A tab closed while it restored is no error. A
+// selection a newer one from its mount overtook (ctx's Selection,
+// selection.go) changes nothing and restores nothing.
 func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
-	if err := m.selectTab(access, pageID); err != nil {
+	applied, err := m.selectTab(access, selectionOf(ctx), pageID)
+	if err != nil || !applied {
 		return err
+	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// RestoreActiveCompanionPage is the pane asking for the suspended tab it
+// shows, the thread's active one, to be restored. It selects nothing, so it
+// cannot undo a selection the user made since the pane saw that tab; a tab
+// that is no longer active is left as it is.
+func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID string) error {
+	pageID = strings.TrimSpace(pageID)
+	m.mu.Lock()
+	active := m.sessionLocked(access.ThreadID).ActivePageID
+	m.mu.Unlock()
+	if pageID == "" || pageID != active {
+		return nil
 	}
 	return m.restoreSelectedTab(ctx, access, pageID)
 }
@@ -1187,11 +1227,12 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 // Manager's own order and selection, so presses in a row each move one tab
 // whatever the client last saw. With no active tab, a forward step selects
 // the first tab and a backward one the last. Then it is ActivateCompanionPage.
+// Numbered steps compose by addition in any order (selection.go).
 func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
 	if step == 0 {
 		return fmt.Errorf("browser: tab step must not be 0")
 	}
-	pageID, err := m.selectTabWhere(access, func(tabs []threadTab, active string) int {
+	pageID, applied, err := m.selectTabWhere(access, selectionOf(ctx), step, func(tabs []threadTab, active string) int {
 		n := len(tabs)
 		if n == 0 {
 			return -1
@@ -1205,9 +1246,9 @@ func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int
 		if at < 0 && step < 0 {
 			at = 0
 		}
-		return ((at+step)%n + n) % n
+		return wrapTab(at+step, n)
 	})
-	if err != nil {
+	if err != nil || !applied {
 		return err
 	}
 	return m.restoreSelectedTab(ctx, access, pageID)

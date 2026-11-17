@@ -79,13 +79,15 @@ func (f *paneFollowFixture) attach(t *testing.T) string {
 }
 
 // awaitActiveAt waits for a drain pass to have laid the active page (the
-// second, which the fixture shows) out at w x h, through the seam rather
-// than wall-clock polling. A pane resize lays out only that page.
+// second, which the fixture shows) out at w x h, through the seam, and then
+// for the presentation that pass runs after its layout, which places the
+// page. A pane resize lays out only that page.
 func (f *paneFollowFixture) awaitActiveAt(t *testing.T, w, h int) {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
 		if pw, ph := f.pages[1].lastViewport(); pw == w && ph == h {
+			awaitViewportIdle(t, f.manager, f.access.ThreadID)
 			return
 		}
 		select {

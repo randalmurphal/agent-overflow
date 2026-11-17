@@ -186,6 +186,10 @@ type Manager struct {
 	// taken the unpushed records and copied the tabs. Production leaves it
 	// nil.
 	pushCopied func()
+	// presentDeciding is a test seam: called, with no lock held, by a
+	// presentation pass after it hid every page but its candidate and before
+	// it decides whether to show it. Production leaves it nil.
+	presentDeciding func(threadID string, candidate *managedPage)
 	// infoRead is a test seam: called between a read of a page's info (or
 	// history state) and its commit. Production leaves it nil.
 	infoRead func(p *managedPage)

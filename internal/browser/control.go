@@ -14,7 +14,8 @@ import (
 // pane takes its size and is shown, and its info is read.
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
 	pageID = strings.TrimSpace(pageID)
-	if err := m.selectTab(access, pageID); err != nil {
+	// An agent's selection keeps arrival order (selection.go).
+	if _, err := m.selectTab(access, Selection{}, pageID); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.resolvePage(ctx, access, pageID, false)
@@ -42,9 +43,11 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 // selectTab makes one of the thread's tabs, in any state, the active one and
 // presents it before any page work: a live page is shown at once, and a tab
 // with no page yet (creating, restoring, suspended, failed) shows its state
-// until it has one. A live page counts as used.
-func (m *Manager) selectTab(access Access, pageID string) error {
-	_, err := m.selectTabWhere(access, func(tabs []threadTab, _ string) int {
+// until it has one. A live page counts as used. sel is the user's numbered
+// selection (selection.go); it answers false, selecting nothing, when sel
+// was overtaken.
+func (m *Manager) selectTab(access Access, sel Selection, pageID string) (bool, error) {
+	_, applied, err := m.selectTabWhere(access, sel, 0, func(tabs []threadTab, _ string) int {
 		for i := range tabs {
 			if tabs[i].id == pageID {
 				return i
@@ -52,21 +55,29 @@ func (m *Manager) selectTab(access Access, pageID string) error {
 		}
 		return -1
 	})
-	return err
+	return applied, err
 }
 
 // selectTabWhere is selectTab of the tab pick chooses from the companion's
 // tabs in strip order and the active tab's id, under one hold of m.mu so the
-// choice and the selection see the same tabs. A pick of -1 is
-// errPageNotFound. It answers the selected id.
-func (m *Manager) selectTabWhere(access Access, pick func(tabs []threadTab, activePageID string) int) (string, error) {
+// choice, its order against the mount's other selections
+// (orderSelectionLocked; step is pick's relative move, 0 for a tab chosen
+// outright) and the selection see the same tabs. A pick of -1 is
+// errPageNotFound. It answers the selected id, and false with no change
+// when sel was overtaken.
+func (m *Manager) selectTabWhere(access Access, sel Selection, step int, pick func(tabs []threadTab, activePageID string) int) (string, bool, error) {
 	m.mu.Lock()
 	tabs := m.companionTabsLocked(access.ThreadID)
 	info := m.sessionLocked(access.ThreadID)
 	at := pick(tabs, info.ActivePageID)
 	if at < 0 || at >= len(tabs) {
 		m.mu.Unlock()
-		return "", errPageNotFound
+		return "", false, errPageNotFound
+	}
+	at, applied := m.orderSelectionLocked(access.ThreadID, sel, tabs, at, step)
+	if !applied {
+		m.mu.Unlock()
+		return "", false, nil
 	}
 	found := &tabs[at]
 	pageID := found.id
@@ -79,7 +90,7 @@ func (m *Manager) selectTabWhere(access Access, pick func(tabs []threadTab, acti
 	}
 	m.emitThreadState(access.ThreadID)
 	m.syncPanePresentation(access.ThreadID)
-	return pageID, nil
+	return pageID, true, nil
 }
 
 // labelHolderLocked answers the thread's other tab (not pageID) whose label

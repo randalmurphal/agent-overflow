@@ -12,7 +12,8 @@
 // through the address row's picker, by search and from the folder view,
 // without typing its path. A tab's menu duplicates it and closes the others
 // or those to its right, and the menu or mod+shift+t reopens the last closed
-// tab where it was.
+// tab where it was. Of two tabs clicked with no gap the second stays
+// selected even when the backend receives the clicks in reverse order.
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -254,3 +255,63 @@ test('the tab menu duplicates and closes tabs, and a closed tab reopens where it
   await expect.poll(() => tabURLs(harness, threadId)).toEqual([urls[1]]);
   await expect.poll(async () => (await harness.rpc<{ closedTabs?: number }>('BrowserCompanionThreadState', threadId)).closedTabs).toBe(3);
 });
+
+const BROWSER_COMPANION_DO = 197228034;
+
+test('the last of two tabs clicked with no gap stays selected when the clicks arrive reversed', async ({ harness, page }) => {
+  // The socket holds the first click's activation until the second's has
+  // answered, so the backend runs the two in reverse order every round.
+  let held: { id: string; message: string } | null = null;
+  let secondId = '';
+  let settledRounds = 0;
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO && frame.params?.[1]?.kind === 'activate') {
+        if (held === null) {
+          held = { id: frame.id, message: String(message) };
+          return;
+        }
+        secondId = frame.id;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      socket.send(message);
+      const frame = JSON.parse(String(message));
+      if (frame.type !== 'rpc' || held === null) return;
+      if (frame.id === secondId) {
+        secondId = '';
+        server.send(held.message);
+      } else if (frame.id === held.id) {
+        held = null;
+        settledRounds++;
+      }
+    });
+  });
+  const threadId = await seedBrowserThread(harness, 'Browser tab clicks');
+  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three'];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser tab clicks').click();
+  const tabs = page.getByTestId('browser-pane').getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(3);
+
+  // Every ordered pair of the three tabs, each clicked in one task.
+  const pairs = [[0, 1], [1, 2], [2, 0], [1, 0], [2, 1], [0, 2]];
+  for (const [round, [first, second]] of pairs.entries()) {
+    await tabs.evaluateAll((elements, [a, b]) => {
+      (elements[a] as HTMLElement).click();
+      (elements[b] as HTMLElement).click();
+    }, [first, second]);
+    // Both activations have answered, the first one last.
+    await expect.poll(() => settledRounds, { message: `round ${round} settled` }).toBe(round + 1);
+    expect(await activeURL(harness, threadId), `round ${round}`).toBe(urls[second]);
+    await expect(tabs.nth(second)).toHaveAttribute('aria-selected', 'true');
+  }
+});
+

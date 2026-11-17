@@ -51,7 +51,9 @@ describe('<BrowserPane> suspended pages', () => {
 
     await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
     expect(act.mock.calls[0][0]).toBe(THREAD);
-    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'activate', pageId: 'a' });
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'restore', pageId: 'a' });
+    // A restore is not the user's selection: it carries no number.
+    expect((act.mock.calls[0][1] as { select?: number }).select ?? 0).toBe(0);
     // A state push while the restore runs asks nothing more.
     applyBrowserCompanionState(state([page('a', true), page('b', false)]) as never);
     await tick();

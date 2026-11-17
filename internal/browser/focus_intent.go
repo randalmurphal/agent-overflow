@@ -181,7 +181,10 @@ func (m *Manager) applyFocusIntent(threadID string) {
 		return
 	}
 	var page *managedPage
-	if m.presented[threadID].id == in.pageID {
+	// Presented and still selected, as a pass's show requires: a page shown
+	// by a pass that a newer selection overtook is hidden by the next pass,
+	// which applies the intent if its page is shown then.
+	if m.presented[threadID].id == in.pageID && m.sessions[threadID].ActivePageID == in.pageID {
 		// A closing page has left its scope's pages already.
 		if p, _ := m.livePageLocked(in.pageID); p != nil && p.owner == threadID {
 			page = p

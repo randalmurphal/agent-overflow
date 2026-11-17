@@ -688,3 +688,78 @@ describe('tab lifecycle in the browser companion store', () => {
     expect(addressFocusIntent(THREAD)).toBeNull();
   });
 });
+
+describe('numbering the user\'s tab selections', () => {
+  const THREAD = 'thread-browser';
+  const shown = { kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, pages: [page('https://example.test/', 'A')] };
+  type Action = { kind: string; mount?: string; select?: number };
+  let sent: Action[];
+  let answers: Array<() => void>;
+  let mounts: string[];
+
+  beforeEach(() => {
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetPaneLayoutForTest();
+    resetPanesForTest();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    createPane('main').replaceThread(makeThread({ id: THREAD }));
+    applyBrowserCompanionState(shown);
+    sent = [];
+    answers = [];
+    mounts = ['mount-1', 'mount-2'];
+    // No action answers until the test lets it: every one is on its way.
+    setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: Action) => {
+      sent.push({ ...action });
+      await new Promise<void>((resolve) => answers.push(resolve));
+      return shown;
+    }));
+    setBindingMock('BrowserCompanionPaneAttach', vi.fn(async () => ({ id: mounts.shift(), state: shown })));
+    setBindingMock('BrowserCompanionPaneDetach', vi.fn(async () => {}));
+  });
+  afterEach(() => {
+    for (const answer of answers.splice(0)) answer();
+    resetBrowserCompanionForTest();
+  });
+
+  const order = (action: Action) => ({ kind: action.kind, mount: action.mount ?? '', select: action.select ?? 0 });
+
+  it('numbers each selection in its mount when the user acts, before any answer, across a reconnect', async () => {
+    let pane = attachBrowserCompanion(THREAD);
+    await vi.waitFor(() => expect(pane.current).not.toBeNull());
+    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
+    void browserCompanionAct(THREAD, { kind: 'step', index: 1 });
+    void browserCompanionAct(THREAD, { kind: 'close', pageId: 'a' });
+    void openBrowserTab(THREAD);
+    void browserCompanionAct(THREAD, { kind: 'reopen' });
+    void browserCompanionAct(THREAD, { kind: 'duplicate', pageId: 'a' });
+    void browserCompanionAct(THREAD, { kind: 'download-open', downloadId: 'd' });
+    void browserCompanionAct(THREAD, { kind: 'restore', pageId: 'a' });
+    expect(sent.map(order)).toEqual([
+      { kind: 'activate', mount: 'mount-1', select: 1 },
+      { kind: 'step', mount: 'mount-1', select: 2 },
+      { kind: 'close', mount: '', select: 0 },
+      { kind: 'new', mount: 'mount-1', select: 3 },
+      { kind: 'reopen', mount: 'mount-1', select: 4 },
+      { kind: 'duplicate', mount: 'mount-1', select: 5 },
+      { kind: 'download-open', mount: 'mount-1', select: 6 },
+      { kind: 'restore', mount: '', select: 0 },
+    ]);
+
+    // The connection drops and the pane attaches again as a new mount; the
+    // numbers keep rising.
+    pane.release();
+    pane = attachBrowserCompanion(THREAD);
+    await vi.waitFor(() => expect(pane.current).not.toBeNull());
+    sent = [];
+    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
+    expect(sent.map(order)).toEqual([{ kind: 'activate', mount: 'mount-2', select: 7 }]);
+    pane.release();
+  });
+
+  it('sends a selection made with no pane mounted unnumbered', () => {
+    void browserCompanionAct(THREAD, { kind: 'activate', pageId: 'a' });
+    expect(sent.map(order)).toEqual([{ kind: 'activate', mount: '', select: 0 }]);
+  });
+});
