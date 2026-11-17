@@ -148,6 +148,9 @@ type paneMount struct {
 	findSeq uint64
 	// focus is the mount's page focus intent (focus_intent.go).
 	focus *mountFocus
+	// selection is the order of the tab selections made in the mount
+	// (selection.go).
+	selection *mountSelection
 }
 
 // A thread's state push shows each of its tabs' info, loading state and
@@ -1074,11 +1077,29 @@ func (m *Manager) openUserTab(ctx context.Context, access Access, address, label
 
 // ActivateCompanionPage is the user selecting a tab in the pane. It is
 // presented first (selectTab); a suspended page is then restored, and the
-// call answers when it is. A tab closed while it restored is no error.
+// call answers when it is. A tab closed while it restored is no error. A
+// selection a newer one from its mount overtook (ctx's Selection,
+// selection.go) changes nothing and restores nothing.
 func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
-	if err := m.selectTab(access, pageID); err != nil {
+	applied, err := m.selectTab(access, selectionOf(ctx), pageID)
+	if err != nil || !applied {
 		return err
+	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// RestoreActiveCompanionPage is the pane asking for the suspended tab it
+// shows, the thread's active one, to be restored. It selects nothing, so it
+// cannot undo a selection the user made since the pane saw that tab; a tab
+// that is no longer active is left as it is.
+func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID string) error {
+	pageID = strings.TrimSpace(pageID)
+	m.mu.Lock()
+	active := m.sessionLocked(access.ThreadID).ActivePageID
+	m.mu.Unlock()
+	if pageID == "" || pageID != active {
+		return nil
 	}
 	return m.restoreSelectedTab(ctx, access, pageID)
 }
@@ -1088,11 +1109,12 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 // Manager's own order and selection, so presses in a row each move one tab
 // whatever the client last saw. With no active tab, a forward step selects
 // the first tab and a backward one the last. Then it is ActivateCompanionPage.
+// Numbered steps compose by addition in any order (selection.go).
 func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
 	if step == 0 {
 		return fmt.Errorf("browser: tab step must not be 0")
 	}
-	pageID, err := m.selectTabWhere(access, func(tabs []threadTab, active string) int {
+	pageID, applied, err := m.selectTabWhere(access, selectionOf(ctx), step, func(tabs []threadTab, active string) int {
 		n := len(tabs)
 		if n == 0 {
 			return -1
@@ -1106,9 +1128,9 @@ func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int
 		if at < 0 && step < 0 {
 			at = 0
 		}
-		return ((at+step)%n + n) % n
+		return wrapTab(at+step, n)
 	})
-	if err != nil {
+	if err != nil || !applied {
 		return err
 	}
 	return m.restoreSelectedTab(ctx, access, pageID)

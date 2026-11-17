@@ -39,7 +39,9 @@ mode. Product behavior and authority are defined in
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab
-  stack and the tab menu's actions are `companion_tabs.go`.
+  stack and the tab menu's actions are `companion_tabs.go`. Every user
+  selection of a tab is ordered per pane mount by `selection.go` inside
+  the lock hold that sets the active tab.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. The pane uses a native view positioned over the SPA; pixels do not cross
   the transport. Keyboard focus enters a page's view only by a click or a

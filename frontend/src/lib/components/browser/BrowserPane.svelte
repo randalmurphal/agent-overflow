@@ -136,7 +136,9 @@
     }
     if (page.id === restoreAsked) return;
     restoreAsked = page.id;
-    void act('activate', page.id);
+    // Not a selection: the backend restores the tab only while it is the
+    // active one, so this cannot undo a tab the user picked since.
+    void act('restore', page.id);
   });
 
   // A new tab the user opened takes the address bar's focus once it is ready

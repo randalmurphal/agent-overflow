@@ -402,10 +402,33 @@ export function sendBrowserPageFocus(
   return BrowserCompanionDo(threadId, new BrowserCompanionAction({ kind, pageId, address: '', index: 0, mount, intent }));
 }
 
+// The action kinds that select a tab: the user's selections, which the
+// backend orders per pane mount (internal/browser/selection.go).
+const SELECTING_KINDS = new Set(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open']);
+
+// selectionSeq numbers the user's selections. One count for every mount is
+// still increasing per mount, and neither a mount's end nor a reconnect
+// resets it, so numbers only rise for the life of the page.
+let selectionSeq = 0;
+
+/**
+ * The mount and number of a selecting action, taken when the user acted:
+ * actions run concurrently on the backend, which applies a selection only
+ * if no newer one from the same mount was applied. With no mount the
+ * selection carries neither and applies in arrival order.
+ */
+function selectionOrder(threadId: string, kind: string): { mount: string; select: number } | null {
+  const mount = browserPaneMountId(threadId);
+  if (!mount || !SELECTING_KINDS.has(kind)) return null;
+  selectionSeq += 1;
+  return { mount, select: selectionSeq };
+}
+
 async function runBrowserAction(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar; downloadId?: string },
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
+  const order = selectionOrder(threadId, action.kind);
   noteBrowserActionStarted(threadId);
   noteBrowserActionError(threadId, '');
   try {
@@ -418,6 +441,7 @@ async function runBrowserAction(
         index: action.index ?? 0,
         ...(action.jar ? { jar: action.jar } : {}),
         ...(action.downloadId ? { downloadId: action.downloadId } : {}),
+        ...order,
       }),
     );
     applyBrowserCompanionState(state);
@@ -525,6 +549,7 @@ addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 export function resetBrowserCompanionForTest(): void {
   for (const observer of observers) observer.resetForTest?.();
   browserActionCounts.clear();
+  selectionSeq = 0;
   paneIds.clear();
   stateOrder.reset();
   liveStates.reset();

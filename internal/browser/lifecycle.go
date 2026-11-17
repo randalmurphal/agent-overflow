@@ -161,7 +161,19 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, user bool, in
 	}
 	if user {
 		info := m.sessionLocked(owner)
-		info.ActivePageID, info.Visible = p.id, true
+		info.Visible = true
+		// The new tab is the user's selection unless a newer one from the
+		// same mount overtook it (selection.go); then it opens behind.
+		tabs := m.companionTabsLocked(owner)
+		for i := range tabs {
+			if tabs[i].id != p.id {
+				continue
+			}
+			if at, ok := m.orderSelectionLocked(owner, selectionOf(ctx), tabs, i, 0); ok {
+				info.ActivePageID = tabs[at].id
+			}
+			break
+		}
 		info.UpdatedAt = time.Now()
 		m.sessions[owner] = info
 	}

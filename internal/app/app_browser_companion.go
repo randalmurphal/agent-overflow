@@ -28,6 +28,13 @@ type BrowserCompanionAction struct {
 	// "focus-page-withdraw": the pane mount and its number for the request.
 	Mount  string `json:"mount,omitempty"`
 	Intent uint64 `json:"intent,omitempty"`
+	// Select numbers a user's tab selection made in Mount ("activate",
+	// "step", and the "new", "reopen", "duplicate" and "download-open" that
+	// select the tab they open), increasing per mount in the order the user
+	// acted. The Manager applies a selection only if no newer one from the
+	// same mount was applied (internal/browser/selection.go). Zero, from an
+	// older client, applies in arrival order.
+	Select uint64 `json:"select,omitempty"`
 	// DownloadID names one of the thread's downloads (ThreadDownload.ID)
 	// for "download-cancel", "download-reveal" and "download-open".
 	DownloadID string `json:"downloadId,omitempty"`
@@ -178,6 +185,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	// newPage is the page a "new" opened, named in the answer so the client
 	// that asked can tell its own tab from one an agent opened meanwhile.
 	newPage := ""
+	ctx = appbrowser.WithSelection(ctx, appbrowser.Selection{Mount: strings.TrimSpace(action.Mount), Seq: action.Select})
 	switch strings.ToLower(strings.TrimSpace(action.Kind)) {
 	case "navigate":
 		_, err = a.browser.manager.NavigateCompanion(ctx, access, action.PageID, action.Address)
@@ -190,6 +198,9 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
 	case "activate":
 		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
+	case "restore":
+		// The pane's own request for the suspended tab it shows.
+		err = a.browser.manager.RestoreActiveCompanionPage(ctx, access, action.PageID)
 	case "step":
 		err = a.browser.manager.StepCompanionPage(ctx, access, action.Index)
 	case "move":
