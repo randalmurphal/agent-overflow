@@ -3,6 +3,7 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"image"
 	"image/color"
@@ -168,12 +169,7 @@ func westonScreenshot(t *testing.T) (image.Image, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(files[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	img, err := png.Decode(f)
+	img, err := png.Decode(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("decode the screenshot: %v", err)
 	}
