@@ -400,11 +400,16 @@ behave as a desktop browser's:
   download dialog never opens), WebView2 saves it, and the launcher reports
   it to the backend as whole snapshots (`internal/webview2host/download.go`,
   `internal/browser/hosted_downloads.go`); no download crosses CDP. The
-  backend applies them idempotently, so a lost report heals on the next:
-  the first it gets starts the row, a repeat changes nothing, and nothing
-  after the end reopens it. A cancel is answered with the download's
-  snapshot, and a running download the launcher has not reported for ten
-  seconds is asked for one, so a row whose end was lost settles. WebView2
+  launcher numbers each download's snapshots, and the backend applies a
+  download's snapshots one at a time, each only if newer than the last it
+  applied, so a lost report heals on the next and reports that overtake
+  each other settle in the launcher's order: the first it gets starts the
+  row, a repeat or an older one changes nothing, and nothing after the end
+  reopens it. A cancel is answered with the download's snapshot, and a
+  running download the launcher has not reported for ten seconds is asked
+  for one, so a row whose end was lost settles. An answer settles or
+  advances a row and never creates one; for an id the launcher has no
+  record of it says so, which ends the row only if it still runs. WebView2
   resumes a dropped download itself, as a new download start that carries
   the interruption's reason; the launcher keeps it as the same row, saving
   to the file the download started with, so one click is one row, one file

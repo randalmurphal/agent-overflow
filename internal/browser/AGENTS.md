@@ -154,8 +154,11 @@ alone settles the user's cancel. Every removal of a live page goes through
 `pageLeftLocked`, which settles the page's running downloads, except one
 whose file is being published, which its publish settles, and, under the
 page's `downloadMu`, ends its admission of new ones. The hosted engine's
-downloads are the launcher's snapshots (`hosted_downloads.go`), which it
-applies idempotently and asks for again through one status loop, so a
+downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
+which it applies one at a time per download, held across the Manager's
+callbacks, and only when newer than the last applied; an answer never
+creates a row, and a download is the Manager's to cancel or ask about only
+once admitted. One status loop asks for a quiet download's snapshot, so a
 lost report never leaves a row running; headless Chromium's arrive over
 CDP (`headless_downloads.go`). Preserve the denial of sensitive website
 permissions.

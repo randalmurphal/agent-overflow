@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/webview2host"
@@ -11,16 +12,23 @@ import (
 // Downloads on the hosted engine are the launcher's: it takes every download
 // a pane page starts, so WebView2's own dialog never opens, lets WebView2
 // save it to the Windows user's Downloads folder, and reports each one as
-// whole snapshots (ReportDownload, internal/webview2host/download.go). This
-// engine applies them idempotently: a snapshot of a download it has no row
-// for starts the row (a lost first report heals on the next), a repeat
+// whole snapshots (ReportDownload, internal/webview2host/download.go),
+// each numbered in the order the launcher took it. Reports arrive on RPC
+// goroutines of their own, so they can overtake each other; this engine
+// applies one download's snapshots one at a time (hostedDownload.apply,
+// held across the Manager's callbacks), each only if it is newer than the
+// last it applied: a snapshot of a download it has no row for starts the
+// row (a lost first report heals on the next), a repeat or an older one
 // changes nothing, and nothing after a terminal snapshot reopens it. The
 // Manager's cancel is OpCancelDownload, and a running download the launcher
 // has not reported for hostedDownloadQuiet is asked about with
 // OpDownloadStatus, so a lost end settles with no one acting. Both are
-// answered with a snapshot. Nothing about downloads crosses CDP. A
-// download started in a window the launcher does not own (a popup WebView2
-// opened itself) is never reported and keeps WebView2's own handling.
+// answered with a snapshot marked as an answer, which settles or advances a
+// row and never creates one; DownloadUnknown, the answer for an id the
+// launcher has no record of, ends only a row still running. Nothing about
+// downloads crosses CDP. A download started in a window the launcher does
+// not own (a popup WebView2 opened itself) is never reported and keeps
+// WebView2's own handling.
 
 const (
 	// hostedPathTimeout bounds the `wslpath -u` of a finished download's
@@ -35,19 +43,20 @@ const (
 	// running.
 	hostedDownloadQuiet = 10 * time.Second
 	// maxHostedEndedDownloads bounds the ended ids the engine keeps per
-	// page, so a late snapshot of one cannot reopen its row; past it the
-	// oldest goes, and a snapshot naming it would start a row again. None
-	// comes: the launcher sends an ended download's snapshot only in answer
-	// to this engine, which asks only about running ones.
+	// page, so a late snapshot of one cannot reopen its row. Past it the
+	// oldest goes: an answer naming it still creates nothing, and only a
+	// report the launcher sent unasked, delayed past this many later ends
+	// of the page's downloads, would start its row again.
 	maxHostedEndedDownloads = webview2host.MaxEndedDownloads
 )
 
 // hostedDownloads is the engine's record of the launcher's downloads.
 // Guarded by hostedEngine.mu.
 type hostedDownloads struct {
-	// running is each running download by the launcher's id.
+	// running is each download by the launcher's id from its first snapshot
+	// until it ends or is refused, admitted or with its admission in flight.
 	running map[string]*hostedDownload
-	// ended is each page's ended download ids, oldest first.
+	// ended is each page's ended or refused download ids, oldest first.
 	ended map[string][]string
 	// watching is set while the status loop runs; stop ends it.
 	watching bool
@@ -58,6 +67,15 @@ type hostedDownload struct {
 	page string
 	// heard is when the last snapshot arrived, or the last status was asked.
 	heard time.Time
+	// admitted is set once the Manager took the download: only then is it
+	// known to the Manager, to cancel or to ask about. gone is set as it
+	// leaves running (ended, refused, or its page or the engine went).
+	admitted, gone bool
+	// apply is held while one snapshot is applied, across the Manager's
+	// callbacks, so the download's snapshots reach the Manager one at a time.
+	apply sync.Mutex
+	// applied is the number of the last snapshot applied. Guarded by apply.
+	applied uint64
 }
 
 func newHostedDownloads() hostedDownloads {
@@ -74,6 +92,9 @@ func (d *hostedDownloads) endedIn(page, id string) bool {
 }
 
 func (d *hostedDownloads) noteEnded(page, id string) {
+	if known := d.running[id]; known != nil {
+		known.gone = true
+	}
 	delete(d.running, id)
 	ended := append(d.ended[page], id)
 	if len(ended) > maxHostedEndedDownloads {
@@ -83,7 +104,7 @@ func (d *hostedDownloads) noteEnded(page, id string) {
 }
 
 // downloadReport applies one launcher snapshot of a download of page
-// pageID.
+// pageID, in the download's apply section.
 func (e *hostedEngine) downloadReport(pageID, detail string) {
 	report, err := webview2host.ParseDownloadReport(detail)
 	if err != nil {
@@ -97,6 +118,13 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 	}
 	known := e.downloads.running[report.ID]
 	if known == nil {
+		if report.Answer {
+			// An answer settles or advances a row and never creates one: the
+			// engine asks only about downloads it has, so this one ended here
+			// and was forgotten, or its page went.
+			e.mu.Unlock()
+			return
+		}
 		if _, live := e.targetByPage[pageID]; !live {
 			// No page of the Manager's started it, or that page is leaving;
 			// the launcher cancels a closed page's downloads itself.
@@ -107,14 +135,30 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		e.downloads.running[report.ID] = known
 		e.watchDownloadsLocked()
 	}
-	fresh := known.heard.IsZero()
 	known.heard = time.Now()
-	if report.Terminal() {
-		e.downloads.noteEnded(pageID, report.ID)
-	}
 	e.mu.Unlock()
 
-	if fresh {
+	known.apply.Lock()
+	defer known.apply.Unlock()
+	e.mu.Lock()
+	gone, admitted := known.gone, known.admitted
+	e.mu.Unlock()
+	if gone {
+		// Ended or refused while this snapshot waited its turn.
+		return
+	}
+	if report.State == webview2host.DownloadUnknown {
+		// Created by no answer, so the download is admitted.
+		e.mu.Lock()
+		e.downloads.noteEnded(pageID, report.ID)
+		e.mu.Unlock()
+		e.events.DownloadProgress(downloadProgress{ID: report.ID, State: downloadCanceled, Error: report.Reason})
+		return
+	}
+	if report.Seq <= known.applied {
+		return
+	}
+	if !admitted {
 		name := report.Name
 		if name == "" {
 			name = windowsBase(report.Path)
@@ -129,11 +173,20 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			}
 			return
 		}
+		e.mu.Lock()
+		known.admitted = true
+		e.mu.Unlock()
+	}
+	known.applied = report.Seq
+	if report.Terminal() {
+		e.mu.Lock()
+		e.downloads.noteEnded(pageID, report.ID)
+		e.mu.Unlock()
 	}
 	progress := downloadProgress{ID: report.ID, Received: float64(report.Received), Total: float64(report.Total), State: downloadInProgress}
 	switch report.State {
 	case webview2host.DownloadRunning:
-		if fresh && report.Received == 0 {
+		if !admitted && report.Received == 0 {
 			return
 		}
 	case webview2host.DownloadCompleted:
@@ -163,12 +216,14 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 func (e *hostedEngine) cancelDownload(id string) error {
 	e.mu.Lock()
 	known := e.downloads.running[id]
-	page := ""
+	page, admitted := "", false
 	if known != nil {
-		page = known.page
+		page, admitted = known.page, known.admitted
 	}
 	e.mu.Unlock()
-	if known == nil {
+	if !admitted {
+		// A download whose admission is in flight is not the Manager's yet,
+		// so its cancel cannot come from there.
 		return errDownloadEnded
 	}
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCancelDownload, PageID: page, Download: id}) {
@@ -220,7 +275,7 @@ func (e *hostedEngine) askQuietDownloads(stop chan struct{}) {
 			return
 		}
 		for id, d := range e.downloads.running {
-			if now.Sub(d.heard) >= interval {
+			if d.admitted && now.Sub(d.heard) >= interval {
 				d.heard = now
 				ask = append(ask, webview2host.Directive{Op: webview2host.OpDownloadStatus, PageID: d.page, Download: id})
 			}
@@ -237,6 +292,7 @@ func (e *hostedEngine) askQuietDownloads(stop chan struct{}) {
 func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
 	for id, d := range e.downloads.running {
 		if d.page == pageID {
+			d.gone = true
 			delete(e.downloads.running, id)
 		}
 	}
@@ -248,6 +304,9 @@ func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
 func (e *hostedEngine) stopDownloadsLocked() {
 	if e.downloads.stop != nil {
 		close(e.downloads.stop)
+	}
+	for _, d := range e.downloads.running {
+		d.gone = true
 	}
 	e.downloads = newHostedDownloads()
 }

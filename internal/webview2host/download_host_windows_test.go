@@ -223,7 +223,7 @@ func states(reports []DownloadReport) string {
 }
 
 // Every report is the download's whole snapshot: its address, name and
-// file and bytes, from the first on.
+// file and bytes, from the first on, numbered from 1 in order.
 func TestALauncherDownloadReportsSnapshotsAndLetsItsOperationGo(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
@@ -241,6 +241,9 @@ func TestALauncherDownloadReportsSnapshotsAndLetsItsOperationGo(t *testing.T) {
 		if report.URI != "https://example.test/f" || report.Name != "f.bin" || report.Path != `C:\D\f.bin` || report.Total != 100 {
 			t.Fatalf("report %d is not a whole snapshot: %+v", i, report)
 		}
+		if report.Seq != uint64(i+1) || report.Answer {
+			t.Fatalf("report %d is numbered %d (answer %v)", i, report.Seq, report.Answer)
+		}
 	}
 	if last := reports[2]; last.Received != 100 {
 		t.Fatalf("completion %+v", last)
@@ -248,11 +251,12 @@ func TestALauncherDownloadReportsSnapshotsAndLetsItsOperationGo(t *testing.T) {
 	r.done(t, op)
 }
 
-// A directive naming a download is answered with its snapshot: a running
-// one's (and a cancel cancels it, its end following from the operation),
-// an ended one's terminal snapshot again, and an unknown id a terminal
-// snapshot saying so. A repeated terminal state and a late progress event
-// after the end reach nobody.
+// A directive naming a download is answered with a snapshot marked as an
+// answer: a running one's, numbered after the last (and a cancel cancels
+// it, its end following from the operation), an ended one's terminal
+// snapshot again under its own number, and an unknown id "unknown". A
+// repeated terminal state and a late progress event after the end reach
+// nobody.
 func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
@@ -260,22 +264,25 @@ func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 	r.take()
 
 	r.host.answerDownload(r.page, "dl-t-1", false)
-	if got := r.take(); states(got) != "dl-t-1:running" || op.canceled != 0 {
-		t.Fatalf("a status of a running download answers %s and cancels %d times", states(got), op.canceled)
+	if got := r.take(); states(got) != "dl-t-1:running" || op.canceled != 0 || got[0].Seq != 2 || !got[0].Answer {
+		t.Fatalf("a status of a running download answers %+v and cancels %d times", got, op.canceled)
 	}
 	r.host.answerDownload(r.page, "dl-t-1", true)
-	if got := r.take(); states(got) != "dl-t-1:running" || op.canceled != 1 {
-		t.Fatalf("a cancel answers %s and cancels %d times", states(got), op.canceled)
+	if got := r.take(); states(got) != "dl-t-1:running" || op.canceled != 1 || got[0].Seq != 3 || !got[0].Answer {
+		t.Fatalf("a cancel answers %+v and cancels %d times", got, op.canceled)
 	}
 	op.set(downloadStateInterrupted, downloadUserCanceled)
 	terminal := r.take()
-	if states(terminal) != "dl-t-1:interrupted" || terminal[0].Reason != "the download was canceled" {
+	if states(terminal) != "dl-t-1:interrupted" || terminal[0].Reason != "the download was canceled" || terminal[0].Seq != 4 || terminal[0].Answer {
 		t.Fatalf("the cancel ended as %+v", terminal)
 	}
-	// Ended: the same terminal snapshot again, and nothing canceled.
+	// Ended: the same terminal snapshot again, as an answer, and nothing
+	// canceled.
 	r.host.answerDownload(r.page, "dl-t-1", true)
 	r.host.answerDownload(r.page, "dl-t-1", false)
-	if got := r.take(); len(got) != 2 || got[0] != terminal[0] || got[1] != terminal[0] || op.canceled != 1 {
+	again := terminal[0]
+	again.Answer = true
+	if got := r.take(); len(got) != 2 || got[0] != again || got[1] != again || op.canceled != 1 {
 		t.Fatalf("an ended download answers %+v (canceled %d times)", got, op.canceled)
 	}
 	// A repeat of the end, and a late progress event, reach nobody.
@@ -286,7 +293,7 @@ func TestADirectiveIsAnsweredWithTheDownloadsSnapshot(t *testing.T) {
 		t.Fatalf("after the end the operation reported %+v", got)
 	}
 	r.host.answerDownload(r.page, "dl-t-9", true)
-	if got := r.take(); len(got) != 1 || got[0] != (DownloadReport{ID: "dl-t-9", State: DownloadInterrupted, Reason: DownloadUnknownReason}) {
+	if got := r.take(); len(got) != 1 || got[0] != (DownloadReport{ID: "dl-t-9", State: DownloadUnknown, Reason: DownloadUnknownReason, Answer: true}) {
 		t.Fatalf("an unknown id answers %+v", got)
 	}
 	r.done(t, op)

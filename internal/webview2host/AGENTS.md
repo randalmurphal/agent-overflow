@@ -76,12 +76,15 @@ a controller that outlived its page.
 A page's downloads are the launcher's (`download_windows.go`): it handles
 each `DownloadStarting`, so WebView2's dialog never opens, keeps the
 `DownloadOperation` and reports every change as the download's whole
-snapshot (`ReportDownload`, `download.go`), progress throttled. A
-directive naming a download (`OpCancelDownload`, `OpDownloadStatus`) is
-answered with its snapshot: a running one's, an ended one's kept terminal
-snapshot (up to `MaxEndedDownloads` per page while the page lives), or one
-saying the id is unknown. A report is bounded: the address is shortened,
-then the path left out, never the start or end. WebView2 resumes a
+snapshot (`ReportDownload`, `download.go`), progress throttled, each
+numbered (`Seq`) in the order taken so the backend applies only newer
+ones. A directive naming a download (`OpCancelDownload`,
+`OpDownloadStatus`) is answered with a snapshot marked `Answer`, which the
+backend never creates a row from: a running one's, an ended one's kept
+terminal snapshot under its own number (up to `MaxEndedDownloads` per page
+while the page lives), or `DownloadUnknown` for an id with no record. A
+report is bounded: the address is shortened, then the path left out,
+never the start or end. WebView2 resumes a
 dropped download as a new `DownloadStarting` whose operation carries the
 interruption's reason; it is adopted into the page's running download from
 that address (the one saving to its file, else the oldest), set back to

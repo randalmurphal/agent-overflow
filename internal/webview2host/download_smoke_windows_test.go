@@ -99,24 +99,26 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 	}
 	s.expectNoFile("fail.bin")
 
-	// A directive naming a download is answered with its snapshot: an
-	// ended one's terminal snapshot again, whether it asks for a cancel or
-	// the status, and an unknown id a terminal snapshot saying so.
+	// A directive naming a download is answered with a snapshot marked as
+	// an answer: an ended one's terminal snapshot again, whether it asks for
+	// a cancel or the status, and an unknown id "unknown".
+	kept := held.final
+	kept.Answer = true
 	for _, op := range []Op{OpCancelDownload, OpDownloadStatus} {
 		s.host.Apply(Directive{Op: op, PageID: "page-1", Download: held.id})
-		if got := s.nextReport(); got != held.final {
-			t.Fatalf("%s of an ended download answered %+v, want %+v", op, got, held.final)
+		if got := s.nextReport(); got != kept {
+			t.Fatalf("%s of an ended download answered %+v, want %+v", op, got, kept)
 		}
 	}
 	s.host.Apply(Directive{Op: OpDownloadStatus, PageID: "page-1", Download: "dl-none-1"})
-	if got := s.nextReport(); got != (DownloadReport{ID: "dl-none-1", State: DownloadInterrupted, Reason: DownloadUnknownReason}) {
+	if got := s.nextReport(); got != (DownloadReport{ID: "dl-none-1", State: DownloadUnknown, Reason: DownloadUnknownReason, Answer: true}) {
 		t.Fatalf("an unknown id answered %+v", got)
 	}
 	// A running one answers its running snapshot, and a status cancels
 	// nothing.
 	asked := s.navigateStarted("asked.bin", "/slow/asked.bin")
 	s.host.Apply(Directive{Op: OpDownloadStatus, PageID: "page-1", Download: asked.id})
-	if got := s.nextReport(); got.ID != asked.id || got.State != DownloadRunning || got.Path != asked.path {
+	if got := s.nextReport(); got.ID != asked.id || got.State != DownloadRunning || got.Path != asked.path || !got.Answer {
 		t.Fatalf("a status of a running download answered %+v", got)
 	}
 	for _, later := range s.quietFor(2 * time.Second) {
@@ -225,6 +227,8 @@ type smokeDownload struct {
 	path     string
 	progress int
 	final    DownloadReport
+	// seq is the number of the last snapshot read.
+	seq uint64
 }
 
 func startDownloadSmoke(t *testing.T) *downloadSmoke {
@@ -485,7 +489,7 @@ func (s *downloadSmoke) started(match string) *smokeDownload {
 				s.t.Fatalf("the download of %s is to be saved at %s, outside %s", match, r.Path, s.downloads)
 			}
 			s.expectNoDialog()
-			return &smokeDownload{id: r.ID, uri: r.URI, path: r.Path}
+			return &smokeDownload{id: r.ID, uri: r.URI, path: r.Path, seq: r.Seq}
 		case <-deadline:
 			s.t.Fatalf("no download of %s began", match)
 		}
@@ -509,6 +513,10 @@ func (s *downloadSmoke) settle(d *smokeDownload) {
 			if r.Path != d.path && r.State != DownloadCompleted || r.URI != d.uri {
 				s.t.Fatalf("%s moved from %s (%s) to %s (%s) before it ended", d.id, d.uri, d.path, r.URI, r.Path)
 			}
+			if r.Seq <= d.seq {
+				s.t.Fatalf("%s reported snapshot %d after %d", d.id, r.Seq, d.seq)
+			}
+			d.seq = r.Seq
 			if !r.Terminal() {
 				d.progress++
 				continue

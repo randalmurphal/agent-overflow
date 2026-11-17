@@ -9,7 +9,7 @@ import (
 )
 
 func TestDownloadReportRoundTrips(t *testing.T) {
-	want := DownloadReport{ID: "dl-abc-1", State: DownloadCompleted, URI: "https://example.test/a.bin?x=1&y=<2>", Name: "a (1).bin", Path: `C:\Users\u\Downloads\a (1).bin`, Received: 4096, Total: 4096}
+	want := DownloadReport{ID: "dl-abc-1", Seq: 7, Answer: true, State: DownloadCompleted, URI: "https://example.test/a.bin?x=1&y=<2>", Name: "a (1).bin", Path: `C:\Users\u\Downloads\a (1).bin`, Received: 4096, Total: 4096}
 	detail, err := want.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestDownloadReportShortensItsAddressToFit(t *testing.T) {
 		{"escaped quotes and controls", "data:text/plain," + strings.Repeat("\"\x01\\", 2000)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			report := DownloadReport{ID: "dl-abc-2", State: DownloadRunning, URI: tc.uri, Name: "x.txt", Path: `C:\Users\u\Downloads\x.txt`, Received: 1, Total: 9}
+			report := DownloadReport{ID: "dl-abc-2", Seq: 1, State: DownloadRunning, URI: tc.uri, Name: "x.txt", Path: `C:\Users\u\Downloads\x.txt`, Received: 1, Total: 9}
 			detail, err := report.Encode()
 			if err != nil {
 				t.Fatal(err)
@@ -66,7 +66,7 @@ func TestDownloadReportShortensItsAddressToFit(t *testing.T) {
 func TestDownloadReportLeavesOutAPathThatCannotFit(t *testing.T) {
 	long := `C:\` + strings.Repeat("a", MaxReportDetailBytes) + `\x.txt`
 	for _, state := range []string{DownloadRunning, DownloadCompleted} {
-		detail, err := DownloadReport{ID: "dl-abc-3", State: state, URI: "https://example.test/x", Name: "x.txt", Path: long, Received: 5}.Encode()
+		detail, err := DownloadReport{ID: "dl-abc-3", Seq: 1, State: state, URI: "https://example.test/x", Name: "x.txt", Path: long, Received: 5}.Encode()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func TestDownloadReportLeavesOutAPathThatCannotFit(t *testing.T) {
 			t.Fatalf("a completed snapshot without its path says %q", parsed.Reason)
 		}
 	}
-	base := DownloadReport{ID: "dl-abc-4", State: DownloadCompleted, Name: "x.txt", Received: 5, Total: 5}
+	base := DownloadReport{ID: "dl-abc-4", Seq: 1, State: DownloadCompleted, Name: "x.txt", Received: 5, Total: 5}
 	empty, err := base.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -102,12 +102,15 @@ func TestDownloadReportLeavesOutAPathThatCannotFit(t *testing.T) {
 func TestParseDownloadReportRefusesMalformedReports(t *testing.T) {
 	for name, detail := range map[string]string{
 		"not json":                    "{",
-		"no id":                       `{"state":"running"}`,
-		"bad id":                      `{"id":"a/b","state":"running"}`,
-		"unknown state":               `{"id":"dl-1","state":"paused"}`,
-		"negative bytes":              `{"id":"dl-1","state":"running","received":-1}`,
-		"completed, no file, no word": `{"id":"dl-1","state":"completed","received":4}`,
-		"negative total size":         `{"id":"dl-1","state":"running","total":-4}`,
+		"no id":                       `{"seq":1,"state":"running"}`,
+		"bad id":                      `{"id":"a/b","seq":1,"state":"running"}`,
+		"unknown state":               `{"id":"dl-1","seq":1,"state":"paused"}`,
+		"negative bytes":              `{"id":"dl-1","seq":1,"state":"running","received":-1}`,
+		"completed, no file, no word": `{"id":"dl-1","seq":1,"state":"completed","received":4}`,
+		"negative total size":         `{"id":"dl-1","seq":1,"state":"running","total":-4}`,
+		"a snapshot with no number":   `{"id":"dl-1","state":"running"}`,
+		"a numbered unknown":          `{"id":"dl-1","seq":2,"answer":true,"state":"unknown"}`,
+		"an unknown not answering":    `{"id":"dl-1","state":"unknown"}`,
 	} {
 		if _, err := ParseDownloadReport(detail); err == nil {
 			t.Errorf("%s: %s parsed", name, detail)
@@ -116,20 +119,21 @@ func TestParseDownloadReportRefusesMalformedReports(t *testing.T) {
 }
 
 // A page keeps its last MaxEndedDownloads terminal snapshots to answer a
-// directive; past the bound the oldest is answered as unknown.
+// directive, as answers under their own numbers; past the bound the oldest
+// is answered as unknown.
 func TestEndedDownloadsAreBoundedAndAnswerUnknownIDs(t *testing.T) {
 	var ended endedDownloads
 	for i := range MaxEndedDownloads + 3 {
-		ended.add(DownloadReport{ID: fmt.Sprintf("dl-%d", i), State: DownloadCompleted, Path: `C:\x`})
+		ended.add(DownloadReport{ID: fmt.Sprintf("dl-%d", i), Seq: 4, State: DownloadCompleted, Path: `C:\x`})
 	}
 	if len(ended.byID) != MaxEndedDownloads || len(ended.order) != MaxEndedDownloads {
 		t.Fatalf("kept %d snapshots in %d places", len(ended.byID), len(ended.order))
 	}
-	if got := ended.answer("dl-3"); got.State != DownloadCompleted || got.Path != `C:\x` {
+	if got := ended.answer("dl-3"); got.State != DownloadCompleted || got.Path != `C:\x` || got.Seq != 4 || !got.Answer {
 		t.Fatalf("a kept snapshot answers %+v", got)
 	}
 	for _, id := range []string{"dl-0", "dl-nope"} {
-		if got := ended.answer(id); got != (DownloadReport{ID: id, State: DownloadInterrupted, Reason: DownloadUnknownReason}) {
+		if got := ended.answer(id); got != (DownloadReport{ID: id, State: DownloadUnknown, Reason: DownloadUnknownReason, Answer: true}) {
 			t.Fatalf("%s answers %+v", id, got)
 		}
 	}

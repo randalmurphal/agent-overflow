@@ -37,6 +37,8 @@ type hostDownload struct {
 	received, total int64
 	// cancelRequested is the backend's cancel, applied to a resume too.
 	cancelRequested bool
+	// snapshots counts the snapshots taken, numbering each (Seq).
+	snapshots uint64
 	// stale holds the operations resumes replaced (retireOperation).
 	stale []downloadOp
 }
@@ -169,13 +171,15 @@ func (h *Host) resumeDownload(d *hostDownload, args *iDownloadStartingEventArgs,
 	h.downloadStateChanged(d)
 }
 
-// snapshot is the download's whole state as a report.
+// snapshot is the download's whole state as a report, numbered after the
+// last one taken.
 func (d *hostDownload) snapshot(state, reason string) DownloadReport {
 	if d.op != nil {
 		d.received, d.total = d.op.bytesReceived(), d.op.totalBytes()
 	}
+	d.snapshots++
 	return DownloadReport{
-		ID: d.id, State: state, URI: d.uri, Name: windowsFileName(d.path), Path: d.path,
+		ID: d.id, Seq: d.snapshots, State: state, URI: d.uri, Name: windowsFileName(d.path), Path: d.path,
 		Received: d.received, Total: d.total, Reason: reason,
 	}
 }
@@ -315,10 +319,10 @@ func (h *Host) releaseOperations(d *hostDownload) {
 }
 
 // answerDownload answers a directive naming one of the page's downloads
-// with its snapshot. A cancel cancels a running download first, and its end
-// follows from the operation's state change. An ended download's answer is
-// its terminal snapshot again; an id with no record gets a terminal
-// snapshot saying so.
+// with its snapshot, marked as an answer. A cancel cancels a running
+// download first, and its end follows from the operation's state change.
+// An ended download's answer is its terminal snapshot again; an id with no
+// record gets DownloadUnknown.
 func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	d := page.downloads[id]
 	if d == nil {
@@ -332,7 +336,9 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 			h.config.Logf("browser host: cancel download %s: %v", id, err)
 		}
 	}
-	h.report(page, d.snapshot(DownloadRunning, ""))
+	answer := d.snapshot(DownloadRunning, "")
+	answer.Answer = true
+	h.report(page, answer)
 }
 
 // retireDownloads cancels and lets go every download of a page that is

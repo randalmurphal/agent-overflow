@@ -19,20 +19,27 @@ import (
 // (download_windows.go). WebView2 saves the file where it would anyway: the
 // user's Downloads folder, under a name that does not exist yet.
 //
-// Every report is the download's whole snapshot, and the backend applies
-// snapshots idempotently: one for a download it has no row for creates the
-// row, a repeat changes nothing, and nothing after a terminal snapshot
-// reopens it. So a lost report heals on the next one, and the launcher
-// answers every directive naming a download with its snapshot: a running
-// one's, an ended one's terminal snapshot again (kept while its page lives,
-// up to MaxEndedDownloads per page), or, for an id it has no record of, a
-// terminal snapshot saying so (DownloadUnknownReason).
+// Every report is the download's whole snapshot, numbered (Seq) in the
+// order the launcher took it, and the backend applies a download's
+// snapshots one at a time, each only if it is newer than the last it
+// applied: one for a download it has no row for creates the row, a repeat
+// or an older one changes nothing, and nothing after a terminal snapshot
+// reopens it. So a lost report heals on the next one, and reports that
+// overtake each other on the way settle as the launcher took them. The
+// launcher answers every directive naming a download with a snapshot
+// marked as an answer (Answer), which settles or advances a row and never
+// creates one: a running download's, an ended one's terminal snapshot
+// again (kept while its page lives, up to MaxEndedDownloads per page), or,
+// for an id it has no record of, DownloadUnknown.
 
 // The states a DownloadReport carries: running until one terminal state.
+// DownloadUnknown is no download's state: it answers a directive naming an
+// id the launcher has no record of, and ends only a row still running.
 const (
 	DownloadRunning     = "running"
 	DownloadCompleted   = "completed"
 	DownloadInterrupted = "interrupted"
+	DownloadUnknown     = "unknown"
 )
 
 // DownloadProgressInterval is the most often the launcher reports one
@@ -45,8 +52,7 @@ const DownloadProgressInterval = 250 * time.Millisecond
 // first, and a directive naming it is answered as an unknown id is.
 const MaxEndedDownloads = 64
 
-// DownloadUnknownReason is the terminal snapshot's reason for a download
-// id the launcher has no record of.
+// DownloadUnknownReason is the reason a DownloadUnknown answer carries.
 const DownloadUnknownReason = "the browser host has no record of this download"
 
 // DownloadPathTooLongReason is a completed snapshot's reason when the
@@ -55,13 +61,18 @@ const DownloadUnknownReason = "the browser host has no record of this download"
 const DownloadPathTooLongReason = "the saved file's path is too long to report, so it is not opened from here"
 
 // DownloadReport is the detail of a ReportDownload: the download's whole
-// snapshot. ID is the launcher's id for the download; Name the saved
-// file's name and Path the file as Windows names it, from the first
-// snapshot on; URI its address, shortened or left out so the report fits;
-// Reason an interrupted download's cause, or why a completed one's file
-// is not reported (DownloadPathTooLongReason).
+// snapshot. ID is the launcher's id for the download; Seq the snapshot's
+// number among the download's, from 1, increasing in the order the
+// launcher took them (0 for DownloadUnknown, which is no snapshot); Answer
+// marks one sent in answer to a directive; Name the saved file's name and
+// Path the file as Windows names it, from the first snapshot on; URI its
+// address, shortened or left out so the report fits; Reason an interrupted
+// download's cause, why a completed one's file is not reported
+// (DownloadPathTooLongReason), or DownloadUnknownReason.
 type DownloadReport struct {
 	ID       string `json:"id"`
+	Seq      uint64 `json:"seq,omitempty"`
+	Answer   bool   `json:"answer,omitempty"`
 	State    string `json:"state"`
 	URI      string `json:"uri,omitempty"`
 	Name     string `json:"name,omitempty"`
@@ -131,6 +142,13 @@ func ParseDownloadReport(detail string) (DownloadReport, error) {
 	}
 	switch r.State {
 	case DownloadRunning, DownloadCompleted, DownloadInterrupted:
+		if r.Seq == 0 {
+			return DownloadReport{}, errors.New("a download snapshot has no number")
+		}
+	case DownloadUnknown:
+		if r.Seq != 0 || !r.Answer {
+			return DownloadReport{}, errors.New("an unknown-download report must be an unnumbered answer")
+		}
 	default:
 		return DownloadReport{}, fmt.Errorf("download report state %q is unknown", r.State)
 	}
@@ -250,11 +268,12 @@ func (e *endedDownloads) add(r DownloadReport) {
 	}
 }
 
-// answer is the terminal snapshot a directive naming id gets: the ended
-// download's, or one saying the id is unknown.
+// answer is what a directive naming an ended or unknown id gets: the ended
+// download's terminal snapshot, under its own number, or DownloadUnknown.
 func (e *endedDownloads) answer(id string) DownloadReport {
 	if r, ok := e.byID[id]; ok {
+		r.Answer = true
 		return r
 	}
-	return DownloadReport{ID: id, State: DownloadInterrupted, Reason: DownloadUnknownReason}
+	return DownloadReport{ID: id, State: DownloadUnknown, Reason: DownloadUnknownReason, Answer: true}
 }
