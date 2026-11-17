@@ -172,15 +172,19 @@ func (m *Manager) sessionLocked(threadID string) SessionInfo {
 	return info
 }
 
-func (m *Manager) ensureActivePage(threadID, pageID string) {
+// ensureActivePage makes pageID the thread's active page when it has none,
+// and reports whether it did.
+func (m *Manager) ensureActivePage(threadID, pageID string) bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	info := m.sessionLocked(threadID)
-	if info.ActivePageID == "" {
-		info.ActivePageID = pageID
-		info.UpdatedAt = time.Now()
-		m.sessions[threadID] = info
+	if info.ActivePageID != "" {
+		return false
 	}
-	m.mu.Unlock()
+	info.ActivePageID = pageID
+	info.UpdatedAt = time.Now()
+	m.sessions[threadID] = info
+	return true
 }
 
 func (m *Manager) setActivePage(threadID, pageID string) {

@@ -28,8 +28,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
-	p.setInfo(snapshot.PageInfo)
-	m.pageChanged(p)
+	m.pageChanged(p, p.setInfo(snapshot.PageInfo))
 	return snapshot, nil
 }
 
@@ -353,20 +352,18 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
 	info, err := m.pageInfo(ctx, p)
+	changed := false
 	if err == nil {
-		p.setInfo(info)
+		changed = p.setInfo(info)
 		info = p.cachedInfo()
 	}
-	m.pageChanged(p)
+	m.pageChanged(p, changed)
 	return info, err
 }
 
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
 	info, err := m.pageInfo(ctx, p)
-	if err == nil {
-		p.setInfo(info)
-	}
-	m.pageChanged(p)
+	m.pageChanged(p, err == nil && p.setInfo(info))
 }
 
 // lookupOrSelectPage answers the live page a page-scoped call acts on: the

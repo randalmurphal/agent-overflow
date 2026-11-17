@@ -455,9 +455,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer cancel()
 	info, err := m.pageInfo(opCtx, p)
 	if err == nil {
-		p.setInfo(info)
+		changed := p.setInfo(info)
 		info = p.cachedInfo()
-		m.pageChanged(p)
+		m.pageChanged(p, changed)
 	}
 	return info, err
 }
@@ -496,11 +496,12 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	}
 	p.touch()
 	info, err := m.pageInfo(opCtx, p)
+	changed := false
 	if err == nil {
-		p.setInfo(info)
+		changed = p.setInfo(info)
 		info = p.cachedInfo()
 	}
-	m.pageChanged(p)
+	m.pageChanged(p, changed)
 	return info, err
 }
 
@@ -901,7 +902,8 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	scope.pages[p.id] = p
 	m.mu.Unlock()
-	m.pageChanged(p)
+	// A new tab.
+	m.pageChanged(p, true)
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}
