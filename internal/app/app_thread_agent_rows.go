@@ -134,14 +134,17 @@ type ThreadAgentRow struct {
 	// counts its agent's, its own native agents' left to their rows; and
 	// the time its turns ran, the open one's so far.
 	// TurnOpen says a turn is open, whose time goes on from RuntimeMs as
-	// read. Read here, or reported by the paired computer that holds it;
+	// read, and TurnStartedAt which turn: its start on the computer that
+	// holds the thread, an identity a later read is compared with, never a
+	// time this computer's clock is compared with. Read here, or reported by the paired computer that holds it;
 	// zero for every other kind and from a computer that does not report
 	// them, and for a paired spawn under Past whose computer has not
 	// answered, NestedUnavailable then saying why when it could not.
-	ToolCalls int64 `json:"toolCalls,omitempty"`
-	Tokens    int64 `json:"tokens,omitempty"`
-	RuntimeMs int64 `json:"runtimeMs,omitempty"`
-	TurnOpen  bool  `json:"turnOpen,omitempty"`
+	ToolCalls     int64 `json:"toolCalls,omitempty"`
+	Tokens        int64 `json:"tokens,omitempty"`
+	RuntimeMs     int64 `json:"runtimeMs,omitempty"`
+	TurnOpen      bool  `json:"turnOpen,omitempty"`
+	TurnStartedAt int64 `json:"turnStartedAt,omitempty"`
 	// RestUnreported marks a request settled `finished` by a paired
 	// computer whose version settles a spawn when its turn ends and cannot
 	// report whether the thread came to rest (store.ThreadRequest.RestUnreported).
@@ -189,15 +192,16 @@ type ThreadAgentRows struct {
 	// for (answerThreadAgentRows). Nil from a computer that predates it,
 	// whose rows say what they can (peerListingOpen).
 	Open *bool `json:"open,omitempty"`
-	// Activity, ToolCalls, Tokens, RuntimeMs and TurnOpen are the listed
+	// Activity, ToolCalls, Tokens, RuntimeMs, TurnOpen and TurnStartedAt are the listed
 	// thread's own, answered by agent_rows for the spawn row on the
 	// computer that asked (ThreadAgentRow). A computer that predates them
 	// sends none.
-	Activity  string `json:"activity,omitempty"`
-	ToolCalls int64  `json:"toolCalls,omitempty"`
-	Tokens    int64  `json:"tokens,omitempty"`
-	RuntimeMs int64  `json:"runtimeMs,omitempty"`
-	TurnOpen  bool   `json:"turnOpen,omitempty"`
+	Activity      string `json:"activity,omitempty"`
+	ToolCalls     int64  `json:"toolCalls,omitempty"`
+	Tokens        int64  `json:"tokens,omitempty"`
+	RuntimeMs     int64  `json:"runtimeMs,omitempty"`
+	TurnOpen      bool   `json:"turnOpen,omitempty"`
+	TurnStartedAt int64  `json:"turnStartedAt,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -708,7 +712,7 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 // spawn's counts, for its open row and its Past row alike.
 func peerSpawnCounts(row *ThreadAgentRow, answer threadAgentPeerAnswer) {
 	row.ToolCalls, row.Tokens = answer.listing.ToolCalls, answer.listing.Tokens
-	row.RuntimeMs, row.TurnOpen = answer.listing.RuntimeMs, answer.listing.TurnOpen
+	row.RuntimeMs, row.TurnOpen, row.TurnStartedAt = answer.listing.RuntimeMs, answer.listing.TurnOpen, answer.listing.TurnStartedAt
 }
 
 // pastPeerSpawnCounts sets the counts of the paired spawns on a page of
@@ -901,6 +905,9 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 			// What the thread it made did, read with its name.
 			tally := name.Tally
 			out.ToolCalls, out.Tokens, out.RuntimeMs, out.TurnOpen = tally.ToolCalls, tally.Tokens, tally.RuntimeMs, tally.Running
+			if tally.Running {
+				out.TurnStartedAt = tally.TurnStartedAt
+			}
 		}
 	}
 	if asked, ok := names[row.OriginThreadID]; ok && local && row.Kind == store.ThreadRequestAsk {

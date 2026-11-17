@@ -136,16 +136,21 @@ func addOwnSpendTx(tx *sql.Tx, spend OwnSpend) error {
 // ThreadTally is what one thread did over its life: the tool calls it
 // executed, the tokens it spent itself and the time its turns ran, the
 // running turn's included as of the read. Running is
-// whether a turn runs now, whose time grows from the read on.
+// whether a turn runs now, whose time grows from the read on, and
+// TurnStartedAt that turn's start as this computer recorded it: which turn
+// it is, so a reader can tell a later read of the same open turn from one
+// of the next.
 type ThreadTally struct {
-	ToolCalls int64
-	Tokens    int64
-	RuntimeMs int64
-	Running   bool
+	ToolCalls     int64
+	Tokens        int64
+	RuntimeMs     int64
+	Running       bool
+	TurnStartedAt int64
 }
 
-// threadTallyColumnsSQL is the four columns of the tally of the thread id
-// names, tool calls, tokens, runtime and whether a turn runs, with now in
+// threadTallyColumnsSQL is the five columns of the tally of the thread id
+// names, tool calls, tokens, runtime, whether a turn runs and when it
+// started, with now in
 // milliseconds as the parameter now names: one probe of thread_tallies, one
 // of the running turn's usage_pending rows and one of its open turn.
 func threadTallyColumnsSQL(id, now string) string {
@@ -155,7 +160,8 @@ func threadTallyColumnsSQL(id, now string) string {
 		+ COALESCE((SELECT SUM(` + usageSpendSQLPlain + `) FROM usage_pending WHERE thread_id = ` + id + `), 0),
 		COALESCE((SELECT turn_ms FROM thread_tallies WHERE thread_id = ` + id + `), 0)
 		+ COALESCE(MAX(0, ` + now + ` - ` + open + `), 0),
-		` + open + ` IS NOT NULL`
+		` + open + ` IS NOT NULL,
+		COALESCE(` + open + `, 0)`
 }
 
 // ThreadTallies reads the tallies of threadIDs at now, keyed by thread; a
@@ -178,7 +184,7 @@ func (s *Store) ThreadTallies(threadIDs []string, now time.Time) (map[string]Thr
 	for rows.Next() {
 		var id string
 		var tally ThreadTally
-		if err := rows.Scan(&id, &tally.ToolCalls, &tally.Tokens, &tally.RuntimeMs, &tally.Running); err != nil {
+		if err := rows.Scan(&id, &tally.ToolCalls, &tally.Tokens, &tally.RuntimeMs, &tally.Running, &tally.TurnStartedAt); err != nil {
 			return nil, fmt.Errorf("store: scan thread tally: %w", err)
 		}
 		if tally != (ThreadTally{}) {

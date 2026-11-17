@@ -121,6 +121,10 @@ func TestARemoteWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 	if row.ToolCalls != 1 || row.Worker != workerRunning {
 		t.Fatalf("row %+v; want the worker running with its one tool call and its line", row)
 	}
+	// Its open turn, named as that computer recorded its start.
+	if turn, active, err := pair.dest.store.GetActiveTurn(child); err != nil || !active || !row.TurnOpen || row.TurnStartedAt != turn.StartedAt {
+		t.Fatalf("row %+v; want its open turn %+v (%v, %v) named by its start", row, turn, active, err)
+	}
 
 	parent := ThreadAgentRow{Token: agentPair.spawn.Token, Worker: workerRunning}
 	pair.source.nestPeerAgentRows(&parent, threadAgentRemoteSlot{spawn: agentPair.spawn},

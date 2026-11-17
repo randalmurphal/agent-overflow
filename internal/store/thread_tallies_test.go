@@ -146,13 +146,13 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	if err := s.InsertTurn(Turn{TurnID: "worker:0", ThreadID: "worker", TurnIndex: 0, StartedAt: 1000}); err != nil {
 		t.Fatal(err)
 	}
-	if got := tally(1500); got.RuntimeMs != 500 || !got.Running {
-		t.Fatalf("runtime mid-turn %+v; want 500 ms, running", got)
+	if got := tally(1500); got.RuntimeMs != 500 || !got.Running || got.TurnStartedAt != 1000 {
+		t.Fatalf("runtime mid-turn %+v; want 500 ms, running the turn started at 1000", got)
 	}
 	if err := s.UpdateTurnCompleted("worker:0", 1400, "end_turn", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := tally(9000); got.RuntimeMs != 400 || got.Running {
+	if got := tally(9000); got.RuntimeMs != 400 || got.Running || got.TurnStartedAt != 0 {
 		t.Fatalf("runtime at rest %+v; want the turn's 400 ms, not running", got)
 	}
 	if err := s.ReopenTurn("worker:0"); err != nil {

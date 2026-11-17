@@ -164,7 +164,8 @@ func TestACrashedWorkersPastRuntimeEndsAtItsLastActivity(t *testing.T) {
 
 // A worker's runtime is the time its turns ran: the open turn's so far,
 // then each ended turn's, never the idle time between them, and never less
-// than it read before.
+// than it read before. A read while a turn is open names that turn by its
+// start, so a read of the next turn is told from a later read of this one.
 func TestAWorkerRowsRuntimeIsItsTurnsTime(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -176,6 +177,17 @@ func TestAWorkerRowsRuntimeIsItsTurnsTime(t *testing.T) {
 	running := f.awaitWorker(t, f.caller.ID, "runtime-spawn", workerRunning)
 	if !running.TurnOpen || running.RuntimeMs < 300 || running.RuntimeMs > time.Since(started).Milliseconds()+50 {
 		t.Fatalf("running row %+v; want its open turn's time so far", running)
+	}
+	openStart := func() int64 {
+		t.Helper()
+		turn, active, err := f.app.store.GetActiveTurn(worker.ID)
+		if err != nil || !active {
+			t.Fatalf("open turn of the worker %+v, %v, %v", turn, active, err)
+		}
+		return turn.StartedAt
+	}
+	if first := openStart(); running.TurnStartedAt != first {
+		t.Fatalf("running row names turn %d; want the open turn's start %d", running.TurnStartedAt, first)
 	}
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, nil)
 	f.expectRested(t, "runtime-spawn")
@@ -197,7 +209,7 @@ func TestAWorkerRowsRuntimeIsItsTurnsTime(t *testing.T) {
 		row, _ := agentRowByToken(page.Rows, "runtime-spawn")
 		return row
 	}
-	if row := past(); row.TurnOpen || row.RuntimeMs != ran || ran < running.RuntimeMs {
+	if row := past(); row.TurnOpen || row.TurnStartedAt != 0 || row.RuntimeMs != ran || ran < running.RuntimeMs {
 		t.Fatalf("rested row %+v; want exactly its turn's %dms, at least the %dms read while it ran", row, ran, running.RuntimeMs)
 	}
 	// Idle time is not runtime.
@@ -209,5 +221,8 @@ func TestAWorkerRowsRuntimeIsItsTurnsTime(t *testing.T) {
 	again := f.awaitWorker(t, f.caller.ID, "runtime-spawn", workerRunning)
 	if !again.TurnOpen || again.RuntimeMs < ran || again.RuntimeMs > ran+time.Since(started).Milliseconds() {
 		t.Fatalf("row in its second turn %+v; want %dms and the new turn's time so far", again, ran)
+	}
+	if second := openStart(); again.TurnStartedAt != second || second == running.TurnStartedAt {
+		t.Fatalf("second turn's row names turn %d; want its own start %d, not the first's %d", again.TurnStartedAt, second, running.TurnStartedAt)
 	}
 }

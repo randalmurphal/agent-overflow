@@ -235,6 +235,9 @@ func (a *App) answerThreadAgentRows(ctx context.Context, args threadAgentPeerArg
 	tally := tallies[args.ThreadID]
 	listing.ToolCalls, listing.Tokens = tally.ToolCalls, tally.Tokens
 	listing.RuntimeMs, listing.TurnOpen = tally.RuntimeMs, tally.Running
+	if tally.Running {
+		listing.TurnStartedAt = tally.TurnStartedAt
+	}
 	if open {
 		// As this computer's own row of it reads (threadAgentView.row).
 		listing.Activity = a.threadAgentActivity(args.ThreadID)
