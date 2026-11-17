@@ -62,13 +62,14 @@ func New(opts Options) (*Client, error) {
 	}
 	c := &Client{endpoint: base}
 	hc, err := trackerapi.New(trackerapi.Options{
-		Name:        "linear",
-		BaseURL:     base,
-		Version:     opts.Version,
-		Credentials: opts.Credentials,
-		Dialect:     dialect{},
-		Proxy:       opts.Proxy,
-		OnAnswer:    c.observeAnswer,
+		Name:          "linear",
+		BaseURL:       base,
+		Version:       opts.Version,
+		Credentials:   opts.Credentials,
+		Dialect:       dialect{},
+		Proxy:         opts.Proxy,
+		OnAnswer:      c.observeAnswer,
+		ReportHeaders: usageHeaders,
 	})
 	if err != nil {
 		return nil, err

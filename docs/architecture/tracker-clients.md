@@ -61,14 +61,15 @@ type Options struct {
     ReadTimeout  time.Duration   // a call whose Request.Timeout is zero; zero means 45s
     MaxBodyBytes int64           // a body Do and JSON read; zero means 8 MiB
     Proxy        func(*http.Request) (*url.URL, error) // nil connects directly
-    OnAnswer     func(status int, header http.Header)  // every answer's status and a scrubbed header copy with no URL, before its body
+    OnAnswer     func(status int, header http.Header)  // every answer's status and its ReportHeaders, scrubbed, before its body
+    ReportHeaders []string                             // the answer headers OnAnswer receives
 }
 
 func New(opts Options) (*Client, error) // misconfiguration is a construction error
 func (c *Client) Do(ctx context.Context, r Request) (*Response, error)
 func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error)
 func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
-func (c *Client) Location(ctx context.Context, r Request) (string, error) // a redirect's target, not followed, scrubbed
+func (c *Client) Location(ctx context.Context, r Request) (string, error) // a redirect's target, not followed; refused if it repeats the credential
 func (c *Client) ForgetCredential()
 func (c *Client) Close()
 func (r *Response) Scrub(text string) string       // also on *StatusError and *AuthError

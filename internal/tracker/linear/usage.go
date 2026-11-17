@@ -35,6 +35,14 @@ type Budget struct {
 // units left. An unknown budget allows anything.
 func (b Budget) Allows(n int) bool { return !b.Known || b.Remaining >= n }
 
+// usageHeaders are the answer headers usageOf reads, which the transport
+// reports for every answer.
+var usageHeaders = []string{
+	"X-Complexity",
+	"X-Ratelimit-Requests-Limit", "X-Ratelimit-Requests-Remaining", "X-Ratelimit-Requests-Reset",
+	"X-Ratelimit-Complexity-Limit", "X-Ratelimit-Complexity-Remaining", "X-Ratelimit-Complexity-Reset",
+}
+
 func usageOf(h http.Header) Usage {
 	u := Usage{
 		Requests: budgetOf(h, "X-Ratelimit-Requests-"),

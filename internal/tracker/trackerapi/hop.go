@@ -150,11 +150,11 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 	return &exchange{resp: resp, sent: with, st: st, cancel: cancel}, nil
 }
 
-// report hands an answer's status and a copy of its headers to OnAnswer,
-// unless Close has begun; Close waits for a report in progress. The copy
-// is answer text handed out with no Scrub of its own, so it is made safe
-// here: it names no URL (a redirect's target can be signed) and every
-// value is scrubbed of the credential the request carried.
+// report hands an answer's status and the headers ReportHeaders names to
+// OnAnswer, unless Close has begun; Close waits for a report in progress.
+// What it hands out is answer text with no Scrub of its own, so it is
+// made safe here: the names are the caller's, never the tracker's, and
+// every value is scrubbed of the credential the request carried.
 func (c *Client) report(resp *http.Response, sent sentWith) {
 	if c.onAnswer == nil {
 		return
@@ -166,9 +166,10 @@ func (c *Client) report(resp *http.Response, sent sentWith) {
 	}
 	s := c.scrubber(sent)
 	defer s.clear()
-	header := make(http.Header, len(resp.Header))
-	for name, values := range resp.Header {
-		if name == "Location" || name == "Content-Location" {
+	header := make(http.Header, len(c.reported))
+	for _, name := range c.reported {
+		values := resp.Header[name]
+		if len(values) == 0 {
 			continue
 		}
 		scrubbed := make([]string, len(values))

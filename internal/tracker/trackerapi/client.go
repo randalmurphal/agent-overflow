@@ -72,11 +72,15 @@ type Options struct {
 	// success or error, before its body is read and before the call
 	// settles. It is not called when nothing answered, and never after
 	// Close returns. It runs on the calling goroutine, so it must not
-	// block or call Close. The header is a copy it may keep, without
-	// Location and Content-Location and with the credential the request
-	// carried replaced by secret.Redacted in every value: it carries no
-	// URL and no body.
+	// block or call Close. The header holds only the headers ReportHeaders
+	// names, in a map it may keep, with the credential the request carried
+	// replaced by secret.Redacted in every value. Nothing else of the
+	// answer reaches it: no other header, no URL and no body.
 	OnAnswer func(status int, header http.Header)
+	// ReportHeaders names the answer headers OnAnswer receives, such as a
+	// tracker's rate budget headers. A header that can hold a URL does not
+	// belong here.
+	ReportHeaders []string
 }
 
 // Client calls one tracker endpoint. It is safe for concurrent use. Close
@@ -97,6 +101,7 @@ type Client struct {
 	closeIdle func()
 
 	onAnswer func(status int, header http.Header)
+	reported []string // canonical names of the headers OnAnswer receives
 	// reportMu is held for reading through each OnAnswer call; Close
 	// takes it to set reportsOff, so no report starts or runs after it.
 	reportMu   sync.RWMutex
@@ -181,6 +186,7 @@ func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
 		transport:   transport,
 		closeIdle:   func() {},
 		onAnswer:    opts.OnAnswer,
+		reported:    canonicalNames(opts.ReportHeaders),
 		tag:         &clientTag{},
 		now:         time.Now,
 		sleep:       sleep,
@@ -301,4 +307,12 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func canonicalNames(names []string) []string {
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = http.CanonicalHeaderKey(name)
+	}
+	return out
 }

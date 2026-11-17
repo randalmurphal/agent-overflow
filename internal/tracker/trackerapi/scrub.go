@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 
 	"agent-overflow/internal/secret"
 )
@@ -155,6 +156,26 @@ func (s *scrubber) holds(v string) bool {
 		}
 	}
 	return false
+}
+
+// maxDecodes bounds how many layers of percent-encoding holdsEncoded
+// undoes.
+const maxDecodes = 4
+
+// holdsEncoded reports whether v holds a form as written or under
+// percent-encoding, which a caller that parses v as a URL undoes.
+func (s *scrubber) holdsEncoded(v string) bool {
+	for range maxDecodes {
+		if s.holds(v) {
+			return true
+		}
+		decoded, err := url.PathUnescape(v)
+		if err != nil || decoded == v {
+			return false
+		}
+		v = decoded
+	}
+	return s.holds(v)
 }
 
 // trimCut drops the end of a body cut short when it begins a form, which

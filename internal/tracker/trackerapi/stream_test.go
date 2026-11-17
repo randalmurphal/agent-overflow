@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
-
-	"agent-overflow/internal/secret"
 )
 
 func TestStreamLimit(t *testing.T) {
@@ -129,22 +128,70 @@ func TestLocation(t *testing.T) {
 	}
 }
 
-// A redirect target is answer text: one that repeats the credential the
-// request carried comes back with it redacted.
-func TestLocationIsScrubbed(t *testing.T) {
+// A redirect target that repeats the credential the request carried is
+// refused, as written and under one or two layers of percent-encoding,
+// in the path and in the query; so is any target once the credential is
+// gone. Nothing of it reaches the error.
+func TestLocationRefusesATargetWithTheCredential(t *testing.T) {
 	t.Parallel()
-	tr := newTracker(t, route{
-		"GET /attachment/content/1": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", "https://media.example.com/file/"+testSecret+"/binary?token=signed")
-			w.WriteHeader(http.StatusSeeOther)
-		},
-	})
-	c, _ := loopbackClient(t, testOptions(tr.url()))
-	got, err := c.Location(t.Context(), Request{Path: "attachment/content/1"})
-	if err != nil {
-		t.Fatal(err)
+	// "%66" is "f", the first letter of testSecret; "%2566" decodes to it.
+	once := "%66" + testSecret[1:]
+	twice := "%2566" + testSecret[1:]
+	targets := map[string]string{
+		"plain":         "https://media.example.com/file/" + testSecret + "/binary?token=signed",
+		"encoded":       "https://media.example.com/file/" + once + "/binary",
+		"encoded twice": "https://media.example.com/file/" + twice + "/binary",
+		"query":         "https://media.example.com/file/1/binary?token=" + once,
 	}
-	if strings.Contains(got, testSecret) || !strings.Contains(got, secret.Redacted) {
-		t.Fatalf("Location = %q, want the credential redacted", got)
+	routes := route{"GET /clean": func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://media.example.com/file/1/binary?token=signed")
+		w.WriteHeader(http.StatusSeeOther)
+	}}
+	for name, target := range targets {
+		routes["GET /"+strings.ReplaceAll(name, " ", "-")] = func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", target)
+			w.WriteHeader(http.StatusSeeOther)
+		}
+	}
+	tr := newTracker(t, routes)
+	c, _ := loopbackClient(t, testOptions(tr.url()))
+	for name := range targets {
+		got, err := c.Location(t.Context(), Request{Path: strings.ReplaceAll(name, " ", "-")})
+		if err == nil || got != "" {
+			t.Errorf("%s: Location = %q, %v, want an error and no target", name, got, err)
+			continue
+		}
+		if text := err.Error(); strings.Contains(text, testSecret) || strings.Contains(text, testSecret[1:]) {
+			t.Errorf("%s: the error repeats the target: %v", name, err)
+		}
+	}
+	if got, err := c.Location(t.Context(), Request{Path: "clean"}); err != nil || !strings.HasSuffix(got, "?token=signed") {
+		t.Fatalf("a clean target: %q, %v", got, err)
+	}
+}
+
+// A target cannot be checked once the client dropped the credential its
+// request carried, so it is refused.
+func TestLocationRefusedOnceTheCredentialIsGone(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	tr := newTracker(t, route{"GET /clean": func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.Header().Set("Location", "https://media.example.com/file/1/binary")
+		w.WriteHeader(http.StatusSeeOther)
+	}})
+	c, _ := loopbackClient(t, testOptions(tr.url()))
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Location(t.Context(), Request{Path: "clean"})
+		done <- err
+	}()
+	for tr.count("GET /clean") == 0 {
+		runtime.Gosched()
+	}
+	c.ForgetCredential()
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("Location returned a target it could not check")
 	}
 }

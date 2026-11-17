@@ -51,10 +51,14 @@ func TestOnAnswerReportsEveryAnswer(t *testing.T) {
 	var got reports
 	opts := testOptions(tr.url())
 	opts.OnAnswer = got.record
+	opts.ReportHeaders = []string{"x-budget"}
 	c, _ := loopbackClient(t, opts)
 	resp, err := c.Do(t.Context(), Request{Path: "ok"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got.headers[0].Get("X-Budget") != "10" {
+		t.Fatalf("reported %v, want X-Budget as sent", got.headers[0])
 	}
 	got.headers[0].Set("X-Budget", "changed")
 	if resp.Header.Get("X-Budget") != "10" {
@@ -157,14 +161,16 @@ func TestOnAnswerNotAfterClose(t *testing.T) {
 	}
 }
 
-// The reported header copy has no Scrub of its own, so it names no URL
-// and repeats no credential.
+// The report has no Scrub of its own. It holds only the headers the
+// owner named, so no header name is the tracker's and no URL-bearing
+// header arrives unasked, and every value is scrubbed.
 func TestOnAnswerHeadersAreSafe(t *testing.T) {
 	t.Parallel()
 	tr := newTracker(t, route{
 		"GET /content": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Location", "https://media.example.com/file/1/binary?token=signed")
-			w.Header().Set("Content-Location", "/file/1?token=signed")
+			w.Header().Set("Link", "<https://media.example.com/file?token=signed>; rel=\"next\"")
+			w.Header().Set("X-Name-"+testSecret, "present")
 			w.Header().Set("X-Echo", "you sent "+r.Header.Get("Authorization"))
 			w.Header().Set("X-Budget", "10")
 			w.WriteHeader(http.StatusSeeOther)
@@ -173,15 +179,21 @@ func TestOnAnswerHeadersAreSafe(t *testing.T) {
 	var got reports
 	opts := testOptions(tr.url())
 	opts.OnAnswer = got.record
+	opts.ReportHeaders = []string{"X-Echo", "X-Budget", "X-Absent"}
 	c, _ := loopbackClient(t, opts)
 	if _, err := c.Location(t.Context(), Request{Path: "content"}); err != nil {
 		t.Fatal(err)
 	}
 	header := got.headers[0]
-	if header.Get("Location") != "" || header.Get("Content-Location") != "" {
-		t.Errorf("the report names a URL: %v", header)
+	if len(header) != 2 {
+		t.Errorf("the report holds %v, want only the two named headers that were sent", header)
 	}
-	if echo := header.Get("X-Echo"); strings.Contains(echo, testSecret) || !strings.Contains(echo, secret.Redacted) {
+	for name, values := range header {
+		if text := name + strings.Join(values, ""); strings.Contains(text, testSecret) || strings.Contains(text, "signed") {
+			t.Errorf("the report holds %s: %v", name, values)
+		}
+	}
+	if echo := header.Get("X-Echo"); !strings.Contains(echo, secret.Redacted) {
 		t.Errorf("X-Echo = %q, want the credential redacted", echo)
 	}
 	if header.Get("X-Budget") != "10" {
