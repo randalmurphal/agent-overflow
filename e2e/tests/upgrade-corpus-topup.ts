@@ -181,7 +181,9 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     // An assistant that spawned a helper of its own work and set itself a
     // loop and a watch through the thread tools, an hour out, and stopped a
     // second loop. The helper runs on Codex in the home, from a script of
-    // its own. The hourly watch is run once now and keeps its stderr; a
+    // its own. The hourly watch is run once now and keeps its stderr, and
+    // a second hourly one, run once in a missing directory, keeps its
+    // failure notice; a
     // short watch fires once, and the turn its wake starts cancels it
     // before a second fire is due; a long-running watch is started and
     // stopped. Nothing is left running for a later boot of the corpus to
@@ -206,6 +208,9 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
             // A run prints nothing on stdout, so it wakes nobody, and the
             // line on stderr is kept on the row (last_stderr).
             { call: { tool: 'thread_watch', args: { label: 'inbox', command: 'echo "inbox: nothing new" >&2', cwd: home, every_seconds: 3600, timeout_seconds: 30 } } },
+            // Its directory does not exist, so its run cannot start and the
+            // watch raises its failure notice (failure_noticed_at).
+            { call: { tool: 'thread_watch', args: { label: 'mailbox', command: 'true', cwd: path.join(home, 'mailbox'), every_seconds: 3600 } } },
             { call: { tool: 'thread_loop', args: { label: 'retired', note: 'an old check', every_seconds: 3600 } } },
             { call: { tool: 'thread_loop', args: { label: 'retired', stop: true } } },
             {
@@ -245,7 +250,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     if (spawned.isError || !spawned.value) throw new Error(`top-up thread_spawn of a helper was refused: ${spawned.text}`);
     await awaitTurnCompleted(harness, spawned.value.thread_id, TURN_TIMEOUT_MS);
     threadIds.push(spawned.value.thread_id);
-    for (const label of ['inbox', 'once', 'tail', 'tail stopped']) {
+    for (const label of ['inbox', 'mailbox', 'once', 'tail', 'tail stopped']) {
       const answer = await awaitToolAnswer(harness, { tool: 'thread_watch', timeoutMs: TURN_TIMEOUT_MS });
       if (answer.isError) throw new Error(`top-up thread_watch ${label} was refused: ${answer.text}`);
     }
@@ -259,18 +264,24 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
     // A cancel keeps nothing the row carried, so the hourly watch, run once
     // now, is the row that keeps a stderr tail. It stays armed an hour out.
-    type WakeRow = { id: string; label: string; state: string; lastRunAt?: number };
-    const inbox = async () =>
-      (await harness.rpc<{ rows: WakeRow[] }>('ListThreadWakes', agent.id)).rows.find((row) => row.label === 'inbox');
-    const armed = await inbox();
-    if (!armed) throw new Error('top-up watch inbox is not listed');
-    await harness.rpc('WakeThreadWakeNow', agent.id, 'watch', armed.id);
-    await expect
-      .poll(async () => {
-        const row = await inbox();
-        return row?.state === 'armed' && (row.lastRunAt ?? 0) > 0;
-      }, { timeout: TURN_TIMEOUT_MS })
-      .toBe(true);
+    // The mailbox watch, run once now, cannot start, so it keeps its
+    // failure notice; it too stays armed an hour out.
+    type WakeRow = { id: string; label: string; state: string; lastRunAt?: number; lastOutcome?: string };
+    const watch = async (label: string) =>
+      (await harness.rpc<{ rows: WakeRow[] }>('ListThreadWakes', agent.id)).rows.find((row) => row.label === label);
+    for (const label of ['inbox', 'mailbox']) {
+      const armed = await watch(label);
+      if (!armed) throw new Error(`top-up watch ${label} is not listed`);
+      await harness.rpc('WakeThreadWakeNow', agent.id, 'watch', armed.id);
+      await expect
+        .poll(async () => {
+          const row = await watch(label);
+          return row?.state === 'armed' && (row.lastRunAt ?? 0) > 0;
+        }, { timeout: TURN_TIMEOUT_MS })
+        .toBe(true);
+    }
+    const failed = await watch('mailbox');
+    if (!failed?.lastOutcome?.startsWith('error: ')) throw new Error(`top-up watch mailbox ran without failing: ${failed?.lastOutcome}`);
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     // Claude fast mode is offered only on a model the CLI reports fast, so
