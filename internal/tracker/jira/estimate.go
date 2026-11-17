@@ -1,7 +1,6 @@
 package jira
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -76,9 +75,11 @@ type EstimateInput struct {
 // configuration is read first: a board that estimates by no field, or a
 // value of the other kind than the field takes, is refused before
 // anything is sent. It returns the field ID and the value as Jira stored
-// it; once the write was sent, a failure still returns the board's field
-// ID, and an answer that does not decode is a StepEstimate *StepError
-// whose Applied reports it.
+// it, empty for no estimate. The answer is read strictly in its
+// documented form, 200 with {fieldId, value} where value is a string or
+// null: one that names the field but is otherwise malformed is a
+// StepEstimate *StepError whose Applied reports it, with the field ID;
+// any other leaves the outcome unknown and returns nothing.
 func (c *Client) SetEstimate(ctx context.Context, in EstimateInput) (fieldID, stored string, err error) {
 	if err := c.admit(ctx); err != nil {
 		return "", "", err
@@ -95,19 +96,26 @@ func (c *Client) SetEstimate(ctx context.Context, in EstimateInput) (fieldID, st
 		return "", "", notSentErr(fmt.Errorf("jira: estimate %s: %w", in.Issue, err))
 	}
 	var j struct {
-		FieldID string `json:"fieldId"`
-		Value   jsonID `json:"value"`
+		FieldID string  `json:"fieldId"`
+		Value   *string `json:"value"`
 	}
-	_, err = c.call(ctx, trackerapi.Request{
+	req := trackerapi.Request{
 		Method: http.MethodPut, Path: agilePath + "issue/" + url.PathEscape(in.Issue) + "/estimation",
 		Query: url.Values{"boardId": {strconv.FormatInt(in.Board, 10)}},
 		Body:  map[string]any{"value": value},
-	}, &j)
-	if err != nil {
-		return cfg.Estimation.FieldID, "", fmt.Errorf("jira: estimate %s: %w", in.Issue, &StepError{Step: StepEstimate, Err: err})
 	}
-	return cmp.Or(j.FieldID, cfg.Estimation.FieldID), string(j.Value), nil
+	w, err := c.write(ctx, req, bodyAnswer(namesField, http.StatusOK), &j)
+	if err != nil {
+		return w.text("fieldId"), "", fmt.Errorf("jira: estimate %s: %w", in.Issue, &StepError{Step: StepEstimate, Err: err})
+	}
+	if j.Value == nil {
+		return j.FieldID, "", nil
+	}
+	return j.FieldID, *j.Value, nil
 }
+
+// namesField accepts an estimation answer naming its field.
+func namesField(w written) bool { return w.text("fieldId") != "" }
 
 // estimateText is v as the estimation endpoint takes it for cfg's field:
 // a number, minutes ("90m") for original time, or nil to clear.

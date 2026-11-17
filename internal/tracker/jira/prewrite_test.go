@@ -48,7 +48,7 @@ func TestFailedReadBeforeAWriteIsNotSent(t *testing.T) {
 			return err
 		},
 		"EditComment": func(ctx context.Context) error {
-			_, err := c.EditComment(ctx, CommentEdit{Issue: "WEB-1", ID: "900", Markdown: md})
+			_, err := c.EditComment(ctx, CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: md})
 			return err
 		},
 		"Transition": func(ctx context.Context) error {
@@ -71,7 +71,7 @@ func TestFailedReadBeforeAWriteIsNotSent(t *testing.T) {
 			return err
 		},
 		"UpdateWorklog": func(ctx context.Context) error {
-			_, err := c.UpdateWorklog(ctx, WorklogEdit{Issue: "WEB-1", ID: "300", Markdown: &md})
+			_, err := c.UpdateWorklog(ctx, WorklogEdit{Issue: "WEB-1", ID: "300", Unchecked: true, Markdown: &md})
 			return err
 		},
 		"UpdateSprint": func(ctx context.Context) error {

@@ -118,10 +118,7 @@ func (c *Client) WorklogsByID(ctx context.Context, ids []int64) (WorklogList, er
 			return out, fmt.Errorf("jira: worklogs by ID: %w", err)
 		}
 		for _, j := range page {
-			w, err := j.worklog()
-			if err != nil {
-				return out, fmt.Errorf("jira: worklogs by ID: %w", &AnswerError{Message: err.Error()})
-			}
+			w := j.worklog()
 			id, _ := strconv.ParseInt(w.ID, 10, 64)
 			if seen[id] {
 				seen[id] = false // each named worklog counts once

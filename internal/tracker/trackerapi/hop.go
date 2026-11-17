@@ -146,21 +146,38 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 		return fail(failure)
 	}
 	st.receiving()
-	c.report(resp)
+	c.report(resp, with)
 	return &exchange{resp: resp, sent: with, st: st, cancel: cancel}, nil
 }
 
 // report hands an answer's status and a copy of its headers to OnAnswer,
-// unless Close has begun; Close waits for a report in progress.
-func (c *Client) report(resp *http.Response) {
+// unless Close has begun; Close waits for a report in progress. The copy
+// is answer text handed out with no Scrub of its own, so it is made safe
+// here: it names no URL (a redirect's target can be signed) and every
+// value is scrubbed of the credential the request carried.
+func (c *Client) report(resp *http.Response, sent sentWith) {
 	if c.onAnswer == nil {
 		return
 	}
 	c.reportMu.RLock()
 	defer c.reportMu.RUnlock()
-	if !c.reportsOff {
-		c.onAnswer(resp.StatusCode, resp.Header.Clone())
+	if c.reportsOff {
+		return
 	}
+	s := c.scrubber(sent)
+	defer s.clear()
+	header := make(http.Header, len(resp.Header))
+	for name, values := range resp.Header {
+		if name == "Location" || name == "Content-Location" {
+			continue
+		}
+		scrubbed := make([]string, len(values))
+		for i, v := range values {
+			scrubbed[i] = s.text(v)
+		}
+		header[name] = scrubbed
+	}
+	c.onAnswer(resp.StatusCode, header)
 }
 
 // redirectTarget is the URL a followed redirect names, or nil when resp is

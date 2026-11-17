@@ -23,8 +23,11 @@ func commentSite(t *testing.T, typeKey string) (*fakeJira, *Client) {
 	return f, c
 }
 
-func storedCommentReply(body string) handler {
-	return reply(201, `{"id":"900","author":`+userOneJSON+`,"body":`+body+`,"created":"2026-11-16T10:00:00.000+0000","updated":"2026-11-16T10:00:00.000+0000","jsdPublic":false}`)
+func storedCommentReply(body string) handler { return storedComment(201, body) }
+
+// storedComment is the answer status with comment 900 holding body.
+func storedComment(status int, body string) handler {
+	return reply(status, `{"id":"900","author":`+userOneJSON+`,"body":`+body+`,"created":"2026-11-16T10:00:00.000+0000","updated":"2026-11-16T10:00:00.000+0000","jsdPublic":false}`)
 }
 
 func TestAddCommentAudience(t *testing.T) {
@@ -115,11 +118,17 @@ func TestCommentsPage(t *testing.T) {
 		wantQuery(t, r, "orderBy", "created")
 		reply(200, `{"startAt":1,"total":3,"comments":[
 			{"id":"901","author":`+userOneJSON+`,"body":{"type":"doc","version":1,"content":[]},"created":"2026-11-16T10:00:00.000+0000","jsdPublic":true},
-			{"id":"902","body":null,"visibility":{"type":"role","value":"Developers"},"created":"2026-11-16T11:00:00.000+0000"}]}`)(w, r, b)
+			{"id":"902","body":null,"visibility":{"type":"role","value":"Developers"},"created":"2026-11-16T11:00:00.000+0000","updated":"later"}]}`)(w, r, b)
 	})
 	page, err := c.Comments(t.Context(), "WEB-1", 1, 2)
 	if err != nil || page.Total != 3 || len(page.Comments) != 2 || page.Comments[0].Internal || page.Comments[1].Visibility == nil {
 		t.Fatalf("got %+v %v", page, err)
+	}
+	// A timestamp that does not parse is the comment's problem; an absent
+	// one is none.
+	first, second := page.Comments[0], page.Comments[1]
+	if len(first.Problems) != 0 || problemIn(second.Problems, "updated") == nil || len(second.Problems) != 1 || second.Created.IsZero() {
+		t.Errorf("problems %+v %+v", first.Problems, second.Problems)
 	}
 }
 
@@ -144,40 +153,77 @@ func TestEditComment(t *testing.T) {
 		if !strings.Contains(string(body.Body), "layoutSection") || string(body.Visibility) != `{"type":"role","value":"Developers"}` {
 			t.Errorf("edit %s", b)
 		}
-		storedCommentReply(string(body.Body))(w, r, b)
+		storedComment(200, string(body.Body))(w, r, b)
 	})
-	res, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: md, From: layoutDoc()})
-	if err != nil || res.Comment == nil {
+	read, err := c.Comment(t.Context(), "WEB-1", "900")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: md, From: &read})
+	if err != nil || res.Comment == nil || res.Unchanged {
 		t.Fatalf("got %+v %v", res, err)
 	}
 	// The same body again sends nothing.
-	res, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: adf.ToMarkdown(layoutDoc())})
-	if err != nil || res.Comment == nil || f.count("PUT", "/rest/api/3/issue/WEB-1/comment/900") != 1 {
-		t.Errorf("an unchanged edit: %v", err)
+	res, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: adf.ToMarkdown(layoutDoc())})
+	if err != nil || res.Comment == nil || !res.Unchanged || f.count("PUT", "/rest/api/3/issue/WEB-1/comment/900") != 1 {
+		t.Errorf("an unchanged edit: %+v %v", res, err)
 	}
 }
 
 func TestEditCommentRefusals(t *testing.T) {
 	f, c := editCommentSite(t, layoutDoc())
-	flattened := strings.NewReplacer("<!-- layout -->\n\n", "", "<!-- column 50% -->\n\n", "", "<!-- /column -->\n\n", "", "<!-- /layout -->\n\n", "").
+	flattened := strings.NewReplacer("<!-- layout -->\n\n", "", "<!-- column 50% -->\n\n", "", "<!-- /column -->\n\n", "", "<!-- /layout -->\n", "").
 		Replace(adf.ToMarkdown(layoutDoc()))
-	_, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: flattened})
+	_, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: flattened})
 	if _, ok := errors.AsType[*adf.LossError](err); !ok {
 		t.Errorf("loss: %v", err)
 	}
-	_, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: "x", From: adf.Doc(para("older"))})
-	if _, ok := errors.AsType[*StaleError](err); !ok {
-		t.Errorf("stale: %v", err)
+	// A base read with another body, or with none, is stale.
+	for _, body := range []*adf.Node{adf.Doc(para("older")), nil} {
+		_, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: "x", From: &Comment{ID: "900", Body: body}})
+		if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) {
+			t.Errorf("stale from %v: %v", body, err)
+		}
 	}
-	if _, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "../900", Markdown: "x"}); !trackerapi.WriteNotApplied(err) {
-		t.Errorf("a bad comment ID: %v", err)
+	for name, in := range map[string]CommentEdit{
+		"a bad comment ID":           {Issue: "WEB-1", ID: "../900", Unchecked: true, Markdown: "x"},
+		"neither From nor Unchecked": {Issue: "WEB-1", ID: "900", Markdown: "x"},
+		"both":                       {Issue: "WEB-1", ID: "900", Markdown: "x", Unchecked: true, From: &Comment{ID: "900", Body: layoutDoc()}},
+		"From another comment":       {Issue: "WEB-1", ID: "900", Markdown: "x", From: &Comment{ID: "901", Body: layoutDoc()}},
+	} {
+		if _, err := c.EditComment(t.Context(), in); !trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 	if n := f.count("PUT", "/rest/api/3/issue/WEB-1/comment/900"); n != 0 {
 		t.Errorf("%d writes", n)
 	}
 	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":{"type":"doc","version":1,"content":[]}}`))
-	if _, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: flattened, AcceptLoss: true}); err != nil {
+	if _, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: flattened, AcceptLoss: true}); err != nil {
 		t.Errorf("accepted loss: %v", err)
+	}
+}
+
+// TestEditCommentChecksLast proves the stale check is the last read
+// before the write: the mention the Markdown names is read first, so a
+// change made while it is read is caught, and nothing is written.
+func TestEditCommentChecksLast(t *testing.T) {
+	f, c := editCommentSite(t, adf.Doc(para("first")))
+	read, err := c.Comment(t.Context(), "WEB-1", "900")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		f.on("GET", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":`+docJSON(t, adf.Doc(para("changed")))+`}`))
+		reply(200, userOneJSON)(w, r, b)
+	})
+	_, err = c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: "thanks @[me]", From: &read})
+	if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) {
+		t.Fatalf("got %v", err)
+	}
+	want := []string{"GET /rest/api/3/issue/WEB-1/comment/900", "GET " + myselfURL, "GET /rest/api/3/issue/WEB-1/comment/900"}
+	if got := f.requests(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

@@ -2,7 +2,6 @@ package jira
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,12 +10,16 @@ import (
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
-// AnswerError is a successful answer this package could not read: a body
-// that is not JSON, or JSON of another shape than the call's. For a
-// write it means the write was applied; StepError.Applied reports it.
-// Message holds no text of the answer that could carry the credential.
+// AnswerError is a 2xx answer this package could not read: a body that
+// is not JSON, or JSON of another shape than the call's, or for a write a
+// status or body its spec does not document. Applied is set only on a
+// write's answer that is a documented success naming what was written
+// (see write): the write happened, and the result carries what decoded.
+// Any other AnswerError of a write leaves its outcome unknown. Message
+// holds no text of the answer that could carry the credential.
 type AnswerError struct {
 	Message string
+	Applied bool
 }
 
 func (e *AnswerError) Error() string { return "jira: " + e.Message }
@@ -26,62 +29,23 @@ func (e *AnswerError) Error() string { return "jira: " + e.Message }
 // that credential and is not used.
 var errCredentialChanged = &AnswerError{Message: "the credential changed while the answer was read; read it again"}
 
-// decodeAnswer decodes resp's body into out. It is the one place a
-// successful answer is decoded: every string in the body, object keys
+// decodeAnswer decodes resp's body into out. It is the one place an
+// answer's body is decoded: every string in the body, object keys
 // included, has the credential the request carried replaced through
 // resp.Scrub before any of it reaches out, so no text a call returns,
 // puts in an error or lists as a problem or warning can repeat it, and
 // text written with JSON escapes is checked as it decodes, not as sent.
-// A decode error is an *AnswerError whose text is scrubbed too.
+// A decode error is an *AnswerError whose text is scrubbed too. A write's
+// answer goes through write, which uses the same scrub.
 func decodeAnswer(resp *trackerapi.Response, out any) error {
-	_, err := decodeWritten(resp, out)
-	return err
-}
-
-// written is what a write's answer names as written: the id and key of
-// an object, or the id of each object of a list.
-type written struct {
-	id, key string
-	ids     []string
-}
-
-// decodeWritten decodes a write's answer into out (nil skips it) as
-// decodeAnswer does, reading first the identity of what was written on
-// its own and leniently (a string or a number), so it survives an answer
-// whose other fields do not decode. It is the one place a write's
-// identity is read.
-func decodeWritten(resp *trackerapi.Response, out any) (written, error) {
 	body, err := scrubbedBody(resp)
 	if err != nil {
-		return written{}, err
-	}
-	var w written
-	var top map[string]json.RawMessage
-	var list []map[string]json.RawMessage
-	switch {
-	case json.Unmarshal(body, &top) == nil:
-		w.id, w.key = idText(top["id"]), idText(top["key"])
-	case json.Unmarshal(body, &list) == nil:
-		for _, item := range list {
-			w.ids = append(w.ids, idText(item["id"]))
-		}
-	}
-	if out == nil {
-		return w, nil
+		return err
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return w, &AnswerError{Message: "the answer did not decode: " + resp.Scrub(err.Error())}
+		return &AnswerError{Message: "the answer did not decode: " + resp.Scrub(err.Error())}
 	}
-	return w, nil
-}
-
-// write sends r, a write, and decodes its answer through decodeWritten.
-func (c *Client) write(ctx context.Context, r trackerapi.Request, out any) (written, error) {
-	resp, err := c.call(ctx, r, nil)
-	if err != nil {
-		return written{}, err
-	}
-	return decodeWritten(resp, out)
+	return nil
 }
 
 // scrubbedBody is resp's body with every string scrubbed: the body itself

@@ -180,21 +180,24 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	return err
 }
 
-// send is call for a write of body to path under apiPath.
-func (c *Client) send(ctx context.Context, method, path string, q url.Values, body, out any) error {
-	_, err := c.call(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Query: q, Body: body}, out)
+// sendWrite is write for a write of body to path under apiPath whose
+// answer is not decoded.
+func (c *Client) sendWrite(ctx context.Context, method, path string, q url.Values, body any, want writeAnswer) error {
+	_, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Query: q, Body: body}, want, nil)
 	return err
 }
 
 // explain turns a transport error into the client's: a 404 the
-// credential caused becomes an AuthError.
+// credential caused becomes an AuthError. The error is judged by its own
+// outcome, the outermost (see outcomeOf).
 func (c *Client) explain(ctx context.Context, err error) error {
-	if _, ok := errors.AsType[*trackerapi.AuthError](err); ok {
+	switch e := outcomeOf(err).(type) {
+	case *trackerapi.AuthError:
 		c.id.forget()
-		return err
-	}
-	if errors.Is(err, trackerapi.ErrNotFound) {
-		return c.checkNotFound(ctx, err)
+	case *trackerapi.StatusError:
+		if e.Status == http.StatusNotFound {
+			return c.checkNotFound(ctx, err)
+		}
 	}
 	return err
 }

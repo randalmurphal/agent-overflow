@@ -72,7 +72,9 @@ type Options struct {
 	// success or error, before its body is read and before the call
 	// settles. It is not called when nothing answered, and never after
 	// Close returns. It runs on the calling goroutine, so it must not
-	// block or call Close. The header is a copy it may keep; it carries no
+	// block or call Close. The header is a copy it may keep, without
+	// Location and Content-Location and with the credential the request
+	// carried replaced by secret.Redacted in every value: it carries no
 	// URL and no body.
 	OnAnswer func(status int, header http.Header)
 }

@@ -41,9 +41,15 @@ func TestSprints(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	f.on("GET", "/rest/agile/1.0/board/4/sprint", reply(200, `{"isLast":true,"values":[{"id":9,"name":"x","state":"active","startDate":"soon"}]}`))
-	if _, err := c.Sprints(t.Context(), SprintQuery{Board: 4}); !isAnswerErr(err) {
-		t.Errorf("a date that does not parse: %v", err)
+	// A date that does not parse is a problem of that sprint, which stays
+	// listed with its other dates.
+	f.on("GET", "/rest/agile/1.0/board/4/sprint", reply(200, `{"isLast":true,"values":[{"id":9,"name":"x","state":"active","startDate":"soon","endDate":"2026-11-16T09:00:00.000Z","completeDate":""}]}`))
+	list, err = c.Sprints(t.Context(), SprintQuery{Board: 4})
+	if err != nil || len(list.Sprints) != 1 {
+		t.Fatalf("a date that does not parse: %+v %v", list, err)
+	}
+	if s := list.Sprints[0]; s.ID != 9 || len(s.Problems) != 1 || problemIn(s.Problems, "startDate") == nil || s.End.IsZero() || !s.Start.IsZero() {
+		t.Errorf("a date that does not parse: %+v", s)
 	}
 }
 
@@ -73,23 +79,57 @@ func TestCreateSprint(t *testing.T) {
 	}
 }
 
-// TestSprintWriteUnreadableAnswer proves a sprint written whose answer
-// does not decode still names the sprint by ID, as applied.
-func TestSprintWriteUnreadableAnswer(t *testing.T) {
-	for body, wantID := range map[string]int64{
-		`{"id":7,"name":"Sprint 1","startDate":"soon"}`: 7,
-		`{"id":"7","name":5}`:                           7,
-		`{"name":"Sprint 1"}`:                           0,
-		`not json`:                                      0,
+// TestSprintWriteAnswers proves a sprint write is reported only on an
+// answer naming the sprint: a malformed date is a problem of a stored
+// sprint, an answer naming it that fails to decode elsewhere is applied
+// with its ID, and one naming no sprint, or not JSON, or with another
+// status, is an unknown outcome that reports no sprint.
+func TestSprintWriteAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		body    string
+		id      int64
+		applied bool
+		err     bool
+	}{
+		{201, `{"id":7,"name":"Sprint 1","startDate":"soon"}`, 7, false, false},
+		{201, `{"id":"7","name":5}`, 7, true, true},
+		{201, `{"name":"Sprint 1"}`, 0, false, true},
+		{201, `{"id":"7x","name":"Sprint 1"}`, 0, false, true},
+		{201, `not json`, 0, false, true},
+		{200, `{"id":7,"name":"Sprint 1"}`, 0, false, true},
 	} {
 		f := newFake(t)
 		c := newTestClient(t, f)
-		f.on("POST", "/rest/agile/1.0/sprint", reply(201, body))
+		f.on("POST", "/rest/agile/1.0/sprint", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			wantJSON(t, b, `{"name":"Sprint 1","originBoardId":3}`)
+			reply(tc.status, tc.body)(w, r, b)
+		})
 		s, err := c.CreateSprint(t.Context(), SprintInput{Board: 3, Name: "Sprint 1"})
-		se, ok := errors.AsType[*StepError](err)
-		if !ok || se.Step != StepSprint || !se.Applied() || s.ID != wantID {
-			t.Errorf("%s: got %+v %v", body, s, err)
+		if s.ID != tc.id || (err != nil) != tc.err {
+			t.Errorf("%d %s: got %+v %v", tc.status, tc.body, s, err)
+			continue
 		}
+		if !tc.err {
+			if problemIn(s.Problems, "startDate") == nil {
+				t.Errorf("%s: no problem for the date: %+v", tc.body, s)
+			}
+			continue
+		}
+		se, ok := errors.AsType[*StepError](err)
+		if !ok || se.Step != StepSprint || se.Applied() != tc.applied || se.OutcomeUnknown() == tc.applied {
+			t.Errorf("%d %s: %v", tc.status, tc.body, err)
+		}
+	}
+	// An update's answer must name the sprint updated.
+	f := newFake(t)
+	c := newTestClient(t, f)
+	f.on("GET", sprint7URL, reply(200, `{"id":7,"name":"Sprint 1","state":"active"}`))
+	f.on("POST", sprint7URL, reply(200, `{"id":8,"name":"Sprint A","state":"active"}`))
+	name := "Sprint A"
+	s, err := c.UpdateSprint(t.Context(), SprintUpdate{ID: 7, Name: &name})
+	if se, ok := errors.AsType[*StepError](err); !ok || se.Applied() || !se.OutcomeUnknown() || s.ID != 0 {
+		t.Errorf("an answer naming another sprint: %+v %v", s, err)
 	}
 }
 

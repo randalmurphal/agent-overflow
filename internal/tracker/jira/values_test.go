@@ -222,6 +222,15 @@ func TestValueAssigneeMustBeAssignable(t *testing.T) {
 	if n := f.count("GET", "/rest/api/3/user/assignable/search"); n != 3 {
 		t.Errorf("%d scoped checks, want 3", n)
 	}
+	// An answer listing only someone else does not vouch for the user.
+	f.on("GET", "/rest/api/3/user/assignable/search", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		wantQuery(t, r, "issueKey", "WEB-1")
+		wantQuery(t, r, "accountId", "acc-user1")
+		reply(200, "["+userTwoJSON+"]")(w, r, b)
+	})
+	if _, err := c.Value(t.Context(), assignee, Text("acc-user1"), ValueOptions{Issue: "WEB-1"}); !trackerapi.WriteNotApplied(err) {
+		t.Errorf("an answer naming another user: %v", err)
+	}
 }
 
 func TestValueParentMissing(t *testing.T) {

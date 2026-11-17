@@ -2,7 +2,6 @@ package jira
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -21,7 +20,8 @@ type SprintMove struct {
 }
 
 // MoveToSprint moves issues into a future or active sprint, in groups of
-// 50 that chain as Rank's do. The sprint is read first, and a closed one
+// 50 that chain as Rank's do. Jira documents only a 204 for it, so any
+// other answer leaves a group's outcome unknown. The sprint is read first, and a closed one
 // is refused before anything is sent. A failure is a *BatchError with the
 // result saying what happened to each issue.
 func (c *Client) MoveToSprint(ctx context.Context, in SprintMove) (BatchResult, error) {
@@ -81,9 +81,10 @@ func (c *Client) MoveToBacklog(ctx context.Context, in BacklogMove) (BatchResult
 	case in.Position.set():
 		return BatchResult{}, notSent("a backlog position needs the board whose backlog it is")
 	}
+	// Only the board's backlog is documented to answer 207.
 	return c.runBatch(ctx, batchWrite{
 		step: StepMove, path: path, method: http.MethodPost,
-		issues: in.Issues, pos: in.Position, field: in.RankFieldID,
+		issues: in.Issues, pos: in.Position, field: in.RankFieldID, multi: in.Board > 0,
 	})
 }
 
@@ -100,10 +101,12 @@ type SprintCompletion struct {
 }
 
 // CompletionResult is how far a completion got: the unfinished issues
-// found, what their moves did, and whether the sprint was closed.
+// found, what their moves did, the unfinished issues still in the sprint
+// after the moves (which keep it open), and whether it was closed.
 type CompletionResult struct {
 	Unfinished []string
 	Moves      BatchResult
+	Remaining  []string
 	Closed     bool
 	// Sprint is the sprint as Jira stored it once closed.
 	Sprint *Sprint
@@ -114,9 +117,14 @@ type CompletionResult struct {
 // the sprint, the destination, the board's done column and every issue of
 // the sprint, refusing before any write when one of them is not as
 // needed; moves the issues whose status is not in the done column to
-// MoveTo or the backlog; and closes the sprint only when every move was
-// done. A failure says how far it got: a move that failed or whose
-// outcome is unknown leaves the sprint open, with the moves in Moves.
+// MoveTo or the backlog; lists the sprint's issues again; and closes the
+// sprint only when every move was done and no unfinished issue is left
+// in it. An unfinished issue added meanwhile is in Remaining, with the
+// sprint left open, so the caller can run the completion again. Jira
+// takes no precondition on the source sprint, so an issue someone else
+// moved between the listing and the move is still moved by this call. A
+// failure says how far it got; the close answer is read as every write's
+// is (see write), so only an answer naming the sprint reports it closed.
 func (c *Client) CompleteSprint(ctx context.Context, in SprintCompletion) (CompletionResult, error) {
 	var res CompletionResult
 	if err := c.admit(ctx); err != nil {
@@ -126,13 +134,15 @@ func (c *Client) CompleteSprint(ctx context.Context, in SprintCompletion) (Compl
 	if err != nil {
 		return res, err
 	}
-	unfinished, err := c.unfinishedIssues(ctx, in)
+	done, err := c.completionChecks(ctx, in)
+	if err == nil {
+		res.Unfinished, err = c.unfinishedIssues(ctx, in.Sprint, done)
+	}
 	if err != nil {
 		return res, notSentErr(fmt.Errorf("jira: complete sprint %d: %w", in.Sprint, err))
 	}
-	res.Unfinished = unfinished
-	if len(unfinished) > 0 {
-		w := batchWrite{step: StepMove, path: agilePath + "backlog/issue", method: http.MethodPost, issues: unfinished}
+	if len(res.Unfinished) > 0 {
+		w := batchWrite{step: StepMove, path: agilePath + "backlog/issue", method: http.MethodPost, issues: res.Unfinished}
 		if in.MoveTo > 0 {
 			w.path = agilePath + "sprint/" + strconv.FormatInt(in.MoveTo, 10) + "/issue"
 		}
@@ -140,10 +150,17 @@ func (c *Client) CompleteSprint(ctx context.Context, in SprintCompletion) (Compl
 		if err != nil {
 			return res, fmt.Errorf("jira: complete sprint %d: the sprint stays open: %w", in.Sprint, err)
 		}
+		// The last read before the close.
+		if res.Remaining, err = c.unfinishedIssues(ctx, in.Sprint, done); err == nil && len(res.Remaining) > 0 {
+			err = fmt.Errorf("%d unfinished issues are in the sprint after the moves; run the completion again", len(res.Remaining))
+		}
+		if err != nil {
+			return res, &StepError{Step: StepSprint, Err: notSentErr(fmt.Errorf("jira: complete sprint %d: the sprint stays open: %w", in.Sprint, err))}
+		}
 	}
-	s, err := c.writeSprint(ctx, http.MethodPost, path, map[string]any{"state": SprintClosed})
+	s, err := c.writeSprint(ctx, http.MethodPost, path, in.Sprint, map[string]any{"state": SprintClosed})
 	if err != nil {
-		if se, ok := errors.AsType[*StepError](err); ok && se.Applied() {
+		if answerApplied(err) {
 			res.Closed, res.Sprint = true, &s
 		}
 		return res, fmt.Errorf("jira: complete sprint %d: %w", in.Sprint, err)
@@ -152,9 +169,10 @@ func (c *Client) CompleteSprint(ctx context.Context, in SprintCompletion) (Compl
 	return res, nil
 }
 
-// unfinishedIssues checks a completion can run and returns the keys of
-// the sprint's issues outside the board's done column, in rank order.
-func (c *Client) unfinishedIssues(ctx context.Context, in SprintCompletion) ([]string, error) {
+// completionChecks checks a completion can run: the sprint is active, the
+// destination open, and the board has a done column, whose statuses it
+// returns.
+func (c *Client) completionChecks(ctx context.Context, in SprintCompletion) ([]string, error) {
 	switch {
 	case in.MoveTo < 0:
 		return nil, checkAgileID("sprint", in.MoveTo)
@@ -189,7 +207,13 @@ func (c *Client) unfinishedIssues(ctx context.Context, in SprintCompletion) ([]s
 	if len(done) == 0 {
 		return nil, notSent("board %d has no column with statuses, so no issue reads as done", board)
 	}
-	list, err := c.listAll(ctx, ListQuery{List: SprintIssues(in.Sprint), Fields: []string{"status"}}, 0)
+	return done, nil
+}
+
+// unfinishedIssues lists every issue of sprint and returns the keys of
+// those whose status is not in done, in rank order.
+func (c *Client) unfinishedIssues(ctx context.Context, sprint int64, done []string) ([]string, error) {
+	list, err := c.listAll(ctx, ListQuery{List: SprintIssues(sprint), Fields: []string{"status"}}, 0)
 	if err != nil {
 		return nil, err
 	}

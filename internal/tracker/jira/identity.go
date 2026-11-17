@@ -150,7 +150,7 @@ func (c *Client) checkNotFound(ctx context.Context, notFound error) error {
 		}
 		return &UnconfirmedError{NotFound: status, Err: errCredentialReplaced}
 	}
-	if ae, ok := errors.AsType[*trackerapi.AuthError](err); ok && sameRead(status.CredentialMark(), ae.CredentialMark()) {
+	if ae, ok := outcomeOf(err).(*trackerapi.AuthError); ok && sameRead(status.CredentialMark(), ae.CredentialMark()) {
 		return fmt.Errorf("jira: the answer was 404 because the credential was refused: %w", err)
 	}
 	return &UnconfirmedError{NotFound: status, Err: err}

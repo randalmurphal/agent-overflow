@@ -63,19 +63,13 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	if len(update) > 0 {
 		body["update"] = update
 	}
-	created, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + "issue", Body: body}, nil)
-	if numericRE.MatchString(created.id) {
-		res.ID = created.id
-	}
-	if issueKeyRE.MatchString(created.key) {
-		res.Key = created.key
-	}
+	// Documented: 201 with the issue's id and key.
+	created, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + "issue", Body: body},
+		bodyAnswer(namesIssue, http.StatusCreated), nil)
 	if err != nil {
 		return res, &StepError{Step: StepCreate, Err: fmt.Errorf("jira: create in %s: %w", p.project, err)}
 	}
-	if res.ID == "" || res.Key == "" {
-		return res, &StepError{Step: StepCreate, Err: &AnswerError{Message: "the create's answer does not name the issue's ID and key"}}
-	}
+	res.ID, res.Key = created.id(), created.key()
 	if len(p.images) == 0 {
 		return res, nil
 	}
@@ -87,7 +81,8 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 	if err != nil {
 		return res, &StepError{Step: StepFinish, Err: notSentErr(err)}
 	}
-	if err := c.send(ctx, http.MethodPut, "issue/"+url.PathEscape(res.ID), nil, map[string]any{"fields": finish}, nil); err != nil {
+	finishReq := trackerapi.Request{Method: http.MethodPut, Path: apiPath + "issue/" + url.PathEscape(res.ID), Body: map[string]any{"fields": finish}}
+	if _, err := c.write(ctx, finishReq, emptyAnswer(http.StatusNoContent), nil); err != nil {
 		return res, &StepError{Step: StepFinish, Err: fmt.Errorf("jira: write the images into %s: %w", firstNonEmpty(res.Key, res.ID), err)}
 	}
 	return res, nil
@@ -168,8 +163,11 @@ func (c *Client) uploadImages(ctx context.Context, issue string, imgs []*Image, 
 type EditResult struct {
 	Uploaded []Attachment
 	// Issue holds the fields the edit wrote, as Jira returned them; nil
-	// when the plan changed nothing and nothing was sent.
+	// when Jira answered without them (a 204) or nothing was sent.
 	Issue *Issue
+	// Unchanged reports a plan whose every value the issue already held,
+	// so nothing was sent.
+	Unchanged bool
 }
 
 // ApplyEdit sends an edit plan: it reads again every rich text field the
@@ -189,6 +187,7 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 		return res, err
 	}
 	if len(p.values) == 0 {
+		res.Unchanged = true
 		return res, nil
 	}
 	if err := c.recheck(ctx, p); err != nil {
@@ -225,12 +224,18 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 		body["update"] = update
 	}
 	q := url.Values{"returnIssue": {"true"}, "fields": {strings.Join(names, ",")}}
+	// Documented: 200 with the issue when returnIssue is true, or 204.
 	var stored issueJSON
-	if err := c.send(ctx, http.MethodPut, "issue/"+url.PathEscape(p.issueID), q, body, &stored); err != nil {
+	req := trackerapi.Request{Method: http.MethodPut, Path: apiPath + "issue/" + url.PathEscape(p.issueID), Query: q, Body: body}
+	_, err = c.write(ctx, req, writeAnswer{empty: []int{http.StatusNoContent}, body: []int{http.StatusOK}, names: namesThisID(p.issueID)}, &stored)
+	if err != nil && !answerApplied(err) {
 		return res, &StepError{Step: StepEdit, Err: fmt.Errorf("jira: edit %s: %w", p.issueKey, err)}
 	}
 	if stored.ID != "" {
 		res.Issue = stored.decode()
+	}
+	if err != nil {
+		return res, &StepError{Step: StepEdit, Err: fmt.Errorf("jira: edit %s: %w", p.issueKey, err)}
 	}
 	return res, nil
 }
@@ -239,8 +244,18 @@ func (c *Client) ApplyEdit(ctx context.Context, p *EditPlan) (EditResult, error)
 // a clear included, and refuses when one is no longer the document the
 // plan was made against.
 func (c *Client) recheck(ctx context.Context, p *EditPlan) error {
+	return c.recheckRich(ctx, p.issueID, p.issueKey, p.values)
+}
+
+// recheckRich reads the stored document of every rich text field values
+// write on issue (named issueKey in errors) and refuses with a
+// *StaleError when one is no longer the document its value was built
+// against. A write calls it as its last read before its first write; it
+// narrows the window for a lost update and does not close it, since Jira
+// takes no precondition on the write.
+func (c *Client) recheckRich(ctx context.Context, issue, issueKey string, values []Value) error {
 	var rich []Value
-	for _, v := range p.values {
+	for _, v := range values {
 		if v.rich {
 			rich = append(rich, v)
 		}
@@ -252,7 +267,7 @@ func (c *Client) recheck(ctx context.Context, p *EditPlan) error {
 	for i, v := range rich {
 		ids[i] = v.FieldID
 	}
-	is, err := c.GetIssue(ctx, p.issueID, ids...)
+	is, err := c.GetIssue(ctx, issue, ids...)
 	if err != nil {
 		return err
 	}
@@ -262,7 +277,7 @@ func (c *Client) recheck(ctx context.Context, p *EditPlan) error {
 			return notSentErr(err)
 		}
 		if !adf.Equal(now, v.base) {
-			return notSentErr(&StaleError{Issue: p.issueKey, What: v.Name})
+			return notSentErr(&StaleError{Issue: issueKey, What: v.Name})
 		}
 	}
 	return nil

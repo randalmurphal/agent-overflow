@@ -315,7 +315,7 @@ func richFieldIDs(metas []FieldMeta) []string {
 // storedDoc is the document field f holds on is; nil when it is empty.
 func storedDoc(is *Issue, f FieldMeta) (*adf.Node, error) {
 	if f.ID == "description" {
-		if err := problemOf(is, f.ID); err != nil {
+		if err := problemIn(is.Problems, f.ID); err != nil {
 			return nil, fmt.Errorf("jira: the stored %s is not a document, so it cannot be edited as Markdown: %w", f.Name, err)
 		}
 		return is.Description, nil

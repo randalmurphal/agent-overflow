@@ -23,6 +23,8 @@ type Attachment struct {
 	Size     int64
 	Created  time.Time
 	Author   *User
+	// Problems names the fields whose value did not decode (created).
+	Problems []FieldProblem
 }
 
 type attachmentJSON struct {
@@ -36,9 +38,7 @@ type attachmentJSON struct {
 
 func (a attachmentJSON) attachment() Attachment {
 	out := Attachment{ID: idText(a.ID), Filename: a.Filename, MimeType: a.MimeType, Size: a.Size, Author: a.Author.userPtr()}
-	if t, err := parseTime(a.Created); err == nil {
-		out.Created = t
-	}
+	timeField("created", a.Created, &out.Created, &out.Problems)
 	return out
 }
 
@@ -51,20 +51,10 @@ func (c *Client) Attachments(ctx context.Context, issue string) ([]Attachment, e
 	if err != nil {
 		return nil, err
 	}
-	if p := problemOf(is, "attachment"); p != nil {
+	if p := problemIn(is.Problems, "attachment"); p != nil {
 		return nil, fmt.Errorf("jira: attachments of %s: %w", issue, p)
 	}
 	return is.Attachments, nil
-}
-
-// problemOf is the decode error of field on is, or nil.
-func problemOf(is *Issue, field string) error {
-	for _, p := range is.Problems {
-		if p.Field == field {
-			return p.Err
-		}
-	}
-	return nil
 }
 
 // File is one file to attach.
@@ -76,14 +66,15 @@ type File struct {
 // Attach uploads files to an issue in one request and returns the
 // attachments Jira stored. The request is bounded by
 // Options.MaxUploadBytes; Jira refuses more than 60 files at once. An
-// upload Jira stored whose answer did not decode is a *StepError whose
-// Applied reports it.
+// upload whose answer could not be read in full is a StepUpload
+// *StepError: Applied, with the stored attachments by ID, when the answer
+// names them, and an unknown outcome otherwise.
 func (c *Client) Attach(ctx context.Context, issue string, files ...File) ([]Attachment, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
 	out, err := c.attach(ctx, issue, files...)
-	if _, ok := errors.AsType[*AnswerError](err); ok {
+	if _, ok := outcomeOf(err).(*AnswerError); ok {
 		return out, &StepError{Step: StepUpload, Err: err}
 	}
 	return out, err
@@ -110,6 +101,7 @@ func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Att
 	if err != nil {
 		return nil, notSentErr(fmt.Errorf("jira: attach to %s: %w", issue, err))
 	}
+	// Documented: 200 with the list of attachments stored.
 	var stored []attachmentJSON
 	w, err := c.write(ctx, trackerapi.Request{
 		Method: http.MethodPost, Path: apiPath + path + "/attachments",
@@ -117,11 +109,12 @@ func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Att
 		Header:   http.Header{"X-Atlassian-Token": {"no-check"}},
 		Body:     body,
 		Transfer: true, ContentType: contentType,
-	}, &stored)
+	}, bodyAnswer(namesEveryID, http.StatusOK), &stored)
 	if err != nil {
-		// What was stored is known by ID even when the rest is not read.
+		// What was stored is known by ID even when the rest is not read;
+		// an unknown outcome names nothing.
 		var known []Attachment
-		for _, id := range w.ids {
+		for _, id := range w.ids() {
 			known = append(known, Attachment{ID: id})
 		}
 		return known, fmt.Errorf("jira: attach to %s: %w", issue, err)
@@ -143,7 +136,8 @@ func (c *Client) DeleteAttachment(ctx context.Context, id string) error {
 	if err := checkID("attachment", id); err != nil {
 		return err
 	}
-	if err := c.send(ctx, http.MethodDelete, "attachment/"+url.PathEscape(id), nil, nil, nil); err != nil {
+	req := trackerapi.Request{Method: http.MethodDelete, Path: apiPath + "attachment/" + url.PathEscape(id)}
+	if _, err := c.write(ctx, req, emptyAnswer(http.StatusNoContent), nil); err != nil {
 		return fmt.Errorf("jira: delete attachment %s: %w", id, err)
 	}
 	return nil

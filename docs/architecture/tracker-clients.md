@@ -61,7 +61,7 @@ type Options struct {
     ReadTimeout  time.Duration   // a call whose Request.Timeout is zero; zero means 45s
     MaxBodyBytes int64           // a body Do and JSON read; zero means 8 MiB
     Proxy        func(*http.Request) (*url.URL, error) // nil connects directly
-    OnAnswer     func(status int, header http.Header)  // every answer's status and a header copy, before its body
+    OnAnswer     func(status int, header http.Header)  // every answer's status and a scrubbed header copy with no URL, before its body
 }
 
 func New(opts Options) (*Client, error) // misconfiguration is a construction error
@@ -216,7 +216,8 @@ caller writes rich text without it.
 One `jira.Client` per site. The value side of a field is open-ended (a
 site adds custom fields), so an issue carries its raw field values by field
 ID beside the typed fields every site has, and the field catalog says how
-to read and write each one.
+to read and write each one. A field of a record that cannot be read is a
+problem on that record, which stays usable.
 
 - **Fields.** The catalog lists every field with its schema. Create and
   edit metadata say which fields a screen offers, which are required and
@@ -225,7 +226,8 @@ to read and write each one.
   date, a number, rich text from Markdown. A value that matches several
   options or none is an error that lists them. A field is named by its
   exact name or ID; an exact ID wins over any name, and there are no
-  aliases.
+  aliases. A required rich text field is not emptied, by Markdown or by a
+  raw document that shows nothing.
 - **Writes.** Create, edit, transition (with the fields its screen takes),
   assign, comment (add, edit, delete, with a service desk comment's
   audience), link and unlink issues, remote links, attach and download.
@@ -238,8 +240,16 @@ to read and write each one.
 - **Plans.** Create and edit are planned, then applied. A plan is opaque:
   it shows a preview and is applied once, by the client that made it, to
   the issue it was checked for. Apply reads the rich text the plan was
-  computed from again and refuses when it changed, a clear included. A
-  write whose answer cannot be read still returns what was written.
+  computed from again and refuses when it changed, a clear included.
+  That recheck is the last read before the first write; it narrows the
+  window and is not atomic, since Jira offers no precondition.
+- **Write answers.** A write is applied when its answer is a success form
+  the spec documents and names what was written, or is a documented empty
+  success such as a 204. One that names it but fails to decode elsewhere
+  is applied and returns what decoded. Any other 2xx is an unknown outcome
+  and reports nothing as created, stored or closed. An edit that asks for
+  nothing is refused, and one that asks only for stored values sends
+  nothing and says so.
 - **Identity.** Jira answers some paths with a 404 when the credential is
   bad. After a 404 the client asks who it is signed in as, with a check
   that starts after the 404 arrived, and reports a refused credential as
@@ -257,23 +267,30 @@ to read and write each one.
   future or active sprint, and move to the backlog, with a position only
   on a board's backlog. Each is sent in groups of 50 chained after the
   last issue ranked, stops at the first group not answered in full, and
-  reports every issue as done, refused, unknown or not sent. Create,
-  update, start and delete a sprint. Completing reads the sprint, the
-  target and every issue first, moves the issues outside the board's done
-  column to the sprint or backlog the caller names, and closes the sprint
-  only when every move succeeded. A sprint is named for a field value
+  reports every issue as done, refused, unknown or not sent. A group's
+  answer is read only as a 204 or, for a rank and a board's backlog, a 207
+  whose every entry names an issue of the group once with a status;
+  anything else leaves the whole group unknown. Create, update, start and
+  delete a sprint. Completing reads the sprint, the target and every issue
+  first, moves the issues outside the board's done column to the sprint or
+  backlog the caller names, lists the sprint again, and closes it only
+  when every move succeeded and no unfinished issue is left; one added
+  meanwhile is reported and the sprint stays open. An issue someone else
+  moved between the listing and the move is still moved. A sprint is named for a field value
   among the active and future sprints of the project's scrum boards.
 - **History.** An issue's changelog as typed entries, and the bulk fetch
   split across 1000 issues and 10 fields with entries joined again. Sprint
-  changes parse to sprint IDs.
+  changes parse to sprint IDs. Bulk change times are epoch milliseconds
+  and per-issue ones timestamp strings; both are read.
 - **Search.** `search/jql` with token paging, the approximate count, and
   the bulk fetch of issues by key or ID. Reading a search to its end
   returns its warnings and whether it is complete; a bulk fetch and a
   project listing say the same.
-- **Worklogs.** Jira's own worklogs: list, read by ID, add, change (edited
-  from the stored comment, with the loss and stale checks), delete, with
-  the remaining-estimate adjustments each write allows, and the updated
-  and deleted feeds for sync.
+- **Worklogs.** Jira's own worklogs: list, read by ID, add, change (based
+  on the worklog as read, or explicitly unchecked, with the loss check;
+  an estimate adjustment alone is a change), delete, with the
+  remaining-estimate adjustments each write allows, and the updated and
+  deleted feeds for sync.
 - **People.** Who the token belongs to, a user by account ID, a user found
   by account ID, exact name or email (active and not an app; a name that
   cannot be proven unique within Jira's search window is an error), and

@@ -2,9 +2,9 @@ package jira
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -113,6 +113,9 @@ type batchWrite struct {
 	issues []string
 	pos    RankPosition
 	field  int64 // the rank field; zero for Jira's default
+	// multi reports a call documented to answer 207 with per-issue
+	// results; every call is documented to answer 204 when all went well.
+	multi bool
 }
 
 // checkBatch refuses issues that are not issue references, repeat, or
@@ -199,7 +202,10 @@ func batchErr(step Step, res BatchResult, stop error) error {
 }
 
 // sendGroup sends one group placed at pos and records each issue's
-// outcome; an error stops the batch.
+// outcome; an error stops the batch. The answer is read in the forms the
+// spec documents: 204 (every issue done) or, where documented, a 207 read
+// whole (see applyEntries). Any other 2xx leaves the whole group unknown.
+// A failure is judged by its own outcome, the outermost in its chain.
 func (c *Client) sendGroup(ctx context.Context, w batchWrite, pos RankPosition, group []IssueOutcome) error {
 	refs := make([]string, len(group))
 	for i, o := range group {
@@ -218,70 +224,101 @@ func (c *Client) sendGroup(ctx context.Context, w batchWrite, pos RankPosition, 
 	resp, err := c.call(ctx, trackerapi.Request{Method: w.method, Path: w.path, Body: body}, nil)
 	if err != nil {
 		outcome := OutcomeUnknown
-		if _, unsent := errors.AsType[*trackerapi.NotSentError](err); unsent {
-			// Refused before sending, as an ended context is: Jira never
-			// saw the group.
+		switch {
+		case neverSent(err):
 			outcome = OutcomeNotSent
-		} else if trackerapi.WriteNotApplied(err) {
+		case trackerapi.WriteNotApplied(err):
 			outcome = OutcomeRefused
 		}
-		for i := range group {
-			group[i].Outcome, group[i].Reason = outcome, err.Error()
-		}
+		setOutcome(group, outcome, err.Error())
 		return err
 	}
-	if resp.Status != http.StatusMultiStatus {
-		for i := range group {
-			group[i].Outcome = OutcomeDone
-		}
+	switch {
+	case resp.Status == http.StatusNoContent:
+		setOutcome(group, OutcomeDone, "")
 		return nil
+	case resp.Status == http.StatusMultiStatus && w.multi:
+		return applyEntries(resp, group)
 	}
-	return applyEntries(resp, group)
+	setOutcome(group, OutcomeUnknown, "")
+	return &AnswerError{Message: fmt.Sprintf("the answer's status %d is not one this write documents, so which of %d issues Jira took is unknown", resp.Status, len(group))}
 }
 
-// applyEntries reads a 207's per-issue results into group. An answer
-// that does not decode, or leaves an issue out, makes those issues'
-// outcome unknown and stops the batch.
+func setOutcome(group []IssueOutcome, o Outcome, reason string) {
+	for i := range group {
+		group[i].Outcome, group[i].Reason = o, reason
+	}
+}
+
+// entryOutcome is what a 207 entry's status says of its issue: done for
+// a 2xx; refused for a 4xx and for the 503 the spec's example shows for a
+// rank Jira could not run then; anything else is a status this package
+// does not know, so unknown.
+func entryOutcome(status int) Outcome {
+	switch {
+	case status >= 200 && status <= 299:
+		return OutcomeDone
+	case status >= 400 && status <= 499 || status == http.StatusServiceUnavailable:
+		return OutcomeRefused
+	}
+	return OutcomeUnknown
+}
+
+// applyEntries reads a 207's per-issue results into group. The answer is
+// taken only whole: every entry must name an issue of the group, once,
+// and carry a status; otherwise which issues Jira took is unknown for the
+// whole group. An issue with no entry, or an entry status this package
+// does not know, is unknown. Any unknown issue stops the batch.
 func applyEntries(resp *trackerapi.Response, group []IssueOutcome) error {
 	var v struct {
-		Entries []struct {
+		Entries *[]struct {
 			IssueID  jsonID   `json:"issueId"`
 			IssueKey string   `json:"issueKey"`
-			Status   int      `json:"status"`
+			Status   *int     `json:"status"`
 			Errors   []string `json:"errors"`
 		} `json:"entries"`
 	}
-	if err := decodeAnswer(resp, &v); err != nil {
-		for i := range group {
-			group[i].Outcome = OutcomeUnknown
-		}
+	unknown := func(why string) error {
+		setOutcome(group, OutcomeUnknown, "")
 		// Not an *AnswerError: which issues Jira took is what is unknown.
-		return fmt.Errorf("the per-issue answer did not decode, so which of %d issues Jira took is unknown: %v", len(group), err)
+		return fmt.Errorf("the per-issue answer %s, so which of %d issues Jira took is unknown", why, len(group))
 	}
-	var missing int
+	if err := decodeAnswer(resp, &v); err != nil {
+		return unknown("did not decode (" + err.Error() + ")")
+	}
+	if v.Entries == nil {
+		return unknown("has no entries")
+	}
+	found := make([]bool, len(group))
+	for _, e := range *v.Entries {
+		i := slices.IndexFunc(group, func(o IssueOutcome) bool {
+			return strings.EqualFold(e.IssueKey, o.Issue) || string(e.IssueID) == o.Issue
+		})
+		switch {
+		case i < 0:
+			return unknown("names an issue not in the request")
+		case found[i]:
+			return unknown("names " + group[i].Issue + " twice")
+		case e.Status == nil:
+			return unknown("has an entry without a status")
+		}
+		found[i] = true
+		group[i].Outcome = entryOutcome(*e.Status)
+		if group[i].Outcome != OutcomeDone {
+			group[i].Reason = fmt.Sprintf("%d: %s", *e.Status, strings.Join(e.Errors, "; "))
+		}
+	}
+	var open int
 	for i := range group {
-		ref := group[i].Issue
-		found := false
-		for _, e := range v.Entries {
-			if !strings.EqualFold(e.IssueKey, ref) && string(e.IssueID) != ref {
-				continue
-			}
-			found = true
-			if e.Status >= 200 && e.Status < 300 {
-				group[i].Outcome = OutcomeDone
-			} else {
-				group[i].Outcome = OutcomeRefused
-				group[i].Reason = fmt.Sprintf("%d: %s", e.Status, strings.Join(e.Errors, "; "))
-			}
-			break
-		}
-		if !found {
+		if !found[i] {
 			group[i].Outcome = OutcomeUnknown
-			missing++
+		}
+		if group[i].Outcome == OutcomeUnknown {
+			open++
 		}
 	}
-	if missing > 0 {
-		return fmt.Errorf("the per-issue answer left out %d issues, whose outcome is unknown", missing)
+	if open > 0 {
+		return fmt.Errorf("the per-issue answer leaves %d issues without a known outcome", open)
 	}
 	return nil
 }
@@ -302,7 +339,7 @@ func (c *Client) Rank(ctx context.Context, in RankInput) (BatchResult, error) {
 	}
 	return c.runBatch(ctx, batchWrite{
 		step: StepRank, path: agilePath + "issue/rank", method: http.MethodPut,
-		issues: in.Issues, pos: in.Position, field: in.RankFieldID,
+		issues: in.Issues, pos: in.Position, field: in.RankFieldID, multi: true,
 	})
 }
 

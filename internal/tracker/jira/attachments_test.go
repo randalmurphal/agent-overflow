@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -60,12 +61,18 @@ func TestAttachmentsListAndDelete(t *testing.T) {
 	c := newTestClient(t, f)
 	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		wantQuery(t, r, "fields", "attachment")
-		reply(200, `{"id":"10001","key":"WEB-1","fields":{"attachment":[{"id":"501","filename":"a.png","size":3}]}}`)(w, r, b)
+		reply(200, `{"id":"10001","key":"WEB-1","fields":{"attachment":[{"id":"501","filename":"a.png","size":3,"created":"2026-11-16T09:00:00.000+0000"},
+			{"id":"502","filename":"b.png","size":4,"created":"yesterday"},{"id":"503","filename":"c.png","size":5}]}}`)(w, r, b)
 	})
 	f.on("DELETE", "/rest/api/3/attachment/501", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
 	got, err := c.Attachments(t.Context(), "WEB-1")
-	if err != nil || len(got) != 1 || got[0].Filename != "a.png" {
+	if err != nil || len(got) != 3 || got[0].Filename != "a.png" || got[0].Created.IsZero() || len(got[0].Problems) != 0 {
 		t.Fatalf("got %+v %v", got, err)
+	}
+	// A timestamp that does not parse is the record's problem; an absent
+	// one is none.
+	if got[1].Filename != "b.png" || problemIn(got[1].Problems, "created") == nil || len(got[2].Problems) != 0 {
+		t.Errorf("got %+v", got[1:])
 	}
 	if err := c.DeleteAttachment(t.Context(), "501"); err != nil {
 		t.Fatal(err)
@@ -118,6 +125,20 @@ func TestAttachmentMediaID(t *testing.T) {
 		if err == nil || got != "" || strings.Contains(err.Error(), seg) {
 			t.Errorf("%s: got %q %v", seg, got, err)
 		}
+	}
+	// A credential shaped like a media ID is scrubbed from the redirect
+	// before it is read, so it fails the check and is never returned.
+	uuidSecret, err := New(Options{
+		BaseURL: f.srv.URL, Version: "test",
+		Credentials: trackerapi.StaticCredentials(trackerapi.Basic("user1@example.com", secret.New([]byte(media)))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(uuidSecret.Close)
+	got, err := uuidSecret.AttachmentMediaID(t.Context(), "501")
+	if err == nil || got != "" || strings.Contains(err.Error(), media) {
+		t.Errorf("a media ID that is the credential: got %q %v", got, err)
 	}
 	f.on("GET", "/rest/api/3/attachment/content/502", func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		w.Header().Set("Location", "https://api.media.example.com/elsewhere")

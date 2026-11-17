@@ -30,6 +30,10 @@ type Worklog struct {
 	// Visibility is a role or group the worklog is restricted to; nil
 	// when everyone who can see the issue sees it.
 	Visibility json.RawMessage
+	// Problems names the fields whose value did not decode (started,
+	// created, updated, comment); the rest of the worklog is usable. An
+	// edit refuses to rewrite a comment that did not decode.
+	Problems []FieldProblem
 }
 
 type worklogJSON struct {
@@ -45,28 +49,26 @@ type worklogJSON struct {
 	Visibility       json.RawMessage `json:"visibility"`
 }
 
-// worklog decodes w; a comment that is not a document or a start that is
-// not a timestamp is an error, with the rest of the worklog returned.
-func (w worklogJSON) worklog() (Worklog, error) {
+// worklog decodes w; a timestamp that does not parse or a comment that is
+// not a document is one of its Problems.
+func (w worklogJSON) worklog() Worklog {
 	out := Worklog{
 		ID: w.ID, IssueID: w.IssueID, Author: w.Author.userPtr(), UpdateAuthor: w.UpdateAuthor.userPtr(),
 		TimeSpent: time.Duration(w.TimeSpentSeconds) * time.Second,
 	}
-	out.Created, _ = parseTime(w.Created)
-	out.Updated, _ = parseTime(w.Updated)
+	timeField("started", w.Started, &out.Started, &out.Problems)
+	timeField("created", w.Created, &out.Created, &out.Problems)
+	timeField("updated", w.Updated, &out.Updated, &out.Problems)
 	if !isNull(w.Visibility) {
 		out.Visibility = w.Visibility
 	}
-	var err error
-	if out.Started, err = parseTime(w.Started); err != nil {
-		return out, fmt.Errorf("worklog %s: %w", w.ID, err)
-	}
 	if !isNull(w.Comment) {
 		if err := decodeDoc(w.Comment, &out.Comment); err != nil {
-			return out, fmt.Errorf("worklog %s: %w", w.ID, err)
+			out.Comment = nil
+			out.Problems = append(out.Problems, FieldProblem{Field: "comment", Err: err})
 		}
 	}
-	return out, nil
+	return out
 }
 
 func worklogPath(issue, id string) (string, error) {
@@ -123,11 +125,7 @@ func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) (WorklogList, err
 			return out, fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
 		}
 		for _, j := range page.Worklogs {
-			w, err := j.worklog()
-			if err != nil {
-				return out, fmt.Errorf("jira: worklogs of %s: %w", q.Issue, &AnswerError{Message: err.Error()})
-			}
-			out.Worklogs = append(out.Worklogs, w)
+			out.Worklogs = append(out.Worklogs, j.worklog())
 		}
 		if page.Total == nil {
 			// Only the total ends the walk; without it the end is unknown.
@@ -161,11 +159,7 @@ func (c *Client) worklog(ctx context.Context, issue, id string) (Worklog, error)
 	if _, err := c.call(ctx, trackerapi.Request{Path: path}, &j); err != nil {
 		return Worklog{}, fmt.Errorf("jira: worklog %s on %s: %w", id, issue, err)
 	}
-	w, err := j.worklog()
-	if err != nil {
-		return Worklog{}, fmt.Errorf("jira: %w", &AnswerError{Message: err.Error()})
-	}
-	return w, nil
+	return j.worklog(), nil
 }
 
 // EstimateAdjust is how a worklog write changes the issue's remaining
@@ -290,7 +284,7 @@ func (c *Client) AddWorklog(ctx context.Context, in WorklogInput) (Worklog, erro
 		}
 		body["comment"] = doc
 	}
-	w, err := c.writeWorklog(ctx, http.MethodPost, apiPath+path+"/worklog", q, body)
+	w, err := c.writeWorklog(ctx, http.MethodPost, apiPath+path+"/worklog", "", q, body)
 	if err != nil {
 		return w, fmt.Errorf("jira: worklog on %s: %w", in.Issue, err)
 	}
@@ -312,107 +306,24 @@ func (c *Client) worklogDoc(ctx context.Context, issue, md string, base *adf.Nod
 	return b.markdown(ctx, md, base)
 }
 
-// writeWorklog sends a worklog write and decodes the worklog Jira stored.
-// A failure is a StepWorklog *StepError; an answer that does not decode
-// is one whose Applied reports it.
-func (c *Client) writeWorklog(ctx context.Context, method, path string, q url.Values, body any) (Worklog, error) {
+// writeWorklog sends a worklog write and decodes the worklog Jira stored:
+// an add (id empty; documented: 201 with the new worklog) or an update of
+// worklog id (200 with that worklog). A failure is a StepWorklog
+// *StepError; an Applied one returns what of the worklog decoded, its ID
+// at least, and any other returns the zero Worklog.
+func (c *Client) writeWorklog(ctx context.Context, method, path, id string, q url.Values, body any) (Worklog, error) {
+	want := bodyAnswer(namesID, http.StatusCreated)
+	if id != "" {
+		want = bodyAnswer(namesThisID(id), http.StatusOK)
+	}
 	var j worklogJSON
-	ids, err := c.write(ctx, trackerapi.Request{Method: method, Path: path, Query: q, Body: body}, &j)
+	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: path, Query: q, Body: body}, want, &j)
+	wl := j.worklog()
+	wl.ID = w.id()
 	if err != nil {
-		known := Worklog{}
-		if numericRE.MatchString(ids.id) {
-			known.ID = ids.id
-		}
-		return known, &StepError{Step: StepWorklog, Err: err}
+		return wl, &StepError{Step: StepWorklog, Err: err}
 	}
-	w, err := j.worklog()
-	switch {
-	case err != nil:
-		return w, &StepError{Step: StepWorklog, Err: &AnswerError{Message: "the worklog was stored, but its answer did not decode: " + err.Error()}}
-	case !numericRE.MatchString(w.ID):
-		return w, &StepError{Step: StepWorklog, Err: &AnswerError{Message: "the worklog's answer names no worklog ID"}}
-	}
-	return w, nil
-}
-
-// WorklogEdit changes a worklog; a zero or nil field keeps the stored
-// value.
-type WorklogEdit struct {
-	Issue     string
-	ID        string
-	Started   time.Time
-	TimeSpent time.Duration
-	// Markdown replaces the comment, edited from the stored one so what
-	// Markdown cannot show survives where the text is unchanged.
-	Markdown *string
-	// From is the stored comment the Markdown was written from; when set,
-	// a worklog that holds another comment by now is a *StaleError.
-	From *adf.Node
-	// AcceptLoss is the user's acceptance that the edit loses content
-	// Markdown cannot show; without it such an edit is a *adf.LossError.
-	AcceptLoss bool
-	// Estimate takes AdjustAuto, LeaveEstimate or SetRemaining.
-	Estimate EstimateAdjust
-}
-
-// UpdateWorklog reads the worklog, checks the edit against it and writes
-// the fields that change, keeping its visibility. An edit that changes
-// nothing sends nothing and returns the worklog as read.
-func (c *Client) UpdateWorklog(ctx context.Context, in WorklogEdit) (Worklog, error) {
-	if err := c.admit(ctx); err != nil {
-		return Worklog{}, err
-	}
-	path, err := worklogPath(in.Issue, in.ID)
-	if err != nil {
-		return Worklog{}, err
-	}
-	q := url.Values{}
-	if err := in.Estimate.query(q, adjustAuto, adjustLeave, adjustNew); err != nil {
-		return Worklog{}, err
-	}
-	if in.TimeSpent != 0 {
-		if err := checkTimeSpent(in.TimeSpent); err != nil {
-			return Worklog{}, err
-		}
-	}
-	cur, err := c.worklog(ctx, in.Issue, in.ID)
-	if err != nil {
-		return Worklog{}, notSentErr(err)
-	}
-	if in.From != nil && !adf.Equal(in.From, cur.Comment) {
-		return Worklog{}, notSentErr(&StaleError{Issue: in.Issue, What: "worklog " + in.ID})
-	}
-	body := map[string]any{}
-	if !in.Started.IsZero() && !in.Started.Equal(cur.Started) {
-		body["started"] = in.Started.Format(jiraTimeLayout)
-	}
-	if in.TimeSpent != 0 && in.TimeSpent != cur.TimeSpent {
-		body["timeSpentSeconds"] = int64(in.TimeSpent / time.Second)
-	}
-	if in.Markdown != nil {
-		doc, ws, err := c.worklogDoc(ctx, in.Issue, *in.Markdown, cur.Comment)
-		if err == nil {
-			err = adf.CheckLoss(ws, in.AcceptLoss)
-		}
-		if err != nil {
-			return Worklog{}, notSentErr(fmt.Errorf("jira: edit worklog %s on %s: %w", in.ID, in.Issue, err))
-		}
-		if !adf.Equal(doc, cur.Comment) {
-			body["comment"] = doc
-		}
-	}
-	if len(body) == 0 {
-		return cur, nil
-	}
-	if cur.Visibility != nil {
-		// A write without it may show a restricted worklog to everyone.
-		body["visibility"] = cur.Visibility
-	}
-	w, err := c.writeWorklog(ctx, http.MethodPut, path, q, body)
-	if err != nil {
-		return w, fmt.Errorf("jira: edit worklog %s on %s: %w", in.ID, in.Issue, err)
-	}
-	return w, nil
+	return wl, nil
 }
 
 // DeleteWorklog deletes a worklog. estimate takes AdjustAuto,
@@ -429,7 +340,8 @@ func (c *Client) DeleteWorklog(ctx context.Context, issue, id string, estimate E
 	if err := estimate.query(q, adjustAuto, adjustLeave, adjustNew, adjustIncrease); err != nil {
 		return err
 	}
-	if _, err := c.call(ctx, trackerapi.Request{Method: http.MethodDelete, Path: path, Query: q}, nil); err != nil {
+	// Documented: 204.
+	if _, err := c.write(ctx, trackerapi.Request{Method: http.MethodDelete, Path: path, Query: q}, emptyAnswer(http.StatusNoContent), nil); err != nil {
 		return fmt.Errorf("jira: delete worklog %s on %s: %w", id, issue, err)
 	}
 	return nil

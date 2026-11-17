@@ -123,29 +123,76 @@ func TestWrittenCommentWithUnreadableAnswer(t *testing.T) {
 
 	f.on("GET", "/rest/api/3/issue/WEB-1/comment/900", reply(200, `{"id":"900","body":{"type":"doc","version":1,"content":[]}}`))
 	f.on("PUT", "/rest/api/3/issue/WEB-1/comment/900", reply(200, bad))
-	eres, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Markdown: "y"})
+	eres, err := c.EditComment(t.Context(), CommentEdit{Issue: "WEB-1", ID: "900", Unchecked: true, Markdown: "y"})
 	check("EditComment", eres.Comment, err)
 
 	// An answer whose shape fails before the body is read keeps its ID.
 	f.on("POST", "/rest/api/3/issue/WEB-1/comment", reply(201, `{"id":"900","author":5,"body":{"type":"doc","version":1,"content":[]}}`))
 	res, err = c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "x", Audience: AudiencePublic})
 	check("AddComment with a malformed author", res.Comment, err)
+
+	// An ID sent as a number fails the comment's decode; the answer still
+	// names the comment, so it is applied and keeps the ID.
+	f.on("POST", "/rest/api/3/issue/WEB-1/comment", reply(201, `{"id":900,"body":{"type":"doc","version":1,"content":[]}}`))
+	res, err = c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "x", Audience: AudiencePublic})
+	check("AddComment with a numeric ID", res.Comment, err)
+
+	// An answer naming no comment, or not JSON, or with a status the call
+	// does not document, is an unknown outcome reporting no comment.
+	for _, answer := range []struct {
+		status int
+		body   string
+	}{{201, `{"body":{"type":"doc","version":1,"content":[]}}`}, {201, `{"id":"9x"}`}, {201, `<html>saved</html>`}, {200, `{"id":"900"}`}} {
+		f.on("POST", "/rest/api/3/issue/WEB-1/comment", func(w http.ResponseWriter, r *http.Request, b []byte) {
+			wantJSON(t, b, `{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]}}`)
+			reply(answer.status, answer.body)(w, r, b)
+		})
+		res, err = c.AddComment(t.Context(), CommentInput{Issue: "WEB-1", Markdown: "x", Audience: AudiencePublic})
+		se, ok := errors.AsType[*StepError](err)
+		if !ok || se.Step != StepComment || se.Applied() || !se.OutcomeUnknown() || res.Comment != nil {
+			t.Errorf("%d %s: %+v %v", answer.status, answer.body, res, err)
+		}
+	}
 }
 
-func TestOtherWritesWithUnreadableAnswers(t *testing.T) {
+// TestOtherWritesWithUnknownAnswers proves a 2xx that does not name
+// what was written, or is not JSON, or has an undocumented status, is an
+// unknown outcome reporting nothing stored.
+func TestOtherWritesWithUnknownAnswers(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
-	f.on("POST", "/rest/api/3/issue/WEB-1/attachments", reply(200, `{"not":"a list"}`))
-	_, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("x")})
-	if se, ok := errors.AsType[*StepError](err); !ok || se.Step != StepUpload || !se.Applied() {
-		t.Errorf("Attach: %v", err)
-	}
-	for _, body := range []string{`{"self":"x"}`, `<html>stored</html>`} {
-		f.on("POST", "/rest/api/3/issue/WEB-1/remotelink", reply(201, body))
-		_, err = c.AddRemoteLink(t.Context(), "WEB-1", RemoteLinkInput{URL: "https://example.com", Title: "x"})
-		if se, ok := errors.AsType[*StepError](err); !ok || se.Step != StepRemoteLink || !se.Applied() {
-			t.Errorf("AddRemoteLink answered %s: %v", body, err)
+	unknown := func(name string, step Step, err error) {
+		t.Helper()
+		se, ok := errors.AsType[*StepError](err)
+		if !ok || se.Step != step || se.Applied() || !se.OutcomeUnknown() || trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s: %v", name, err)
 		}
+	}
+	for _, answer := range []struct {
+		status int
+		body   string
+	}{{200, `{"not":"a list"}`}, {200, `[]`}, {200, `[{"id":"x"}]`}, {201, `[{"id":"501"}]`}, {200, `<html>stored</html>`}} {
+		f.on("POST", "/rest/api/3/issue/WEB-1/attachments", reply(answer.status, answer.body))
+		got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("x")})
+		unknown("Attach answered "+answer.body, StepUpload, err)
+		if got != nil {
+			t.Errorf("Attach answered %s: reported %+v", answer.body, got)
+		}
+	}
+	for _, answer := range []struct {
+		status int
+		body   string
+	}{{201, `{"self":"x"}`}, {201, `<html>stored</html>`}, {204, ``}, {202, `{"id":10000}`}} {
+		f.on("POST", "/rest/api/3/issue/WEB-1/remotelink", reply(answer.status, answer.body))
+		id, err := c.AddRemoteLink(t.Context(), "WEB-1", RemoteLinkInput{URL: "https://example.com", Title: "x"})
+		unknown("AddRemoteLink answered "+answer.body, StepRemoteLink, err)
+		if id != "" {
+			t.Errorf("AddRemoteLink answered %s: reported %q", answer.body, id)
+		}
+	}
+	f.on("POST", "/rest/api/3/issue/WEB-1/remotelink", reply(201, `{"id":10000,"self":5}`))
+	if id, err := c.AddRemoteLink(t.Context(), "WEB-1", RemoteLinkInput{URL: "https://example.com", Title: "x"}); err != nil || id != "10000" {
+		t.Errorf("a link answer naming the link: %q %v", id, err)
 	}
 }
 

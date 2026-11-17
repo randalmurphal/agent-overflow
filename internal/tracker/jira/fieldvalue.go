@@ -138,6 +138,9 @@ type Sprint struct {
 	Start   time.Time
 	End     time.Time
 	Done    time.Time
+	// Problems names the fields of a sprint read from the agile API whose
+	// value did not decode (startDate, endDate, completeDate).
+	Problems []FieldProblem
 }
 
 // Sprints reads a sprint field: every sprint the issue was in.

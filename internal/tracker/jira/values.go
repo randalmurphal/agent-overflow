@@ -129,6 +129,11 @@ func (b *builder) rawRich(f FieldMeta, raw json.RawMessage, v Value) (Value, err
 	if err := adf.Validate(doc); err != nil {
 		return v, fmt.Errorf("jira: %s: the raw value is not a valid document: %w", f.Name, err)
 	}
+	// Emptiness is the content's, as for Markdown (see markdown): a
+	// document showing nothing empties a required field as a null would.
+	if f.Required && adf.Blank(doc) {
+		return v, fmt.Errorf("jira: %s is required and the raw document shows nothing", f.Name)
+	}
 	v.doc, v.Fields, v.Display = doc, raw, adf.ToMarkdown(doc)
 	v.Unchanged = v.base != nil && adf.Equal(doc, v.base)
 	v.replaces = !v.Unchanged && !adf.Blank(v.base)

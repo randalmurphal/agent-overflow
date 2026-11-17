@@ -110,8 +110,10 @@ type transitionPlan struct {
 
 // Transition runs every check that needs no write first: the transition,
 // every field value, the screen's required fields, the comment and its
-// audience, and the images, read whole. Then it attaches the images and
-// moves the issue. On a service desk project the comment is added after
+// audience, and the images, read whole; then, as its last read, it reads
+// every rich text field it writes again and refuses with a *StaleError
+// when one changed meanwhile. Then it attaches the images and moves the
+// issue. On a service desk project the comment is added after
 // the move through the comment call, where its audience is set; elsewhere
 // it is part of the move. A failure after the first write is a
 // *StepError.
@@ -121,6 +123,10 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 		return res, err
 	}
 	tp, err := c.checkTransition(ctx, in)
+	if err == nil {
+		// The last read before the first write.
+		err = c.recheckRich(ctx, in.Issue, in.Issue, tp.values)
+	}
 	if err != nil {
 		return res, notSentErr(err)
 	}
@@ -156,7 +162,8 @@ func (c *Client) Transition(ctx context.Context, in TransitionInput) (Transition
 	if len(update) > 0 {
 		body["update"] = update
 	}
-	if err := c.send(ctx, http.MethodPost, tp.path+"/transitions", nil, body, nil); err != nil {
+	// Documented: 204.
+	if err := c.sendWrite(ctx, http.MethodPost, tp.path+"/transitions", nil, body, emptyAnswer(http.StatusNoContent)); err != nil {
 		return res, &StepError{Step: StepTransition, Err: fmt.Errorf("jira: transition %s by %s: %w", in.Issue, tp.t.Name, err)}
 	}
 	res.Moved = true
@@ -348,7 +355,7 @@ func (c *Client) assign(ctx context.Context, issue string, accountID any) error 
 		return err
 	}
 	body := map[string]any{"accountId": accountID}
-	if err := c.send(ctx, http.MethodPut, path+"/assignee", nil, body, nil); err != nil {
+	if err := c.sendWrite(ctx, http.MethodPut, path+"/assignee", nil, body, emptyAnswer(http.StatusNoContent)); err != nil {
 		return fmt.Errorf("jira: assign %s: %w", issue, err)
 	}
 	return nil

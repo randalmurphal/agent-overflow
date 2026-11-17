@@ -76,25 +76,29 @@ func TestApplyCreateAnswerUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A create's answer must name the issue's numeric ID and key; one
-	// that is not JSON, or names neither, is read as stored all the same,
-	// and the result keeps whichever the answer does name.
-	for body, want := range map[string]CreateResult{
-		`<html>stored</html>`:               {},
-		`{"key":"WEB-1"}`:                   {Key: "WEB-1"},
-		`{"id":"10001/x","key":"WEB-1"}`:    {Key: "WEB-1"},
-		`{"id":"10001","key":5}`:            {ID: "10001"},
-		`{"id":10001,"key":"WEB-1","x":[}`:  {},
-		`{"id":"10001","fields":"not one"}`: {ID: "10001"},
+	// A create is applied only on its documented answer, a 201 naming the
+	// issue's numeric ID and key. Any other 2xx is an unknown outcome
+	// that reports nothing created.
+	for _, answer := range []struct {
+		status int
+		body   string
+	}{
+		{201, `<html>stored</html>`},
+		{201, `{"key":"WEB-1"}`},
+		{201, `{"id":"10001/x","key":"WEB-1"}`},
+		{201, `{"id":"10001","key":5}`},
+		{201, `{"id":10001,"key":"WEB-1","x":[}`},
+		{201, `{"id":"10001","fields":"not one"}`},
+		{200, `{"id":"10001","key":"WEB-1"}`},
 	} {
-		f.on("POST", "/rest/api/3/issue", reply(201, body))
+		f.on("POST", "/rest/api/3/issue", reply(answer.status, answer.body))
 		res, err := c.ApplyCreate(t.Context(), plan)
 		se, ok := errors.AsType[*StepError](err)
-		if !ok || se.Step != StepCreate || !se.Applied() || se.OutcomeUnknown() || trackerapi.WriteNotApplied(err) {
-			t.Errorf("%s: %v", body, err)
+		if !ok || se.Step != StepCreate || se.Applied() || !se.OutcomeUnknown() || trackerapi.WriteNotApplied(err) {
+			t.Errorf("%d %s: %v", answer.status, answer.body, err)
 		}
-		if res.ID != want.ID || res.Key != want.Key {
-			t.Errorf("%s: the result %+v, want %+v", body, res, want)
+		if res.ID != "" || res.Key != "" {
+			t.Errorf("%d %s: reported %+v as created", answer.status, answer.body, res)
 		}
 		if plan, err = c.PlanCreate(t.Context(), CreateInput{Project: "WEB", IssueType: "Task", Fields: []FieldInput{{Field: "Summary", Value: Text("x")}}}); err != nil {
 			t.Fatal(err)
@@ -282,7 +286,7 @@ func TestPlanAndApplyEditKeepsWhatMarkdownCannotShow(t *testing.T) {
 		reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+d+`}}`)(w, r, b)
 	})
 	res, err := c.ApplyEdit(t.Context(), plan)
-	if err != nil || res.Issue == nil || res.Issue.Description == nil {
+	if err != nil || res.Issue == nil || res.Issue.Description == nil || res.Unchanged {
 		t.Fatalf("got %+v %v", res, err)
 	}
 }
@@ -352,7 +356,7 @@ func TestPlanEditUnchangedSendsNothing(t *testing.T) {
 		t.Fatalf("got %+v %v", plan, err)
 	}
 	before := len(f.requests())
-	if res, err := c.ApplyEdit(t.Context(), plan); err != nil || res.Issue != nil || len(f.requests()) != before {
+	if res, err := c.ApplyEdit(t.Context(), plan); err != nil || res.Issue != nil || !res.Unchanged || len(f.requests()) != before {
 		t.Errorf("an empty plan sent something: %v", err)
 	}
 }

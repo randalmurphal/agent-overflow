@@ -1,7 +1,6 @@
 package jira
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -149,9 +148,11 @@ const (
 )
 
 // StepError is the failure of one step of a write: a step of a
-// multi-request write, or a single write whose answer did not decode.
-// The result returned with it says what the earlier steps did, and what
-// the failed step stored when it was applied.
+// multi-request write, or a single write whose answer could not be read
+// in full. The result returned with it says what the earlier steps did,
+// and what the failed step stored when it was applied. Applied,
+// OutcomeUnknown and trackerapi.WriteNotApplied judge the step by its
+// own outcome, the outermost in Err's chain (see write).
 type StepError struct {
 	Step Step
 	Err  error
@@ -161,11 +162,10 @@ func (e *StepError) Error() string { return fmt.Sprintf("jira: %s step: %v", e.S
 func (e *StepError) Unwrap() error { return e.Err }
 
 // Applied reports a step Jira applied whose answer this package could not
-// read (an *AnswerError): the write happened, and the result carries what
-// of its answer decoded.
+// read in full (an Applied *AnswerError): the answer is a documented
+// success naming what was written, and the result carries what decoded.
 func (e *StepError) Applied() bool {
-	_, ok := errors.AsType[*AnswerError](e.Err)
-	return ok && e.Step != StepCheck && !trackerapi.WriteNotApplied(e.Err)
+	return answerApplied(e.Err)
 }
 
 // OutcomeUnknown reports whether the failed step may have been applied:

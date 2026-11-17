@@ -3,7 +3,6 @@ package jira
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -56,7 +55,8 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 	if numericRE.MatchString(in.Inward) {
 		body["inwardIssue"] = idRef{in.Inward}
 	}
-	if err := c.send(ctx, http.MethodPost, "issueLink", nil, body, nil); err != nil {
+	// Documented: 201 with no body.
+	if err := c.sendWrite(ctx, http.MethodPost, "issueLink", nil, body, emptyAnswer(http.StatusCreated)); err != nil {
 		return fmt.Errorf("jira: link %s %s %s: %w", in.Outward, hit.Name, in.Inward, err)
 	}
 	return nil
@@ -70,7 +70,8 @@ func (c *Client) UnlinkIssues(ctx context.Context, linkID string) error {
 	if err := checkID("issue link", linkID); err != nil {
 		return err
 	}
-	if err := c.send(ctx, http.MethodDelete, "issueLink/"+url.PathEscape(linkID), nil, nil, nil); err != nil {
+	// Documented: 200 or 204, neither with a body.
+	if err := c.sendWrite(ctx, http.MethodDelete, "issueLink/"+url.PathEscape(linkID), nil, nil, emptyAnswer(http.StatusOK, http.StatusNoContent)); err != nil {
 		return fmt.Errorf("jira: delete issue link %s: %w", linkID, err)
 	}
 	return nil
@@ -175,18 +176,16 @@ func (c *Client) AddRemoteLink(ctx context.Context, issue string, in RemoteLinkI
 	if in.GlobalID != "" {
 		body["globalId"] = in.GlobalID
 	}
-	stored, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + path + "/remotelink", Body: body}, nil)
-	if _, ok := errors.AsType[*AnswerError](err); ok {
+	// Documented: 200 (updated) or 201 (created), naming the link's id.
+	stored, err := c.write(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + path + "/remotelink", Body: body},
+		bodyAnswer(namesID, http.StatusOK, http.StatusCreated), nil)
+	if _, ok := outcomeOf(err).(*AnswerError); ok {
 		err = &StepError{Step: StepRemoteLink, Err: err}
 	}
 	if err != nil {
 		return "", fmt.Errorf("jira: add remote link on %s: %w", issue, err)
 	}
-	id := stored.id
-	if !numericRE.MatchString(id) {
-		return "", &StepError{Step: StepRemoteLink, Err: &AnswerError{Message: "the remote link's answer names no link ID"}}
-	}
-	return id, nil
+	return stored.id(), nil
 }
 
 // RemoveRemoteLink deletes a remote link by its ID.
@@ -201,7 +200,7 @@ func (c *Client) RemoveRemoteLink(ctx context.Context, issue, linkID string) err
 	if err := checkID("remote link", linkID); err != nil {
 		return err
 	}
-	if err := c.send(ctx, http.MethodDelete, path+"/remotelink/"+url.PathEscape(linkID), nil, nil, nil); err != nil {
+	if err := c.sendWrite(ctx, http.MethodDelete, path+"/remotelink/"+url.PathEscape(linkID), nil, nil, emptyAnswer(http.StatusNoContent)); err != nil {
 		return fmt.Errorf("jira: delete remote link %s on %s: %w", linkID, issue, err)
 	}
 	return nil
@@ -247,7 +246,7 @@ func (c *Client) AddWatcher(ctx context.Context, issue, accountID string) error 
 	if accountID == "" {
 		return notSent("watch %s: an account ID is required", issue)
 	}
-	if err := c.send(ctx, http.MethodPost, path+"/watchers", nil, accountID, nil); err != nil {
+	if err := c.sendWrite(ctx, http.MethodPost, path+"/watchers", nil, accountID, emptyAnswer(http.StatusNoContent)); err != nil {
 		return fmt.Errorf("jira: add watcher to %s: %w", issue, err)
 	}
 	return nil
@@ -265,7 +264,7 @@ func (c *Client) RemoveWatcher(ctx context.Context, issue, accountID string) err
 	if accountID == "" {
 		return notSent("unwatch %s: an account ID is required", issue)
 	}
-	if err := c.send(ctx, http.MethodDelete, path+"/watchers", url.Values{"accountId": {accountID}}, nil, nil); err != nil {
+	if err := c.sendWrite(ctx, http.MethodDelete, path+"/watchers", url.Values{"accountId": {accountID}}, nil, emptyAnswer(http.StatusNoContent)); err != nil {
 		return fmt.Errorf("jira: remove watcher from %s: %w", issue, err)
 	}
 	return nil

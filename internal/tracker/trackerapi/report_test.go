@@ -7,10 +7,13 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"agent-overflow/internal/secret"
 )
 
 // reports records what OnAnswer was told.
@@ -151,5 +154,37 @@ func TestOnAnswerNotAfterClose(t *testing.T) {
 	}
 	if s := got.seen(); len(s) != 0 {
 		t.Fatalf("reported %v after Close returned", s)
+	}
+}
+
+// The reported header copy has no Scrub of its own, so it names no URL
+// and repeats no credential.
+func TestOnAnswerHeadersAreSafe(t *testing.T) {
+	t.Parallel()
+	tr := newTracker(t, route{
+		"GET /content": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "https://media.example.com/file/1/binary?token=signed")
+			w.Header().Set("Content-Location", "/file/1?token=signed")
+			w.Header().Set("X-Echo", "you sent "+r.Header.Get("Authorization"))
+			w.Header().Set("X-Budget", "10")
+			w.WriteHeader(http.StatusSeeOther)
+		},
+	})
+	var got reports
+	opts := testOptions(tr.url())
+	opts.OnAnswer = got.record
+	c, _ := loopbackClient(t, opts)
+	if _, err := c.Location(t.Context(), Request{Path: "content"}); err != nil {
+		t.Fatal(err)
+	}
+	header := got.headers[0]
+	if header.Get("Location") != "" || header.Get("Content-Location") != "" {
+		t.Errorf("the report names a URL: %v", header)
+	}
+	if echo := header.Get("X-Echo"); strings.Contains(echo, testSecret) || !strings.Contains(echo, secret.Redacted) {
+		t.Errorf("X-Echo = %q, want the credential redacted", echo)
+	}
+	if header.Get("X-Budget") != "10" {
+		t.Errorf("X-Budget = %q, want it as sent", header.Get("X-Budget"))
 	}
 }

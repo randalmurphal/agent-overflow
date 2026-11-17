@@ -73,6 +73,7 @@ func TestApplyCreateImageFailures(t *testing.T) {
 		{"image gone before the create", "", 0, StepCheck, false, false},
 		{"upload refused after the create", "POST /rest/api/3/issue/10001/attachments", 413, StepUpload, false, true},
 		{"finish with unknown outcome", "PUT /rest/api/3/issue/10001", 500, StepFinish, true, true},
+		{"finish answered 200, which it does not document", "PUT /rest/api/3/issue/10001", 200, StepFinish, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, c := createSite(t)

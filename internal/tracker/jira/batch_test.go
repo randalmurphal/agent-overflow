@@ -125,22 +125,28 @@ func TestRankChainsGroups(t *testing.T) {
 	}
 }
 
-// TestRankAllDone is the plain success: 204 for each group, no error.
 // TestRankEntriesByID proves a 207 entry is matched to an issue the
-// caller named by ID through its issueId, a number in the answer.
+// caller named by ID through its issueId, a number in the answer, and a
+// refused entry, 503 included, is refused.
 func TestRankEntriesByID(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
-	f.on("PUT", rankURL, reply(207, `{"entries":[{"issueId":10,"issueKey":"WEB-10","status":204},{"issueId":11,"issueKey":"WEB-11","status":400,"errors":["no"]}]}`))
-	res, err := c.Rank(t.Context(), RankInput{Issues: []string{"10", "11"}, Position: RankAfter("WEB-500")})
-	if be, ok := errors.AsType[*BatchError](err); !ok || be.Refused != 1 || be.Unknown != 0 {
+	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		wantJSON(t, b, `{"issues":["10","11","12"],"rankAfterIssue":"WEB-500"}`)
+		reply(207, `{"entries":[{"issueId":10,"issueKey":"WEB-10","status":204},{"issueId":11,"issueKey":"WEB-11","status":400,"errors":["no"]},
+			{"issueId":12,"issueKey":"WEB-12","status":503,"errors":["later"]}]}`)(w, r, b)
+	})
+	res, err := c.Rank(t.Context(), RankInput{Issues: []string{"10", "11", "12"}, Position: RankAfter("WEB-500")})
+	if be, ok := errors.AsType[*BatchError](err); !ok || be.Refused != 2 || be.Unknown != 0 {
 		t.Fatalf("got %v", err)
 	}
-	if res.Issues[0].Outcome != OutcomeDone || res.Issues[1].Outcome != OutcomeRefused {
+	// The spec's example answers 503 for a rank Jira could not run then.
+	if res.Issues[0].Outcome != OutcomeDone || res.Issues[1].Outcome != OutcomeRefused || res.Issues[2].Outcome != OutcomeRefused || res.Issues[2].Reason != "503: later" {
 		t.Errorf("outcomes %+v", res.Issues)
 	}
 }
 
+// TestRankAllDone is the plain success: 204 for each group, no error.
 func TestRankAllDone(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
@@ -155,22 +161,64 @@ func TestRankAllDone(t *testing.T) {
 	}
 }
 
+// rankEntry is a 207 entry for issue WEB-n with status; a status of 0
+// leaves the status out.
+func rankEntry(issue string, status int) string {
+	if status == 0 {
+		return fmt.Sprintf(`{"issueId":%s,"issueKey":%q}`, strings.TrimPrefix(issue, "WEB-"), issue)
+	}
+	return fmt.Sprintf(`{"issueId":%s,"issueKey":%q,"status":%d,"errors":[]}`, strings.TrimPrefix(issue, "WEB-"), issue, status)
+}
+
+// rankEntries is a 207 with a 204 entry for every issue but the last,
+// followed by the entries in last.
+func rankEntries(issues []string, last ...string) string {
+	var out []string
+	for _, is := range issues[:len(issues)-1] {
+		out = append(out, rankEntry(is, 204))
+	}
+	return `{"entries":[` + strings.Join(append(out, last...), ",") + `]}`
+}
+
 // TestBatchStopsAtAGroupNotAnsweredInFull proves a group whose outcome
 // is unknown, or which Jira refuses whole, stops the batch: the groups
-// after it are not sent, and each issue says which happened to it.
+// after it are not sent, and each issue says which happened to it. A
+// rank's answer is recognized only as a 204 or a 207 whose every entry
+// names an issue of the group, once, with a status; any other answer
+// leaves the whole group unknown, and an entry status this package does
+// not know leaves its issue unknown.
 func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
+	last := func(issues []string) string { return issues[len(issues)-1] }
+	fixed := func(body string) func([]string) string { return func([]string) string { return body } }
 	cases := map[string]struct {
-		status        int
-		body          string
-		want          Outcome // of the second group's issues
-		unknown, sent int
-		notApplied    bool
+		status     int
+		body       func(issues []string) string
+		want       Outcome // of the second group's issues
+		lastOnly   bool    // only the group's last issue has the outcome want
+		unknown    int
+		notApplied bool
 	}{
-		"a 500":                {500, `{}`, OutcomeUnknown, 50, 2, false},
-		"a 207 not JSON":       {207, `{"entries":[`, OutcomeUnknown, 50, 2, false},
-		"a group refused":      {400, `{"errorMessages":["no"]}`, OutcomeRefused, 0, 2, true},
-		"an entry left out":    {207, "", OutcomeDone, 1, 2, false},
-		"a credential refused": {401, `{}`, OutcomeRefused, 0, 2, true},
+		"a 500":                 {500, fixed(`{}`), OutcomeUnknown, false, 50, false},
+		"a 207 not JSON":        {207, fixed(`{"entries":[`), OutcomeUnknown, false, 50, false},
+		"a 207 without entries": {207, fixed(`{"entries":null}`), OutcomeUnknown, false, 50, false},
+		"a 200":                 {200, func(is []string) string { return rankEntries(is, rankEntry(last(is), 204)) }, OutcomeUnknown, false, 50, false},
+		"a 200 page":            {200, fixed(`<html>ranked</html>`), OutcomeUnknown, false, 50, false},
+		"a 202":                 {202, fixed(`{}`), OutcomeUnknown, false, 50, false},
+		"an entry without a status": {207, func(is []string) string {
+			return rankEntries(is, rankEntry(last(is), 0))
+		}, OutcomeUnknown, false, 50, false},
+		"an entry for another issue": {207, func(is []string) string {
+			return rankEntries(is, rankEntry(last(is), 204), rankEntry("WEB-500", 204))
+		}, OutcomeUnknown, false, 50, false},
+		"an entry twice": {207, func(is []string) string {
+			return rankEntries(is, rankEntry(last(is), 204), rankEntry(is[0], 400))
+		}, OutcomeUnknown, false, 50, false},
+		"an entry left out": {207, func(is []string) string { return rankEntries(is) }, OutcomeUnknown, true, 1, false},
+		"an unknown entry status": {207, func(is []string) string {
+			return rankEntries(is, rankEntry(last(is), 500))
+		}, OutcomeUnknown, true, 1, false},
+		"a group refused":      {400, fixed(`{"errorMessages":["no"]}`), OutcomeRefused, false, 0, true},
+		"a credential refused": {401, fixed(`{}`), OutcomeRefused, false, 0, true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -178,13 +226,10 @@ func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
 			c := newTestClient(t, f)
 			f.on("GET", myselfURL, reply(200, userOneJSON))
 			site := &batchSite{t: t, answer: func(n int, b batchBody) (int, string) {
-				switch {
-				case n != 1:
+				if n != 1 {
 					return http.StatusNoContent, ""
-				case tc.body == "":
-					return 207, multiStatus(b.Issues[:49], nil, func(s string) string { return s })
 				}
-				return tc.status, tc.body
+				return tc.status, tc.body(b.Issues)
 			}}
 			f.on("PUT", rankURL, site.handle)
 			res, err := c.Rank(t.Context(), RankInput{Issues: webIssues(1, 120), Position: RankBefore("WEB-500")})
@@ -192,8 +237,9 @@ func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
 			if !ok || be.Err == nil || be.Unknown != tc.unknown || be.NotSent != 20 {
 				t.Fatalf("got %+v", err)
 			}
-			if len(site.bodies) != tc.sent {
-				t.Errorf("%d groups sent", len(site.bodies))
+			want := []batchBody{{Issues: webIssues(1, 50), Before: "WEB-500"}, {Issues: webIssues(51, 100), After: "WEB-50"}}
+			if fmt.Sprint(site.bodies) != fmt.Sprint(want) {
+				t.Errorf("sent %v\nwant %v", site.bodies, want)
 			}
 			// As for a StepError, it speaks for the group that stopped the
 			// batch; the result says what the earlier groups did.
@@ -205,9 +251,7 @@ func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
 				switch {
 				case i >= 100:
 					want = OutcomeNotSent
-				case i == 99 && tc.body == "":
-					want = OutcomeUnknown
-				case i >= 50:
+				case i == 99 || i >= 50 && !tc.lastOnly:
 					want = tc.want
 				}
 				if o.Outcome != want {
@@ -215,6 +259,27 @@ func TestBatchStopsAtAGroupNotAnsweredInFull(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRankRefusedGroupAfterAFailedCheck proves a group Jira answered 404
+// is refused even when the sign-in check that follows the 404 fails
+// before it is sent: the outcome is the write's own, not the check's.
+func TestRankRefusedGroupAfterAFailedCheck(t *testing.T) {
+	f := newFake(t)
+	c := markClient(t, f, &failingReread{}, nil)
+	site := &batchSite{t: t, answer: func(int, batchBody) (int, string) { return http.StatusNotFound, `{"errorMessages":["no"]}` }}
+	f.on("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		c.ForgetCredential()
+		site.handle(w, r, b)
+	})
+	res, err := c.Rank(t.Context(), RankInput{Issues: webIssues(1, 120), Position: RankBefore("WEB-500")})
+	be, ok := errors.AsType[*BatchError](err)
+	if _, unconfirmed := errors.AsType[*UnconfirmedError](err); !ok || !unconfirmed || be.Refused != 50 || be.NotSent != 70 || !trackerapi.WriteNotApplied(err) {
+		t.Fatalf("got %+v %v", be, err)
+	}
+	if res.Issues[0].Outcome != OutcomeRefused || res.Issues[50].Outcome != OutcomeNotSent || f.count("GET", myselfURL) != 0 {
+		t.Errorf("outcomes %v %v", res.Issues[0], res.Issues[50])
 	}
 }
 
@@ -275,6 +340,9 @@ func TestRankGroupNotSent(t *testing.T) {
 	}
 	if res.Issues[49].Outcome != OutcomeDone || res.Issues[50].Outcome != OutcomeNotSent {
 		t.Errorf("outcomes %v %v", res.Issues[49], res.Issues[50])
+	}
+	if want := []batchBody{{Issues: webIssues(1, 50), Before: "WEB-500"}}; fmt.Sprint(site.bodies) != fmt.Sprint(want) {
+		t.Errorf("sent %v", site.bodies)
 	}
 	if n := f.count("PUT", rankURL); n != 1 {
 		t.Errorf("%d groups sent", n)
@@ -344,6 +412,45 @@ func TestMoveToBacklog(t *testing.T) {
 	}
 	if _, err := c.MoveToBacklog(t.Context(), BacklogMove{Board: 3, Issues: []string{"WEB-1"}, Position: RankBefore("WEB-9"), RankFieldID: 10019}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestMoveAnswers proves which answers each move takes: a sprint move and
+// the plain backlog move are documented to answer only 204, so a 207 or
+// a 200 leaves them unknown; the board's backlog takes a 207 too.
+func TestMoveAnswers(t *testing.T) {
+	f := newFake(t)
+	c := newTestClient(t, f)
+	f.on("GET", "/rest/agile/1.0/sprint/7", reply(200, `{"id":7,"name":"Sprint 1","state":"active","originBoardId":3}`))
+	both := []string{"WEB-1", "WEB-2"}
+	full := rankEntries(both, rankEntry("WEB-2", 204))
+	moves := map[string]func() (BatchResult, error){
+		"/rest/agile/1.0/sprint/7/issue": func() (BatchResult, error) {
+			return c.MoveToSprint(t.Context(), SprintMove{Sprint: 7, Issues: both})
+		},
+		"/rest/agile/1.0/backlog/issue": func() (BatchResult, error) {
+			return c.MoveToBacklog(t.Context(), BacklogMove{Issues: both})
+		},
+	}
+	for _, status := range []int{207, 200} {
+		for path, move := range moves {
+			f.on("POST", path, func(w http.ResponseWriter, r *http.Request, b []byte) {
+				wantJSON(t, b, `{"issues":["WEB-1","WEB-2"]}`)
+				reply(status, full)(w, r, b)
+			})
+			res, err := move()
+			if be, ok := errors.AsType[*BatchError](err); !ok || be.Unknown != 2 || len(res.Done()) != 0 || trackerapi.WriteNotApplied(err) {
+				t.Errorf("%s answered %d: %+v %v", path, status, res, err)
+			}
+		}
+	}
+	f.on("POST", "/rest/agile/1.0/backlog/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		wantJSON(t, b, `{"issues":["WEB-1","WEB-2"]}`)
+		reply(207, rankEntries(both, rankEntry("WEB-2", 400)))(w, r, b)
+	})
+	res, err := c.MoveToBacklog(t.Context(), BacklogMove{Board: 3, Issues: both})
+	if be, ok := errors.AsType[*BatchError](err); !ok || be.Refused != 1 || be.Unknown != 0 || res.Issues[0].Outcome != OutcomeDone {
+		t.Errorf("a board backlog 207: %+v %v", res, err)
 	}
 }
 

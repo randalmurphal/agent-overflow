@@ -104,15 +104,31 @@ func TestRawRichTextMustBeADocument(t *testing.T) {
 	}
 }
 
-// TestRawNullOnRequiredRichText proves a required rich text field is not
-// cleared raw.
-func TestRawNullOnRequiredRichText(t *testing.T) {
+// TestRequiredRichTextIsNotEmptied proves a required rich text field is
+// judged empty on content, raw and Markdown alike: a null, an empty
+// document, empty paragraphs or whitespace are all refused, while an
+// optional field takes the empty document.
+func TestRequiredRichTextIsNotEmptied(t *testing.T) {
 	f := newFake(t)
 	c := newTestClient(t, f)
 	env := meta("environment", "Environment", Schema{Type: "string", System: "environment"})
 	env.Required = true
-	if _, err := c.Value(t.Context(), env, RawJSON(json.RawMessage(`null`)), ValueOptions{}); err == nil || !trackerapi.WriteNotApplied(err) {
-		t.Errorf("got %v", err)
+	empty := map[string]Input{
+		"a raw null":              RawJSON(json.RawMessage(`null`)),
+		"a raw empty document":    RawJSON(json.RawMessage(`{"type":"doc","version":1,"content":[]}`)),
+		"raw empty paragraphs":    RawJSON(json.RawMessage(`{"type":"doc","version":1,"content":[{"type":"paragraph"},{"type":"paragraph","content":[{"type":"hardBreak"}]}]}`)),
+		"raw whitespace":          RawJSON(json.RawMessage(`{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":" \t "}]}]}`)),
+		"Markdown whitespace":     Text("  \n\n "),
+		"Markdown with a comment": Text("<!-- -->"),
+	}
+	for name, value := range empty {
+		if _, err := c.Value(t.Context(), env, value, ValueOptions{}); err == nil || !trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s: got %v", name, err)
+		}
+	}
+	env.Required = false
+	if v, err := c.Value(t.Context(), env, empty["a raw empty document"], ValueOptions{}); err != nil || string(v.Fields) != `{"type":"doc","version":1,"content":[]}` {
+		t.Errorf("an optional field emptied raw: %+v %v", v, err)
 	}
 	if n := len(f.requests()); n != 0 {
 		t.Errorf("%d requests", n)

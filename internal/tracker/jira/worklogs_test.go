@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,63 +59,270 @@ func TestAddWorklog(t *testing.T) {
 	}
 }
 
-// TestWorklogUnreadableAnswer proves a worklog stored whose answer does
-// not decode still names the worklog by ID, as applied.
-func TestWorklogUnreadableAnswer(t *testing.T) {
-	for body, wantID := range map[string]string{
-		`{"id":"300","started":"soon","timeSpentSeconds":60}`: "300",
-		`{"id":300,"comment":5}`:                              "300",
-		`{"started":"2026-11-16T09:30:00.000+0100"}`:          "",
+// TestWorklogAnswerForms proves a worklog write is applied only on its
+// documented answer naming the worklog: one that names it but does not
+// decode in full is applied with its ID, a field that does not parse is a
+// problem on a stored worklog, and any other 2xx is an unknown outcome
+// reporting no worklog.
+func TestWorklogAnswerForms(t *testing.T) {
+	for body, want := range map[string]struct {
+		status  int
+		id      string
+		applied bool
+		problem string
+		err     bool
+	}{
+		`{"id":"300","started":"soon","timeSpentSeconds":60}`: {201, "300", false, "started", false},
+		`{"id":"300","created":"yesterday"}`:                  {201, "300", false, "created", false},
+		`{"id":"300","comment":5}`:                            {201, "300", false, "comment", false},
+		`{"id":300,"comment":5}`:                              {201, "300", true, "", true},
+		`{"id":"300","timeSpentSeconds":"long"}`:              {201, "300", true, "", true},
+		`{"started":"2026-11-16T09:30:00.000+0100"}`:          {201, "", false, "", true},
+		`<html>ok</html>`:                                     {201, "", false, "", true},
+		`{"id":"300"}`:                                        {200, "", false, "", true},
 	} {
 		f := newFake(t)
 		c := newTestClient(t, f)
-		f.on("POST", worklogsURL, reply(201, body))
-		wl, err := c.AddWorklog(t.Context(), WorklogInput{Issue: "WEB-1", Started: time.Now(), TimeSpent: time.Minute})
-		se, ok := errors.AsType[*StepError](err)
-		if !ok || se.Step != StepWorklog || !se.Applied() || wl.ID != wantID {
+		f.on("POST", worklogsURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			wantJSON(t, b, `{"started":"2026-11-16T09:30:00.000+0000","timeSpentSeconds":60}`)
+			reply(want.status, body)(w, r, b)
+		})
+		wl, err := c.AddWorklog(t.Context(), WorklogInput{Issue: "WEB-1", Started: time.Date(2026, 11, 16, 9, 30, 0, 0, time.UTC), TimeSpent: time.Minute})
+		if (err != nil) != want.err || wl.ID != want.id || (problemIn(wl.Problems, want.problem) != nil) != (want.problem != "") {
 			t.Errorf("%s: got %+v %v", body, wl, err)
+			continue
+		}
+		if err == nil {
+			continue
+		}
+		se, ok := errors.AsType[*StepError](err)
+		if !ok || se.Step != StepWorklog || se.Applied() != want.applied || se.OutcomeUnknown() == want.applied || trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s: %v", body, err)
 		}
 	}
 }
 
+// worklogSite serves worklog 300 as stored holds it, and its update.
+type worklogSite struct {
+	t      *testing.T
+	f      *fakeJira
+	c      *Client
+	stored atomic.Pointer[string]
+	put    func(r *http.Request, b []byte) string
+}
+
+func newWorklogSite(t *testing.T, comment, visibility string) *worklogSite {
+	s := &worklogSite{t: t, f: newFake(t)}
+	s.c = newTestClient(t, s.f)
+	body := worklogJSONWith(comment, visibility)
+	s.stored.Store(&body)
+	s.f.on("GET", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) { reply(200, *s.stored.Load())(w, r, b) })
+	s.f.on("PUT", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) { reply(200, s.put(r, b))(w, r, b) })
+	return s
+}
+
 // TestUpdateWorklog proves an edit sends only what changes, keeps the
-// worklog's visibility and what Markdown cannot show, and is refused
-// when it would lose content or the comment changed meanwhile.
+// worklog's visibility and what Markdown cannot show, and is refused when
+// it would lose content or its base changed.
 func TestUpdateWorklog(t *testing.T) {
-	f := newFake(t)
-	c := newTestClient(t, f)
 	visibility := `{"type":"group","value":"web-team"}`
-	stored := worklogJSONWith(docJSON(t, layoutDoc()), visibility)
-	f.on("GET", worklog300, reply(200, stored))
-	md := strings.Replace(adf.ToMarkdown(layoutDoc()), "left", "LEFT", 1)
-	edited := strings.Replace(docJSON(t, layoutDoc()), "left", "LEFT", 1)
-	f.on("PUT", worklog300, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		wantQuery(t, r, "adjustEstimate", "leave")
-		wantJSON(t, b, `{"timeSpentSeconds":3600,"comment":`+edited+`,"visibility":`+visibility+`}`)
-		reply(200, worklogJSONWith(edited, visibility))(w, r, b)
-	})
-	in := WorklogEdit{Issue: "WEB-1", ID: "300", TimeSpent: time.Hour, Markdown: &md, From: layoutDoc(), Estimate: LeaveEstimate()}
-	if _, err := c.UpdateWorklog(t.Context(), in); err != nil {
+	s := newWorklogSite(t, docJSON(t, layoutDoc()), visibility)
+	read, err := s.c.Worklog(t.Context(), "WEB-1", "300")
+	if err != nil {
 		t.Fatal(err)
 	}
+	md := strings.Replace(adf.ToMarkdown(layoutDoc()), "left", "LEFT", 1)
+	edited := strings.Replace(docJSON(t, layoutDoc()), "left", "LEFT", 1)
+	s.put = func(r *http.Request, b []byte) string {
+		wantQuery(t, r, "adjustEstimate", "leave")
+		wantJSON(t, b, `{"timeSpentSeconds":3600,"comment":`+edited+`,"visibility":`+visibility+`}`)
+		return worklogJSONWith(edited, visibility)
+	}
+	in := WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: time.Hour, Markdown: &md, Estimate: LeaveEstimate()}
+	if res, err := s.c.UpdateWorklog(t.Context(), in); err != nil || res.Unchanged || res.Worklog.ID != "300" {
+		t.Fatalf("got %+v %v", res, err)
+	}
 	flattened := "intro\n\nleft\n\nright\n"
-	_, err := c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Markdown: &flattened})
+	_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Unchecked: true, Markdown: &flattened})
 	if _, ok := errors.AsType[*adf.LossError](err); !ok || !trackerapi.WriteNotApplied(err) {
 		t.Errorf("a lossy edit: %v", err)
 	}
-	_, err = c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Markdown: &md, From: adf.Doc(para("older"))})
+	older := read
+	older.Comment = adf.Doc(para("older"))
+	_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &older, Markdown: &md})
 	if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) {
 		t.Errorf("a stale edit: %v", err)
 	}
 	same := adf.ToMarkdown(layoutDoc())
-	if wl, err := c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", TimeSpent: 90 * time.Minute, Markdown: &same}); err != nil || wl.ID != "300" {
-		t.Errorf("an edit that changes nothing: %v", err)
+	res, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: 90 * time.Minute, Markdown: &same})
+	if err != nil || !res.Unchanged || res.Worklog.ID != "300" {
+		t.Errorf("an edit asking for what is stored: %+v %v", res, err)
 	}
-	if _, err := c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Estimate: ReduceRemaining(time.Minute)}); !trackerapi.WriteNotApplied(err) {
-		t.Errorf("reduce on an update: %v", err)
+	for name, bad := range map[string]WorklogEdit{
+		"reduce on an update": {Issue: "WEB-1", ID: "300", Unchecked: true, Estimate: ReduceRemaining(time.Minute)},
+		"no base":             {Issue: "WEB-1", ID: "300", TimeSpent: time.Hour},
+		"both bases":          {Issue: "WEB-1", ID: "300", From: &read, Unchecked: true, TimeSpent: time.Hour},
+		"another worklog":     {Issue: "WEB-1", ID: "301", From: &read, TimeSpent: time.Hour},
+		"nothing asked":       {Issue: "WEB-1", ID: "300", From: &read},
+		"only leave":          {Issue: "WEB-1", ID: "300", From: &read, Estimate: LeaveEstimate()},
+	} {
+		if _, err := s.c.UpdateWorklog(t.Context(), bad); !trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
-	if n := f.count("PUT", worklog300); n != 1 {
+	if n := s.f.count("PUT", worklog300); n != 1 {
 		t.Errorf("%d writes", n)
+	}
+}
+
+// TestUpdateWorklogAbsentComment proves a base read with no comment is
+// checked: a comment added since makes the edit stale.
+func TestUpdateWorklogAbsentComment(t *testing.T) {
+	s := newWorklogSite(t, "null", "null")
+	read, err := s.c.Worklog(t.Context(), "WEB-1", "300")
+	if err != nil || read.Comment != nil {
+		t.Fatalf("got %+v %v", read, err)
+	}
+	added := worklogJSONWith(docJSON(t, adf.Doc(para("added meanwhile"))), "null")
+	s.stored.Store(&added)
+	md := "mine"
+	_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, Markdown: &md})
+	if _, ok := errors.AsType[*StaleError](err); !ok || s.f.count("PUT", worklog300) != 0 {
+		t.Fatalf("a comment added since an absent one was read: %v", err)
+	}
+}
+
+// TestUpdateWorklogStaleParts proves each part an edit can overwrite is
+// checked against the base: a start, a time spent or a comment that
+// changed since the read (a comment that no longer decodes included)
+// makes the edit stale, and nothing is written.
+func TestUpdateWorklogStaleParts(t *testing.T) {
+	base := worklogJSONWith("null", "null")
+	for name, now := range map[string]string{
+		"the start":                strings.Replace(base, "09:30:00.000+0100", "10:30:00.000+0100", 1),
+		"the time spent":           strings.Replace(base, "5400", "7200", 1),
+		"a comment that is no doc": worklogJSONWith("5", "null"),
+	} {
+		s := newWorklogSite(t, "null", "null")
+		read, err := s.c.Worklog(t.Context(), "WEB-1", "300")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.stored.Store(&now)
+		_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: time.Hour})
+		if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) || s.f.count("PUT", worklog300) != 0 {
+			t.Errorf("%s changed: %v", name, err)
+		}
+	}
+}
+
+// TestUpdateWorklogUnreadableComment proves a comment edit of a worklog
+// whose stored comment did not decode is refused before anything is sent,
+// since the edit cannot keep what it cannot read; a change to another
+// field goes through.
+func TestUpdateWorklogUnreadableComment(t *testing.T) {
+	s := newWorklogSite(t, "5", "null")
+	read, err := s.c.Worklog(t.Context(), "WEB-1", "300")
+	if err != nil || problemIn(read.Problems, "comment") == nil {
+		t.Fatalf("got %+v %v", read, err)
+	}
+	md := "mine"
+	for name, in := range map[string]WorklogEdit{
+		"based on the read": {Issue: "WEB-1", ID: "300", From: &read, Markdown: &md},
+		"unchecked":         {Issue: "WEB-1", ID: "300", Unchecked: true, Markdown: &md},
+	} {
+		_, err = s.c.UpdateWorklog(t.Context(), in)
+		if _, stale := errors.AsType[*StaleError](err); err == nil || stale || !trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	s.put = func(r *http.Request, b []byte) string {
+		wantQuery(t, r, "adjustEstimate", "auto")
+		wantJSON(t, b, `{"timeSpentSeconds":3600}`)
+		return worklogJSONWith("5", "null")
+	}
+	if _, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, TimeSpent: time.Hour}); err != nil {
+		t.Errorf("a time change: %v", err)
+	}
+	if n := s.f.count("PUT", worklog300); n != 1 {
+		t.Errorf("%d writes", n)
+	}
+}
+
+// TestUpdateWorklogStoredValues proves an edit asking only for values the
+// worklog holds sends nothing and says so.
+func TestUpdateWorklogStoredValues(t *testing.T) {
+	s := newWorklogSite(t, "null", "null")
+	s.put = func(*http.Request, []byte) string {
+		t.Error("an edit of stored values was sent")
+		return worklogJSONWith("null", "null")
+	}
+	read, err := s.c.Worklog(t.Context(), "WEB-1", "300")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, in := range map[string]WorklogEdit{
+		"the start":      {Issue: "WEB-1", ID: "300", From: &read, Started: read.Started.UTC()},
+		"the time spent": {Issue: "WEB-1", ID: "300", From: &read, TimeSpent: read.TimeSpent},
+	} {
+		res, err := s.c.UpdateWorklog(t.Context(), in)
+		if err != nil || !res.Unchanged || res.Worklog.ID != "300" {
+			t.Errorf("%s: %+v %v", name, res, err)
+		}
+	}
+}
+
+// TestUpdateWorklogAnswerNamesAnother proves an update answered with
+// another worklog is an unknown outcome reporting no worklog.
+func TestUpdateWorklogAnswerNamesAnother(t *testing.T) {
+	s := newWorklogSite(t, "null", "null")
+	s.put = func(r *http.Request, b []byte) string {
+		wantJSON(t, b, `{"timeSpentSeconds":3600}`)
+		return strings.Replace(worklogJSONWith("null", "null"), `"id":"300"`, `"id":"301"`, 1)
+	}
+	res, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Unchecked: true, TimeSpent: time.Hour})
+	se, ok := errors.AsType[*StepError](err)
+	if !ok || se.Step != StepWorklog || se.Applied() || !se.OutcomeUnknown() || res.Worklog.ID != "" {
+		t.Fatalf("got %+v %v", res, err)
+	}
+}
+
+// TestUpdateWorklogChecksLast proves the stale check is the last read
+// before the write: a change made while a mention resolves is caught.
+func TestUpdateWorklogChecksLast(t *testing.T) {
+	s := newWorklogSite(t, docJSON(t, adf.Doc(para("old"))), "null")
+	read, err := s.c.Worklog(t.Context(), "WEB-1", "300")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		changed := worklogJSONWith(docJSON(t, adf.Doc(para("changed while the mention resolved"))), "null")
+		s.stored.Store(&changed)
+		reply(200, userOneJSON)(w, r, b)
+	})
+	md := "thanks @[me]"
+	_, err = s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", From: &read, Markdown: &md})
+	if _, ok := errors.AsType[*StaleError](err); !ok || s.f.count("PUT", worklog300) != 0 {
+		t.Fatalf("a change during the mention's read: %v", err)
+	}
+	if got := s.f.requests(); got[len(got)-1] != "GET "+worklog300 || got[len(got)-2] != "GET "+myselfURL {
+		t.Errorf("requests %v", got)
+	}
+}
+
+// TestUpdateWorklogEstimateOnly proves setting the remaining estimate is
+// a change on its own: the write carries it with the stored time spent.
+func TestUpdateWorklogEstimateOnly(t *testing.T) {
+	s := newWorklogSite(t, "null", "null")
+	s.put = func(r *http.Request, b []byte) string {
+		wantQuery(t, r, "adjustEstimate", "new")
+		wantQuery(t, r, "newEstimate", "120m")
+		wantJSON(t, b, `{"timeSpentSeconds":5400}`)
+		return worklogJSONWith("null", "null")
+	}
+	res, err := s.c.UpdateWorklog(t.Context(), WorklogEdit{Issue: "WEB-1", ID: "300", Unchecked: true, Estimate: SetRemaining(2 * time.Hour)})
+	if err != nil || res.Unchanged || s.f.count("PUT", worklog300) != 1 {
+		t.Fatalf("got %+v %v", res, err)
 	}
 }
 

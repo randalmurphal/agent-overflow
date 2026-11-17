@@ -112,7 +112,7 @@ func TestTransitionLossCheck(t *testing.T) {
 		reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+docJSON(t, layoutDoc())+`}}`)(w, r, b)
 	})
 	f.on("POST", "/rest/api/3/issue/WEB-1/transitions", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
-	flattened := strings.NewReplacer("<!-- layout -->\n\n", "", "<!-- column 50% -->\n\n", "", "<!-- /column -->\n\n", "", "<!-- /layout -->\n\n", "").
+	flattened := strings.NewReplacer("<!-- layout -->\n\n", "", "<!-- column 50% -->\n\n", "", "<!-- /column -->\n\n", "", "<!-- /layout -->\n", "").
 		Replace(adf.ToMarkdown(layoutDoc()))
 	in := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "description", Value: Text(flattened)}}}
 	if _, err := c.Transition(t.Context(), in); !errors.As(err, new(*adf.LossError)) || !trackerapi.WriteNotApplied(err) {
@@ -124,6 +124,44 @@ func TestTransitionLossCheck(t *testing.T) {
 	in.AcceptLoss = true
 	if res, err := c.Transition(t.Context(), in); err != nil || !res.Moved {
 		t.Fatalf("accepted loss: %+v %v", res, err)
+	}
+}
+
+// TestTransitionChecksLast proves the rich text field's stale check is
+// the last read before the move: the comment's mention is read first, so
+// a change to the field made while it is read is caught, and nothing is
+// moved.
+func TestTransitionChecksLast(t *testing.T) {
+	f := newFake(t)
+	c := newTestClient(t, f)
+	var desc atomic.Pointer[string]
+	first := docJSON(t, adf.Doc(para("first")))
+	desc.Store(&first)
+	f.on("GET", "/rest/api/3/issue/WEB-1/transitions", reply(200, `{"transitions":[{"id":"31","name":"Resolve","isAvailable":true,"fields":{
+		"description":{"key":"description","name":"Description","schema":{"type":"string","system":"description"},"operations":["set"]}}}]}`))
+	f.on("GET", "/rest/api/3/issue/WEB-1", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		switch fields := r.URL.Query().Get("fields"); fields {
+		case "description":
+			reply(200, `{"id":"10001","key":"WEB-1","fields":{"description":`+*desc.Load()+`}}`)(w, r, b)
+		case "project":
+			reply(200, `{"id":"10001","key":"WEB-1","fields":{"project":{"id":"10000","key":"WEB","projectTypeKey":"software"}}}`)(w, r, b)
+		default:
+			t.Errorf("fields %q", fields)
+		}
+	})
+	f.on("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		changed := docJSON(t, adf.Doc(para("changed")))
+		desc.Store(&changed)
+		reply(200, userOneJSON)(w, r, b)
+	})
+	in := TransitionInput{Issue: "WEB-1", Transition: "Resolve", Fields: []FieldInput{{Field: "description", Value: Text("new text")}}, Comment: "thanks @[me]"}
+	_, err := c.Transition(t.Context(), in)
+	if _, ok := errors.AsType[*StaleError](err); !ok || !trackerapi.WriteNotApplied(err) {
+		t.Fatalf("got %v", err)
+	}
+	got := f.requests()
+	if tail := strings.Join(got[len(got)-2:], " | "); tail != "GET "+myselfURL+" | GET /rest/api/3/issue/WEB-1" {
+		t.Errorf("requests %s", strings.Join(got, " | "))
 	}
 }
 

@@ -42,24 +42,13 @@ type sprintJSON struct {
 	Complete string      `json:"completeDate"`
 }
 
-// sprint decodes s; a date that does not parse is an error, with the
-// rest of the sprint returned.
-func (s sprintJSON) sprint() (Sprint, error) {
+// sprint decodes s; a date that does not parse is one of its Problems.
+func (s sprintJSON) sprint() Sprint {
 	out := Sprint{ID: s.ID, Name: s.Name, State: s.State, BoardID: s.BoardID, Goal: s.Goal}
-	for _, t := range []struct {
-		text string
-		dst  *time.Time
-	}{{s.Start, &out.Start}, {s.End, &out.End}, {s.Complete, &out.Done}} {
-		if t.text == "" {
-			continue
-		}
-		parsed, err := parseTime(t.text)
-		if err != nil {
-			return out, fmt.Errorf("sprint %d: %w", s.ID, err)
-		}
-		*t.dst = parsed
-	}
-	return out, nil
+	timeField("startDate", s.Start, &out.Start, &out.Problems)
+	timeField("endDate", s.End, &out.End, &out.Problems)
+	timeField("completeDate", s.Complete, &out.Done, &out.Problems)
+	return out
 }
 
 func sprintPath(id int64) (string, error) {
@@ -117,11 +106,7 @@ func (c *Client) sprints(ctx context.Context, q SprintQuery) (SprintList, error)
 	found, complete, err := offsetPages[sprintJSON](ctx, c, path, v, 50, q.Limit)
 	out := SprintList{Sprints: make([]Sprint, 0, len(found)), Complete: complete}
 	for _, j := range found {
-		s, derr := j.sprint()
-		if derr != nil {
-			return out, fmt.Errorf("jira: sprints of board %d: %w", q.Board, &AnswerError{Message: derr.Error()})
-		}
-		out.Sprints = append(out.Sprints, s)
+		out.Sprints = append(out.Sprints, j.sprint())
 	}
 	if err != nil {
 		out.Complete = false
@@ -147,11 +132,7 @@ func (c *Client) sprint(ctx context.Context, id int64) (Sprint, error) {
 	if _, err := c.call(ctx, trackerapi.Request{Path: path}, &j); err != nil {
 		return Sprint{}, fmt.Errorf("jira: sprint %d: %w", id, err)
 	}
-	s, err := j.sprint()
-	if err != nil {
-		return Sprint{}, fmt.Errorf("jira: %w", &AnswerError{Message: err.Error()})
-	}
-	return s, nil
+	return j.sprint(), nil
 }
 
 // openSprintNamed resolves name among the active and future sprints of
@@ -193,22 +174,22 @@ func (c *Client) openSprintNamed(ctx context.Context, project, name string) (Spr
 	return Sprint{}, fmt.Errorf("jira: sprint %s vanished from its own list", hit.ID)
 }
 
-// writeSprint sends a sprint write and decodes the sprint Jira stored. A
-// failure is a StepSprint *StepError; an answer that does not decode is
-// one whose Applied reports it, with what of the sprint decoded.
-func (c *Client) writeSprint(ctx context.Context, method, path string, body any) (Sprint, error) {
-	var j sprintJSON
-	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: path, Body: body}, &j)
-	if err != nil {
-		id, _ := strconv.ParseInt(w.id, 10, 64)
-		return Sprint{ID: max(id, 0)}, &StepError{Step: StepSprint, Err: err}
+// writeSprint sends a sprint write and decodes the sprint Jira stored:
+// a create (id zero; documented: 201 naming the new sprint) or a change
+// of sprint id (200 naming that sprint). A failure is a StepSprint
+// *StepError; an Applied one returns what of the sprint decoded, its ID
+// at least, and any other returns the zero Sprint.
+func (c *Client) writeSprint(ctx context.Context, method, path string, id int64, body any) (Sprint, error) {
+	want := bodyAnswer(namesID, http.StatusCreated)
+	if id > 0 {
+		want = bodyAnswer(namesThisID(strconv.FormatInt(id, 10)), http.StatusOK)
 	}
-	s, err := j.sprint()
-	switch {
-	case err != nil:
-		return s, &StepError{Step: StepSprint, Err: &AnswerError{Message: "the sprint was stored, but its answer did not decode: " + err.Error()}}
-	case s.ID <= 0:
-		return s, &StepError{Step: StepSprint, Err: &AnswerError{Message: "the sprint's answer names no sprint ID"}}
+	var j sprintJSON
+	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: path, Body: body}, want, &j)
+	s := j.sprint()
+	s.ID, _ = strconv.ParseInt(w.id(), 10, 64)
+	if err != nil {
+		return s, &StepError{Step: StepSprint, Err: err}
 	}
 	return s, nil
 }
@@ -242,7 +223,7 @@ func (c *Client) CreateSprint(ctx context.Context, in SprintInput) (Sprint, erro
 		body["goal"] = in.Goal
 	}
 	putDates(body, in.Start, in.End)
-	s, err := c.writeSprint(ctx, http.MethodPost, agilePath+"sprint", body)
+	s, err := c.writeSprint(ctx, http.MethodPost, agilePath+"sprint", 0, body)
 	if err != nil {
 		return s, fmt.Errorf("jira: create sprint %q: %w", in.Name, err)
 	}
@@ -323,7 +304,7 @@ func (c *Client) UpdateSprint(ctx context.Context, in SprintUpdate) (Sprint, err
 	if in.End != nil {
 		putDates(body, time.Time{}, end)
 	}
-	s, err := c.writeSprint(ctx, http.MethodPost, path, body)
+	s, err := c.writeSprint(ctx, http.MethodPost, path, in.ID, body)
 	if err != nil {
 		return s, fmt.Errorf("jira: update sprint %d: %w", in.ID, err)
 	}
@@ -371,7 +352,7 @@ func (c *Client) StartSprint(ctx context.Context, in SprintStart) (Sprint, error
 	}
 	body := map[string]any{"state": SprintActive}
 	putDates(body, start, end)
-	s, err := c.writeSprint(ctx, http.MethodPost, path, body)
+	s, err := c.writeSprint(ctx, http.MethodPost, path, in.ID, body)
 	if err != nil {
 		return s, fmt.Errorf("jira: start sprint %d: %w", in.ID, err)
 	}
@@ -388,7 +369,8 @@ func (c *Client) DeleteSprint(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.call(ctx, trackerapi.Request{Method: http.MethodDelete, Path: path}, nil); err != nil {
+	// Documented: 204.
+	if _, err := c.write(ctx, trackerapi.Request{Method: http.MethodDelete, Path: path}, emptyAnswer(http.StatusNoContent), nil); err != nil {
 		return fmt.Errorf("jira: delete sprint %d: %w", id, err)
 	}
 	return nil

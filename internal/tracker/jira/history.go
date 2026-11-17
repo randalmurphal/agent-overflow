@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -29,6 +30,9 @@ type ChangeEntry struct {
 	Author  *User // nil for a change Jira made itself
 	Created time.Time
 	Items   []ChangeItem
+	// Problems names the fields whose value did not decode (created); the
+	// rest of the entry is usable.
+	Problems []FieldProblem
 }
 
 // ChangeItem is one field's change. From and To are the raw values (IDs,
@@ -57,12 +61,17 @@ type changeItemJSON struct {
 type changeEntryJSON struct {
 	ID      string           `json:"id"`
 	Author  *userJSON        `json:"author"`
-	Created changeTime       `json:"created"`
+	Created json.RawMessage  `json:"created"`
 	Items   []changeItemJSON `json:"items"`
 }
 
 func (e changeEntryJSON) entry() ChangeEntry {
-	out := ChangeEntry{ID: e.ID, Author: e.Author.userPtr(), Created: time.Time(e.Created)}
+	out := ChangeEntry{ID: e.ID, Author: e.Author.userPtr()}
+	if t, err := changeTime(e.Created); err != nil {
+		out.Problems = append(out.Problems, FieldProblem{Field: "created", Err: err})
+	} else {
+		out.Created = t
+	}
 	deref := func(s *string) string {
 		if s == nil {
 			return ""
@@ -78,34 +87,30 @@ func (e changeEntryJSON) entry() ChangeEntry {
 	return out
 }
 
-// changeTime reads a change's time: a Jira timestamp, as the per-issue
-// changelog sends it, or milliseconds since the epoch, as the bulk
-// fetch's published example does.
-type changeTime time.Time
-
-func (t *changeTime) UnmarshalJSON(b []byte) error {
-	b = bytes.TrimSpace(b)
-	if isNull(b) {
-		return nil
+// changeTime reads a change's time: a Jira timestamp string, as the
+// per-issue changelog sends it, or a number of milliseconds since the
+// epoch, as the bulk fetch does (measured: docs/references/
+// tracker-api-measurements.md; the spec's example shows ten digits, which
+// is not what a site sends). A number is always milliseconds: its
+// magnitude is not used to guess another unit. Absent or null is the zero
+// time.
+func changeTime(raw json.RawMessage) (time.Time, error) {
+	b := bytes.TrimSpace(raw)
+	if len(b) == 0 || isNull(b) {
+		return time.Time{}, nil
 	}
 	if b[0] != '"' {
 		ms, err := strconv.ParseInt(string(b), 10, 64)
 		if err != nil {
-			return fmt.Errorf("a change time of %s", b)
+			return time.Time{}, errors.New("jira: the value is neither a timestamp nor a whole number of milliseconds")
 		}
-		*t = changeTime(time.UnixMilli(ms))
-		return nil
+		return time.UnixMilli(ms), nil
 	}
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
-		return err
+		return time.Time{}, err
 	}
-	parsed, err := parseTime(s)
-	if err != nil {
-		return err
-	}
-	*t = changeTime(parsed)
-	return nil
+	return parseTime(s)
 }
 
 // Changelog is an issue's changes, oldest first. Complete is false when
@@ -257,6 +262,11 @@ func (c *Client) changelogPages(ctx context.Context, issues, fields []string, me
 				for _, it := range e.Items {
 					if !slices.Contains(have.Items, it) {
 						have.Items = append(have.Items, it)
+					}
+				}
+				for _, p := range e.Problems {
+					if problemIn(have.Problems, p.Field) == nil {
+						have.Problems = append(have.Problems, p)
 					}
 				}
 			}

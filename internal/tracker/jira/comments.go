@@ -26,6 +26,9 @@ type Comment struct {
 	// Visibility is a role or group the comment is restricted to; nil
 	// when everyone who can see the issue sees it.
 	Visibility json.RawMessage
+	// Problems names the fields whose value did not decode (created,
+	// updated); the rest of the comment is usable.
+	Problems []FieldProblem
 }
 
 type commentJSON struct {
@@ -44,8 +47,8 @@ type commentJSON struct {
 // it holds everything else.
 func (j commentJSON) comment() (Comment, error) {
 	out := Comment{ID: j.ID, Author: j.Author.userPtr(), UpdateAuthor: j.UpdateAuthor.userPtr()}
-	out.Created, _ = parseTime(j.Created)
-	out.Updated, _ = parseTime(j.Updated)
+	timeField("created", j.Created, &out.Created, &out.Problems)
+	timeField("updated", j.Updated, &out.Updated, &out.Problems)
 	out.Internal = j.JSDPublic != nil && !*j.JSDPublic
 	if !isNull(j.Visibility) {
 		out.Visibility = j.Visibility
@@ -201,17 +204,20 @@ type CommentInput struct {
 }
 
 // CommentResult is how far a comment write got: the images attached, and
-// the comment as Jira stored it.
+// the comment as Jira stored it. Unchanged reports an edit that sent
+// nothing because the comment already held the text asked for; Comment is
+// then the comment as read.
 type CommentResult struct {
-	Uploaded []Attachment
-	Comment  *Comment
+	Uploaded  []Attachment
+	Comment   *Comment
+	Unchanged bool
 }
 
 // AddComment checks the audience, converts the Markdown and reads its
 // images, then attaches the images and adds the comment. A failure after
-// the first write is a *StepError; a comment stored whose answer did not
-// decode is one whose Applied reports it, with the comment's ID in the
-// result.
+// the first write is a *StepError; a comment stored whose answer names it
+// but did not decode in full is one whose Applied reports it, with what
+// decoded (its ID at least) in the result.
 func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult, error) {
 	var res CommentResult
 	if err := c.admit(ctx); err != nil {
@@ -249,22 +255,28 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	return res, nil
 }
 
-// writeComment sends a comment write and decodes the comment it stored.
-// A failure to send is a StepComment *StepError; so is an answer that
-// does not decode, which Applied reports, with whatever of the comment
-// decoded (its ID at least, when the answer named one) returned.
+// writeComment sends a comment write, POST (documented: 201) or PUT
+// (200), each answering with the comment, and decodes the comment it
+// stored. A failure is a StepComment *StepError; an Applied one returns
+// what of the comment decoded, its ID at least, and any other returns no
+// comment.
 func (c *Client) writeComment(ctx context.Context, method, path string, body any) (*Comment, error) {
-	var stored commentJSON
-	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Body: body}, &stored)
-	if err != nil {
-		if w.id == "" {
-			return nil, &StepError{Step: StepComment, Err: err}
-		}
-		return &Comment{ID: w.id}, &StepError{Step: StepComment, Err: err}
+	status := http.StatusCreated
+	if method == http.MethodPut {
+		status = http.StatusOK
 	}
-	cm, err := stored.comment()
+	var stored commentJSON
+	w, err := c.write(ctx, trackerapi.Request{Method: method, Path: apiPath + path, Body: body}, bodyAnswer(namesID, status), &stored)
+	if err != nil && !answerApplied(err) {
+		return nil, &StepError{Step: StepComment, Err: err}
+	}
+	cm, derr := stored.comment()
+	cm.ID = w.id()
+	if err == nil && derr != nil {
+		err = &AnswerError{Applied: true, Message: "the comment was stored, but its answer did not decode: " + derr.Error()}
+	}
 	if err != nil {
-		return &cm, &StepError{Step: StepComment, Err: &AnswerError{Message: "the comment was stored, but its answer did not decode: " + err.Error()}}
+		return &cm, &StepError{Step: StepComment, Err: err}
 	}
 	return &cm, nil
 }
@@ -287,14 +299,17 @@ func (c *Client) uploadInto(ctx context.Context, issue string, doc *adf.Node, im
 	return out, nil
 }
 
-// CommentEdit replaces a comment's text.
+// CommentEdit replaces a comment's text. From is the comment as read
+// when the Markdown was written, which the edit checks: a comment that
+// holds another body by now (an absent one included) is a *StaleError.
+// Unchecked edits whatever is stored, with no check. One of the two is
+// required.
 type CommentEdit struct {
-	Issue    string
-	ID       string
-	Markdown string
-	// From is the stored body the Markdown was written from; when set, a
-	// comment that holds another body by now is a *StaleError.
-	From *adf.Node
+	Issue     string
+	ID        string
+	Markdown  string
+	From      *Comment
+	Unchecked bool
 	// AcceptLoss is the user's explicit acceptance that the edit loses
 	// content Markdown cannot show; without it such an edit is a
 	// *adf.LossError.
@@ -304,10 +319,16 @@ type CommentEdit struct {
 	ImageDir string
 }
 
-// EditComment edits the stored body with the Markdown, keeping what
+// EditComment edits the base body with the Markdown, keeping what
 // Markdown cannot show where the text is unchanged, and keeps the
-// comment's visibility. An edit that stores the same body sends nothing
-// and returns the comment as read.
+// comment's visibility. With From, the Markdown is converted against its
+// body (its mentions read first) and the comment is read as the last read
+// before the first write: a comment that holds another body by then is a
+// *StaleError. This narrows the window for a lost update and does not
+// close it, since Jira takes no precondition on the write. Unchecked
+// reads the stored body first and edits it with no check. An edit that would
+// store the body already stored sends nothing and returns Unchanged with
+// the comment as read.
 func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult, error) {
 	var res CommentResult
 	if err := c.admit(ctx); err != nil {
@@ -317,23 +338,37 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	if err != nil {
 		return res, err
 	}
-	cur, err := c.comment(ctx, in.Issue, in.ID)
-	if err != nil {
-		return res, notSentErr(err)
+	switch {
+	case (in.From == nil) == !in.Unchecked:
+		return res, notSent("edit comment %s: give From, the comment the edit is based on, or Unchecked, not both", in.ID)
+	case in.From != nil && in.From.ID != in.ID:
+		return res, notSent("edit comment %s: From is comment %s", in.ID, in.From.ID)
 	}
-	if in.From != nil && !adf.Equal(in.From, cur.Body) {
-		return res, notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
+	base := in.From
+	if in.Unchecked {
+		if base, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
+			return res, err
+		}
 	}
+	cur := base
 	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
-	doc, ws, err := b.markdown(ctx, in.Markdown, cur.Body)
+	doc, ws, err := b.markdown(ctx, in.Markdown, base.Body)
 	if err == nil {
 		err = adf.CheckLoss(ws, in.AcceptLoss)
 	}
 	if err != nil {
 		return res, notSentErr(fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err))
 	}
+	if !in.Unchecked {
+		if cur, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
+			return res, err
+		}
+		if !adf.Equal(in.From.Body, cur.Body) {
+			return res, notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
+		}
+	}
 	if adf.Equal(doc, cur.Body) {
-		res.Comment = &cur
+		res.Comment, res.Unchanged = cur, true
 		return res, nil
 	}
 	imgs := b.stage.in(doc)
@@ -356,6 +391,16 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	return res, nil
 }
 
+// readComment reads a comment an edit depends on; a failure is the edit's
+// refusal before sending.
+func (c *Client) readComment(ctx context.Context, issue, id string) (*Comment, error) {
+	cm, err := c.comment(ctx, issue, id)
+	if err != nil {
+		return nil, notSentErr(err)
+	}
+	return &cm, nil
+}
+
 // DeleteComment deletes a comment.
 func (c *Client) DeleteComment(ctx context.Context, issue, id string) error {
 	if err := c.admit(ctx); err != nil {
@@ -365,7 +410,8 @@ func (c *Client) DeleteComment(ctx context.Context, issue, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.send(ctx, http.MethodDelete, path, nil, nil, nil); err != nil {
+	req := trackerapi.Request{Method: http.MethodDelete, Path: apiPath + path}
+	if _, err := c.write(ctx, req, emptyAnswer(http.StatusNoContent), nil); err != nil {
 		return fmt.Errorf("jira: delete comment %s on %s: %w", id, issue, err)
 	}
 	return nil
