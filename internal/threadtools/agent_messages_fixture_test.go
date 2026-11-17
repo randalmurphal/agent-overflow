@@ -237,10 +237,17 @@ func wakePart(wake Wake) fixtureMessage {
 			part.Wake.StoppedBy = "the thread did not take it in"
 		case wake.Text == InterruptNotTakenInToComposer:
 			part.Wake.StoppedBy = "the thread did not take it in, and its message went back to that thread's composer"
-		case strings.HasPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar):
-			part.Wake.StoppedBy = wantSessionEndedBy(InterruptSessionEndedMidTurn)
-			part.Body = strings.TrimPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar)
-			if len(part.Body) > WakePreviewBytes {
+		case strings.HasPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar),
+			strings.HasPrefix(wake.Text, InterruptSessionEndedWorking+SessionEndedWrittenSoFar):
+			opening, _, _ := strings.Cut(wake.Text, SessionEndedWrittenSoFar)
+			part.Wake.StoppedBy = wantSessionEndedBy(opening)
+			prefix := opening + SessionEndedWrittenSoFar
+			part.Body = strings.TrimPrefix(wake.Text, prefix)
+			if len(wake.Sources) > 1 && len(wake.Text) > WakePreviewBytes {
+				// A digest clips the shared reason whole.
+				part.Body = strings.TrimPrefix(clipBytes(wake.Text, WakePreviewBytes), prefix)
+				part.Wake.Clipped = true
+			} else if len(part.Body) > WakePreviewBytes {
 				part.Body = clipBytes(part.Body, WakePreviewBytes)
 				part.Wake.Clipped = true
 			}
@@ -350,6 +357,12 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("interrupted by a handoff", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptHandedOff("t-old")})),
 		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptTurn})),
 		one("interrupted by a workflow, its recorded cause", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Its workflow stopped the turn before it answered."})),
+		one("interrupted by its session ending while it was still working, having written nothing", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedWorking})),
+		one("interrupted by its session ending while it was still working, with what it wrote", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedWorking + SessionEndedWrittenSoFar + "Half done."})),
+		one("interrupted by the user from the Agents tray", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "The user stopped its turn from the Agents tray before it answered."})),
+		one("interrupted by the user taking the thread over from its workflow", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "The user took the thread over from its workflow before it answered."})),
+		one("interrupted by another thread's thread_cancel", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "\"Lead \\\"one\\\"\" (t-lead, on desk) stopped its turn with thread_cancel before it answered."})),
+		one("interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Assistants were turned off in Settings before it answered."})),
 		one("interrupted by the person's Stop with no last message recorded", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: WakePersonStopped})),
 		one("interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
 		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptNeverStarted})),
@@ -379,6 +392,8 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: interrupted mid-turn, with what they wrote", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.", Sources: digestSources})),
 		one("digest: interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Sources: digestSources})),
 		one("digest: interrupted by a workflow", wake(Wake{Kind: WakeInterrupted, Text: "Its workflow stopped the turn before it answered.", Sources: digestSources})),
+		one("digest: interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Text: "Assistants were turned off in Settings before it answered.", Sources: digestSources})),
+		one("digest: interrupted while still working, with what they wrote, past the preview", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedWorking + SessionEndedWrittenSoFar + strings.Repeat("Long answer. ", WakePreviewBytes/12+8), Sources: digestSources})),
 		one("digest: stopped by the person", wake(Wake{Kind: WakeStopped, Sources: digestSources})),
 		one("digest: stopped by the person, with the same last message", wake(Wake{Kind: WakeStopped, Text: "Half done.", Sources: digestSources})),
 		one("digest: expired", wake(Wake{Kind: WakeExpired, Sources: digestSources})),
