@@ -226,13 +226,12 @@
    */
   /**
    * Delete the selection as one delete per computer (deleteThreadsAction).
-   * Selection is cleared once every computer's delete went through.
+   * Selection is cleared once every computer's delete went through. A
+   * failure is a toast, as runBulk's is: the menu's pane may show a thread
+   * the delete just removed.
    */
   async function deleteSelected(): Promise<void> {
-    const complete = await deleteThreadsAction(selectedThreads.slice(), (msg, err) => {
-      if (pane) pane.setGeneralError(msg, err);
-      else addErrorToast(msg, err);
-    });
+    const complete = await deleteThreadsAction(selectedThreads.slice(), (msg, err) => addErrorToast(msg, err));
     if (complete) clearThreadSelection();
   }
 

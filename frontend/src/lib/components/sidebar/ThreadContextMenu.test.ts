@@ -380,6 +380,33 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     expect(deletedId).toBe('ctx-on');
   });
 
+  // A computer that refuses deletes nothing there and keeps the selection;
+  // the menu's pane shows a thread the delete removed elsewhere, so the
+  // refusal is a toast, not that pane's error.
+  it('toasts a refused bulk delete and keeps the selection', async () => {
+    await primeSettings({ confirmDelete: false });
+    resetToastsForTest();
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0 }));
+    setBindingMock('DeleteThreads', async () => { throw new Error('delete refused'); });
+    const first = makeThread({ id: 'thread-1' });
+    replaceAllThreads([first, makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const pane = await buildPane(first, [], 'pane-bulk-delete');
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const { getByRole } = render(ThreadContextMenu, {
+      props: { thread: first, pane, anchor, open: true, onClose: () => {}, onRename: () => {}, isActive: true },
+    });
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await vi.waitFor(() => expect(getToasts().filter((t) => t.type === 'error').map((t) => t.message))
+      .toEqual(['Delete refused.']));
+    expect(getPane('pane-bulk-delete')?.generalError ?? null).toBeNull();
+    expect(getSelectedThreadIds()).toEqual(new Set(['thread-1', 'thread-2']));
+  });
+
   it('keeps bulk delete always-confirming even when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deleted = false;
