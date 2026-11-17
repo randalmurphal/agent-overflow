@@ -445,6 +445,38 @@ func TestAHostedDownloadLandsInTheThreadList(t *testing.T) {
 	if len(cancels) != 1 || string(cancels[0].Params) != `{"guid":"G-2"}` {
 		t.Fatalf("cancelDownload calls %+v, want G-2 alone", cancels)
 	}
+	// Chromium accepts the cancel of a download that has just finished and
+	// reports nothing more (observed on WebView2), so the finish it already
+	// sent settles it and the file stays.
+	if got := waitForDownload(t, manager, access, "big.bin", downloadStateRunning); got.ID != running.ID {
+		t.Fatalf("the canceled download lists as %+v", got)
+	}
+	big := filepath.Join(jarDir, "G-2")
+	if err := os.WriteFile(big, []byte("all of it"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	endpoint.send(map[string]any{"method": "Browser.downloadProgress", "params": map[string]any{
+		"guid": "G-2", "totalBytes": 9, "receivedBytes": 9, "state": "completed", "filePath": windowsViewOf(t, big),
+	}})
+	finished := waitForDownload(t, manager, access, "big.bin", downloadStateCompleted)
+	if item, err := manager.finishedDownloadPath(access, finished.ID); err != nil {
+		t.Fatalf("the finish that beat the cancel lost its file: %v", err)
+	} else if body, err := os.ReadFile(item.path); err != nil || string(body) != "all of it" {
+		t.Fatalf("the finished file reads %q, %v", body, err)
+	}
+
+	// A cancel the engine took ends with the engine's cancel report.
+	beginDownload(endpoint, "G-5", "stopped.bin")
+	stopping := waitForDownload(t, manager, access, "stopped.bin", downloadStateRunning)
+	if err := manager.CancelThreadDownload(access, stopping.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	endpoint.send(map[string]any{"method": "Browser.downloadProgress", "params": map[string]any{
+		"guid": "G-5", "totalBytes": 9, "receivedBytes": 3, "state": "canceled",
+	}})
+	if got := waitForDownload(t, manager, access, "stopped.bin", downloadStateCanceled); got.Error != "" {
+		t.Fatalf("the user's cancel lists as %+v", got)
+	}
 }
 
 // A browser that wrote a download anywhere but the jar's directory (its

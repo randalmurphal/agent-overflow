@@ -155,6 +155,7 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		}
 		return
 	}
+	removePartial := false
 	switch event.State {
 	case downloadCompleted:
 		entry.State = downloadStateCompleted
@@ -190,6 +191,7 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		// is a cancel.
 		if entry.cancelRequested {
 			entry.State = downloadStateCanceled
+			removePartial = true
 		} else {
 			entry.State, entry.Error = downloadStateFailed, event.Error
 			if entry.Error == "" {
@@ -201,6 +203,10 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 	note := m.noteDownloadLocked(p, entry, "")
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
+	if removePartial && scope != nil {
+		// The engine took the user's cancel; what it wrote is a partial file.
+		removePartialDownload(scope, event.ID)
+	}
 	m.publishDownloads(note)
 }
 

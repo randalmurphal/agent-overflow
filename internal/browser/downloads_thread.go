@@ -128,7 +128,8 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 	switch {
 	case !started && item.State == downloadStateRunning:
 		note.progress = true
-	case item.State != downloadStateRunning && wasRunning && !entry.cancelRequested:
+	case item.State != downloadStateRunning && wasRunning && !(item.State == downloadStateCanceled && entry.cancelRequested):
+		// The user's own cancel is not announced; a finish that beat it is.
 		announced := item.ThreadDownload
 		note.announce = &announced
 	}
@@ -234,10 +235,12 @@ func (m *Manager) threadDownload(threadID, id string) (threadDownload, error) {
 	return threadDownload{}, errDownloadNotFound
 }
 
-// CancelThreadDownload is the pane's cancel for a running download. The
-// engine is asked first; its refusal is the answer and the download keeps
-// running and listed as such. A download that settled meanwhile is left as
-// it settled.
+// CancelThreadDownload is the pane's cancel for a running download. It only
+// asks: the engine's terminal report settles the download, as a cancel when
+// the cancel won (downloadProgress then removes the partial file) or as a
+// finish when the download finished first, so a cancel racing a finish never
+// deletes the finished file. The engine's refusal is the answer and the
+// download keeps running and listed as such.
 func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	item, err := m.threadDownload(access.ThreadID, id)
 	if err != nil {
@@ -256,31 +259,20 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	}
 	entry.cancelRequested = true
 	p.downloadMu.Unlock()
-	if err := scope.profile.CancelDownload(item.engineID); err != nil {
-		p.downloadMu.Lock()
-		if entry := p.downloadLocked(item.engineID); entry != nil {
-			entry.cancelRequested = false
-		}
-		p.downloadMu.Unlock()
-		return fmt.Errorf("browser: cancel the download of %s: %w", item.Name, err)
+	err = scope.profile.CancelDownload(item.engineID)
+	if err == nil {
+		return nil
 	}
-	// An engine that reported the cancel already settled the entry; one
-	// that reports it later, or never (WKDownload's cancel), finds it
-	// settled here.
 	p.downloadMu.Lock()
-	entry = p.downloadLocked(item.engineID)
-	if entry != nil && entry.State == downloadStateRunning {
-		entry.State = downloadStateCanceled
-		m.releaseDownloadLocked(p, entry)
-		note := m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
-		p.downloadMu.Unlock()
-		m.publishDownloads(note)
-	} else {
-		p.downloadMu.Unlock()
+	if entry := p.downloadLocked(item.engineID); entry != nil {
+		entry.cancelRequested = false
 	}
-	removePartialDownload(scope, item.engineID)
-	return nil
+	p.downloadMu.Unlock()
+	if errors.Is(err, errDownloadEnded) {
+		// The download finished first; its report is the answer.
+		return nil
+	}
+	return fmt.Errorf("browser: cancel the download of %s: %w", item.Name, err)
 }
 
 // ClearThreadDownloads removes the thread's settled downloads from its list.

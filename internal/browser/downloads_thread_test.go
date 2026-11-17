@@ -238,6 +238,59 @@ func TestCancelingADownloadSettlesItAsCanceled(t *testing.T) {
 	}
 }
 
+func fakeProfileOf(t *testing.T, manager *Manager) *fakeProfile {
+	t.Helper()
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, scope := range manager.scopes {
+		if profile, ok := scope.profile.(*fakeProfile); ok {
+			return profile
+		}
+	}
+	t.Fatal("no fake profile")
+	return nil
+}
+
+// A cancel that reaches the engine after it let the finished download go,
+// and before it reported the finish, loses: the finish settles the download
+// and its file is kept. The engine's errDownloadEnded is that answer.
+func TestACancelRacingTheFinishKeepsTheFinishedFile(t *testing.T) {
+	manager, log, access, page := newDownloadManager(t)
+	startDownload(t, manager, access, page, "late.bin", 4096, "hold")
+	listed := threadDownloads(manager, access)
+	item, err := manager.threadDownload(access.ThreadID, listed[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.take()
+	engine := manager.engine.(*fakeEngine)
+	engine.downloadReleased = func(string) {
+		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+			t.Errorf("a cancel that lost to the finish answers %v", err)
+		}
+		if got := threadDownloads(manager, access)[0]; got.State != downloadStateRunning {
+			t.Errorf("a cancel that lost settled the download as %+v before the engine's report", got)
+		}
+	}
+	if err := fakeProfileOf(t, manager).finishHeld(item.engineID); err != nil {
+		t.Fatal(err)
+	}
+	got := threadDownloads(manager, access)[0]
+	if got.State != downloadStateCompleted || got.ReceivedBytes != 4096 {
+		t.Fatalf("the download lists as %+v, want completed", got)
+	}
+	finished, err := manager.finishedDownloadPath(access, got.ID)
+	if err != nil {
+		t.Fatalf("the finished file: %v", err)
+	}
+	if stat, err := os.Stat(finished.path); err != nil || stat.Size() != 4096 {
+		t.Fatalf("the finished file at %s: %v", finished.path, err)
+	}
+	if n := countKind(log.take(), "download"); n != 1 {
+		t.Fatalf("the finish that beat the cancel was announced %d times, want once", n)
+	}
+}
+
 type cancelRefusingEngine struct {
 	*fakeEngine
 	refuse error
