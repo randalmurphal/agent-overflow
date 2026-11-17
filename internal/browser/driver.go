@@ -125,9 +125,13 @@ type engineProfile interface {
 	// error the Manager discards the page, which is a no-op for an engine
 	// that already closed it.
 	AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error)
-	// CancelDownload aborts one in-flight download by its engine id. An
-	// error means the engine refused or could not be asked, and the
-	// download may still be running.
+	// CancelDownload aborts one in-flight download by its engine id. A nil
+	// answer means the engine took the cancel; the download then ends with
+	// the engine's own terminal report, a cancel or, when the download
+	// finished first, its finish. errDownloadEnded means the engine had
+	// already let the download go and its terminal report is on the way.
+	// Any other error means the engine refused or could not be asked, and
+	// the download may still be running.
 	CancelDownload(id string) error
 	// Dispose destroys the profile and every page still in it.
 	Dispose(ctx context.Context) error
@@ -276,8 +280,8 @@ type pageDriver interface {
 
 // downloadsUnmanaged is the optional half of a page driver whose engine can
 // fail to keep the page's downloads in AO's directory without failing the
-// page: it answers why, empty when downloads are managed. The Manager tells
-// the user once per jar profile.
+// page: it answers the user-facing warning, empty when downloads are
+// managed. The Manager shows each distinct warning once per jar profile.
 type downloadsUnmanaged interface {
 	downloadsUnmanaged() string
 }
@@ -389,6 +393,11 @@ type downloadStart struct {
 	URL           string
 	SuggestedName string
 }
+
+// errDownloadEnded is CancelDownload's answer when the engine had already
+// let the download go: it finished or failed, and its terminal report is on
+// the way. The cancel lost; that report settles the download.
+var errDownloadEnded = errors.New("browser: the download already ended")
 
 // downloadProgress is an engine download advancing. Total is the size the
 // response announced, zero when unknown. Error is the engine's reason for a

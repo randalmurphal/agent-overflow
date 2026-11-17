@@ -605,9 +605,11 @@ and anti-changes that live only here:
   no file; files stay in AO's artifact directory under its quotas and
   seven-day pruning. Downloads never open with the system's default app.
   A browser that refuses AO's download directory still opens its pages:
-  the user is told once per browser profile, and its downloads are stopped
-  and listed as failed with the reason rather than saved to the user's
-  Downloads folder. `docs/architecture/browser-tools.md`.
+  the profile's downloads are turned off, the user is told once per
+  browser profile, and each refused download is listed as failed with the
+  reason. Only when turning them off is refused too is the user told that
+  the profile's downloads go to the system Downloads folder.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

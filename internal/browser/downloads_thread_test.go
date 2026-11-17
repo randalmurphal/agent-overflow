@@ -238,6 +238,59 @@ func TestCancelingADownloadSettlesItAsCanceled(t *testing.T) {
 	}
 }
 
+func fakeProfileOf(t *testing.T, manager *Manager) *fakeProfile {
+	t.Helper()
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, scope := range manager.scopes {
+		if profile, ok := scope.profile.(*fakeProfile); ok {
+			return profile
+		}
+	}
+	t.Fatal("no fake profile")
+	return nil
+}
+
+// A cancel that reaches the engine after it let the finished download go,
+// and before it reported the finish, loses: the finish settles the download
+// and its file is kept. The engine's errDownloadEnded is that answer.
+func TestACancelRacingTheFinishKeepsTheFinishedFile(t *testing.T) {
+	manager, log, access, page := newDownloadManager(t)
+	startDownload(t, manager, access, page, "late.bin", 4096, "hold")
+	listed := threadDownloads(manager, access)
+	item, err := manager.threadDownload(access.ThreadID, listed[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.take()
+	engine := manager.engine.(*fakeEngine)
+	engine.downloadReleased = func(string) {
+		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+			t.Errorf("a cancel that lost to the finish answers %v", err)
+		}
+		if got := threadDownloads(manager, access)[0]; got.State != downloadStateRunning {
+			t.Errorf("a cancel that lost settled the download as %+v before the engine's report", got)
+		}
+	}
+	if err := fakeProfileOf(t, manager).finishHeld(item.engineID); err != nil {
+		t.Fatal(err)
+	}
+	got := threadDownloads(manager, access)[0]
+	if got.State != downloadStateCompleted || got.ReceivedBytes != 4096 {
+		t.Fatalf("the download lists as %+v, want completed", got)
+	}
+	finished, err := manager.finishedDownloadPath(access, got.ID)
+	if err != nil {
+		t.Fatalf("the finished file: %v", err)
+	}
+	if stat, err := os.Stat(finished.path); err != nil || stat.Size() != 4096 {
+		t.Fatalf("the finished file at %s: %v", finished.path, err)
+	}
+	if n := countKind(log.take(), "download"); n != 1 {
+		t.Fatalf("the finish that beat the cancel was announced %d times, want once", n)
+	}
+}
+
 type cancelRefusingEngine struct {
 	*fakeEngine
 	refuse error
@@ -425,6 +478,65 @@ func TestRevealingADownloadShowsItsFile(t *testing.T) {
 	}
 }
 
+// A row acts only on the file its download wrote. Moving a download out
+// frees its name for the next one, so the two rows share a path: the older
+// row refuses the newer file, and once the older file is back in its place
+// the newer row refuses it.
+func TestADownloadRowActsOnlyOnItsOwnFile(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	var revealed []string
+	manager.revealFileInFileManager = func(_ context.Context, path string) error {
+		revealed = append(revealed, path)
+		return nil
+	}
+	act := func(id string) error {
+		revealErr := manager.RevealThreadDownload(t.Context(), access, id)
+		_, openErr := manager.OpenThreadDownload(t.Context(), access, id)
+		if (revealErr == nil) != (openErr == nil) {
+			t.Fatalf("Show in folder answers %v and Open %v", revealErr, openErr)
+		}
+		return revealErr
+	}
+	replaced := func(err error) bool { return err != nil && strings.Contains(err.Error(), "moved or replaced") }
+
+	startDownload(t, manager, access, page, "report.pdf", 10)
+	older := threadDownloads(manager, access)[0]
+	olderItem, _ := manager.threadDownload(access.ThreadID, older.ID)
+	moved := olderItem.path + ".moved"
+	if err := os.Rename(olderItem.path, moved); err != nil {
+		t.Fatal(err)
+	}
+	startDownload(t, manager, access, page, "report.pdf", 20)
+	newer := threadDownloads(manager, access)[0]
+	newerItem, _ := manager.threadDownload(access.ThreadID, newer.ID)
+	if newerItem.path != olderItem.path {
+		t.Fatalf("the second download is at %s, not the freed name %s", newerItem.path, olderItem.path)
+	}
+
+	if err := act(older.ID); !replaced(err) {
+		t.Fatalf("the older row acting on the newer file answers %v", err)
+	}
+	if err := act(newer.ID); err != nil {
+		t.Fatalf("the newer row: %v", err)
+	}
+
+	if err := os.Rename(newerItem.path, newerItem.path+".newer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, olderItem.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := act(newer.ID); !replaced(err) {
+		t.Fatalf("the newer row acting on the older file answers %v", err)
+	}
+	if err := act(older.ID); err != nil {
+		t.Fatalf("the older row with its own file back: %v", err)
+	}
+	if !slices.Equal(revealed, []string{newerItem.path, olderItem.path}) {
+		t.Fatalf("revealed %q", revealed)
+	}
+}
+
 // Open shows a finished download of a type tabs show in a new tab; a page
 // may open its own workspace's downloads and no other workspace's.
 func TestOpeningADownloadShowsItInANewTab(t *testing.T) {
@@ -469,5 +581,85 @@ func TestClosingTheThreadForgetsItsDownloads(t *testing.T) {
 	manager.downloadsMu.Unlock()
 	if kept {
 		t.Fatal("the closed thread's downloads are still kept")
+	}
+}
+
+// However a page stops being the Manager's, a download it left running
+// settles, its reservations are released, the engine is asked to stop it,
+// and its row can be cleared.
+func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		teardown func(t *testing.T, manager *Manager, access Access, page PageInfo)
+		listGone bool
+	}{
+		{"clear site data", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.ClearSiteData(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"disable", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.Reconfigure(Config{Enabled: false}); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"persistence change", func(t *testing.T, manager *Manager, _ Access, _ PageInfo) {
+			if err := manager.Reconfigure(Config{Enabled: true, PersistSiteData: true}); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"engine page closed", func(t *testing.T, manager *Manager, _ Access, page PageInfo) {
+			manager.mu.Lock()
+			p, _ := manager.livePageLocked(page.ID)
+			manager.mu.Unlock()
+			manager.engine.(*fakeEngine).events.PageClosed(p.driver.Handle())
+		}, false},
+		{"close the page", func(t *testing.T, manager *Manager, access Access, page PageInfo) {
+			if err := manager.closeLivePage(t.Context(), access, page.ID); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"thread close", func(t *testing.T, manager *Manager, access Access, _ PageInfo) {
+			if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, access, page := newDownloadManager(t)
+			baseline := manager.artifactBytes.Load()
+			startDownload(t, manager, access, page, "held.bin", 4096, "hold")
+			authority := authorityOf(t, manager, access)
+			item, err := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := fakeProfileOf(t, manager)
+
+			tc.teardown(t, manager, access, page)
+
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				listed := threadDownloads(manager, access)
+				running := slices.ContainsFunc(listed, func(d ThreadDownload) bool { return d.State == downloadStateRunning })
+				settled := (tc.listGone && len(listed) == 0) || (!tc.listGone && len(listed) == 1 && listed[0].State == downloadStateCanceled)
+				profile.mu.Lock()
+				_, held := profile.held[item.engineID]
+				profile.mu.Unlock()
+				if !running && settled && !held && authority.downloadBytes.Load() == 0 && manager.artifactBytes.Load() == baseline {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !tc.listGone {
+				manager.ClearThreadDownloads(access)
+				if listed := threadDownloads(manager, access); len(listed) != 0 {
+					t.Fatalf("Clear list keeps %+v", listed)
+				}
+			}
+		})
 	}
 }

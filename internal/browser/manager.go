@@ -262,9 +262,9 @@ type jarScope struct {
 	// downloadDir is where the engine writes this jar's downloads before
 	// they move to their workspace's directory.
 	downloadDir string
-	// downloadsWarned is whether the user was told downloads in this jar's
-	// profile are not managed. Guarded by m.mu.
-	downloadsWarned bool
+	// downloadsWarned is what the user was last told about downloads in
+	// this jar's profile not being managed. Guarded by m.mu.
+	downloadsWarned string
 }
 
 type managedPage struct {
@@ -837,15 +837,17 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	m.mu.Lock()
 	p.attach(driver)
 	if warn != "" {
-		// Once per profile: every page of it would say the same.
-		if scope.downloadsWarned {
+		// Once per profile: every page of it says the same until the
+		// profile's state changes.
+		if scope.downloadsWarned == warn {
 			warn = ""
+		} else {
+			scope.downloadsWarned = warn
 		}
-		scope.downloadsWarned = true
 	}
 	m.mu.Unlock()
 	if warn != "" {
-		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: "Downloads are off in this browser profile: " + warn})
+		m.emit(CompanionEvent{Kind: "downloads-unmanaged", ThreadID: p.owner, Error: warn})
 	}
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
@@ -996,10 +998,11 @@ func (m *Manager) removeClosedPage(handle string) {
 	var owner string
 	var closed *managedPage
 	var released *jarScope
+	var ended endedDownloads
 	for _, scope := range m.scopes {
 		if p := pageWithHandle(scope, handle); p != nil {
 			owner, closed = p.owner, p
-			delete(scope.pages, p.id)
+			ended = m.pageLeftLocked(scope, p, "page closed")
 			if m.releaseScopeLocked(scope) {
 				released = scope
 			}
@@ -1008,13 +1011,12 @@ func (m *Manager) removeClosedPage(handle string) {
 	}
 	m.mu.Unlock()
 	if closed != nil {
+		m.publishDownloads(ended.notes...)
 		m.endFind(closed)
-	}
-	if released != nil {
 		// Off the engine's callback, as a closed page's disposal always is,
 		// and started before the state push: a page opened in the workspace
 		// on that push waits for it.
-		m.disposeReleased(released, owner, closed.id)
+		m.disposeReleased(ended, released, owner, closed.id)
 	}
 	if owner != "" {
 		m.repairActivePage(owner)
@@ -1056,11 +1058,13 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	scopes := make([]*jarScope, 0, len(m.scopes))
 	owners := make(map[string]struct{})
 	var pages []*managedPage
+	var ended []endedDownloads
 	for _, scope := range m.scopes {
 		scopes = append(scopes, scope)
 		for _, p := range scope.pages {
 			owners[p.owner] = struct{}{}
 			pages = append(pages, p)
+			ended = append(ended, m.pageLeftLocked(scope, p, "the browser closed"))
 		}
 	}
 	m.scopes = make(map[string]*jarScope)
@@ -1099,6 +1103,10 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Unlock()
 	for _, p := range pages {
 		m.endFind(p)
+	}
+	for _, e := range ended {
+		m.publishDownloads(e.notes...)
+		m.stopEndedDownloads(e)
 	}
 	for owner := range owners {
 		m.emitThreadState(owner)

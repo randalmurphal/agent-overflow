@@ -96,14 +96,40 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 }
 
 // CancelDownload ends a held download and reports it canceled, as an engine
-// reports the cancel it was asked for. Any other id has already settled.
+// reports the cancel it was asked for. Any other id has already been let
+// go, and its terminal report is out or on the way.
 func (p *fakeProfile) CancelDownload(id string) error {
 	p.mu.Lock()
 	held, ok := p.held[id]
 	delete(p.held, id)
 	p.mu.Unlock()
-	if ok && p.engine.events.DownloadProgress != nil {
+	if !ok {
+		return errDownloadEnded
+	}
+	if p.engine.events.DownloadProgress != nil {
 		p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(held.total / 2), Total: float64(held.total), State: downloadCanceled})
 	}
+	return nil
+}
+
+// finishHeld finishes a held download the way the native engines do: the
+// file is complete, the engine's record of it is released, and only then is
+// the finish reported.
+func (p *fakeProfile) finishHeld(id string) error {
+	p.mu.Lock()
+	held, ok := p.held[id]
+	delete(p.held, id)
+	p.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("browser: %s is not a held fake download", id)
+	}
+	file := filepath.Join(p.downloadDir, id)
+	if err := os.WriteFile(file, make([]byte, held.total), 0o600); err != nil {
+		return err
+	}
+	if released := p.engine.downloadReleased; released != nil {
+		released(id)
+	}
+	p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(held.total), Total: float64(held.total), State: downloadCompleted, FilePath: file})
 	return nil
 }

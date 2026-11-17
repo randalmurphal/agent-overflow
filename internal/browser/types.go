@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"time"
 
 	"agent-overflow/internal/keybindings"
@@ -385,6 +386,9 @@ type DownloadInfo struct {
 	// cancelRequested is set while the user's cancel is with the engine, so
 	// the engine's report of it reads as canceled rather than failed.
 	cancelRequested bool
+	// file is the finished file as it was when the download settled, so a
+	// later Open or Show in folder acts on that file and no other.
+	file os.FileInfo
 }
 
 type DownloadOptions struct {

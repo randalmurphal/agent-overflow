@@ -314,8 +314,9 @@ func (p *webkitProfile) CancelDownload(id string) error {
 	download := p.downloads[id]
 	p.mu.Unlock()
 	if download == nil {
-		// Released: WebKit already reported it finished or failed.
-		return nil
+		// Released: WebKit finished or failed it, and that report is on its
+		// way (aoWebKitDownloadProgress releases before it reports).
+		return errDownloadEnded
 	}
 	if !webkitCancelDownload(download) {
 		return errGTKUnavailable

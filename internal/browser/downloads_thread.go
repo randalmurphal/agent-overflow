@@ -50,9 +50,11 @@ type ThreadDownload struct {
 
 type threadDownload struct {
 	ThreadDownload
-	// engineID is the engine's id for the download; path the finished file.
+	// engineID is the engine's id for the download; path the finished file
+	// and file what it was when the download finished.
 	engineID string
 	path     string
+	file     os.FileInfo
 }
 
 type threadDownloadList struct {
@@ -119,16 +121,18 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 	wasRunning := started || item.State == downloadStateRunning
 	item.Name = entry.SuggestedName
 	if entry.Path != "" {
-		item.path = entry.Path
+		item.path, item.file = entry.Path, entry.file
 		item.Name = filepath.Base(entry.Path)
 	}
 	item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
 	item.Openable = item.State == downloadStateCompleted && downloadOpensInPage(item.Name)
 	note := downloadNote{threadID: p.owner}
+	// The user's own cancel is not announced; a finish that beat it is.
+	userCanceled := item.State == downloadStateCanceled && entry.cancelRequested
 	switch {
 	case !started && item.State == downloadStateRunning:
 		note.progress = true
-	case item.State != downloadStateRunning && wasRunning && !entry.cancelRequested:
+	case item.State != downloadStateRunning && wasRunning && !userCanceled:
 		announced := item.ThreadDownload
 		note.announce = &announced
 	}
@@ -234,10 +238,12 @@ func (m *Manager) threadDownload(threadID, id string) (threadDownload, error) {
 	return threadDownload{}, errDownloadNotFound
 }
 
-// CancelThreadDownload is the pane's cancel for a running download. The
-// engine is asked first; its refusal is the answer and the download keeps
-// running and listed as such. A download that settled meanwhile is left as
-// it settled.
+// CancelThreadDownload is the pane's cancel for a running download. It only
+// asks: the engine's terminal report settles the download, as a cancel when
+// the cancel won (downloadProgress then removes the partial file) or as a
+// finish when the download finished first, so a cancel racing a finish never
+// deletes the finished file. The engine's refusal is the answer and the
+// download keeps running and listed as such.
 func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	item, err := m.threadDownload(access.ThreadID, id)
 	if err != nil {
@@ -256,31 +262,20 @@ func (m *Manager) CancelThreadDownload(access Access, id string) error {
 	}
 	entry.cancelRequested = true
 	p.downloadMu.Unlock()
-	if err := scope.profile.CancelDownload(item.engineID); err != nil {
-		p.downloadMu.Lock()
-		if entry := p.downloadLocked(item.engineID); entry != nil {
-			entry.cancelRequested = false
-		}
-		p.downloadMu.Unlock()
-		return fmt.Errorf("browser: cancel the download of %s: %w", item.Name, err)
+	err = scope.profile.CancelDownload(item.engineID)
+	if err == nil {
+		return nil
 	}
-	// An engine that reported the cancel already settled the entry; one
-	// that reports it later, or never (WKDownload's cancel), finds it
-	// settled here.
 	p.downloadMu.Lock()
-	entry = p.downloadLocked(item.engineID)
-	if entry != nil && entry.State == downloadStateRunning {
-		entry.State = downloadStateCanceled
-		m.releaseDownloadLocked(p, entry)
-		note := m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
-		p.downloadMu.Unlock()
-		m.publishDownloads(note)
-	} else {
-		p.downloadMu.Unlock()
+	if entry := p.downloadLocked(item.engineID); entry != nil {
+		entry.cancelRequested = false
 	}
-	removePartialDownload(scope, item.engineID)
-	return nil
+	p.downloadMu.Unlock()
+	if errors.Is(err, errDownloadEnded) {
+		// The download finished first; its report is the answer.
+		return nil
+	}
+	return fmt.Errorf("browser: cancel the download of %s: %w", item.Name, err)
 }
 
 // ClearThreadDownloads removes the thread's settled downloads from its list.
@@ -312,11 +307,17 @@ func (m *Manager) finishedDownloadPath(access Access, id string) (threadDownload
 	if item.State != downloadStateCompleted || item.path == "" {
 		return threadDownload{}, fmt.Errorf("browser: the download of %s did not finish", item.Name)
 	}
-	if _, err := os.Stat(item.path); err != nil {
+	current, err := os.Stat(item.path)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return threadDownload{}, fmt.Errorf("browser: %s is gone; downloads are removed after %d days", item.Name, int(artifactMaxAge.Hours()/24))
 		}
 		return threadDownload{}, fmt.Errorf("browser: read the download %s: %w", item.Name, err)
+	}
+	// A name is reused once its file is moved away, so the path alone may
+	// name a later download's file.
+	if item.file == nil || !os.SameFile(item.file, current) {
+		return threadDownload{}, fmt.Errorf("browser: %s was moved or replaced since it downloaded", item.Name)
 	}
 	return item, nil
 }

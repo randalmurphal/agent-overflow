@@ -28,13 +28,18 @@ import (
 //     accepted and holds for its whole profile; set again from page 1
 //     before page 2, which set it last, closes, it still holds after the
 //     close (without that WebView2 falls back to the user's Downloads
-//     folder, observed 2026-11-16, which is why the engine hands it over);
+//     folder, observed 2026-11-16, which is why a closing page has another
+//     page set it again);
 //   - a download lands as its GUID in that directory (a \\wsl.localhost
 //     path when AO_WEBVIEW2_DOWNLOAD_SMOKE_DIR names one), never in the
 //     user's Downloads folder, and Browser.downloadProgress reports that
 //     path; two downloads with one suggested name are two files;
 //   - Browser.cancelDownload with no browser context cancels a download of
-//     the named profile and leaves no file behind.
+//     the named profile and leaves no file behind; a cancel of a download
+//     that already finished is accepted, reports nothing and keeps the file;
+//   - Page.setDownloadBehavior deny holds for the named profile: a download
+//     is reported begun and then canceled, and writes no file in the
+//     directory or the user's Downloads folder.
 //
 // Browser.setDownloadBehavior naming the profile's browser context is
 // refused ("Failed to find browser context"), so the engine never sends it.
@@ -214,6 +219,63 @@ func TestDownloadSmokeKeepsAProfilesDownloadsInItsDirectory(t *testing.T) {
 	if _, err := os.Stat(downloadDir + `\` + slow); err == nil {
 		t.Fatalf("the canceled download left %s behind", slow)
 	}
+
+	// A cancel that loses to the finish is accepted, reports nothing and
+	// leaves the file, so only the engine's terminal report may settle it.
+	cdp.events = nil
+	cdp.call("Browser.cancelDownload", map[string]any{"guid": first.GUID}, "", nil)
+	for _, message := range append(cdp.events, cdp.collect(2*time.Second)...) {
+		if message.Method == "Browser.downloadProgress" && strings.Contains(string(message.Params), first.GUID) {
+			t.Fatalf("a late cancel of a finished download reported %s", message.Params)
+		}
+	}
+	cdp.events = nil
+	if _, err := os.Stat(downloadDir + `\` + first.GUID); err != nil {
+		t.Fatalf("the finished file is gone after a late cancel: %v", err)
+	}
+
+	// Deny, which the engine sets when AO's directory is refused, holds
+	// for the named profile: the download is announced, then canceled by
+	// the browser, and no file is written anywhere.
+	before, err := os.ReadDir(downloadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdp.call("Page.setDownloadBehavior", map[string]any{"behavior": "deny"}, session1, nil)
+	denied := "denied-" + stamp + ".bin"
+	cdp.call("Page.navigate", map[string]any{"url": server.URL + "/" + denied}, session1, nil)
+	guid := cdp.downloadBegan(denied)
+	if ended := cdp.downloadSettled(guid); ended.State != "canceled" {
+		t.Fatalf("a download under deny ended %s", ended.State)
+	}
+	if _, err := os.Stat(filepath.Join(userDownloads, denied)); err == nil {
+		_ = os.Remove(filepath.Join(userDownloads, denied))
+		t.Fatalf("a download under deny was saved to %s", userDownloads)
+	}
+	after, err := os.ReadDir(downloadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a download under deny changed %s from %d to %d entries", downloadDir, len(before), len(after))
+	}
+}
+
+// collect answers every message that arrives within d.
+func (c *smokeCDP) collect(d time.Duration) []smokeCDPMessage {
+	var out []smokeCDPMessage
+	deadline := time.After(d)
+	for {
+		select {
+		case message, ok := <-c.feed:
+			if !ok {
+				return out
+			}
+			out = append(out, message)
+		case <-deadline:
+			return out
+		}
+	}
 }
 
 // smokeCDP is a browser-level CDP connection. One goroutine reads it, since
@@ -283,6 +345,15 @@ func (c *smokeCDP) read(what string, deadline time.Time) smokeCDPMessage {
 // if it refuses.
 func (c *smokeCDP) call(method string, params any, sessionID string, result any) {
 	c.t.Helper()
+	if refusal := c.try(method, params, sessionID, result); refusal != "" {
+		c.t.Fatalf("%s was refused: %s", method, refusal)
+	}
+}
+
+// try sends one command and answers the browser's refusal, empty when it
+// accepted it.
+func (c *smokeCDP) try(method string, params any, sessionID string, result any) string {
+	c.t.Helper()
 	c.next++
 	id := c.next
 	frame := map[string]any{"id": id, "method": method, "params": params}
@@ -309,14 +380,14 @@ func (c *smokeCDP) call(method string, params any, sessionID string, result any)
 			continue
 		}
 		if message.Error != nil {
-			c.t.Fatalf("%s was refused: %s", method, message.Error.Message)
+			return message.Error.Message
 		}
 		if result != nil {
 			if err := json.Unmarshal(message.Result, result); err != nil {
 				c.t.Fatalf("%s result %s: %v", method, message.Result, err)
 			}
 		}
-		return
+		return ""
 	}
 }
 

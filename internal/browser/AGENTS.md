@@ -114,10 +114,13 @@ bounds, page cancellation, and denial of sensitive website permissions. Every
 change to a page's download entry goes through `noteDownloadLocked` and
 `publishDownloads` (`downloads_thread.go`), which keep the thread's list the
 pane shows and coalesce byte progress; an engine reports one terminal event
-per download. The hosted engine sets each page's download behavior from the
-page's own session before handing the page over, moves it to another page of
-the profile before the page holding it closes, and on a refusal leaves the
-page open with its profile's downloads unmanaged (`hosted_downloads.go`).
+per download, and that report alone settles the user's cancel. Every
+removal of a live page goes through `pageLeftLocked`, which settles the
+page's running downloads. The hosted engine sets each page's download
+behavior from the page's own session before handing the page over, has the
+profile's other live pages set it again, one profile-serialized walk per
+leaving page, before that page's session goes, and on a refusal leaves the
+page open and denies the profile's downloads (`hosted_downloads.go`).
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and
 ephemeral profiles must remain distinct; a private jar is always ephemeral.

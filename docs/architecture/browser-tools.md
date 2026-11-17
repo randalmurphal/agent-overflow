@@ -275,7 +275,10 @@ behave as a desktop browser's:
   failure. A running one cancels; a finished one shows in the file manager
   (the reveal hand-off of Show in folder) and, for a type every engine shows
   in a tab (PDF, PNG, JPEG, GIF, WebP, BMP, text, JSON), opens in a new tab.
-  Script-capable types (HTML, SVG, XML) are never opened from the list. There
+  Script-capable types (HTML, SVG, XML) are never opened from the list. A
+  row acts only on the file its download wrote (`os.SameFile` against the
+  file as it finished): one moved away or replaced since, including by a
+  later download given the freed name, is refused with that reason. There
   is no "open with the system's default app": the OS opener refuses `file:`
   URLs (`internal/externalurl`). Clear list drops the settled downloads and
   deletes no file. The list is in memory and goes with the thread; the page's
@@ -284,17 +287,25 @@ behave as a desktop browser's:
   cancel push at once, byte progress at most once a second per thread. A
   download that settles other than by the user's cancel is announced once
   (a Kind `download` event): a toast with Show in folder when it finished,
-  an error toast with the reason otherwise. `canceled` means AO stopped it
-  (the user, a quota, its size, its page closing); an end the engine
-  reports on its own is `failed`, with the engine's reason when it gives one.
+  an error toast with the reason otherwise. `canceled` means AO stopped it:
+  the user (settled by the engine's own report, so a finish that beats the
+  cancel keeps its file), a quota, its size, or its page leaving by any
+  path (a close, a suspend, the engine's close, Clear site data, disabling
+  the browser), which settles it at once and releases its reservation; an
+  end the engine reports on its own is `failed`, with the engine's reason
+  when it gives one.
   On Windows through WSL the pane's WebView2 writes into the jar's AO
   directory through its Windows view (`internal/browser/hosted_downloads.go`,
   which records the protocol real WebView2 accepts; `TestDownloadSmoke` in
   `internal/webview2host` runs it on the real runtime). A refusal does not
-  fail the page: it is logged with the engine's message, the user gets one
-  error toast per browser profile (a Kind `downloads-unmanaged` event), and
-  each download that starts in that profile is cancelled and listed as
-  failed with the reason.
+  fail the page: it is logged with the engine's message and the user gets
+  one error toast per browser profile (a Kind `downloads-unmanaged` event,
+  repeated only if the profile's state changes). A refused directory or
+  refused download events turn the profile's downloads off (`deny`), and
+  each download the browser then cancels is listed as failed with the
+  reason. If turning them off is refused too, the toast says downloads in
+  that profile go to the system Downloads folder, and AO cancels each one
+  that starts and lists it as possibly saved there.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,

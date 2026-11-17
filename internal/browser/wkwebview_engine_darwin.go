@@ -401,8 +401,9 @@ func (p *wkProfile) CancelDownload(id string) error {
 	entry := p.downloads[id]
 	p.mu.Unlock()
 	if entry == nil {
-		// Released: WebKit already reported it finished or failed.
-		return nil
+		// Released: WebKit finished, failed or canceled it, and that report
+		// is on its way (aoWKVDownloadFinished releases before it reports).
+		return errDownloadEnded
 	}
 	if !wkCancelDownload(entry.ptr) {
 		return errWKUnavailable
