@@ -117,8 +117,11 @@ func (a *App) noteWorkflowOriginChange(change store.WorkItemOriginChange) {
 // to its reassessment, unless it can change nothing: a delta whose named
 // launches all still run, for a thread already waiting on its background
 // work. A delta of a running background agent's latest tool is such a
-// frame, so a working agent costs its worker no reads.
+// frame, so a working agent costs its worker no reads. A decision on rest
+// under way is told of every frame: the record it skips by may be stale,
+// and a launch that starts as the recorded work ends is new work.
 func (a *App) noteBackgroundTrayLiveness(event triage.BackgroundTrayEvent) {
+	a.noteThreadRestChange(event.ThreadID)
 	if !event.Refresh && len(event.Rows) == len(event.LaunchIDs) && a.waitsOnBackground(event.ThreadID) {
 		running := true
 		for _, row := range event.Rows {
