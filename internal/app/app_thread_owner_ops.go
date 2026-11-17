@@ -309,8 +309,6 @@ type ownerOpAttempt struct {
 	older bool
 	// unpaired: the pairing with the computer ended; dropped.
 	unpaired bool
-	// busy: another attempt at the same spawn was under way.
-	busy bool
 	// reason says why a pending operation did not land, in a person's words.
 	reason string
 	// members are the workers below its worker that an unfinished operation
@@ -348,7 +346,7 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 				defer func() { <-limit }()
 				attempts[i] = a.deliverOwnerOp(ctx, op)
 			case <-ctx.Done():
-				attempts[i] = ownerOpAttempt{busy: true}
+				attempts[i] = ownerOpAttempt{}
 			}
 		}()
 	}
@@ -417,7 +415,7 @@ func (a *App) ownerOpTargets(ops []store.OwnerOp) map[string]store.ThreadRequest
 // operation, does nothing.
 func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttempt {
 	if !a.beginOwnerOpSend(op.Token) {
-		return ownerOpAttempt{busy: true}
+		return ownerOpAttempt{}
 	}
 	defer a.endOwnerOpSend(op.Token)
 	marked, err := a.store.MarkOwnerOpSent(op.Token, op.Seq)
@@ -442,7 +440,7 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 		a.settleOwnerOp(op)
 		return ownerOpAttempt{unpaired: true}
 	case err != nil:
-		a.rescheduleOwnerOp(op, err.Error())
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{}
 	}
 	switch answer.Outcome {
@@ -455,18 +453,18 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 			names = append(names, cmp.Or(failure.Title, failure.ThreadID))
 		}
 		reason := fmt.Sprintf("the threads under it there were not all %s yet (%s)", ownerOpVerb(op.Op), strings.Join(names, ", "))
-		a.rescheduleOwnerOp(op, reason)
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: reason, members: answer.Failures}
 	case ownerOpPending:
-		a.rescheduleOwnerOp(op, "its thread there is still being made")
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: "its thread there is still being made"}
 	case ownerOpRefused:
 		reason := "refused for now: " + answer.Reason
-		a.rescheduleOwnerOp(op, reason)
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: reason}
 	default:
 		reason := fmt.Sprintf("answered %q", answer.Outcome)
-		a.rescheduleOwnerOp(op, reason)
+		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: reason}
 	}
 }
@@ -504,7 +502,7 @@ func (a *App) settleOwnerOp(op store.OwnerOp) {
 
 // rescheduleOwnerOp sets op's next attempt on the retry ladder: 5 s after
 // the first, doubling to threadPollLateCap.
-func (a *App) rescheduleOwnerOp(op store.OwnerOp, reason string) {
+func (a *App) rescheduleOwnerOp(op store.OwnerOp) {
 	delay := threadPollNormalDelay
 	for range op.Attempts {
 		if delay *= 2; delay >= threadPollLateCap {
@@ -512,7 +510,7 @@ func (a *App) rescheduleOwnerOp(op store.OwnerOp, reason string) {
 			break
 		}
 	}
-	if _, err := a.store.RescheduleOwnerOp(op.Token, op.Seq, time.Now().Add(delay).UnixMilli(), reason); err != nil {
+	if _, err := a.store.RescheduleOwnerOp(op.Token, op.Seq, time.Now().Add(delay).UnixMilli()); err != nil {
 		log.Printf("thread tools: reschedule owner operation %s for spawn %s: %v", op.Op, op.Token, err)
 	}
 }

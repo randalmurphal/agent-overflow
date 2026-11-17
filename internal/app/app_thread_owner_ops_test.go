@@ -232,7 +232,7 @@ func TestAnUnansweredArchiveIsPendingUntilTheComputerAnswers(t *testing.T) {
 	retriedWithin := func(attempts int, wait time.Duration, before time.Time) {
 		t.Helper()
 		owed := p.owed(t)
-		if len(owed) != 1 || owed[0].Op != store.OwnerOpArchive || !owed[0].Sent || owed[0].LastError == "" || owed[0].Attempts != attempts {
+		if len(owed) != 1 || owed[0].Op != store.OwnerOpArchive || !owed[0].Sent || owed[0].Attempts != attempts {
 			t.Fatalf("owed = %+v, want the archive, tried %d times", owed, attempts)
 		}
 		next := time.UnixMilli(owed[0].NextAt)
@@ -341,7 +341,7 @@ func TestTheSweepWakesForAnOwedOperation(t *testing.T) {
 		t.Fatalf("owed %+v, %v", owed, err)
 	}
 	due := time.Now().Add(3 * time.Second)
-	if _, err := f.app.store.RescheduleOwnerOp(owed[0].Token, owed[0].Seq, due.UnixMilli(), "asleep"); err != nil {
+	if _, err := f.app.store.RescheduleOwnerOp(owed[0].Token, owed[0].Seq, due.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if delay := f.app.threadRequestSweepDelay(time.Now()); delay > 3*time.Second {

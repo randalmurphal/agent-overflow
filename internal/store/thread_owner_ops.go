@@ -38,19 +38,19 @@ type OwnerOp struct {
 	Op             string
 	Seq            int64
 	// Sent is whether an attempt was made at this Seq.
-	Sent      bool
-	OwedAt    int64
-	NextAt    int64
-	Attempts  int
-	LastError string
+	Sent   bool
+	OwedAt int64
+	NextAt int64
+	// Attempts paces the retry ladder (rescheduleOwnerOp).
+	Attempts int
 }
 
-const ownerOpColumns = `token, computer_id, source_thread_id, op, seq, sent, owed_at, next_at, attempts, last_error`
+const ownerOpColumns = `token, computer_id, source_thread_id, op, seq, sent, owed_at, next_at, attempts`
 
 func scanOwnerOp(row rowScanner) (OwnerOp, error) {
 	var op OwnerOp
 	err := row.Scan(&op.Token, &op.ComputerID, &op.SourceThreadID, &op.Op, &op.Seq, &op.Sent,
-		&op.OwedAt, &op.NextAt, &op.Attempts, &op.LastError)
+		&op.OwedAt, &op.NextAt, &op.Attempts)
 	return op, err
 }
 
@@ -95,10 +95,10 @@ func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []
 	}
 	for _, row := range owed {
 		if _, err := tx.Exec(`INSERT INTO thread_owner_ops (`+ownerOpColumns+`)
-			VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, 0, '')
+			VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, 0)
 			ON CONFLICT(token) DO UPDATE SET computer_id = excluded.computer_id,
 			    source_thread_id = excluded.source_thread_id, op = excluded.op, seq = excluded.seq,
-			    sent = 0, owed_at = excluded.owed_at, next_at = excluded.next_at, attempts = 0, last_error = ''`,
+			    sent = 0, owed_at = excluded.owed_at, next_at = excluded.next_at, attempts = 0`,
 			row.Token, row.ComputerID, row.SourceThreadID, row.Op, row.Seq, now); err != nil {
 			return nil, fmt.Errorf("owe %s for spawn %s: %w", op, row.Token, err)
 		}
@@ -238,10 +238,10 @@ func (s *Store) MarkOwnerOpSent(token string, seq int64) (bool, error) {
 }
 
 // RescheduleOwnerOp sets when the operation owed for token at seq is tried
-// again, and why the last attempt did not settle it.
-func (s *Store) RescheduleOwnerOp(token string, seq, next int64, lastError string) (bool, error) {
+// again.
+func (s *Store) RescheduleOwnerOp(token string, seq, next int64) (bool, error) {
 	return s.ownerOpWrite("store: reschedule owner operation "+token,
-		`UPDATE thread_owner_ops SET next_at = ?, last_error = ? WHERE token = ? AND seq = ?`, next, lastError, token, seq)
+		`UPDATE thread_owner_ops SET next_at = ? WHERE token = ? AND seq = ?`, next, token, seq)
 }
 
 // SettleOwnerOp drops the operation owed for token at seq once its computer

@@ -45,8 +45,7 @@ CREATE TABLE thread_owner_ops (
   sent             INTEGER NOT NULL DEFAULT 0 CHECK(sent IN (0,1)),
   owed_at          INTEGER NOT NULL,
   next_at          INTEGER NOT NULL,
-  attempts         INTEGER NOT NULL DEFAULT 0,
-  last_error       TEXT NOT NULL DEFAULT ''
+  attempts         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_thread_owner_ops_due ON thread_owner_ops(next_at);
 CREATE INDEX idx_thread_owner_ops_computer ON thread_owner_ops(computer_id);

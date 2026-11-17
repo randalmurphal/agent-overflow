@@ -69,8 +69,6 @@ type SpawnReach struct {
 	// is owned, not given a sidebar row or a group. Only then do the
 	// thread's prompts route to the spawner (SpawnOwnerOf).
 	Owned bool
-	// OwnerOpSeq is the newest owner operation the receipt admitted.
-	OwnerOpSeq int64
 }
 
 // Open reports whether the receipt can still name a thread.
@@ -87,11 +85,11 @@ func (r SpawnReach) Open() bool {
 // (touchSpawnLinkOwner).
 func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64) (SpawnReach, bool, error) {
 	var reach SpawnReach
-	err := s.reader().QueryRow(`SELECT COALESCE(r.target_thread_id, ''), r.state, r.spawn_link, r.owner_op_seq,
+	err := s.reader().QueryRow(`SELECT COALESCE(r.target_thread_id, ''), r.state, r.spawn_link,
 		    r.spawn_link = 1 AND EXISTS (SELECT 1 FROM threads WHERE threads.id = r.target_thread_id AND threads.placement = 'owned')
 		  FROM thread_request_receipts AS r
 		 WHERE r.token = ? AND r.owner_device_id = ? AND r.source_thread_id = ? AND r.kind = ?`,
-		token, deviceID, sourceThreadID, ThreadRequestSpawn).Scan(&reach.TargetThreadID, &reach.State, &reach.Linked, &reach.OwnerOpSeq, &reach.Owned)
+		token, deviceID, sourceThreadID, ThreadRequestSpawn).Scan(&reach.TargetThreadID, &reach.State, &reach.Linked, &reach.Owned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SpawnReach{}, false, nil
 	}
