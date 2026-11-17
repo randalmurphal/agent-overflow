@@ -20,7 +20,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	since := p.infoGeneration()
+	stamp := p.readStamp()
 	snapshot, err := p.driver.Snapshot(opCtx)
 	if err != nil {
 		return Snapshot{}, err
@@ -31,7 +31,7 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	}
 	// The snapshot script reads the address and title, not the session
 	// history: the tab keeps its back/forward state, and the agent is told it.
-	info, _ := m.commitRead(p, pageUpdate{Location: &pageLocation{URL: snapshot.URL, Title: snapshot.Title}}, since)
+	info, _ := m.commitRead(p, pageUpdate{Location: &pageLocation{URL: snapshot.URL, Title: snapshot.Title}}, stamp)
 	snapshot.CanGoBack, snapshot.CanGoForward = info.CanGoBack, info.CanGoForward
 	m.pageUsed(p)
 	return snapshot, nil
@@ -358,7 +358,7 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 // finishPageOperation reads and commits p's info after an operation. The
 // caller holds the page-operation lock.
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
-	info, err := m.readInfo(ctx, p, pageListing{})
+	info, _, err := m.readInfo(ctx, p, pageListing{})
 	m.pageUsed(p)
 	return info, err
 }
@@ -367,7 +367,7 @@ func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (Page
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
 	// A failed read leaves the tab as it was; the operation's own result
 	// reports its outcome.
-	_, _ = m.readInfo(ctx, p, pageListing{})
+	_, _, _ = m.readInfo(ctx, p, pageListing{})
 	m.pageUsed(p)
 }
 

@@ -29,7 +29,7 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 		return PageInfo{}, err
 	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	info, infoErr := m.readInfo(opCtx, p, pageListing{})
+	info, _, infoErr := m.readInfo(opCtx, p, pageListing{})
 	cancel()
 	p.mu.Unlock()
 	if infoErr != nil {

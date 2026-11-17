@@ -185,6 +185,14 @@ type pageHooks struct {
 	// reach it out of order settle on the engine's latest. Never called on a
 	// UI thread (it takes Manager locks).
 	Loading func(loading bool, order uint64)
+	// Info reports the page's address and title. order is the engine's
+	// count of the reports it has made for the page, stamped where the
+	// engine orders them (its UI thread), which only grows: the Manager
+	// keeps the report with the highest order, so reports that reach it out
+	// of order settle on the engine's latest. Bound from the moment the
+	// engine page exists, so no report misses that fence. Never called on a
+	// UI thread (it takes Manager locks).
+	Info func(url, title string, order uint64)
 }
 
 // pageDriver is one engine's implementation of every per-page operation the
@@ -423,11 +431,12 @@ const (
 type engineEvents struct {
 	PopupOpened func(enginePopup)
 	PageClosed  func(handle string)
-	// PageInfoChanged reports a page's address and title. order is the
-	// engine's count of the reports it has made, stamped where the engine
-	// orders them (its UI thread or its event stream), which only grows for
-	// a page: the Manager keeps the report with the highest order, so
-	// reports delivered out of order settle on the engine's latest.
+	// PageInfoChanged is a CDP engine's report of a page's address and
+	// title, from the browser's target events, by the page's handle; a
+	// native engine reports through the page's own hook (pageHooks.Info).
+	// order is as for pageHooks.Info. The engine delivers the reports one
+	// at a time, so one the Manager cannot route yet (a page whose engine
+	// page it has not attached) is never overtaken by an older one.
 	PageInfoChanged func(handle, url, title string, order uint64)
 	// DownloadStarted reports whether the download may continue. The engine
 	// cancels one it answers false for.

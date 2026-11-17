@@ -293,11 +293,12 @@ type managedPage struct {
 	// info is what the page's tab shows; once the page is in its thread's
 	// tabs only commitInfo changes it.
 	info PageInfo
-	// infoGen counts commits of the address and history, and infoReport is
-	// the order of the newest engine report committed, both under metaMu
-	// (commitInfo).
-	infoGen    uint64
-	infoReport uint64
+	// infoStamp issues the stamps of info writes; locationStamp and
+	// historyStamp are the stamps of the writes that set those fields, and
+	// infoReport is the order of the newest engine report committed, all
+	// under metaMu (commitInfo).
+	infoStamp, locationStamp, historyStamp uint64
+	infoReport                             uint64
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load         pageLoad
@@ -499,7 +500,7 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
-	info, err := m.readInfo(opCtx, p, pageListing{})
+	info, _, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
 		m.pageUsed(p)
 	}
@@ -539,7 +540,7 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 		return PageInfo{}, err
 	}
 	p.touch()
-	info, err := m.readInfo(opCtx, p, pageListing{})
+	info, _, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
 		m.recordRecentAddress(p, info)
 	}
@@ -567,7 +568,7 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 		listing := pageListing{Selected: p.id == activePageID, LastOpened: time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)}
-		info, err := m.readInfo(opCtx, p, listing)
+		info, _, err := m.readInfo(opCtx, p, listing)
 		cancel()
 		p.mu.Unlock()
 		if err == nil {
@@ -867,6 +868,7 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 		Allow:             func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
 		DocumentCommitted: func() func() { return m.documentCommitted(p) },
 		Loading:           func(loading bool, order uint64) { m.pageLoading(p, loading, order) },
+		Info:              func(url, title string, order uint64) { m.pageInfoReport(p, url, title, order) },
 	}
 }
 
