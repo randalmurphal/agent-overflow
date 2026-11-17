@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The launcher embeds a backend which embeds the SPA. Every public build must
@@ -74,6 +76,7 @@ func TestWSLBuildOwnsFrontendAndLeavesGoInputTrackingToGo(t *testing.T) {
 	// A successful generator exit is insufficient: nogui once emitted zero
 	// services and erased every App import. Exercise the configured flags and
 	// compare the real generated contract with the bindings the frontend uses.
+	reporoot.ObserveGoSources(t)
 	output := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
