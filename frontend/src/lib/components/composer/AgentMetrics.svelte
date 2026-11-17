@@ -4,10 +4,9 @@
   // same counts the same way. Either count is left out while unknown. For a
   // sub-thread (docs/specs/standing-agents.md, "Agents segment"): tools is
   // each top-level tool call the thread executed, once, none a fork, import
-  // or restore copied; tokens is what its own turns spent (fresh input,
-  // cache writes and output; cache reads are no spend) plus what its own
-  // native agents spent, a Codex agent's added since its thread's usage
-  // never carries it, and none of the threads it spawned.
+  // or restore copied; tokens is what it spent itself (fresh input, cache
+  // writes and output; cache reads are no spend), as a subagent's row
+  // counts its own, none of its native agents' or the threads it spawned.
   import { formatAgentTokens, formatToolUses } from '../../utils/subagentProgress';
 
   interface Props {

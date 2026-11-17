@@ -1578,22 +1578,32 @@ closes up their spacing so the row holds at a phone width.
   - Tool calls: each top-level tool call the thread executed, once. A
     fork's copy of its source's history, an import and a restore count
     none of theirs again.
-  - Tokens: what the thread's own turns spent, counted as a subagent's
-    are (fresh input, cache writes and output; a cached prompt read
-    again is no spend), the running turn's included, plus what its own
-    native agents spent: a Claude agent's spend is in its turn's usage,
-    a Codex agent's never is and is added from its progress while it
-    runs and its completion record once it ends, once. The threads it
-    spawned count their own. The billing ledger is unchanged.
+  - Tokens: what the thread spent itself, counted as a subagent's are
+    (fresh input, cache writes and output; a cached prompt read again is
+    no spend), the running turn's included: the same meaning as a native
+    agent row's tokens and the same scope as its tool calls. Its native
+    agents are rows of their own with their own counts, and the threads
+    it spawned count their own. The figure is the one the provider
+    reports as the thread's own with each settled turn
+    (`WireTurnCompleteMeta.OwnUsage`): Claude's flat `result.usage`,
+    which leaves its subagents out, not its subagent-inclusive
+    `modelUsage`; a Codex turn's usage, which never carries its
+    children's. The billing ledger is unchanged and keeps the inclusive
+    figure.
   - Runtime: the time its turns ran, each ended turn's start to end plus
     the open turn's time so far (`RuntimeMs`, `TurnOpen`); the time
-    between turns is not runtime. The row adds the open turn's time from
-    its own clock since the read, and never shows less than it showed;
-    a Past row's settled age is a separate fact, its runtime the tooltip.
+    between turns is not runtime, nor is the time the app was down: a
+    turn a crash left open ends at the last activity it recorded. The row
+    adds the open turn's time from its own clock since the read and,
+    within that open turn, never shows less than it showed; once the turn
+    has ended the server's figure is shown as it is. A Past row's settled
+    age is a separate fact, its runtime the tooltip.
   The counts are live while it works and kept, final, once it rests and
-  under Past. Its row is framed again, at most every 2 s, for each new
-  tool call, one whose line reads as the last one did included, for its
-  usage's progress and for its agents' progress. A running target's
+  under Past. A copy of the thread to another computer starts at zero; a
+  move takes the counts with it, and a thread that moves back brings the
+  work it did there. Its row is framed again, at most every 2 s, for each new
+  tool call, one whose line reads as the last one did included, and for
+  its usage's progress. A running target's
   latest top-level tool call is its activity, beside the counts on a
   second line; its messages are not activity, its last one is in the
   digest. A waiting worker's line is what it waits on instead, and a

@@ -1210,7 +1210,10 @@ What settles a request, in order:
    the turn-end registry marked held (`receiptGate.held`,
    `app_thread_tools_rest_settle.go`), with no wake. Held is a phase of
    the same lifecycle: each later turn end and session end of the
-   thread is read for it as its own turn's would be, so a later turn
+   thread is read for it as its own turn's would be, and a turn already
+   read is read again before the next, the request's own included,
+   since a turn's first close is not its outcome (a soft close the
+   result later errors, or a turn the model resumes), so a later turn
    that errors settles it `errored`, one interrupted settles it
    `interrupted` with its cause, the person's Stop as a Stop, and a
    session that ends during a later turn `interrupted`, saying the
@@ -1222,17 +1225,21 @@ What settles a request, in order:
    in the poll's answer (`waitingOn`), and its row there reads
    `waiting`. Every change that can bring a thread to rest reaches the
    Agents rows' drain, which asks for a pass over the held requests;
-   a pass reads rest from facts complete when it reads them, a thread's
-   durable sources before its memory ones, so an answer on its way to
-   a thread keeps it from rest until the turn it starts is open. The
+   a pass reads each held thread's rest itself, from facts complete when
+   it reads them, a thread's durable sources before its memory ones, so
+   an answer on its way to a thread keeps it from rest until the turn it
+   starts is open, and a workflow run's report from its rest until its
+   wake has been handed over. The
    Stop of the thread, the person's or the spawner's `thread_cancel` by
    thread id, and an explicit `thread_reply` settle it as before. A
    boot holds again a running receipt whose turn ended as it would
-   settle `finished`, settling it as the restart's interruption if a
-   later turn of its thread was cut, or with a later turn's error; no
-   held request settles at rest until the boot has recorded every
-   thread a recovered source keeps from rest (`recoverRestAtBoot`), a
-   pass asked for meanwhile waiting for it. A paired computer that
+   settle `finished`, keeping the turn it answers from, settling it as
+   the restart's interruption if a later turn of its thread was cut, or
+   with a later turn's error; no held request settles at rest until the
+   boot has recorded every thread a recovered source keeps from rest
+   (`recoverRestAtBoot`), a pass asked for meanwhile waiting for it. A
+   source or thread the recovery could not read is read again by each
+   pass of the request sweep until it succeeds. A paired computer that
    settles at rest says so in the poll's answer (`restRule`); one that
    does not settles such a request when its turn ends, and its
    `finished` answer is recorded `rest_unreported`, which
