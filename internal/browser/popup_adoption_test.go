@@ -368,6 +368,38 @@ func TestAPopupsDownloadEndsBeforeItsCloseInEveryOrder(t *testing.T) {
 	}
 }
 
+// A popup's tab closed by the user between its listing and the listing of
+// its downloads leaves them to its nearest listed opener, as a popup never
+// listed does: a fate naming a tab that is gone falls back to the openers.
+func TestAPopupClosedPubliclyBeforeItsDownloadsAreListedLeavesThemWithItsOpener(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.downloadProgress(progressOf("dl-1", downloadCompleted, 100))
+	var wg sync.WaitGroup
+	manager.popupListing = func() {
+		var id string
+		for _, p := range manager.ownedPages(access.ThreadID) {
+			if p.driver.Handle() == "popup" {
+				id = p.id
+			}
+		}
+		wg.Go(func() {
+			if err := manager.ClosePage(context.Background(), access, id); err != nil {
+				t.Errorf("close the popup's tab: %v", err)
+			}
+		})
+		time.Sleep(50 * time.Millisecond)
+	}
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	wg.Wait()
+	if listed(manager, "popup") {
+		t.Fatal("the closed popup is still listed")
+	}
+	wantDownloads(t, manager, opener, "dl-1 completed 100")
+}
+
 // A popup whose opener left before the popup's report is handled is
 // discarded at once.
 func TestAPopupOfAnOpenerThatLeftIsDiscardedAtOnce(t *testing.T) {

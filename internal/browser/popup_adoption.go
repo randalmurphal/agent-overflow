@@ -287,13 +287,16 @@ func (m *Manager) refuseParked(d *parkedDownload) {
 	}
 }
 
-// fateTarget answers the page that takes a popup's downloads: its tab when
-// listed, else its nearest listed opener, or nil.
+// fateTarget answers the page that takes a popup's downloads: its tab while
+// listed, else (never listed, or closed since by any path) its nearest
+// listed opener, or nil.
 func (m *Manager) fateTarget(fate popupFate) *managedPage {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if fate.listed != "" {
-		return m.listedPageLocked(fate.listed)
+		if p := m.listedPageLocked(fate.listed); p != nil {
+			return p
+		}
 	}
 	for _, opener := range fate.openers {
 		if p := m.listedPageLocked(opener); p != nil {
