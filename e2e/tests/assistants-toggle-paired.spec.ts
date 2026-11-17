@@ -6,6 +6,9 @@
 // fires while this one's is hidden and does not fire. The Settings page
 // turns the setting of the computer its picker shows. A standalone frontend
 // attached to two computers does the same and has no switch of its own.
+// With this computer's assistants off, an assistant's worker on the other
+// computer asks the person there at once, and the assistant is not woken
+// (docs/specs/standing-agents.md, "Owned workers").
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +19,8 @@ import { launchFrontendClient } from './frontend-client-helpers.js';
 import { connectedAfterConfirm, pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { assistantRow, assistantsSection } from './sidebar-sections-helpers.js';
-import { dbWake, registerThrough, seedWakeAgent, type WakeAgent } from './wake-rows-helpers.js';
+import { advanceGate, awaitGate, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { dbWake, registerThrough, seedWakeAgent, wakeInput, type WakeAgent } from './wake-rows-helpers.js';
 
 const LOOP_FIRED = 'Loop "beat" fired.';
 const EVERY_SECONDS = 3;
@@ -158,5 +162,52 @@ test('a standalone frontend turns the setting of the computer it picks and has n
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test('with this computer\'s assistants off, an assistant\'s worker on the other computer asks the person there at once', async () => {
+  test.setTimeout(240_000);
+  const [here, there] = await startTogether(launchHarness(), launchHarness());
+  try {
+    const thereID = await pairOwnDevice(here, there, 'GPU computer');
+    const work = (await there.rpc<{ projects: Array<{ projectId: string; path: string }> }>('HarnessSeed', {
+      projects: [{ name: 'paused-owner-work', repo: {}, threads: [] }],
+    })).projects[0];
+    await setScenario(there, work.path, threadToolsScenario({
+      name: 'paused-owner-worker', provider: 'claude',
+      turns: [{ steps: [
+        { gate: 'paused-owner-hold' },
+        { approval: { toolName: 'Bash', input: { command: 'make soak' }, onAllow: [], onDeny: [] } },
+      ], text: 'Soaked.' }],
+      afterTurns: 'repeatLast',
+    }));
+    const assistant = await seedWakeAgent(here, 'claude', 'paused-owner', 'Paused owner');
+    const [spawn] = await registerThrough(here, 'claude', assistant, 'paused-owner', [{
+      tool: 'thread_spawn',
+      args: { prompt: 'Run the soak.', title: 'Paused owner worker', computer_id: thereID, project_id: work.projectId, notify: true },
+    }]);
+    const worker = String(spawn.thread_id);
+    const held = await awaitGate(there, 'paused-owner-hold', work.path);
+
+    // Assistants off here: this computer gives the worker's approval back
+    // the first time it sees it, so the person there has it well inside
+    // the two-minute lease, and the assistant is not woken for it.
+    await here.rpc('UpdateSettings', { assistantsEnabled: false });
+    const woken = wakeInput(here, assistant.home, 'Paused owner worker', 20_000).then(() => true, () => false);
+    await advanceGate(there, held.mockId, 'paused-owner-hold');
+    type Pending = { requestId: string; routedTo?: { threadId: string } | null };
+    const approvals = async () => (await there.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
+    await expect.poll(async () => {
+      const [approval] = await approvals();
+      return approval ? (approval.routedTo?.threadId ?? 'the person') : 'none';
+    }, { timeout: 30_000 }).toBe('the person');
+    expect(await woken, 'the paused assistant was woken for its worker\'s approval').toBe(false);
+
+    const done = awaitTurnCompleted(there, worker);
+    await there.rpc('RespondToApproval', worker, { requestId: (await approvals())[0].requestId, decision: 'allow' });
+    await done;
+  } finally {
+    await here.close();
+    await there.close();
   }
 });

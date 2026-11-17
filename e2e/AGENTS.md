@@ -21,8 +21,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   (`merged-pr-poll`), the first retry of a failed open-PR lookup
   (`pr-lookup-retry`), a shortened idle-session reaper (`idle-reap`,
   `idle-reap-sweep`, `wakeup-grace`), a longer remote-job watcher cadence
-  (`remote-watch-poll`) or a shorter provider event drain stall bound
-  (`drain-stall`), passes its own through `env`.
+  (`remote-watch-poll`), a shorter provider event drain stall bound
+  (`drain-stall`) or a shorter lease on a worker's prompt routed to a
+  paired computer (`prompt-lease`), passes its own through `env`.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
   and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
   and `writeProductScript` for a launch a product process makes, such as a
