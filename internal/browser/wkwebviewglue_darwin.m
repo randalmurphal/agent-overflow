@@ -1579,7 +1579,18 @@ void ao_wkv_download_cancel(void *download) {
     if (download == NULL) {
       return;
     }
-    [(WKDownload *)download cancel:nil];
+    // WebKit reports a cancel it was asked for to neither downloadDidFinish
+    // nor didFailWithError, so the cancel's completion is its terminal
+    // report, through the same export: that releases the record and stops
+    // the progress poller once (wkProfile.releaseDownload), and settles the
+    // download. A download not registered with a profile is a lookup miss
+    // there.
+    WKDownload *target = (WKDownload *)download;
+    uint64_t identifier = ao_number(objc_getAssociatedObject(target, &kAODownloadIDKey));
+    double received = (double)[[target progress] completedUnitCount];
+    [target cancel:^(NSData *resumeData) {
+      aoWKVDownloadFinished(identifier, received, AO_DL_CANCELED, NULL, NULL);
+    }];
   }
 }
 
