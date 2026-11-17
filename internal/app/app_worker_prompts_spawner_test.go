@@ -237,13 +237,16 @@ func TestAWorkerPromptRoutesOneSpawnUpUnlessTheSpawnerIsArchived(t *testing.T) {
 	// prompt is routed to another computer.
 	remote := noticeTestThread(t, a, "route-remote")
 	if _, _, err := a.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
-		Token: "remote-spawn", OwnerDeviceID: "desk-device", SourceComputerID: "desk", SourceThreadID: "desk-lead",
+		Token: "remote-spawn", OwnerDeviceID: reachableDevice(t, a.store), SourceComputerID: "desk", SourceThreadID: "desk-lead",
 		Kind: store.ThreadRequestSpawn, SpawnLink: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if named, _, err := a.store.SetThreadReceiptTarget("remote-spawn", remote.ID, true); err != nil || !named {
 		t.Fatalf("name the remote spawn's thread: %v, %v", named, err)
+	}
+	if owned, err := a.store.GetThread(remote.ID); err != nil || owned.Placement != store.PlacementOwned {
+		t.Fatalf("the remote spawn's thread = %s, %v; want owned", owned.Placement, err)
 	}
 	if route := ask(remote.ID, "remote-1"); route != nil {
 		t.Fatalf("a worker a paired computer owns asks %+v, want the user", route)

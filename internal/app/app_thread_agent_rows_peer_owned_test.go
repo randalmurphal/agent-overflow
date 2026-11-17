@@ -122,7 +122,7 @@ func TestAPolledPromptRoutedBackToTheAskerIsRoutedHere(t *testing.T) {
 	there.configureTriageQueueCallbacks()
 	worker := noticeTestThread(t, there, "linked-worker")
 	here := newRequestFixture(t)
-	token, device := "linked-spawn", "source-device"
+	token, device := "linked-spawn", reachableDevice(t, there.store)
 	if _, _, err := there.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 		Token: token, OwnerDeviceID: device, SourceComputerID: "source-computer", SourceComputerName: "Desk",
 		SourceThreadID: here.caller.ID, SourceThreadTitle: "the lead as it was", Kind: store.ThreadRequestSpawn,
