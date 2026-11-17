@@ -502,10 +502,7 @@ export class ArchiveThreadResult {
 
     /**
      * CleanupError says what could not be stopped or withdrawn of the work
-     * the archived threads were waiting on, and names an archived thread
-     * whose sub-threads could not be read, which stay open until archiving
-     * it again or the next start finishes its archive. Their archives
-     * stand.
+     * the archived threads were waiting on. Their archives stand.
      */
     "cleanupError"?: string;
 
