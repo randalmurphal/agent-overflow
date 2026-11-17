@@ -122,11 +122,13 @@ per-platform no-op.
 - A tab the user closes is kept on the thread's in-memory closed-tab stack
   (`internal/browser/companion_tabs.go`): its address, label and position,
   the last 10, for http, https and `file:` addresses of a tab that finished
-  opening; an agent's close is not kept. Reopen pops the newest into a new
-  tab at that position; a reopen that fails before the tab exists puts the
-  entry back. The state carries `closedTabs`, the stack's depth. Clearing
-  site data, a jar switch, the thread's deletion and turning the browser off
-  forget the stack, and a private jar keeps none.
+  opening; an agent's close is not kept. The close that takes the tab out of
+  the tab set records it, so racing closes record it once. Reopen pops the
+  newest into a new tab at that position; a reopen that fails before the
+  tab exists puts the entry back unless a forget ran meanwhile. The state
+  carries `closedTabs`, the stack's depth. The stack is browsing history,
+  forgotten with the recent addresses below by the same helpers and
+  generation, and a private jar keeps none.
 - A tab's state comes from the Manager alone (`internal/browser/lifecycle.go`).
   A new tab is in the state, `creating`, before the engine page exists; the
   user's own new tab is also selected and shown at once, and a failed creation

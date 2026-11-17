@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -184,6 +183,10 @@ type Manager struct {
 	// infoRead is a test seam: called between a read of a page's info (or
 	// history state) and its commit. Production leaves it nil.
 	infoRead func(p *managedPage)
+	// reopenRefused is a test seam: called between a reopen's refused open
+	// and its putting the closed tab back (ReopenClosedTab). Production
+	// leaves it nil.
+	reopenRefused func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -478,12 +481,7 @@ func (m *Manager) Reconfigure(config Config) error {
 func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
 	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
 	m.mu.Lock()
-	threads := m.forgetAllRecentLocked()
-	for _, threadID := range m.forgetAllClosedLocked() {
-		if !slices.Contains(threads, threadID) {
-			threads = append(threads, threadID)
-		}
-	}
+	threads := m.forgetAllBrowsingLocked()
 	m.mu.Unlock()
 	// The closes pushed state before the forget; these carry its generation.
 	for _, threadID := range threads {
@@ -623,8 +621,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	// Forgotten here for a close that stops early, and again with the
 	// session below, after any open or user close the closing pages were
 	// running.
-	m.forgetRecentLocked(threadID)
-	hadClosed := m.forgetClosedLocked(threadID)
+	hadClosed := m.forgetBrowsingLocked(threadID)
 	m.mu.Unlock()
 	if hadClosed {
 		m.emitThreadState(threadID)
@@ -647,8 +644,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
-	m.forgetRecentLocked(threadID)
-	m.forgetClosedLocked(threadID)
+	m.forgetBrowsingLocked(threadID)
 	m.mu.Unlock()
 	m.forgetThreadDownloads(threadID)
 	return errors.Join(errs...)

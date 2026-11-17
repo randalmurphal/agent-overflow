@@ -87,26 +87,6 @@ func (m *Manager) setClosedLocked(threadID string, stack []closedTab) {
 	m.closedTabs[threadID] = stack
 }
 
-// forgetClosedLocked forgets threadID's closed tabs, answering whether it
-// had any; the caller pushes its state when it did. The caller holds m.mu.
-// The tabs are forgotten where the recent addresses are (forgetRecentLocked).
-func (m *Manager) forgetClosedLocked(threadID string) bool {
-	_, had := m.closedTabs[threadID]
-	delete(m.closedTabs, threadID)
-	return had
-}
-
-// forgetAllClosedLocked forgets every thread's closed tabs, answering the
-// threads that had some. The caller holds m.mu.
-func (m *Manager) forgetAllClosedLocked() []string {
-	threads := make([]string, 0, len(m.closedTabs))
-	for threadID := range m.closedTabs {
-		threads = append(threads, threadID)
-	}
-	clear(m.closedTabs)
-	return threads
-}
-
 // ReopenClosedTab reopens the thread's most recently closed tab at its
 // position, selected, and loads its address as the address bar would. With
 // none to reopen it does nothing.
@@ -119,13 +99,20 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 	}
 	tab := stack[len(stack)-1]
 	m.setClosedLocked(access.ThreadID, stack[:len(stack)-1])
+	gen := m.recentGen
 	m.mu.Unlock()
 	info, err := m.openUserTab(ctx, access, tab.url, tab.label, tab.index)
 	if err != nil && info.ID == "" {
+		if m.reopenRefused != nil {
+			m.reopenRefused()
+		}
 		// No tab opened (the thread's page limit, say): it can be reopened
-		// once the reason is gone.
+		// once the reason is gone, unless a forget of browsing history
+		// (forgetBrowsingLocked) ran since the pop and took it with the rest.
+		// The generation is Manager-wide, so another thread's forget drops
+		// the entry too.
 		m.mu.Lock()
-		if jarKindOf(m.sessions[access.ThreadID]) != JarPrivate {
+		if m.recentGen == gen {
 			m.pushClosedLocked(access.ThreadID, tab)
 		}
 		m.mu.Unlock()

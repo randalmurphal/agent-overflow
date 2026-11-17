@@ -378,11 +378,10 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 			t.Fatalf("ClosedTabs = %d", got)
 		}
 	})
-	t.Run("reopen at the page limit", func(t *testing.T) {
-		m, access, _ := newTabsManager(t)
-		closeOne(t, m, access)
-		// The closed tab's teardown runs after its close returned and holds
-		// its slot until it ends.
+	// fill opens blank tabs up to the thread's page limit. The closed tab's
+	// teardown runs after its close returned and holds its slot until it ends.
+	fill := func(t *testing.T, m *Manager, access Access) {
+		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
 		for opened := 0; opened < maxPagesPerThread; {
 			if _, err := m.NewCompanionPage(context.Background(), access, ""); err == nil {
@@ -391,6 +390,11 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+	t.Run("reopen at the page limit", func(t *testing.T) {
+		m, access, _ := newTabsManager(t)
+		closeOne(t, m, access)
+		fill(t, m, access)
 		if err := m.ReopenClosedTab(t.Context(), access); err == nil {
 			t.Fatal("a reopen past the page limit succeeded")
 		}
@@ -398,4 +402,36 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 			t.Fatalf("ClosedTabs = %d, want the entry kept", got)
 		}
 	})
+	// A forget that runs while a refused reopen holds the entry it popped
+	// forgets that entry too.
+	for _, forget := range []struct {
+		name string
+		run  func(m *Manager, access Access) error
+	}{
+		{"a jar switch between shared jars", func(m *Manager, access Access) error { return m.SetJar(access, JarProject) }},
+		{"clear site data", func(m *Manager, _ Access) error { return m.ClearSiteData(context.Background()) }},
+		{"thread delete", func(m *Manager, access Access) error { return m.CloseThread(context.Background(), access.ThreadID) }},
+	} {
+		t.Run("a refused reopen, then "+forget.name, func(t *testing.T) {
+			m, access, _ := newTabsManager(t)
+			closeOne(t, m, access)
+			fill(t, m, access)
+			ran := false
+			m.reopenRefused = func() {
+				ran = true
+				if err := forget.run(m, access); err != nil {
+					t.Errorf("%s: %v", forget.name, err)
+				}
+			}
+			if err := m.ReopenClosedTab(t.Context(), access); err == nil {
+				t.Fatal("a reopen past the page limit succeeded")
+			}
+			if !ran {
+				t.Fatal("the reopen was not refused")
+			}
+			if got := closedCount(t, m, access); got != 0 {
+				t.Fatalf("ClosedTabs = %d, want the entry forgotten with the rest", got)
+			}
+		})
+	}
 }
