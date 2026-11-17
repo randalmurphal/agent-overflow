@@ -62,11 +62,12 @@ type pendingArchives struct {
 }
 
 // startPendingArchives finishes, in the background, every archive whose
-// walk did not end (store.ListUnfinishedArchives): it archives the workers
-// each such thread owns and ends its archive, as finishArchive does. The
-// thread's own work stopped with the process, so nothing of it is stopped
-// again. It waits for the first client's catalog reads
-// (awaitFirstReadsSettled).
+// walk did not end (store.ListUnfinishedArchives), through the archive's
+// own path (resumeArchiveLocked, finishArchive): what the thread still has
+// of the work an archive stops is stopped, a remote command's cancel owed
+// when its computer does not take it, its workers are archived and the
+// archive ends. Nothing runs at boot, so the session stop finds nothing.
+// It waits for the first client's catalog reads (awaitFirstReadsSettled).
 func (a *App) startPendingArchives() {
 	if a.store == nil {
 		return
@@ -97,27 +98,29 @@ func (a *App) finishPendingArchives(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		outcome := a.finishArchive(a.resumeArchiveWalk(id))
-		if outcome.cleanup != nil {
-			log.Printf("app: pending archive of %s: %v", id, outcome.cleanup)
-		}
-		for _, worker := range outcome.workers {
-			log.Printf("app: pending archive of %s: worker %s not archived: %v", id, worker.threadID, worker.err)
-		}
+		a.resumeArchive(id)
 	}
 }
 
-// resumeArchiveWalk reads, under the thread's action lock as an archive
-// does, the workers an unfinished archive goes on to archive, and records
-// its walk. A thread reopened since has no workers the walk may archive
-// (store.ArchiveOwnedWorker's fence) and its archive is already ended.
-func (a *App) resumeArchiveWalk(id string) restingThreadWork {
-	unlock := a.threadLocks().Lock(id)
-	defer unlock()
-	work := restingThreadWork{threadID: id}
-	a.beginArchiveWalk(id)
-	a.readArchivedWorkers(&work)
-	return work
+// resumeArchive finishes one unfinished archive: it stops what the thread
+// still has of the work the archive stops, then walks its workers and ends
+// the archive (finishArchive). A thread reopened since is left alone.
+func (a *App) resumeArchive(id string) {
+	work, err := a.resumeArchiveLocked(id)
+	if err != nil {
+		log.Printf("app: pending archive of %s: %v", id, err)
+		return
+	}
+	if !work.captured {
+		return
+	}
+	outcome := a.finishArchive(work)
+	if outcome.cleanup != nil {
+		log.Printf("app: pending archive of %s: %v", id, outcome.cleanup)
+	}
+	for _, worker := range outcome.workers {
+		log.Printf("app: pending archive of %s: worker %s not archived: %v", id, worker.threadID, worker.err)
+	}
 }
 
 // waitPendingArchives joins the boot walk. Shutdown cancels the app

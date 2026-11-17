@@ -729,8 +729,10 @@ Ruling 36, as built:
   The sidebar's archive says so in a toast that archives them again.
   The archive's flip marks it unfinished in the same transaction, the
   walk's end clears the mark, and each boot finishes the archives still
-  marked (`startPendingArchives`), so a crash between the flip and the
-  end of the walk archives the workers at the next start.
+  marked through the same path (`startPendingArchives`): what the thread
+  still has of the work an archive stops is stopped, a remote command's
+  cancel owed when its computer does not take it, and its workers are
+  archived. A thread reopened before the resume reaches it is left alone.
 - Deleting a thread deletes what lives under it in one delete
   (`familyDelete`): each owned thread whose spawn link names it as
   caller, archived or not, down the lineage, and for an assistant's

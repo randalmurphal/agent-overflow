@@ -127,6 +127,30 @@ func (a *App) finishArchive(work restingThreadWork) archiveOutcome {
 // (commitArchive); an archive the fence excludes changes nothing and stops
 // nothing, because the thread is no longer that archive's to stop.
 func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error) {
+	return a.runArchive(id, archiveRequest{ownerID: ownerID})
+}
+
+// resumeArchiveLocked carries out, under id's action lock, an archive that
+// committed and did not finish (startPendingArchives): the same capture,
+// stop and walk as the archive itself, of whatever of the thread's work
+// still exists, and none of it once the thread was reopened.
+func (a *App) resumeArchiveLocked(id string) (restingThreadWork, error) {
+	return a.runArchive(id, archiveRequest{resume: true})
+}
+
+// archiveRequest is which archive runArchive carries out: a person's or an
+// agent's (the zero value), a worker's for its owner's archive (ownerID),
+// or the resume of one already committed (resume).
+type archiveRequest struct {
+	ownerID string
+	resume  bool
+}
+
+// runArchive is the one archive: commit, capture, session stop and the
+// read of the workers its walk goes on to archive. A fenced archive, a
+// worker's or a resume, that captured nothing stops nothing and walks
+// nothing: the thread is no longer that archive's to stop.
+func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, error) {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
 	// holding it can dispatch a whole turn before this call gets its
@@ -138,7 +162,7 @@ func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error)
 	defer reopen()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	work, changed, err := a.commitArchive(id, ownerID)
+	work, changed, err := a.commitArchive(id, req)
 	if err != nil {
 		return restingThreadWork{}, err
 	}
@@ -146,7 +170,7 @@ func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error)
 	// from its sidebar too; re-archiving an already-archived thread
 	// changes nothing and says nothing.
 	a.announceThreadIfChanged(triage.ThreadActionUnlisted, id, changed)
-	if !changed && ownerID != "" {
+	if !work.captured && (req.ownerID != "" || req.resume) {
 		return work, nil
 	}
 	a.beginArchiveWalk(id)
@@ -177,18 +201,33 @@ func (a *App) readArchivedWorkers(work *restingThreadWork) {
 // round, never between its check and its write. The lock is released
 // before the session stops: the teardown's queue drop takes it, and it is
 // not reentrant. A worker's archive, ownerID set, flips the row only while
-// its owner is archived and still owns it (store.ArchiveOwnedWorker).
-func (a *App) commitArchive(id, ownerID string) (restingThreadWork, bool, error) {
+// its owner is archived and still owns it (store.ArchiveOwnedWorker). A
+// resume flips nothing: it captures while the thread is still archived, in
+// the same critical section an unarchive's write takes, so a thread
+// reopened before it keeps its new work.
+func (a *App) commitArchive(id string, req archiveRequest) (restingThreadWork, bool, error) {
 	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), id)
 	if err != nil {
 		return restingThreadWork{}, false, err
 	}
 	defer unlock()
 	var changed bool
-	if ownerID == "" {
+	switch {
+	case req.resume:
+		row, err := a.threadApplication().Get(id)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return restingThreadWork{threadID: id}, false, nil
+		case err != nil:
+			return restingThreadWork{}, false, err
+		case !row.Archived:
+			return restingThreadWork{threadID: id}, false, nil
+		}
+		return a.captureRestingThreadWork(id, archiveRest), false, nil
+	case req.ownerID == "":
 		_, changed, err = a.threadApplication().Archive(id)
-	} else {
-		_, changed, err = a.threadApplication().ArchiveWorker(id, ownerID)
+	default:
+		_, changed, err = a.threadApplication().ArchiveWorker(id, req.ownerID)
 	}
 	if err != nil || !changed {
 		return restingThreadWork{threadID: id}, changed, err
