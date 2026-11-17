@@ -667,6 +667,7 @@
     deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={() => {
     showDeleteConfirm = false;
@@ -717,6 +718,7 @@
     deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={() => {
     showBulkDeleteConfirm = false;

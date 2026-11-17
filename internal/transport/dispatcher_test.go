@@ -321,6 +321,29 @@ func TestDispatcher_Invoke_MethodReturnsError(t *testing.T) {
 	}
 }
 
+// A harness boot standing in for an older computer answers a method whose
+// result this build added as that release did: null on success, the
+// method's own error on failure, and every other method as it is.
+func TestDispatcher_Invoke_ResultlessAnswersNull(t *testing.T) {
+	d, _ := newTestDispatcher(t, RegisterOptions{
+		Package:    "main",
+		TypeName:   "App",
+		Resultless: map[string]bool{"Maybe": true},
+	})
+	maybe, _ := resolveLoopback(d, 0, "Maybe")
+	result, fe := d.Invoke(context.Background(), maybe, []json.RawMessage{json.RawMessage(`true`)})
+	if fe != nil || string(result) != `null` {
+		t.Fatalf("resultless success = %s, %v; want null", result, fe)
+	}
+	if _, fe := d.Invoke(context.Background(), maybe, []json.RawMessage{json.RawMessage(`false`)}); fe == nil || fe.Message != "intentionally unhappy" {
+		t.Fatalf("resultless failure = %v, want the method's error", fe)
+	}
+	greet, _ := resolveLoopback(d, 0, "Greet")
+	if result, fe := d.Invoke(context.Background(), greet, []json.RawMessage{json.RawMessage(`"you"`)}); fe != nil || string(result) != `"hello, you"` {
+		t.Fatalf("other method = %s, %v; want its result", result, fe)
+	}
+}
+
 func TestDispatcher_Invoke_MethodNoErrorReturn(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Save")

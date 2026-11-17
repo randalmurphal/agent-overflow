@@ -1474,6 +1474,17 @@ test('a spawn on the other computer is owned there: no sidebar row, its Agents r
     await rowMenuItem(remotePage, 'desktop', run.worker, 'Remove from Sidebar');
     await expect.poll(() => placementThere(remote, run.worker)).toBe('owned');
     for (const view of [page, remotePage]) await expect(sidebarRow(view, run.worker)).toHaveCount(0);
+    // The desktop tray, still open, offers it again from that computer's
+    // own word, whatever this computer's cache of it says; Show again
+    // places it, and the offer stays gone.
+    await expect(show).toBeVisible();
+    await show.click();
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('standalone');
+    await expect(show).toHaveCount(0);
+    await expect(sidebarRow(remotePage, run.worker)).toBeVisible();
+    await rowMenuItem(remotePage, 'desktop', run.worker, 'Remove from Sidebar');
+    await expect.poll(() => placementThere(remote, run.worker)).toBe('owned');
+    await expect(show).toBeVisible();
 
     // The same under the compact layout.
     const phoneBody = await openAgentsTray(phone, run.caller, 'compact');
@@ -1769,15 +1780,61 @@ test('archiving and deleting the spawner while the other computer is stopped say
   await expect.poll(() => archivedThere(remote, deleted.worker), { timeout: 150_000 }).toBeNull();
 });
 
-test('archiving the spawner of a worker on an older computer names that computer once', async ({ page }) => {
+test('a computer on v0.0.19: its threads archive and delete from this window, and a spawner here names it once', async ({ page, browser }) => {
   test.setTimeout(300_000);
   page.setDefaultTimeout(30_000);
   await home.rpc('UpdateSettings', { confirmArchive: false, confirmDelete: false });
-  // A computer that answers owner operations as a build before them does.
-  const older = await launchHarness({ env: { AO_HARNESS_OLD_OWNER_OPS_PEER: '1' } });
+  // A computer that answers as v0.0.19 does: the methods added since are
+  // missing, archive and delete answer null, and owner operations are an
+  // unknown write (diagenv.HarnessOlderComputer).
+  const older = await launchHarness({ env: { AO_HARNESS_OLDER_COMPUTER: '1' } });
   let olderID = '';
+  const missing: string[] = [];
+  page.on('console', (message) => {
+    if (/method_not_found|unknown method/i.test(message.text())) missing.push(message.text());
+  });
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
   try {
     olderID = await pairOwnDevice(home, older, 'Old computer');
+    await expect(older.rpc('ListThreadAgentRows', 'any')).rejects.toThrow(/method_not_found/);
+
+    // Its own threads, from this window that has it attached, on the
+    // desktop and on the phone: each action goes through the method that
+    // release has and reports nothing more.
+    const own = await seed(older, 'older-own', ['Older archive me', 'Older delete me', 'Older phone delete'], true);
+    const [archiveMe, deleteMe, phoneDelete] = own.threadIds;
+    await home.open(page);
+    for (const id of own.threadIds) await expect(sidebarRow(page, id)).toBeVisible({ timeout: 60_000 });
+    await rowMenuItem(page, 'desktop', archiveMe, 'Archive Thread');
+    await expect(sidebarRow(page, archiveMe)).toHaveCount(0);
+    await expect.poll(() => archivedThere(older, archiveMe)).toBe(true);
+    await rowMenuItem(page, 'desktop', deleteMe, 'Delete');
+    await expect(sidebarRow(page, deleteMe)).toHaveCount(0);
+    await expect.poll(() => archivedThere(older, deleteMe)).toBeNull();
+    const phone = await phoneContext.newPage();
+    phone.on('console', (message) => {
+      if (/method_not_found|unknown method/i.test(message.text())) missing.push(message.text());
+    });
+    // Confirmed, so the confirmation reads what the delete takes: that
+    // release has no such read, and its answer is nothing more.
+    await home.rpc('UpdateSettings', { confirmDelete: true });
+    await home.open(phone);
+    await rowMenuItem(phone, 'compact', phoneDelete, 'Delete');
+    const confirmDelete = phone.getByRole('button', { name: 'Delete', exact: true });
+    await expect(confirmDelete).toBeEnabled();
+    await expect(phone.getByText('This will permanently delete this thread and all its messages. This action cannot be undone.', { exact: true })).toBeVisible();
+    await confirmDelete.tap();
+    await home.rpc('UpdateSettings', { confirmDelete: false });
+    await expect(sidebarRow(phone, phoneDelete)).toHaveCount(0);
+    await expect.poll(() => archivedThere(older, phoneDelete)).toBeNull();
+    // Opening a thread there reads no Agents segment and fails nothing.
+    const kept = await seed(older, 'older-kept', ['Older kept'], true);
+    await sidebarRow(page, kept.threadIds[0]).click();
+    await expect(chatShowing(page, kept.threadIds[0])).toBeVisible();
+    await expect(page.getByTestId('activity-rail-agents-toggle')).toHaveCount(0);
+    for (const view of [page, phone]) await expect(view.getByTestId('toast')).toHaveCount(0);
+    expect(missing).toEqual([]);
+
     const there = await seed(older, 'older-owner-work', []);
     await setScenario(older, there.path, plainScenario({ name: 'older-owner-worker', provider: 'claude', texts: ['Done on the old computer.'] }));
     const owners: Array<{ caller: string; worker: string }> = [];
@@ -1824,6 +1881,7 @@ test('archiving the spawner of a worker on an older computer names that computer
     expect(await archivedThere(older, owners[0].worker)).toBe(false);
     expect(await archivedThere(older, owners[1].worker)).toBe(false);
   } finally {
+    await phoneContext.close();
     if (olderID !== '') await home.rpc('RemoveBackend', olderID, true);
     await older.close();
   }

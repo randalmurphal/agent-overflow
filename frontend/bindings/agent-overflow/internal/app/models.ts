@@ -10108,6 +10108,12 @@ export class WorkerFailure {
     "computer"?: string;
 
     /**
+     * ComputerID is that computer's id here, empty for a worker here. Two
+     * paired computers may share a name; a report groups by this.
+     */
+    "computerId"?: string;
+
+    /**
      * Pending is a worker on another computer that has not taken the
      * archive or delete yet: it is sent again until that computer takes
      * it, and Error says why the last attempt did not land.

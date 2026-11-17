@@ -40,6 +40,7 @@ import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { asSentence, userFacingError } from '../../utils/userFacingError';
 import { isAssistantNameTaken } from '../../stores/assistants.svelte';
+import { ThreadsPartlyDeleted } from '../../stores/olderComputer';
 import type { ArchiveThreadResult, DeleteThreadResult, Thread, WorkerFailure } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
@@ -189,7 +190,9 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
  * A worker failure split by where the worker is: here, on a paired computer
  * that has not taken the archive or delete yet (`pending`: it is sent again
  * until that computer does), or on a paired computer too old to take it.
- * Only a worker here is this computer's to archive or delete again.
+ * Only a worker here is this computer's to archive or delete again. Workers
+ * on paired computers are grouped by the computer's id: two computers may
+ * share a name.
  */
 function splitWorkerFailures(workers: readonly WorkerFailure[]) {
   const here: WorkerFailure[] = [];
@@ -201,20 +204,41 @@ function splitWorkerFailures(workers: readonly WorkerFailure[]) {
       continue;
     }
     const byComputer = worker.pending ? pending : older;
-    byComputer.set(worker.computer, [...(byComputer.get(worker.computer) ?? []), worker]);
+    const key = worker.computerId || worker.computer;
+    byComputer.set(key, [...(byComputer.get(key) ?? []), worker]);
   }
   return { here, pending, older };
 }
 
-/**
- * "its worker "A"" or "its workers "A", "B"", for workers on a paired
- * computer; a worker whose spawn there has not named a thread yet may have
- * no title.
- */
+/** A worker on a paired computer by name: one whose spawn there has not named a thread yet may have no title. */
+function remoteWorkerNames(workers: readonly WorkerFailure[]): string[] {
+  return workers.map((worker) => worker.title || worker.threadId).filter(Boolean).map((name) => `"${name}"`);
+}
+
+/** "its worker "A"" or "its workers "A", "B"", for workers on a paired computer. */
 function remoteWorkersPhrase(owner: string, workers: readonly WorkerFailure[]): { subject: string; plural: boolean } {
-  const names = workers.map((worker) => worker.title || worker.threadId).filter(Boolean).map((name) => `"${name}"`);
+  const names = remoteWorkerNames(workers);
   const plural = workers.length > 1;
   return { subject: `${owner} ${plural ? 'workers' : 'worker'}${names.length > 0 ? ` ${names.join(', ')}` : ''}`, plural };
+}
+
+/**
+ * Why workers on one computer did not take the operation, each distinct
+ * reason once: alone when they share it, else each after the workers it
+ * applies to.
+ */
+function remoteWorkerReasons(workers: readonly WorkerFailure[]): { reasons: string; shared: boolean } {
+  const byReason = new Map<string, WorkerFailure[]>();
+  for (const worker of workers) {
+    const reason = asSentence(worker.error);
+    byReason.set(reason, [...(byReason.get(reason) ?? []), worker]);
+  }
+  if (byReason.size === 1) return { reasons: [...byReason.keys()][0], shared: true };
+  const parts = [...byReason].map(([reason, group]) => {
+    const names = remoteWorkerNames(group);
+    return names.length > 0 ? `${names.join(', ')}: ${reason}` : reason;
+  });
+  return { reasons: parts.join(' '), shared: false };
 }
 
 /**
@@ -222,8 +246,9 @@ function remoteWorkersPhrase(owner: string, workers: readonly WorkerFailure[]): 
  * computer: workers it is on its way to (`pending`), said as such and not
  * as a failure, and workers on a computer too old to take it, said once.
  * Neither offers a retry: the other computer's half is sent again on its
- * own, and an older computer never takes it. That computer's reason is a
- * sentence written for a person and is shown whole. `done` is "Archived"
+ * own, and an older computer never takes it. That computer's reasons are
+ * sentences written for a person, each shown whole with the workers it
+ * applies to (remoteWorkerReasons). `done` is "Archived"
  * or "Deleted"; `owner` names the threads' workers ("its" or "their").
  */
 function reportRemoteLeftovers(
@@ -233,15 +258,17 @@ function reportRemoteLeftovers(
   pending: ReadonlyMap<string, WorkerFailure[]>,
   older: ReadonlyMap<string, WorkerFailure[]>,
 ): void {
-  for (const [computer, workers] of pending) {
+  for (const workers of pending.values()) {
     const { subject, plural } = remoteWorkersPhrase(owner, workers);
     const capitalized = subject.charAt(0).toUpperCase() + subject.slice(1);
-    addToast('info', `${done} "${title}". ${capitalized} ${plural ? 'are' : 'is'} pending on ${computer}. ${asSentence(workers[0].error)}`, 10000);
+    const { reasons } = remoteWorkerReasons(workers);
+    addToast('info', `${done} "${title}". ${capitalized} ${plural ? 'are' : 'is'} pending on ${workers[0].computer}. ${reasons}`, 10000);
   }
-  for (const [computer, workers] of older) {
+  for (const workers of older.values()) {
     const { subject, plural } = remoteWorkersPhrase(owner, workers);
     const stays = done === 'Archived' ? `${plural ? 'are' : 'is'} still open` : `${plural ? 'stay' : 'stays'}`;
-    addToast('warning', `${done} "${title}", but ${subject} on ${computer} ${stays}: ${asSentence(workers[0].error)}`, 10000);
+    const { reasons, shared } = remoteWorkerReasons(workers);
+    addToast('warning', `${done} "${title}", but ${subject} on ${workers[0].computer} ${stays}${shared ? ':' : '.'} ${reasons}`, 10000);
   }
 }
 
@@ -350,7 +377,19 @@ export async function deleteThreadsAction(
     } catch (err) {
       console.error('Failed to delete threads:', err);
       complete = false;
-      reportError(userFacingError(err), err);
+      if (!(err instanceof ThreadsPartlyDeleted)) {
+        reportError(userFacingError(err), err);
+        continue;
+      }
+      // A computer without DeleteThreads deleted them one at a time.
+      for (const id of err.deleted) {
+        removeThread(id);
+        closePanesShowingThread(id);
+      }
+      for (const { threadId, error } of err.failures) {
+        const title = group.find((thread) => thread.id === threadId)?.title || 'Untitled';
+        reportError(`Could not delete "${title}": ${userFacingError(error)}`, error);
+      }
     }
   }
   return complete;

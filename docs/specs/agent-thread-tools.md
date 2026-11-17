@@ -1874,8 +1874,9 @@ it was routed or last named. `agent_owner_op` carries what archiving or
 deleting the spawner owes the worker, sent until that computer answers.
 A computer that predates `agent_owner_op` answers that it is not a
 thread tools write call, and the operation is reported once as on a
-computer that runs an older version. An isolated boot with `AO_HARNESS_OLD_OWNER_OPS_PEER=1` answers
-`agent_owner_op` that way, and `AO_HARNESS_TIMING`'s `prompt-lease`
+computer that runs an older version. An isolated boot with `AO_HARNESS_OLDER_COMPUTER=1` answers
+`agent_owner_op` that way, as a computer on v0.0.19 does
+([testing harness](testing-harness.md#8-e2e-and-gates)), and `AO_HARNESS_TIMING`'s `prompt-lease`
 shortens the two minutes; no other boot honors either.
 
 Errors follow the remote-commands shape: stable codes, prose that names

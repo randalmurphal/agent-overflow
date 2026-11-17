@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../test/helpers/olderComputer';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import {
   getThreadWorkerCounts,
@@ -291,6 +292,18 @@ describe('thread worker summaries', () => {
     // Once it answered nothing reads it again.
     await vi.advanceTimersByTimeAsync(120_000);
     expect(list).toHaveBeenCalledTimes(3);
+    expect(threadWorkerSummaryRetentionForTest().failed).toBe(0);
+  });
+
+  // v0.0.19 has no worker summaries: its threads have no workers to count,
+  // and the read is neither reported nor read again.
+  it('counts no workers on a computer without the read, and reads it once', async () => {
+    answerAsV0019();
+    await refreshThreadWorkerSummaries();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(getBindingMock('ListThreadWorkerSummaries')).toHaveBeenCalledTimes(1);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 0, needYou: 0 });
+    expect(await reported()).toHaveLength(0);
     expect(threadWorkerSummaryRetentionForTest().failed).toBe(0);
   });
 

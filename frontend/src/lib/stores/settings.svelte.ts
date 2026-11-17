@@ -19,8 +19,15 @@ type PendingPatch = { patch: Partial<Settings> };
 interface ComputerSettings {
   saved: Settings;
   pending: readonly PendingPatch[];
+  /** The computer's settings name assistantsEnabled; a release before assistants has none. */
+  assistants: boolean;
 }
-const EMPTY: ComputerSettings = { saved: defaultSettings(), pending: [] };
+const EMPTY: ComputerSettings = { saved: defaultSettings(), pending: [], assistants: true };
+
+/** Whether a settings answer comes from a computer whose release has assistants. */
+function answerHasAssistants(result: Partial<Settings>): boolean {
+  return 'assistantsEnabled' in result;
+}
 const computers = createKeyedSignalRegistry<ComputerSettings>(EMPTY);
 const queues = new Map<BackendKey, Promise<void>>();
 const projections = new Map<BackendKey, {
@@ -63,6 +70,15 @@ export function mirrorFrontendPreferences(backend: BackendKey, patch: Partial<Se
 
 export function hasComputerSettings(backend: BackendKey): boolean {
   return computers.get(backend) !== EMPTY;
+}
+
+/**
+ * Whether the computer's release has assistants, from its own settings
+ * answer: a release before them names no assistantsEnabled. True until the
+ * computer's settings are read.
+ */
+export function computerHasAssistants(backend: BackendKey = HOME_BACKEND): boolean {
+  return computers.get(backend).assistants;
 }
 
 /** Stable per-computer projection; reads allocate only after an actual change. */
@@ -146,7 +162,9 @@ async function readSettings(backend: BackendKey, migrate: boolean): Promise<bool
     if (expected !== generation || backendById(backend) !== target) return false;
     if (result) {
       const saved = mergeSettingsWithDefaults(result as Partial<Settings>);
-      computers.set(backend, { saved, pending: computers.get(backend).pending });
+      computers.set(backend, {
+        saved, pending: computers.get(backend).pending, assistants: answerHasAssistants(result as Partial<Settings>),
+      });
       if (migrate && backend === HOME_BACKEND) seedFrontendPreferences(saved);
     }
     return true;
@@ -199,7 +217,8 @@ export function updateSettingsPatch(
       const saved = result
         ? mergeSettingsWithDefaults(result as Partial<Settings>)
         : { ...state.saved, ...pending.patch };
-      computers.set(backend, { ...state, saved });
+      const assistants = result ? answerHasAssistants(result as Partial<Settings>) : state.assistants;
+      computers.set(backend, { ...state, saved, assistants });
     } catch (err) {
       if (expected !== generation || backendById(backend) !== target) return;
       console.error('Failed to update computer settings:', err);
@@ -226,6 +245,7 @@ export function applySettingsSnapshot(
 ): void {
   computers.set(backend, {
     saved: mergeSettingsWithDefaults(result), pending: computers.get(backend).pending,
+    assistants: answerHasAssistants(result),
   });
 }
 

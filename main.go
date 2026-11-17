@@ -365,6 +365,10 @@ type bootTransportOptions struct {
 	// transport and attached-computer ones are applied here. Only harness
 	// mode sets it.
 	HarnessTiming harnessTiming
+	// HarnessOlderComputer serves the App surface as v0.0.19 did
+	// (olderComputerSurface). Only harness mode sets it
+	// (diagenv.HarnessOlderComputer).
+	HarnessOlderComputer bool
 }
 
 // bootBrowserCDPRelay binds the loopback endpoint the Windows launcher's
@@ -417,11 +421,15 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 
 	phaseStarted := time.Now()
 	dispatcher := transport.NewDispatcher()
-	methods, err := dispatcher.Register(appService, transport.RegisterOptions{
+	appOptions := transport.RegisterOptions{
 		Package:   "main",
 		TypeName:  "App",
 		AllowList: transport.NewMethodAllowList(),
-	})
+	}
+	if opts.HarnessOlderComputer {
+		appOptions.Skip, appOptions.Resultless = olderComputerSurface()
+	}
+	methods, err := dispatcher.Register(appService, appOptions)
 	if err != nil {
 		fatalf("transport: register App methods: %v", err)
 	}

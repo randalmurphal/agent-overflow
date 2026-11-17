@@ -93,6 +93,9 @@ type WorkerFailure struct {
 	// Computer names the paired computer a worker there is on, as this
 	// computer names it; empty for a worker here.
 	Computer string `json:"computer,omitempty"`
+	// ComputerID is that computer's id here, empty for a worker here. Two
+	// paired computers may share a name; a report groups by this.
+	ComputerID string `json:"computerId,omitempty"`
 	// Pending is a worker on another computer that has not taken the
 	// archive or delete yet: it is sent again until that computer takes
 	// it, and Error says why the last attempt did not land.
@@ -102,11 +105,13 @@ type WorkerFailure struct {
 type workerFailure struct {
 	threadID string
 	err      error
-	// computer names the paired computer of a worker there, whose title
-	// is the one its spawn recorded; pending is WorkerFailure.Pending.
-	computer string
-	title    string
-	pending  bool
+	// computer names the paired computer of a worker there and computerID
+	// is its id; such a worker's title is the one its spawn recorded.
+	// pending is WorkerFailure.Pending.
+	computer   string
+	computerID string
+	title      string
+	pending    bool
 }
 
 // workerFailures renders failures for a binding, a worker here titled by
@@ -115,7 +120,7 @@ func (a *App) workerFailures(failures []workerFailure) []WorkerFailure {
 	var out []WorkerFailure
 	for _, worker := range failures {
 		failure := WorkerFailure{ThreadID: worker.threadID, Title: worker.title, Error: worker.err.Error(),
-			Computer: worker.computer, Pending: worker.pending}
+			Computer: worker.computer, ComputerID: worker.computerID, Pending: worker.pending}
 		if worker.computer == "" {
 			if row, err := a.store.GetThread(worker.threadID); err == nil {
 				failure.Title = row.Title

@@ -835,7 +835,10 @@ Ruling 36, as built:
   with its work, for Remove Worktree to remove. The sidebar, a
   selection, the archived threads list and the compact layout delete
   through `DeleteThreads` (`threads:operate`); threads selected together
-  are one delete per computer. The window stops no session for a delete.
+  are one delete per computer. A computer on a release without it
+  (v0.0.19) deletes them one at a time through `DeleteThread`, which
+  answers a success with `null`: the ones that went stay deleted, and each
+  that did not is reported with its reason. The window stops no session for a delete.
   The cleanup of a thread moved to another computer deletes none of the
   workers it left here.
 - Archiving and deleting reach the owned workers the threads spawned on
@@ -849,11 +852,15 @@ Ruling 36, as built:
   its computer (`WorkerFailure.pending`, `computer`), and one on a
   computer that predates this as running an older version, which is not
   asked again. The sidebar's archive and delete say so in one toast per
-  computer, after the toast for the workers here and with no action:
-  `Archived "<owner>". Its worker "<title>" is pending on <computer>.
-  <reason>` while pending, and `Archived "<owner>", but its worker
-  "<title>" on <computer> is still open: <reason>` (a delete's: `Deleted
-  ... stays: <reason>`) for an older computer. The request sweep sends the rest, 5 s after an attempt
+  computer, told apart by its id (`WorkerFailure.computerId`), since two
+  can share a name, after the toast for the workers here and with no
+  action: `Archived "<owner>". Its worker "<title>" is pending on
+  <computer>. <reason>` while pending, and `Archived "<owner>", but its
+  worker "<title>" on <computer> is still open: <reason>` (a delete's:
+  `Deleted ... stays: <reason>`) for an older computer. Workers with
+  different reasons keep each one: the reasons follow, each after the
+  workers it applies to (`"<title>", "<title>": <reason>. "<title>":
+  <reason>.`). The request sweep sends the rest, 5 s after an attempt
   doubling to 10 min, until that computer answers
   (`deliverOwedOwnerOps`); a refusal or a computer that does not answer
   never undoes the archive or delete here. That computer reads the
@@ -887,7 +894,14 @@ Ruling 36, as built:
   threads it takes spawned workers on other computers
   (`DeleteDependents.remoteWorkers`), with no count: `Workers it spawned
   on other computers are deleted there too.` (`they` for several
-  threads).
+  threads). Unknown is not none: until every read of what the delete
+  takes has answered, Delete cannot be confirmed; when one failed, the
+  dialog says `Its sub-threads could not be checked; any it has are
+  deleted too, here and on other computers.` (`Their` and `they have` for
+  several threads) and Delete can be confirmed. A computer without the
+  read (v0.0.19) has no workers, and its answer is none. The sidebar, a
+  selection, the palette, the archived threads list and the compact
+  layout share this confirmation (`ThreadDeleteNote`).
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
@@ -1546,7 +1560,10 @@ them on shows and runs the second one's and not the first one's. The
 Settings page follows the computer picker at the top of Settings, so a
 window changes the setting of the computer it picks. A standalone
 frontend's own home has no assistants: its switch is disabled and the
-page never writes there.
+page never writes there. Nor does a computer on a release before
+assistants, whose settings name no `assistantsEnabled`: every surface
+reads it as having them off, and its switch is off, disabled and says
+`<computer> runs an older version: it has no assistants.`
 
 **Hidden.** Every surface decides an assistant by the computer it lives
 on: the Assistants section (shown while any attached computer has them
@@ -1881,7 +1898,13 @@ closes up their spacing so the row holds at a phone width.
   (`agentThreadBackend`); an assistant's helper, outside every project,
   takes no placement and has none. It is `SetThreadPlacement` standalone
   on that computer, after which the row's placement is standalone and the
-  button is gone; a refusal is an error toast. Both are icon buttons with
+  button is gone; a refusal is an error toast. A row's placement is the
+  one the computer holding its thread last said, in that answer or in a
+  `thread:updated` frame it sent this window (Remove from Sidebar in any
+  window included); it stands over the placement a read of the list
+  relays, which for a paired computer's worker is the spawner's computer's
+  cache of it, until the pane shows another thread or this window's
+  connection to that computer drops. Both are icon buttons with
   a title and a matching label, as Background's Open in Agent Pane. Stop
   and Stop All stay text buttons.
 - **Incoming.** Messages other threads' agents, wakes and workers queued
@@ -2046,12 +2069,11 @@ closes up their spacing so the row holds at a phone width.
   read does not supply. A row of the thread's own that an open-list read
   supplies is taken into Past from that read when settled (a late reply
   while it lingers), and out of it, with the count, when open again, so
-  no row shows in both lists. Reads and Show in Sidebar are ordered by
-  when each started: a page read never shows a row older than an
-  open-list row or a placement that arrived while it was out, the first
-  page included, nor a row an open-list read found open while it was
-  out, and an open-list read never undoes a placement made while it was
-  out.
+  no row shows in both lists. Reads are ordered by when each started: a
+  page read never shows a row older than an open-list row that arrived
+  while it was out, the first page included, nor a row an open-list read
+  found open while it was out. No read undoes a placement the thread's
+  computer said.
   Expanded, those cues read every row shown again, from the newest
   through cursor pages down to the oldest row shown, so rows that
   settled since go first and none shown is dropped. The rows are held

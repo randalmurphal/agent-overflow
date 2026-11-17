@@ -10,6 +10,7 @@ import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app
 import { makeSettings } from '../../../test/helpers/settings';
 import type { Settings } from '../../types/settings';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { assistantsOn } from '../../stores/assistants.svelte';
 
 async function seed(overrides: Partial<Settings> = {}): Promise<void> {
   const saved = makeSettings(overrides);
@@ -55,6 +56,30 @@ describe('<AssistantsSettings>', () => {
       await fireEvent.click(toggle);
       expect(getSettings('laptop').assistantsEnabled).toBe(true);
       expect(getSettings(HOME_BACKEND).assistantsEnabled).toBe(true);
+    } finally {
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
+  });
+
+  // A computer on a release before assistants (v0.0.19) names no
+  // assistantsEnabled: it has no assistants, nothing offers to make one
+  // there, and its page says why instead of writing a key it lacks.
+  it('offers no assistants on a computer whose release has none', async () => {
+    await seed();
+    stageBackend();
+    try {
+      const { assistantsEnabled: _absent, ...older } = makeSettings();
+      applySettingsSnapshot(older, 'laptop');
+      expect(assistantsOn('laptop')).toBe(false);
+      expect(assistantsOn(HOME_BACKEND)).toBe(true);
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: AssistantsSettings, needsComputer: false } });
+      const toggle = (await view.findByRole('switch')) as HTMLButtonElement;
+      expect(toggle.getAttribute('aria-checked')).toBe('false');
+      expect(toggle.disabled).toBe(true);
+      expect(view.getByTestId('assistants-older-computer').textContent).toBe('Laptop runs an older version: it has no assistants.');
+      await fireEvent.click(toggle);
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
     } finally {
       resetStagedBackends();
       resetSettingsForTest();

@@ -48,7 +48,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		for _, variable := range []string{"diagenv.HarnessTiming", "diagenv.HarnessOldOwnerOpsPeer"} {
+		for _, variable := range []string{"diagenv.HarnessTiming", "diagenv.HarnessOlderComputer"} {
 			uses := strings.Contains(readRootSource(t, name), "os.Getenv("+variable+")")
 			if uses != (name == "main_harness.go") {
 				t.Errorf("%s reads %s: %v", name, variable, uses)
@@ -78,13 +78,15 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`PRLookupRetryBase:\s+opts\.Timing\.PRLookupRetry,`,
 			`UsageProbeGap:\s+opts\.Timing\.UsageProbeGap,`,
 			`WorkerPromptLease:\s+opts\.Timing\.PromptLease,`,
-			`OmitOwnerOps:\s+opts\.OldOwnerOpsPeer,`,
-			`isolation\.OldOwnerOpsPeer = envTruthy\(os\.Getenv\(diagenv\.HarnessOldOwnerOpsPeer\)\)`,
+			`OmitOwnerOps:\s+opts\.OlderComputer,`,
+			`isolation\.OlderComputer = envTruthy\(os\.Getenv\(diagenv\.HarnessOlderComputer\)\)`,
+			`HarnessOlderComputer:\s+isolation\.OlderComputer,`,
 		},
 		"main.go": {
 			`WatermarkInterval:\s+opts\.HarnessTiming\.Watermark,`,
 			`bootAttachedBackends\(opts\.HarnessTiming\.PairingProbe\)`,
 			`manager\.SetActivationProbe\(activationProbe\)`,
+			`if opts\.HarnessOlderComputer \{\s+appOptions\.Skip, appOptions\.Resultless = olderComputerSurface\(\)`,
 		},
 	} {
 		source := readRootSource(t, file)

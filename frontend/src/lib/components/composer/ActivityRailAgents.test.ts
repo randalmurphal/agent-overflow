@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
-import { buildPane } from '../../../test/helpers/chat';
+import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setupEventListeners } from '../../stores/events';
@@ -614,6 +614,99 @@ describe('the Agents segment', () => {
       }
     });
   }
+
+  // The placement a row shows is the one the computer holding the worker
+  // said: its frames reach this window at once, while this computer's list
+  // relays its cache of that computer, which can answer from before a
+  // placement made from a window. Show, a late cached answer, Remove from
+  // another window, Show again, on one mounted tray.
+  for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}keeps the placement the worker's computer said over a cached answer from before it`, async () => {
+      setCompactLayoutForTest(compact);
+      stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+      try {
+        // This computer's cache of Studio's rows.
+        let cached: 'owned' | 'standalone' = 'owned';
+        const worker = (caller: string, placement: string) => row('studio', {
+          callerThreadId: caller, placement, computerId: REMOTE_BACKEND_UUID, computer: 'Studio',
+        });
+        const { view, toggle, pane } = await openTray((caller) => [worker(caller, cached)]);
+        const list = setBindingMock('ListThreadAgentRows', async () => ({ rows: [worker(pane.threadId!, cached)], hidden: false }));
+        // What Studio announces of its own thread, on its connection.
+        const announce = (placement: 'owned' | 'standalone') => emitWailsEvent('thread:updated', {
+          action: placement === 'owned' ? 'full' : 'listed',
+          thread: makeThread({ id: 't-studio', title: 'Agent studio', placement }),
+        }, REMOTE_BACKEND_UUID);
+        setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => {
+          announce(placement as 'owned' | 'standalone');
+          return ids.map((id) => ({ id, placement }));
+        }));
+        // A read of the list, as a frame about the thread's agents starts one.
+        const reread = async () => {
+          const before = list.mock.calls.length;
+          emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+          await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(before));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        };
+        await fireEvent.click(toggle);
+        const offered = async () => Boolean(within(await view.findByTestId('agent-tray-row')).queryByTestId('agent-tray-row-show-in-sidebar'));
+        await waitFor(async () => expect(await offered()).toBe(true));
+
+        await fireEvent.click(within(await view.findByTestId('agent-tray-row')).getByTestId('agent-tray-row-show-in-sidebar'));
+        await waitFor(async () => expect(await offered()).toBe(false));
+        // The cache still says owned: a read that started after the click.
+        await reread();
+        expect(await offered()).toBe(false);
+
+        // Remove from Sidebar in Studio's window; this computer's cache has
+        // caught up with the Show and not yet with the Remove.
+        cached = 'standalone';
+        announce('owned');
+        await waitFor(async () => expect(await offered()).toBe(true));
+        await reread();
+        expect(await offered()).toBe(true);
+
+        // Show again, and a cached answer from before it.
+        cached = 'owned';
+        await fireEvent.click(within(await view.findByTestId('agent-tray-row')).getByTestId('agent-tray-row-show-in-sidebar'));
+        await waitFor(async () => expect(await offered()).toBe(false));
+        await reread();
+        expect(await offered()).toBe(false);
+        expect(toastTexts()).toEqual([]);
+      } finally {
+        resetStagedBackends();
+      }
+    });
+  }
+
+  // The computer sends a write's frame ahead of its reply, so a frame that
+  // arrived after Show in Sidebar was sent is a newer write: Remove from
+  // Sidebar in another window, here before the reply.
+  it('keeps a placement the worker\'s computer announced after Show in Sidebar was sent over its reply', async () => {
+    stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+    try {
+      const { view, toggle } = await openTray((caller) => [
+        row('studio', { callerThreadId: caller, placement: 'owned', computerId: REMOTE_BACKEND_UUID, computer: 'Studio' }),
+      ]);
+      const announce = (placement: 'owned' | 'standalone') => emitWailsEvent('thread:updated', {
+        action: placement === 'owned' ? 'full' : 'listed',
+        thread: makeThread({ id: 't-studio', title: 'Agent studio', placement }),
+      }, REMOTE_BACKEND_UUID);
+      setBindingMock('SetThreadPlacement', async (ids: string[]) => {
+        announce('standalone');
+        announce('owned');
+        return ids.map((id) => ({ id, placement: 'standalone' }));
+      });
+      await fireEvent.click(toggle);
+      const shown = await view.findByTestId('agent-tray-row');
+      await fireEvent.click(within(shown).getByTestId('agent-tray-row-show-in-sidebar'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await waitFor(() => expect(within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-show-in-sidebar').hasAttribute('disabled')).toBe(false));
+      expect(within(view.getByTestId('agent-tray-row')).queryByTestId('agent-tray-row-show-in-sidebar')).not.toBeNull();
+    } finally {
+      resetStagedBackends();
+    }
+  });
 
   it('offers Show in Sidebar on an owned worker of this computer, and drops it once the worker has a row', async () => {
     const { view, toggle } = await openTray((caller) => [

@@ -4,9 +4,11 @@
   // assistants are shown and running, or hidden and paused, in every
   // window, by that computer's switch alone. A standalone frontend's own
   // home is an administrative controller with no assistants, so the page
-  // never writes there.
+  // never writes there, nor to a computer on a release before assistants.
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { isFrontendOnly } from '../../transport/runMode';
+  import { assistantsOffOn } from '../../stores/assistants.svelte';
+  import { computerHasAssistants } from '../../stores/settings.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import { settingsComputer } from './settingsComputer';
@@ -14,6 +16,7 @@
   const { backend, getSettings, updateSetting } = settingsComputer();
   let settings = $derived(getSettings());
   const controller = isFrontendOnly() && backend === HOME_BACKEND;
+  let older = $derived(!computerHasAssistants(backend));
 </script>
 
 <div class="settings-sections" data-testid="settings-assistants">
@@ -25,12 +28,15 @@
         hint="Show this computer's assistants and let them run. Off hides them in every window and pauses them; nothing is deleted."
       >
         <ToggleSwitch
-          checked={settings.assistantsEnabled}
-          disabled={controller}
+          checked={settings.assistantsEnabled && !older}
+          disabled={controller || older}
           ariaLabel="Toggle assistants"
           onToggle={(value) => updateSetting('assistantsEnabled', value)}
         />
       </SettingsField>
+      {#if older}
+        <p class="text-[0.75rem] text-fg-muted" data-testid="assistants-older-computer">{assistantsOffOn(backend)}</p>
+      {/if}
     </div>
     <p class="mt-2 text-[0.75rem] text-fg-muted">
       While they are off, none of this computer's assistants' loops, watches or reminders fires and none of their

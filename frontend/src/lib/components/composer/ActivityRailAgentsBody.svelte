@@ -22,6 +22,7 @@
   import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { withBackendTarget } from '../../transport/backends';
+  import { threadRowFrameMark, threadRowFramedSince } from '../../stores/threadRowFrames';
   import { navigateToThreadItem } from '../../stores/threadItemNavigation';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
@@ -163,8 +164,12 @@
     if (!id || backend === null || placing.has(id)) return;
     placing = new Set([...placing, id]);
     try {
+      const mark = threadRowFrameMark();
       const rows = (await withBackendTarget(backend, () => SetThreadPlacement([id], 'standalone'))) as Thread[] | null;
-      agents.placed(id, rows?.find((thread) => thread.id === id)?.placement ?? 'standalone');
+      // A frame the computer sent since carries its newer placement.
+      if (!threadRowFramedSince(id, mark)) {
+        agents.placed(id, rows?.find((thread) => thread.id === id)?.placement ?? 'standalone', backend);
+      }
     } catch (err) {
       addErrorToast(`Could not show ${row.title} in the sidebar: ${errString(err)}`, err);
     } finally {

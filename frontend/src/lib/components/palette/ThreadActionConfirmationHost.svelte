@@ -57,6 +57,7 @@
     deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={confirm}
   onCancel={cancel}

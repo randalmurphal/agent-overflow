@@ -40,16 +40,12 @@ export {
 	SetAgentComputerEnabled,
 	PairAgentComputer,
   // Thread management
-  ArchiveThread,
   UnarchiveThread,
-  DeleteThread,
-  DeleteThreads,
   ForkThread,
   ForkThreadFromMessage,
   ForkSideChat,
   PromoteScratchThread,
   GetStandingAgent,
-  GetDeleteDependents,
   BeginThreadTransfer,
   GetThreadTransferDestinationProject,
   BindThreadTransferDestination,
@@ -66,7 +62,6 @@ export {
   ListArchivedThreads,
   ListThreads,
   MarkThreadRead,
-  MarkThreadsRead,
   MarkThreadUnread,
   PinThread,
   SetThreadPinGroup,
@@ -338,10 +333,8 @@ export {
   GetProviderStatuses,
   GetModelsForProvider,
   // What the computer would make of each agent profile (Settings, Agents).
-  CheckAgentProfiles,
   // Whether each provider's own memory is on as the user configured it
   // (Settings, Memory).
-  GetNativeMemoryStatus,
   // Composer command menu sources. GetClaudeSlashCommands is a pure read
   // of what the zero-token account probe left behind (never spawns) and
   // is available on a cold thread; GetCodexSkills and GetClaudeSkills
@@ -647,17 +640,9 @@ export {
   RefreshPipeline,
   UnsubscribePipeline,
   ListLiveBackgroundTasks,
-  ListThreadWakes,
-  ListStandingAgentWakes,
-  ListThreadWorkerSummaries,
-  GetThreadWorkerSummary,
   GetThreadWakeDetail,
   WakeThreadWakeNow,
   CancelThreadWake,
-  ListThreadAgentRows,
-  GetThreadAgentRows,
-  ListThreadPastAgentRows,
-  GetThreadRequestStates,
   StopThreadAgentIncoming,
   StopThreadAgentRow,
   StopThreadAgentRows,
@@ -750,7 +735,6 @@ export {
   WorkflowListUnresolvedItems,
   WorkflowMergeItem,
   WorkflowPauseItem,
-  WorkflowPauseItemAndEndSessions,
   WorkflowRequestSoftStop,
   WorkflowResolveGate,
   WorkflowResumeItem,
@@ -1328,3 +1312,163 @@ export function SearchThreadItems(
 
 export { ListAsyncQuestions, SubmitAsyncAnswers, SetAsyncQuestionDismissed } from '../../../bindings/agent-overflow/app.js';
 export { AsyncQuestion, AsyncQuestionAnswer } from '../../../bindings/agent-overflow/internal/store/models';
+
+// Calls a computer on an older release may not answer as this build does
+// (stores/olderComputer.ts). Archive and delete answer null on a release
+// whose method returned nothing, and the generated decoders throw on null,
+// so those two are called by id here. An action the older release has goes
+// through its own method; a read of a feature it lacks answers empty, so
+// its surface shows nothing and reports nothing.
+import { Call } from '@wailsio/runtime';
+import {
+  CheckAgentProfiles as CheckAgentProfilesRaw,
+  DeleteThreads as DeleteThreadsRaw,
+  GetDeleteDependents as GetDeleteDependentsRaw,
+  GetNativeMemoryStatus as GetNativeMemoryStatusRaw,
+  GetThreadAgentRows as GetThreadAgentRowsRaw,
+  GetThreadRequestStates as GetThreadRequestStatesRaw,
+  GetThreadWorkerSummary as GetThreadWorkerSummaryRaw,
+  ListStandingAgentWakes as ListStandingAgentWakesRaw,
+  ListThreadAgentRows as ListThreadAgentRowsRaw,
+  ListThreadPastAgentRows as ListThreadPastAgentRowsRaw,
+  ListThreadWakes as ListThreadWakesRaw,
+  ListThreadWorkerSummaries as ListThreadWorkerSummariesRaw,
+  MarkThreadRead as MarkThreadReadRaw,
+  MarkThreadsRead as MarkThreadsReadRaw,
+  WorkflowPauseItem as WorkflowPauseItemRaw,
+  WorkflowPauseItemAndEndSessions as WorkflowPauseItemAndEndSessionsRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import {
+  ArchiveThreadResult,
+  DeleteDependents,
+  DeleteThreadResult,
+  PastAgentRows as PastAgentRowsClass,
+  ThreadAgentRows as ThreadAgentRowsClass,
+  ThreadWakes as ThreadWakesClass,
+  ThreadWorkerSummary as ThreadWorkerSummaryClass,
+  ThreadWorkerSummaryPage as ThreadWorkerSummaryPageClass,
+  type AgentProfileCheck,
+  type NativeMemoryStatus,
+  type StandingAgentWakes as StandingAgentWakesRow,
+  type ThreadAgentRowRead as ThreadAgentRowReadRow,
+  type ThreadRequestState as ThreadRequestStateRow,
+} from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { AgentProfile } from '../../../bindings/agent-overflow/internal/settings/models.js';
+import type { PastAgentRowsCursor, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
+import { methodId } from '../transport/methodId';
+import { orOlder, ThreadsPartlyDeleted } from './olderComputer';
+
+export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
+
+const ARCHIVE_THREAD = methodId('ArchiveThread');
+const DELETE_THREAD = methodId('DeleteThread');
+
+/** ArchiveThread; a release that answers a success with null left nothing behind. */
+export async function ArchiveThread(id: string): Promise<ArchiveThreadResult> {
+  const answer = await Call.ByID(ARCHIVE_THREAD, id);
+  return answer == null ? new ArchiveThreadResult() : ArchiveThreadResult.createFrom(answer);
+}
+
+/** DeleteThread; a release that answers a success with null left nothing behind. */
+export async function DeleteThread(id: string): Promise<DeleteThreadResult> {
+  const answer = await Call.ByID(DELETE_THREAD, id);
+  return answer == null ? new DeleteThreadResult() : DeleteThreadResult.createFrom(answer);
+}
+
+/**
+ * DeleteThreads. A computer without it deletes them one at a time with
+ * DeleteThread, as that release deletes several: one thread's failure is
+ * its own, and of several, the ones that went stay deleted and the rest
+ * fail as ThreadsPartlyDeleted.
+ */
+export function DeleteThreads(threadIds: string[]): Promise<DeleteThreadResult> {
+  return orOlder(() => DeleteThreadsRaw(threadIds), async (same) => {
+    if (threadIds.length === 1) return same(() => DeleteThread(threadIds[0]));
+    const deleted: string[] = [];
+    const failures: { threadId: string; error: unknown }[] = [];
+    const workersNotDeleted: NonNullable<DeleteThreadResult['workersNotDeleted']> = [];
+    for (const threadId of threadIds) {
+      try {
+        const result = await same(() => DeleteThread(threadId));
+        workersNotDeleted.push(...(result.workersNotDeleted ?? []));
+        deleted.push(threadId);
+      } catch (error) {
+        failures.push({ threadId, error });
+      }
+    }
+    if (failures.length > 0) throw new ThreadsPartlyDeleted(deleted, failures);
+    return new DeleteThreadResult({ workersNotDeleted });
+  });
+}
+
+/** What deleting the threads takes with them; nothing on a computer without the read. */
+export function GetDeleteDependents(threadIds: string[]): Promise<DeleteDependents> {
+  return orOlder(() => GetDeleteDependentsRaw(threadIds), () => new DeleteDependents());
+}
+
+/**
+ * MarkThreadsRead. A computer without it marks each thread with
+ * MarkThreadRead, which answers no rows; its thread:updated frames carry
+ * them. Fails with the first failure after trying every thread.
+ */
+export function MarkThreadsRead(ids: string[]): Promise<StoreThread[]> {
+  return orOlder(() => MarkThreadsReadRaw(ids), async (same) => {
+    let failure: { error: unknown } | null = null;
+    for (const id of ids) {
+      try {
+        await same(() => MarkThreadReadRaw(id));
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    if (failure !== null) throw failure.error;
+    return [];
+  });
+}
+
+/** Pause and End Sessions; a computer without it pauses the item as its release does. */
+export function WorkflowPauseItemAndEndSessions(itemId: string): Promise<void> {
+  return orOlder(() => WorkflowPauseItemAndEndSessionsRaw(itemId), (same) => same(() => WorkflowPauseItemRaw(itemId)));
+}
+
+/** Null when the computer cannot check profiles; the save goes ahead and UpdateSettings decides. */
+export function CheckAgentProfiles(profiles: AgentProfile[]): Promise<AgentProfileCheck[] | null> {
+  return orOlder(() => CheckAgentProfilesRaw(profiles), () => null);
+}
+
+/** Null when the computer cannot say whether the providers' own memory is on. */
+export function GetNativeMemoryStatus(): Promise<NativeMemoryStatus | null> {
+  return orOlder(() => GetNativeMemoryStatusRaw(), () => null);
+}
+
+export function ListThreadWakes(threadId: string): Promise<ThreadWakesClass> {
+  return orOlder(() => ListThreadWakesRaw(threadId), () => new ThreadWakesClass());
+}
+
+export function ListStandingAgentWakes(): Promise<StandingAgentWakesRow[]> {
+  return orOlder(() => ListStandingAgentWakesRaw(), () => []);
+}
+
+export function ListThreadWorkerSummaries(after: string): Promise<ThreadWorkerSummaryPageClass> {
+  return orOlder(() => ListThreadWorkerSummariesRaw(after), () => new ThreadWorkerSummaryPageClass());
+}
+
+export function GetThreadWorkerSummary(threadId: string): Promise<ThreadWorkerSummaryClass> {
+  return orOlder(() => GetThreadWorkerSummaryRaw(threadId), () => new ThreadWorkerSummaryClass({ threadId }));
+}
+
+export function ListThreadAgentRows(threadId: string): Promise<ThreadAgentRowsClass> {
+  return orOlder(() => ListThreadAgentRowsRaw(threadId), () => new ThreadAgentRowsClass());
+}
+
+export function GetThreadAgentRows(threadId: string, tokens: string[]): Promise<ThreadAgentRowReadRow[]> {
+  return orOlder(() => GetThreadAgentRowsRaw(threadId, tokens), () => []);
+}
+
+export function ListThreadPastAgentRows(threadId: string, after: PastAgentRowsCursor, limit: number): Promise<PastAgentRowsClass> {
+  return orOlder(() => ListThreadPastAgentRowsRaw(threadId, after, limit), () => new PastAgentRowsClass());
+}
+
+export function GetThreadRequestStates(threadId: string, tokens: string[]): Promise<ThreadRequestStateRow[]> {
+  return orOlder(() => GetThreadRequestStatesRaw(threadId, tokens), () => []);
+}

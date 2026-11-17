@@ -112,6 +112,7 @@ import {
   applyRuntimeModeChanged,
   type RuntimeModeChangedPayload,
 } from './eventsThreadRows';
+import { publishThreadPlacementFrame } from './threadPlacementFrames';
 import {
   applyProjectUpdated,
   type ProjectUpdateEvent,
@@ -627,6 +628,9 @@ export function setupEventListeners(): () => void {
       if (!noteThread(id, backend, evt.thread ? (evt.thread.ownershipEpoch ?? 0) : undefined)) return;
     }
     applyThreadUpdated(evt);
+    if (id && evt.action !== 'deleted' && typeof evt.thread?.placement === 'string') {
+      publishThreadPlacementFrame(id, evt.thread.placement, backendKeyForOrigin(origin.backendId));
+    }
     // Store removal needs the origin to invalidate that computer's catalog.
     // Forgetting first would make the writer fall back to the home computer.
     if (id && evt.action === 'deleted') forgetThread(id);

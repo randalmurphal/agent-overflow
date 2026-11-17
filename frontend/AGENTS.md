@@ -38,6 +38,11 @@ through `stores/layoutMode.svelte.ts`.
 - Keep heavy transcript payloads lazy and bounded to the visible window.
 - Call generated bindings through `stores/bindings.ts`. Components do not
   subscribe directly to runtime events.
+- A paired computer may run an older release. A call it may lack, or whose
+  result it answers as `null`, is decided once in `stores/bindings.ts`
+  (`stores/olderComputer.ts`): an action goes through the method that release
+  has, a read of a feature it lacks answers empty. Tests answer as v0.0.19
+  with `test/helpers/olderComputer.ts`.
 
 ## Compact layout
 

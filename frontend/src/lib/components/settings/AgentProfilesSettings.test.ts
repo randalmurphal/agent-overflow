@@ -4,6 +4,7 @@ import AgentProfilesSettings from './AgentProfilesSettings.svelte';
 import { applySettingsSnapshot, loadSettings } from '../../stores/settings.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
+import { TransportError } from '../../transport/wsClient';
 import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
 import type { AgentNote, AgentProfile, Settings } from '../../types/settings';
 
@@ -285,6 +286,25 @@ describe('<AgentProfilesSettings>', () => {
     await settle();
     expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
     expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // v0.0.19 has no check: the save goes ahead, nothing is marked checked
+  // and nothing is logged.
+  it('saves without a check, quietly, on a computer without one', async () => {
+    await seed({ agentProfiles: [PROFILE] });
+    setBindingMock('CheckAgentProfiles', async () => { throw new TransportError('method_not_found', 'unknown method'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const view = render(AgentProfilesSettings);
+    await settle();
+
+    const name = view.getByLabelText('Name') as HTMLInputElement;
+    await fireEvent.input(name, { target: { value: 'Critic' } });
+    await fireEvent.change(name);
+    await settle();
+    expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
+    expect(view.queryByTestId('agent-profile-error')).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 

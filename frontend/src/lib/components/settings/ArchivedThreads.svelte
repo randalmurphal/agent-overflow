@@ -160,6 +160,7 @@
     deleteNote.note,
   )}
   confirmLabel="Delete"
+  confirmDisabled={deleteNote.pending}
   destructive={true}
   onConfirm={executeDelete}
   onCancel={cancelDelete}

@@ -12,6 +12,7 @@ import { forgetGrantedScopes, setCarriedSessionScopes } from '../../transport/sc
 import ArchivedThreads from './ArchivedThreads.svelte';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 
 describe('<ArchivedThreads>', () => {
   it('renders friendly model aliases', async () => {
@@ -74,6 +75,29 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
     await waitFor(() => expect(deleted).toHaveBeenCalledWith(['archived-on-wt']));
     expect(status).not.toHaveBeenCalled();
     expect(removed).not.toHaveBeenCalled();
+  });
+
+  // Unknown is not none: the delete cannot be confirmed until the read
+  // answers, and a read that failed says what the delete may take.
+  it('cannot be confirmed before the read answers, and says when the read failed', async () => {
+    const archived = makeThread({ id: 'archived-early', title: 'Early', archived: true, projectId: 'project-1' });
+    setBindingMock('ListArchivedThreads', async () => [archived]);
+    let fail: (err: Error) => void = () => {};
+    setBindingMock('GetDeleteDependents', () => new Promise((_resolve, reject) => { fail = reject; }));
+    const deleted = setBindingMock('DeleteThreads', async () => ({}));
+
+    const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    expect(getByRole('button', { name: 'Delete' })).toBeDisabled();
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+    expect(deleted).not.toHaveBeenCalled();
+    fail(new Error('database is locked'));
+    expect((await findByText(/could not be checked/)).textContent).toBe(
+      'This will permanently delete this thread and all its messages. This action cannot be undone. Its sub-threads could not be checked; any it has are deleted too, here and on other computers.',
+    );
+    expect(getByRole('button', { name: 'Delete' })).toBeEnabled();
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(['archived-early']));
   });
 });
 
@@ -156,10 +180,34 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
 
     const { findByLabelText, getByRole } = render(ArchivedThreads);
     await fireEvent.click(await findByLabelText('Delete permanently'));
+    // Confirmable once it knows what the delete takes.
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(getToasts().some((t) => /computer that owns this item is unknown/.test(t.message))).toBe(true));
     expect(deleted).not.toHaveBeenCalled();
+  });
+
+  // v0.0.19 has DeleteThread only, answers it with null, and has no read of
+  // what a delete takes: the dialog says nothing more and the delete goes.
+  it('deletes a thread on a computer on v0.0.19 through the method it has', async () => {
+    const archived = makeThread({ id: 'archived-on-older', title: 'Old work', archived: true, projectId: 'project-archived' });
+    noteThread(archived.id, 'laptop');
+    setBindingMock('ListArchivedThreads', async () => [archived]);
+    answerAsV0019();
+    const targets: Array<string | null> = [];
+    setBindingMock('DeleteThread', async () => { targets.push(getPinnedBackend()); return null; });
+
+    const { findByLabelText, getByRole, queryByText, findByText } = render(ArchivedThreads);
+    await findByText('Old work');
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
+    expect(queryByText(/could not be checked|deleted with it/)).toBeNull();
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(targets).toEqual(['laptop']));
+    await waitFor(() => expect(queryByText('Old work')).toBeNull());
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([['info', 'Deleted "Old work".']]);
   });
 
   it('keeps the thread when its computer refuses the delete', async () => {
@@ -171,6 +219,8 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
 
     const { findByLabelText, getByRole, findByText } = render(ArchivedThreads);
     await fireEvent.click(await findByLabelText('Delete permanently'));
+    // Confirmable once it knows what the delete takes.
+    await waitFor(() => expect(getByRole('button', { name: 'Delete' })).toBeEnabled());
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(getToasts().some((t) => /client closed/.test(t.message))).toBe(true));

@@ -133,7 +133,10 @@
   async function checkProfiles(list: AgentProfile[]): Promise<boolean | null> {
     let results: ProfileCheck[];
     try {
-      results = ((await call(() => CheckAgentProfiles(list))) ?? []) as ProfileCheck[];
+      const answer = await call(() => CheckAgentProfiles(list));
+      // An older computer has no check (bindings.ts, CheckAgentProfiles).
+      if (answer === null) return null;
+      results = answer as ProfileCheck[];
     } catch (err) {
       console.warn('Could not check the agent profiles against this computer:', err);
       return null;

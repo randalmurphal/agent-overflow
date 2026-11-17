@@ -58,6 +58,8 @@ type Method struct {
 	// Static per signature — precomputed at Register like NeedsContext /
 	// IsVariadic so processResults doesn't re-derive it per invocation.
 	hasError bool
+	// resultless answers a success with null (RegisterOptions.Resultless).
+	resultless bool
 }
 
 // RegisterOptions controls Register's filtering behavior.
@@ -80,6 +82,11 @@ type RegisterOptions struct {
 	// names. Used by methodgen to lock the dispatcher to exactly the
 	// methods the binding generator emitted.
 	AllowList map[string]bool
+
+	// Resultless names methods whose successful call answers null, the
+	// way a release whose method returned only an error answered it. Only
+	// a harness boot standing in for an older computer sets it.
+	Resultless map[string]bool
 
 	// LocalOnly marks every method on this receiver as loopback-only.
 	// The harness receiver registers with this set: its entire surface
@@ -177,6 +184,7 @@ func (d *Dispatcher) Register(receiver any, opts RegisterOptions) ([]*Method, er
 			inputTypes:   inputTypes,
 			outputTypes:  outputTypes,
 			hasError:     len(outputTypes) > 0 && outputTypes[len(outputTypes)-1].Implements(errType),
+			resultless:   opts.Resultless[name],
 		}
 
 		if existing, ok := d.byID[m.ID]; ok {
@@ -498,6 +506,9 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.Ra
 		results = results[:len(results)-1]
 	}
 
+	if m.resultless {
+		return json.RawMessage(`null`), nil
+	}
 	switch len(results) {
 	case 0:
 		return json.RawMessage(`null`), nil

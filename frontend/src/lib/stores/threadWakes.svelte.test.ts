@@ -1,6 +1,7 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../test/helpers/olderComputer';
 import {
   ensureAgentWakes,
   forgetAgentWakes,
@@ -128,6 +129,21 @@ describe('thread wakes store', () => {
     await refreshAgentWakes();
     expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1', 'w1']);
     expect(getAgentWakeRows('plain')).toEqual([]);
+  });
+
+  // v0.0.19 has no wakes: its computer and threads read as having none,
+  // and nothing is logged.
+  it('reads no wakes and logs nothing on a computer without them', async () => {
+    const logged = vi.spyOn(console, 'error');
+    answerAsV0019();
+    await refreshAgentWakes();
+    ensureAgentWakes('agent');
+    await flush();
+    expect(getBindingMock('ListStandingAgentWakes')).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('ListThreadWakes')).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    expect(logged).not.toHaveBeenCalled();
+    logged.mockRestore();
   });
 
   it('reads one row on demand, once, and leaves a known row alone', async () => {

@@ -118,7 +118,7 @@ func runHarness(flags cliFlags) {
 
 	isolation := isolationOptionsFor(flags)
 	isolation.Timing = timing
-	isolation.OldOwnerOpsPeer = envTruthy(os.Getenv(diagenv.HarnessOldOwnerOpsPeer))
+	isolation.OlderComputer = envTruthy(os.Getenv(diagenv.HarnessOlderComputer))
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolation)
 	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
@@ -149,6 +149,7 @@ func runHarness(flags cliFlags) {
 		HarnessMethodsSink:     func(names []string) { harnessrpc.SetWireMethods(h, names) },
 		AllowDevServerAssets:   true,
 		HarnessTiming:          timing,
+		HarnessOlderComputer:   isolation.OlderComputer,
 	})
 	log.Printf("transport: harness mode (data dir %s)", paths.DataDir)
 
@@ -379,11 +380,34 @@ type isolationOptions struct {
 	// sets it (diagenv.HarnessTiming); the zero value keeps every product
 	// interval.
 	Timing harnessTiming
-	// OldOwnerOpsPeer makes this computer answer a paired spawner's
-	// archive or delete as a build before owner operations does. Only a
-	// harness boot sets it (diagenv.HarnessOldOwnerOpsPeer); the zero
-	// value serves them.
-	OldOwnerOpsPeer bool
+	// OlderComputer makes this computer answer as one on v0.0.19: its
+	// window's calls (olderComputerSurface) and a paired spawner's archive
+	// or delete of a worker here. Only a harness boot sets it
+	// (diagenv.HarnessOlderComputer); the zero value is this build.
+	OlderComputer bool
+}
+
+// olderComputerSurface is how v0.0.19 answers this build's window: the
+// App methods added since are absent, so a call answers method_not_found,
+// and ArchiveThread and DeleteThread, which returned only an error then,
+// answer a success with null. From the generated bindings at the tag and
+// at head.
+func olderComputerSurface() (absent, resultless map[string]bool) {
+	absent = map[string]bool{}
+	for _, name := range []string{
+		"CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
+		"GetDeleteDependents", "GetNativeMemoryStatus", "GetStandingAgent",
+		"GetThreadAgentRows", "GetThreadRequestStates", "GetThreadWakeDetail",
+		"GetThreadWorkerSummary", "ListAssistantPastThreads", "ListStandingAgentWakes",
+		"ListThreadAgentRows", "ListThreadPastAgentRows", "ListThreadRecurringJobs",
+		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead",
+		"SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
+		"StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
+		"StopThreadAgentRow", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
+	} {
+		absent[name] = true
+	}
+	return absent, map[string]bool{"ArchiveThread": true, "DeleteThread": true}
 }
 
 // isolationOptionsFor is the one mapping from boot flags to isolation
@@ -449,7 +473,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
 		WorkerPromptLease:       opts.Timing.PromptLease,
-		OmitOwnerOps:            opts.OldOwnerOpsPeer,
+		OmitOwnerOps:            opts.OlderComputer,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

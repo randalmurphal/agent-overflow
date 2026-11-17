@@ -12,7 +12,7 @@ import { GetDeleteDependents, GetStandingAgent, StopSession } from './bindings';
 import { addErrorToast } from './toast.svelte';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { getThreads } from './threads.svelte';
-import { getSettings } from './settings.svelte';
+import { computerHasAssistants, getSettings } from './settings.svelte';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { threadBackend } from '../transport/entityIndex';
@@ -27,10 +27,11 @@ import { TransportError } from '../transport/wsClient';
  * an assistant by the computer it lives on, so a window attached to one
  * computer with them off and another with them on shows the second one's
  * and not the first one's. Nothing of theirs is deleted, and turning the
- * setting on shows them again.
+ * setting on shows them again. A computer on a release before assistants
+ * has none, and nothing offers to make one there.
  */
 export function assistantsOn(backend: BackendKey): boolean {
-  return getSettings(backend).assistantsEnabled;
+  return computerHasAssistants(backend) && getSettings(backend).assistantsEnabled;
 }
 
 /** The computer a thread lives on. */
@@ -65,9 +66,11 @@ export function hiddenAssistantThread(thread: Pick<Thread, 'id' | 'agentId' | 'p
 /** Why something of a computer's assistants is unavailable while it has them off. */
 export function assistantsOffOn(backend: BackendKey): string {
   const entry = getAttachedBackends().find((candidate) => candidate.id === backend);
-  return entry && getAttachedBackends().length > 1
-    ? `Assistants are turned off in Settings on ${backendDisplayName(entry)}.`
-    : 'Assistants are turned off in Settings.';
+  const named = entry && getAttachedBackends().length > 1 ? backendDisplayName(entry) : '';
+  if (!computerHasAssistants(backend)) {
+    return `${named || 'This computer'} runs an older version: it has no assistants.`;
+  }
+  return named ? `Assistants are turned off in Settings on ${named}.` : 'Assistants are turned off in Settings.';
 }
 
 /** What a pane showing an assistant's thread says while its computer has assistants off. */
@@ -220,6 +223,17 @@ export function remoteWorkersDeleteSentence(remote: boolean, threads: number): s
 }
 
 /**
+ * The sentence for threads whose dependents could not be read: unknown is
+ * not none, so it says that whatever lives under them goes too, here and
+ * on other computers. `threads` is how many threads the delete names.
+ */
+export function uncheckedDeleteSentence(threads: number): string {
+  return threads === 1
+    ? 'Its sub-threads could not be checked; any it has are deleted too, here and on other computers.'
+    : 'Their sub-threads could not be checked; any they have are deleted too, here and on other computers.';
+}
+
+/**
  * What deleting the threads, all on one computer, deletes with them as one
  * delete, read on that computer. A call that fails as it is made is a
  * rejection, as one that fails later is.
@@ -241,15 +255,26 @@ export function withDeleteNote(description: string, note: string): string {
  * their delete there takes them, so a worker under two of them counts
  * once. `load` starts the reads for the dialog being opened; `clear` drops
  * them when it closes, so a late answer for an earlier opening never shows.
- * A count that could not be read is null: an assistant's sentence says its
- * threads go, and that computer's workers are left out of the count.
+ * Unknown is not none: until every read has answered the delete is
+ * `pending` and cannot be confirmed, and a count that could not be read is
+ * null, for which an assistant's sentence says its threads go and the note
+ * says that whatever lives under the threads goes too, here and on other
+ * computers. A computer older than the read answers none
+ * (bindings.ts, GetDeleteDependents).
  */
 export class ThreadDeleteNote {
   #threads = $state<readonly Thread[]>([]);
   #homes = $state<ReadonlyMap<string, string>>(new Map());
   // Keyed by an assistant's thread id, or by `workers:` and a computer.
   #dependents = $state<ReadonlyMap<string, DeleteDependents | null>>(new Map());
+  // How many of this opening's reads have not answered.
+  #outstanding = $state(0);
   #generation = 0;
+
+  /** Whether a read of what the delete takes has not answered yet. */
+  get pending(): boolean {
+    return this.#outstanding > 0;
+  }
 
   get note(): string {
     const sentences = this.#threads
@@ -257,14 +282,17 @@ export class ThreadDeleteNote {
       .map((thread) => assistantDeleteSentence(thread.title, this.#homes.get(thread.id), this.#dependents.get(thread.id)));
     let workers = 0;
     let remote = false;
+    let unchecked = false;
     for (const [key, counts] of this.#dependents) {
       if (key.startsWith(WORKERS_KEY)) workers += counts?.workers ?? 0;
       remote ||= counts?.remoteWorkers === true;
+      unchecked ||= counts === null;
     }
     return [
       ...sentences,
       workersDeleteSentence(workers, this.#threads.length),
       remoteWorkersDeleteSentence(remote, this.#threads.length),
+      unchecked ? uncheckedDeleteSentence(this.#threads.length) : '',
     ].filter(Boolean).join(' ');
   }
 
@@ -273,6 +301,7 @@ export class ThreadDeleteNote {
     this.#threads = threads.slice();
     this.#homes = new Map();
     this.#dependents = new Map();
+    this.#outstanding = 0;
     const others = new Map<BackendKey, string[]>();
     for (const thread of this.#threads) {
       const backend = threadBackend(thread.id) ?? HOME_BACKEND;
@@ -298,15 +327,19 @@ export class ThreadDeleteNote {
     this.#threads = [];
     this.#homes = new Map();
     this.#dependents = new Map();
+    this.#outstanding = 0;
   }
 
   #read(generation: number, key: string, backend: BackendKey, ids: readonly string[]): void {
+    this.#outstanding++;
     void readDeleteDependents(backend, ids).then((counts) => {
-      if (generation !== this.#generation || !counts) return;
+      if (generation !== this.#generation) return;
       this.#setDependents(key, counts);
     }).catch((err: unknown) => {
       reportFrontendDiagnostic('threads deleted with a thread for a delete confirmation failed', userFacingError(err));
       if (generation === this.#generation) this.#setDependents(key, null);
+    }).finally(() => {
+      if (generation === this.#generation) this.#outstanding--;
     });
   }
 

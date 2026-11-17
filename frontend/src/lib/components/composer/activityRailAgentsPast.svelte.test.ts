@@ -470,7 +470,7 @@ describe('the Agents segment\'s Past', () => {
     });
     controller.past.toggle();
     await vi.advanceTimersByTimeAsync(0);
-    controller.placed('t-w', 'standalone');
+    controller.placed('t-w', 'standalone', '');
     expect(controller.rows[0].placement).toBe('standalone');
     expect(controller.past.rows[0].placement).toBe('standalone');
   });
@@ -652,7 +652,7 @@ describe('the Agents segment\'s Past', () => {
       }));
       emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a', id: 'child' });
       await vi.advanceTimersByTimeAsync(500);
-      controller.placed('t-child', 'standalone');
+      controller.placed('t-child', 'standalone', '');
       releaseRows();
       await vi.advanceTimersByTimeAsync(0);
       expect(controller.past.rows[0].answer).toBe('late');
@@ -666,7 +666,7 @@ describe('the Agents segment\'s Past', () => {
       let held = holdPages(readPast, () => rows);
       controller.past.toggle();
       await vi.advanceTimersByTimeAsync(0);
-      controller.placed('t-p03', 'standalone');
+      controller.placed('t-p03', 'standalone', '');
       await releaseAll(held);
       expect(controller.past.rows[3].placement, 'the first page undid Show in Sidebar').toBe('standalone');
 
@@ -678,12 +678,12 @@ describe('the Agents segment\'s Past', () => {
       emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
       await vi.advanceTimersByTimeAsync(500);
       expect(held.length).toBeGreaterThan(0);
-      controller.placed('t-p21', 'standalone');
+      controller.placed('t-p21', 'standalone', '');
       await releaseAll(held);
       expect(controller.past.rows[21].placement, 'the reread undid Show in Sidebar').toBe('standalone');
-      // A read that started after a placement answers for it: the ledger's
-      // word (here, unchanged) stands over the one made before it.
-      expect(controller.past.rows[3].placement).toBe('owned');
+      // What the thread's computer said stands over every later read too,
+      // which relays another computer's word.
+      expect(controller.past.rows[3].placement).toBe('standalone');
     });
   });
 });

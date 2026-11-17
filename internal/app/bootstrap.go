@@ -110,7 +110,7 @@ type IsolationConfig struct {
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
-	// Only a harness boot sets it (diagenv.HarnessOldOwnerOpsPeer).
+	// Only a harness boot sets it (diagenv.HarnessOlderComputer).
 	OmitOwnerOps bool
 }
 

@@ -19,18 +19,34 @@
 // is its own lifetime: a read that answers after Past collapsed, or after
 // it collapsed and opened again, lands nothing but the total.
 //
-// Read order: one clock orders every input. A read, Past's own or the open
-// list's (`readStarted`), takes a tick when it starts; a placement (Show in
-// Sidebar) takes one when it is made. A shown row keeps the tick of the
-// input it shows, and an input older than that is not applied. A patch is
-// held until a Past read that started after it has finished, a placement
-// until the pane shows another thread, and a read lands each held input
-// newer than itself over its own row (`placedSince` for the open list's),
-// so no read installs a row older than what arrived while it was out,
-// before the first page included, and none puts back a row the open list
-// has since read open.
+// Read order: one clock orders every read, Past's own or the open list's
+// (`readStarted`), which takes a tick when it starts. A shown row keeps the
+// tick of the read it shows, and an older one is not applied. A patch is
+// held until a Past read that started after it has finished, and a read
+// lands each held patch newer than itself over its own row, so no read
+// installs a row older than what arrived while it was out, before the first
+// page included, and none puts back a row the open list has since read
+// open.
+//
+// Placement: a row's sidebar placement is the one the computer holding its
+// thread last said (`placed`): its answer to Show in Sidebar, or a
+// thread:updated frame it sent this window. A read relays another
+// computer's cache of that thread, which can answer from before a placement
+// made from a window, so what the holding computer said stands over every
+// read (`withPlacement` for the open list's) until the pane shows another
+// thread or this window's connection to that computer drops
+// (`forgetPlacements`), after which it may have missed a frame. A row whose
+// reads report no placement is a thread that takes none (an assistant's
+// helper, `placedRow`); its frames still carry the stored column.
 
 import type { ThreadAgentRow } from '../../stores/bindings';
+import type { BackendKey } from '../../transport/backendKey';
+
+/** `row` with `placement` when it shows `threadId` and takes a placement. */
+export function placedRow(row: ThreadAgentRow, threadId: string, placement: string): ThreadAgentRow {
+  if (row.threadId !== threadId || !row.placement || row.placement === placement) return row;
+  return { ...row, placement };
+}
 import { ListThreadPastAgentRows } from '../../stores/bindings';
 import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
@@ -75,8 +91,8 @@ export interface PastAgentRows {
   showMore(): void;
   /** Read again after a failure. */
   retry(): void;
-  /** Rows of this thread whose sidebar placement changed. */
-  placed(threadId: string, placement: string): void;
+  /** The sidebar placement `backend`, the computer holding the thread, said it has. */
+  placed(threadId: string, placement: string, backend: BackendKey): void;
 }
 
 export interface PastAgentRowsHost extends PastAgentRows {
@@ -89,8 +105,10 @@ export interface PastAgentRowsHost extends PastAgentRows {
    * started at `at`, supplied: a settled one as it reads, an open one out.
    */
   patch(rows: readonly ThreadAgentRow[], at: number): void;
-  /** `row` from a read started at `at`, with any placement made since. */
-  placedSince(row: ThreadAgentRow, at: number): ThreadAgentRow;
+  /** `row` with the placement its thread's computer said, when it said one. */
+  withPlacement(row: ThreadAgentRow): ThreadAgentRow;
+  /** `backend`'s connection dropped: its placements may have missed a frame. */
+  forgetPlacements(backend: BackendKey): void;
   /** The pane shows another thread (or none): drop everything and read. */
   reset(): void;
   dispose(): void;
@@ -118,13 +136,13 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
   // only in the expansion it started in.
   let lifetime = 0;
   // The read order's clock, the tick each shown row's content came from,
-  // and the inputs held for page reads that started before them: the
-  // newest row an open-list read supplied, by token, and the newest
-  // placement made, by thread.
+  // and the newest row an open-list read supplied, by token, held for page
+  // reads that started before it. Beside them, the placement each shown
+  // thread's computer last said, by thread.
   let clock = 0;
   let stamps = new Map<string, number>();
   const heldRows = new Map<string, { row: ThreadAgentRow; at: number }>();
-  const heldPlacements = new Map<string, { placement: string; at: number }>();
+  const heldPlacements = new Map<string, { placement: string; backend: BackendKey }>();
 
   // Past's rows are flat: the open list's nesting marks are its own.
   function flat(fresh: ThreadAgentRow, shown: ThreadAgentRow): ThreadAgentRow {
@@ -134,10 +152,10 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
     };
   }
 
-  // A placement made after the input a row came from is the row's placement.
-  function placedOver(row: ThreadAgentRow, at: number): ThreadAgentRow {
+  // What the thread's computer said is the row's placement.
+  function withPlacement(row: ThreadAgentRow): ThreadAgentRow {
     const placed = row.threadId ? heldPlacements.get(row.threadId) : undefined;
-    return placed && placed.at > at && row.placement !== placed.placement ? { ...row, placement: placed.placement } : row;
+    return placed ? placedRow(row, row.threadId!, placed.placement) : row;
   }
 
   /**
@@ -151,15 +169,13 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
       const stamp = held && held.at > at ? held.at : at;
       if (stamp !== at && isOpenAgentRow(held!.row)) continue;
       into.set(row.token, stamp);
-      out.push(placedOver(stamp === at ? row : flat(held!.row, row), stamp));
+      out.push(withPlacement(stamp === at ? row : flat(held!.row, row)));
     }
     return out;
   }
 
   // A Past read that started at `at` has finished: a row held from before
-  // it, every later page read answers for. Placements stay until the thread
-  // changes: an open-list read that started before one may still be out,
-  // and there is one per Show in Sidebar.
+  // it, every later page read answers for.
   function release(at: number): void {
     for (const [token, held] of heldRows) if (held.at < at) heldRows.delete(token);
   }
@@ -317,17 +333,21 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
       refresh.request({ immediate: true });
     },
 
-    placed(threadId: string, placement: string): void {
-      heldPlacements.set(threadId, { placement, at: ++clock });
-      if (!rows.some((row) => row.threadId === threadId)) return;
-      rows = rows.map((row) => (row.threadId === threadId ? { ...row, placement } : row));
+    placed(threadId: string, placement: string, backend: BackendKey): void {
+      heldPlacements.set(threadId, { placement, backend });
+      const next = rows.map((row) => placedRow(row, threadId, placement));
+      if (next.some((row, i) => row !== rows[i])) rows = next;
     },
 
     readStarted(): number {
       return ++clock;
     },
 
-    placedSince: placedOver,
+    withPlacement,
+
+    forgetPlacements(backend: BackendKey): void {
+      for (const [threadId, placed] of heldPlacements) if (placed.backend === backend) heldPlacements.delete(threadId);
+    },
 
     patch(read: readonly ThreadAgentRow[], at: number): void {
       if (read.length === 0) return;
@@ -355,7 +375,7 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
           continue;
         }
         stamps.set(row.token, at);
-        const updated = placedOver(flat(fresh, row), at);
+        const updated = withPlacement(flat(fresh, row));
         if (!sameAgentRow(row, updated)) changed = true;
         out.push(sameAgentRow(row, updated) ? row : updated);
       }

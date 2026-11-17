@@ -50,6 +50,8 @@ import { GetThreadAgentRows, ListThreadAgentRows, type ThreadAgentRow } from '..
 import { getQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { userMessageOriginThread, userMessageOriginWake } from '../../utils/userMessageMeta';
 import { onThreadAgentRowsChanged } from '../../stores/eventsThreadAgentRows';
+import { onThreadPlacementFrame } from '../../stores/threadPlacementFrames';
+import type { BackendKey } from '../../transport/backendKey';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import { createRefreshScheduler, type RefreshToken } from '../../utils/refreshScheduler';
@@ -63,7 +65,7 @@ import {
   visibleAgentRows,
 } from '../../utils/agentTray';
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
-import { createPastAgentRows, type AgentReadStatus, type PastAgentRows } from './activityRailAgentsPast.svelte';
+import { createPastAgentRows, placedRow, type AgentReadStatus, type PastAgentRows } from './activityRailAgentsPast.svelte';
 import { errString } from '../../utils/errors';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
@@ -135,8 +137,11 @@ export interface AgentController {
   retry(): void;
   /** Take a row that is not open out now, as its click does. */
   dismiss(token: string): void;
-  /** A row's thread got a new sidebar placement (Show in Sidebar). */
-  placed(threadId: string, placement: string): void;
+  /**
+   * The sidebar placement `backend`, the computer holding a row's thread,
+   * answered Show in Sidebar with; its frames say the same.
+   */
+  placed(threadId: string, placement: string, backend: BackendKey): void;
   /** Subscribe to events; returns a disposer. Call once from onMount. */
   mount(): () => void;
 }
@@ -174,6 +179,12 @@ export function createAgentController(
   const remembered = new Map<string, SettledMemory>();
   let shownFor: string | null = null;
 
+  function placed(placedThreadId: string, placement: string, backend: BackendKey): void {
+    past.placed(placedThreadId, placement, backend);
+    const next = listed.map((row) => placedRow(row, placedThreadId, placement));
+    if (next.some((row, i) => row !== listed[i])) listed = next;
+  }
+
   function remember(id: string): void {
     remembered.delete(id);
     remembered.set(id, { seen: settledSeen, dismissed });
@@ -206,9 +217,9 @@ export function createAgentController(
     read: readonly ThreadAgentRow[] = next,
     named: readonly string[] = [],
   ): void {
-    // A placement made while the read was out stands: no agent rows frame
-    // follows Show in Sidebar.
-    next = next.map((row) => past.placedSince(row, at));
+    // The placement the thread's own computer said stands over the one
+    // this read relays (activityRailAgentsPast.svelte.ts, Placement).
+    next = next.map((row) => past.withPlacement(row));
     // The wall clock, not the rail's: the rail's clock stops while nothing
     // it shows needs it, and a stamp from its last tick would end the
     // linger on the first tick after it starts again.
@@ -410,11 +421,7 @@ export function createAgentController(
       dismissed = new Set([...dismissed, token]);
     },
 
-    placed(placedThreadId: string, placement: string): void {
-      past.placed(placedThreadId, placement);
-      if (!listed.some((row) => row.threadId === placedThreadId)) return;
-      listed = listed.map((row) => (row.threadId === placedThreadId ? { ...row, placement } : row));
-    },
+    placed,
 
     mount(): () => void {
       // A frame about a row the list holds that runs here reads that row;
@@ -446,7 +453,13 @@ export function createAgentController(
         }
         refresh.request({ immediate: change === null });
       });
+      // A placement the computer holding a shown row's thread announced.
+      const cancelPlacement = onThreadPlacementFrame((placedThreadId, placement, backend) => {
+        const shownHere = (row: ThreadAgentRow) => row.threadId === placedThreadId;
+        if (listed.some(shownHere) || past.rows.some(shownHere)) placed(placedThreadId, placement, backend);
+      });
       const cancelStatus = onBackendStatusChange((backend, status) => {
+        if (status.status !== 'connected') past.forgetPlacements(backend);
         if (!threadId || threadBackend(threadId) !== backend) return;
         refresh.reset();
         listDue = true;
@@ -457,6 +470,7 @@ export function createAgentController(
       });
       return () => {
         cancelChanged();
+        cancelPlacement();
         cancelStatus();
         refresh.dispose();
         past.dispose();

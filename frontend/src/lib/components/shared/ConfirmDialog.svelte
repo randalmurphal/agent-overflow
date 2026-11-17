@@ -15,6 +15,9 @@
   // An optional destructive alternative (`alternateLabel` with
   // `onAlternate`) sits between Cancel and Confirm, for a prompt whose
   // confirm has a stronger variant the user must pick deliberately.
+  //
+  // `confirmDisabled` holds Confirm while the prompt does not yet know what
+  // confirming does; nothing confirms it then.
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
 
@@ -24,6 +27,7 @@
     description,
     confirmLabel = 'Confirm',
     cancelLabel = 'Cancel',
+    confirmDisabled = false,
     destructive = false,
     alternateLabel,
     alternateDisabled = false,
@@ -37,6 +41,7 @@
     description: string;
     confirmLabel?: string;
     cancelLabel?: string;
+    confirmDisabled?: boolean;
     destructive?: boolean;
     alternateLabel?: string;
     alternateDisabled?: boolean;
@@ -78,6 +83,7 @@
       variant={destructive ? 'danger' : 'primary'}
       size="sm"
       autofocus={!destructive}
+      disabled={confirmDisabled}
       onclick={onConfirm}
     >
       {#snippet children()}{confirmLabel}{/snippet}

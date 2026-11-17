@@ -29,7 +29,9 @@ import {
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { TransportError } from '../../transport/wsClient';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
+import { getToasts } from '../../stores/toast.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert, installThreadSwitchMocks } from '../../../test/helpers/chat';
 import { endThreadRowDrag, THREAD_ROW_DRAG_MIME, threadDragPayloadForEvent } from '../../utils/threadDragPayload';
@@ -1781,6 +1783,41 @@ describe('<ThreadRow> compact layout', () => {
     expect(menu?.hasAttribute('data-popover-sheet')).toBe(false);
     expect(menu?.querySelector('[role="menu"]')).not.toBeNull();
     expect(pane.threadId).toBeNull();
+  });
+
+  // A thread on a computer on v0.0.19, from the phone's row menu: the
+  // confirmation knows at once that the delete takes nothing more, the
+  // delete goes through DeleteThread, and the archive's null answer is a
+  // success (test/helpers/olderComputer.ts).
+  it('archives and deletes a thread on a computer on v0.0.19 from its menu', async () => {
+    await primeSettings({ confirmDelete: true, confirmArchive: false });
+    answerAsV0019();
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    type RowView = { getByTestId: (id: string) => HTMLElement; getByRole: (role: string, options: { name: string }) => HTMLElement };
+    const menuItem = async (view: RowView, name: string) => {
+      await fireEvent.click(view.getByTestId('thread-row-menu'));
+      await tick();
+      return view.getByRole('menuitem', { name });
+    };
+
+    const doomed = makeThread({ id: 'old-delete', title: 'Old delete' });
+    const deleting = render(ThreadRow, { props: { thread: doomed, pane } });
+    await fireEvent.click(await menuItem(deleting, 'Delete'));
+    const confirm = () => [...document.querySelectorAll<HTMLButtonElement>('button:not([role="menuitem"])')]
+      .find((b) => b.textContent?.trim() === 'Delete');
+    await vi.waitFor(() => expect(confirm()?.disabled).toBe(false));
+    expect(document.body.textContent).not.toContain('could not be checked');
+    await fireEvent.click(confirm()!);
+    await vi.waitFor(() => expect(getBindingMock('DeleteThread')).toHaveBeenCalledWith('old-delete'));
+    deleting.unmount();
+
+    const archived = render(ThreadRow, { props: { thread: makeThread({ id: 'old-archive', title: 'Old archive' }), pane } });
+    await fireEvent.click(await menuItem(archived, 'Archive Thread'));
+    await vi.waitFor(() => expect(getBindingMock('ArchiveThread')).toHaveBeenCalledWith('old-archive'));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(getToasts()).toEqual([]);
+    archived.unmount();
   });
 
   it('keeps the row draggable on the desktop', async () => {

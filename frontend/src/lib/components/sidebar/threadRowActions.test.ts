@@ -1,10 +1,12 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 import {
   archiveThreadAction,
   deleteThreadAction,
   deleteThreadsAction,
   forkThreadAction,
+  markAllReadAction,
   nextAssistantThreadAction,
   pinThreadAction,
   setThreadPinGroupAction,
@@ -182,9 +184,10 @@ describe('archiveThreadAction', () => {
     const archive = vi.fn(async (id: string) => (id === 'thread-1'
       ? { workersNotArchived: [
           { threadId: 'worker-1', title: 'Parser review', error: 'thread is preparing a fork' },
-          { threadId: 'remote-1', title: 'Kernel build', computer: 'Laptop', pending: true, error: 'Laptop did not answer in time; it is archived there once that computer answers' },
-          { threadId: 'remote-2', title: 'Soak run', computer: 'Laptop', pending: true, error: 'Laptop: its thread there is still being made; it is archived there once that computer takes it' },
-          { threadId: '', title: '', computer: 'Desk', error: 'Desk runs an older version, so the worker there was not archived' },
+          { threadId: 'remote-1', title: 'Kernel build', computer: 'Laptop', computerId: 'c-laptop', pending: true, error: 'Laptop did not answer in time; it is archived there once that computer answers' },
+          { threadId: 'remote-2', title: 'Soak run', computer: 'Laptop', computerId: 'c-laptop', pending: true, error: 'Laptop: its thread there is still being made; it is archived there once that computer takes it' },
+          { threadId: 'remote-3', title: 'Fuzz run', computer: 'Laptop', computerId: 'c-laptop', pending: true, error: 'Laptop did not answer in time; it is archived there once that computer answers' },
+          { threadId: '', title: '', computer: 'Desk', computerId: 'c-desk', error: 'Desk runs an older version, so the worker there was not archived' },
         ] }
       : {}));
     setBindingMock('ArchiveThread', archive);
@@ -193,7 +196,7 @@ describe('archiveThreadAction', () => {
     expect(ctx.reportError).not.toHaveBeenCalled();
     expect(getToasts().map((toast) => [toast.type, toast.message, toast.action?.label ?? null])).toEqual([
       ['warning', 'Archived "Source thread", but its worker "Parser review" is still open: Thread is preparing a fork.', 'Archive again'],
-      ['info', 'Archived "Source thread". Its workers "Kernel build", "Soak run" are pending on Laptop. Laptop did not answer in time; it is archived there once that computer answers.', null],
+      ['info', 'Archived "Source thread". Its workers "Kernel build", "Soak run", "Fuzz run" are pending on Laptop. "Kernel build", "Fuzz run": Laptop did not answer in time; it is archived there once that computer answers. "Soak run": Laptop: its thread there is still being made; it is archived there once that computer takes it.', null],
       ['warning', 'Archived "Source thread", but its worker on Desk is still open: Desk runs an older version, so the worker there was not archived.', null],
     ]);
     getToasts()[0].action?.run();
@@ -284,8 +287,10 @@ describe('deleteThreadAction', () => {
   // again until it lands; deleting again here has nothing left to delete.
   it('names a worker on another computer as pending there, and one on an older computer once, offering no delete again', async () => {
     const remove = vi.fn(async () => ({ workersNotDeleted: [
-      { threadId: 'remote-1', title: 'Kernel build', computer: 'Laptop', pending: true, error: 'Laptop: refused for now: it is being transferred to another computer; it is deleted there once that computer takes it' },
-      { threadId: 'remote-2', title: 'Soak run', computer: 'Desk', error: 'Desk runs an older version, so the worker there was not deleted' },
+      { threadId: 'remote-1', title: 'Kernel build', computer: 'Laptop', computerId: 'c-laptop', pending: true, error: 'Laptop: refused for now: it is being transferred to another computer; it is deleted there once that computer takes it' },
+      { threadId: 'remote-2', title: 'Soak run', computer: 'Desk', computerId: 'c-desk', error: 'Desk runs an older version, so the worker there was not deleted' },
+      // A second computer that shares the first one's name is its own toast.
+      { threadId: 'remote-3', title: 'Fuzz run', computer: 'Laptop', computerId: 'c-laptop-2', pending: true, error: 'Laptop did not answer in time; it is deleted there once that computer answers' },
     ] }));
     setBindingMock('DeleteThreads', remove);
     const ctx = makeCtx({});
@@ -293,6 +298,7 @@ describe('deleteThreadAction', () => {
     expect(ctx.reportError).not.toHaveBeenCalled();
     expect(getToasts().map((toast) => [toast.type, toast.message, toast.action?.label ?? null])).toEqual([
       ['info', 'Deleted "Source thread". Its worker "Kernel build" is pending on Laptop. Laptop: refused for now: it is being transferred to another computer; it is deleted there once that computer takes it.', null],
+      ['info', 'Deleted "Source thread". Its worker "Fuzz run" is pending on Laptop. Laptop did not answer in time; it is deleted there once that computer answers.', null],
       ['warning', 'Deleted "Source thread", but its worker "Soak run" on Desk stays: Desk runs an older version, so the worker there was not deleted.', null],
     ]);
     expect(remove).toHaveBeenCalledTimes(1);
@@ -346,6 +352,86 @@ describe('deleteThreadAction', () => {
       resetStagedBackends();
       __resetEntityIndexForTest();
     }
+  });
+});
+
+// A thread on a computer on v0.0.19 (test/helpers/olderComputer.ts): the
+// archive and delete answer null, and DeleteThreads and MarkThreadsRead are
+// not there. Each action goes through the method that release has and
+// reports nothing when it went.
+describe('thread actions on a computer on v0.0.19', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    clearThreadsForTest();
+    for (const toast of getToasts()) removeToast(toast.id);
+    stageBackend();
+    noteThread('thread-1', 'laptop');
+    answerAsV0019();
+  });
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  it('archives it there and says nothing more', async () => {
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+    await archiveThreadAction(ctx);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getBindingMock('ArchiveThread')).toHaveBeenCalledWith('thread-1');
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getToasts()).toEqual([]);
+  });
+
+  it('deletes it there with DeleteThread and says nothing more', async () => {
+    const pins: (string | null)[] = [];
+    setBindingMock('DeleteThread', async () => { pins.push(getPinnedBackend()); return null; });
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+    await deleteThreadAction(ctx);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(pins).toEqual(['laptop']);
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getToasts()).toEqual([]);
+  });
+
+  it('keeps the row and says why when that release refuses the delete', async () => {
+    setBindingMock('DeleteThread', async () => { throw new Error('thread is busy'); });
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+    await deleteThreadAction(ctx);
+    expect(getThreadById('thread-1')).toBeDefined();
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls.map(([message]) => message)).toEqual(['Thread is busy.']);
+  });
+
+  it('deletes a selection one thread at a time, keeping the deleted ones gone and naming each it could not delete', async () => {
+    noteThread('thread-2', 'laptop');
+    noteThread('thread-3', 'laptop');
+    setBindingMock('DeleteThread', async (id: string) => {
+      if (id === 'thread-2') throw new Error('thread is busy');
+      return null;
+    });
+    for (const id of ['thread-1', 'thread-2', 'thread-3']) prependThread(makeCtx({ id }).thread);
+    const reportError = vi.fn();
+    const complete = await deleteThreadsAction([
+      { id: 'thread-1', title: 'One' }, { id: 'thread-2', title: 'Two' }, { id: 'thread-3', title: 'Three' },
+    ], reportError);
+    expect(complete).toBe(false);
+    expect(getBindingMock('DeleteThread')!.mock.calls).toEqual([['thread-1'], ['thread-2'], ['thread-3']]);
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getThreadById('thread-2')).toBeDefined();
+    expect(getThreadById('thread-3')).toBeUndefined();
+    expect(reportError.mock.calls.map(([message]) => message)).toEqual(['Could not delete "Two": Thread is busy.']);
+  });
+
+  it('marks a group read there one thread at a time', async () => {
+    noteThread('thread-2', 'laptop');
+    const unread = (id: string) => ({ ...makeCtx({ id }).thread, latestTurnCompletedAt: 50, lastReadAt: 10 });
+    for (const id of ['thread-1', 'thread-2']) prependThread(unread(id));
+    await markAllReadAction([unread('thread-1'), unread('thread-2')]);
+    expect(getBindingMock('MarkThreadRead')!.mock.calls).toEqual([['thread-1'], ['thread-2']]);
+    expect(getToasts()).toEqual([]);
   });
 });
 

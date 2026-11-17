@@ -7,6 +7,7 @@ import { tick } from 'svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
+import { TransportError } from '../../transport/wsClient';
 
 async function seed(overrides: Partial<Settings>, native: { claude: boolean; codex: boolean } | Error): Promise<void> {
   let saved: Settings = makeSettings(overrides);
@@ -117,6 +118,18 @@ describe('<MemorySettings>', () => {
     await seed({ sharedMemoryEnabled: true }, new Error('read Codex config: bad toml'));
     const { findByTestId, queryAllByTestId } = render(MemorySettings);
     expect((await findByTestId('memory-native-error')).textContent).toContain('read Codex config: bad toml');
+    expect(queryAllByTestId('memory-overlap-warning')).toHaveLength(0);
+  });
+
+  // v0.0.19 has no read of the providers' own memory: nothing to warn of
+  // and nothing failed.
+  it('says nothing of the providers on a computer without the read', async () => {
+    await seed({ sharedMemoryEnabled: true }, new TransportError('method_not_found', 'unknown method'));
+    const { getByTestId, queryAllByTestId } = render(MemorySettings);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getBindingMock('GetNativeMemoryStatus')).toHaveBeenCalled();
+    expect(getByTestId('settings-memory')).toBeDefined();
+    expect(queryAllByTestId('memory-native-error')).toHaveLength(0);
     expect(queryAllByTestId('memory-overlap-warning')).toHaveLength(0);
   });
 });

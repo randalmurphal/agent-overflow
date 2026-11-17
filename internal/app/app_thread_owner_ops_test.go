@@ -39,6 +39,9 @@ type ownerOpPeer struct {
 	// replying, when set, runs before an agent_prompt_reply reaches the
 	// app; an error it returns is the call's answer.
 	replying atomic.Pointer[func() error]
+	// answering, when set, is this computer's answer to every owner
+	// operation, which then does not reach the app.
+	answering atomic.Pointer[threadOwnerOpAnswer]
 }
 
 var errPeerUnreachable = errors.New("the computer cannot be reached")
@@ -80,6 +83,10 @@ func (p *ownerOpPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (
 	}
 	if p.asleep.Load() {
 		return ThreadPeerReply{}, errors.New("the computer is asleep")
+	}
+	if answer := p.answering.Load(); answer != nil {
+		encoded, err := json.Marshal(answer)
+		return ThreadPeerReply{Result: encoded}, err
 	}
 	if hold := p.hold.Load(); hold != nil {
 		var args threadOwnerOpArgs
@@ -212,8 +219,8 @@ func TestAnUnansweredArchiveIsPendingUntilTheComputerAnswers(t *testing.T) {
 		t.Fatalf("WorkersNotArchived = %+v, want the worker there", result.WorkersNotArchived)
 	}
 	failure := result.WorkersNotArchived[0]
-	if !failure.Pending || failure.ThreadID != p.worker || failure.Computer == "" || failure.Error == "" {
-		t.Fatalf("the worker there is reported %+v, want it pending on its computer", failure)
+	if !failure.Pending || failure.ThreadID != p.worker || failure.Computer == "" || failure.ComputerID != p.computer || failure.Error == "" {
+		t.Fatalf("the worker there is reported %+v, want it pending on its computer %s", failure, p.computer)
 	}
 	if row, _ := p.source.store.GetThread(p.caller.ID); !row.Archived {
 		t.Fatal("the spawner's archive did not stand")
@@ -245,6 +252,27 @@ func TestAnUnansweredArchiveIsPendingUntilTheComputerAnswers(t *testing.T) {
 	}
 	if owed := p.owed(t); len(owed) != 0 {
 		t.Fatalf("still owed %+v", owed)
+	}
+}
+
+// A worker below the worker there that its computer could not archive yet
+// is reported pending on that computer, by its id, so a report groups it
+// with the computer's other workers.
+func TestAWorkerBelowThatIsNotArchivedYetNamesItsComputer(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	p.peer.answering.Store(&threadOwnerOpAnswer{Outcome: ownerOpUnfinished,
+		Failures: []WorkerFailure{{ThreadID: "below", Title: "Below", Error: "it is busy"}}})
+	result, err := p.source.ArchiveThread(p.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.WorkersNotArchived) != 1 {
+		t.Fatalf("WorkersNotArchived = %+v, want the worker below", result.WorkersNotArchived)
+	}
+	failure := result.WorkersNotArchived[0]
+	if !failure.Pending || failure.ThreadID != "below" || failure.Computer == "" || failure.ComputerID != p.computer || !strings.Contains(failure.Error, "it is busy") {
+		t.Fatalf("the worker below is reported %+v, want it pending on its computer %s", failure, p.computer)
 	}
 }
 

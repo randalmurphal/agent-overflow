@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentController, type AgentController } from './activityRailAgents.svelte';
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
-import { buildPane } from '../../../test/helpers/chat';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { buildPane, makeThread } from '../../../test/helpers/chat';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
@@ -217,7 +218,10 @@ describe('agents controller', () => {
     expect(controller.rows[1].activity).toBe('Reading');
   });
 
-  it('keeps a placement made while a list read is out, and a later read stands', async () => {
+  // The placement a row shows is what the computer holding its thread said,
+  // in its answer to Show in Sidebar or a frame; a list read relays a cache
+  // of that computer, from before or after the placement alike.
+  it('keeps the placement its thread\'s computer said over every list read, until that computer says another', async () => {
     const { pane, controller } = await mountAgents([row('child', { placement: 'owned' })]);
     let land = (_rows: ThreadAgentRow[]) => {};
     setBindingMock('ListThreadAgentRows', () => new Promise((resolve) => {
@@ -225,19 +229,63 @@ describe('agents controller', () => {
     }));
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
     await vi.advanceTimersByTimeAsync(500);
-    controller.placed('t-child', 'standalone');
+    controller.placed('t-child', 'standalone', '');
     // A Past read that starts and finishes meanwhile does not answer for it.
     controller.past.toggle();
     await vi.advanceTimersByTimeAsync(0);
     land([row('child', { placement: 'owned' })]);
     await vi.advanceTimersByTimeAsync(0);
     expect(controller.rows[0].placement, 'the older read undid Show in Sidebar').toBe('standalone');
-    // A read started after the placement answers for it.
+    // Nor does one started after the placement.
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
     await vi.advanceTimersByTimeAsync(500);
     land([row('child', { placement: 'owned' })]);
     await vi.advanceTimersByTimeAsync(0);
+    expect(controller.rows[0].placement, 'a later cached read undid Show in Sidebar').toBe('standalone');
+    // The thread's computer announces Remove from Sidebar.
+    emitWailsEvent('thread:updated', { action: 'full', thread: makeThread({ id: 't-child', placement: 'owned' }) });
     expect(controller.rows[0].placement).toBe('owned');
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    land([row('child', { placement: 'standalone' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.rows[0].placement, 'a cached read undid Remove from Sidebar').toBe('owned');
+  });
+
+  // A frame missed while the window's connection to that computer was down
+  // leaves no word of it standing: the rows show what the reads relay.
+  it('drops what a computer said of a placement when the connection to it drops', async () => {
+    const { pane, controller } = await mountAgents([row('child', { placement: 'owned' })]);
+    controller.placed('t-child', 'standalone', '');
+    __setBackendStatusForTest('', { status: 'reconnecting', nextAttemptAt: null });
+    __setBackendStatusForTest('', { status: 'connected', nextAttemptAt: null });
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [row('child', { placement: 'owned' })], hidden: false }));
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(controller.rows[0].placement).toBe('owned');
+  });
+
+  // Frames about threads the tray does not show leave nothing behind.
+  it('holds no placement for a thread it does not show', async () => {
+    const { pane, controller } = await mountAgents([row('child', { placement: 'owned' })]);
+    emitWailsEvent('thread:updated', { action: 'listed', thread: makeThread({ id: 't-elsewhere', placement: 'standalone' }) });
+    setBindingMock('ListThreadAgentRows', async () => ({
+      rows: [row('child', { placement: 'owned' }), row('elsewhere', { placement: 'owned' })], hidden: false,
+    }));
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(controller.rows.map((r) => r.placement)).toEqual(['owned', 'owned']);
+  });
+
+  // An assistant's helper takes no placement: its row reads none, while its
+  // thread's frames still carry the stored column.
+  it('gives no placement to a row that takes none, from a frame or the reads after it', async () => {
+    const { pane, controller } = await mountAgents([row('helper', { placement: undefined })]);
+    emitWailsEvent('thread:updated', { action: 'full', thread: makeThread({ id: 't-helper', placement: 'owned' }) });
+    expect(controller.rows[0].placement, 'the frame offered Show in Sidebar').toBeFalsy();
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(controller.rows[0].placement, 'a read after the frame offered Show in Sidebar').toBeFalsy();
   });
 
   it('reads again for its own thread and a nested caller, not another thread, and after a lost frame', async () => {
@@ -438,6 +486,29 @@ describe('agents controller', () => {
     expect(controller.status).toBe('loaded');
     expect(controller.error).toBe('');
     expect(controller.rows.map((r) => r.token)).toEqual(['child']);
+  });
+
+  // v0.0.19 has no agent rows: a thread there shows no Agents segment, no
+  // error and no diagnostic, and a frame does not set off another read.
+  it('shows nothing for a thread on a computer without agent rows', async () => {
+    vi.useFakeTimers();
+    const pane = await buildPane();
+    noteThread(pane.threadId!, '', 2);
+    vi.mocked(reportFrontendDiagnostic).mockClear();
+    answerAsV0019();
+    stopEvents = setupEventListeners();
+    let controller!: AgentController;
+    release = $effect.root(() => {
+      controller = createAgentController(() => pane, () => Date.now());
+      return controller.mount();
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(getBindingMock('ListThreadAgentRows')).toHaveBeenCalledTimes(1);
+    expect(controller.status).toBe('loaded');
+    expect(controller.error).toBe('');
+    expect(controller.rows).toEqual([]);
+    expect(controller.shown).toBe(0);
+    expect(reportFrontendDiagnostic).not.toHaveBeenCalled();
   });
 
   it('reads again when its computer reconnects', async () => {

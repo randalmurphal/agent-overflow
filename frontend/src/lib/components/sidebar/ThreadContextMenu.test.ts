@@ -8,7 +8,8 @@ import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../../test/helpers/olderComputer';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
@@ -70,6 +71,11 @@ function visibleLabels(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('[role="menuitem"]'))
     .map((el) => el.textContent?.trim() ?? '')
     .filter((text) => text.length > 0);
+}
+
+/** The confirmation's Delete button, beside its Cancel. */
+function confirmButton(root: HTMLElement): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
 }
 
 describe('<ThreadContextMenu> single-row menu', () => {
@@ -421,20 +427,102 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     ));
   });
 
-  it('says nothing of workers when the thread has none or they could not be counted', async () => {
+  it('says nothing of workers when the thread has none, or is on a computer older than the read', async () => {
     await primeSettings({ confirmDelete: true });
     for (const read of [
       async () => ({ pastThreads: 0, helpers: 0, workers: 0 }),
-      async () => { throw new Error('database is locked'); },
+      // v0.0.19 has no GetDeleteDependents: its delete takes no workers.
+      async () => { throw Object.assign(new Error('method not found'), { code: 'method_not_found' }); },
     ]) {
       const counted = setBindingMock('GetDeleteDependents', read);
+      const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
       const view = renderMenu(makeThread({ id: 'plain' }));
       await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
       await waitFor(() => expect(counted).toHaveBeenCalledWith(['plain']));
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
-      expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('worker');
+      await waitFor(() => expect(confirmButton(view.baseElement)?.disabled).toBe(false));
+      const text = view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent;
+      expect(text).not.toContain('worker');
+      expect(text).not.toContain('could not be checked');
+      await fireEvent.click(confirmButton(view.baseElement)!);
+      await waitFor(() => expect(remove).toHaveBeenCalledWith(['plain']));
       view.unmount();
     }
+  });
+
+  // Unknown is not none: until the read answers, the delete cannot be
+  // confirmed, whatever it would take on another computer.
+  it('cannot be confirmed before it knows what the delete takes', async () => {
+    await primeSettings({ confirmDelete: true });
+    let answer: (counts: object) => void = () => {};
+    setBindingMock('GetDeleteDependents', () => new Promise((resolve) => { answer = resolve; }));
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    const view = renderMenu(makeThread({ id: 'early' }));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+    await tick();
+    const confirm = confirmButton(view.baseElement)!;
+    expect(confirm.disabled).toBe(true);
+    await fireEvent.click(confirm);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(remove).not.toHaveBeenCalled();
+    answer({ pastThreads: 0, helpers: 0, workers: 0, remoteWorkers: true });
+    await waitFor(() => expect(confirmButton(view.baseElement)?.disabled).toBe(false));
+    expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent)
+      .toContain('Workers it spawned on other computers are deleted there too.');
+    await fireEvent.click(confirmButton(view.baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['early']));
+  });
+
+  it('cannot confirm a bulk delete before it knows what the delete takes, and says when the read failed', async () => {
+    await primeSettings({ confirmDelete: false });
+    let fail: (err: Error) => void = () => {};
+    setBindingMock('GetDeleteDependents', () => new Promise((_resolve, reject) => { fail = reject; }));
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await tick();
+    expect(confirmButton(baseElement)?.disabled).toBe(true);
+    await fireEvent.click(confirmButton(baseElement)!);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(remove).not.toHaveBeenCalled();
+    fail(new Error('database is locked'));
+    await waitFor(() => expect(confirmButton(baseElement)?.disabled).toBe(false));
+    expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'This will permanently delete 2 threads and all their messages. This action cannot be undone. Their sub-threads could not be checked; any they have are deleted too, here and on other computers.',
+    );
+    await fireEvent.click(confirmButton(baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['thread-1', 'thread-2']));
+  });
+
+  it('says the sub-threads could not be checked when the read fails, and can still be confirmed', async () => {
+    await primeSettings({ confirmDelete: true });
+    setBindingMock('GetDeleteDependents', async () => { throw new Error('database is locked'); });
+    const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));
+    const view = renderMenu(makeThread({ id: 'unchecked' }));
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+    await waitFor(() => expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'This will permanently delete this thread and all its messages. This action cannot be undone. Its sub-threads could not be checked; any it has are deleted too, here and on other computers.',
+    ));
+    expect(confirmButton(view.baseElement)?.disabled).toBe(false);
+    await fireEvent.click(confirmButton(view.baseElement)!);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['unchecked']));
+  });
+
+  // v0.0.19 has neither GetDeleteDependents nor DeleteThreads: the bulk
+  // confirmation knows at once the delete takes nothing more, and the
+  // threads go one at a time through DeleteThread.
+  it('deletes a selection on a computer on v0.0.19 one thread at a time', async () => {
+    await primeSettings({ confirmDelete: false });
+    answerAsV0019();
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(confirmButton(baseElement)?.disabled).toBe(false));
+    expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('could not be checked');
+    await fireEvent.click(confirmButton(baseElement)!);
+    await waitFor(() => expect(getBindingMock('DeleteThread')!.mock.calls).toEqual([['thread-1'], ['thread-2']]));
   });
 
   // The selection is one delete on its computer: a worker under two of the
@@ -462,9 +550,8 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     setThreadSelection(['thread-1', 'thread-2']);
     const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
-    const confirm = Array.from(baseElement.querySelectorAll('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
-    if (!confirm) throw new Error('confirm button not rendered');
-    await fireEvent.click(confirm);
+    await waitFor(() => expect(confirmButton(baseElement)?.disabled).toBe(false));
+    await fireEvent.click(confirmButton(baseElement)!);
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
     expect(remove).toHaveBeenCalledWith(['thread-1', 'thread-2']);
   });

@@ -372,14 +372,15 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 			computer = "The other computer"
 		}
 		for _, member := range attempt.members {
-			failures = append(failures, workerFailure{threadID: member.ThreadID, title: member.Title, computer: computer, pending: true,
+			failures = append(failures, workerFailure{threadID: member.ThreadID, title: member.Title, computer: computer, computerID: op.ComputerID, pending: true,
 				err: fmt.Errorf("%s: %s; it is %s there once that computer takes it", computer, member.Error, ownerOpVerb(op.Op))})
 		}
 		if len(attempt.members) > 0 {
 			continue
 		}
 		target := targets[op.Token]
-		failure := workerFailure{threadID: target.TargetThreadID, title: target.TargetThreadTitle, computer: computer, pending: !attempt.older}
+		failure := workerFailure{threadID: target.TargetThreadID, title: target.TargetThreadTitle, computer: computer, computerID: op.ComputerID,
+			pending: !attempt.older}
 		switch {
 		case attempt.older:
 			failure.err = fmt.Errorf("%s runs an older version, so the worker there was not %s", computer, ownerOpVerb(op.Op))
