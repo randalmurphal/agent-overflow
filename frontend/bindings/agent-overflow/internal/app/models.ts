@@ -8185,7 +8185,8 @@ export class ThreadAgentRow {
      * BlockedOn is approval or question for a target waiting on a prompt,
      * here or as a paired computer's agent_rows answer reports it, and
      * person for a paired computer's target known only to be blocked;
-     * BlockedDetail says what it asks and BlockedRoutedTo names the
+     * BlockedDetail says what it asks, an approval's only to a reader that
+     * may answer it (withholdApprovalDetail), and BlockedRoutedTo names the
      * spawner its prompt went to (ruling 19). BlockedRoutedHere marks a
      * paired computer's prompt routed back to the spawner here, which
      * BlockedRoutedTo then names as this computer does.
@@ -8400,9 +8401,10 @@ export class ThreadAgentRows {
     /**
      * BlockedOn, BlockedDetail and BlockedRoutedTo are the prompt the
      * listed thread waits on, as its own Agents row here reads it
-     * (threadWaitingOn). RoutedToAsker says that prompt went to the thread
-     * on the asking computer whose link owns the listed thread
-     * (routedToAsker), which that computer names itself.
+     * (threadWaitingOn), an approval's detail withheld from a session that
+     * may not answer it (withholdApprovalDetail). RoutedToAsker says that
+     * prompt went to the thread on the asking computer whose link owns the
+     * listed thread (routedToAsker), which that computer names itself.
      */
     "blockedOn"?: string;
     "blockedDetail"?: string;
