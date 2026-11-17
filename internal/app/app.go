@@ -812,6 +812,15 @@ type App struct {
 	// a held request's thread under a paused assistant (settleRestedReceipts),
 	// so a test can turn assistants off and on again at that moment.
 	restPausedReadForTest func(threadID string)
+	// threadAgentDrainForTest, when set, runs in the Agents rows' drain
+	// before it takes each batch (drainThreadAgentEmits), so a test can hold
+	// what liveWorkers records behind a change.
+	threadAgentDrainForTest func()
+	// restBelowReadForTest, when set, runs in a held request's read of its
+	// thread's rest once the thread's own sources read it at rest and before
+	// the threads below it are read (heldThreadAtRest), so a test can break
+	// a source there.
+	restBelowReadForTest func(threadID string)
 	// admitWorkForTest, when set, runs as a call reaches admitWork, after
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.

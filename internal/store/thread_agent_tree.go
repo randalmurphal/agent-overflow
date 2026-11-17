@@ -496,6 +496,45 @@ func (s *Store) SpawnLinkOf(threadID string) (token string, found bool, err erro
 var spawnLinkOfSQL = `SELECT link.token FROM thread_requests AS link
 	WHERE ` + agentSpawnLinkSQL("link") + ` AND link.target_thread_id = ?1`
 
+// ThreadsSpawnedBelow lists, by id, the threads of this computer reached
+// from any of roots through local spawn links, at any depth, settled and
+// lineage links included: every thread whose own work a spawn above it is
+// open for. One statement; it reads each reached thread's requests by
+// caller (idx_thread_requests_caller_settled), so its cost follows the
+// subtree, not the computer. A cycle ends at the threads already reached.
+func (s *Store) ThreadsSpawnedBelow(roots []string) (_ []string, err error) {
+	action := "store: list the threads spawned below " + strings.Join(roots, ", ")
+	encoded, err := json.Marshal(roots)
+	if err != nil {
+		return nil, fmt.Errorf("%s: encode: %w", action, err)
+	}
+	rows, err := s.reader().Query(threadsSpawnedBelowSQL, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("%s: scan: %w", action, err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: iterate: %w", action, err)
+	}
+	return out, nil
+}
+
+var threadsSpawnedBelowSQL = `WITH RECURSIVE below(id) AS (
+    SELECT link.target_thread_id FROM json_each(?1) CROSS JOIN thread_requests AS link
+     WHERE link.caller_thread_id = json_each.value AND ` + agentSpawnLinkSQL("link") + `
+    UNION
+    SELECT link.target_thread_id FROM below CROSS JOIN thread_requests AS link
+     WHERE link.caller_thread_id = below.id AND ` + agentSpawnLinkSQL("link") + `)
+SELECT below.id FROM below CROSS JOIN threads ON threads.id = below.id ORDER BY below.id`
+
 // agentOpenBelowSQL is whether a local spawn has open work under its
 // target within agentOpenDepth, the term of idx_thread_requests_open_below.
 func agentOpenBelowSQL(alias string) string {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -109,6 +110,13 @@ func (a *App) restSettlement(receipt store.ThreadRequestReceipt, settlement stor
 // the boot has not recovered every source of it, and while a stop brings the
 // thread to rest (holdRest): the stop cancels what held it before it settles
 // the requests on it, which it settles itself.
+//
+// A `finished` settlement cannot be taken back, so a thread that reads at
+// rest is read again with the threads below it fresh: each thread a spawn
+// reached from it is reassessed from its sources now (reassessSpawnedBelow),
+// and the listing's state read again over that record. What the Agents rows'
+// drain has not yet recorded, a child that took work since, is read there.
+// A read that fails leaves the request held for the next pass.
 func (a *App) heldThreadAtRest(threadID string) (bool, error) {
 	a.threadRequests.mu.Lock()
 	barred := a.threadRequests.rest.barred
@@ -117,7 +125,42 @@ func (a *App) heldThreadAtRest(threadID string) (bool, error) {
 		return false, nil
 	}
 	rest, err := a.threadRest(threadID)
-	return err == nil && rest.unrest == "", err
+	if err != nil || rest.unrest != "" {
+		return false, err
+	}
+	if hook := a.restBelowReadForTest; hook != nil {
+		hook(threadID)
+	}
+	if err := a.reassessSpawnedBelow([]string{threadID}, false); err != nil {
+		return false, err
+	}
+	state, err := a.threadAgentState(threadID)
+	return err == nil && !state.OpenBelow, err
+}
+
+// reassessSpawnedBelow reassesses, from their sources now, durable ones
+// included (reassessWorker), every thread a local spawn reached from roots
+// at any depth, and roots themselves with withRoots, so the listing's reads
+// that follow see what the threads below hold at this moment, not what the
+// drain last recorded. Its cost is one read of the subtree's links and a
+// reassessment per thread in it, whatever else this computer runs. The first
+// thread whose sources cannot be read ends it with that error.
+func (a *App) reassessSpawnedBelow(roots []string, withRoots bool) error {
+	threads, err := a.store.ThreadsSpawnedBelow(roots)
+	if err != nil {
+		return err
+	}
+	if withRoots {
+		threads = append(threads, roots...)
+		slices.Sort(threads)
+		threads = slices.Compact(threads)
+	}
+	for _, id := range threads {
+		if _, err := a.reassessWorker(id, true); err != nil {
+			return fmt.Errorf("read whether %s, spawned below %s, is at rest: %w", id, strings.Join(roots, ", "), err)
+		}
+	}
+	return nil
 }
 
 // restAnswer is a held request's answer at its thread's rest: `finished`

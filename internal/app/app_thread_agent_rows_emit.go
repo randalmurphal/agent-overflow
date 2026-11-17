@@ -151,6 +151,9 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 func (a *App) drainThreadAgentEmits() {
 	e := &a.threadAgentEmits
 	for {
+		if hook := a.threadAgentDrainForTest; hook != nil {
+			hook()
+		}
 		e.mu.Lock()
 		tokens, callers, targets, liveness, runs := e.tokens, e.callers, e.targets, e.liveness, e.workflowRuns
 		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs) == 0 || a.lifeCtx().Err() != nil {

@@ -288,7 +288,7 @@ func (a *App) workerTimerUnrest(threadID string) workerRest {
 //
 //   - triage's sources and the timers are memory;
 //   - the spawn link is recorded, or up to two searches for a thread not
-//     recorded (workerLinkOf);
+//     recorded, or recorded with none and read with durable (workerLinkOf);
 //   - with durable, for a spawned thread only, workerDurableUnrest's reads.
 //
 // It reports whether the thread is a worker, one a spawn made, now
@@ -307,7 +307,9 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 	before, known := w.threads[threadID]
 	w.mu.Unlock()
 	next := liveWorker{link: before.link, waits: before.waits, background: before.background}
-	if !known {
+	// A thread recorded with no link may have been recorded before the
+	// spawn that names it did, as a fork with a question is.
+	if !known || (durable && before.link == "") {
 		link, err := a.workerLinkOf(threadID)
 		if err != nil {
 			return true, err
