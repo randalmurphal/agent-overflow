@@ -50,13 +50,30 @@ export interface AddressSuggestionSources {
 /** The most rows each source contributes, and the most the list shows. */
 export const SUGGESTION_LIMITS = { tab: 4, 'dev-server': 3, recent: 5, total: 8 } as const;
 
-/** An address as compared for duplicates and prefixes: no scheme, no `www.`, no trailing slash. */
+/**
+ * An address as typed text is matched against: no scheme, no `www.`, no
+ * trailing slash, any case. Forgiving, so never an identity.
+ */
 function bare(address: string): string {
   return address
     .toLowerCase()
     .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
     .replace(/^www\./, '')
     .replace(/\/+$/, '');
+}
+
+/**
+ * Where an address goes, for telling one destination from another: the URL
+ * parser's form, so scheme and host case and an empty path's slash
+ * normalize while path, query and fragment stay exact. An address the
+ * parser refuses is its exact text.
+ */
+function destination(address: string): string {
+  try {
+    return new URL(address).href;
+  } catch {
+    return address;
+  }
 }
 
 /**
@@ -102,7 +119,7 @@ export function addressSuggestions(typed: string, sources: AddressSuggestionSour
     const candidates: Candidate[] = [];
     const seen = new Set<string>();
     entries.forEach((entry, order) => {
-      const id = bare(entry.address);
+      const id = destination(entry.address);
       if (offered.has(id) || seen.has(id)) return;
       seen.add(id);
       const rank = matchRank(query, words, entry.address, entry.title);
@@ -114,14 +131,14 @@ export function addressSuggestions(typed: string, sources: AddressSuggestionSour
       });
     });
     const chosen = ranked(candidates, SUGGESTION_LIMITS[kind]);
-    for (const suggestion of chosen) offered.add(bare(suggestion.address));
+    for (const suggestion of chosen) offered.add(destination(suggestion.address));
     return chosen;
   };
 
   // The field's own tab is what the text replaces, so it is no destination,
   // and neither is its address under another source.
   const active = sources.tabs.find((tab) => tab.id === sources.activePageId);
-  if (active?.url) offered.add(bare(active.url));
+  if (active?.url) offered.add(destination(active.url));
   const tabs = collect(
     'tab',
     sources.tabs

@@ -102,6 +102,39 @@ describe('addressSuggestions', () => {
     expect(kinds.filter((k) => k === 'recent').length).toBe(SUGGESTION_LIMITS.total - SUGGESTION_LIMITS.tab - SUGGESTION_LIMITS['dev-server']);
   });
 
+  it('tells destinations apart by everything but scheme and host case and an empty path', () => {
+    const from = sources({
+      tabs: [
+        { id: 'a', url: 'file:///tmp/Report.html', title: '' },
+        { id: 'b', url: 'http://example.test/Path?Q=1', title: '' },
+      ],
+      devServers: [],
+      recent: [
+        // A different file than the field's own tab: paths are case-sensitive.
+        { url: 'file:///tmp/report.html' },
+        // A different scheme, and a different query, than tab b.
+        { url: 'https://example.test/Path?Q=1' },
+        { url: 'http://example.test/Path?q=1' },
+        // Tab b again, spelled with an upper-case scheme and host.
+        { url: 'HTTP://EXAMPLE.TEST/Path?Q=1' },
+        // One destination two ways: the empty path is the root.
+        { url: 'https://Example.test' },
+        { url: 'https://example.test/' },
+        // Text the parser refuses compares exactly.
+        { url: 'not an address' },
+        { url: 'Not an address' },
+      ],
+    });
+    expect(addresses('report', from)).toEqual(['recent file:///tmp/report.html']);
+    expect(addresses('path', from)).toEqual([
+      'tab http://example.test/Path?Q=1',
+      'recent https://example.test/Path?Q=1',
+      'recent http://example.test/Path?q=1',
+    ]);
+    expect(addresses('https://example', from)).toEqual(['recent https://example.test/Path?Q=1', 'recent https://Example.test']);
+    expect(addresses('address', from)).toEqual(['recent not an address', 'recent Not an address']);
+  });
+
   it('keys are unique even for two tabs on one address', () => {
     const from = sources({
       tabs: [
