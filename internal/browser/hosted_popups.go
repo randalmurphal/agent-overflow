@@ -62,10 +62,20 @@ type hostedPopup struct {
 }
 
 // popupReported takes the launcher's report of a popup: the engine knows
-// its opener, so it hands it to the Manager, and otherwise closes it.
+// its opener, so it hands it to the Manager, and otherwise closes it. A
+// report naming a page id the engine already has is ignored before it is
+// read, so no report closes a known page; one naming a target a page or a
+// pending popup already has is refused, and the target keeps its page.
 func (e *hostedEngine) popupReported(pageID, detail string) {
 	if err := webview2host.ValidatePageID(pageID); err != nil {
 		e.logf("browser: pane host reported a popup with an unusable id: %v", err)
+		return
+	}
+	e.mu.Lock()
+	_, taken := e.pageProfile[pageID]
+	e.mu.Unlock()
+	if taken {
+		e.logf("browser: pane host reported popup %s, a page it already has", pageID)
 		return
 	}
 	report, err := webview2host.ParsePopupReport(detail)
@@ -76,11 +86,17 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 	}
 	e.mu.Lock()
 	profile, known := e.pageProfile[report.Opener]
-	_, taken := e.pageProfile[pageID]
+	_, taken = e.pageProfile[pageID]
+	_, claimed := e.targetPageLocked(report.Target)
 	switch {
 	case taken:
 		e.mu.Unlock()
 		e.logf("browser: pane host reported popup %s twice", pageID)
+		return
+	case claimed:
+		e.mu.Unlock()
+		e.logf("browser: pane host reported popup %s with target %s, which another page has", pageID, report.Target)
+		e.closePage(pageID)
 		return
 	case !known || len(e.popups) >= webview2host.MaxHostPages:
 		e.mu.Unlock()

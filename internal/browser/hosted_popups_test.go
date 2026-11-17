@@ -200,6 +200,34 @@ func TestHostedPopupReportValidation(t *testing.T) {
 		t.Errorf("the repeat re-paired the popup's target")
 	}
 
+	// A report naming a known page id is never the report that closes it,
+	// whatever it carries; one naming a target a page or a pending popup
+	// already has is refused and the target keeps its page.
+	engine.Report("popup-b", webview2host.ReportPopup, `{"target":"T-x"}`)
+	engine.Report("opener", webview2host.ReportPopup, `not json`)
+	engine.Report("opener", webview2host.ReportPopup, `{"opener":"opener","target":"T-y"}`)
+	if got := sink.drain(); len(got) != 0 {
+		t.Fatalf("a report for a known page was answered with %+v", got)
+	}
+	for _, claimed := range []string{"T-b", "T-opener"} {
+		engine.Report("popup-"+claimed, webview2host.ReportPopup, `{"opener":"opener","target":"`+claimed+`"}`)
+		if d := sink.next(t); d.Op != webview2host.OpClose || d.PageID != "popup-"+claimed {
+			t.Fatalf("a popup claiming %s was answered with %+v, want close", claimed, d)
+		}
+	}
+	for target, want := range map[string]string{"T-b": "popup-b", "T-opener": "opener"} {
+		if got, _ := engine.pageForTarget(target); got != want {
+			t.Errorf("target %s belongs to %q, want %q", target, got, want)
+		}
+	}
+	engine.mu.Lock()
+	for _, id := range []string{"popup-T-b", "popup-T-opener"} {
+		if _, ok := engine.pageProfile[id]; ok || engine.popups[id] != nil {
+			t.Errorf("the refused popup %s was kept", id)
+		}
+	}
+	engine.mu.Unlock()
+
 	// No more pending popups than the launcher keeps pages.
 	engine.mu.Lock()
 	for i := len(engine.popups); i < webview2host.MaxHostPages; i++ {
