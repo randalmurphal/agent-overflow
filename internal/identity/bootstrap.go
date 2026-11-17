@@ -17,10 +17,6 @@ type BootstrapResult struct {
 	// boot returns nil, which means "this account already has codes
 	// somebody wrote down", not "minting failed".
 	RecoveryCodes []string
-	// ReleasedThreads are the threads whose spawn links retiring the
-	// unfinished pairings released, which the session core's
-	// OnLinksReleased function, set after the boot, never saw.
-	ReleasedThreads []string
 }
 
 // Bootstrap brings first-boot identity into existence: the signing key,
@@ -60,11 +56,8 @@ func Bootstrap(st *store.Store, backendID, ownerName string) (*Sessions, Bootstr
 		}
 		result.RecoveryCodes = codes
 	}
-	// Before anything serves, so a released worker is read from its row.
-	released, err := st.RetirePendingPairings(sessions.Now())
-	if err != nil {
+	if err := st.RetirePendingPairings(sessions.Now()); err != nil {
 		return nil, BootstrapResult{}, fmt.Errorf("identity: retire unfinished pairing: %w", err)
 	}
-	result.ReleasedThreads = released
 	return sessions, result, nil
 }
