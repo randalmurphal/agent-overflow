@@ -73,13 +73,47 @@ reference after the hand-off call, success or failure; a page detaches its
 callbacks when it goes, except controller-completed, whose completion closes
 a controller that outlived its page.
 
+A page's downloads are the launcher's (`download_windows.go`): it handles
+each `DownloadStarting`, so WebView2's dialog never opens, keeps the
+`DownloadOperation` and reports every change as the download's whole
+snapshot (`ReportDownload`, `download.go`), progress throttled, each
+numbered (`Seq`) in the order taken so the backend applies only newer
+ones. A directive naming a download (`OpCancelDownload`,
+`OpDownloadStatus`) is answered with a snapshot marked `Answer`, which the
+backend never creates a row from: a running one's, an ended one's kept
+terminal snapshot under its own number (up to `MaxEndedDownloads` per page
+while the page lives), or `DownloadUnknown` for an id with no record. A
+report is bounded: the address is shortened, then the path left out,
+never the start or end. WebView2 resumes a dropped download as a new
+`DownloadStarting` whose operation carries the
+interruption's reason, while the dropped operation stays in progress with
+that reason and never ends. The resume is adopted only when exactly one
+running download from that address reads so (`resumedDownload`): it is set
+back to that download's file, and the operations it replaced are kept,
+detached, until the download ends, because releasing them stops the new
+one's reports. Otherwise it is a row of its own and nothing running is
+touched. A cancel always settles: WebView2's report ends it, or the
+launcher does after `downloadCancelBound` (`settleCancel`). A download
+ends, its handlers detached and every operation released, at its terminal
+state (an interrupted operation canceled first) or when its page goes
+(`retireDownloads`), which cancels it and reports nothing. What the real
+runtime does on a drop is recorded at `downloadStateChanged`,
+`settleCancel` and in `download_smoke_windows_test.go`.
+
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
 `crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
 `background_smoke_windows_test.go`),
-which need an installed runtime and open a window. From WSL, build them with
+which need an installed runtime. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
-`WSLENV=AO_NATIVE_BROWSER_SMOKE`.
+`WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the
+user's screen or takes their keyboard: the binary runs itself again on a
+desktop of its own, never switched to (`desktop_smoke_windows_test.go`),
+refuses to run the smokes when it cannot, and a smoke refuses to open a
+window on any other desktop, unless
+`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. That desktop is never the
+input desktop, so the focus smoke stands in the host's foreground answer
+(`Host.foreground`).
 
 See [embedded browser specification](../../docs/specs/embedded-browser.md).

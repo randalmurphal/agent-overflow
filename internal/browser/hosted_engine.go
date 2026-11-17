@@ -35,7 +35,10 @@ import (
 //   - a page id is the backend's own handle, minted here and validated
 //     against the launcher's vocabulary. The CDP target id is what the
 //     `created` report carries back, and it is used for exactly one thing:
-//     attaching chromedp.
+//     attaching chromedp;
+//   - a download is the launcher's: WebView2 saves it to the Windows
+//     user's Downloads folder and the launcher reports its life
+//     (hosted_downloads.go). No download crosses CDP.
 //
 // Policy stays in the Manager, as everywhere else on this seam.
 
@@ -132,23 +135,20 @@ type hostedEngine struct {
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
 	noFind map[string]bool
-	// pageDownloads is where each page's downloads land, and downloads the
-	// same for each download in flight, by guid (hosted_downloads.go).
-	pageDownloads map[string]*hostedProfile
-	downloads     *boundedMap[string, *hostedProfile]
-	// downloadEventsRefusal is why the connection reports no downloads,
-	// empty when it does.
-	downloadEventsRefusal string
-	// downloadLeaving holds the pages whose session is about to go, which
-	// no longer set their profile's download behavior.
-	downloadLeaving map[string]bool
+	// downloads is the record of the launcher's downloads
+	// (hosted_downloads.go).
+	downloads hostedDownloads
+	// downloadQuiet overrides hostedDownloadQuiet when set (tests).
+	downloadQuiet time.Duration
 
 	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
 	// to stand in for the CDP evaluate.
 	readPageRatio func(ctx context.Context, p *cdpPage) (float64, error)
-	// windowsPath is the backend path's Windows view (`wslpath -w`); a test
-	// replaces it.
+	// windowsPath is the backend path's Windows view (`wslpath -w`), and
+	// backendPath a Windows path's backend view (`wslpath -u`); a test
+	// replaces them.
 	windowsPath func(ctx context.Context, path string) (string, error)
+	backendPath func(ctx context.Context, path string) (string, error)
 	// viewScaleAsked is a test seam called whenever a page is asked for a
 	// view scale it was not already asked for. Production leaves it nil.
 	viewScaleAsked func(handle string, want viewScale)
@@ -165,22 +165,21 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		attachTimeout: hostAttachTimeout,
 		clearTimeout:  hostClearTimeout,
 
-		pending:         make(map[string]chan hostReport),
-		pageByTarget:    make(map[string]string),
-		targetByPage:    make(map[string]string),
-		pageConn:        make(map[string]context.Context),
-		shown:           make(map[string]bool),
-		bounds:          make(map[string]PanePlacement),
-		drivers:         make(map[string]*cdpPage),
-		ratios:          make(map[string]pageRatio),
-		scales:          make(map[string]*viewScaleState),
-		noFind:          make(map[string]bool),
-		pageDownloads:   make(map[string]*hostedProfile),
-		downloadLeaving: make(map[string]bool),
-		downloads:       newBoundedMap[string, *hostedProfile](orderSlack),
+		pending:      make(map[string]chan hostReport),
+		pageByTarget: make(map[string]string),
+		targetByPage: make(map[string]string),
+		pageConn:     make(map[string]context.Context),
+		shown:        make(map[string]bool),
+		bounds:       make(map[string]PanePlacement),
+		drivers:      make(map[string]*cdpPage),
+		ratios:       make(map[string]pageRatio),
+		scales:       make(map[string]*viewScaleState),
+		noFind:       make(map[string]bool),
+		downloads:    newHostedDownloads(),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 		windowsPath:   windowsPathFor,
+		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
 }
 
@@ -264,9 +263,7 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
-	e.pageDownloads = make(map[string]*hostedProfile)
-	e.downloadLeaving = make(map[string]bool)
-	e.downloads = newBoundedMap[string, *hostedProfile](orderSlack)
+	e.stopDownloadsLocked()
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -284,19 +281,10 @@ func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (eng
 	if err != nil {
 		return nil, err
 	}
-	// Downloads go to the jar's AO directory, which the Windows-side browser
-	// writes through its Windows view (hosted_downloads.go).
-	if strings.TrimSpace(opts.DownloadDir) == "" {
-		return nil, errors.New("browser: a pane profile needs a download directory")
-	}
-	downloadDir, err := e.windowsPath(ctx, opts.DownloadDir)
-	if err != nil {
-		return nil, fmt.Errorf("browser: the pane browser cannot reach the download directory: %w", err)
-	}
 	// Site data is the engine's own (spec §4): a hosted profile is a real
 	// browser profile on disk and WebView2 persists it, so AO seeds nothing
 	// into it and reads nothing out of it.
-	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral, downloadDir: downloadDir, backendDownloadDir: opts.DownloadDir}, nil
+	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral}, nil
 }
 
 // hostedProfileID is the WebView2 profile name of a jar. A worktree jar's
@@ -382,7 +370,7 @@ func (e *hostedEngine) BackendFilePath(ctx context.Context, rawURL string) (stri
 	if err != nil {
 		return "", err
 	}
-	return runWSLPath(ctx, "-u", windowsPath)
+	return e.backendPath(ctx, windowsPath)
 }
 
 // windowsPathFromFileURL is windowsFileURL's pure inverse: the URL authority
@@ -430,16 +418,6 @@ type hostedProfile struct {
 	engine    *hostedEngine
 	id        string
 	ephemeral bool
-	// downloadDir is the Windows view of the jar's AO download directory,
-	// backendDownloadDir the same directory as the backend sees it.
-	downloadDir, backendDownloadDir string
-	// behaviorMu serializes the profile's download-behavior calls.
-	behaviorMu sync.Mutex
-	// downloadMode is what the profile does with a download, downloadRefusal
-	// why AO's directory is not used and downloadDenyRefusal why denying
-	// was refused too. Guarded by engine.mu (hosted_downloads.go).
-	downloadMode                         hostedDownloadMode
-	downloadRefusal, downloadDenyRefusal string
 }
 
 func (p *hostedProfile) Handle() string { return p.id }

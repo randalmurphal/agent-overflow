@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+
+	"agent-overflow/internal/serialqueue"
 )
 
 // The WKWebView engine's process and profile halves (spec §6). It is IN-PROCESS
@@ -70,6 +72,11 @@ type wkEngine struct {
 	pane     map[uint64]wkPaneState
 	profiles map[uint64]*wkProfile
 	stopped  bool
+
+	// downloadEvents carries every download report to the Manager off the
+	// main thread, one at a time in the order they were made, so a fast
+	// download's finish never reaches the Manager before its start.
+	downloadEvents serialqueue.Queue
 }
 
 func (e *wkEngine) Start(context.Context) error {
@@ -148,6 +155,11 @@ func (e *wkEngine) OnUIThread() bool { return wkOnMainThread() }
 
 var _ engineUIThread = (*wkEngine)(nil)
 
+// WaitDownloadEvents is engineDownloadEvents.
+func (e *wkEngine) WaitDownloadEvents() { e.downloadEvents.Wait() }
+
+var _ engineDownloadEvents = (*wkEngine)(nil)
+
 // FocusApp is engineAppFocus: the SPA's webview becomes the first
 // responder. Called on the main thread from the key gate, where wkDo runs
 // inline.
@@ -173,6 +185,10 @@ func (e *wkEngine) takePopup(handle string) unsafe.Pointer {
 	delete(e.popups, handle)
 	return view
 }
+
+// DownloadSaving: WebKit writes into AO's directory and the Manager
+// publishes each finished file to the user's Downloads folder.
+func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
 func (e *wkEngine) DiscardPage(handle string) {
 	if view := e.takePopup(handle); view != nil {
@@ -210,8 +226,9 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	}
 	profile := &wkProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
-		downloadDir: opts.DownloadDir,
-		pages:       make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		stage: opts.StageDownload,
+		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		stageFailures: make(map[string]error),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -234,13 +251,18 @@ type wkProfile struct {
 	// on macOS 14+ with the site-data setting on: WebKit offers no
 	// per-identifier persistent store below that, and an in-memory one is the
 	// only honest answer there.
-	store       unsafe.Pointer
-	downloadDir string
+	store unsafe.Pointer
+	// stage names the staged file each download is written to
+	// (profileOptions.StageDownload).
+	stage func(id string) (string, error)
 
 	mu        sync.Mutex
 	disposed  bool
 	pages     map[*wkPage]struct{}
 	downloads map[string]*wkDownload
+	// stageFailures holds why a download got no staged file, from its
+	// destination to its start report.
+	stageFailures map[string]error
 }
 
 // wkDownload is one live download: the retained WKDownload and the sampler that
@@ -268,7 +290,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	if err != nil {
 		return nil, err
 	}
-	view, err := wkNewView(p.store, page.id, p.id, script, webkitConsoleHandler, p.downloadDir)
+	view, err := wkNewView(p.store, page.id, p.id, script, webkitConsoleHandler)
 	if err != nil {
 		page.discard()
 		return nil, err
@@ -294,7 +316,7 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 	// is gone: the injected script applies from its next document on. That is
 	// the same trade CDP's addScriptToEvaluateOnNewDocument makes for an adopted
 	// target.
-	if err := wkAdoptView(view, page.id, p.id, script, webkitConsoleHandler, p.downloadDir); err != nil {
+	if err := wkAdoptView(view, page.id, p.id, script, webkitConsoleHandler); err != nil {
 		page.discard()
 		wkCloseView(view)
 		return nil, err
@@ -359,8 +381,7 @@ func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {
 }
 
 // sampleDownload is the WKDownload half of what WebKitGTK reports for free on
-// its `received-data` signal. Without it the Manager could only enforce its
-// per-download byte cap once the whole file was already written.
+// its `received-data` signal: the pane's progress for a running download.
 func (p *wkProfile) sampleDownload(entry *wkDownload) {
 	ticker := time.NewTicker(wkDownloadPollInterval)
 	defer ticker.Stop()
@@ -375,8 +396,10 @@ func (p *wkProfile) sampleDownload(entry *wkDownload) {
 				return
 			default:
 			}
-			p.engine.events.DownloadProgress(downloadProgress{
-				ID: entry.handle, Received: received, Total: total, State: downloadInProgress,
+			p.engine.downloadEvents.Go(func() {
+				p.engine.events.DownloadProgress(downloadProgress{
+					ID: entry.handle, Received: received, Total: total, State: downloadInProgress,
+				})
 			})
 		}
 	}

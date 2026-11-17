@@ -73,6 +73,16 @@ const (
 	// show it follows. A move made is answered with ReportFocused, a move
 	// refused with ReportFocusFailed.
 	OpFocus Op = "focus"
+	// OpCancelDownload cancels the page's download Download, a launcher id
+	// from its ReportDownload, and is answered with the download's snapshot
+	// as OpDownloadStatus is: a running one's end follows its cancel.
+	OpCancelDownload Op = "cancel-download"
+	// OpDownloadStatus asks for the snapshot of the page's download
+	// Download and changes nothing: the launcher answers a running
+	// download's snapshot, an ended one's terminal snapshot again, and an
+	// id it has no record of with a terminal snapshot saying so
+	// (download.go).
+	OpDownloadStatus Op = "download-status"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -135,6 +145,8 @@ type Directive struct {
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
 	// Query is OpFind's search term.
 	Query string `json:"query,omitempty"`
+	// Download is OpCancelDownload's and OpDownloadStatus's download id.
+	Download string `json:"download,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.
@@ -188,6 +200,11 @@ func (d Directive) Validate() error {
 			return errors.New("focus must name its intent")
 		}
 		return nil
+	case OpCancelDownload, OpDownloadStatus:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		return ValidateDownloadID(d.Download)
 	case OpFind:
 		if err := ValidatePageID(d.PageID); err != nil {
 			return err
@@ -369,6 +386,10 @@ const (
 	// the launcher declined (the page not presented, the window not in the
 	// foreground, the intent withdrawn) is no failure and is not reported.
 	ReportFocusFailed ReportKind = "focus-failed"
+	// ReportDownload is the whole snapshot of a download the page started,
+	// sent at each change and in answer to a directive naming it. Its
+	// detail is a DownloadReport (download.go).
+	ReportDownload ReportKind = "download"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over
@@ -390,7 +411,7 @@ func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
 		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
-		ReportFocused, ReportFocusFailed:
+		ReportFocused, ReportFocusFailed, ReportDownload:
 		return true
 	default:
 		return false

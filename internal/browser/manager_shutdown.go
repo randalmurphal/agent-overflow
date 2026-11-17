@@ -124,7 +124,16 @@ func (m *Manager) Close() error {
 	m.lifeGate.Unlock()
 	if ui, ok := m.engine.(engineUIThread); !ok || !ui.OnUIThread() {
 		m.lifeWork.Wait()
+		// A finish the engine reported before it stopped reaches its
+		// publish; its events may dispatch to the UI thread, so not there.
+		if events, ok := m.engine.(engineDownloadEvents); ok {
+			events.WaitDownloadEvents()
+		}
 	}
+	// A publish in flight completes, so a finished download is in the
+	// Downloads folder and its row settled; one still queued on the UI
+	// thread's path stays staged, never partly public.
+	m.waitPublishes()
 	// The browser's close submitted the end of every page's find; what an
 	// engine reports after it has no page left to end a find on.
 	m.findGate.Lock()

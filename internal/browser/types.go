@@ -375,7 +375,8 @@ type ConsoleOptions struct {
 // DownloadInfo is one download in a page's log, as browser_downloads lists
 // it. State is in_progress, completed, failed (the engine stopped it on its
 // own, or the finished file could not be kept) or canceled (AO stopped it:
-// the user, a quota, the page closing).
+// the user, a quota, the page closing). A completed one with an Error saved
+// a file that is not openable from AO, and the Error says why.
 type DownloadInfo struct {
 	Sequence      uint64 `json:"sequence"`
 	ID            string `json:"id"`
@@ -393,6 +394,9 @@ type DownloadInfo struct {
 	// cancelRequested is set while the user's cancel is with the engine, so
 	// the engine's report of it reads as canceled rather than failed.
 	cancelRequested bool
+	// publishing is set while a staged download's finished file moves into
+	// the user's Downloads folder (publishFinishedDownload).
+	publishing bool
 	// file is the finished file as it was when the download settled, so a
 	// later Open or Show in folder acts on that file and no other.
 	file os.FileInfo

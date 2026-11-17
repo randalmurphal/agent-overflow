@@ -325,6 +325,26 @@ func aoWebKitPagePresented(pageID C.uint64_t) C.int {
 	return C.ao_wk_host_presented(page.view)
 }
 
+//export aoWebKitDownloadDestination
+func aoWebKitDownloadDestination(profileID, downloadID C.uint64_t) *C.char {
+	// On the GTK thread inside decide-destination: the Manager's staging
+	// takes no lock a GTK dispatch waits on and dispatches nothing.
+	profile := webkitLookupProfile(uint64(profileID))
+	if profile == nil || profile.stage == nil {
+		return nil
+	}
+	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
+	path, err := profile.stage(handle)
+	if err != nil {
+		profile.mu.Lock()
+		profile.stageFailures[handle] = err
+		profile.mu.Unlock()
+		return nil
+	}
+	// Freed by the C side.
+	return C.CString(path)
+}
+
 //export aoWebKitDownloadStarted
 func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := webkitTakeString(uri), webkitTakeString(suggested)
@@ -339,14 +359,26 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 	if page != nil {
 		frame = page.handle
 	}
-	// The handle IS the on-disk name the C side gave the file, which is what
-	// lets the Manager find and rename a finished download.
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
-	profile.registerDownload(handle, download)
+	profile.mu.Lock()
+	stageErr := profile.stageFailures[handle]
+	delete(profile.stageFailures, handle)
+	profile.mu.Unlock()
 	if name == "" {
 		name = handle
 	}
-	go func() {
+	if stageErr != nil {
+		// The C side canceled it before a byte was written; the row says why.
+		profile.engine.downloadEvents.Go(func() {
+			if profile.engine.events.DownloadStarted(downloadStart{Frame: frame, ID: handle, URL: target, SuggestedName: name}) {
+				profile.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
+			}
+			webkitReleaseDownload(download)
+		})
+		return
+	}
+	profile.registerDownload(handle, download)
+	profile.engine.downloadEvents.Go(func() {
 		if !profile.engine.events.DownloadStarted(downloadStart{
 			Frame: frame, ID: handle, URL: target, SuggestedName: name,
 		}) {
@@ -354,7 +386,7 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}
 		}
-	}()
+	})
 }
 
 //export aoWebKitDownloadProgress
@@ -375,18 +407,20 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, s
 	case 2:
 		progress.State = downloadCanceled
 	}
+	// Off the GTK thread, after the start and in the order WebKit reported
+	// them (downloadEvents).
 	if progress.State != downloadInProgress {
-		// Released off the GTK thread, in order, before the event goes out:
-		// releasing dispatches BACK to the GTK thread, which would queue behind
-		// the signal handler this export is running inside and freeze the UI
-		// for a full gtkCallTimeout on every finished download.
-		go func() {
+		// Released before the event goes out: releasing dispatches BACK to the
+		// GTK thread, which would queue behind the signal handler this export
+		// is running inside and freeze the UI for a full gtkCallTimeout on
+		// every finished download.
+		profile.engine.downloadEvents.Go(func() {
 			profile.releaseDownload(handle)
 			profile.engine.events.DownloadProgress(progress)
-		}()
+		})
 		return
 	}
-	go profile.engine.events.DownloadProgress(progress)
+	profile.engine.downloadEvents.Go(func() { profile.engine.events.DownloadProgress(progress) })
 }
 
 func webkitLookupPage(id uint64) *webkitPage {
@@ -470,7 +504,7 @@ func webkitHideView(view webkitView) error {
 // Every C string below is allocated INSIDE its dispatch closure and freed
 // there. A dispatch that misses its deadline still runs afterwards, so a
 // string allocated out here and freed on return would be read after free.
-func webkitNewSession(dataDir, cacheDir, cookieFile, downloadDir string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
+func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, profileID uint64) (unsafe.Pointer, error) {
 	var session unsafe.Pointer
 	flag := C.int(0)
 	if ephemeral {
@@ -478,12 +512,11 @@ func webkitNewSession(dataDir, cacheDir, cookieFile, downloadDir string, ephemer
 	}
 	if !gtkDo(func() {
 		cData, cCache := C.CString(dataDir), C.CString(cacheDir)
-		cCookie, cDownload := C.CString(cookieFile), C.CString(downloadDir)
-		session = C.ao_wk_session_new(cData, cCache, cCookie, cDownload, flag, C.uint64_t(profileID))
+		cCookie := C.CString(cookieFile)
+		session = C.ao_wk_session_new(cData, cCache, cCookie, flag, C.uint64_t(profileID))
 		C.free(unsafe.Pointer(cData))
 		C.free(unsafe.Pointer(cCache))
 		C.free(unsafe.Pointer(cCookie))
-		C.free(unsafe.Pointer(cDownload))
 	}) {
 		return nil, errGTKUnavailable
 	}

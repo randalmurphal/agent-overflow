@@ -44,7 +44,20 @@ type fakeEngine struct {
 	// release and its terminal report (finishHeld, CancelDownload), where a
 	// native engine releases its record. Nil outside tests.
 	downloadReleased func(id string)
+	// saving is the engine this fake stands in for: downloadsStaged, the
+	// zero value, writes into the profile's directory for the Manager to
+	// publish, as WebKitGTK does; downloadsAsArtifacts as headless Chromium
+	// does; downloadsSavedByEngine saves into the user's Downloads folder
+	// itself, as WebView2 does. Set by tests before the first profile.
+	saving downloadSaving
+	// beforeFinishReport is a test seam run after a download's file is
+	// complete and before its finish is reported, with that file's path:
+	// where an engine's report waits in its queue. Nil outside tests.
+	beforeFinishReport func(file string)
 }
+
+// DownloadSaving is the engine the fake stands in for (saving).
+func (e *fakeEngine) DownloadSaving() downloadSaving { return e.saving }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{} }
 
@@ -79,19 +92,20 @@ func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineP
 	}
 	return &fakeProfile{
 		engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow,
-		downloadDir: opts.DownloadDir,
+		downloadDir: opts.DownloadDir, stage: opts.StageDownload,
 	}, nil
 }
 
 type fakeProfile struct {
 	engine *fakeEngine
 	handle string
-	// jar, ephemeral, allow and downloadDir are what the profile was
-	// created with.
+	// jar, ephemeral, allow, downloadDir and stage are what the profile
+	// was created with.
 	jar         string
 	ephemeral   bool
 	allow       func(owners []string, rawURL string) bool
 	downloadDir string
+	stage       func(id string) (string, error)
 
 	mu       sync.Mutex
 	disposed bool

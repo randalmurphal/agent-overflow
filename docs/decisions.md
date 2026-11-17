@@ -597,8 +597,8 @@ and anti-changes that live only here:
   switch, Clear site data, turning the browser off and closing the thread.
 - Each thread's browser chooses its cookie jar: this worktree (default),
   the whole project, this browser only, or private. A jar shares sign-ins
-  and site data only; file and navigation permissions and download quotas
-  stay with the thread's workspace, and a popup keeps its opener's. A
+  and site data only; file and navigation permissions and finished
+  downloads stay with the thread's workspace, and a popup keeps its opener's. A
   private jar is never part of a persistent profile and is discarded when
   its last tab closes. Switching with tabs open asks first, then suspends
   the tabs into the new jar, where they load again when used; page state is
@@ -609,17 +609,20 @@ and anti-changes that live only here:
   lists the thread's downloads with cancel, Show in folder, and open in a
   tab for a type a tab shows. A finished download is announced once with
   Show in folder, a failed one with its reason. Clearing the list deletes
-  no file; files stay in AO's artifact directory under its quotas and
-  seven-day pruning. Downloads never open with the system's default app.
-  A browser that refuses AO's download directory still opens its pages:
-  the profile's downloads are turned off, the user is told once per
-  browser profile and state change, and each refused download is listed as
-  failed with the reason. Only when turning them off is refused too is the
-  user told that the profile's downloads go to the system Downloads folder.
-  Such a profile keeps its pages rather than failing them: real WebView2
-  accepts both calls, so this needs an engine change, and losing the
-  browser to it is worse than the visible warning.
-  `docs/architecture/browser-tools.md`.
+  no file. Downloads never open with the system's default app.
+- A pane download goes to the Downloads folder of the machine that runs the
+  page's engine, as in any browser there; there is no setting (2026-11-17).
+  AO applies no quota, cap or pruning there and deletes or replaces no
+  file it did not put there; an engine in AO's process downloads into AO's
+  private staging folder inside Downloads and AO moves the finished file
+  beside it without copying or replacing. A missing
+  Downloads folder is created; one that cannot be created or written fails
+  the download with its reason rather than falling back.
+  Headless Chromium in serve mode alone keeps AO's artifact directories,
+  quotas, caps and pruning. An agent may open a finished download of its
+  workspace's, never the folder around it. On WebView2 the mark of the web
+  stays, and a window WebView2 opened itself keeps WebView2's own download
+  handling. `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

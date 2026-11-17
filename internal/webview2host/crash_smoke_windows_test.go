@@ -112,7 +112,7 @@ func TestCrashSmokeReportsTheRendererAndKeepsTheHost(t *testing.T) {
 	load("page-1", "ao crash smoke")
 
 	conn := smokeDialCDP(t, host.CDPPort())
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	crashTarget(t, conn, targetID)
 
 	failed := await("page-1", ReportProcessFailed)

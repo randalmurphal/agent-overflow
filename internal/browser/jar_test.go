@@ -58,8 +58,11 @@ func newJarManager(t *testing.T, dir string, config Config) (*Manager, *jarEngin
 	t.Helper()
 	manager := NewManager(dir, config, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
+	// Downloads AO keeps, whose directories and quotas are per workspace.
+	fake := newFakeEngine()
+	fake.saving = downloadsAsArtifacts
 	engine := &jarEngine{
-		fakeEngine: newFakeEngine(), navErr: make(map[string]error),
+		fakeEngine: fake, navErr: make(map[string]error),
 		navigating: make(chan string, 16), creating: make(chan struct{}, 16), profiling: make(chan struct{}, 16),
 	}
 	manager.engine = engine
@@ -197,16 +200,6 @@ func (e *jarEngine) holdDispose(t *testing.T) (release func()) {
 	release = func() { once.Do(func() { close(gate) }) }
 	t.Cleanup(release)
 	return release
-}
-
-// ownFrame makes the page with handle report frame as one of its subframes.
-func (e *jarEngine) ownFrame(frame, handle string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.frames == nil {
-		e.frames = make(map[string]string)
-	}
-	e.frames[frame] = handle
 }
 
 func (p *jarPage) OwnsFrame(frame string) bool {

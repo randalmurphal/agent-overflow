@@ -742,6 +742,15 @@ func isolateHarnessHome(dataRoot string) (string, error) {
 	if err := os.Setenv("HOME", homeDir); err != nil {
 		return "", fmt.Errorf("redirect HOME: %w", err)
 	}
+	// The browser pane saves downloads to the user's Downloads folder, which
+	// XDG_CONFIG_HOME's user-dirs file can name outside HOME: both follow the
+	// harness home, and its Downloads folder exists as a user's does.
+	if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config")); err != nil {
+		return "", fmt.Errorf("redirect XDG_CONFIG_HOME: %w", err)
+	}
+	if err := ensureHarnessPrivateDir(filepath.Join(homeDir, "Downloads")); err != nil {
+		return "", fmt.Errorf("create the harness Downloads folder: %w", err)
+	}
 	if runtime.GOOS == "windows" {
 		if err := os.Setenv("USERPROFILE", homeDir); err != nil {
 			return "", fmt.Errorf("redirect USERPROFILE: %w", err)

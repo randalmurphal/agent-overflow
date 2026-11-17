@@ -10,6 +10,19 @@ import (
 	"unsafe"
 )
 
+// holdDownloadEvents stops the engine's download reports from reaching the
+// Manager until the answered release runs, as a busy event queue would.
+func holdDownloadEvents(t *testing.T, manager *Manager) (release func()) {
+	t.Helper()
+	engine, ok := manager.engine.(*wkEngine)
+	if !ok {
+		t.Fatalf("the manager runs %T, not WKWebView", manager.engine)
+	}
+	gate := make(chan struct{})
+	engine.downloadEvents.Go(func() { <-gate })
+	return func() { close(gate) }
+}
+
 // Engine selection is the one part of the WKWebView engine that can be proven
 // without a window, and it is the part that decides what every OTHER
 // environment gets: no window means NO engine, which is what keeps

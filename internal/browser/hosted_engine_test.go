@@ -71,6 +71,19 @@ func (s *directiveSink) next(t *testing.T) webview2host.Directive {
 	return webview2host.Directive{}
 }
 
+// drain answers the directives sent since the last next or drain.
+func (s *directiveSink) drain() []webview2host.Directive {
+	var out []webview2host.Directive
+	for {
+		select {
+		case directive := <-s.feed:
+			out = append(out, directive)
+		default:
+			return out
+		}
+	}
+}
+
 // expectOps asserts the exact directive sequence, which is the whole
 // observable contract of a failed create: ask, then clean up.
 func (s *directiveSink) expectOps(t *testing.T, want ...webview2host.Op) {
@@ -115,11 +128,9 @@ func testWindowsPath(_ context.Context, path string) (string, error) {
 	return `\\wsl.localhost\Test` + strings.ReplaceAll(path, "/", `\`), nil
 }
 
-const testDownloadDir = "/home/dev/.ao/downloads/jar"
-
 func testProfile(t *testing.T, engine *hostedEngine) *hostedProfile {
 	t.Helper()
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", DownloadDir: testDownloadDir, Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -478,7 +489,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 
 func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", DownloadDir: testDownloadDir, Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -1101,36 +1112,6 @@ func TestHostedEngineReportsALostConnectionsPagesOnce(t *testing.T) {
 			<-connB.Done()
 			none("Stop")
 		})
-	}
-}
-
-// A download the Manager refuses is cancelled on the browser connection
-// that reported it.
-func TestHostedEngineCancelsADownloadTheManagerRefuses(t *testing.T) {
-	endpoint := startFakeCDPEndpoint(t, nil, nil)
-	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		DownloadStarted: func(downloadStart) bool { return false },
-	})
-	engine.attachTimeout = 5 * time.Second
-	if _, err := engine.ensureBrowser(); err != nil {
-		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
-	}
-	defer engine.Interrupt()
-
-	endpoint.send(map[string]any{"method": "Browser.downloadWillBegin", "params": map[string]any{
-		"frameId": "F-1", "guid": "G-refused", "url": "https://example.test/file.bin", "suggestedFilename": "file.bin",
-	}})
-	deadline := time.Now().Add(hostedTestDeadline)
-	for {
-		for _, call := range endpoint.calls() {
-			if call.Method == "Browser.cancelDownload" && call.SessionID == "" && strings.Contains(string(call.Params), `"G-refused"`) {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the refused download was never cancelled")
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 

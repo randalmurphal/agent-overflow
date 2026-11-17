@@ -72,12 +72,13 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.mu.Lock()
 		e.drivers[pageID] = cdp
 		e.mu.Unlock()
-		// Before the Manager has the page, so nothing it loads can download
-		// anywhere but the jar's directory.
-		e.addDownloadPage(pageID, cdp, profile)
 	}
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
 }
+
+// DownloadSaving: WebView2 saves to the Windows user's Downloads folder
+// (hosted_downloads.go).
+func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedByEngine }
 
 // DiscardPage closes a controller the Manager declined to adopt. The handle
 // is this engine's page id, because that is what pageDriver.Handle answers.
@@ -139,6 +140,8 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 			failure = fmt.Errorf("browser: the page did not take keyboard focus: %s", report.Error)
 		}
 		e.events.PageFocusReported(pageID, report.Mount, report.Intent, failure)
+	case webview2host.ReportDownload:
+		e.downloadReport(pageID, detail)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData
@@ -169,7 +172,6 @@ func processFailureCrashes(detail string) bool {
 // (targetDestroyed above).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
-	profile := e.pageDownloads[pageID]
 	targetID, known := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
@@ -180,14 +182,8 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
-	delete(e.pageDownloads, pageID)
-	delete(e.downloadLeaving, pageID)
+	e.forgetDownloadsLocked(pageID)
 	e.mu.Unlock()
-	if profile != nil {
-		// The page is already gone, so the behavior it set may have fallen
-		// back to WebView2's own; another page of its profile sets it again.
-		go e.reassertDownloads(profile)
-	}
 	if !known {
 		return
 	}
@@ -256,7 +252,6 @@ func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
 // the close a page's own Close already accounted for must not be reported
 // to the Manager twice.
 func (e *hostedEngine) closePage(pageID string) {
-	e.leaveDownloads(pageID)
 	e.mu.Lock()
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
@@ -268,8 +263,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
-	delete(e.pageDownloads, pageID)
-	delete(e.downloadLeaving, pageID)
+	e.forgetDownloadsLocked(pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
@@ -312,10 +306,13 @@ type hostedPage struct {
 // both halves of this engine agree on.
 func (p *hostedPage) Handle() string { return p.id }
 
-// Close has the profile's other pages set its download behavior again
-// before the page's session goes (leaveDownloads).
+// OwnsFrame answers for the page id too, which is the frame a launcher
+// download report names (hosted_downloads.go).
+func (p *hostedPage) OwnsFrame(frame string) bool {
+	return frame == p.id || p.pageDriver.OwnsFrame(frame)
+}
+
 func (p *hostedPage) Close() {
-	p.engine.leaveDownloads(p.id)
 	p.pageDriver.Close()
 	p.closeOnce.Do(func() { p.engine.closePage(p.id) })
 }

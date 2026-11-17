@@ -212,6 +212,7 @@ func (u *smokeUIThread) do(fn func()) {
 
 func startSmokeUIThread(t *testing.T) *smokeUIThread {
 	t.Helper()
+	requireSmokeDesktop(t)
 	ui := &smokeUIThread{queue: make(chan func(), 64)}
 	ready := make(chan error, 1)
 	stop := make(chan struct{})
@@ -261,6 +262,8 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 	return ui
 }
 
+// createSmokeWindow creates the one kind of top-level window a smoke uses,
+// on the smoke's own desktop (requireSmokeDesktop).
 func createSmokeWindow() (uintptr, error) {
 	var module windows.Handle
 	if err := windows.GetModuleHandleEx(0, nil, &module); err != nil {

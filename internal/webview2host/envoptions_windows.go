@@ -80,8 +80,8 @@ func coTaskMemString(s string) uintptr {
 		return 0
 	}
 	// Windows copies into the allocation: its address names COM task
-	// memory, which is never a Go pointer.
-	procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&encoded[0])), size)
+	// memory, which is never a Go pointer. RtlMoveMemory returns nothing.
+	_, _, _ = procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&encoded[0])), size)
 	return ptr
 }
 

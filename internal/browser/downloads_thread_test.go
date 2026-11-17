@@ -44,14 +44,35 @@ func countKind(events []CompanionEvent, kind string) int {
 	return n
 }
 
+// downloadModes are the three ways an engine's downloads are saved
+// (downloadSaving): staged in AO's directory and published to the user's
+// Downloads folder (WebKitGTK, WKWebView), saved there by the engine
+// (WebView2), and kept as AO's artifacts (headless Chromium).
+var downloadModes = []struct {
+	name   string
+	saving downloadSaving
+}{{"staged", downloadsStaged}, {"saved by the engine", downloadsSavedByEngine}, {"artifacts", downloadsAsArtifacts}}
+
+// newDownloadManager opens a page on a fake engine standing in for an
+// engine in this process, whose downloads are published to a Downloads
+// folder of the test's own.
 func newDownloadManager(t *testing.T) (*Manager, *downloadEventLog, Access, PageInfo) {
 	t.Helper()
+	return newDownloadManagerFor(t, downloadsStaged)
+}
+
+// newDownloadManagerFor is newDownloadManager, standing in for an engine
+// that saves as saving says.
+func newDownloadManagerFor(t *testing.T, saving downloadSaving) (*Manager, *downloadEventLog, Access, PageInfo) {
+	t.Helper()
+	testDownloadsFolder(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
 			t.Errorf("close manager: %v", err)
 		}
 	})
+	manager.engine.(*fakeEngine).saving = saving
 	log := &downloadEventLog{}
 	manager.SetEventSink(log.sink)
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -61,6 +82,36 @@ func newDownloadManager(t *testing.T) (*Manager, *downloadEventLog, Access, Page
 	}
 	log.take()
 	return manager, log, access, page
+}
+
+// testDownloadsFolder gives the test a home of its own with an empty
+// Downloads folder, and answers that folder, links resolved.
+func testDownloadsFolder(t *testing.T) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	downloads := filepath.Join(home, "Downloads")
+	if err := os.Mkdir(downloads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return downloads
+}
+
+// heldFile is the file the fake engine is writing a held download into.
+func heldFile(t *testing.T, manager *Manager, engineID string) string {
+	t.Helper()
+	profile := fakeProfileOf(t, manager)
+	profile.mu.Lock()
+	defer profile.mu.Unlock()
+	held, ok := profile.held[engineID]
+	if !ok {
+		t.Fatalf("the engine holds no download %s", engineID)
+	}
+	return held.file
 }
 
 // fakeDownload navigates the page to the fake engine's download address.
@@ -95,10 +146,19 @@ func authorityOf(t *testing.T, manager *Manager, access Access) *workspaceAuthor
 }
 
 // A finished download is in the thread's state with its source page, size
-// and file name, its file is in the workspace's download directory, and it
-// is announced exactly once, after the state that lists it.
+// and file name, its file is in the user's Downloads folder or, on an
+// engine whose downloads are AO's, the workspace's download directory, and
+// it is announced exactly once, after the state that lists it.
 func TestAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T) {
-	manager, log, access, page := newDownloadManager(t)
+	for _, mode := range downloadModes {
+		t.Run(mode.name, func(t *testing.T) {
+			testAFinishedDownloadIsListedAndAnnouncedOnce(t, mode.saving)
+		})
+	}
+}
+
+func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, saving downloadSaving) {
+	manager, log, access, page := newDownloadManagerFor(t, saving)
 	startDownload(t, manager, access, page, "report.pdf", 2048)
 
 	listed := threadDownloads(manager, access)
@@ -114,8 +174,12 @@ func TestAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pathInside(authorityOf(t, manager, access).downloadDir, item.path) {
-		t.Fatalf("the finished file %s is outside the workspace's download directory", item.path)
+	wantDir := filepath.Join(os.Getenv("HOME"), "Downloads")
+	if saving == downloadsAsArtifacts {
+		wantDir = authorityOf(t, manager, access).downloadDir
+	}
+	if filepath.Dir(item.path) != wantDir {
+		t.Fatalf("the finished file is %s, want it in %s", item.path, wantDir)
 	}
 	events := log.take()
 	if n := countKind(events, "download"); n != 1 {
@@ -195,9 +259,17 @@ func TestDownloadProgressCoalescesIntoOneStatePush(t *testing.T) {
 }
 
 // The user's cancel stops a running download, keeps no partial file, gives
-// the reservation back, and is not announced.
+// any reservation back, and is not announced.
 func TestCancelingADownloadSettlesItAsCanceled(t *testing.T) {
-	manager, log, access, page := newDownloadManager(t)
+	for _, mode := range downloadModes {
+		t.Run(mode.name, func(t *testing.T) {
+			testCancelingADownloadSettlesItAsCanceled(t, mode.saving)
+		})
+	}
+}
+
+func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSaving) {
+	manager, log, access, page := newDownloadManagerFor(t, saving)
 	startDownload(t, manager, access, page, "big.zip", 4096, "hold")
 	listed := threadDownloads(manager, access)
 	if len(listed) != 1 || listed[0].State != downloadStateRunning || listed[0].ReceivedBytes != 2048 || listed[0].TotalBytes != 4096 {
@@ -207,8 +279,8 @@ func TestCancelingADownloadSettlesItAsCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, scope := manager.pageForDownload(item.engineID)
-	partial := filepath.Join(scope.downloadDir, item.engineID)
+	p, _ := manager.pageForDownload(item.engineID)
+	partial := heldFile(t, manager, item.engineID)
 	if _, err := os.Stat(partial); err != nil {
 		t.Fatalf("the held download has no partial file: %v", err)
 	}
@@ -348,7 +420,7 @@ func TestARefusedCancelReachesTheUserAndTheDownloadRuns(t *testing.T) {
 // A download refused for quota, and one stopped by its page closing, are
 // listed with the reason and announced.
 func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {
-	manager, log, access, page := newDownloadManager(t)
+	manager, log, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
 	frame := paneHandle(manager, access, page.ID)
 	authorityOf(t, manager, access).downloadBytes.Store(maxWorkspaceDownloadBytes)
 	if manager.downloadStarted(downloadStart{Frame: frame, ID: "over", SuggestedName: "over.bin"}) {
@@ -447,10 +519,22 @@ func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
 	}
 }
 
-// Show in folder hands the finished file to the file manager; a file pruned
+// Show in folder hands the finished file to the file manager; a file gone
 // since is an error naming it.
 func TestRevealingADownloadShowsItsFile(t *testing.T) {
-	manager, _, access, page := newDownloadManager(t)
+	for _, mode := range downloadModes {
+		t.Run(mode.name, func(t *testing.T) {
+			gone := "notes.txt is no longer at"
+			if mode.saving == downloadsAsArtifacts {
+				gone = "notes.txt is gone; downloads are removed after 7 days"
+			}
+			testRevealingADownloadShowsItsFile(t, mode.saving, gone)
+		})
+	}
+}
+
+func testRevealingADownloadShowsItsFile(t *testing.T, saving downloadSaving, gone string) {
+	manager, _, access, page := newDownloadManagerFor(t, saving)
 	var revealed []string
 	manager.revealFileInFileManager = func(_ context.Context, path string) error {
 		revealed = append(revealed, path)
@@ -468,8 +552,8 @@ func TestRevealingADownloadShowsItsFile(t *testing.T) {
 	if err := os.Remove(item.path); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.RevealThreadDownload(t.Context(), access, download.ID); err == nil || !strings.Contains(err.Error(), "notes.txt is gone") {
-		t.Fatalf("revealing a pruned download answers %v", err)
+	if err := manager.RevealThreadDownload(t.Context(), access, download.ID); err == nil || !strings.Contains(err.Error(), gone) {
+		t.Fatalf("revealing a download whose file is gone answers %v, want %q", err, gone)
 	}
 	// Another thread cannot reach this thread's download.
 	other := Access{ThreadID: "other", Workspace: access.Workspace}
@@ -677,7 +761,7 @@ func TestASecondCancelKeepsTheFirstCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	partial := filepath.Join(fakeProfileOf(t, manager).downloadDir, item.engineID)
+	partial := heldFile(t, manager, item.engineID)
 	if _, err := os.Stat(partial); err != nil {
 		t.Fatalf("no partial file: %v", err)
 	}
@@ -750,8 +834,17 @@ func TestClosingTheThreadForgetsItsDownloads(t *testing.T) {
 
 // However a page stops being the Manager's, a download it left running
 // settles, its reservations are released, the engine is asked to stop it,
-// and its row can be cleared.
+// its partial file goes (the engine's in the Downloads folder, AO's in its
+// own directory), and its row can be cleared.
 func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
+	for _, mode := range downloadModes {
+		t.Run(mode.name, func(t *testing.T) {
+			testEveryPageTeardownSettlesItsRunningDownloads(t, mode.saving)
+		})
+	}
+}
+
+func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downloadSaving) {
 	for _, tc := range []struct {
 		name     string
 		teardown func(t *testing.T, manager *Manager, access Access, page PageInfo)
@@ -796,7 +889,7 @@ func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			manager, _, access, page := newDownloadManager(t)
+			manager, _, access, page := newDownloadManagerFor(t, saving)
 			baseline := manager.artifactBytes.Load()
 			startDownload(t, manager, access, page, "held.bin", 4096, "hold")
 			authority := authorityOf(t, manager, access)
@@ -805,6 +898,7 @@ func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
 				t.Fatal(err)
 			}
 			profile := fakeProfileOf(t, manager)
+			partial := heldFile(t, manager, item.engineID)
 
 			tc.teardown(t, manager, access, page)
 
@@ -816,11 +910,13 @@ func TestEveryPageTeardownSettlesItsRunningDownloads(t *testing.T) {
 				profile.mu.Lock()
 				_, held := profile.held[item.engineID]
 				profile.mu.Unlock()
-				if !running && settled && !held && authority.downloadBytes.Load() == 0 && manager.artifactBytes.Load() == baseline {
+				_, statErr := os.Stat(partial)
+				partialGone := errors.Is(statErr, os.ErrNotExist)
+				if !running && settled && !held && partialGone && authority.downloadBytes.Load() == 0 && manager.artifactBytes.Load() == baseline {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
+					t.Fatalf("after the teardown the thread lists %+v, the engine holds it: %v, its partial file is gone: %v, the workspace reserves %d bytes and the artifacts %d over %d", listed, held, partialGone, authority.downloadBytes.Load(), manager.artifactBytes.Load(), baseline)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}

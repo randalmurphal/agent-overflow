@@ -574,7 +574,7 @@ func TestAuthorizeFileStaysWithinGrantedRoots(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{config: Config{}, scopes: make(map[string]*jarScope)}
+	manager := &Manager{config: Config{}, scopes: make(map[string]*jarScope), engine: newFakeEngine()}
 	access := Access{ThreadID: "t", Workspace: root}
 	wantInside, _ := filepath.EvalSymlinks(inside)
 	if got, err := manager.authorizeFile(access, inside); err != nil || got != wantInside {
@@ -970,11 +970,13 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 }
 
 // The Manager keeps a download only when a managed page owns the frame it
-// began in and the workspace has quota for it. It answers false for every
-// other one, which the engine then cancels.
+// began in and, on an engine whose downloads are AO's, the workspace has
+// quota for it. It answers false for every other one, which the engine then
+// cancels.
 func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { manager.Close() })
+	manager.engine.(*fakeEngine).saving = downloadsAsArtifacts
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	page, err := manager.NewPage(t.Context(), access)
 	if err != nil {

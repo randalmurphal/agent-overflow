@@ -85,12 +85,10 @@ type jarScope struct {
 	// (lifecycle.go). They are out of pages, so nothing finds or presents
 	// them as live, and still count toward every cap. Guarded by m.mu.
 	closing map[string]*pageClose
-	// downloadDir is where the engine writes this jar's downloads before
-	// they move to their workspace's directory.
+	// downloadDir is where an engine keeping downloads as artifacts writes
+	// this jar's downloads before they move to their workspace's directory;
+	// empty for every other engine (downloadSaving).
 	downloadDir string
-	// downloadsWarned is what the user was last told about downloads in
-	// this jar's profile not being managed. Guarded by m.mu.
-	downloadsWarned string
 }
 
 // jarForLocked maps a thread's access and a jar kind to the jar its pages
@@ -185,8 +183,8 @@ func framePageLocked(scope *jarScope, frame string) *managedPage {
 }
 
 // workspaceAuthority is what a canonical workspace owns across every jar its
-// pages are in: the directory its downloads land in and the bytes they
-// reserve. It lives while the workspace has a page, live, closing or being
+// pages are in: on an engine whose downloads AO keeps, the directory they
+// land in and the bytes they reserve. It lives while the workspace has a page, live, closing or being
 // created, in any jar (pruneAuthoritiesLocked).
 type workspaceAuthority struct {
 	workspace     string

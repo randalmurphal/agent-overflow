@@ -37,6 +37,9 @@ type browserEngine interface {
 	NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error)
 	// DiscardPage closes an engine page the Manager declined to adopt.
 	DiscardPage(handle string)
+	// DownloadSaving is where the engine's downloads go; constant for an
+	// engine.
+	DownloadSaving() downloadSaving
 }
 
 // engineSiteData is the engine half of ClearSiteData (spec §4), implemented by
@@ -59,6 +62,13 @@ type engineSiteData interface {
 // dispatch runs synchronously there and the teardown takes milliseconds.
 type engineUIThread interface {
 	OnUIThread() bool
+}
+
+// engineDownloadEvents is implemented by an engine that delivers download
+// reports on a queue of its own: WaitDownloadEvents returns once every
+// report submitted so far has been delivered (Manager.Close).
+type engineDownloadEvents interface {
+	WaitDownloadEvents()
 }
 
 // engineAppFocus is implemented by an engine whose page views share the
@@ -187,8 +197,17 @@ type profileOptions struct {
 	// An engine derives its profile directory or id from it and nothing
 	// else, so one jar is one profile across restarts.
 	Jar string
-	// DownloadDir is the AO artifact directory downloads must land in.
+	// DownloadDir is the AO artifact directory downloads must land in, for
+	// an engine that keeps them there (downloadsAsArtifacts); empty
+	// otherwise.
 	DownloadDir string
+	// StageDownload answers the staged file an engine that stages
+	// (downloadsStaged) writes download id into, resolved as the download
+	// starts (download_staging.go); with an error the engine cancels the
+	// download before writing and reports the error as its end. Nil for
+	// other engines. Called on the engine's UI thread; it takes no lock a
+	// UI-thread dispatch waits on.
+	StageDownload func(id string) (string, error)
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
@@ -337,15 +356,28 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
-// downloadPolicy is the optional half of an engine profile that can fail to
-// keep its downloads in AO's directory without failing its pages:
-// downloadsWarning answers the user-facing warning, empty while downloads
-// are managed. The engine reports each change, at page creation or any
-// later time, through engineEvents.DownloadPolicyChanged; the Manager shows
-// each distinct warning once per jar profile.
-type downloadPolicy interface {
-	downloadsWarning() string
-}
+// downloadSaving is where an engine's downloads are written and where a
+// finished one ends up (browserEngine.DownloadSaving, downloads.go).
+type downloadSaving int
+
+const (
+	// downloadsStaged: the engine writes each download into the staged file
+	// profileOptions.StageDownload names, in the app's private staging
+	// directory in the user's Downloads folder, and the Manager publishes
+	// each finished file beside it (publishDownload). The engines in this
+	// process: WebKitGTK, WKWebView.
+	downloadsStaged downloadSaving = iota
+	// downloadsAsArtifacts: the engine writes into profileOptions.DownloadDir
+	// under engine ids, the Manager moves each finished file to its
+	// workspace's artifact directory, and quotas, the per-download cap and
+	// artifact pruning apply. Headless Chromium in serve mode alone: it runs
+	// on a server, where no user has a Downloads folder to look in.
+	downloadsAsArtifacts
+	// downloadsSavedByEngine: the engine saves into the Downloads folder of
+	// the machine its pages run on and reports the path. The launcher-hosted
+	// WebView2.
+	downloadsSavedByEngine
+)
 
 // pageFind is the optional find-in-page half of a page driver: the engine's
 // own text search, never one AO runs in the document. A driver without it
@@ -504,11 +536,6 @@ type engineEvents struct {
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool
 	DownloadProgress func(downloadProgress)
-	// DownloadPolicyChanged reports that the profile with this handle
-	// changed what it does with downloads (downloadPolicy). It carries no
-	// state: the Manager reads the current warning, so reports may arrive
-	// in any order, and an engine may report from any goroutine.
-	DownloadPolicyChanged func(profile string)
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held
 	// keyboard focus — does AO own it? True means the engine swallows the

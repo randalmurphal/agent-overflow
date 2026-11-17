@@ -54,7 +54,8 @@ export function downloadStatus(download: BrowserDownload): string {
         ? `${formatBytes(download.receivedBytes)} of ${formatBytes(download.totalBytes)}`
         : formatBytes(download.receivedBytes);
     case 'completed':
-      return formatBytes(download.receivedBytes);
+      // A completed download with an error saved a file AO does not open.
+      return download.error ? `${formatBytes(download.receivedBytes)} · ${download.error}` : formatBytes(download.receivedBytes);
     case 'failed':
       return `Failed: ${download.error || 'unknown error'}`;
     default:
@@ -105,27 +106,25 @@ export function clearBrowserDownloads(threadId: string): Promise<BrowserActionFa
 
 /** Whether a companion event is one announceBrowserDownload takes. */
 export function isBrowserDownloadAnnouncement(event: BrowserCompanionEvent | null | undefined): boolean {
-  return event?.kind === 'download' || event?.kind === 'downloads-unmanaged';
+  return event?.kind === 'download';
 }
 
 /**
  * A Kind "download" event: one of the thread's downloads settled other than
- * by the user's cancel. A Kind "downloads-unmanaged" event: the browser
- * refused AO's download directory for the profile a page of the thread
- * opened in, said once per profile. Only a page that can host the thread's
- * browser announces either; the events are not replayed, so each page
- * announces one once.
+ * by the user's cancel. Only a page that can host the thread's browser
+ * announces it; the events are not replayed, so each page announces one
+ * once.
  */
 export function announceBrowserDownload(event: BrowserCompanionEvent): void {
   if (!event.threadId || !canUseNativeBrowser(event.threadId)) return;
-  if (event.kind === 'downloads-unmanaged') {
-    const message = event.error || 'Downloads are off in this browser profile';
-    addErrorToast(message, new Error(message));
-    return;
-  }
   const download = event.download;
   if (!download) return;
   const threadId = event.threadId;
+  if (download.state === 'completed' && download.error) {
+    // Saved, but not a file AO opens or shows.
+    addToast('info', `Downloaded ${download.name}; ${download.error}`, FINISHED_TOAST_MS);
+    return;
+  }
   if (download.state === 'completed') {
     addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {
       label: 'Show in folder',

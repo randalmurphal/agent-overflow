@@ -70,8 +70,9 @@ per-platform no-op.
   a switch closes the user's tabs. Pages remain owned by the registering
   thread.
 - A jar shares site data and nothing else. Navigation and file permissions,
-  the download directory and the download quota stay per canonical
-  workspace, whichever jar a page is in. A request the jar's own policy
+  the record of finished downloads, and headless Chromium's download
+  directory and quota stay per canonical workspace, whichever jar a page
+  is in. A request the jar's own policy
   sees (headless Chromium's browser-wide interception) has the authority of
   the page its frame belongs to, or for a popup not yet adopted, of its
   opener chain; one whose owner is not resolved may open no workspace's
@@ -385,27 +386,51 @@ behave as a desktop browser's:
   (a Kind `download` event): a toast with Show in folder when it finished,
   an error toast with the reason otherwise. `canceled` means AO stopped it:
   the user (settled by the engine's own report, so a finish that beats the
-  cancel keeps its file; a repeated cancel never withdraws the first), a
-  quota, its size, or its page leaving by any path (a close, a suspend, the
-  engine's close, Clear site data, disabling the browser), which settles it
-  at once and releases its reservation; a download that starts on a page
-  already leaving is refused to the engine and never listed; an
-  end the engine reports on its own is `failed`, with the engine's reason
-  when it gives one.
-  On Windows through WSL the pane's WebView2 writes into the jar's AO
-  directory through its Windows view (`internal/browser/hosted_downloads.go`,
-  which records the protocol real WebView2 accepts; `TestDownloadSmoke` in
-  `internal/webview2host` runs it on the real runtime). A refusal does not
-  fail the page: it is logged with the engine's message and the user gets
-  one error toast per browser profile (a Kind `downloads-unmanaged` event)
-  for each change of the profile's state, whether a new tab or a re-set on
-  a surviving tab after a close made it, sent to every thread with a tab in
-  the profile. A refused directory or
-  refused download events turn the profile's downloads off (`deny`), and
-  each download the browser then cancels is listed as failed with the
-  reason. If turning them off is refused too, the toast says downloads in
-  that profile go to the system Downloads folder, and AO cancels each one
-  that starts and lists it as possibly saved there.
+  cancel keeps its file; a repeated cancel never withdraws the first), under
+  headless Chromium a quota or its size, or its page leaving by any path (a
+  close, a suspend, the engine's close, Clear site data, disabling the
+  browser), which settles it at once and releases any reservation; a
+  download that starts on a page already leaving is refused to the engine
+  and never listed; an end the engine reports on its own is `failed`, with
+  the engine's reason when it gives one, and so is a download whose
+  Downloads folder cannot be created or written. Where the file goes is
+  in [Browser hardening](#browser-hardening).
+  On Windows through WSL the launcher takes every download a pane page
+  starts (WebView2's `DownloadStarting`, handled, so WebView2's own
+  download dialog never opens), WebView2 saves it, and the launcher reports
+  it to the backend as whole snapshots (`internal/webview2host/download.go`,
+  `internal/browser/hosted_downloads.go`); no download crosses CDP. The
+  launcher numbers each download's snapshots, and the backend applies a
+  download's snapshots one at a time, each only if newer than the last it
+  applied, so a lost report heals on the next and reports that overtake
+  each other settle in the launcher's order: the first it gets starts the
+  row, a repeat or an older one changes nothing, and nothing after the end
+  reopens it. A cancel is answered with the download's snapshot, and a
+  running download the launcher has not reported for ten seconds is asked
+  for one, so a row whose end was lost settles. An answer settles or
+  advances a row and never creates one; for an id the launcher has no
+  record of it says so, which ends the row only if it still runs. WebView2
+  resumes a dropped download itself, as a new download start that carries
+  the interruption's reason; the launcher keeps it as the same row, saving
+  to the file the download started with, so one click is one row, one file
+  and one end. A resume names nothing else of its download, so the launcher
+  adopts it only when exactly one running download from that address
+  reads as dropped (in progress with an interrupt reason; a healthy one
+  that never resumed reads none). Otherwise, with two dropped at once or
+  one dropped beside a download that already resumed, the resume is a row
+  of its own saving where WebView2 chose, and the dropped download's row
+  stays running until the user cancels it. A cancel always settles: by
+  WebView2's report, within milliseconds when it comes, or by the
+  launcher after five seconds, since a dropped download's operation never
+  ends. In WebView2 that dropped download and its resume are one, so the
+  cancel ends the resume's row too if it still runs. A download that
+  really finishes after the five seconds is listed canceled, and its file
+  stays in the Downloads folder, listed nowhere. A second download a
+  script starts with no user gesture gets WebView2's own "download
+  multiple files" prompt in
+  the page and has no row until it is allowed. A window WebView2 opened
+  itself rather than as an AO tab keeps WebView2's own handling: its
+  dialog, the file in the Downloads folder, no row.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
@@ -739,7 +764,7 @@ it without relying on an optional skill.
 | `browser_evaluate` | Explicit mutation-capable JavaScript escape hatch; bounded and serialized. Takes an expression, or a function called with an optional JSON argument, as Playwright's evaluate does; other code runs as statements in an async function body and gives a value only through `return`. The engine reads the code: the Manager offers it as an expression, and as statements only when the engine reports that does not compile, so no code runs twice ([`evaluate.go`](../../internal/browser/evaluate.go)). Nothing uses the page's `eval`, so a page CSP without `'unsafe-eval'` allows it. The page encodes the result as `JSON.stringify` does, plus DOM nodes, collections, errors, `BigInt` and cycles, bounded in size and depth. |
 | `browser_clipboard` | Read/write a bounded tab-local MIME clipboard. Paste/copy chords bridge this clipboard without touching the OS clipboard. |
 | `browser_console_logs` | Read the bounded tab console/runtime ring by level and substring. |
-| `browser_downloads` | List or wait for browser downloads (`in_progress`, `completed`, `failed`, `canceled`, with `totalBytes` when known) and return their AO-owned local paths. |
+| `browser_downloads` | List or wait for browser downloads (`in_progress`, `completed`, `failed`, `canceled`, with `totalBytes` when known) and return each finished file's path as the backend sees it. |
 | `browser_assets` | Inventory resource, DOM-attribute, computed-style, and inline-SVG assets; bundle selected images, fonts, stylesheets, or videos with page credentials into an AO-owned artifact directory. |
 
 ## Parallel agents
@@ -762,9 +787,16 @@ background subagents cannot make a visible companion flicker between tabs.
 The browser never launches with `--allow-file-access-from-files`. Public page
 JavaScript therefore does not inherit the MCP caller's file authority.
 `browser_open_file` resolves symlinks and permits files inside the thread's
-workspace or project root, and the workspace's own finished downloads (its
-AO-owned download directory, which the pane's downloads list opens from).
-Outside files require
+workspace or project root, and the workspace's own finished downloads, which
+the pane's downloads list opens from: under headless Chromium its AO-owned
+download directory; on every other engine the file of each finished
+download of the workspace that AO still lists, in any thread's pane list
+or a live page's `browser_downloads`, while it is still the file the
+download wrote (device, inode, size and modification time), never the
+Downloads folder around it (`internal/browser/download_files.go`). A row
+that is listed is openable and one that is gone is not, so a download of
+an earlier run of the app is an outside file. Outside files
+require
 `browserAllowOutsideWorkspace`, an explicit off-by-default setting. This gate
 exists because the MCP server runs outside provider process sandboxes; OS-user
 permissions alone would make it a sandbox bypass.
@@ -784,14 +816,73 @@ The manager uses a per-jar profile, grants no camera, microphone,
 geolocation, notification, or system-clipboard permission, bounds navigation
 and tool deadlines, caps pages and contexts, dismisses JavaScript dialogs,
 blocks dangerous navigation schemes, and never exposes a debugging
-endpoint outside the local controller process. Downloads and asset bundles go
-only to AO-owned directories with file/count/byte caps; download filenames are
-sanitized across macOS, Linux, and Windows and never target the user's normal
-Downloads directory. A download that begins outside every AO page is
-cancelled. Downloads are capped at 512 MiB each and 2 GiB reserved
-per live workspace, whichever jars its pages are in; downloads and asset bundles share a 4 GiB per-process
-artifact quota. Files older than seven days are pruned on the next artifact
-use, while newer files are never silently evicted to make quota room.
+endpoint outside the local controller process. Asset bundles go only to
+AO-owned directories with file/count/byte caps.
+
+A finished download ends up where any browser on the machine that runs the
+page's engine puts it: that user's Downloads folder (`downloadSaving` in
+`internal/browser/driver.go`). There is no setting.
+
+- Launcher-hosted WebView2: WebView2's default, the Windows user's
+  Downloads folder, under the name WebView2 gives (`name (1).ext` on a
+  collision). WebView2 keeps the mark of the web. The finished file is
+  openable from AO only while the path WebView2 reported is a regular
+  file, not a link, of the size it reported; otherwise the row completes
+  with the reason and opens nothing.
+- WebKitGTK and WKWebView write each download only into the app's
+  private staging folder in the Downloads folder,
+  `.agent-overflow-downloads` (mode 0700), under a name the Manager gives
+  as the engine asks for the destination: `dl-<process token>-<n>`, so a
+  file another run left never collides
+  (`internal/browser/download_staging.go`). The folder is resolved per
+  download, created on demand with a missing Downloads folder, checked to
+  be a real folder and not a link before every use, and removed once no
+  download stages in it and it is empty. The Manager publishes a finished
+  file into the Downloads folder beside it
+  (`internal/browser/user_downloads.go`): it hard-links the staged file to
+  the sanitized suggested name, or that name with ` (1)`, ` (2)` and on,
+  or where the filesystem refuses hard links renames it with a rename
+  that refuses to replace (`renameat2` `RENAME_NOREPLACE` on Linux,
+  `renamex_np` `RENAME_EXCL` on macOS), taking the next name on one that
+  exists, so it replaces nothing, copies nothing and nothing partial ever
+  has a public name. A filesystem with neither fails the row with the
+  reason. The row stays running until the file is in place and completes
+  with its path; a publish that fails is the row's error and its staged
+  file goes. Closing the browser waits for a publish under way. On Linux
+  the folder is `XDG_DOWNLOAD_DIR` from
+  `$XDG_CONFIG_HOME/user-dirs.dirs` (`$HOME/.config` when unset), read as
+  xdg-user-dirs writes it (double-quoted, backslash escapes, a leading
+  `$HOME`), else `$HOME/Downloads`; on macOS `$HOME/Downloads`.
+- A Downloads folder that does not exist is created when a download
+  starts. A path that is not a folder, a folder that cannot be created or
+  written, or a staging folder that is a link fails the download on its
+  row with the reason, before the engine writes; nothing falls back
+  elsewhere. A Downloads folder relocated while the app runs takes the
+  next download; one moved or removed while a download runs fails that
+  download at its publish, and nothing is written anywhere else.
+- In the Downloads folder AO applies no quota, per-download cap or
+  pruning and never deletes or replaces a file it did not put there. A
+  canceled or failed download leaves the folder as it was: WebView2
+  removes its own partial file, and the other desktop engines remove
+  their staged file and the emptied staging folder. A staged file left
+  by a run that ended mid-download is removed when a download of a later
+  run first uses the staging folder, once it is 24 hours old; a running
+  download's file never is. A download another app process lets stall
+  for 24 hours can lose its staged file that way and fails at its
+  publish. Nothing that deletes a thread, clears site data, turns the
+  browser off or prunes artifacts deletes a file in the Downloads
+  folder.
+- Headless Chromium in serve mode alone keeps downloads as AO artifacts:
+  under the download's id in the jar's AO directory, moved on finishing
+  to the workspace's under a sanitized unique name, capped at 512 MiB
+  each and 2 GiB reserved per live workspace, whichever jars its pages
+  are in. Downloads and asset bundles share a 4 GiB per-process artifact
+  quota. Files older than seven days are pruned on the next artifact
+  use, while newer files are never silently evicted to make quota room.
+
+A download that begins in a page no thread owns is cancelled, except on
+WebView2, where a window WebView2 opened itself (a popup the Manager did
+not adopt as a tab) keeps WebView2's own download handling.
 
 ## Codex browser parity boundary
 

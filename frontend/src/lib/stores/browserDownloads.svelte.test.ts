@@ -47,6 +47,7 @@ describe('browser downloads', () => {
     expect(downloadStatus(download({ receivedBytes: 1500, totalBytes: 3_000_000 }))).toBe('2 KB of 3.0 MB');
     expect(downloadStatus(download({ receivedBytes: 1500 }))).toBe('2 KB');
     expect(downloadStatus(download({ state: 'completed', receivedBytes: 912 }))).toBe('912 B');
+    expect(downloadStatus(download({ state: 'completed', receivedBytes: 912, error: 'the saved file is a link' }))).toBe('912 B · the saved file is a link');
     expect(downloadStatus(download({ state: 'failed', error: 'net::ERR_FAILED' }))).toBe('Failed: net::ERR_FAILED');
     expect(downloadStatus(download({ state: 'canceled' }))).toBe('Canceled');
     expect(downloadStatus(download({ state: 'canceled', error: 'page closed' }))).toBe('Canceled: page closed');
@@ -68,6 +69,14 @@ describe('browser downloads', () => {
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'download-reveal', downloadId: 'd1' });
   });
 
+  it('announces a saved file AO does not open with its reason and no action', () => {
+    announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed', error: 'the saved file is a link' }) } as never);
+    const toasts = getToasts();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ type: 'info', message: 'Downloaded report.pdf; the saved file is a link' });
+    expect(toasts[0].action).toBeUndefined();
+  });
+
   it('puts a refused Show in folder from the toast in a toast when no pane is open', async () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => { throw new Error('browser: report.pdf is gone; downloads are removed after 7 days'); }));
     announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed' }) } as never);
@@ -81,24 +90,16 @@ describe('browser downloads', () => {
     expect(getToasts()).toMatchObject([{ type: 'error', message: 'report.pdf did not download: the server closed the connection' }]);
   });
 
-  it('takes the download and downloads-unmanaged kinds and leaves the rest to the companion state', () => {
+  it('takes the download kind and leaves the rest to the companion state', () => {
     expect(isBrowserDownloadAnnouncement({ kind: 'download' } as never)).toBe(true);
-    expect(isBrowserDownloadAnnouncement({ kind: 'downloads-unmanaged' } as never)).toBe(true);
     expect(isBrowserDownloadAnnouncement({ kind: 'state' } as never)).toBe(false);
     expect(isBrowserDownloadAnnouncement({ kind: 'error' } as never)).toBe(false);
     expect(isBrowserDownloadAnnouncement(null)).toBe(false);
   });
 
-  it('announces downloads that are off in a profile as an error with the reason', () => {
-    const error = 'Downloads are off in this browser profile: the pane browser refused AO\'s download directory';
-    announceBrowserDownload({ kind: 'downloads-unmanaged', threadId: THREAD, error } as never);
-    expect(getToasts()).toMatchObject([{ type: 'error', message: error }]);
-  });
-
   it('announces nothing on a page that cannot host the browser', () => {
     setHostWindowFromBootstrap(false);
     announceBrowserDownload({ kind: 'download', threadId: THREAD, download: download({ state: 'completed' }) } as never);
-    announceBrowserDownload({ kind: 'downloads-unmanaged', threadId: THREAD, error: 'off' } as never);
     expect(getToasts()).toHaveLength(0);
   });
 });

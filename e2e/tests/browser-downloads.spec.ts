@@ -3,9 +3,11 @@
 // address row, which shows a running download's progress and opens the list
 // of the thread's downloads: a running one can be canceled there, a finished
 // one opens in a new tab when a tab shows its type, and the list clears to
-// nothing. A finished download is announced once with Show in folder, and
-// one that fails is announced with its reason. The fake engine's
-// download.invalid addresses stand in for a server (fake_downloads.go).
+// nothing. A finished download is saved in the Downloads folder of the
+// harness home under a name that overwrites nothing, is announced once with
+// Show in folder, and one that fails is announced with its reason. The fake
+// engine's download.invalid addresses stand in for a server
+// (fake_downloads.go).
 import { test, expect, type SeedResult } from './fixtures.js';
 
 interface BrowserState {
@@ -55,7 +57,8 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
   // A finished download announces itself once, with Show in folder.
   await address.fill('https://download.invalid/report.pdf?bytes=2048');
   await address.press('Enter');
-  const finished = page.getByTestId('toast').filter({ hasText: 'Downloaded report.pdf' });
+  // The worker's harness home may hold a report.pdf from an earlier test.
+  const finished = page.getByTestId('toast').filter({ hasText: /Downloaded report(?: \(\d+\))?\.pdf/ });
   await expect(finished).toHaveCount(1);
   await expect(finished.getByRole('button', { name: 'Show in folder' })).toBeVisible();
   // The page the download began on stays.
@@ -72,13 +75,31 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
   await expect(rows.nth(1)).toHaveAttribute('data-state', 'completed');
   await expect(rows.nth(2)).toHaveAttribute('data-state', 'canceled');
 
-  // Open shows the finished file in a new tab.
+  // Open shows the finished file in a new tab, from the Downloads folder of
+  // the harness home, as the desktop engines save it.
   await rows.nth(1).getByTestId('browser-download-open').click();
   await expect(pane.getByTestId('browser-tab')).toHaveCount(2);
+  const savedAs = /^file:\/\/.*\/home\/Downloads\/(report(?: \(\d+\))?\.pdf)$/;
   await expect.poll(async () => {
     const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
     return state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '';
-  }).toMatch(/^file:\/\/.*\/report\.pdf$/);
+  }).toMatch(savedAs);
+  const opened = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+  const firstName = opened.pages?.find((tab) => tab.id === opened.activePageId)?.url.match(savedAs)?.[1];
+
+  // The same name again is saved beside the first, never over it.
+  await pane.getByTestId('browser-tab').first().click();
+  await address.fill('https://download.invalid/report.pdf?bytes=2048');
+  await address.press('Enter');
+  await expect.poll(async () => {
+    const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+    return (state.downloads ?? []).filter((item) => item.state === 'completed').map((item) => item.name);
+  }).toHaveLength(2);
+  const both = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+  const names = (both.downloads ?? []).filter((item) => item.state === 'completed').map((item) => item.name);
+  expect(names[1]).toBe(firstName);
+  expect(names[0]).not.toBe(firstName);
+  expect(names[0]).toMatch(/^report \(\d+\)\.pdf$/);
 
   // Clearing empties the list, and the button goes with it.
   await button.click();

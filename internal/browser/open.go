@@ -123,10 +123,19 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.scheduleIdleClose()
 		return nil, err
 	}
-	authorityDir := m.workspaceDownloadDir(workspace)
-	if err := os.MkdirAll(authorityDir, 0o700); err != nil {
-		m.scheduleIdleClose()
-		return nil, fmt.Errorf("browser: create download directory: %w", err)
+	if m.engine.DownloadSaving() != downloadsSavedByEngine {
+		// Once per Manager: artifacts a download kept, here or in an earlier
+		// version that kept this engine's downloads as artifacts, go after
+		// artifactMaxAge.
+		m.prepareArtifacts()
+	}
+	authorityDir := ""
+	if m.downloadsToArtifacts() {
+		authorityDir = m.workspaceDownloadDir(workspace)
+		if err := os.MkdirAll(authorityDir, 0o700); err != nil {
+			m.scheduleIdleClose()
+			return nil, fmt.Errorf("browser: create download directory: %w", err)
+		}
 	}
 	m.mu.Lock()
 	var jar jarIdentity
@@ -263,9 +272,16 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 // policy answers with the authority of the page a request's frame belongs
 // to, or its opener's (jarAllows).
 func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
-	downloadDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
-	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
-		return nil, fmt.Errorf("browser: create download directory: %w", err)
+	downloadDir := ""
+	if m.downloadsToArtifacts() {
+		downloadDir = filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
+		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
+			return nil, fmt.Errorf("browser: create download directory: %w", err)
+		}
+	}
+	var stage func(string) (string, error)
+	if m.downloadsStagedHere() {
+		stage = m.stageDownload
 	}
 	scope := &jarScope{
 		jar: jar, downloadDir: downloadDir,
@@ -273,7 +289,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 		creating: make(map[*managedPage]struct{}),
 	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
-		Jar: jar.key, DownloadDir: downloadDir, Ephemeral: jar.ephemeral,
+		Jar: jar.key, DownloadDir: downloadDir, StageDownload: stage, Ephemeral: jar.ephemeral,
 		Allow: func(owners []string, rawURL string) bool { return m.jarAllows(scope, owners, rawURL) },
 	})
 	if err != nil {

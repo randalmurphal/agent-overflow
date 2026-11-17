@@ -37,20 +37,22 @@ const nativeBrowserSmokeEnv = "AO_NATIVE_BROWSER_SMOKE"
 // the gate is set.
 var nativeSmokeWindow atomic.Pointer[application.WebviewWindow]
 
-func TestMain(m *testing.M) {
+// nativeSmokeMain runs the package's tests for TestMain when the gate is
+// set, and answers ran false when it is not.
+func nativeSmokeMain(m *testing.M) (code int, ran bool) {
 	if os.Getenv(nativeBrowserSmokeEnv) != "1" {
-		os.Exit(m.Run())
+		return 0, false
 	}
 	weston, _ := exec.LookPath("weston")
 	plan, err := nativeSmokeDisplay(os.Getenv, weston, runtime.GOOS)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1, true
 	}
 	if plan == smokeUnderWeston {
-		os.Exit(runUnderHeadlessWeston(weston))
+		return runUnderHeadlessWeston(weston), true
 	}
-	os.Exit(runInNativeWindow(m))
+	return runInNativeWindow(m), true
 }
 
 // runInNativeWindow runs the tests inside an application loop with one
@@ -58,20 +60,16 @@ func TestMain(m *testing.M) {
 // thread, so the tests run beside it and the process exits when they end.
 func runInNativeWindow(m *testing.M) int {
 	// The engine and the window's own webview inherit these, so nothing the
-	// run starts writes into the developer's home.
+	// run starts writes into the developer's home, and its downloads land
+	// in the temporary home's Downloads folder.
 	home, err := os.MkdirTemp("", "ao-native-browser-smoke-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "native browser smoke: %v\n", err)
 		return 1
 	}
-	for name, dir := range map[string]string{
-		"HOME": home, "XDG_DATA_HOME": filepath.Join(home, "data"),
-		"XDG_CACHE_HOME": filepath.Join(home, "cache"), "XDG_CONFIG_HOME": filepath.Join(home, "config"),
-	} {
-		if err := os.Setenv(name, dir); err != nil {
-			fmt.Fprintf(os.Stderr, "native browser smoke: %v\n", err)
-			return 1
-		}
+	if err := useTestHome(home); err != nil {
+		fmt.Fprintf(os.Stderr, "native browser smoke: %v\n", err)
+		return 1
 	}
 	app := application.New(application.Options{Name: "ao-native-browser-smoke"})
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {

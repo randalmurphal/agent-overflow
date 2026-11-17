@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"unsafe"
+
+	"agent-overflow/internal/serialqueue"
 )
 
 // The WebKitGTK engine's process and profile halves (spec §6). It is IN-PROCESS
@@ -57,6 +59,11 @@ type webkitEngine struct {
 	pane      map[uint64]webkitPaneState
 	stopped   bool
 	pageCount int
+
+	// downloadEvents carries every download report to the Manager off the
+	// GTK thread, one at a time in the order they were made, so a fast
+	// download's finish never reaches the Manager before its start.
+	downloadEvents serialqueue.Queue
 }
 
 func (e *webkitEngine) Start(context.Context) error {
@@ -129,6 +136,10 @@ func (e *webkitEngine) takePopup(handle string) unsafe.Pointer {
 	return view
 }
 
+// DownloadSaving: WebKit writes into AO's directory and the Manager
+// publishes each finished file to the user's Downloads folder.
+func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
+
 func (e *webkitEngine) DiscardPage(handle string) {
 	if view := e.takePopup(handle); view != nil {
 		webkitCloseView(view)
@@ -157,13 +168,14 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	// An ephemeral session keeps everything in memory and touches no path at
 	// all, which is what the site-data setting being off has to mean for an
 	// engine whose storage is its own.
-	session, err := webkitNewSession(dataDir, cacheDir, cookieFile, opts.DownloadDir, opts.Ephemeral, id)
+	session, err := webkitNewSession(dataDir, cacheDir, cookieFile, opts.Ephemeral, id)
 	if err != nil {
 		return nil, err
 	}
 	profile := &webkitProfile{
-		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session,
+		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session, stage: opts.StageDownload,
 		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
+		stageFailures: make(map[string]error),
 	}
 	webkitProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -184,10 +196,17 @@ type webkitProfile struct {
 	handle  string
 	session unsafe.Pointer
 
+	// stage names the staged file each download is written to
+	// (profileOptions.StageDownload).
+	stage func(id string) (string, error)
+
 	mu        sync.Mutex
 	disposed  bool
 	pages     map[*webkitPage]struct{}
 	downloads map[string]unsafe.Pointer
+	// stageFailures holds why a download got no staged file, from its
+	// destination to its start report.
+	stageFailures map[string]error
 }
 
 func (p *webkitProfile) Handle() string { return p.handle }
@@ -353,6 +372,11 @@ func webkitDownloadOwner(handle string) *webkitProfile {
 func (e *webkitEngine) OnUIThread() bool { return gtkOnMainThread() }
 
 var _ engineUIThread = (*webkitEngine)(nil)
+
+// WaitDownloadEvents is engineDownloadEvents.
+func (e *webkitEngine) WaitDownloadEvents() { e.downloadEvents.Wait() }
+
+var _ engineDownloadEvents = (*webkitEngine)(nil)
 
 // FocusApp is engineAppFocus: the SPA's webview becomes the window's focus
 // widget. Called on the GTK thread from the key gate, where gtkDo runs

@@ -41,6 +41,17 @@ type Host struct {
 	accelerators keybindings.AcceleratorSet
 
 	cdpPort int
+	// downloadToken and downloadSeq make the launcher's download ids
+	// (download.go); downloadSeq is UI thread only.
+	downloadToken string
+	downloadSeq   uint64
+	// cancelTimer runs fn after wait, on a goroutine of its own
+	// (settleCancelAfter); nil is time.AfterFunc. A test stands in its own.
+	cancelTimer func(wait time.Duration, fn func())
+	// foreground answers whether the launcher window is the foreground
+	// window (isForeground). A smoke stands in its answer so it never takes
+	// the user's foreground.
+	foreground func(hwnd uintptr) bool
 }
 
 // Config wires the host to the launcher without importing Wails here.
@@ -117,6 +128,12 @@ type hostPage struct {
 	// first find (find_windows.go). The page holds its constructor's
 	// reference until retireHandlers.
 	findStarted *iFindStartCompletedHandler
+	// downloadStarting takes the page's downloads, downloads holds each one
+	// until it ends, and ended keeps the terminal snapshots that answer a
+	// later directive (download_windows.go). UI thread only.
+	downloadStarting *iDownloadStartingHandler
+	downloads        map[string]*hostDownload
+	ended            endedDownloads
 	// pres is what the backend said about the page's presentation, and
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
@@ -184,6 +201,9 @@ func New(config Config) (*Host, error) {
 		config:  config,
 		pages:   make(map[string]*hostPage, 4),
 		cdpPort: port,
+
+		foreground:    isForeground,
+		downloadToken: newDownloadToken(),
 	}
 	h.env = newPaneEnvironment(config.OnMain, h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
 	return h, nil
@@ -247,6 +267,10 @@ func (h *Host) Apply(directive Directive) {
 	case OpFocus:
 		h.config.Focus.Deliver(directive.Mount, directive.Intent, directive.PageID)
 		h.withPage(directive.PageID, h.applyPendingFocus)
+	case OpCancelDownload:
+		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, true) })
+	case OpDownloadStatus:
+		h.withPage(directive.PageID, func(page *hostPage) { h.answerDownload(page, directive.Download, false) })
 	}
 }
 
@@ -264,7 +288,7 @@ func (h *Host) applyPendingFocus(page *hostPage) {
 		mount, intent, ok = h.config.Focus.Take(page.id)
 		return ok
 	}
-	if focusDecision(page.shown, isForeground(h.config.HostWindow()), take) != focusMove {
+	if focusDecision(page.shown, h.foreground(h.config.HostWindow()), take) != focusMove {
 		return
 	}
 	report := FocusReport{Mount: mount, Intent: intent}
@@ -821,6 +845,7 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
 	keyHandler.ref.release()
+	h.watchDownloads(page, view)
 
 	// A runtime without the find API has to be known before the page is
 	// used, so its report precedes created.
@@ -945,6 +970,7 @@ func (h *Host) retireHandlers(page *hostPage) {
 		page.findStarted.ref.release()
 		page.findStarted = nil
 	}
+	h.retireDownloads(page)
 }
 
 func errString(err error) string {

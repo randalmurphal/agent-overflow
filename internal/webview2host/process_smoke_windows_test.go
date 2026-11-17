@@ -98,7 +98,7 @@ func TestProcessSmokeBrowserExitsWithItsLastController(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open browser process %d: %v", firstPID, err)
 	}
-	defer windows.CloseHandle(process)
+	defer func() { _ = windows.CloseHandle(process) }()
 	relay := smokeDialCDP(t, host.CDPPort())
 
 	// The engine stop: the CDP connection goes, then the profile's
@@ -128,7 +128,7 @@ func TestProcessSmokeBrowserExitsWithItsLastController(t *testing.T) {
 	if secondPID == firstPID {
 		t.Fatalf("the second controller reports the exited browser process %d", firstPID)
 	}
-	smokeDialCDP(t, host.CDPPort()).CloseNow()
+	_ = smokeDialCDP(t, host.CDPPort()).CloseNow()
 	var navErr error
 	ui.do(func() { navErr = smokeNavigateToString(viewOf("page-2"), "<title>ao process smoke</title>") })
 	if navErr != nil {
@@ -186,7 +186,7 @@ func smokeDialCDP(t *testing.T, port int) *websocket.Conn {
 		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 	}
 	err = json.NewDecoder(response.Body).Decode(&version)
-	response.Body.Close()
+	_ = response.Body.Close()
 	if err != nil || !strings.HasPrefix(version.WebSocketDebuggerURL, "ws://127.0.0.1:") {
 		t.Fatalf("debugging endpoint answered %q: %v", version.WebSocketDebuggerURL, err)
 	}
