@@ -617,11 +617,30 @@ type LocalSettlement struct {
 	// computer sent to another one: the receipt was minted elsewhere and
 	// its answer is not that request's.
 	Outbound bool
-	// AnsweredBySpawned is whether the thread that answered was spawned on
-	// this computer by the thread that asked, as Thread.SpawnedByThreadID
-	// reads it, so the answer may mark it read
-	// (docs/specs/standing-agents.md ruling 30).
+	// AnsweredBySpawned is whether the thread that answered was spawned by
+	// the thread that asked, so the answer may mark it read
+	// (docs/specs/standing-agents.md ruling 30): on this computer as
+	// Thread.SpawnedByThreadID reads it, set only with Collected; or, for a
+	// request a paired computer made, through the link that names the same
+	// device and source thread as the request's receipt.
 	AnsweredBySpawned bool
+}
+
+// answeredByLinkedTx reports whether a paired computer's receipt comes from
+// the thread whose link owns its target: the link (spawn_link, at most one
+// per thread) names the receipt's device and source thread.
+func answeredByLinkedTx(tx *sql.Tx, receipt ThreadRequestReceipt) (bool, error) {
+	if receipt.TargetThreadID == "" || receipt.OwnerDeviceID == localReceiptOwner {
+		return false, nil
+	}
+	var linked bool
+	err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_request_receipts
+		 WHERE target_thread_id = ? AND spawn_link = 1 AND owner_device_id = ? AND source_thread_id = ?)`,
+		receipt.TargetThreadID, receipt.OwnerDeviceID, receipt.SourceThreadID).Scan(&linked)
+	if err != nil {
+		return false, fmt.Errorf("read whether %s answered its owner's link: %w", receipt.TargetThreadID, err)
+	}
+	return linked, nil
 }
 
 // SettleLocalThreadRequest settles a receipt and, when the request was made
@@ -669,6 +688,12 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		Scan(&targetComputer, &notify, &answeredBySpawned)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		// A paired computer's request, which its poller collects. It was
+		// made by the thread that owns the target when it comes from that
+		// thread's link: the same device and source thread.
+		if out.AnsweredBySpawned, err = answeredByLinkedTx(tx, receipt); err != nil {
+			return LocalSettlement{}, fmt.Errorf("%s: %w", action, err)
+		}
 	case err != nil:
 		return LocalSettlement{}, fmt.Errorf("%s: read the source row: %w", action, err)
 	case targetComputer != "":

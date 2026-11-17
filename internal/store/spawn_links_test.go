@@ -536,3 +536,37 @@ func TestALinkFencesADeleteClaim(t *testing.T) {
 		t.Fatalf("the link's claim: %v", err)
 	}
 }
+
+// A paired computer's request settled here was answered by a thread its
+// spawner owns when it comes from the device and source thread of the
+// worker's link: the spawn itself, or a later send from the same thread.
+// Any other device or source thread, and a thread no link owns, did not.
+func TestASettledRequestFromALinkedSpawnerIsAnsweredBySpawned(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"worker", "plain"} {
+		mustCreateThread(t, s, id)
+	}
+	acceptLink(t, s, "link", "dev", "worker", 1000)
+	send := func(token, device, source, target string) {
+		t.Helper()
+		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+			Token: token, OwnerDeviceID: device, SourceComputerID: "pc-" + device, SourceThreadID: source,
+			Kind: ThreadRequestSend, TargetThreadID: target, State: ThreadReceiptRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("from-owner", "dev", "lead-link", "worker")
+	send("other-device", "other", "lead-link", "worker")
+	send("other-source", "dev", "someone-else", "worker")
+	send("unlinked", "dev", "lead-link", "plain")
+	for token, want := range map[string]bool{
+		"link": true, "from-owner": true, "other-device": false, "other-source": false, "unlinked": false,
+	} {
+		settled, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(),
+			ThreadRequestSettlement{State: ThreadReceiptFinished, SettledAt: 20}, ThreadRequestFinished)
+		if err != nil || !settled.Settled || settled.Collected || settled.AnsweredBySpawned != want {
+			t.Errorf("%s: settled %+v, %v; want answered by spawned %v and nothing collected here", token, settled, err, want)
+		}
+	}
+}
