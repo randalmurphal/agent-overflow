@@ -10,6 +10,8 @@ import { getPinnedBackend } from '../../transport/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import { forgetGrantedScopes, setCarriedSessionScopes } from '../../transport/scopes';
 import ArchivedThreads from './ArchivedThreads.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 
 describe('<ArchivedThreads>', () => {
   it('renders friendly model aliases', async () => {
@@ -24,6 +26,24 @@ describe('<ArchivedThreads>', () => {
 
     const { findByText } = render(ArchivedThreads);
     expect(await findByText(/codex · GPT 5\.6 Sol/)).toBeTruthy();
+  });
+
+  // While assistants are off, an archived assistant and the threads under
+  // it are not listed; they are when assistants are on again.
+  it('lists no thread under an assistant while assistants are off', async () => {
+    setBindingMock('ListArchivedThreads', async () => [
+      makeThread({ id: 'plain', title: 'Plain', archived: true }),
+      makeThread({ id: 'agent', title: 'Ops', archived: true, agentId: 'ops' }),
+      makeThread({ id: 'past', title: 'Earlier Ops', archived: true, pastAgentId: 'ops' }),
+      makeThread({ id: 'helper', title: 'Research', archived: true, helperOfAgentId: 'ops' }),
+    ]);
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(ArchivedThreads);
+    expect(await view.findByText('Plain')).toBeTruthy();
+    expect(view.getByText('1 archived thread')).toBeTruthy();
+    for (const title of ['Ops', 'Earlier Ops', 'Research']) expect(view.queryByText(title)).toBeNull();
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    expect(await view.findByText('4 archived threads')).toBeTruthy();
   });
 });
 

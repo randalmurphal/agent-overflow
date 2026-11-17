@@ -31,6 +31,7 @@ export const SETTINGS_DEFAULTS = {
   dictationAPIPrompt: "",
   readAloudAPIEnabled: false,
   agentGuideEnabled: true,
+  assistantsEnabled: true,
   sharedMemoryEnabled: false,
   agentProfiles: [
     {

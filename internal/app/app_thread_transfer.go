@@ -113,6 +113,11 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 			return ThreadTransferIntent{}, errorsx.Public(transport.ErrCodeMethodError, "This conversation has no project workspace to include. Transfer it without workspace changes.", nil)
 		}
 	}
+	// A paused assistant's thread neither moves nor is copied; refused before
+	// a move's stops below change anything.
+	if _, err := a.admitPersonOperation(ctx, threadID); err != nil {
+		return ThreadTransferIntent{}, err
+	}
 	// A move takes the conversation away from the computer that owns its
 	// remote commands; stop them before fencing the thread. A copy leaves
 	// the original in place and waits for them like any other pending work.

@@ -1270,7 +1270,8 @@ func (s *Store) ListOpenLocalThreadRequests() ([]ThreadRequest, error) {
 
 // DueThreadReminders returns the `remind` rows whose clock has passed. The
 // partial index idx_thread_requests_due serves the predicate, which is
-// restated here in full so SQLite can prove it.
+// restated here in full so SQLite can prove it. A reminder of a thread
+// assistants' pause holds is not due (assistants_paused.go).
 func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 32
@@ -1278,6 +1279,7 @@ func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE kind = 'remind' AND state = 'accepted' AND due_at <= ?
+		    AND `+s.assistantPauseSQL("thread_requests.caller_thread_id")+`
 		  ORDER BY due_at ASC LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due thread reminders: %w", err)
@@ -1473,7 +1475,8 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	if err := s.reader().QueryRow(
 		`SELECT
 		   (SELECT MIN(due_at) FROM thread_requests
-		     WHERE kind = 'remind' AND state = 'accepted'),
+		     WHERE kind = 'remind' AND state = 'accepted'
+		       AND `+s.assistantPauseSQL("thread_requests.caller_thread_id")+`),
 		   (SELECT MIN(next_check) FROM thread_requests
 		     WHERE polling = 1 AND target_computer_id <> ''
 		       AND state IN ('unconfirmed','accepted','running','finished')),

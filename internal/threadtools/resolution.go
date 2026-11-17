@@ -1,6 +1,7 @@
 package threadtools
 
 import (
+	"cmp"
 	"context"
 	"strings"
 
@@ -168,11 +169,18 @@ func (c *session) fanOutResolve(ctx context.Context, ref string) (Target, error)
 	var matches []Candidate
 	var silent []Computer
 	var moved *resolveAnswer
+	var refusal error
 	seen := make(map[string]struct{}, len(answers))
 	for index := range answers {
 		answer := answers[index]
 		if answer.err != nil {
-			silent = append(silent, answer.computer)
+			// A computer that refused the reference answered; only one
+			// that failed to answer leaves the result incomplete.
+			if code, _, public := errorsx.PublicDetails(answer.err); public && code == CodeUnsupported {
+				refusal = cmp.Or(refusal, answer.err)
+			} else {
+				silent = append(silent, answer.computer)
+			}
 			continue
 		}
 		for _, candidate := range c.withComputer(answer) {
@@ -199,6 +207,9 @@ func (c *session) fanOutResolve(ctx context.Context, ref string) (Target, error)
 		if target, err, followed := c.follow(ctx, ref, moved.res); followed {
 			return target, err
 		}
+	}
+	if refusal != nil {
+		return Target{}, refusal
 	}
 	if len(silent) > 0 {
 		return Target{}, resolutionIncomplete(ref, silent)

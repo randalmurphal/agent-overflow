@@ -41,6 +41,9 @@ import (
 //
 //ao:scope threads:autonomy
 func (a *App) StartNextAssistantThread(ctx context.Context, threadID string) (store.Thread, error) {
+	if err := a.refuseAssistantsOff(); err != nil {
+		return store.Thread{}, err
+	}
 	agent, found, err := a.store.GetStandingAgent(threadID)
 	if err != nil {
 		return store.Thread{}, err

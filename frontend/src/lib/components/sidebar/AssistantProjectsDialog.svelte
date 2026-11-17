@@ -15,6 +15,7 @@
     isAssistantProjectsOpening,
   } from '../../stores/newAssistant.svelte';
   import { assistantCurrentThread } from '../../stores/threads.svelte';
+  import { assistantsOn, threadComputer } from '../../stores/assistants.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
   import { threadBackend } from '../../transport/entityIndex';
   import { threadHasScope } from '../../transport/entityScopes';
@@ -49,8 +50,9 @@
   });
 
   // Archived, deleted or detached with its computer: nothing to save to.
+  // Assistants turned off on its computer: nothing of them shows.
   $effect(() => {
-    if (opening !== null && thread === undefined) closeAssistantProjectsDialog(opening);
+    if (opening !== null && (thread === undefined || !assistantsOn(threadComputer(thread.id)))) closeAssistantProjectsDialog(opening);
   });
 
   async function save(): Promise<void> {

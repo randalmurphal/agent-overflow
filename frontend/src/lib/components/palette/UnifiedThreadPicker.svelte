@@ -16,6 +16,7 @@
   import { lastKnownThreadStatusPill, resolveThreadStatusPill } from '../../utils/threadStatusPill';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
   import { isHiddenThreadMode } from '../../utils/threadModes';
+  import { hiddenAssistantThread } from '../../stores/assistants.svelte';
 
   interface Props {
     open: boolean;
@@ -43,11 +44,12 @@
 
   // Non-archived threads are the only candidates. Archived threads live
   // behind their own filter in the sidebar and shouldn't clutter the picker.
+  // An assistant's threads are none while assistants are off.
   // A closed picker reads no threads: it is always mounted, and the clamp
   // effect below keeps this chain live, so it would otherwise filter the
   // whole catalog on every thread change.
   let visibleThreads: Thread[] = $derived(
-    open ? getThreads().filter((thread) => !thread.archived && !isHiddenThreadMode(thread.mode)) : [],
+    open ? getThreads().filter((thread) => !thread.archived && !isHiddenThreadMode(thread.mode) && !hiddenAssistantThread(thread)) : [],
   );
 
   let matches: Ranked[] = $derived.by(() => {

@@ -89,3 +89,19 @@ export async function headlessPairing(harness: HarnessApp) {
     };
   } catch (error) { close(); throw error; }
 }
+
+/**
+ * Pairs `other` to `owner` as the owner's own device through AddBackend,
+ * names it, and returns its backend id on the owner.
+ */
+export async function pairOwnDevice(owner: HarnessApp, other: HarnessApp, name: string): Promise<string> {
+  const pairing = await headlessPairing(other);
+  try {
+    const attachment = await owner.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
+    await pairing.confirm(attachment.verificationNumber);
+    await owner.rpc('RenameBackend', attachment.id, name);
+    return attachment.id;
+  } finally {
+    pairing.close();
+  }
+}

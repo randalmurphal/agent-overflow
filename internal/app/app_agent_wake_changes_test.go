@@ -33,7 +33,9 @@ func TestWakeChangesCarryTheRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.settleThreadReminder(reminder, time.Now())
+	if _, err := a.settleThreadReminder(reminder, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if got := wakeChanges(rec, thread.ID)[2]; got != (ThreadWakeChange{ThreadID: thread.ID, ID: "changes-remind", Removed: true}) {
 		t.Fatalf("fired reminder frame = %+v", got)
 	}

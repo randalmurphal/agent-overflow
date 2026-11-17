@@ -231,6 +231,11 @@ func (a *App) startAgentNoticeSession(ctx context.Context, notice agentNotice, r
 			// rest takes the notice back out of the queue.
 			held, checkErr = a.threadArchivedNow(notice.threadID)
 			held = held || a.resting.holds(notice.threadID)
+			// A paused assistant's message waits in its queue for
+			// assistants to be turned on (startWaitingAssistantSession).
+			if checkErr == nil && !held {
+				held, checkErr = a.pausedAssistantThread(notice.threadID)
+			}
 		}
 		if checkErr == nil && !held && notice.keep != nil {
 			kept, checkErr = notice.keep()
@@ -273,7 +278,7 @@ func (a *App) startAgentNoticeSession(ctx context.Context, notice agentNotice, r
 	case startErr != nil:
 		a.emitErrorToThread(notice.threadID, notice.startFailed(startErr))
 	case held:
-		// The archive takes it back.
+		// The archive takes it back, or turning assistants on starts it.
 	case !kept:
 		a.withdrawAgentNotice(notice)
 	}

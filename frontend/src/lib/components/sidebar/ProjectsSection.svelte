@@ -2,7 +2,9 @@
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   // The sidebar's two sections, Assistants above Projects, in one scroll
   // area: the Projects header and list here, the Assistants section
-  // (AssistantsSection) fed from the same bucketing. Owns the "Add project"
+  // (AssistantsSection) fed from the same bucketing, absent while no
+  // computer this window shows has assistants on, and without the rows of
+  // a computer that has them off (hiddenAssistantThread). Owns the "Add project"
   // modal open state and the sort-direction toggle. Search-driven
   // filtering happens here so each section only sees what matches the
   // current query.
@@ -62,6 +64,7 @@
   import ProjectSortMenu from './ProjectSortMenu.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
   import AssistantsSection from './AssistantsSection.svelte';
+  import { anyAssistantsOn, hiddenAssistantThread } from '../../stores/assistants.svelte';
   import SidebarSectionToggle from './SidebarSectionToggle.svelte';
 
   interface Props {
@@ -102,7 +105,7 @@
       groups: getThreadGroups(),
       query,
       entryOf: entryIdFor,
-      threadVisible: sidebarThreadVisible,
+      threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread),
       filterDevices,
     });
     previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, buckets.threadsByProject);
@@ -335,11 +338,13 @@
   the Projects header and list. ProjectList itself doesn't scroll.
 -->
 <div class="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-sections">
-  <AssistantsSection
-    {assistants}
-    {pane}
-    searching={query !== ''}
-  />
+  {#if anyAssistantsOn()}
+    <AssistantsSection
+      {assistants}
+      {pane}
+      searching={query !== ''}
+    />
+  {/if}
   <section
     class="flex flex-col"
     aria-label="Projects"

@@ -154,6 +154,12 @@ type Settings struct {
 	// (internal/app/app_agent_guide.go). Default on; spawn-only, so a
 	// change reaches a session at its next start or resume.
 	AgentGuideEnabled bool `json:"agentGuideEnabled"`
+	// AssistantsEnabled shows this computer's assistants and lets them run
+	// (docs/specs/standing-agents.md, "Turning assistants off"). Off hides
+	// every assistant surface, pauses their loops, watches and reminders and
+	// ends their sessions; nothing is archived or deleted, and turning it on
+	// resumes them. Default on; applies live.
+	AssistantsEnabled bool `json:"assistantsEnabled"`
 	// SharedMemoryEnabled delivers project and user memory to every
 	// thread's sessions, not only to assistants' (docs/specs/memory.md,
 	// "Settings"). Default off; spawn-only, so a change reaches a session at
@@ -718,6 +724,7 @@ var DefaultSettings = Settings{
 	BrowserPersistSiteData: true,
 	ThreadToolsEnabled:     true,
 	AgentGuideEnabled:      true,
+	AssistantsEnabled:      true,
 	AgentProfiles:          defaultAgentProfiles,
 	AgentNotes:             defaultAgentNotes,
 	SubThreadLevels:        DefaultSubThreadLevels,

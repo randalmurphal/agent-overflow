@@ -11,8 +11,9 @@
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
+  import { settingsFieldHint } from './fields';
 
-  const { getSettings, updateSetting, call } = settingsComputer();
+  const { backend, getSettings, updateSetting, call } = settingsComputer();
   let settings = $derived(getSettings());
 
   // The provider switches' labels, which the overlap warning names.
@@ -68,7 +69,7 @@
       <SettingsField
         id="memory.shared"
         label="Shared memory"
-        hint="Give every conversation the memory of its project and the memory of you, which it reads when it starts and may add to. Assistants always have memory."
+        hint={settingsFieldHint('memory.shared', backend)}
       >
         <ToggleSwitch
           checked={settings.sharedMemoryEnabled}

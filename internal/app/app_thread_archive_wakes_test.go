@@ -138,7 +138,7 @@ func TestACancelDuringAFiresAdmissionStopsItsRun(t *testing.T) {
 				case <-time.After(200 * time.Millisecond):
 				}
 			}
-			if !a.fireAgentWake(row, time.UnixMilli(row.NextAt+1), agentWakeFire{at: row.NextAt + 1}) {
+			if err := a.fireAgentWake(row, time.UnixMilli(row.NextAt+1), agentWakeFire{at: row.NextAt + 1}); err != nil {
 				t.Fatal("the fire did not start")
 			}
 			if err := <-cancelled; err != nil {

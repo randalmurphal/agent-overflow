@@ -3,6 +3,10 @@ import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen }
 import { render, fireEvent, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeaderActions from './ChatHeaderActions.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -513,5 +517,61 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     await fireEvent.click(within(document.body).getByRole('menuitem', { name: 'Terminal' }));
     await flush();
     expect(pane.showTerminal).toBe(false);
+  });
+});
+
+// New Thread, Same Assistant is an assistant's own control: gone on the
+// desktop and under compact while assistants are turned off, and back once
+// they are on.
+describe('<ChatHeaderActions> New Thread, Same Assistant with assistants off', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetEditorsForTest();
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+    await loadSettings();
+  });
+
+  afterEach(() => setCompactLayoutForTest(false));
+
+  for (const compact of [false, true]) {
+    it(`follows the Assistants setting${compact ? ' under compact' : ''}`, async () => {
+      installSubscribeMock(status({}));
+      setCompactLayoutForTest(compact);
+      const pane = await buildPane(makeThread({ agentId: 'agent-1' }));
+      const { queryByTestId } = render(ChatHeaderActions, { props: { pane } });
+      await flush();
+      expect(queryByTestId('chat-header-next-thread')).not.toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      await flush();
+      expect(queryByTestId('chat-header-next-thread')).toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+      await flush();
+      expect(queryByTestId('chat-header-next-thread')).not.toBeNull();
+    });
+  }
+
+  // By the computer the thread lives on, not this one.
+  it("follows the thread's computer", async () => {
+    installSubscribeMock(status({}));
+    stageBackend();
+    noteThread('thread-laptop', 'laptop', 1);
+    try {
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      const pane = await buildPane(makeThread({ id: 'thread-laptop', agentId: 'agent-1' }));
+      const { queryByTestId } = render(ChatHeaderActions, { props: { pane } });
+      await flush();
+      expect(queryByTestId('chat-header-next-thread')).not.toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      await flush();
+      expect(queryByTestId('chat-header-next-thread')).toBeNull();
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    }
   });
 });

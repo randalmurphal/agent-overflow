@@ -206,7 +206,7 @@ func TestAFireOfARowItsRunJustArmedStarts(t *testing.T) {
 			if err != nil || !found || armed.State != store.AgentWakeArmed {
 				t.Fatalf("row after its run = %+v, %v, %v; want armed", armed, found, err)
 			}
-			if !a.fireAgentWake(armed, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+			if err := a.fireAgentWake(armed, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}); err != nil {
 				row, _, _ := a.store.GetAgentWake(loop.ID)
 				t.Fatalf("the next fire did not start; row = %s", row.State)
 			}
@@ -307,7 +307,7 @@ func TestARetiringRunThatLostItsRowWritesNothing(t *testing.T) {
 	wake := store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "check the board",
 		IntervalSeconds: 3600, NextAt: time.Now().Add(-time.Minute).UnixMilli()}
 	loop := registerTestWake(t, a, wake)
-	if !a.fireAgentWake(loop, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+	if err := a.fireAgentWake(loop, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}); err != nil {
 		t.Fatal("the first fire did not start")
 	}
 	within(t, "the old run's retirement", oldHeld)
@@ -324,7 +324,7 @@ func TestARetiringRunThatLostItsRowWritesNothing(t *testing.T) {
 	if again.ID != loop.ID {
 		t.Fatalf("the same label registered as row %s, want %s", again.ID, loop.ID)
 	}
-	if !a.fireAgentWake(again, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+	if err := a.fireAgentWake(again, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}); err != nil {
 		t.Fatal("the new fire did not start")
 	}
 	claimed, found, err := a.store.GetAgentWake(loop.ID)
@@ -358,8 +358,8 @@ func TestAFireDoesNotClaimARowWhoseRunIsRegistered(t *testing.T) {
 	}
 	a.agentWakes.runs[loop.ID] = &agentWakeRun{threadID: thread.ID, cancel: func() {}, done: make(chan struct{})}
 	a.agentWakes.mu.Unlock()
-	if a.fireAgentWake(loop, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
-		t.Fatal("a fire started beside the row's registered run")
+	if err := a.fireAgentWake(loop, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}); !errors.Is(err, errAgentWakeNotFired) {
+		t.Fatalf("a fire beside the row's registered run = %v; want it not fired", err)
 	}
 	row, found, err := a.store.GetAgentWake(loop.ID)
 	if err != nil || !found || row.State != store.AgentWakeArmed || row.NextAt != loop.NextAt {

@@ -320,10 +320,11 @@ func (s *Store) queryThreadIDs(action, query string, args ...any) ([]string, err
 }
 
 // ListLiveAgentWakes lists every armed or running row: what the supervisor
-// rebuilds at boot.
+// rebuilds at boot. While assistants are paused it leaves their threads'
+// rows out, for turning them on to resume (ListLiveAssistantAgentWakes).
 func (s *Store) ListLiveAgentWakes() ([]AgentWake, error) {
 	rows, err := s.reader().Query(`SELECT ` + agentWakeColumns + ` FROM agent_wakes
-		WHERE state IN ('armed','running') ORDER BY created_at`)
+		WHERE state IN ('armed','running') AND ` + s.assistantPauseSQL("agent_wakes.thread_id") + ` ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list live agent wakes: %w", err)
 	}
@@ -332,13 +333,15 @@ func (s *Store) ListLiveAgentWakes() ([]AgentWake, error) {
 
 // DueAgentWakes lists the interval rows whose fire has come. A long-running
 // watch has no fire time; its process is the schedule. A row of a thread
-// whose delete committed is not fired (agentWakeFireable).
+// whose delete committed is not fired (agentWakeFireable), and a row
+// assistants' pause holds is not due (assistants_paused.go).
 func (s *Store) DueAgentWakes(now int64, limit int) ([]AgentWake, error) {
 	if limit < 1 {
 		limit = 32
 	}
 	rows, err := s.reader().Query(`SELECT `+agentWakeColumns+` FROM agent_wakes
 		WHERE state = 'armed' AND next_at <= ? AND long_running = 0 AND `+agentWakeFireable+`
+		  AND `+s.assistantPauseSQL("agent_wakes.thread_id")+`
 		ORDER BY next_at LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due agent wakes: %w", err)
@@ -347,10 +350,12 @@ func (s *Store) DueAgentWakes(now int64, limit int) ([]AgentWake, error) {
 }
 
 // NextAgentWakeDue is the earliest armed interval fire, for the sweep's sleep.
+// A row assistants' pause holds is not due (assistants_paused.go).
 func (s *Store) NextAgentWakeDue() (ScheduledMoment, error) {
 	var next sql.NullInt64
 	if err := s.reader().QueryRow(`SELECT MIN(next_at) FROM agent_wakes
-		WHERE state = 'armed' AND long_running = 0 AND ` + agentWakeFireable).Scan(&next); err != nil {
+		WHERE state = 'armed' AND long_running = 0 AND ` + agentWakeFireable + `
+		  AND ` + s.assistantPauseSQL("agent_wakes.thread_id")).Scan(&next); err != nil {
 		return ScheduledMoment{}, fmt.Errorf("store: read next agent wake: %w", err)
 	}
 	return ScheduledMoment{At: next.Int64, Set: next.Valid}, nil
@@ -459,10 +464,15 @@ func (s *Store) ReleaseQueuedAgentWake(id, outcome, output string, fireAt int64)
 }
 
 // RecoverAgentWake records what a quit did to a row it left `running` and
-// arms it, so the boot pass can claim it again.
-func (s *Store) RecoverAgentWake(id, outcome string) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: recover agent wake %s", id),
-		`UPDATE agent_wakes SET state = 'armed', last_outcome = ? WHERE id = ? AND state = 'running'`,
+// arms it, so the run can be claimed again, and returns the row as it left
+// it. An interval row is due again at the fire the cut run was for, as
+// PauseAgentWakeRun leaves one, so its replay stays owed until a fire
+// claims it, whatever stops the caller first.
+func (s *Store) RecoverAgentWake(id, outcome string) (AgentWake, bool, error) {
+	return s.changeAgentWakeRow(fmt.Sprintf("store: recover agent wake %s", id),
+		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?,
+		        next_at = CASE WHEN long_running = 0 THEN COALESCE(last_run_at, next_at) ELSE next_at END
+		  WHERE id = ? AND state = 'running'`,
 		outcome, id)
 }
 

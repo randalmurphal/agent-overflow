@@ -352,7 +352,7 @@ func claimedDeliveries() map[string]func(t *testing.T, f *claimFixture) claimedD
 				marker: marker,
 				deliver: func(t *testing.T) string {
 					now := time.Now()
-					if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+					if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 						t.Fatal("the fire did not start")
 					}
 					return agentWakeSendID(loop.ID, now.UnixMilli())
@@ -373,7 +373,7 @@ func claimedDeliveries() map[string]func(t *testing.T, f *claimFixture) claimedD
 				marker: marker,
 				deliver: func(t *testing.T) string {
 					now := time.Now()
-					if !f.app.fireAgentWake(watch, now, agentWakeFire{at: now.UnixMilli()}) {
+					if err := f.app.fireAgentWake(watch, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 						t.Fatal("the fire did not start")
 					}
 					return agentWakeSendID(watch.ID, now.UnixMilli())
@@ -770,7 +770,7 @@ func TestAFireOnAClaimedThreadFinishesAsAnyFire(t *testing.T) {
 		IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
 	refusedDelete(t, f.app, f.caller.ID, func() {
 		now := time.Now()
-		if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+		if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 			t.Fatal("the fire did not start")
 		}
 		awaitQueuedWake(t, f.app, f.caller.ID, agentWakeSendID(loop.ID, now.UnixMilli()))

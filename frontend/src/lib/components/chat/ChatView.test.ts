@@ -12,6 +12,8 @@ import { pendingAttention } from '../../utils/threadStatusPill';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 // ChatView imports its terminal surface lazily. Loaded with the file, the
 // terminal-mode test waits for the mount rather than for a first import
 // transforming the surface's component graph, which is load-dependent.
@@ -296,6 +298,52 @@ describe('<ChatView>', () => {
     });
   }
 
+  // A pane already showing an assistant's thread when assistants are turned
+  // off stays readable and takes nothing: the composer gives way to a line
+  // saying why, kept mounted underneath for its draft, and the messages
+  // offer no fork, edit or run. Desktop and compact; on again, it is as it was.
+  for (const compact of [false, true]) {
+    it(`shows an assistant's thread read-only while assistants are off${compact ? ' under compact' : ''}`, async () => {
+      setCompactLayoutForTest(compact);
+      try {
+        const thread: Thread = { ...seedThread(), projectId: '', agentId: 'ops', title: 'Ops' };
+        const userItem = makeItem({
+          id: 'user:1', threadId: thread.id, turnIndex: 1, itemIndex: 0,
+          kind: 'user_text', role: 'user', summary: 'Watch the deploy',
+        });
+        const view = render(ChatView, { props: { pane: await buildPane(thread, [userItem]) } });
+        await tick();
+        const composerHidden = () => view.getByTestId('composer-root').closest('.hidden') !== null;
+        expect(view.queryByTestId('assistants-off-note')).toBeNull();
+        expect(composerHidden()).toBe(false);
+
+        applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+        await tick();
+        expect(view.getByTestId('assistants-off-note').textContent?.trim()).toBe('Assistants are turned off in Settings. Turn them on to continue this thread.');
+        expect(composerHidden()).toBe(true);
+        expect(view.queryByLabelText('Fork from this message')).toBeNull();
+        expect(view.queryByLabelText('Edit message and resend from here')).toBeNull();
+        expect(view.container.querySelector('[data-ui-surface="chat"]')?.hasAttribute('data-shell-runnable')).toBe(false);
+        expect(view.getByTestId('chat-header-title')).toBeInTheDocument();
+
+        applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+        await tick();
+        expect(view.queryByTestId('assistants-off-note')).toBeNull();
+        expect(composerHidden()).toBe(false);
+      } finally {
+        setCompactLayoutForTest(false);
+      }
+    });
+  }
+
+  it('leaves an ordinary thread as it is while assistants are off', async () => {
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(ChatView, { props: { pane: await buildPane() } });
+    await tick();
+    expect(view.queryByTestId('assistants-off-note')).toBeNull();
+    expect(view.getByTestId('composer-root').closest('.hidden')).toBeNull();
+  });
+
   it('forks from a user-message action through the chat-level handler', async () => {
     const thread = seedThread();
     const userItem = makeItem({
@@ -496,6 +544,46 @@ describe('<ChatView>', () => {
       );
     });
   });
+
+  // An edit open on an assistant's message when its computer turns
+  // assistants off closes, and so does its kill confirmation: nothing is
+  // reverted or sent, and the edited text waits in the composer's draft for
+  // when they are back. Desktop and compact.
+  for (const compact of [false, true]) {
+    for (const confirming of [false, true]) {
+      it(`closes an open edit${confirming ? ' and its confirmation' : ''} keeping the text when assistants go off${compact ? ' under compact' : ''}`, async () => {
+        setCompactLayoutForTest(compact);
+        try {
+          const thread: Thread = { ...seedThread(), projectId: '', agentId: 'ops', title: 'Ops' };
+          const item = userItem('user:1', 1, 'Update one of the lines', thread.id);
+          const pane = await buildPane(thread, [item]);
+          mockDrafts(new Map([[thread.id, '']]));
+          const saved: string[] = [];
+          setBindingMock('SaveDraft', async (_threadId: string, content: string) => { saved.push(content); });
+          setBindingMock('CountRunningBackgroundTasks', async () => (confirming ? 1 : 0));
+          const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
+
+          const view = render(ChatView, { props: { pane } });
+          const editor = await openMessageEditor(view);
+          await typeInEditor(editor, 'Update TWO of the lines');
+          if (confirming) {
+            await fireEvent.click(view.getByTestId('user-message-edit-send'));
+            await view.findByText('Revert to this message?');
+          }
+
+          applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+          await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+          await waitFor(() => expect(view.queryByText('Revert to this message?')).toBeNull());
+          await waitFor(() => expect(view.getAllByLabelText('Message Input')[0]).toHaveValue('Update TWO of the lines'));
+          await waitFor(() => expect(saved.at(-1)).toBe('Update TWO of the lines'));
+          expect(view.getByTestId('assistants-off-note')).toBeInTheDocument();
+          expect(resend).not.toHaveBeenCalled();
+        } finally {
+          setCompactLayoutForTest(false);
+        }
+      });
+    }
+  }
 
   it('declining the kill confirmation returns to the editor with the edit intact', async () => {
     const thread = seedThread();

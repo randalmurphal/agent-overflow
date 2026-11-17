@@ -496,6 +496,9 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	// `theme` key further down the boot.
 	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
 	a.settingsAttached.Store(true)
+	// Assistants turned off stay paused from the first read on: their loops
+	// are not recovered and nothing of theirs starts.
+	a.initAssistantsPause(st)
 	// Prompt override texts move out of the user-tier rows into
 	// <configDir>/prompts once the rows are in the store, and before the
 	// prompts watcher starts (initPromptDirectory). A failure leaves the

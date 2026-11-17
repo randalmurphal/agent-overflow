@@ -213,7 +213,9 @@ func TestAWorkerWithAnArmedLoopOrReminderIsOpen(t *testing.T) {
 	f.expectWaiting(t, "loop-spawn", "Reminder · look at the canary")
 	// Its fire is a turn of the worker's; once that ends, nothing holds it.
 	fired = time.Now().UnixMilli()
-	f.app.fireThreadReminder(f.request(t, ack.Token), time.Now())
+	if err := f.app.fireThreadReminder(f.request(t, ack.Token), time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	awaitTurnSince(t, f.app, worker.ID, fired)
 	f.expectRested(t, "loop-spawn")
 }

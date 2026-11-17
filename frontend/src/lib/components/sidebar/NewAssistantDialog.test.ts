@@ -14,6 +14,9 @@ import { makeThread } from '../../../test/helpers/chat';
 import { __resetEntityIndexForTest } from '../../transport/entityIndex';
 import { TransportError } from '../../transport/wsClient';
 import type { Project } from '../../types/models';
+import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 function project(id: string, name: string): Project {
   return { id, path: `/repo/${id}`, name, sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
@@ -200,5 +203,48 @@ describe('<NewAssistantDialog>', () => {
     expect((view.getByTestId('new-assistant-name') as HTMLInputElement).value).toBe('');
     expect((view.getByTestId('assistant-projects-all') as HTMLInputElement).checked).toBe(false);
     expect([item(view, 'p1').checked, item(view, 'p2').checked]).toEqual([false, true]);
+  });
+
+  // Turning assistants off while the dialog is open closes it, and turning
+  // them on again does not bring it back; while they are off nothing opens it.
+  it('closes when assistants are turned off and opens for nothing while they are', async () => {
+    const view = render(NewAssistantDialog);
+    openNewAssistantDialog({ projectId: 'p1' });
+    await tick();
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Ops' } });
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    await tick();
+    expect(getNewAssistantRequest()).toBeNull();
+    await waitFor(() => expect(view.queryByTestId('new-assistant-dialog')).toBeNull());
+    openNewAssistantDialog({ projectId: 'p2' });
+    await tick();
+    expect(getNewAssistantRequest()).toBeNull();
+    expect(view.queryByTestId('new-assistant-dialog')).toBeNull();
+
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(view.queryByTestId('new-assistant-dialog')).toBeNull();
+  });
+
+  // It follows the computer it creates on, not this one.
+  it('closes when the computer it creates on turns them off', async () => {
+    stageBackend();
+    setSelectedBackend('laptop');
+    try {
+      const view = render(NewAssistantDialog);
+      openNewAssistantDialog({});
+      await tick();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      await tick();
+      expect(getNewAssistantRequest()?.selectedBackend).toBe('laptop');
+      expect(view.queryByTestId('new-assistant-dialog')).not.toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      await tick();
+      expect(getNewAssistantRequest()).toBeNull();
+    } finally {
+      setSelectedBackend(HOME_BACKEND);
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
   });
 });

@@ -10,6 +10,8 @@ import { makeThread } from '../../../test/helpers/chat';
 import { __resetEntityIndexForTest, noteThread, threadBackend } from '../../transport/entityIndex';
 import { TransportError } from '../../transport/wsClient';
 import type { Project, Thread } from '../../types/models';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 
 function project(id: string, name: string, archived = false): Project {
   return { id, path: `/repo/${id}`, name, sortPosition: 0, createdAt: 0, updatedAt: 0, archived };
@@ -140,5 +142,22 @@ describe('<AssistantProjectsDialog>', () => {
     await fireEvent.click(view.getByTestId('assistant-projects-save'));
     await waitFor(() => expect(view.getByTestId('assistant-projects-error')).toHaveTextContent('Project p9 is not on this computer.'));
     expect(view.getByTestId('assistant-projects-dialog')).toBeInTheDocument();
+  });
+
+  it('closes when assistants are turned off and opens for nothing while they are', async () => {
+    const view = await open();
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    await tick();
+    expect(getAssistantProjectsAgentId()).toBeNull();
+    await waitFor(() => expect(view.queryByTestId('assistant-projects-dialog')).toBeNull());
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(view.queryByTestId('assistant-projects-dialog')).toBeNull();
+    view.unmount();
+
+    // The opener refuses on its own, with no dialog mounted to close it.
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    openAssistantProjectsDialog(agent);
+    expect(getAssistantProjectsAgentId()).toBeNull();
   });
 });

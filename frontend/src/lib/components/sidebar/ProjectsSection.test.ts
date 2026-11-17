@@ -21,6 +21,11 @@ import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { isSidebarSectionExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   isSessionImportOpen,
   resetSessionImportForTest,
@@ -126,6 +131,61 @@ describe('ProjectsSection assistants and projects', () => {
     expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
     expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work', 'plain']);
     expect(view.getByTestId('sidebar-assistants-section').querySelector('[data-testid="thread-row-agent-projects"]')?.textContent?.trim()).toBe('Alpha');
+  });
+
+  it('has no Assistants section while assistants are off, and the same one when they are on again', async () => {
+    const view = render(ProjectsSection, { props: { pane: null } });
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    await tick();
+    expect(view.queryByTestId('sidebar-assistants-section')).toBeNull();
+    expect(view.queryByRole('button', { name: 'New Assistant' })).toBeNull();
+    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work', 'plain']);
+    setThreadFilterQuery('ops');
+    await tick();
+    expect(idsIn(view.getByTestId('sidebar-sections'))).toEqual([]);
+
+    setThreadFilterQuery('');
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
+  });
+
+  // Each computer shows or hides its own assistants: with this computer's
+  // off and the laptop's on, the laptop's assistant is listed and this
+  // one's is not, and New Assistant, which creates on the selected
+  // computer (this one), says why it is unavailable; the other way round,
+  // the other way round. With both off there is no section.
+  it('shows each computer\'s assistants by that computer\'s setting', async () => {
+    stageBackend();
+    const remote = makeThread({ id: 'remote-agent', title: 'Scout', projectId: '', agentId: 'scout' });
+    replaceAllThreads([agent, helper, worker, work, plain, remote]);
+    __resetEntityIndexForTest();
+    noteThread('agent', HOME_BACKEND);
+    noteThread('helper', HOME_BACKEND);
+    noteThread('remote-agent', 'laptop');
+    try {
+      const view = render(ProjectsSection, { props: { pane: null } });
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), HOME_BACKEND);
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }), 'laptop');
+      await tick();
+      await waitFor(() => expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['remote-agent']));
+      const create = view.getByRole('button', { name: 'New Assistant' });
+      expect(create).toBeDisabled();
+      expect(create.getAttribute('title')).toMatch(/^Assistants are turned off in Settings on /);
+
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }), HOME_BACKEND);
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      // A row going out animates before it leaves the DOM.
+      await waitFor(() => expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']));
+      expect(view.getByRole('button', { name: 'New Assistant' })).toBeEnabled();
+
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), HOME_BACKEND);
+      await waitFor(() => expect(view.queryByTestId('sidebar-assistants-section')).toBeNull());
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      resetSettingsForTest();
+    }
   });
 
   it('folds each section on its own and shows a search\'s matches through a fold', async () => {

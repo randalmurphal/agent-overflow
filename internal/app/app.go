@@ -257,6 +257,9 @@ type App struct {
 	// messages it carries (StartNextAssistantThread,
 	// recoverAssistantSessionLoss).
 	assistantHandOffs assistantHandOffState
+	// assistantsSwitch converges this computer on its Assistants setting
+	// (app_assistants_switch.go).
+	assistantsSwitch assistantsSwitchState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
@@ -780,6 +783,10 @@ type App struct {
 	// false) and right after it (committed true), so a test can withdraw a
 	// message on either side of it.
 	flushGroupCommitForTest func(threadID string, committed bool)
+	// agentWatchRefusedForTest, when set, runs in a long-running watch's
+	// supervisor after the pause refused its process start and before the
+	// supervisor returns (superviseAgentWatch).
+	agentWatchRefusedForTest func(wakeID string)
 	// cancelReadForTest, when set, runs in a request cancel between its read
 	// of the receipt and its settlement (stopThreadRequestWorkFor), so a
 	// test can settle the receipt at that moment.

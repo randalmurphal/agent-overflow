@@ -130,6 +130,13 @@ export const SETTINGS_SECTIONS = [
     description: "The built-in thread tools agents use to read, start and answer this computer's other conversations.",
   },
   {
+    id: 'assistants',
+    label: 'Assistants',
+    group: 'Agents',
+    description:
+      'Named agents that keep their own home, memory, loops and watches across threads, and whether this computer shows and runs them.',
+  },
+  {
     id: 'agent-profiles',
     label: 'Agent profiles',
     group: 'Agents',
@@ -278,6 +285,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'thread-tools', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
+    'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage', 'voice'].includes(section);
 }

@@ -863,7 +863,10 @@ it; and `projects`, the ids of the projects it serves, each one the
 caller serves, default every project the caller serves (all projects
 for a caller serving all of them). Refused with the reason unless the
 caller is an assistant's current thread on this computer, so a worker
-never creates one; never forwarded to another computer. The assistant
+never creates one; never forwarded to another computer. While
+assistants are turned off it is not listed, and a session that started
+before lists it but is refused
+([standing agents](standing-agents.md#turning-assistants-off)). The assistant
 is created on the caller's computer outside every project, in its
 home, with provider and model as `thread_spawn` defaults them, its home
 made and its creator recorded,

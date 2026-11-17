@@ -85,7 +85,9 @@ func spawnSchema(shape Shape) map[string]any {
 		"maxLength":   MaxSpawnInstructionsBytes,
 		"description": fmt.Sprintf("Text appended to the new thread's system prompt for its whole life, after everything the app and the user already put there, for a one-off role such as a reviewer told what to look for. A profile's own instructions come first. At most %d bytes with the profile's. The task itself goes in prompt.", MaxSpawnInstructionsBytes),
 	}
-	properties["home_files"] = homeFilesProperty("prompt")
+	if !shape.AssistantsOff {
+		properties["home_files"] = homeFilesProperty("prompt")
+	}
 	waitProperties(properties, 0, "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
 	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
@@ -130,7 +132,9 @@ func sendSchema(shape Shape) map[string]any {
 		"thread_id": map[string]any{"type": "string", "description": "The thread to continue. Full id, or an unambiguous prefix of at least 6 characters. You cannot send to your own thread; use thread_remind to wake yourself."},
 		"message":   map[string]any{"type": "string", "minLength": 1, "description": "Exactly what the user would have typed there. The receiving agent sees it as a user message with a footer naming this thread and the token, so write it to be read without your context."},
 	}
-	properties["home_files"] = homeFilesProperty("message")
+	if !shape.AssistantsOff {
+		properties["home_files"] = homeFilesProperty("message")
+	}
 	waitProperties(properties, 0, "that thread to answer")
 	computerIDProperty(shape, properties, "the thread")
 	description := "Continue an existing thread as if the user had typed message there. A thread mid-turn queues it for the turn boundary with the user's draft preserved; an idle thread receives it now and its session starts lazily. Works across projects" + pairedSuffix(shape, " and computers") + ". Returns a request token. Use send to give a thread work; use thread_ask to consult one without touching it."

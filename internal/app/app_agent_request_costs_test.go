@@ -198,7 +198,7 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 	// fire starts. The queue's dispatch attempt and the Agents rows drain the
 	// wake starts run on their own and are not the fire's.
 	fireReads := readsUnder(a.store, "app.(*App).fireAgentWake")
-	if !a.fireAgentWake(watch, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+	if err := a.fireAgentWake(watch, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}); err != nil {
 		t.Fatal("the watch did not fire")
 	}
 	waitUntil(t, 10*time.Second, func() bool {

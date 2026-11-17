@@ -22,6 +22,8 @@
 // is computed from state.
 
 import { remoteAccessAvailable } from '../../transport/buildVariant';
+import { anyAssistantsOn, assistantsOn } from '../../stores/assistants.svelte';
+import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { settingsSectionAvailable, type SettingsSection } from './sections';
 
 export interface SettingsFieldDef {
@@ -37,6 +39,8 @@ export interface SettingsFieldDef {
   readonly remote?: boolean;
   /** The hint a build without remote access renders, where `hint` names a remote feature. */
   readonly localHint?: string;
+  /** The hint while assistants are turned off, where `hint` names assistants. */
+  readonly assistantsOffHint?: string;
 }
 
 /** The providers that get a settings page each. Mirrors `PROVIDER_SETTINGS_ORDER`. */
@@ -549,6 +553,15 @@ const STATIC_FIELDS = [
     keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
   },
 
+  // --- Assistants ----------------------------------------------------------
+  {
+    id: 'assistants.enabled',
+    section: 'assistants',
+    label: 'Assistants',
+    hint: "Show this computer's assistants and let them run. Off hides them in every window and pauses them; nothing is deleted.",
+    keywords: ['standing agent', 'hide', 'pause', 'sidebar', 'loops', 'watches'],
+  },
+
   // --- Agent profiles ------------------------------------------------------
   {
     id: 'agent-profiles.levels',
@@ -594,6 +607,7 @@ const STATIC_FIELDS = [
     section: 'memory',
     label: 'Shared memory',
     hint: 'Give every conversation the memory of its project and the memory of you, which it reads when it starts and may add to. Assistants always have memory.',
+    assistantsOffHint: 'Give every conversation the memory of its project and the memory of you, which it reads when it starts and may add to.',
     keywords: ['facts', 'remember', 'project memory', 'user memory'],
   },
   {
@@ -1096,17 +1110,31 @@ export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
 /**
  * The index as this build presents it: without remote access, the remote
  * pages' fields and remote-only controls are absent and local wording
- * replaces remote wording.
+ * replaces remote wording. While no computer this window shows has
+ * assistants on, no hint names them.
  */
 export function settingsFields(): readonly SettingsFieldDef[] {
-  if (remoteAccessAvailable()) return SETTINGS_FIELDS;
-  return SETTINGS_FIELDS
-    .filter((f) => !f.remote && settingsSectionAvailable(f.section))
-    .map((f) => (f.localHint === undefined ? f : { ...f, hint: f.localHint }));
+  const fields = remoteAccessAvailable()
+    ? SETTINGS_FIELDS
+    : SETTINGS_FIELDS.filter((f) => !f.remote && settingsSectionAvailable(f.section));
+  const assistants = anyAssistantsOn();
+  if (remoteAccessAvailable() && assistants) return fields;
+  return fields.map((f) => {
+    const hint = fieldHint(f, assistants);
+    return hint === f.hint ? f : { ...f, hint };
+  });
 }
 
-/** The hint a field renders in this build. */
-export function settingsFieldHint(id: SettingsFieldId): string | undefined {
+/**
+ * The hint a field renders in this build, on the page of `backend`: no
+ * hint names assistants while that computer has them off.
+ */
+export function settingsFieldHint(id: SettingsFieldId, backend: BackendKey = HOME_BACKEND): string | undefined {
   const field = SETTINGS_FIELDS.find((f) => f.id === id);
-  return !remoteAccessAvailable() && field?.localHint !== undefined ? field.localHint : field?.hint;
+  return field && fieldHint(field, assistantsOn(backend));
+}
+
+function fieldHint(field: SettingsFieldDef, assistants: boolean): string | undefined {
+  if (!assistants && field.assistantsOffHint !== undefined) return field.assistantsOffHint;
+  return !remoteAccessAvailable() && field.localHint !== undefined ? field.localHint : field.hint;
 }

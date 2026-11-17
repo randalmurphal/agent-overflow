@@ -144,9 +144,13 @@ var tierByKey = map[string]Tier{
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
 	"agentGuideEnabled":           TierUser,
-	"agentProfiles":               TierUser,
-	"agentNotes":                  TierUser,
-	"subThreadLevels":             TierUser,
+	// Assistants on or off is the person's choice of how they work, like
+	// the guide and the profiles beside it. Backend behavior reads it (the
+	// wake supervisor's pause), so it is not device tier.
+	"assistantsEnabled": TierUser,
+	"agentProfiles":     TierUser,
+	"agentNotes":        TierUser,
+	"subThreadLevels":   TierUser,
 	// The providers' own memory is a spawn-time preference of the same
 	// kind; shared memory is host tier, since it grants write access
 	// outside the workspace.

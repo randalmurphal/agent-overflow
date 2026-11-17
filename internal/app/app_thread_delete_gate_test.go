@@ -427,7 +427,7 @@ func TestAFireRunWaitingForADecisionEndsWithItsCancel(t *testing.T) {
 	}
 	refusedDelete(t, f.app, f.caller.ID, func() {
 		now := time.Now()
-		if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+		if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 			t.Fatal("the fire did not start")
 		}
 		waitAtGates(t, f.app, 1)
@@ -481,7 +481,7 @@ func TestAFireRunWhoseDeleteCommittedEndsSilently(t *testing.T) {
 	f.app.deleteDecisionMadeForTest = hook
 	committedDelete(t, f.app, f.caller.ID, func() {
 		now := time.Now()
-		if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+		if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 			t.Fatal("the fire did not start")
 		}
 		waitAtGates(t, f.app, 1)

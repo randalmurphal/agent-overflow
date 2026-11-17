@@ -305,11 +305,13 @@ func (s *Store) PlaceThreadInHome(threadID, home string) error {
 // names the current one. Found is false for a thread no local spawn made
 // and for one whose spawner is archived. A worker past the request ledger's
 // retention still names its spawner: the sweep keeps its spawn row as
-// lineage (spawnLineageSQL), so its prompts keep routing there.
+// lineage (spawnLineageSQL), so its prompts keep routing there. While
+// assistants are paused, a spawner that lives under one takes no prompt
+// either (assistants_paused.go): the worker asks the user.
 func (s *Store) SpawnerOf(threadID string) (spawnerThreadID, title string, found bool, err error) {
 	var archived bool
 	err = s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM threads t
-		WHERE t.id = `+spawnerOfSQL("?"), threadID).Scan(&spawnerThreadID, &title, &archived)
+		WHERE t.id = `+spawnerOfSQL("?")+` AND `+s.assistantPauseSQL("t.id"), threadID).Scan(&spawnerThreadID, &title, &archived)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && archived) {
 		return "", "", false, nil
 	}

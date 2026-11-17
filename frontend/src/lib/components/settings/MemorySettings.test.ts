@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import MemorySettings from './MemorySettings.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { applySettingsSnapshot, loadSettings } from '../../stores/settings.svelte';
+import { settingsFields } from './fields';
+import { tick } from 'svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -30,6 +32,20 @@ function switchNamed(container: HTMLElement, label: string): HTMLButtonElement {
 // provider's own memory off; turning shared memory on beside a provider's
 // own memory warns, naming the switch that turns it off.
 describe('<MemorySettings>', () => {
+  // The sentence about assistants' memory, in the page and in the settings
+  // search, is there only while assistants are on.
+  it('says nothing of assistants while they are off', async () => {
+    await seed({ assistantsEnabled: false }, { claude: false, codex: false });
+    const view = render(MemorySettings);
+    await view.findByTestId('settings-memory');
+    expect(view.container.textContent).not.toContain('Assistants');
+    expect(settingsFields().find((field) => field.id === 'memory.shared')?.hint).not.toContain('Assistants');
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(view.container.textContent).toContain('Assistants always have memory.');
+    expect(settingsFields().find((field) => field.id === 'memory.shared')?.hint).toContain('Assistants always have memory.');
+  });
+
   it('shows every switch off by default and no warning', async () => {
     await seed({}, { claude: true, codex: true });
     const { container, findByTestId, queryAllByTestId } = render(MemorySettings);
