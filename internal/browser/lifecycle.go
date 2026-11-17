@@ -127,24 +127,20 @@ func (m *Manager) goLife(fn func()) bool {
 }
 
 // createPage creates a page for access's thread. Its tab appears at once,
-// creating, and the call returns once the engine page exists. user marks a
-// tab the user opened: it is selected and its companion shown before the
-// engine is asked, and a failure stays on the tab. A tab closed meanwhile
-// answers errClosedWhileCreating.
-func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*managedPage, error) {
-	var turn *selectionTurn
-	if user {
-		turn = &selectionTurn{}
-	}
-	return m.createPageAt(ctx, access, turn, -1)
+// creating, and the call returns once the engine page exists. A tab closed
+// meanwhile answers errClosedWhileCreating. This is an agent's tab, opened
+// behind the selection; the user's go through createPageAt.
+func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
+	return m.createPageAt(ctx, access, nil, -1)
 }
 
 // createPageAt is createPage with the new tab placed at index in the
 // thread's tab order from the start; a negative index appends it. A tab the
-// user opens has the turn its selection was admitted in (selection.go),
-// which the hold that adds and selects the tab commits; a turn whose pane
-// detached meanwhile opens nothing and answers errSelectionPassed. An
-// agent's tab has no turn.
+// user opens has the turn its selection was admitted in (selection.go): it
+// is selected and its companion shown before the engine is asked, in the
+// hold that adds the tab and commits the turn, and a failure stays on the
+// tab. A turn whose pane detached meanwhile opens nothing and answers
+// errSelectionPassed. An agent's tab has no turn.
 func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selectionTurn, index int) (*managedPage, error) {
 	user := turn != nil
 	p := newManagedPage(access)

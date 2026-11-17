@@ -95,7 +95,7 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested stri
 		p, _, err := m.resolvePage(ctx, access, requested, skipLoad)
 		return p, err
 	}
-	return m.createPage(ctx, access, false)
+	return m.createPage(ctx, access)
 }
 
 // openPageLocked starts the engine if it is not running, applies the jar,
