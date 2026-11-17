@@ -170,7 +170,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(agentRow).toHaveCount(0);
     await expect.poll(() => existsSync(agent.home)).toBe(false);
-    expect(await harness.rpc('GetStandingAgent', thread)).toBeNull();
+    // The committed delete hides the row and removes the home before the
+    // drop takes the record.
+    await expect.poll(() => harness.rpc('GetStandingAgent', thread)).toBeNull();
   });
 }
 
