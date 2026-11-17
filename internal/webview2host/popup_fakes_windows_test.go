@@ -4,6 +4,7 @@ package webview2host
 
 import (
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -500,12 +501,19 @@ func (r *popupRig) awaitReport(page string, kind ReportKind) []rigReport {
 	var got []rigReport
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 		r.pump()
-		for _, report := range r.takeReports() {
-			got = append(got, report)
-			if report.page == page && report.kind == kind {
-				return got
-			}
+		r.mu.Lock()
+		match := slices.IndexFunc(r.reports, func(report rigReport) bool {
+			return report.page == page && report.kind == kind
+		})
+		if match >= 0 {
+			got = append(got, r.reports[:match+1]...)
+			r.reports = r.reports[match+1:]
+			r.mu.Unlock()
+			return got
 		}
+		got = append(got, r.reports...)
+		r.reports = nil
+		r.mu.Unlock()
 	}
 	r.t.Fatalf("no %s report of %s in %+v", kind, page, got)
 	return nil

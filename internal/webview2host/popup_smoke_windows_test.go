@@ -375,30 +375,8 @@ setTimeout(() => { window.opener.postMessage("done", "*"); window.close() }, 300
 func (s *popupSmoke) step(name string, allow func([]smokeWindowSeen) error, run func()) {
 	s.t.Helper()
 	s.t.Logf("---- %s", name)
-	if _, err := s.windows.take(); err != nil {
+	if err := s.windows.runStep(s.t, run, allow); err != nil {
 		s.t.Fatalf("%s: %v", name, err)
-	}
-	run()
-	// A window WebView2 opens at a request's completion shows within a
-	// frame or two; give it time to.
-	time.Sleep(300 * time.Millisecond)
-	seen, err := s.windows.take()
-	if err != nil {
-		s.t.Fatalf("%s: %v", name, err)
-	}
-	for _, w := range seen {
-		s.t.Logf("%s: a window appeared: %s", name, w)
-	}
-	if allow != nil {
-		if err := allow(seen); err != nil {
-			s.t.Fatalf("%s: %v", name, err)
-		}
-		return
-	}
-	for _, w := range seen {
-		if !w.statusBubble(s.ui.hwnd) {
-			s.t.Fatalf("%s: a window of WebView2's own appeared: %s", name, w)
-		}
 	}
 }
 
