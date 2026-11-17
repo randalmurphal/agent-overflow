@@ -35,6 +35,9 @@ type remoteAdmissionReceiver struct {
 	// lostReply, when set, starts the command and then fails the call, as a
 	// reply lost on the way back does.
 	lostReply atomic.Bool
+	// wire is the destination's listener, which a test stops to take the
+	// computer offline.
+	wire *pairedBackend
 }
 
 func (r *remoteAdmissionReceiver) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand, error) {
@@ -80,7 +83,7 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 		}
 		cfg.Dispatcher = dispatcher
 	})
-	receiver.App = backend.app
+	receiver.App, receiver.wire = backend.app, backend
 	source := identityApp(t)
 	manager, err := attachedbackends.New(t.TempDir(), "admission source", "linux")
 	if err != nil {
@@ -187,6 +190,39 @@ func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
 	}
 	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.Receipt.ID != input.Request.ID {
 		t.Fatalf("retry after refusal lost completion tracking: %#v %v", watch, err)
+	}
+}
+
+// A start the carrier never sent, because the computer cannot be reached,
+// is refused at once: its fresh watch is released, so it neither blocks
+// the conversation nor forgetting the computer, and the same ID admits an
+// identical retry once the computer is back.
+func TestRemoteAdmissionToAnUnreachableComputerReleasesTheWatch(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	scope, _ := transport.CallerScopeFrom(ctx)
+	stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := receiver.wire.srv.Shutdown(stop); err != nil {
+		t.Fatalf("stop the destination: %v", err)
+	}
+	_, err := source.AgentRemoteStart(ctx, input)
+	if _, message, _ := errorsx.PublicDetails(err); !strings.Contains(message, "nothing was sent") {
+		t.Fatalf("start on an unreachable computer = %v, want it said that nothing was sent", err)
+	}
+	if receiver.calls.Load() != 0 {
+		t.Fatalf("the destination saw %d starts", receiver.calls.Load())
+	}
+	watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+	if err != nil || watch.Notification != "dismissed" || watch.Receipt.ID != "" {
+		t.Fatalf("a start never sent retained its watch: %#v %v", watch, err)
+	}
+	if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || pending {
+		t.Fatalf("a start never sent blocks the conversation: %v %v", pending, err)
+	}
+	if err := source.RemoveBackend(input.ComputerID, false); err != nil {
+		t.Fatalf("forget the computer: %v", err)
 	}
 }
 

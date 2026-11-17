@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -498,6 +499,23 @@ type peerFaults struct {
 	dropReplies atomic.Int32
 	// calls counts every ThreadToolCall this destination answered.
 	calls atomic.Int32
+	// unread is how many ThreadToolCalls fail before the destination reads
+	// them, with an error the source cannot read: each reached the
+	// destination, and nothing there ran it.
+	unread atomic.Int32
+	// refuseRetries refuses every ThreadToolCall after the first with a
+	// thread tools refusal, as a destination whose state changed between
+	// two attempts does.
+	refuseRetries atomic.Bool
+	attempts      atomic.Int32
+	// detachFirst keeps the first ThreadToolCall running after its source
+	// is told it was lost, as a handler does when the socket under it
+	// drops. Its answer to the source waits for creating to close, which
+	// the test does once that handler is making its thread; detached joins
+	// the handler.
+	detachFirst atomic.Bool
+	creating    chan struct{}
+	detached    sync.WaitGroup
 	// stall holds every ThreadToolRequestStatus until it is closed, which
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
@@ -505,6 +523,21 @@ type peerFaults struct {
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if left := p.unread.Load(); left > 0 && p.unread.CompareAndSwap(left, left-1) {
+		return ThreadPeerReply{}, errors.New("the destination failed before it read the call")
+	}
+	if p.attempts.Add(1) > 1 && p.refuseRetries.Load() {
+		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, "This attempt is refused.", nil)
+	}
+	if p.detachFirst.CompareAndSwap(true, false) {
+		p.detached.Go(func() { _, _ = p.App.ThreadToolCall(context.WithoutCancel(ctx), call) })
+		select {
+		case <-p.creating:
+		case <-ctx.Done():
+			return ThreadPeerReply{}, ctx.Err()
+		}
+		return ThreadPeerReply{}, errors.New("the connection dropped")
+	}
 	reply, err := p.App.ThreadToolCall(ctx, call)
 	if err != nil {
 		return reply, err
@@ -976,12 +1009,19 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
-	pair := newReachPair(t)
-	// The call is cancelled before it can be answered, which is what a
-	// lost reply looks like from the source: the destination may have
-	// accepted it, and this computer cannot tell.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	var faults *peerFaults
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		wire, injected := serveFaultyApp(t, app)
+		faults = injected
+		return wire
+	})
+	// Every attempt reaches the destination and fails with an error this
+	// computer cannot read, which is what a lost answer looks like from the
+	// source: the destination may have accepted it, and this computer
+	// cannot tell. Here it never ran any of them.
+	faults.unread.Store(threadPeerAdmissionAttempts)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
 		Prompt: "work whose answer never came back", ComputerID: pair.computer, ProjectID: pair.project,
 	})

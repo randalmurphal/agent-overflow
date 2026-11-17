@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
@@ -104,5 +106,64 @@ func TestUnsupportedPeerErrorNamesTheSurfaceItAskedFor(t *testing.T) {
 	}
 	if code, _, public := errorsx.PublicDetails(unsupportedPeerError(transport.CapabilityRemoteCommands, errUnsupportedPeerOperation)); !public || code != "remote_unsupported" {
 		t.Fatalf("an older destination refused a command as %q", code)
+	}
+}
+
+// A failed call says whether its request could have reached the
+// destination: never when it failed before a proven connection had it,
+// always once one did, whether the destination answered or the call was
+// abandoned waiting.
+func TestTheCarrierSaysWhetherAFailedCallWasSent(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	bounded := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 5*time.Second)
+	}
+
+	ctx, cancel := bounded()
+	defer cancel()
+	var remote *rpcclient.Error
+	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolResolve", nil); !errors.As(err, &remote) || NotSent(err) {
+		t.Fatalf("an answered refusal = %v, NotSent %v; want it sent", err, NotSent(err))
+	}
+	waiting, stop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer stop()
+	if err := m.CallThreadPeer(waiting, p.id, "ThreadToolCall", nil); !errors.Is(err, context.DeadlineExceeded) || NotSent(err) {
+		t.Fatalf("a call abandoned waiting = %v, NotSent %v; want it sent", err, NotSent(err))
+	}
+
+	for name, call := range map[string]func(context.Context) error{
+		"no such pairing": func(ctx context.Context) error {
+			return m.CallThreadPeer(ctx, uuid.NewString(), "ThreadToolCall", nil)
+		},
+		"not a computer id": func(ctx context.Context) error {
+			return m.CallThreadPeer(ctx, "not-a-computer", "ThreadToolCall", nil)
+		},
+		"a method outside the surface": func(ctx context.Context) error {
+			return m.CallThreadPeer(ctx, p.id, "RemoteCommandStart", nil)
+		},
+		"cancelled before it was sent": func(ctx context.Context) error {
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			return m.CallThreadPeer(cancelled, p.id, "ThreadToolCall", nil)
+		},
+		"a command not opted in": func(ctx context.Context) error {
+			return m.CallAgentPeer(ctx, p.id, "RemoteCommandStart", nil)
+		},
+	} {
+		ctx, cancel := bounded()
+		if err := call(ctx); err == nil || !NotSent(err) {
+			t.Errorf("%s = %v, want it marked not sent", name, err)
+		}
+		cancel()
+	}
+
+	// The computer goes away: its idle connection fails the ping before
+	// reuse, and the dial that replaces it fails.
+	p.closeAll()
+	p.Close()
+	ctx, cancel = bounded()
+	defer cancel()
+	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolCall", nil); err == nil || !NotSent(err) {
+		t.Fatalf("a call to a computer that cannot be reached = %v, want it marked not sent", err)
 	}
 }

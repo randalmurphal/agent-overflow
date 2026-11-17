@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
@@ -372,20 +373,32 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	}
 	if err != nil {
 		publicErr := a.remoteOperationError("run", input.ComputerID, input.Request.ID, err)
-		code, _, _ := errorsx.PublicDetails(publicErr)
-		// Every code here is answered before the destination accepts anything,
-		// so a fresh attempt refused this way never started. A lost reply keeps
-		// the watch, which the poller verifies against the destination instead.
-		switch code {
-		case "remote_invalid_request", "remote_invalid_project", "remote_project_not_found", "workspace_not_registered", "remote_capacity", "remote_request_conflict", "remote_log_unavailable",
-			"remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired, transport.ErrCodeAuthFailed, transport.ErrCodeMethodNotFound:
-			if freshWatch {
-				_ = a.refuseRemoteWatch(input.ComputerID, input.Request.ID, scope.ThreadID, publicErr)
+		if freshWatch && remoteStartNeverRan(publicErr) {
+			if refuseErr := a.refuseRemoteWatch(input.ComputerID, input.Request.ID, scope.ThreadID, publicErr); refuseErr != nil {
+				return result, errors.Join(publicErr, refuseErr)
 			}
 		}
 		return result, publicErr
 	}
 	return result, nil
+}
+
+// remoteStartNeverRan reports whether a failed RemoteCommandStart cannot
+// have started its command: the carrier never sent it, or the destination
+// answered with a refusal it gives only before accepting anything. Any other
+// failure may be a lost reply, whose watch the poller verifies against the
+// destination instead.
+func remoteStartNeverRan(err error) bool {
+	if attachedbackends.NotSent(err) {
+		return true
+	}
+	code, _, _ := errorsx.PublicDetails(err)
+	switch code {
+	case "remote_invalid_request", "remote_invalid_project", "remote_project_not_found", "workspace_not_registered", "remote_capacity", "remote_request_conflict", "remote_log_unavailable",
+		"remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired, transport.ErrCodeAuthFailed, transport.ErrCodeMethodNotFound:
+		return true
+	}
+	return false
 }
 
 //ao:scope terminal:operate

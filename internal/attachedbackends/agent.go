@@ -83,19 +83,19 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
 	if !entityid.Valid(id) {
-		return errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)
+		return notSentError{errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
 	}
 	switch method {
 	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects", "RemoteCommandEnvironment", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact", "RemoteCommandLogArtifact":
 	default:
-		return errors.New("this method is not available to agent commands")
+		return notSentError{errors.New("this method is not available to agent commands")}
 	}
 	access, err := m.AgentAccess()
 	if err != nil {
-		return err
+		return notSentError{err}
 	}
 	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" && method != "RemoteCommandLogArtifact" {
-		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)
+		return notSentError{errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)}
 	}
 	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
 }
@@ -106,19 +106,20 @@ func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
 	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
 }
 
-// The refusals this package raises for the agent thread tools. They are
-// named because the source side reads them to decide whether a request was
-// ever made: both say the call never left this computer, which is what lets
-// a source settle its row instead of polling a destination that never heard
-// of it (app.threadRequestNeverSent).
-const (
-	// CodeThreadUnreachable is a call that could not be addressed at all:
-	// the computer id does not name a computer.
-	CodeThreadUnreachable = "thread_unreachable"
-	// CodeThreadUnsupported is a destination whose version does not serve
-	// the thread tools.
-	CodeThreadUnsupported = "thread_unsupported"
-)
+// notSentError marks a failed peer call whose request frame never left this
+// computer: the call was refused here, its pairing could not be loaded, or
+// no connection proven for it could be opened. Every other failure may have
+// reached the destination, which may have acted on it.
+type notSentError struct{ error }
+
+func (e notSentError) Unwrap() error { return e.error }
+
+// NotSent reports whether a failed CallAgentPeer or CallThreadPeer never
+// sent its request frame, so the destination cannot have acted on it.
+func NotSent(err error) bool {
+	var never notSentError
+	return errors.As(err, &never)
+}
 
 // threadPeerMethods is the whole surface agent thread tools reach on a
 // paired computer. It is separate from the command allowlist because the
@@ -139,10 +140,10 @@ var threadPeerMethods = map[string]struct{}{
 // nothing here does.
 func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
 	if !entityid.Valid(id) {
-		return errorsx.Public(CodeThreadUnreachable, "computer_id must be a computer UUID from thread_options.", nil)
+		return notSentError{errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
 	}
 	if _, ok := threadPeerMethods[method]; !ok {
-		return errors.New("this method is not available to agent thread tools")
+		return notSentError{errors.New("this method is not available to agent thread tools")}
 	}
 	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
 }
@@ -152,20 +153,21 @@ func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result 
 // the call. The
 // capability is the only thing that differs between the two surfaces, and
 // it is what turns an older destination into a clear refusal instead of a
-// method error.
+// method error. Every failure before the call is handed to a proven
+// connection is NotSent; from then on the destination may have it.
 func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
 	held, err := m.carrier(id)
 	if err != nil {
 		if errors.Is(err, deviceclient.ErrNoSession) {
-			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
+			return notSentError{errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)}
 		}
-		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
+		return notSentError{errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)}
 	}
 	rpc := held.peers.take(ctx, capability)
 	if rpc == nil {
 		rpc, err = openPeerRPC(ctx, held, capability)
 		if err != nil {
-			return err
+			return notSentError{err}
 		}
 	}
 	err = rpc.Call(ctx, method, result, params...)
@@ -203,7 +205,7 @@ func openPeerRPC(ctx context.Context, held *carrier, capability string) (*rpccli
 // rather than a method error.
 func unsupportedPeerError(capability string, cause error) error {
 	if capability == transport.CapabilityThreadTools {
-		return errorsx.Public(CodeThreadUnsupported, "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
+		return errorsx.Public("thread_unsupported", "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
 	}
 	return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", cause)
 }
