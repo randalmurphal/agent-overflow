@@ -119,6 +119,48 @@ func TestAnInterruptionsCauseCrossesComputersAsData(t *testing.T) {
 		}
 	})
 
+	t.Run("the user's Stop, with what the turn said", func(t *testing.T) {
+		const said = "Half done."
+		var reported ThreadPeerRequest
+		row := collected(t, func(r *ThreadPeerRequest) { reported = *r },
+			settleThere(threadtools.Cause{Code: threadtools.CauseUserStop}, said))
+		// An earlier build reads the answer and its kind: what the turn
+		// said, as its final message.
+		if reported.Cause == nil || reported.Cause.Code != threadtools.CauseUserStop || reported.Cause.Written != said ||
+			reported.Answer != said || reported.AnswerKind != store.ThreadAnswerFinal {
+			t.Fatalf("the destination reported %q (%s) with cause %+v, want what the turn said beside the user's Stop",
+				reported.Answer, reported.AnswerKind, reported.Cause)
+		}
+		if row.Cause != threadtools.CauseUserStop || string(row.Answer) != said || row.AnswerKind != store.ThreadAnswerFinal {
+			t.Fatalf("collected cause %q answer %q (%s), want the user's Stop with what the turn said", row.Cause, row.Answer, row.AnswerKind)
+		}
+		if got := statusWords(row); got != said {
+			t.Errorf("thread_status reads %q, want %q", got, said)
+		}
+		text, facts := wakeOf(t, row)
+		if !strings.HasSuffix(text, "]: "+threadtools.WakePersonStopped+" Its last message:\n"+said) ||
+			facts.StoppedBy != "the user" || facts.BodyOf(text) != said {
+			t.Errorf("wake %q with facts %+v, want the user named as the stopper and what the turn said as the body", text, facts)
+		}
+	})
+
+	t.Run("a code this computer does not know, on a final answer", func(t *testing.T) {
+		const said = "Half done."
+		row := collected(t, func(r *ThreadPeerRequest) {
+			// A newer computer's own cause for a turn whose last message
+			// it reports as the answer.
+			r.Cause = &ThreadPeerCause{Code: "evicted", Written: said}
+			r.Answer, r.AnswerKind = said, store.ThreadAnswerFinal
+		}, settleThere(threadtools.Cause{Code: threadtools.CauseTurn}, ""))
+		if row.Cause != "" || string(row.Answer) != said || row.AnswerKind != store.ThreadAnswerFinal {
+			t.Fatalf("collected cause %q answer %q (%s), want the text alone", row.Cause, row.Answer, row.AnswerKind)
+		}
+		text, facts := wakeOf(t, row)
+		if facts.StoppedBy != "" || facts.BodyOf(text) != said || strings.Contains(text, threadtools.WakePersonStopped) {
+			t.Errorf("wake %q with facts %+v, want the text whole as the body and no stopper", text, facts)
+		}
+	})
+
 	t.Run("a code this computer does not know", func(t *testing.T) {
 		row := collected(t, func(r *ThreadPeerRequest) {
 			if r.Cause != nil {

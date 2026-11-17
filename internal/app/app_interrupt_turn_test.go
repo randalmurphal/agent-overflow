@@ -400,7 +400,7 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	if got := f.interrupts(t); got != 1 {
 		t.Fatalf("interrupts = %d, want 1", got)
 	}
-	if recorded, ok := f.app.turnStopOf(f.thread.ID, store.Turn{TurnIndex: 1}); !ok || !recorded.person {
+	if recorded, ok := f.app.turnStopOf(f.thread.ID, store.Turn{TurnIndex: 1}); !ok || recorded.cause.Code != threadtools.CauseUserStop {
 		t.Fatalf("stop of turn 1 = %+v, %v; want the person's Stop recorded", recorded, ok)
 	}
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)

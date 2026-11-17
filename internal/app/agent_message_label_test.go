@@ -142,9 +142,9 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a final message", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeErrored, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "boom\nstack"}, from("wake", worker))
 	add("an error", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."}, from("wake", worker))
 	add("a person's Stop with its last message", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}}, from("wake", worker))
 	add("a person's Stop before anything was said", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseRestart}}, from("wake", worker))
 	add("a restart", text, meta)
@@ -191,15 +191,19 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	for _, w := range []threadtools.Wake{
 		{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "All green."},
 		{Kind: threadtools.WakeReminder, Sources: []threadtools.WakeSource{{Tokens: []string{"tok-1"}}}, Text: "Check the build."},
-		{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}},
-		{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."},
+		{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}},
+		{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."},
 		{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseSessionEndedUnanswered}},
 		{Kind: threadtools.WakeReply, Sources: digest, Text: "Same answer."},
 		{Kind: threadtools.WakeInterrupted, Sources: digest, Cause: threadtools.Cause{Code: threadtools.CauseSessionEndedUnread}},
 	} {
 		w.MadeIn, w.Now = "t-old", "t-new"
 		text, meta = answer(w, from("wake", worker))
-		add("made in a past thread: "+w.Kind+" from "+strconv.Itoa(len(w.Sources))+" sources, "+firstNonEmpty(w.Cause.Answer(w.Text), "no text"), text, meta)
+		kind := w.Kind
+		if w.Cause.Code == threadtools.CauseUserStop {
+			kind = "stopped"
+		}
+		add("made in a past thread: "+kind+" from "+strconv.Itoa(len(w.Sources))+" sources, "+firstNonEmpty(w.Cause.Answer(w.Text), "no text"), text, meta)
 	}
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Untitled reply."}, nil)
 	add("a reply whose attribution names no thread", text, meta)

@@ -376,13 +376,11 @@ func threadWakeContent(row store.ThreadRequest, late bool) (kind, text string, e
 		// A cancel the agent made itself disarms the wake; one that still
 		// owes it was made for the agent, and the answer says by whom.
 		return threadtools.WakeCancelled, string(row.Answer), nil
-	case row.State == store.ThreadRequestInterrupted && row.AnswerKind == store.ThreadAnswerFinal:
-		// A person's Stop: the answer is what the turn said before it
-		// (turnSettlement).
-		return threadtools.WakeStopped, string(row.Answer), nil
 	case row.State == store.ThreadRequestInterrupted:
-		// The text is what the turn had written, or with no cause the
-		// whole reason as an earlier build recorded it.
+		// What the wake says is its cause's (soloThreadWakeMessage); the
+		// text is what the turn had written or said, or with no known cause
+		// the whole text an earlier build or computer recorded, whatever
+		// the answer's kind.
 		return threadtools.WakeInterrupted, string(row.Answer), nil
 	case row.State == store.ThreadRequestExpired:
 		return threadtools.WakeExpired, "", nil

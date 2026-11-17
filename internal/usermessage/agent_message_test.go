@@ -90,7 +90,7 @@ func TestConstructorsWriteWhatDecodeStoredReads(t *testing.T) {
 	}
 	for _, kind := range []string{
 		threadtools.WakeReply, threadtools.WakeFinished, threadtools.WakeErrored, threadtools.WakeCancelled, threadtools.WakeInterrupted,
-		threadtools.WakeStopped, threadtools.WakeExpired, "settled",
+		threadtools.WakeExpired, "settled",
 	} {
 		messages["answer: "+kind] = func() (AgentMessage, error) {
 			return Answer(threadtools.Wake{Kind: kind, Text: "Said.", Sources: []threadtools.WakeSource{source}, MadeIn: "t-old", Now: "t-new"})

@@ -19,8 +19,8 @@ import (
 // lifecycle, settled by the same observer. While held, each later turn end
 // and session end on the thread is read as the request's own would be: an
 // error settles it `errored`, an interruption `interrupted` with its cause,
-// a person's Stop as a Stop does, and a session that ends mid-turn
-// `interrupted` (InterruptSessionEndedWorking). Only a turn that ends with
+// the user's Stop with what the turn said, and a session that ends mid-turn
+// `interrupted` (threadtools.CauseSessionEndedWorking). Only a turn that ends with
 // the thread at rest settles it `finished`, with the thread's last message
 // from the request's turn on.
 //
@@ -222,7 +222,7 @@ func (a *App) settleHeldReceiptLocked(receipt store.ThreadRequestReceipt, gate r
 // heldTurnsSettlement reads the ends of thread's turns from the last one a
 // held request read, oldest first: the first that did not end `finished`
 // decides its settlement, as its own turn's end would (turnSettlement). A
-// turn a session's end cut is InterruptSessionEndedWorking, with what the
+// turn a session's end cut is threadtools.CauseSessionEndedWorking, with what the
 // thread wrote since the request's turn. through is the last turn read
 // that ended `finished`; pending says a turn from it on is still to be
 // read at its own end: one open, or, for a pass, one interrupted with no

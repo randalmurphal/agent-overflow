@@ -357,12 +357,17 @@ func (a *App) settleReceiptNotRead(threadID, token, state, why string) threadSet
 // interruptedSettlement is the answer of a request cause interrupted: the
 // cause as data, and what the turn had written by then, if anything, as its
 // text. The words a caller reads are rendered from both (threadtools.Cause).
+// The user's Stop answers with what the turn said, which is its `final`
+// message; every other cause's answer is an `error`.
 func interruptedSettlement(cause threadtools.Cause, written string) store.ThreadRequestSettlement {
 	settlement := store.ThreadRequestSettlement{
 		State:      store.ThreadReceiptInterrupted,
 		AnswerKind: store.ThreadAnswerError,
 		Cause:      cause.Code,
 		CauseArg:   cause.Arg,
+	}
+	if cause.Code == threadtools.CauseUserStop {
+		settlement.AnswerKind = store.ThreadAnswerFinal
 	}
 	if strings.TrimSpace(written) != "" {
 		settlement.Answer = []byte(written)
@@ -512,11 +517,10 @@ func (a *App) bindUndeliveredReceiptToTakingTurn(threadID, token, messageItemID 
 // A turn that answered without thread_reply still said something, and that
 // last message is the most useful thing this computer has; it is reported as
 // `final` so the caller is never told a fallback is the answer it asked for.
-// A turn the user's own Stop cut (recordTurnStop) is `interrupted` with what
-// it said by then as its `final` answer, which is how the wake tells it from
-// a restart: every other interruption's answer is an `error` with the cause
-// the stop recorded (threadtools.Cause). A
-// turn whose session ended with it is settled by settleReceiptOnSessionEnd.
+// An interrupted turn settles `interrupted` with the cause its stop recorded
+// (recordTurnStop, threadtools.Cause); the user's own Stop keeps what the
+// turn said by then. A turn whose session ended with it is settled by
+// settleReceiptOnSessionEnd.
 func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequestSettlement, error) {
 	settledAt := time.Now().UnixMilli()
 	if turn.CompletedAt != nil {
@@ -524,24 +528,19 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 	}
 	switch {
 	case turn.StopReason == "interrupted":
-		stop, stopped := a.turnStopOf(threadID, turn)
-		if stopped && stop.person {
+		cause := threadtools.Cause{Code: threadtools.CauseTurn}
+		if stop, stopped := a.turnStopOf(threadID, turn); stopped {
+			cause = stop.cause
+		}
+		said := ""
+		if cause.Code == threadtools.CauseUserStop {
 			text, err := a.lastAssistantText(threadID, turn.TurnIndex)
 			if err != nil {
 				return store.ThreadRequestSettlement{}, err
 			}
-			return store.ThreadRequestSettlement{
-				State:      store.ThreadReceiptInterrupted,
-				Answer:     []byte(text),
-				AnswerKind: store.ThreadAnswerFinal,
-				SettledAt:  settledAt,
-			}, nil
+			said = text
 		}
-		cause := threadtools.Cause{Code: threadtools.CauseTurn}
-		if stopped {
-			cause = stop.cause
-		}
-		settlement := interruptedSettlement(cause, "")
+		settlement := interruptedSettlement(cause, said)
 		settlement.SettledAt = settledAt
 		return settlement, nil
 	case turn.ErrorMessage != "" || turn.StopReason == "error":

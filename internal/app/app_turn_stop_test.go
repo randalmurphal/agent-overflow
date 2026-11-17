@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
@@ -69,7 +68,7 @@ func settlesAsPersonsStop(t *testing.T, app *App, threadID string, turn store.Tu
 	if err != nil {
 		t.Fatal(err)
 	}
-	return settlement.State == store.ThreadReceiptInterrupted && settlement.AnswerKind == store.ThreadAnswerFinal
+	return settlement.State == store.ThreadReceiptInterrupted && settlement.Cause == threadtools.CauseUserStop
 }
 
 // A second Stop before the first stopped turn settles keeps the first
@@ -145,8 +144,8 @@ func TestASettledTurnTakesOnlyItsOwnStop(t *testing.T) {
 			}
 			app.settleReceiptsForEndedTurn(thread.ID)
 
-			if receipt, _, _ := app.store.GetThreadRequestReceipt("tok-0"); receipt.State != store.ThreadReceiptInterrupted || receipt.AnswerKind != store.ThreadAnswerFinal {
-				t.Fatalf("turn 0's request settled %q/%q, want the person's Stop", receipt.State, receipt.AnswerKind)
+			if receipt, _, _ := app.store.GetThreadRequestReceipt("tok-0"); receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != threadtools.CauseUserStop {
+				t.Fatalf("turn 0's request settled %q/%q, want the person's Stop", receipt.State, receipt.Cause)
 			}
 			if app.stoppedByPerson(thread.ID, store.Turn{TurnIndex: 0, StartedAt: 10}) {
 				t.Error("turn 0's stop outlived its settled end")
@@ -409,8 +408,8 @@ func TestAFailedInterruptKeepsNoStop(t *testing.T) {
 		t.Fatal("a Stop whose interrupt failed was kept")
 	}
 	q.endStoppedTurn(t)
-	if row := q.f.request(t, r.token); row.AnswerKind == store.ThreadAnswerFinal && row.State == store.ThreadRequestInterrupted {
-		t.Fatalf("request = %s/%s, read as the person's Stop after its interrupt failed", row.State, row.AnswerKind)
+	if row := q.f.request(t, r.token); row.Cause == threadtools.CauseUserStop {
+		t.Fatalf("request = %s/%s, read as the person's Stop after its interrupt failed", row.State, row.Cause)
 	}
 }
 
@@ -442,11 +441,20 @@ func (q *queuedRequests) endStoppedTurn(t *testing.T) {
 	q.f.app.settleReceiptsForEndedTurn(q.target.ID)
 }
 
+// wantStoppedWith checks that the request and its receipt settled as the
+// person's Stop: interrupted with its cause, and exactly text, what the turn
+// wrote, as the final answer.
 func (r *queuedRequest) wantStoppedWith(t *testing.T, text string) {
 	t.Helper()
 	row := r.q.f.request(t, r.token)
-	if row.State != store.ThreadRequestInterrupted || row.AnswerKind != store.ThreadAnswerFinal || !strings.Contains(string(row.Answer), text) {
-		t.Fatalf("request = %s/%s %q, want interrupted with %q as its final answer", row.State, row.AnswerKind, row.Answer, text)
+	if row.State != store.ThreadRequestInterrupted || row.AnswerKind != store.ThreadAnswerFinal || string(row.Answer) != text ||
+		row.Cause != threadtools.CauseUserStop || row.CauseArg != "" {
+		t.Fatalf("request = %s/%s cause %q %q answer %q, want interrupted by the user's Stop with %q as its final answer",
+			row.State, row.AnswerKind, row.Cause, row.CauseArg, row.Answer, text)
+	}
+	receipt := r.q.f.receipt(t, r.token)
+	if receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != threadtools.CauseUserStop || string(receipt.Answer) != text {
+		t.Fatalf("receipt = %s cause %q answer %q, want interrupted by the user's Stop with %q", receipt.State, receipt.Cause, receipt.Answer, text)
 	}
 }
 
@@ -454,26 +462,32 @@ func TestAPersonsStopKeepsWhatTheRequestsTurnWrote(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
+		// said is what the request's turn wrote before the Stop.
+		said string
 		// reach runs the request's message into turn 1 before the Stop.
-		reach func(t *testing.T, q *queuedRequests, r *queuedRequest)
+		reach func(t *testing.T, q *queuedRequests, r *queuedRequest, said string)
 		// open runs after the Stop, before the turn's end.
-		open func(t *testing.T, q *queuedRequests, r *queuedRequest)
+		open func(t *testing.T, q *queuedRequests, r *queuedRequest, said string)
 	}{
-		{"echoed before the Stop", func(t *testing.T, q *queuedRequests, r *queuedRequest) {
+		{"echoed before the Stop", "halfway there", func(t *testing.T, q *queuedRequests, r *queuedRequest, said string) {
 			q.startPickupTurn(t)
 			r.consumed(t)
-			q.say(t, 1, "halfway there")
+			q.say(t, 1, said)
 		}, nil},
-		{"taken in without an echo", func(t *testing.T, q *queuedRequests, r *queuedRequest) {
+		{"echoed before the Stop, having said nothing", "", func(t *testing.T, q *queuedRequests, r *queuedRequest, _ string) {
 			q.startPickupTurn(t)
-			q.say(t, 1, "halfway there")
+			r.consumed(t)
+		}, nil},
+		{"taken in without an echo", "halfway there", func(t *testing.T, q *queuedRequests, r *queuedRequest, said string) {
+			q.startPickupTurn(t)
+			q.say(t, 1, said)
 			if receipt := q.f.receipt(t, r.token); receipt.TurnID != "" {
 				t.Fatalf("fixture: receipt bound to %q before the turn's end", receipt.TurnID)
 			}
 		}, nil},
-		{"waiting for its turn to open", nil, func(t *testing.T, q *queuedRequests, r *queuedRequest) {
+		{"waiting for its turn to open", "halfway there", nil, func(t *testing.T, q *queuedRequests, r *queuedRequest, said string) {
 			q.startPickupTurn(t)
-			q.say(t, 1, "halfway there")
+			q.say(t, 1, said)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -488,16 +502,16 @@ func TestAPersonsStopKeepsWhatTheRequestsTurnWrote(t *testing.T) {
 			q.endTurn(t)
 			q.liveTarget(t)
 			if tc.reach != nil {
-				tc.reach(t, q, r)
+				tc.reach(t, q, r, tc.said)
 			}
 			if err := f.app.InterruptTurn(q.target.ID, nil); err != nil {
 				t.Fatalf("InterruptTurn: %v", err)
 			}
 			if tc.open != nil {
-				tc.open(t, q, r)
+				tc.open(t, q, r, tc.said)
 			}
 			q.endStoppedTurn(t)
-			r.wantStoppedWith(t, "halfway there")
+			r.wantStoppedWith(t, tc.said)
 		})
 	}
 }

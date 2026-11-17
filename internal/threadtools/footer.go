@@ -192,11 +192,8 @@ const (
 	WakeErrored     = "errored"
 	WakeCancelled   = "cancelled"
 	WakeInterrupted = "interrupted"
-	// WakeStopped is an interruption a person's Stop made; its Text is what
-	// the turn said before it, possibly nothing.
-	WakeStopped  = "stopped"
-	WakeExpired  = "expired"
-	WakeReminder = "reminder"
+	WakeExpired     = "expired"
+	WakeReminder    = "reminder"
 )
 
 // WakeSource is one thread a wake speaks for, with the requests of it the
@@ -229,11 +226,12 @@ type Wake struct {
 	Kind    string
 	Sources []WakeSource
 	// Text is the answer, the final message, the error or the note; for an
-	// interruption, what the turn had written when its Cause carries that,
-	// or the whole text of one with no cause. It is clipped to
+	// interruption, what the turn had written or said when its Cause carries
+	// that, or the whole text of one with no known cause. It is clipped to
 	// WakePreviewBytes with a pointer to thread_status.
 	Text string
-	// Cause is why a WakeInterrupted request was interrupted.
+	// Cause is why a WakeInterrupted request was interrupted, and the one
+	// thing that says who stopped it.
 	Cause Cause
 	// MadeIn is the assistant's past thread the requests were made in, set
 	// when the wake goes to a later thread of the same assistant, Now. One
@@ -288,14 +286,11 @@ func (w Wake) Message() (string, MessageFacts) {
 	return b.done(facts)
 }
 
-// outcome is the wake's kind as its facts name it: a person's Stop is an
-// interruption, told apart by who stopped it.
+// outcome is the wake's kind as its facts name it.
 func (w Wake) outcome() string {
 	switch w.Kind {
 	case WakeReply, WakeFinished, WakeErrored, WakeCancelled, WakeInterrupted, WakeExpired, WakeReminder:
 		return w.Kind
-	case WakeStopped:
-		return WakeInterrupted
 	}
 	return WakeSettled
 }
@@ -335,24 +330,24 @@ func (w Wake) status(b *spanBuilder, facts *MessageFacts) {
 	switch w.Kind {
 	case WakeReply:
 		b.write("Reply from " + who + ":\n")
-		w.writeAnswer(b, facts, w.Text, 0)
+		w.writeAnswer(b, facts, w.Text)
 	case WakeFinished:
 		b.write(who + " finished its turn without calling thread_reply. Its final message:\n")
-		w.writeAnswer(b, facts, w.Text, 0)
+		w.writeAnswer(b, facts, w.Text)
 	case WakeErrored:
 		if w.Text == "" {
 			b.write(who + " errored.")
 			return
 		}
 		b.write(who + " errored: ")
-		w.writeAnswer(b, facts, w.Text, 0)
+		w.writeAnswer(b, facts, w.Text)
 	case WakeCancelled:
 		if w.Text == "" {
 			b.write(who + " was cancelled.")
 			return
 		}
 		b.write(who + " was cancelled: ")
-		w.writeAnswer(b, facts, w.Text, 0)
+		w.writeAnswer(b, facts, w.Text)
 	case WakeInterrupted:
 		// The cause the settlement recorded, in its words. A restart names
 		// the computer that restarted.
@@ -361,67 +356,35 @@ func (w Wake) status(b *spanBuilder, facts *MessageFacts) {
 			b.write(fmt.Sprintf("%s was interrupted by a restart of %s.", who, restartedComputer(source.Computer)))
 			return
 		}
-		b.write(who + ": ")
-		words, known := w.Cause.words()
-		if !known {
-			// No cause: the text is the answer, whole, and names no stopper.
-			w.writeAnswer(b, facts, w.Text, 0)
-			return
-		}
-		facts.StoppedBy = words.stoppedBy
-		// What a turn its session ended had written is an answer, clipped
-		// as one; the sentence before it is said whole.
-		if words.written && w.Text != "" {
-			b.write(words.sentence + SessionEndedWrittenSoFar)
-			w.writeAnswer(b, facts, w.Text, 0)
-			return
-		}
-		if words.shownFrom < 0 {
-			b.write(words.sentence)
-			return
-		}
-		b.write(words.sentence[:words.shownFrom])
-		b.writeBody(words.sentence[words.shownFrom:])
-	case WakeStopped:
-		facts.StoppedBy = "the user"
-		b.write(who + ": " + WakePersonStopped)
-		if w.Text != "" {
-			b.write(" Its last message:\n")
-			w.writeAnswer(b, facts, w.Text, 0)
-		}
+		// The reason is said whole; with no known cause the text is the
+		// answer, whole, and names no stopper.
+		shown := w.Cause.render(w.Text)
+		facts.StoppedBy = shown.stoppedBy
+		b.write(who + ": " + shown.reason)
+		w.writeAnswer(b, facts, shown.answer)
 	case WakeExpired:
 		b.write(who + " did not answer within a day.")
 	case WakeReminder:
 		b.write("Reminder you set" + tokenLabel(source.Tokens) + ":\n")
-		w.writeAnswer(b, facts, w.Text, 0)
+		w.writeAnswer(b, facts, w.Text)
 	default:
 		b.write(who + " settled.")
 	}
 }
 
-// writeAnswer writes text clipped to the preview, with the pointer to the
-// rest after it: the part from shownFrom on is the message's body, and
-// none of it when shownFrom is negative.
-func (w Wake) writeAnswer(b *spanBuilder, facts *MessageFacts, text string, shownFrom int) {
+// writeAnswer writes text as the message's body, clipped to the preview,
+// with the pointer to the rest after it.
+func (w Wake) writeAnswer(b *spanBuilder, facts *MessageFacts, text string) {
 	clipped, cut := text, len(text) > WakePreviewBytes
 	if cut {
 		clipped = clipBytes(text, WakePreviewBytes)
 		facts.Clipped = true
 	}
-	if shownFrom < 0 || shownFrom >= len(clipped) {
-		b.write(clipped)
-	} else {
-		b.write(clipped[:shownFrom])
-		b.writeBody(clipped[shownFrom:])
-	}
+	b.writeBody(clipped)
 	if cut {
 		b.write("\n" + WakePreviewPointer(w.firstToken()))
 	}
 }
-
-// WakePersonStopped is the status of a request whose turn a person's Stop
-// cut before it answered.
-const WakePersonStopped = "The user stopped this turn before it answered."
 
 // digest renders a wake that speaks for several threads: what happened to
 // each of them, one line naming each with its tokens (and, under it, that it
@@ -434,9 +397,9 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 	var head string
 	text := w.Text
 	shared := text != ""
-	// shownFrom is where in a shared cause's words the part a person reads
-	// as the message starts; a shared answer is read whole.
-	shownFrom := 0
+	// reason is a shared cause's words said before the shared text, outside
+	// the preview the text is clipped to.
+	reason := ""
 	switch w.Kind {
 	case WakeReply:
 		head, shared = fmt.Sprintf("%d threads sent the same reply:", count), true
@@ -458,20 +421,20 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 			facts.StoppedBy = "a restart of " + w.restartedComputers()
 			break
 		}
-		// Their shared cause in its words, or with no cause their shared
-		// text, whole.
-		head = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count)
-		text, shownFrom = w.Cause.answer(w.Text)
-		shared = text != ""
-		if words, known := w.Cause.words(); known {
-			facts.StoppedBy = words.stoppedBy
+		// Their shared cause in its words, or with no known cause their
+		// shared text, whole.
+		shown := w.Cause.render(w.Text)
+		facts.StoppedBy, text = shown.stoppedBy, shown.answer
+		if w.Cause.Code == CauseUserStop {
+			// The head says it for every thread.
+			head, shared = fmt.Sprintf("%d threads: %s", count, WakeDigestPersonStopped), text != ""
+			if shared {
+				head += " Each one's last message:"
+			}
+			break
 		}
-	case WakeStopped:
-		facts.StoppedBy = "the user"
-		head = fmt.Sprintf("%d threads: %s", count, WakeDigestPersonStopped)
-		if shared {
-			head = fmt.Sprintf("%d threads: %s Each one's last message:", count, WakeDigestPersonStopped)
-		}
+		head, reason = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count), shown.reason
+		shared = reason+text != ""
 	case WakeExpired:
 		head, shared = fmt.Sprintf("%d threads did not answer within a day.", count), false
 	default:
@@ -493,14 +456,10 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 		b.write("\n" + WakeMadeIn(w.MadeIn, w.Now))
 	}
 	if shared {
-		b.write("\n")
-		w.writeAnswer(b, facts, text, shownFrom)
+		b.write("\n" + reason)
+		w.writeAnswer(b, facts, text)
 	}
 }
-
-// WakeDigestPersonStopped follows the count on a digest of requests whose
-// turns a person's Stop cut, the plural of WakePersonStopped.
-const WakeDigestPersonStopped = "The user stopped their turns before they answered."
 
 // restartedComputers names the computer a restart stopped a digest's
 // requests on: the one they share, or each one's when they differ.
