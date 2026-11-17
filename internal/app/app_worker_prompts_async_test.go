@@ -763,8 +763,9 @@ func (f asyncQuestionFixture) resendAfterWithdrawal(t *testing.T, requeued []tri
 	f.app.triage.FlushQueuedItems(f.worker.ID)
 	f.app.flushDispatch.wg.Wait()
 	f.drain(t)
+	// The session's stdin reaches its log after the write returns.
 	var later []string
-	for _, envelope := range recordedUserEnvelopes(t, stdinLog)[1:] {
+	for _, envelope := range waitForRecordedUserEnvelopes(t, stdinLog, 2)[1:] {
 		text, _ := envelopeText(t, envelope)
 		later = append(later, text)
 	}
