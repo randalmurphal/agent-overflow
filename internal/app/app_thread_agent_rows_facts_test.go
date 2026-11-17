@@ -2,7 +2,7 @@ package app
 
 // A spawn's row counts what its thread did, as a background subagent's row
 // counts its run (docs/specs/standing-agents.md, "Agents segment"): its
-// top-level tool calls and the tokens its turns spent, and, while it is not
+// top-level tool calls and the tokens it spent itself, and, while it is not
 // at rest, its latest tool call as the activity line.
 
 import (
@@ -34,8 +34,9 @@ func lastToolLine(t *testing.T, a *App, threadID string) string {
 	return clipLine(row.Summary)
 }
 
-// While the worker runs, its row carries its tool calls, the tokens of its
-// settled and running turns, and its latest tool call as its line; a message
+// While the worker runs, its row carries its tool calls, the tokens its
+// settled turns and its running one spent, and its latest tool call as its
+// line; a message
 // it writes after the call leaves the line on the call. Once it rests, Past
 // keeps the counts and no line. A thread that did nothing carries no counts.
 func TestAWorkerRowCountsWhatItsThreadDid(t *testing.T) {
@@ -44,8 +45,10 @@ func TestAWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 	f.watchAgentRows()
 	idle := f.settledSpawn(t, "idle-spawn", f.caller.ID)
 	worker := f.settledSpawn(t, "facts-spawn", f.caller.ID)
-	if err := f.app.store.AppendUsage([]store.UsageLedgerRow{{CreatedAt: 1, ThreadID: worker.ID, TurnID: "t0", Provider: "claude", Model: "m",
-		InputTokens: 1000, OutputTokens: 200, CacheReadInputTokens: 15000, CacheCreationInputTokens: 2000}}); err != nil {
+	// A settled turn's usage, its own spend as its settlement reports it.
+	settled := store.UsageLedgerRow{CreatedAt: 1, ThreadID: worker.ID, TurnID: "t0", Provider: "claude", Model: "m",
+		InputTokens: 1000, OutputTokens: 200, CacheReadInputTokens: 15000, CacheCreationInputTokens: 2000}
+	if err := f.app.store.AppendUsageAndReconcile("t0", []store.UsageLedgerRow{settled}, store.OwnSpend{ThreadID: worker.ID, Tokens: 3200}); err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
 
