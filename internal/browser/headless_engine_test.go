@@ -1076,25 +1076,27 @@ func TestHeadlessProfileEndsWhenItsConnectionIsLost(t *testing.T) {
 	}
 }
 
-// closedPages records what a headless engine reports closed.
-type closedPages struct {
+// lostPages records the pages a headless engine reports lost with their
+// browser (PageCrashed).
+type lostPages struct {
 	mu      sync.Mutex
 	handles []string
 }
 
-func recordClosedPages(engine *headlessEngine) *closedPages {
-	closed := &closedPages{}
-	engine.events.PageClosed = closed.add
+func recordLostPages(engine *headlessEngine) *lostPages {
+	closed := &lostPages{}
+	engine.events.PageCrashed = func(handle, _ string) { closed.add(handle) }
+	engine.events.PageClosed = func(handle string) { panic("a lost browser's page was reported closed, not crashed: " + handle) }
 	return closed
 }
 
-func (c *closedPages) add(handle string) {
+func (c *lostPages) add(handle string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.handles = append(c.handles, handle)
 }
 
-func (c *closedPages) count(handle string) int {
+func (c *lostPages) count(handle string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := 0
@@ -1115,7 +1117,7 @@ func (c *closedPages) count(handle string) int {
 func TestHeadlessProfileRelaunchReportsThePagesOfTheBrowserItLost(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
-	closed := recordClosedPages(engine)
+	closed := recordLostPages(engine)
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 
 	// Published as adopt publishes a browser, without starting its watcher.
@@ -1145,11 +1147,11 @@ func TestHeadlessProfileRelaunchReportsThePagesOfTheBrowserItLost(t *testing.T) 
 	if alive(lostPID) {
 		t.Fatalf("the lost Chromium %d is still running or unreaped after the relaunch", lostPID)
 	}
-	eventually(t, "the lost browser's page to be reported closed", func() bool { return closed.count(handle) > 0 })
+	eventually(t, "the lost browser's page to be reported lost", func() bool { return closed.count(handle) > 0 })
 
 	profile.watchBrowser(lost.ctx)
 	if n := closed.count(handle); n != 1 {
-		t.Fatalf("page %s was reported closed %d times, want once", handle, n)
+		t.Fatalf("page %s was reported lost %d times, want once", handle, n)
 	}
 	if _, ok := profile.browser(); !ok {
 		t.Fatal("the lost browser's watcher ended the relaunched browser")
@@ -1174,13 +1176,13 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 		handle string
 		err    error
 	}
-	closed := &closedPages{}
+	closed := &lostPages{}
 	during := make(chan created, 1)
 	var lostMu sync.Mutex
 	var handle string
 	var lostPID int
 	var reportedBeforeTheReap, reportedBeforeTheRemoval atomic.Bool
-	engine.events.PageClosed = func(closedHandle string) {
+	engine.events.PageCrashed = func(closedHandle, _ string) {
 		closed.add(closedHandle)
 		lostMu.Lock()
 		lost, pid := handle, lostPID
@@ -1213,11 +1215,11 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 	select {
 	case next = <-during:
 	case <-time.After(headlessTestDeadline):
-		t.Fatal("the lost browser's page was never reported closed")
+		t.Fatal("the lost browser's page was never reported lost")
 	}
 	if next.err == nil {
-		// A page that exists must be reported closed when its profile ends.
-		eventually(t, "the page created during the report to be reported closed", func() bool {
+		// A page that exists must be reported lost when its profile ends.
+		eventually(t, "the page created during the report to be reported lost", func() bool {
 			return closed.count(next.handle) > 0
 		})
 		t.Fatalf("a page was created on a profile whose browser was lost: %s", next.handle)
@@ -1228,10 +1230,10 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 		return profile.disposed
 	})
 	if n := closed.count(handle); n != 1 {
-		t.Fatalf("page %s was reported closed %d times, want once", handle, n)
+		t.Fatalf("page %s was reported lost %d times, want once", handle, n)
 	}
 	if reportedBeforeTheReap.Load() || reportedBeforeTheRemoval.Load() {
-		t.Fatal("the page was reported closed before the profile was torn down; a Dispose the report triggers would return early")
+		t.Fatal("the page was reported lost before the profile was torn down; a Dispose the report triggers would return early")
 	}
 	if pid := browser.pid(t); pid != lostPID {
 		t.Fatalf("a Chromium %d was launched for a profile whose browser was lost", pid)
@@ -1240,11 +1242,11 @@ func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
 
 // The same race under real scheduling: the relaunch starts the moment the
 // loss is visible, which is when the watcher wakes too. Whichever runs
-// first, each page of the lost browser is reported closed exactly once.
+// first, each page of the lost browser is reported lost exactly once.
 func TestHeadlessProfileReportsEveryPageOfALostBrowserOnce(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
-	closed := recordClosedPages(engine)
+	closed := recordLostPages(engine)
 
 	var lostPages []string
 	outcomes := make(map[string]int)
@@ -1272,7 +1274,7 @@ func TestHeadlessProfileReportsEveryPageOfALostBrowserOnce(t *testing.T) {
 		} else {
 			outcomes["watcher first"]++
 		}
-		eventually(t, "page "+page.Handle()+" to be reported closed", func() bool {
+		eventually(t, "page "+page.Handle()+" to be reported lost", func() bool {
 			return closed.count(page.Handle()) > 0
 		})
 		if err := profile.Dispose(context.Background()); err != nil {
@@ -1283,7 +1285,7 @@ func TestHeadlessProfileReportsEveryPageOfALostBrowserOnce(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	for _, handle := range lostPages {
 		if n := closed.count(handle); n != 1 {
-			t.Errorf("page %s was reported closed %d times, want once", handle, n)
+			t.Errorf("page %s was reported lost %d times, want once", handle, n)
 		}
 	}
 	t.Logf("outcomes: %v", outcomes)
@@ -1389,6 +1391,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}, engineEvents{
 		PopupOpened:      func(enginePopup) {},
 		PageClosed:       func(string) {},
+		PageCrashed:      func(string, string) {},
 		PageInfoChanged:  func(string, string, string, uint64) {},
 		DownloadStarted:  func(downloadStart) bool { return true },
 		DownloadProgress: func(downloadProgress) {},

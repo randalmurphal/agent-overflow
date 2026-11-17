@@ -198,7 +198,11 @@ per-platform no-op.
   are CDP `Target.targetCrashed` (hosted and headless), WebView2
   `ProcessFailed` of kind render or browser process exited (other kinds are
   logged and the page keeps running), WebKitGTK `web-process-terminated` and
-  WKWebView `webViewWebContentProcessDidTerminate:`. Presenting a failed tab
+  WKWebView `webViewWebContentProcessDidTerminate:`. A lost whole browser
+  is the same for each of its pages: a headless profile's Chromium that
+  ended without its Dispose, and a hosted CDP connection that ended without
+  the engine's Stop (the launcher, its relay or WebView2's browser process
+  went). The native engines' browser is the app's own process. Presenting a failed tab
   does not reload it; its Reload, or a tool call on it, restores it under the
   navigation policy like any suspended page. The failure is not saved, so
   after a restart it is an ordinary suspended tab.

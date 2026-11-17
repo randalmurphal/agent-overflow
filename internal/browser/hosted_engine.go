@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -560,6 +561,13 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		return nil, err
 	}
 	e.bind(pageID, targetID)
+	if browserCtx.Err() != nil {
+		// The connection ended before the bind, so its watcher may not have
+		// seen the page; the page's session went with it.
+		driver.Close()
+		e.closePage(pageID)
+		return nil, errors.New("browser: the connection to the pane browser was lost")
+	}
 	if cdp, ok := driver.(*cdpPage); ok {
 		e.mu.Lock()
 		e.drivers[pageID] = cdp
@@ -640,7 +648,39 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	e.mu.Lock()
 	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
 	e.mu.Unlock()
+	go e.watchBrowser(browserCtx)
 	return browserCtx, nil
+}
+
+// connectionLostReason is the crash reason of a page whose CDP connection
+// through the relay ended without Stop ending it.
+const connectionLostReason = "connection to the pane browser lost"
+
+// watchBrowser reports the pages of a browser connection that ended on its
+// own (the launcher, its relay or WebView2's browser process went) as
+// crashed: every page's CDP session went with the connection, so its tab
+// stays, failed at its address, and its Reload or a tool call creates the
+// page again on a new connection. Stop clears the connection first, which
+// leaves this silent.
+func (e *hostedEngine) watchBrowser(browserCtx context.Context) {
+	<-browserCtx.Done()
+	e.mu.Lock()
+	if e.browserCtx != browserCtx {
+		e.mu.Unlock()
+		return
+	}
+	allocCancel := e.allocCancel
+	e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
+	pages := make([]string, 0, len(e.targetByPage))
+	for pageID := range e.targetByPage {
+		pages = append(pages, pageID)
+	}
+	e.mu.Unlock()
+	allocCancel()
+	slices.Sort(pages)
+	for _, pageID := range pages {
+		e.events.PageCrashed(pageID, connectionLostReason)
+	}
 }
 
 func (e *hostedEngine) browser() (context.Context, bool) {

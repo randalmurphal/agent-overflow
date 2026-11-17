@@ -13,7 +13,10 @@ import (
 // WebView2's ProcessFailed for the page's renderer or browser process, CDP's
 // Target.targetCrashed on the hosted and headless engines, WebKitGTK's
 // web-process-terminated and WKWebView's
-// webViewWebContentProcessDidTerminate:. The tab stays, as a suspended
+// webViewWebContentProcessDidTerminate:. A browser lost whole reports each of
+// its pages the same way: a headless Chromium that ended without its profile
+// ending it (reportLost), and a hosted CDP connection that ended without
+// Stop (hostedEngine.watchBrowser). The tab stays, as a suspended
 // record carrying the failure: the engine page is closed, the tab shows the
 // failure with a Reload, and the Reload restores it at its address through
 // the ordinary restore path (ReloadCompanionPage, resolvePage). Selecting

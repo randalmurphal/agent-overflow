@@ -41,7 +41,10 @@ func newLifetimeProfile(t *testing.T) *lifetimeProfile {
 		logf:        func(format string, args ...any) { t.Logf(format, args...) },
 		profiles:    make(map[*headlessProfile]struct{}),
 		pageProfile: make(map[string]*headlessProfile),
-		events: engineEvents{PageClosed: func(handle string) {
+		events: engineEvents{PageCrashed: func(handle, reason string) {
+			if reason != browserLostReason {
+				t.Errorf("page %s lost with reason %q", handle, reason)
+			}
 			lp.mu.Lock()
 			defer lp.mu.Unlock()
 			lp.closed = append(lp.closed, handle)
@@ -104,7 +107,7 @@ func TestARelaunchRetiresOnlyALostBrowser(t *testing.T) {
 	if !allocCancelled.Load() {
 		t.Error("the lost browser's allocator was never cancelled")
 	}
-	eventually(t, "the lost browser's page to be reported closed", func() bool {
+	eventually(t, "the lost browser's page to be reported lost", func() bool {
 		return len(lp.closedPages()) > 0
 	})
 	lp.retireLostBrowser()
@@ -190,7 +193,7 @@ func TestAProfileEndsWhenItsBrowserDies(t *testing.T) {
 
 	browserCancel()
 
-	eventually(t, "both pages to be reported closed", func() bool {
+	eventually(t, "both pages to be reported lost", func() bool {
 		return len(lp.closedPages()) == 2
 	})
 	if got := lp.closedPages(); got[0] != "page-a" || got[1] != "page-b" {
