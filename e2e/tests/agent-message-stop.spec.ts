@@ -4,6 +4,7 @@
 //
 // Coverage, on both mock providers: Stop on a turn a request started keeps
 // the request (its row stays and nothing goes to the person's composer),
+// records the user's Stop as the request's cause on both of its rows,
 // and the sender's wake says the person stopped the turn, with
 // what it said by then, never a restart.
 import { join } from 'node:path';
@@ -39,8 +40,10 @@ function db<T>(harness: HarnessApp, query: string, ...args: string[]): T[] {
   }
 }
 
+/** The receipt's and the request's state and cause, as `state/cause` each. */
 const requestState = (harness: HarnessApp, token: string) =>
-  db<{ state: string }>(harness, 'SELECT state FROM thread_request_receipts WHERE token = ?', token)[0]?.state ?? '';
+  db<{ settled: string }>(harness, `SELECT r.state || '/' || r.answer_cause || ' ' || q.state || '/' || q.answer_cause AS settled
+    FROM thread_request_receipts r JOIN thread_requests q ON q.token = r.token WHERE r.token = ?`, token)[0]?.settled ?? '';
 
 const PARTIAL = 'Looked at the first half.';
 const ASK = 'Please stop-test this.';
@@ -103,7 +106,8 @@ for (const provider of ['claude', 'codex'] as const) {
     // The request's row stays and nothing goes to the person's composer.
     await expect(request).toHaveCount(1);
     await expect(page.getByLabel('Message Input')).toHaveValue('');
-    await expect.poll(() => requestState(harness, token), { timeout: 30_000 }).toBe('interrupted');
+    // Both rows record the user's Stop as their cause.
+    await expect.poll(() => requestState(harness, token), { timeout: 30_000 }).toBe('interrupted/user_stop interrupted/user_stop');
 
     await openThread(page, 'Stop sender');
     const wake = agentRow(page, 'interrupted');
