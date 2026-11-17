@@ -252,7 +252,7 @@ func await[T any](t *testing.T, ch <-chan T, what string) T {
 // returns: the close it joins answers it.
 func closeWaiter(t *testing.T, m *Manager, access Access, pageID string) <-chan error {
 	t.Helper()
-	c, err := m.beginCloseLive(access, pageID)
+	c, err := m.beginCloseLive(access, pageID, false)
 	if err != nil {
 		t.Fatalf("join the close of %s: %v", pageID, err)
 	}

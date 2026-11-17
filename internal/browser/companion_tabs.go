@@ -45,48 +45,26 @@ func reopenable(rawURL string) bool {
 // gone from the state, and a failure of the teardown after it arrives as a
 // "teardown" event. The tab can be reopened (ReopenClosedTab).
 func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID string) error {
-	pageID = strings.TrimSpace(pageID)
-	m.mu.Lock()
-	kept := m.keepClosedLocked(access.ThreadID, pageID)
-	m.mu.Unlock()
-	return m.closeKept(ctx, access, pageID, kept)
+	return m.closePage(ctx, access, pageID, false, true)
 }
 
-// closeKept closes a tab keepClosedLocked kept, and forgets the record when
-// the tab was gone by the time the close ran (another close took it, which
-// keeps its own record when it was the user's). A close that fails after the
-// tab left (its saved copy not updated) keeps it.
-func (m *Manager) closeKept(ctx context.Context, access Access, pageID string, kept *closedTab) error {
-	err := m.closePage(ctx, access, pageID, false)
-	if errors.Is(err, errPageNotFound) && kept != nil {
-		m.mu.Lock()
-		m.dropClosedLocked(access.ThreadID, kept)
-		m.mu.Unlock()
-		// The close that took the tab may have pushed the record.
-		m.emitThreadState(access.ThreadID)
-	}
-	return err
-}
-
-// keepClosedLocked records the thread's tab pageID as closed before its
-// close runs, so the state the close pushes counts it, and answers the
-// record, or nil when the tab is not kept. The caller holds m.mu.
-func (m *Manager) keepClosedLocked(threadID, pageID string) *closedTab {
+// recordUserCloseLocked keeps the thread's tab pageID as the user's most
+// recent close. The close that takes the tab out of the tab set calls it in
+// that same m.mu hold, so only the close that removed the tab records it,
+// and the state that close pushes counts it. The caller holds m.mu.
+func (m *Manager) recordUserCloseLocked(threadID, pageID string) {
 	if jarKindOf(m.sessions[threadID]) == JarPrivate {
-		return nil
+		return
 	}
 	for i, tab := range m.companionTabsLocked(threadID) {
 		if tab.id != pageID {
 			continue
 		}
-		if tab.pending != nil || !reopenable(tab.info.URL) {
-			return nil
+		if tab.pending == nil && reopenable(tab.info.URL) {
+			m.pushClosedLocked(threadID, closedTab{url: tab.info.URL, label: tab.info.Label, index: i})
 		}
-		kept := &closedTab{url: tab.info.URL, label: tab.info.Label, index: i}
-		m.pushClosedLocked(threadID, *kept)
-		return kept
+		return
 	}
-	return nil
 }
 
 // pushClosedLocked adds tab as the thread's most recently closed, dropping
@@ -97,18 +75,6 @@ func (m *Manager) pushClosedLocked(threadID string, tab closedTab) {
 		stack = append([]closedTab(nil), stack[len(stack)-maxClosedTabs:]...)
 	}
 	m.closedTabs[threadID] = stack
-}
-
-// dropClosedLocked forgets the most recent record equal to kept, for a close
-// that failed. The caller holds m.mu.
-func (m *Manager) dropClosedLocked(threadID string, kept *closedTab) {
-	stack := m.closedTabs[threadID]
-	for i := len(stack) - 1; i >= 0; i-- {
-		if stack[i] == *kept {
-			m.setClosedLocked(threadID, append(stack[:i:i], stack[i+1:]...))
-			return
-		}
-	}
 }
 
 // setClosedLocked stores a thread's closed tabs, removing an empty entry.

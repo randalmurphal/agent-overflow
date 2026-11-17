@@ -532,11 +532,14 @@ func (m *Manager) saveOpenPages() error {
 }
 
 // forgetRecord closes one suspended page: its record and its saved copy go.
-func (m *Manager) forgetRecord(threadID, pageID string) error {
+func (m *Manager) forgetRecord(threadID, pageID string, byUser bool) error {
 	m.mu.Lock()
 	rec := m.suspended[strings.TrimSpace(pageID)]
 	found := rec != nil && rec.owner == threadID
 	if found {
+		if byUser {
+			m.recordUserCloseLocked(threadID, rec.id)
+		}
 		m.dropRecordLocked(rec)
 	}
 	m.mu.Unlock()

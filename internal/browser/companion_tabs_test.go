@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -262,22 +261,53 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	}
 }
 
-// A tab another close took first is that close's to keep; one whose close
-// failed after the tab left is still reopenable.
-func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
+// Only the close that takes a tab out of the tab set records it: the user's
+// closes racing on one tab record it once, and a user's close of a tab an
+// agent's close took, while that close still runs, records nothing.
+func TestOnlyTheCloseThatTakesATabRecordsIt(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("a"), addr("b"))
-	m.mu.Lock()
-	kept := m.keepClosedLocked(access.ThreadID, ids[0])
-	m.mu.Unlock()
-	// The agent closes it between the user's record and close.
-	if err := m.ClosePage(t.Context(), access, ids[0]); err != nil {
+	// Holding a page's lock keeps its close's teardown waiting, so the page
+	// stays closing until the test ends, before the manager closes.
+	hold := func(id string) {
+		p := livePage(t, m, access, id)
+		p.mu.Lock()
+		t.Cleanup(p.mu.Unlock)
+	}
+
+	hold(ids[0])
+	if err := m.closePage(t.Context(), access, ids[0], false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.closeKept(t.Context(), access, ids[0], kept); !errors.Is(err, errPageNotFound) {
-		t.Fatalf("close of a gone tab = %v", err)
+	if err := m.CloseCompanionPage(t.Context(), access, ids[0]); err != nil {
+		t.Fatalf("the user's close of a closing tab: %v", err)
 	}
 	if got := closedCount(t, m, access); got != 0 {
-		t.Fatalf("ClosedTabs = %d, want the record of a tab the user did not close forgotten", got)
+		t.Fatalf("ClosedTabs = %d, want nothing for the agent's close", got)
+	}
+
+	hold(ids[1])
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			<-start
+			if err := m.CloseCompanionPage(context.Background(), access, ids[1]); err != nil {
+				t.Errorf("close: %v", err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if got := closedCount(t, m, access); got != 1 {
+		t.Fatalf("ClosedTabs = %d after 16 simultaneous closes of one tab, want 1", got)
+	}
+}
+
+// A tab whose close failed after the tab left is still reopenable.
+func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
+	m, access, ids := newTabsManager(t, addr("a"), addr("b"))
+	if err := m.ClosePage(t.Context(), access, ids[0]); err != nil {
+		t.Fatal(err)
 	}
 
 	// A suspended tab whose saved copy cannot be updated: its close fails
