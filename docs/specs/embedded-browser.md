@@ -177,9 +177,9 @@ Spike-verified recipes, all load-bearing:
   it in a new tab, which the launcher
   reports (`ReportPopup`) under a page id it mints before any other
   report of the page and after its opener's; the backend adopts or closes
-  it like any page. The report reaches the backend 0.5 to 3 ms before
-  the popup's first request pauses, so the policy has its opener edge
-  when the target names none (`policy_smoke_windows_test.go`). A popup that goes before its report is reported then,
+  it like any page. In every run measured the report was out 0.5 to 17 ms
+  before the popup's first request paused, so the policy has its opener
+  edge when the target names none (`policy_smoke_windows_test.go`). A popup that goes before its report is reported then,
   with its downloads and its close, only when it has downloads to
   report.
   `Handled` with no new window opens nothing (`window.open` answers
