@@ -195,10 +195,9 @@ func TestALinkedWorkersPromptIsHeldForItsSpawnerThere(t *testing.T) {
 func TestAHeldPromptGoesToThePersonWhenItsLeaseRunsOut(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 2)
-	f.app.workerPromptLeaseOverride = 400 * time.Millisecond
-	kept := f.ask(t, 0)
-	f.ask(t, 1)
-	deadline := time.Now().Add(10 * time.Second)
+	kept, lapsed := f.ask(t, 0), f.ask(t, 1)
+	f.shortenLease(2*time.Second, kept, lapsed)
+	deadline := time.Now().Add(15 * time.Second)
 	for f.route(t, f.workers[1].ID) != nil {
 		if time.Now().After(deadline) {
 			t.Fatal("a prompt nobody held is still routed to the spawner there past its lease")
@@ -214,7 +213,30 @@ func TestAHeldPromptGoesToThePersonWhenItsLeaseRunsOut(t *testing.T) {
 		t.Fatalf("the prompt held throughout is routed to %+v, want the lead there", route)
 	}
 	// No longer named as held, it goes too.
-	waitUntil(t, 10*time.Second, func() bool { return f.route(t, f.workers[0].ID) == nil })
+	waitUntil(t, 15*time.Second, func() bool { return f.route(t, f.workers[0].ID) == nil })
+}
+
+// shortenLease shortens the lease to lease once the prompts under tokens
+// are registered and checks them against it, so a test that must first see
+// them held does not race the lease.
+func (f *linkedWorkers) shortenLease(lease time.Duration, tokens ...string) {
+	f.app.workerPromptLeaseOverride = lease
+	for _, token := range tokens {
+		f.app.armPromptLease(token, 0)
+	}
+}
+
+// heldAt is when the paired computer last said it holds the prompt under
+// token, zero for never.
+func (f *linkedWorkers) heldAt(t *testing.T, token string) time.Time {
+	t.Helper()
+	f.app.workerPrompts.mu.Lock()
+	defer f.app.workerPrompts.mu.Unlock()
+	prompt := f.app.workerPrompts.byToken[token]
+	if prompt == nil || prompt.remote == nil {
+		t.Fatalf("no prompt is held for a paired computer under %s", token)
+	}
+	return prompt.remote.heldAt
 }
 
 // Only the link's own device, for its own source thread and spawn, may
@@ -223,7 +245,6 @@ func TestAHeldPromptGoesToThePersonWhenItsLeaseRunsOut(t *testing.T) {
 func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 2)
-	f.app.workerPromptLeaseOverride = 300 * time.Millisecond
 	first, second := f.ask(t, 0), f.ask(t, 1)
 	askOn(t, f.app, f.local.ID, "approval-1", false)
 	f.drain(t)
@@ -262,12 +283,19 @@ func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 		if prompt, _ := f.app.workerPrompts.get(token); prompt.state != workerPromptRouted {
 			t.Fatalf("prompt %d is %v after the refused calls, want it still routed", i, prompt.state)
 		}
+		// None of the refused renewals renewed.
+		if held := f.heldAt(t, token); !held.IsZero() {
+			t.Fatalf("prompt %d was renewed at %v by a refused call", i, held)
+		}
 	}
 	if route := f.route(t, f.local.ID); route == nil || route.ComputerID != "" {
 		t.Fatalf("the local prompt is routed to %+v after the refused calls", route)
 	}
-	// None of the refused renewals renewed: the lease runs out on its own.
-	waitUntil(t, 10*time.Second, func() bool { return f.route(t, f.workers[1].ID) == nil })
+	// The link's own renewal renews.
+	f.list(t, 0, first)
+	if f.heldAt(t, first).IsZero() {
+		t.Fatal("the link's own renewal did not renew its prompt")
+	}
 
 	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReturn, threadPromptPeerArgs{Spawn: f.spawns[0], Token: first}); err != nil {
 		t.Fatalf("the link's own return: %v", err)

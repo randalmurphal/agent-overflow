@@ -268,11 +268,11 @@ func TestAPromptItsSpawnerNeverHoldsGoesToThePersonThereAfterTheLease(t *testing
 	p.source.workerPrompts.gate.Lock()
 	p.source.workerPrompts.closed = true
 	p.source.workerPrompts.gate.Unlock()
-	p.openThere(t, 1)
+	waitUntil(t, 15*time.Second, func() bool { return p.announcedRoutedHere("req-allow") })
 	p.sweep()
 	waitUntil(t, 15*time.Second, func() bool {
 		route, open := p.routeThere("req-allow")
-		return open && route == nil
+		return open && route == nil && p.announcedToPerson("req-allow")
 	})
 	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
 		t.Fatalf("the spawner holds wakes %+v", wakes)
@@ -304,11 +304,11 @@ func TestAPersonsAnswerThereWithdrawsTheWakeAndRefusesALateReply(t *testing.T) {
 }
 
 // The spawner's session cannot start after its wake was queued: the
-// prompt goes back to the person there at once, and stays theirs while
-// this computer keeps asking past the lease.
+// prompt goes back to the person there long before its lease would run
+// out, and stays theirs while this computer keeps asking.
 func TestAPromptWhoseSpawnerCannotStartGoesBackToThePersonThere(t *testing.T) {
 	t.Parallel()
-	p := newRemotePromptPairLeased(t, 300*time.Millisecond, remoteApproveLine)
+	p := newRemotePromptPair(t, remoteApproveLine)
 	p.startErr = errors.New("the provider binary is missing")
 	p.openThere(t, 1)
 	p.sweep()
@@ -319,7 +319,7 @@ func TestAPromptWhoseSpawnerCannotStartGoesBackToThePersonThere(t *testing.T) {
 	time.Sleep(time.Second)
 	p.drain(t)
 	if route, open := p.routeThere("req-allow"); !open || route != nil {
-		t.Fatalf("the prompt is routed to %+v (open %v) after the lease, want it the person's", route, open)
+		t.Fatalf("the prompt is routed to %+v (open %v) while this computer keeps asking, want it the person's", route, open)
 	}
 	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
 		t.Fatalf("the spawner still holds wakes %+v", wakes)
@@ -344,6 +344,21 @@ func (p *remotePromptPair) announcedToPerson(requestID string) bool {
 	for _, event := range p.destBus.all {
 		if approval, ok := event.Data.(provider.ApprovalEvent); ok && approval.Action == "request" && approval.Request != nil &&
 			approval.Request.RequestID == requestID && approval.Request.ThreadID == p.worker && approval.Request.RoutedTo == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// announcedRoutedHere reports whether the paired computer announced the
+// worker's prompt under requestID routed to the spawner here.
+func (p *remotePromptPair) announcedRoutedHere(requestID string) bool {
+	p.destBus.mu.Lock()
+	defer p.destBus.mu.Unlock()
+	for _, event := range p.destBus.all {
+		if approval, ok := event.Data.(provider.ApprovalEvent); ok && approval.Action == "request" && approval.Request != nil &&
+			approval.Request.RequestID == requestID && approval.Request.ThreadID == p.worker &&
+			approval.Request.RoutedTo != nil && approval.Request.RoutedTo.ThreadID == p.caller.ID {
 			return true
 		}
 	}
@@ -455,6 +470,26 @@ func TestAPromptGoesBackWhenItsHolderCannotAnswer(t *testing.T) {
 				t.Fatal("a reply to the prompt given back was taken")
 			}
 		})
+	}
+}
+
+// A prompt that arrives after its spawner here was archived is given back
+// at once: nothing is queued to the archived thread.
+func TestAPromptForAnArchivedSpawnerGoesBackAtOnce(t *testing.T) {
+	t.Parallel()
+	p := newRemotePromptPair(t, remoteApproveLine)
+	p.openThere(t, 1)
+	if _, _, err := p.source.store.ArchiveThread(p.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 15*time.Second, func() bool {
+		p.poll(t)
+		p.drain(t)
+		route, open := p.routeThere("req-allow")
+		return open && route == nil && p.announcedToPerson("req-allow")
+	})
+	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
+		t.Fatalf("the archived spawner holds wakes %+v", wakes)
 	}
 }
 
