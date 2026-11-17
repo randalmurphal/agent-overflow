@@ -108,11 +108,13 @@ func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []
 
 // OweRemoteArchives owes an archive for the remote spawns of ownerID and of
 // the archived threads it owns at any depth through owned threads already
-// archived (ListOwnedWorkersToArchive's walk), and then clears ownerID's
-// archive_cascade: its archive has reached everything it owns. It owes
+// archived (ListOwnedWorkersToArchive's walk), and then, when finished,
+// clears ownerID's archive_cascade: its archive has reached everything it
+// owns. An archive that is not finished (its walk could not read the
+// workers it owns) keeps the mark for the next boot to finish it. It owes
 // nothing and clears nothing once ownerID is no longer archived. One
 // transaction.
-func (s *Store) OweRemoteArchives(ownerID string) (owed []OwnerOp, err error) {
+func (s *Store) OweRemoteArchives(ownerID string, finished bool) (owed []OwnerOp, err error) {
 	action := fmt.Sprintf("store: owe the remote archives of %s", ownerID)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -136,8 +138,10 @@ func (s *Store) OweRemoteArchives(ownerID string) (owed []OwnerOp, err error) {
 	if owed, err = oweRemoteOpsTx(tx, callers, OwnerOpArchive, nowMillis()); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	if _, err := tx.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = ? AND archived = 1 AND archive_cascade = 1`, ownerID); err != nil {
-		return nil, fmt.Errorf("%s: clear its cascade: %w", action, err)
+	if finished {
+		if _, err := tx.Exec(`UPDATE threads SET archive_cascade = 0 WHERE id = ? AND archived = 1 AND archive_cascade = 1`, ownerID); err != nil {
+			return nil, fmt.Errorf("%s: clear its cascade: %w", action, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("%s: commit: %w", action, err)

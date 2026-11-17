@@ -565,7 +565,7 @@ func TestAPromptForAnArchivedSpawnerGoesBackAtOnce(t *testing.T) {
 	if _, _, err := p.source.store.ArchiveThread(p.caller.ID); err != nil {
 		t.Fatal(err)
 	}
-	owed, err := p.source.store.OweRemoteArchives(p.caller.ID)
+	owed, err := p.source.store.OweRemoteArchives(p.caller.ID, true)
 	if err != nil {
 		t.Fatal(err)
 	}

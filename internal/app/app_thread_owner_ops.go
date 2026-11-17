@@ -132,14 +132,18 @@ func (a *App) serveThreadOwnerOp(ctx context.Context, owner string, call ThreadP
 // retention floor kept included); any other is gone, which tells the caller
 // nothing it did not know. A spawn with no receipt here yet is fenced
 // (store.FenceSpawn): its acceptance, if it still arrives, creates nothing,
-// so gone is answered only when no worker can appear for the token.
+// so gone is answered only when no worker can appear for the token. A
+// supersede fences too: its spawner sends one only in place of an archive
+// it already sent, so the spawn was not accepted here when its spawner was
+// archived, and is cancelled as that archive arriving first cancels it;
+// the archive, if it still arrives, finds the fence.
 func (a *App) admitOwnerOp(_ context.Context, owner, source string, args threadOwnerOpArgs) (threadOwnerOpAnswer, error) {
 	now := time.Now().UnixMilli()
 	reach, found, err := a.store.ReachSpawnLink(args.Spawn, owner, source, now)
 	if err != nil {
 		return threadOwnerOpAnswer{}, err
 	}
-	if !found && args.Op != store.OwnerOpSupersede {
+	if !found {
 		reach, found, err = a.store.FenceSpawn(args.Spawn, owner, source, args.Seq, now)
 		if err != nil {
 			return threadOwnerOpAnswer{}, err
@@ -216,9 +220,10 @@ func (a *App) ownerOpReachesThread(threadID, op string) (bool, error) {
 // archive's own path (runArchive), fenced by the link and taking args.Seq
 // once, then finishes it here: its session stops, its workers here are
 // archived, and what it owes further computers is left to the sweep. A
-// worker below it that could not be archived makes the answer unfinished,
-// naming it; the owner sends the same operation again, which walks again
-// while the worker is still archived under it.
+// worker below it that could not be archived, or a worker here whose own
+// workers could not be read, makes the answer unfinished, naming it; the
+// owner sends the same operation again, which walks again while the worker
+// is still archived under it.
 func (a *App) admitLinkedArchive(worker, owner string, args threadOwnerOpArgs) threadOwnerOpAnswer {
 	work, err := a.runArchive(worker, archiveRequest{link: &linkedArchive{token: args.Spawn, device: owner, seq: args.Seq}})
 	switch {
@@ -235,8 +240,8 @@ func (a *App) admitLinkedArchive(worker, owner string, args threadOwnerOpArgs) t
 	if outcome.cleanup != nil {
 		log.Printf("thread tools: archive %s for its spawner on another computer: %v", worker, outcome.cleanup)
 	}
-	if len(outcome.workers) > 0 {
-		return threadOwnerOpAnswer{Outcome: ownerOpUnfinished, Failures: a.workerFailures(outcome.workers)}
+	if len(outcome.workers) > 0 || len(outcome.unread) > 0 {
+		return threadOwnerOpAnswer{Outcome: ownerOpUnfinished, Failures: a.workerFailures(append(outcome.workers, outcome.unread...))}
 	}
 	return threadOwnerOpAnswer{Outcome: ownerOpApplied}
 }

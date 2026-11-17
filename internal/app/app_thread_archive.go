@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -67,29 +68,40 @@ type ArchiveThreadResult struct {
 	// cannot take it.
 	WorkersNotArchived []WorkerFailure `json:"workersNotArchived,omitempty"`
 	// CleanupError says what could not be stopped or withdrawn of the work
-	// the archived threads were waiting on. Their archives stand.
+	// the archived threads were waiting on, and names an archived thread
+	// whose sub-threads could not be read, which stay open until archiving
+	// it again or the next start finishes its archive. Their archives
+	// stand.
 	CleanupError string `json:"cleanupError,omitempty"`
 }
 
 // archiveOutcome is what finishArchive could not do, for each door to
-// report in its own terms.
+// report in its own terms. unread names each archived thread whose walk
+// could not read the workers it owns: its archive is unfinished.
 type archiveOutcome struct {
 	cleanup error
 	workers []workerFailure
+	unread  []workerFailure
 }
 
 func (o *archiveOutcome) add(other archiveOutcome) {
 	o.cleanup = errors.Join(o.cleanup, other.cleanup)
 	o.workers = append(o.workers, other.workers...)
+	o.unread = append(o.unread, other.unread...)
 }
 
 // result renders the outcome for the binding. The host log keeps the
 // cleanup failure.
 func (o archiveOutcome) result(a *App) ArchiveThreadResult {
 	var result ArchiveThreadResult
-	if o.cleanup != nil {
-		log.Printf("app: archive: %v", o.cleanup)
-		result.CleanupError = o.cleanup.Error()
+	cleanup := o.cleanup
+	for _, unread := range a.workerFailures(o.unread) {
+		cleanup = errors.Join(cleanup, fmt.Errorf("%s: %s; archiving it again or the next start finishes its archive",
+			cmp.Or(unread.Title, unread.ThreadID), unread.Error))
+	}
+	if cleanup != nil {
+		log.Printf("app: archive: %v", cleanup)
+		result.CleanupError = cleanup.Error()
 	}
 	result.WorkersNotArchived = a.workerFailures(o.workers)
 	return result
@@ -116,8 +128,14 @@ func (a *App) finishArchive(work restingThreadWork, reach ownerOpReach) archiveO
 // since. Then the archive ends (endArchiveWalk), returning what it owes the
 // paired computers: until it ends, the next boot finishes it. A worker's
 // own walk owes what the owner's end owes again, under a newer sequence.
+// A walk that could not read the workers it goes on to archive does not
+// end the archive: it stays unfinished, for the next boot, and is reported
+// (archiveOutcome.unread).
 func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.OwnerOp) {
 	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
+	if work.unread != nil {
+		outcome.unread = append(outcome.unread, workerFailure{threadID: work.threadID, err: work.unread})
+	}
 	for _, worker := range work.workers {
 		child, err := a.archiveThreadLocked(worker.ThreadID, worker.OwnerID)
 		switch {
@@ -133,7 +151,7 @@ func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.Owner
 	// A prompt of a worker the archive left running goes back to the user,
 	// delivered or not; the archived workers' prompts ended with them.
 	a.reroutePromptsFrom(work.threadID)
-	owed, err := a.endArchiveWalk(work.threadID)
+	owed, err := a.endArchiveWalk(work.threadID, work.unread == nil)
 	outcome.cleanup = errors.Join(outcome.cleanup, err)
 	return outcome, owed
 }
@@ -215,9 +233,16 @@ func (a *App) runArchive(id string, req archiveRequest) (restingThreadWork, erro
 // and the session stopped, so a thread the owner spawns once reopened is
 // never among them.
 func (a *App) readArchivedWorkers(work *restingThreadWork) {
-	workers, err := a.store.ListOwnedWorkersToArchive(work.threadID)
+	var workers []store.OwnedWorker
+	var err error
+	if hook := a.archivedWorkersReadForTest; hook != nil {
+		err = hook(work.threadID)
+	}
+	if err == nil {
+		workers, err = a.store.ListOwnedWorkersToArchive(work.threadID)
+	}
 	if err != nil {
-		work.err = errors.Join(work.err, fmt.Errorf("archive the workers of %s: %w", work.threadID, err))
+		work.unread = fmt.Errorf("its sub-threads could not be read, so they are not archived yet: %w", err)
 		return
 	}
 	work.workers = workers
