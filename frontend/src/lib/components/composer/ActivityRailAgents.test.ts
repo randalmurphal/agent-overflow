@@ -311,7 +311,7 @@ describe('the Agents segment', () => {
     let skew = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
     const { pane, view, toggle } = await openTray((caller) => [
-      row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true }),
+      row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 }),
     ]);
     await fireEvent.click(toggle);
     const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
@@ -324,7 +324,7 @@ describe('the Agents segment', () => {
     // A read while the turn still runs, its computer's clock behind this
     // one's: the row does not go back from what it showed.
     setBindingMock('GetThreadAgentRows', async () => [{
-      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 5_000, turnOpen: true, activity: 'Reading' }),
+      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 5_000, turnOpen: true, turnStartedAt: 1_000, activity: 'Reading' }),
     }]);
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
     await waitFor(() => expect(within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-activity').textContent).toBe('Reading'));
@@ -348,7 +348,7 @@ describe('the Agents segment', () => {
 
     // Its next turn moves it on from its new read.
     setBindingMock('GetThreadAgentRows', async () => [{
-      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 9_000, turnOpen: true }),
+      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 9_000, turnOpen: true, turnStartedAt: 2_000 }),
     }]);
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
     await waitFor(() => expect(elapsed()).toBe('9s'));
@@ -359,7 +359,7 @@ describe('the Agents segment', () => {
     let skew = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
     const settled = (caller: string) => row('worker', { callerThreadId: caller, runtimeMs: 6_500, worker: 'waiting' });
-    const first = await openTray((caller) => [row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true })]);
+    const first = await openTray((caller) => [row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 })]);
     await fireEvent.click(first.toggle);
     const elapsed = (view: typeof first.view) => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
     skew += 5_000;
@@ -373,6 +373,26 @@ describe('the Agents segment', () => {
     // The segment stays open across the mount.
     const again = await openTray((caller) => [settled(caller)]);
     await waitFor(() => expect(elapsed(again.view)).toBe('6s'));
+  });
+
+  it("starts a new turn's runtime from the server's figure though no read saw the last turn end", async () => {
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    const { pane, view, toggle } = await openTray((caller) => [
+      row('worker', { callerThreadId: caller, runtimeMs: 30_000, turnOpen: true, turnStartedAt: 1_000 }),
+    ]);
+    await fireEvent.click(toggle);
+    const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
+    skew += 10_000;
+    await waitFor(() => expect(elapsed()).toMatch(/^4[01]s$/), { timeout: 2_500 });
+    // That turn ended at 12 s of runtime and the next one has run 1 s;
+    // no read saw the end between them.
+    setBindingMock('GetThreadAgentRows', async () => [{
+      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 13_000, turnOpen: true, turnStartedAt: 2_000 }),
+    }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
+    await waitFor(() => expect(elapsed()).toBe('13s'));
   });
 
   it('under compact, gives the title up to two lines and puts state, elapsed and actions on the next', async () => {

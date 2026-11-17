@@ -77,17 +77,20 @@
     void row.turnOpen;
     return untrack(() => now);
   });
-  // The most this row has shown while its turn is open, so a read taken
-  // while the turn runs, which this clock may have run ahead of, never
-  // shows its runtime going back. Once the turn has ended the server's
-  // figure is the runtime, shown as it is.
+  // The most this row has shown while one turn is open, so a read taken
+  // while that turn runs, which this clock may have run ahead of, never
+  // shows its runtime going back. The turn is the one its start names
+  // (`turnStartedAt`): a read of another turn, or of no open turn, shows
+  // the server's figure as it is.
   let shownRuntime = 0;
+  let shownTurn: number | undefined;
   let runtime = $derived.by(() => {
     const ms = agentRowRuntimeMs(row, now, readAt);
-    if (ms === null || !row.turnOpen) {
+    if (ms === null || !row.turnOpen || row.turnStartedAt !== shownTurn) {
       shownRuntime = 0;
-      return ms;
+      shownTurn = row.turnOpen ? row.turnStartedAt : undefined;
     }
+    if (ms === null || !row.turnOpen) return ms;
     shownRuntime = Math.max(shownRuntime, ms);
     return shownRuntime;
   });

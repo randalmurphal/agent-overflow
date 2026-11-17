@@ -1595,9 +1595,12 @@ closes up their spacing so the row holds at a phone width.
     between turns is not runtime, nor is the time the app was down: a
     turn a crash left open ends at the last activity it recorded. The row
     adds the open turn's time from its own clock since the read and,
-    within that open turn, never shows less than it showed; once the turn
-    has ended the server's figure is shown as it is. A Past row's settled
-    age is a separate fact, its runtime the tooltip.
+    within that open turn, never shows less than it showed. The read
+    names the open turn by its start on the computer that holds the
+    thread (`TurnStartedAt`), compared only with a later read's, so a read
+    of the next turn, or one after the turn has ended, shows the server's
+    figure as it is. A Past row's settled age is a separate fact, its
+    runtime the tooltip.
   The counts are live while it works and kept, final, once it rests and
   under Past. A copy of the thread to another computer starts at zero; a
   move takes the counts with it, and a thread that moves back brings the
@@ -1610,7 +1613,7 @@ closes up their spacing so the row holds at a phone width.
   blocked one's what blocks it. A paired computer reports its spawn's
   counts and line with its `agent_rows` answer
   (`ThreadAgentRows.ToolCalls`, `Tokens`, `RuntimeMs`, `TurnOpen`,
-  `Activity`), refreshed as that answer is, its open row and its Past
+  `TurnStartedAt`, `Activity`), refreshed as that answer is, its open row and its Past
   row projected alike; a Past row reads the last answer and asks again,
   a page's worth at most, and one whose computer did not answer or is
   no longer paired says why (`NestedUnavailable`). One that predates
