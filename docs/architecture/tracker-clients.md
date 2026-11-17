@@ -68,7 +68,7 @@ func New(opts Options) (*Client, error) // misconfiguration is a construction er
 func (c *Client) Do(ctx context.Context, r Request) (*Response, error)
 func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error)
 func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
-func (c *Client) Location(ctx context.Context, r Request) (string, error) // a redirect's target, not followed
+func (c *Client) Location(ctx context.Context, r Request) (string, error) // a redirect's target, not followed, scrubbed
 func (c *Client) ForgetCredential()
 func (c *Client) Close()
 func (r *Response) Scrub(text string) string       // also on *StatusError and *AuthError

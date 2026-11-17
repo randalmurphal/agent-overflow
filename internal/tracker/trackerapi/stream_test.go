@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/secret"
 )
 
 func TestStreamLimit(t *testing.T) {
@@ -124,5 +126,25 @@ func TestLocation(t *testing.T) {
 	}
 	if got, err := c.Location(WithInteractive(t.Context()), Request{Path: "attachment/content/limited"}); err != nil || got != tr.srv.URL+"/file/3" {
 		t.Fatalf("after a 429: %q, %v", got, err)
+	}
+}
+
+// A redirect target is answer text: one that repeats the credential the
+// request carried comes back with it redacted.
+func TestLocationIsScrubbed(t *testing.T) {
+	t.Parallel()
+	tr := newTracker(t, route{
+		"GET /attachment/content/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "https://media.example.com/file/"+testSecret+"/binary?token=signed")
+			w.WriteHeader(http.StatusSeeOther)
+		},
+	})
+	c, _ := loopbackClient(t, testOptions(tr.url()))
+	got, err := c.Location(t.Context(), Request{Path: "attachment/content/1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, testSecret) || !strings.Contains(got, secret.Redacted) {
+		t.Fatalf("Location = %q, want the credential redacted", got)
 	}
 }

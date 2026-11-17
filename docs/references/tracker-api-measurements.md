@@ -139,6 +139,11 @@ Other:
   `/file/{media id}/binary` and whose query carries a signed token. With
   `redirect=false` the same path answers 200 with the file from the Jira
   site itself.
+- Measured the same day. `POST /rest/api/3/changelog/bulkfetch` gives each
+  history's `created` as a number of epoch milliseconds (13 digits) and the
+  issue as a string `issueId`, with no key. The spec declares `created` a
+  string and its example shows 10 digits. `GET /issue/{key}/changelog`
+  gives `created` as an ISO 8601 string with milliseconds and an offset.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.

@@ -101,8 +101,10 @@ func (e *destinationError) Error() string { return e.err.Error() }
 
 // Location sends r, a GET, without following a redirect, and returns the
 // redirect's target resolved against the URL that answered. The target is
-// returned as the tracker gave it, signed query included; it is not
-// requested. An answer that is not a redirect fails the call.
+// returned as the tracker gave it, signed query included, and is not
+// requested. It is answer text, so the credential the request carried is
+// replaced in it by secret.Redacted, as Response.Scrub would. An answer
+// that is not a redirect fails the call.
 func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 	k, err := c.prepareGet(r, "Location")
 	if err != nil {
@@ -124,5 +126,7 @@ func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 		// Not quoted: the target can be signed.
 		return "", fmt.Errorf("%s: the redirect target is not a URL", where)
 	}
-	return target.String(), nil
+	s := c.scrubber(a.sent)
+	defer s.clear()
+	return s.text(target.String()), nil
 }
