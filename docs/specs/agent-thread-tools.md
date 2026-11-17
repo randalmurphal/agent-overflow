@@ -247,8 +247,9 @@ window is rendered to a file under the source data directory (beside
 `remote-artifacts/`, retained until explicitly removed), and the call
 returns its path and size for the agent's own read and search tools. A
 remote thread renders on its own computer and the file crosses in
-chunks with a whole-file SHA-256, as remote artifacts do; the inline
-form moves at most `max_bytes` over the wire.
+chunks over one connection, verified against the size and whole-file
+SHA-256 the render announced; the inline form moves at most `max_bytes`
+over the wire.
 
 Output is plain text, turn-delimited, each row prefixed with role and
 item id; a message another agent wrote is role `agent` and names its

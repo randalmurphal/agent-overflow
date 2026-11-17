@@ -969,6 +969,7 @@ func (a *App) sweepThreadExports(now time.Time) {
 	if a.configDir == "" {
 		return
 	}
+	a.peerExports.forgetBefore(now.Add(-threadRequestExportAge))
 	dir := filepath.Join(a.configDir, threadExportDirName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -6559,8 +6559,8 @@ export function ThreadToolCall(call: app$0.ThreadPeerCall): $CancellablePromise<
 
 /**
  * ThreadToolExportChunk serves one rendered transcript in transfer-sized
- * pieces, under the same stamp rule a command artifact uses: a file that
- * changed mid-transfer is refused rather than delivered half old.
+ * pieces (readThreadExportChunk): a file that changed since its render is
+ * refused rather than delivered half old.
  */
 export function ThreadToolExportChunk(exportID: string, offset: number): $CancellablePromise<app$0.RemoteArtifactChunk> {
     return $Call.ByID(1295284198, exportID, offset).then(($result: any) => {

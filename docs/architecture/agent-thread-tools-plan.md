@@ -928,7 +928,7 @@ method: `threadToolOwner(ctx)` (the `remoteCommandOwner` rule), a
 comes from the session. `make methodgen` regenerates the table and the
 TS mirror.
 
-`attachedbackends.CallThreadPeer` shares `callAgentPeer`'s body with a
+`attachedbackends.CallThreadPeer` shares `CallAgentPeer`'s body with a
 capability parameter (`CapabilityThreadTools`) and its own allowlist of
 the peer method names, without the agent-computer opt-in check, because reach
 is pairing alone. `CapabilityThreadTools = "thread-tools.v1"` is
@@ -943,10 +943,15 @@ and keeps raw causes in the host log with a reference id.
 ### `to_file` across computers
 
 The destination renders to `<configDir>/thread-exports/<id>.txt`,
-returns `{export_id, size, sha256}`, and serves `ThreadToolExportChunk`
-in 256 KiB pieces with the file stamp rule from `readRemoteArtifactChunk`.
-The source calls `receiveRemoteArtifact` with a reader that wraps the
-peer method and lands the file in its own `thread-exports/`. That
+returns `{export_id, size, sha256}`, records that digest and the file's
+stamp in memory, and serves `ThreadToolExportChunk` in 256 KiB pieces
+under the recorded stamp, with the recorded digest on the first piece
+instead of a second read of the file. An export with no record (after a
+restart or the sweep) is refused with "ask for the window again". The
+source holds one connection for the whole copy
+(`attachedbackends.HoldThreadPeer`) and calls `receiveRemoteArtifact`
+with the announced size and digest, landing the file in its own
+`thread-exports/`. That
 receiver refuses files over `remoteArtifactMaxBytes` (1 GiB); an
 export larger than that is refused on the destination with its size
 and a suggestion to narrow `include` or the window, since no thread

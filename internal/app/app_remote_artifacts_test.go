@@ -42,7 +42,7 @@ func TestRemoteArtifactCopyIntegrityAndPartialCleanup(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
-			result, err := receiveRemoteArtifact(ctx, destination, "report.html", "thread", func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+			result, err := receiveRemoteArtifact(ctx, destination, "report.html", "thread", artifactAnnouncement{}, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
 				calls++
 				if calls == 2 {
 					switch mode {

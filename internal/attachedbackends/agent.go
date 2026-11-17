@@ -138,22 +138,44 @@ var threadPeerMethods = map[string]struct{}{
 // agent-commands opt-in exists because a remote command runs a shell;
 // nothing here does.
 func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	return m.HoldThreadPeer(ctx, id, func(call PeerCall) error { return call(ctx, method, result, params...) })
+}
+
+// HoldThreadPeer runs use with calls that share one connection to the
+// computer, as the chunks of one export copy do (holdPeer).
+func (m *Manager) HoldThreadPeer(ctx context.Context, id string, use func(PeerCall) error) error {
 	if !entityid.Valid(id) {
 		return errorsx.Public(CodeThreadUnreachable, "computer_id must be a computer UUID from thread_options.", nil)
 	}
-	if _, ok := threadPeerMethods[method]; !ok {
-		return errors.New("this method is not available to agent thread tools")
-	}
-	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
+	return m.holdPeer(ctx, id, transport.CapabilityThreadTools, func(call PeerCall) error {
+		return use(func(ctx context.Context, method string, result any, params ...any) error {
+			if _, ok := threadPeerMethods[method]; !ok {
+				return errors.New("this method is not available to agent thread tools")
+			}
+			return call(ctx, method, result, params...)
+		})
+	})
 }
 
-// callPeer is the shared body: load the carrier, take or open an RPC that
-// proves the destination advertises `capability` (peerconns.go), and make
-// the call. The
-// capability is the only thing that differs between the two surfaces, and
-// it is what turns an older destination into a clear refusal instead of a
-// method error.
+// PeerCall makes one call on a connection holdPeer holds.
+type PeerCall func(ctx context.Context, method string, result any, params ...any) error
+
 func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
+	return m.holdPeer(ctx, id, capability, func(call PeerCall) error { return call(ctx, method, result, params...) })
+}
+
+// holdPeer is the shared body: load the carrier, then hand use a call that
+// takes or opens an RPC proving the destination advertises `capability`
+// (peerconns.go) and keeps it for the calls after. Those go out without the
+// pool's ping, because the connection has just answered. A call that ends
+// without an answer closes the connection, which may hold a reply nobody
+// reads, and the next call takes or opens another. A connection still open
+// when use returns goes back to the pool. use makes one call at a time.
+//
+// The capability is the only thing that differs between the two surfaces,
+// and it is what turns an older destination into a clear refusal instead of
+// a method error.
+func (m *Manager) holdPeer(ctx context.Context, id, capability string, use func(PeerCall) error) error {
 	held, err := m.carrier(ctx, id)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -164,23 +186,32 @@ func (m *Manager) callPeer(ctx context.Context, id, capability, method string, r
 		}
 		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 	}
-	rpc := held.peers.take(ctx, capability)
-	if rpc == nil {
-		rpc, err = openPeerRPC(ctx, held, capability)
-		if err != nil {
+	var rpc *rpcclient.Client
+	defer func() {
+		if rpc != nil {
+			held.peers.put(capability, rpc)
+		}
+	}()
+	return use(func(ctx context.Context, method string, result any, params ...any) error {
+		if rpc == nil {
+			if rpc = held.peers.take(ctx, capability); rpc == nil {
+				opened, err := openPeerRPC(ctx, held, capability)
+				if err != nil {
+					return err
+				}
+				rpc = opened
+			}
+		}
+		err := rpc.Call(ctx, method, result, params...)
+		var answered *rpcclient.Error
+		if err != nil && !errors.As(err, &answered) {
+			rpc.Close()
+			rpc = nil
 			return err
 		}
-	}
-	err = rpc.Call(ctx, method, result, params...)
-	var answered *rpcclient.Error
-	if err != nil && !errors.As(err, &answered) {
-		// The connection may hold a reply this call no longer reads.
-		rpc.Close()
+		held.reached()
 		return err
-	}
-	held.reached()
-	held.peers.put(capability, rpc)
-	return err
+	})
 }
 
 // openPeerRPC dials a new connection for callPeer and maps the refusals

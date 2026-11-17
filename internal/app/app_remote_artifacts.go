@@ -109,7 +109,10 @@ func readRemoteArtifactChunk(ctx context.Context, workspace string, request Remo
 		return changed()
 	}
 	result := RemoteArtifactChunk{Name: filepath.Base(name), Size: info.Size(), Stamp: stamp}
-	if request.Offset == 0 {
+	// The first read of a file the reader knows nothing of carries its
+	// digest. A read pinned to a stamp is of a file whose digest its reader
+	// already holds: a later chunk, or an export whose render recorded both.
+	if request.Offset == 0 && request.Stamp == "" {
 		hash := sha256.New()
 		// Compute once, streamed. The receiver verifies the finished copy against
 		// this digest, so a writer restoring timestamps cannot create a mixed file.
@@ -164,7 +167,7 @@ func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path
 	if a.configDir == "" {
 		return RemoteArtifact{}, errorsx.Public("remote_artifact_storage", "Local artifact storage is not ready. Wait for Agent Overflow startup to finish.", nil)
 	}
-	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), path, job.SourceThreadID, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), path, job.SourceThreadID, artifactAnnouncement{}, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
 		call, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 		var chunk RemoteArtifactChunk
@@ -178,7 +181,18 @@ func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path
 	return result, nil
 }
 
-func receiveRemoteArtifact(ctx context.Context, directory, path, threadID string, read func(context.Context, RemoteArtifactRequest) (RemoteArtifactChunk, error)) (result RemoteArtifact, err error) {
+// artifactAnnouncement is the size and digest a copy was promised before
+// its first chunk, as an export's render reports them. A command artifact
+// has none: its first chunk announces them.
+type artifactAnnouncement struct {
+	Size   int64
+	SHA256 string
+}
+
+// receiveRemoteArtifact copies a file chunk by chunk into a private
+// directory and publishes it once its digest matches the announcement, or,
+// without one, the digest the first chunk carried.
+func receiveRemoteArtifact(ctx context.Context, directory, path, threadID string, announced artifactAnnouncement, read func(context.Context, RemoteArtifactRequest) (RemoteArtifactChunk, error)) (result RemoteArtifact, err error) {
 	// Create a private, unique directory: final rename cannot replace a previous
 	// download or user file, and cancellation removes every partial byte.
 	if err = os.MkdirAll(directory, 0o700); err != nil {
@@ -214,6 +228,12 @@ func receiveRemoteArtifact(ctx context.Context, directory, path, threadID string
 			return result, errorsx.Public("remote_wrong_conversation", "This artifact belongs to another conversation. Retrieve it from the conversation that submitted its job.", nil)
 		}
 		if request.Offset == 0 {
+			if announced.SHA256 != "" {
+				if chunk.Size != announced.Size {
+					return result, errorsx.Public("remote_artifact_changed", "The destination returned an inconsistent artifact. Wait for its writer to finish and retrieve it again.", nil)
+				}
+				chunk.SHA256 = announced.SHA256
+			}
 			digest, decodeErr := hex.DecodeString(chunk.SHA256)
 			if chunk.Size < 0 || chunk.Size > remoteArtifactMaxBytes || decodeErr != nil || len(digest) != sha256.Size || chunk.Stamp == "" || !filepath.IsLocal(chunk.Name) || filepath.Base(chunk.Name) != chunk.Name || chunk.Name == ".partial" {
 				return result, errors.New("destination returned invalid artifact metadata")
@@ -332,7 +352,7 @@ func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (R
 		return RemoteLogArtifact{}, errorsx.Public("remote_artifact_storage", "Local artifact storage is not ready. Wait for Agent Overflow startup to finish.", nil)
 	}
 	var info remotejobs.LogInfo
-	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), "", job.SourceThreadID, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), "", job.SourceThreadID, artifactAnnouncement{}, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
 		call, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 		var chunk RemoteArtifactChunk

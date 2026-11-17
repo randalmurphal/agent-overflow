@@ -298,8 +298,11 @@ type App struct {
 	// remoteWatchNudges wakes the remote command watcher's loops
 	// (app_remote_watch_loop.go).
 	remoteWatchNudges remoteWatchNudges
-	remoteStartsOnce  sync.Once
-	remoteStarts      *keyedlock.Registry
+	// peerExports records the exports rendered for paired computers
+	// (app_thread_tools_export.go).
+	peerExports      peerExports
+	remoteStartsOnce sync.Once
+	remoteStarts     *keyedlock.Registry
 	// reviewSubmits, postedReviewDrafts and reviewAttempts are
 	// SubmitPRReview's per-PR submit lock, its posted-but-unmarked drafts
 	// and its attempts' outcomes (app_pr_review_submit.go). Zero value
