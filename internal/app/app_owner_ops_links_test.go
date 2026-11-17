@@ -205,7 +205,9 @@ func TestASpawnSettledWhileItsThreadIsMadeKeepsNoThread(t *testing.T) {
 		t.Fatalf("the delete = %+v, %v; want gone", answer, err)
 	}
 	free()
-	within(t, "the first attempt", spawned)
+	if err := within(t, "the first attempt", spawned); err == nil {
+		t.Fatal("the first attempt's spawn was accepted though its receipt was settled")
+	}
 	rows, err := p.dest.store.ListThreads()
 	if err != nil {
 		t.Fatal(err)
