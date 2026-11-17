@@ -242,6 +242,13 @@ behave as a desktop browser's:
   an error toast with the reason otherwise. `canceled` means AO stopped it
   (the user, a quota, its size, its page closing); an end the engine
   reports on its own is `failed`, with the engine's reason when it gives one.
+  On Windows through WSL the pane's WebView2 writes into the jar's AO
+  directory through its Windows view (`internal/browser/hosted_downloads.go`):
+  each page's browser context gets `Browser.setDownloadBehavior` before the
+  Manager has the page, and a refusal fails the page with the engine's
+  message rather than leaving WebView2's own Downloads folder in place. This
+  path has not run against real WebView2; the manual
+  `TestDownloadSmoke` in `internal/webview2host` is what settles it.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,

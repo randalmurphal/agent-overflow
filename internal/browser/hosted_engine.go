@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
-	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/remote"
@@ -167,10 +166,17 @@ type hostedEngine struct {
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
 	noFind map[string]bool
+	// pageDownloads is where each page's downloads land, and downloads the
+	// same for each download in flight, by guid (hosted_downloads.go).
+	pageDownloads map[string]hostedDownloadScope
+	downloads     *boundedMap[string, hostedDownloadScope]
 
 	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
 	// to stand in for the CDP evaluate.
 	readPageRatio func(ctx context.Context, p *cdpPage) (float64, error)
+	// windowsPath is the backend path's Windows view (`wslpath -w`); a test
+	// replaces it.
+	windowsPath func(ctx context.Context, path string) (string, error)
 	// viewScaleAsked is a test seam called whenever a page is asked for a
 	// view scale it was not already asked for. Production leaves it nil.
 	viewScaleAsked func(handle string, want viewScale)
@@ -200,17 +206,20 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		attachTimeout: hostAttachTimeout,
 		clearTimeout:  hostClearTimeout,
 
-		pending:      make(map[string]chan hostReport),
-		pageByTarget: make(map[string]string),
-		targetByPage: make(map[string]string),
-		shown:        make(map[string]bool),
-		bounds:       make(map[string]PanePlacement),
-		drivers:      make(map[string]*cdpPage),
-		ratios:       make(map[string]pageRatio),
-		scales:       make(map[string]*viewScaleState),
-		noFind:       make(map[string]bool),
+		pending:       make(map[string]chan hostReport),
+		pageByTarget:  make(map[string]string),
+		targetByPage:  make(map[string]string),
+		shown:         make(map[string]bool),
+		bounds:        make(map[string]PanePlacement),
+		drivers:       make(map[string]*cdpPage),
+		ratios:        make(map[string]pageRatio),
+		scales:        make(map[string]*viewScaleState),
+		noFind:        make(map[string]bool),
+		pageDownloads: make(map[string]hostedDownloadScope),
+		downloads:     newBoundedMap[string, hostedDownloadScope](orderSlack),
 
 		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
+		windowsPath:   windowsPathFor,
 	}
 }
 
@@ -293,6 +302,8 @@ func (e *hostedEngine) Stop() {
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
+	e.pageDownloads = make(map[string]hostedDownloadScope)
+	e.downloads = newBoundedMap[string, hostedDownloadScope](orderSlack)
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -305,15 +316,24 @@ func (e *hostedEngine) Stop() {
 // NewProfile derives a launcher profile id from the jar identity: one
 // profile per jar. The digest is what makes the id stable across restarts,
 // which is what makes a persistent jar's logins survive one.
-func (e *hostedEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {
+func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error) {
 	id, err := hostedProfileID(opts.Jar)
 	if err != nil {
 		return nil, err
 	}
+	// Downloads go to the jar's AO directory, which the Windows-side browser
+	// writes through its Windows view (hosted_downloads.go).
+	if strings.TrimSpace(opts.DownloadDir) == "" {
+		return nil, errors.New("browser: a pane profile needs a download directory")
+	}
+	downloadDir, err := e.windowsPath(ctx, opts.DownloadDir)
+	if err != nil {
+		return nil, fmt.Errorf("browser: the pane browser cannot reach the download directory: %w", err)
+	}
 	// Site data is the engine's own (spec §4): a hosted profile is a real
 	// browser profile on disk and WebView2 persists it, so AO seeds nothing
 	// into it and reads nothing out of it.
-	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral}, nil
+	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral, downloadDir: downloadDir}, nil
 }
 
 // hostedProfileID is the WebView2 profile name of a jar. A worktree jar's
@@ -381,7 +401,7 @@ func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
 // view (or a drive path for /mnt/<letter>), which is the same boundary
 // the show-in-folder reveal crosses in the other direction.
 func (e *hostedEngine) FileURL(ctx context.Context, path string) (string, error) {
-	converted, err := windowsPathFor(ctx, path)
+	converted, err := e.windowsPath(ctx, path)
 	if err != nil {
 		return "", err
 	}
@@ -453,6 +473,8 @@ type hostedProfile struct {
 	engine    *hostedEngine
 	id        string
 	ephemeral bool
+	// downloadDir is the Windows view of the jar's AO download directory.
+	downloadDir string
 }
 
 func (p *hostedProfile) Handle() string { return p.id }
@@ -470,19 +492,6 @@ func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriv
 }
 
 func (p *hostedProfile) CancelDownload(id string) error { return p.engine.cancelDownload(id) }
-
-// cancelDownload keeps the CDP path. Browser.cancelDownload's support in
-// WebView2 is unverified; a refusal leaves the download running.
-func (e *hostedEngine) cancelDownload(id string) error {
-	browserCtx, ok := e.browser()
-	if !ok {
-		return errors.New("browser: the pane browser is not connected")
-	}
-	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
-		return fmt.Errorf("browser: cancel download %s: %w", id, err)
-	}
-	return nil
-}
 
 func (p *hostedProfile) Dispose(context.Context) error {
 	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: p.id, Ephemeral: p.ephemeral})
@@ -535,6 +544,17 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.closePage(pageID)
 		return nil, err
 	}
+	// Before the Manager has the page, so nothing it loads can download
+	// anywhere but the jar's directory.
+	scope, err := e.keepDownloads(browserCtx, targetID, profile)
+	if err != nil {
+		pageCancel()
+		e.closePage(pageID)
+		return nil, err
+	}
+	e.mu.Lock()
+	e.pageDownloads[pageID] = scope
+	e.mu.Unlock()
 	e.bind(pageID, targetID)
 	if cdp, ok := driver.(*cdpPage); ok {
 		e.mu.Lock()
@@ -635,8 +655,9 @@ func (e *hostedEngine) browser() (context.Context, bool) {
 // NewWindowRequested, so no page can be created behind the Manager's back.
 func (e *hostedEngine) subscribe(browserCtx context.Context) error {
 	// Downloads carry no engine identity (the GUID is the handle on every
-	// CDP engine), so the shared tracker translates them.
-	if err := newDownloadTracker(e.events, refusedDownloadCanceler(e.cancelDownload, e.logf)).subscribe(browserCtx, e.logf); err != nil {
+	// CDP engine), so the shared tracker translates them; the engine notes
+	// each one's browser context on the way (hosted_downloads.go).
+	if err := newDownloadTracker(e.downloadEvents(), refusedDownloadCanceler(e.cancelDownload, e.logf)).subscribe(browserCtx, e.logf); err != nil {
 		return err
 	}
 	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
@@ -739,6 +760,7 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
+	delete(e.pageDownloads, pageID)
 	e.mu.Unlock()
 	if !known {
 		return
@@ -809,6 +831,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
+	delete(e.pageDownloads, pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
