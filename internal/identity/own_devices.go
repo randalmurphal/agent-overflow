@@ -25,7 +25,7 @@ func (s *Sessions) mergeOwnDevices(sponsor *owndevices.Member, members []owndevi
 			return false, err
 		}
 	}
-	changed, ids, err := s.store.MergeOwnDevices(members, s.now().UnixMilli(), s.backendID)
+	changed, ids, _, err := s.store.MergeOwnDevices(members, s.now().UnixMilli(), s.backendID)
 	if changed {
 		s.forgetAll(ids)
 	}

@@ -629,9 +629,9 @@ func TestUpgradeSupersededSpawnOwnsNothing(t *testing.T) {
 	owners := func(when, want string) {
 		t.Helper()
 		for _, id := range []string{"w", "tie"} {
-			spawner, _, found, err := s.SpawnerOf(id)
+			spawner, _, found, err := localSpawnerOf(s, id)
 			if err != nil || spawner != want || found != (want != "") {
-				t.Errorf("%s: SpawnerOf(%s) = %q, %v, %v; want %q", when, id, spawner, found, err, want)
+				t.Errorf("%s: SpawnOwnerOf(%s) = %q, %v, %v; want %q", when, id, spawner, found, err, want)
 			}
 			row, err := s.GetThread(id)
 			if err != nil || row.SpawnedByThreadID != want {

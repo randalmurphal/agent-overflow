@@ -67,24 +67,30 @@ func writeOwnDevice(tx *sql.Tx, m owndevices.Member) error {
 
 // MergeOwnDevices commits membership and revokes obsolete group sessions together.
 // Returned IDs must be invalidated in the identity cache after the transaction.
-func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (bool, []string, error) {
+// A member the merge removes loses, in the same transaction, the spawn links
+// owned by the devices its sessions were opened under; released names the
+// threads they named (spawn_links.go).
+func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (changed bool, ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	defer tx.Rollback()
 	old, e := readOwnDevices(tx)
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	next, changed, e := owndevices.Merge(old, in)
 	if e != nil || !changed {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	for _, m := range next {
 		if e = writeOwnDevice(tx, m); e != nil {
-			return false, nil, e
+			return false, nil, nil, e
 		}
+	}
+	if released, e = releaseRemovedMembersLinksTx(tx, old, next); e != nil {
+		return false, nil, nil, e
 	}
 	// Withdrawing this serving host withdraws every personal inbound grant.
 	// Ordinary shares are not group-derived and remain independent.
@@ -104,35 +110,60 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 	}
 	if hostingRemoved {
 		if _, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, at); e != nil {
-			return false, nil, e
+			return false, nil, nil, e
 		}
 	}
 	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND canceled_at IS NULL AND (? OR sponsor_key IN(SELECT key_thumbprint FROM own_devices WHERE removed=1) OR EXISTS(SELECT 1 FROM own_devices d WHERE d.key_thumbprint=expected_key AND (d.removed=1 OR d.generation<>member_generation))) AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, hostingRemoved)
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	rows, e := tx.Query(`UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation) RETURNING id`, at, hostingRemoved)
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
-	ids := []string{}
+	ids = []string{}
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
 			rows.Close()
-			return false, nil, e
+			return false, nil, nil, e
 		}
 		ids = append(ids, id)
 	}
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
-		return false, nil, e
+		return false, nil, nil, e
 	}
-	return true, ids, nil
+	return true, ids, released, nil
+}
+
+// releaseRemovedMembersLinksTx releases the spawn links owned by the devices
+// whose sessions the members next removes, and old did not, were opened
+// under (own_device_sessions).
+func releaseRemovedMembersLinksTx(tx *sql.Tx, old, next []owndevices.Member) ([]string, error) {
+	wasRemoved := make(map[string]bool, len(old))
+	for _, m := range old {
+		wasRemoved[m.KeyThumbprint] = m.Removed
+	}
+	removed := []string{}
+	for _, m := range next {
+		if m.Removed && !wasRemoved[m.KeyThumbprint] {
+			removed = append(removed, m.KeyThumbprint)
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	keys, err := json.Marshal(removed)
+	if err != nil {
+		return nil, err
+	}
+	return releaseSpawnLinksTx(tx, `owner_device_id IN (SELECT s.device_id FROM own_device_sessions o
+		  JOIN sessions s ON s.id = o.session_id WHERE o.key_thumbprint IN (SELECT value FROM json_each(?)))`, string(keys))
 }
 
 // RegisterOwnDevice changes metadata only, never membership or removal state.

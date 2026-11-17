@@ -576,10 +576,15 @@ type DeviceRevocation struct {
 	// every un-revoked session the device held at this instant, whether or
 	// not the device row itself moved.
 	SessionIDs []string
+	// ReleasedThreads are the threads whose spawn link the device owned,
+	// released in the same transaction (spawn_links.go): a computer that
+	// lost its access owns nothing here.
+	ReleasedThreads []string
 }
 
-// RevokeDevice marks a device revoked and revokes every session it still
-// holds, in ONE transaction, returning what moved.
+// RevokeDevice marks a device revoked, revokes every session it still
+// holds and releases every spawn link it owns, in ONE transaction,
+// returning what moved.
 //
 // The two halves cannot be separate calls. A device marked revoked whose
 // sessions are still live is a credential that keeps working, and a caller
@@ -637,10 +642,14 @@ func (s *Store) RevokeDevice(deviceID string, at int64) (DeviceRevocation, error
 	}
 	rows.Close()
 
+	released, err := releaseSpawnLinksTx(tx, `owner_device_id = ?`, deviceID)
+	if err != nil {
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return DeviceRevocation{}, fmt.Errorf("store: revoke device: commit: %w", err)
 	}
-	return DeviceRevocation{DeviceMoved: moved > 0, SessionIDs: sessionIDs}, nil
+	return DeviceRevocation{DeviceMoved: moved > 0, SessionIDs: sessionIDs, ReleasedThreads: released}, nil
 }
 
 // RestoreDevice clears a device's revocation, reporting whether a row

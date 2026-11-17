@@ -19,6 +19,9 @@ const (
 	ThreadReceiptExpired     = "expired"
 )
 
+// localReceiptOwner is OwnerDeviceID for an in-process call.
+const localReceiptOwner = "local"
+
 var threadReceiptStates = map[string]struct{}{
 	ThreadReceiptAccepted: {}, ThreadReceiptRunning: {}, ThreadReceiptReplied: {},
 	ThreadReceiptFinished: {}, ThreadReceiptErrored: {}, ThreadReceiptCancelled: {},
@@ -87,6 +90,15 @@ type ThreadRequestReceipt struct {
 	// the receipt named its thread (spawnInstructionsAtNamingSQL); empty
 	// for every other kind.
 	SpawnInstructions string `json:"-"`
+	// SpawnLink marks a paired computer's owned spawn: its thread is owned
+	// by the source thread there while the link stands (migration v157,
+	// spawn_links.go). Written at acceptance, ended by a release.
+	SpawnLink bool `json:"-"`
+	// OwnerSeenAt is when the source computer last reached a link; the
+	// acceptance writes the creation time (TouchSpawnLinkOwner).
+	OwnerSeenAt int64 `json:"-"`
+	// OwnerOpSeq is the newest owner operation the link admitted.
+	OwnerOpSeq int64 `json:"-"`
 }
 
 // spawnInstructionsAtNamingSQL is the spawn_instructions a naming write
@@ -105,7 +117,8 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     COALESCE(late_reply_at, 0), revision, COALESCE(settled_at, 0),
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
     created_at, updated_at, answer_agent, answer_agent_role, own_turn,
-    late_reply_agent, late_reply_agent_role, spawn_instructions`
+    late_reply_agent, late_reply_agent_role, spawn_instructions,
+    spawn_link, owner_seen_at, owner_op_seq`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
@@ -119,6 +132,7 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
 		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
 		&lateReplyAgent, &lateReplyAgentRole, &r.SpawnInstructions,
+		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
@@ -196,6 +210,9 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 	}
 	if request.State != want {
 		return ThreadRequestReceipt{}, fmt.Errorf("%s: a local request is written %s, not %q", action, want, request.State)
+	}
+	if receipt.SpawnLink {
+		return ThreadRequestReceipt{}, fmt.Errorf("%s: a local spawn is linked by its request row, not its receipt", action)
 	}
 	receipt, err := receipt.validated(action)
 	if err != nil {
@@ -288,13 +305,14 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
     token, owner_device_id, source_computer_id, source_computer_name,
     source_thread_id, source_thread_title, kind, target_thread_id,
-    message_item_id, turn_id, state, created_at, updated_at
- ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at
+ ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
+// insertArgs writes a link as seen by its owner when it was made.
 func (r ThreadRequestReceipt) insertArgs() []any {
 	return []any{r.Token, r.OwnerDeviceID, r.SourceComputerID, r.SourceComputerName,
 		r.SourceThreadID, r.SourceThreadTitle, r.Kind, nilIfEmpty(r.TargetThreadID),
-		r.MessageItemID, r.TurnID, r.State, r.CreatedAt, r.UpdatedAt}
+		r.MessageItemID, r.TurnID, r.State, r.CreatedAt, r.UpdatedAt, boolToInt(r.SpawnLink), r.CreatedAt}
 }
 
 // validated checks a receipt about to be accepted and fills its defaults.
@@ -310,6 +328,12 @@ func (r ThreadRequestReceipt) validated(action string) (ThreadRequestReceipt, er
 	// Everything else is addressed to a thread that already exists.
 	if r.TargetThreadID == "" && r.Kind != ThreadRequestSpawn && r.Kind != ThreadRequestAsk {
 		return r, fmt.Errorf("%s: a %s receipt requires a target thread", action, r.Kind)
+	}
+	// A link names the computer and thread that own its thread, and only a
+	// paired computer's spawn makes one.
+	if r.SpawnLink && (r.Kind != ThreadRequestSpawn || r.OwnerDeviceID == localReceiptOwner ||
+		r.SourceComputerID == "" || r.SourceThreadID == "") {
+		return r, fmt.Errorf("%s: a spawn link is a paired computer's spawn naming its computer and thread", action)
 	}
 	if r.State == "" {
 		r.State = ThreadReceiptAccepted
@@ -330,10 +354,13 @@ func (r ThreadRequestReceipt) validated(action string) (ThreadRequestReceipt, er
 // once the destination has created it. It applies only while the target is
 // still undecided, so a retry that raced the first attempt cannot repoint a
 // receipt at a second thread; false means the target was already set and the
-// caller's thread is the loser of that race. It returns how the naming moved
-// the thread across the sidebar listing: a paired computer's spawn makes
-// its thread real (threadRealClause).
-func (s *Store) SetThreadReceiptTarget(token, threadID string) (bool, ListingChange, error) {
+// caller's thread is the loser of that race. own makes the thread owned in
+// the same transaction when the receipt is a spawn link, as
+// NameLocalThreadRequestTarget does for a local spawn; a receipt that is
+// not a link owns nothing. It returns how the naming moved the thread
+// across the sidebar listing: a paired computer's spawn makes its thread
+// real (threadRealClause), and an owned one stays unlisted.
+func (s *Store) SetThreadReceiptTarget(token, threadID string, own bool) (bool, ListingChange, error) {
 	action := fmt.Sprintf("store: set thread receipt %s target", token)
 	if threadID == "" {
 		return false, ListingUnchanged, fmt.Errorf("%s: thread id is required", action)
@@ -347,18 +374,24 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string) (bool, ListingCha
 	if err != nil {
 		return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
 	}
-	result, err := tx.Exec(
+	var link bool
+	err = tx.QueryRow(
 		`UPDATE thread_request_receipts SET target_thread_id = ?1, updated_at = ?2,
 		    spawn_instructions = `+spawnInstructionsAtNamingSQL("kind")+`
-		  WHERE token = ?3 AND target_thread_id IS NULL`,
+		  WHERE token = ?3 AND target_thread_id IS NULL
+		  RETURNING spawn_link`,
 		threadID, nowMillis(), token,
-	)
+	).Scan(&link)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ListingUnchanged, nil
+	}
 	if err != nil {
 		return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
 	}
-	named, err := rowsChanged(result, action)
-	if err != nil || !named {
-		return false, ListingUnchanged, err
+	if own && link {
+		if err := ownSpawnedThreadTx(tx, threadID); err != nil {
+			return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
+		}
 	}
 	listedAfter, err := threadListed(tx, threadID)
 	if err != nil {

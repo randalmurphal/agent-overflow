@@ -12,12 +12,12 @@ import (
 // grouped (SetThreadGroup) and this file writes the other two. An owned
 // thread belongs to the thread that spawned it: it has no sidebar row
 // (catalogThreadClause) and is otherwise an ordinary thread. Owned needs the
-// thread's spawn link (spawnerOfSQL). A thread outside every project (an
-// assistant's own, past or helper thread) takes no placement: a helper is
-// owned from its spawn and stays so. A row is inserted standalone or
-// grouped, the write that names a local spawn's thread makes it owned, and
-// the trigger of v154 returns an owned row of a project to standalone when
-// its last link is deleted.
+// thread's spawn link (spawnLinkSQL): a local spawn, or a paired computer's
+// link receipt. A thread outside every project (an assistant's own, past or
+// helper thread) takes no placement: a helper is owned from its spawn and
+// stays so. A row is inserted standalone or grouped, the write that names a
+// spawn's thread makes it owned, and the triggers of v154 and v157 return
+// an owned row of a project to standalone when its last link ends.
 
 const (
 	PlacementOwned      = "owned"
@@ -56,8 +56,9 @@ func insertedPlacement(groupID string) string {
 }
 
 // spawnLinkSQL is true when ?1 names a thread with a spawn link, the one
-// relation that owns it (spawnerOfSQL).
-var spawnLinkSQL = spawnerOfSQL("?1") + ` IS NOT NULL`
+// relation that owns it: a local spawn (spawnerOfSQL) or a paired
+// computer's link receipt (remoteSpawnLinkSQL).
+var spawnLinkSQL = `(` + spawnerOfSQL("?1") + ` IS NOT NULL OR ` + remoteSpawnLinkSQL("?1") + `)`
 
 // ThreadMove is one row a group or placement write moved, as it stands
 // after the write, and how the write moved it across the sidebar listing
@@ -195,7 +196,8 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 		return false, ErrThreadNotSpawned
 	}
 	// A thread given back to an owner a delete claimed would join a family
-	// that delete already read.
+	// that delete already read. A paired computer's owner names no spawner
+	// here: its delete reaches the thread through the link.
 	if placement == PlacementOwned {
 		switch err := checkThreadNotDeleting(tx, spawner); {
 		case errors.Is(err, ErrThreadDeleting):
@@ -220,9 +222,10 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 	return rowsChanged(result, "store: set placement of "+threadID)
 }
 
-// ownSpawnedThreadTx makes the thread a local spawn just named owned, in
-// the naming write's transaction. A thread already grouped by the spawn's
-// group stays grouped.
+// ownSpawnedThreadTx makes the thread a spawn just named owned, in the
+// naming write's transaction: a local spawn's, or a paired computer's
+// through its link. A thread already grouped by the spawn's group stays
+// grouped.
 func ownSpawnedThreadTx(tx *sql.Tx, threadID string) error {
 	if _, err := tx.Exec(`UPDATE threads SET placement = 'owned'
 	 WHERE id = ? AND placement = 'standalone'`, threadID); err != nil {

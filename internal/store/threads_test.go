@@ -2877,6 +2877,7 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"deleting":                 "the committed-delete mark (v122), set by CommitDeleteClaim or DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete went ahead",
 	"delete_claim":             "a delete's claim (v154), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
 	"delete_worktrees":         "a committed delete's worktree policy (v154), written only with its commit; a stale struct must not change how the boot finishes it",
+	"archive_cascade":          "an archive not yet through what its thread owns (v157), written by the archive writers and cleared when its walk ends; a stale struct must not drop or revive an unfinished archive",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six

@@ -324,7 +324,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 // deleted rows included. Thread requests and their receipts join them: a
 // request another computer is already running, and the receipt that will
 // answer it, are promises this store made outside the history the snapshot
-// describes.
+// describes, and so are the owner operations owed to a paired computer.
 //
 // The `thread_search*` family is skipped for the opposite reason: it is
 // derived, and an FTS5 table's shadow tables have no meaning apart from the
@@ -332,7 +332,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 func restoreSkipsTable(table string) bool {
 	switch table {
 	case "thread_transfers", "thread_transfer_sessions", "remote_jobs", "remote_watches",
-		"thread_requests", "thread_request_receipts":
+		"thread_requests", "thread_request_receipts", "thread_owner_ops":
 		return true
 	}
 	return strings.HasPrefix(table, "thread_search")

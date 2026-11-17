@@ -30,7 +30,7 @@ import (
 //   - a person's send, steer, edit and resend, fork, transfer, shell command
 //     or workflow binding is refused before it changes anything
 //     (admitPersonOperation); a message queued in the composer waits;
-//   - a worker's question goes to the user instead (store.SpawnerOf).
+//   - a worker's question goes to the user instead (store.SpawnOwnerOf).
 //
 // Turning assistants off also brings what they were doing to a stop: their
 // watch scripts and processes end with their rows armed again, a request

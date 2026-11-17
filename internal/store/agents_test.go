@@ -400,7 +400,7 @@ func TestHandOffAssistantMovesEverythingAtOnce(t *testing.T) {
 	if source, err := s.RemoteRequestSource("new", "desk", "far"); err != nil || source != "old" {
 		t.Errorf("remote source = %q %v, want the thread that made it", source, err)
 	}
-	if spawner, _, found, err := s.SpawnerOf("worker"); err != nil || !found || spawner != "new" {
+	if spawner, _, found, err := localSpawnerOf(s, "worker"); err != nil || !found || spawner != "new" {
 		t.Errorf("worker's spawner = %q %v %v, want the current thread", spawner, found, err)
 	}
 
@@ -885,7 +885,7 @@ func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
 // archived, or that only a spawn on another computer names, has none. A
 // worker past the ledger's retention still names its spawner through the
 // lineage row the sweep kept.
-func TestSpawnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
+func TestSpawnOwnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "worker", "grand", "far", "kept", "orphan"} {
@@ -901,7 +901,7 @@ func TestSpawnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DeleteThreadRequestsBefore(50); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(50); err != nil {
 		t.Fatal(err)
 	}
 	if !rawThreadRequest(t, s, "lead-kept").LineageOnly {
@@ -910,7 +910,7 @@ func TestSpawnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
 	for _, tc := range []struct{ thread, spawner string }{
 		{"worker", "lead"}, {"grand", "worker"}, {"kept", "lead"}, {"orphan", ""}, {"lead", ""},
 	} {
-		spawner, title, found, err := s.SpawnerOf(tc.thread)
+		spawner, title, found, err := localSpawnerOf(s, tc.thread)
 		if err != nil || found != (tc.spawner != "") || spawner != tc.spawner {
 			t.Errorf("spawner of %s = %q found=%v err=%v; want %q", tc.thread, spawner, found, err, tc.spawner)
 		}
@@ -921,10 +921,10 @@ func TestSpawnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
 	if _, _, err := s.ArchiveThread("worker"); err != nil {
 		t.Fatal(err)
 	}
-	if spawner, _, found, err := s.SpawnerOf("grand"); err != nil || found {
+	if spawner, _, found, err := localSpawnerOf(s, "grand"); err != nil || found {
 		t.Errorf("spawner of a worker whose spawner is archived = %q found=%v err=%v; want none", spawner, found, err)
 	}
-	if spawner, _, found, err := s.SpawnerOf("worker"); err != nil || !found || spawner != "lead" {
+	if spawner, _, found, err := localSpawnerOf(s, "worker"); err != nil || !found || spawner != "lead" {
 		t.Errorf("an archived worker's own spawner = %q found=%v err=%v; want lead", spawner, found, err)
 	}
 }

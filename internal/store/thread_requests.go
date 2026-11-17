@@ -931,8 +931,9 @@ func (s *Store) SetThreadRequestNestedOpen(token string, open bool) (bool, error
 // spawns to one computer no longer paired, where nothing will answer for
 // them again: nested_open is cleared on every spawn to it, and the lineage
 // of those past the retention floor is deleted, since it links a thread
-// nothing here can reach. It returns the callers whose rows changed. A
-// forgotten computer is rare, so the reads are the table's.
+// nothing here can reach, and so is every owner operation still owed to
+// it. It returns the callers whose rows changed. A forgotten computer is
+// rare, so the reads are the table's.
 func (s *Store) ForgetRemoteSpawnsOnComputer(computerID string) (_ []string, err error) {
 	action := fmt.Sprintf("store: forget the spawns on computer %s", computerID)
 	tx, err := s.db.Begin()
@@ -967,6 +968,9 @@ func (s *Store) ForgetRemoteSpawnsOnComputer(computerID string) (_ []string, err
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			return nil, fmt.Errorf("%s: %w", action, err)
 		}
+	}
+	if _, err := tx.Exec(forgetOwnerOpsSQL, computerID); err != nil {
+		return nil, fmt.Errorf("%s: owed operations: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("%s: commit: %w", action, err)
@@ -1461,16 +1465,19 @@ type ThreadRequestSchedule struct {
 	// RestingRemote is whether a settled spawn on another computer is at
 	// rest there, which the rest pass asks about at its slower pace.
 	RestingRemote bool
+	// OwnerOp is the earliest attempt of an operation owed to a paired
+	// computer (thread_owner_ops.go).
+	OwnerOp ScheduledMoment
 }
 
 // NextThreadRequestWork reports when the unattended passes next have work.
 // On most computers nothing is scheduled, and the sweep sleeps on that answer
 // rather than asking three questions a second for the life of the process.
 //
-// One query, three indexed minima and two probes, so the answer describes
+// One query, four indexed minima and two probes, so the answer describes
 // one snapshot.
 func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
-	var reminder, poll, wake sql.NullInt64
+	var reminder, poll, wake, ownerOp sql.NullInt64
 	var nestedOpen, restingRemote bool
 	if err := s.reader().QueryRow(
 		`SELECT
@@ -1485,8 +1492,9 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 		   EXISTS (SELECT 1 FROM thread_requests
 		     WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
 		       AND target_computer_id <> ''),
-		   EXISTS (SELECT 1 FROM thread_requests WHERE `+restingRemoteSpawnSQL+`)`,
-	).Scan(&reminder, &poll, &wake, &nestedOpen, &restingRemote); err != nil {
+		   EXISTS (SELECT 1 FROM thread_requests WHERE `+restingRemoteSpawnSQL+`),
+		   (SELECT MIN(next_at) FROM thread_owner_ops)`,
+	).Scan(&reminder, &poll, &wake, &nestedOpen, &restingRemote, &ownerOp); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
 	moment := func(value sql.NullInt64) ScheduledMoment {
@@ -1494,7 +1502,7 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	}
 	return ThreadRequestSchedule{
 		Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake),
-		NestedOpen: nestedOpen, RestingRemote: restingRemote,
+		NestedOpen: nestedOpen, RestingRemote: restingRemote, OwnerOp: moment(ownerOp),
 	}, nil
 }
 
@@ -1621,27 +1629,36 @@ const (
 // past the floor, marked lineage_only with its payload cleared
 // (spawnLineageSQL), and so does a spawn's receipt (receiptLineageSQL).
 //
+// The same transaction releases each paired computer's link whose owner has
+// not reached it since the floor (staleSpawnLinkSQL), one link at a time
+// whatever device owns it, and returns the threads those links named
+// (releaseSpawnLinksTx), apart from the count.
+//
 // The sweep runs every few minutes and almost never finds anything, so it
-// asks first, on the read pool, through the indexes the three sets have,
-// and takes the writer only when something is past the floor.
-func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
+// asks first, on the read pool, through the indexes the sets have, and
+// takes the writer only when something is past the floor.
+func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (swept int64, released []string, err error) {
 	var due bool
 	if err := s.reader().QueryRow(`SELECT
 	    EXISTS (SELECT 1 FROM thread_requests WHERE `+requestPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)
-	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)`,
-		cutoff, cutoff).Scan(&due); err != nil {
-		return 0, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)`,
+		cutoff, cutoff, cutoff, cutoff).Scan(&due); err != nil {
+		return 0, nil, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
 	if !due {
-		return 0, nil
+		return 0, nil, nil
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("store: begin thread request retention sweep: %w", err)
+		return 0, nil, fmt.Errorf("store: begin thread request retention sweep: %w", err)
 	}
 	defer tx.Rollback()
+	if released, err = releaseSpawnLinksTx(tx, staleSpawnLinkSQL, cutoff, cutoff); err != nil {
+		return 0, nil, fmt.Errorf("store: release the spawn links silent since %d: %w", cutoff, err)
+	}
 	steps := []struct {
 		what, query string
 		args        []any
@@ -1654,22 +1671,21 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, []any{cutoff}},
 		{"sweep lineage thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + orphanReceiptLineageSQL, nil},
 	}
-	var total int64
 	for _, step := range steps {
 		result, err := tx.Exec(step.query, step.args...)
 		if err != nil {
-			return 0, fmt.Errorf("store: %s before %d: %w", step.what, cutoff, err)
+			return 0, nil, fmt.Errorf("store: %s before %d: %w", step.what, cutoff, err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return 0, fmt.Errorf("store: count %s rows: %w", step.what, err)
+			return 0, nil, fmt.Errorf("store: count %s rows: %w", step.what, err)
 		}
-		total += affected
+		swept += affected
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit thread request retention sweep: %w", err)
+		return 0, nil, fmt.Errorf("store: commit thread request retention sweep: %w", err)
 	}
-	return total, nil
+	return swept, released, nil
 }
 
 // stateInClause renders a validated `state IN (...)` predicate. A typo would

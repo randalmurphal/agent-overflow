@@ -126,7 +126,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT agent_id FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id), ''),
     (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
     COALESCE((SELECT agent_id FROM agent_helpers WHERE agent_helpers.thread_id = threads.id), ''),
-    COALESCE(` + spawnerOfSQL("threads.id") + `, ''),
+    COALESCE(` + spawnerOfSQL("threads.id") + `, ''), ` + spawnedByComputerSQL("threads.id") + `,
     attention_kind, attention_reason, attention_at,
     spawn_instructions, spawn_level,
     threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
@@ -253,7 +253,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
-		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID,
+		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
 		&attentionKind, &attentionReason, &attentionAt,
 		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
 	); err != nil {

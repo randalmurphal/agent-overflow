@@ -203,7 +203,7 @@ func (r *agentTreeMarksRun) step(check func(what string)) {
 			check("delete request")
 			return
 		}
-		if _, err := s.DeleteThreadRequestsBefore(r.clock - 50); err != nil {
+		if _, _, err := s.DeleteThreadRequestsBefore(r.clock - 50); err != nil {
 			t.Fatal(err)
 		}
 		check("retention sweep")

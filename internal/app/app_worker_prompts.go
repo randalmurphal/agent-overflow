@@ -145,18 +145,19 @@ func (w *workerPrompts) run(job func()) {
 	}
 }
 
-// routeWorkerPrompt is triage's prompt router: the thread that spawned
-// threadID (store.SpawnerOf), or nil when the prompt is the user's.
+// routeWorkerPrompt is triage's prompt router: the thread on this computer
+// that owns threadID (store.SpawnOwnerOf), or nil when the prompt is the
+// user's. A worker a paired computer owns asks the user.
 func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
-	agentID, title, found, err := a.store.SpawnerOf(threadID)
+	owner, found, err := a.store.SpawnOwnerOf(threadID)
 	if err != nil {
 		log.Printf("worker prompts: %v", err)
 		return nil
 	}
-	if !found {
+	if !found || owner.ComputerID != "" {
 		return nil
 	}
-	return &provider.PromptRoute{ThreadID: agentID, Title: title}
+	return &provider.PromptRoute{ThreadID: owner.ThreadID, Title: owner.Title}
 }
 
 // tapWorkerPrompt is the emit tap: a prompt announced routed is delivered

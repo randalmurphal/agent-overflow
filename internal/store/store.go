@@ -633,6 +633,11 @@ type Thread struct {
 	// row is the record, and it outlives the retention floor while this
 	// thread exists (spawnLineageSQL).
 	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
+	// SpawnedByComputerID names the paired computer whose owned spawn made
+	// this thread, read from its link (spawn_links.go), or "" for none.
+	// Derived, as SpawnedByThreadID is; set whatever the placement, so a
+	// linked thread given a sidebar row can be owned again.
+	SpawnedByComputerID string `json:"spawnedByComputerId,omitempty"`
 	// SpawnInstructions is the text a thread_spawn appended to this
 	// thread's system prompt for its whole life: its profile's
 	// instructions, then the spawn's own (migration v154). Every session
