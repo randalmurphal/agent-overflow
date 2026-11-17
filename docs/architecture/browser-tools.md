@@ -218,8 +218,9 @@ behave as a desktop browser's:
   newest first, one entry per address. A failed open, a page left on a
   blank or internal document, a link followed in the page, history moves
   and reloads add nothing. A private jar keeps none; a jar switch, Clear
-  site data, and deleting or archiving the thread forget them, and an open
-  those overtook records nothing.
+  site data, turning the browser off or changing site-data persistence,
+  and deleting or archiving the thread forget them, and an open those
+  overtook records nothing.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
   lock, so it stops an address-bar navigation in flight. Once the engine
   has stopped, the navigation it interrupted (not one queued behind it)

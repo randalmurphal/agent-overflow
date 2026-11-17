@@ -433,9 +433,21 @@ func (m *Manager) Reconfigure(config Config) error {
 		// disabled browser keeps no browser state, and a page restored into
 		// the other site-data mode would not be the page that was open. The
 		// threads' jar settings stay unless the browser is off.
-		return errors.Join(m.forgetAllRecords(config.Enabled), m.closeBrowser(context.Background()))
+		return m.forgetAllPages(context.Background(), config.Enabled)
 	}
 	return nil
+}
+
+// forgetAllPages closes every page, suspended ones and their saved copies
+// included, stops the engine, and then forgets every thread's recent
+// addresses: an open still running then has no live page to record on
+// (recordRecentAddress). keepJars keeps the threads' jar settings.
+func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
+	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
+	m.mu.Lock()
+	m.recent = nil
+	m.mu.Unlock()
+	return err
 }
 
 func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts OpenOptions) (PageInfo, error) {
@@ -608,15 +620,9 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // user-data folder, WebKit's own macOS data-store directory — implements
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
-//
-// The recent addresses go too, once the pages are closed: an open still
-// running then has no live page to record on (recordRecentAddress).
+// The recent addresses go with the pages (forgetAllPages).
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	err := errors.Join(m.forgetAllRecords(true), m.closeBrowser(ctx))
-	m.mu.Lock()
-	m.recent = nil
-	m.mu.Unlock()
-	if err != nil {
+	if err := m.forgetAllPages(ctx, true); err != nil {
 		return err
 	}
 	var errs []error

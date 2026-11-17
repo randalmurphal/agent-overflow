@@ -227,6 +227,107 @@ describe('<BrowserAddressSuggestions>', () => {
     expect((await view.findByTestId('browser-address-suggestions-error')).textContent).toContain('browser manager unavailable');
   });
 
+  it('keeps Enter on the highlighted row when the list changes under it', async () => {
+    const { input, onAct } = mount();
+    input.focus();
+    await type(input, 'github');
+    await waitFor(() => expect(rowText()).toEqual(['recent https://github.test/org/repo']));
+    key(input, { key: 'ArrowDown' });
+    await tick();
+    // A tab push puts a row above the highlighted one.
+    applyBrowserCompanionState({
+      kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree',
+      pages: [...PAGES, page('g', 'https://github.test/other', 'Other')],
+    } as never);
+    await tick();
+    expect(rowText()).toEqual(['tab https://github.test/other', 'recent https://github.test/org/repo']);
+    expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+    expect(input.getAttribute('aria-activedescendant')).toBe(rows()[1].id);
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'https://github.test/org/repo');
+  });
+
+  it('goes back to the typed text when the highlighted row leaves the list', async () => {
+    const other = page('d', 'https://d.test/settings', 'More settings');
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', pages: [...PAGES, other] } as never);
+    const { input, onAct } = mount();
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(2));
+    key(input, { key: 'ArrowDown' });
+    await tick();
+    expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['true', 'false']);
+    // The highlighted tab closes, and the other slides into its place.
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', pages: [PAGES[0], other] } as never);
+    await tick();
+    expect(rowText()).toEqual(['tab https://d.test/settings']);
+    expect(rows()[0].getAttribute('aria-selected')).toBe('false');
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'settings');
+  });
+
+  it('reads again for the new thread when the pane changes thread under the focused field', async () => {
+    recent.mockImplementation(async (thread: string) =>
+      thread === THREAD ? [{ url: 'https://github.test/org/repo', title: 'Repo' }] : [{ url: 'https://two.test/', title: 'Two' }]);
+    applyBrowserCompanionState({ kind: 'state', threadId: 'thread-2', activePageId: 'c', visible: true, jar: 'worktree', pages: [page('c', 'https://c.test/')] } as never);
+    const { view, input } = mount();
+    input.focus();
+    await waitFor(() => expect(recent).toHaveBeenCalledWith(THREAD));
+    await view.rerender({ threadId: 'thread-2', activePage: page('c', 'https://c.test/') as never });
+    await waitFor(() => expect(recent).toHaveBeenLastCalledWith('thread-2'));
+    expect(document.activeElement).toBe(input);
+    await type(input, 'test');
+    await waitFor(() => expect(rowText()).toEqual(['recent https://two.test/']));
+  });
+
+  it('drops the recent addresses, and a read in flight, when the jar changes', async () => {
+    const answers: ((list: { url: string; title: string }[]) => void)[] = [];
+    recent.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const { input } = mount();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'thread', pages: PAGES } as never);
+    await waitFor(() => expect(answers.length).toBe(2));
+    // The old jar's read answers last, with what the Manager has forgotten.
+    answers[1]([]);
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await tick();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+
+    // A read the field left in flight is the old jar's even with no focus
+    // to read again for.
+    answers.length = 0;
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    input.blur();
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'project', pages: PAGES } as never);
+    await tick();
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await tick();
+    input.focus();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+
+    // A list already read goes with the jar too, focus or not.
+    answers.length = 0;
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await type(input, 'github');
+    await waitFor(() => expect(rows().length).toBe(1));
+    input.blur();
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'private', pages: PAGES } as never);
+    await tick();
+    expect(answers.length).toBe(1);
+    // A focus reads again (pending here); until it answers nothing is offered.
+    input.focus();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+  });
+
   it('keeps the newest focus\'s read when an older one answers late', async () => {
     const answers: ((list: { url: string; title: string }[]) => void)[] = [];
     setBindingMock('BrowserCompanionRecentAddresses', () => new Promise((resolve) => answers.push(resolve)));

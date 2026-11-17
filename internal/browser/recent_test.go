@@ -173,10 +173,12 @@ func TestRecentAddressesForgetOnClearSiteDataAndThreadClose(t *testing.T) {
 	}
 }
 
-// An open that loads after its page left the thread's current jar (a switch
-// overtook it) records nothing in the list the switch forgot.
-func TestRecentAddressesIgnoreAnOpenAJarSwitchOvertook(t *testing.T) {
-	m, access, pageID, _ := newNavigateFixture(t, false)
+// overtakeOpen runs an open on the page that the engine finishes only once
+// overtake has taken the page out of the live set, as a load the engine had
+// already committed finishes whatever its context says, and answers
+// overtake's error once both are done.
+func overtakeOpen(t *testing.T, m *Manager, access Access, pageID string, overtake func() error) error {
+	t.Helper()
 	p, _, err := m.lookupOwnedPage(access, pageID)
 	if err != nil {
 		t.Fatal(err)
@@ -185,8 +187,6 @@ func TestRecentAddressesIgnoreAnOpenAJarSwitchOvertook(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	fake.mu.Lock()
-	// The engine finishes the load whatever its context says, as a load the
-	// engine had already committed does.
 	fake.navigateHook = func(context.Context, string) error {
 		close(entered)
 		<-release
@@ -195,8 +195,8 @@ func TestRecentAddressesIgnoreAnOpenAJarSwitchOvertook(t *testing.T) {
 	fake.mu.Unlock()
 	done := navigateAsync(m, access, pageID, "https://example.test/late")
 	<-entered
-	switched := make(chan error, 1)
-	go func() { switched <- m.SetJar(access, JarThread) }()
+	overtaken := make(chan error, 1)
+	go func() { overtaken <- overtake() }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		m.mu.Lock()
@@ -206,16 +206,55 @@ func TestRecentAddressesIgnoreAnOpenAJarSwitchOvertook(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the switch never took the page")
+			t.Fatal("the page never left the live set")
 		}
 		time.Sleep(time.Millisecond)
 	}
 	close(release)
 	<-done
-	if err := <-switched; err != nil {
+	return <-overtaken
+}
+
+// An open that loads after its page left the thread's current jar (a switch
+// overtook it) records nothing in the list the switch forgot.
+func TestRecentAddressesIgnoreAnOpenAJarSwitchOvertook(t *testing.T) {
+	m, access, pageID, _ := newNavigateFixture(t, false)
+	if err := overtakeOpen(t, m, access, pageID, func() error { return m.SetJar(access, JarThread) }); err != nil {
 		t.Fatal(err)
 	}
 	if got := recentURLs(m, access); len(got) != 0 {
 		t.Fatalf("recent = %q: the overtaken open was recorded", got)
+	}
+}
+
+// Turning the browser off, or changing whether site data persists, closes
+// every page and forgets the recent addresses; an open that loads after the
+// pages closed records nothing, and re-enabling brings none back.
+func TestRecentAddressesForgetWhenTheBrowserIsDisabled(t *testing.T) {
+	for _, change := range []struct {
+		name string
+		off  Config
+	}{
+		{"disable", Config{Enabled: false}},
+		{"persistence", Config{Enabled: true, PersistSiteData: true}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			m, access, pageID, _ := newNavigateFixture(t, false)
+			if got := recentURLs(m, access); len(got) != 1 {
+				t.Fatalf("recent = %q, want the fixture's open", got)
+			}
+			if err := overtakeOpen(t, m, access, pageID, func() error { return m.Reconfigure(change.off) }); err != nil {
+				t.Fatal(err)
+			}
+			if got := recentURLs(m, access); len(got) != 0 {
+				t.Fatalf("recent = %q after %s", got, change.name)
+			}
+			if err := m.Reconfigure(Config{Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			if got := recentURLs(m, access); len(got) != 0 {
+				t.Fatalf("recent = %q after re-enabling", got)
+			}
+		})
 	}
 }

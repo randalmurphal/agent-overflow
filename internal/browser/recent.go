@@ -14,8 +14,10 @@ import (
 // Only a committed load is recorded: an engine's failed navigation is an
 // error and records nothing, and a page left on a blank or internal document
 // (WebKitGTK reports about:blank after a failed load) has no address to
-// offer. Nothing is kept for a private jar. A jar switch, Clear site data and
-// closing the thread (delete, archive) forget the list.
+// offer. Nothing is kept for a private jar. A jar switch, closing every page
+// (Clear site data, turning the browser off, changing whether site data
+// persists: forgetAllPages) and closing the thread (delete, archive) forget
+// the list.
 
 // maxRecentAddresses bounds a thread's list.
 const maxRecentAddresses = 50
@@ -54,8 +56,8 @@ func recordableAddress(raw string) bool {
 
 // recordRecentAddress records the address p shows after an open. It is kept
 // only while p is still the thread's live page in its thread's current jar
-// and that jar is not private, so an open that a jar switch, Clear site data
-// or the thread's close overtook records nothing.
+// and that jar is not private, so an open that a jar switch, the close of
+// every page or the thread's close overtook records nothing.
 func (m *Manager) recordRecentAddress(p *managedPage, info PageInfo) {
 	if !recordableAddress(info.URL) {
 		return
