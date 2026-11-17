@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 )
 
 type ownQuery interface {
@@ -68,8 +69,11 @@ func writeOwnDevice(tx *sql.Tx, m owndevices.Member) error {
 // MergeOwnDevices commits membership and revokes obsolete group sessions together.
 // Returned IDs must be invalidated in the identity cache after the transaction.
 // A member the merge removes loses, in the same transaction, the spawn links
-// owned by the devices its sessions were opened under; released names the
-// threads they named (spawn_links.go).
+// owned by the devices its sessions were opened under, and a merge that
+// withdraws this computer from the group releases the links of the devices
+// of every personal session it revokes: a worker is owned only while its
+// owner can reach it. released names the threads they named
+// (spawn_links.go).
 func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (changed bool, ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
@@ -135,10 +139,37 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 	if e != nil {
 		return false, nil, nil, e
 	}
+	if hostingRemoved && len(ids) > 0 {
+		if released, e = releaseRevokedSessionsLinksTx(tx, ids, released); e != nil {
+			return false, nil, nil, e
+		}
+	}
 	if e = tx.Commit(); e != nil {
 		return false, nil, nil, e
 	}
 	return true, ids, released, nil
+}
+
+// releaseRevokedSessionsLinksTx releases the spawn links owned by the devices
+// the sessions ids were opened under, and returns them with the threads
+// already released, sorted.
+func releaseRevokedSessionsLinksTx(tx *sql.Tx, ids, released []string) ([]string, error) {
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	more, err := releaseSpawnLinksTx(tx, `owner_device_id IN (SELECT device_id FROM sessions
+		  WHERE id IN (SELECT value FROM json_each(?)))`, string(encoded))
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range more {
+		if !slices.Contains(released, id) {
+			released = append(released, id)
+		}
+	}
+	slices.Sort(released)
+	return released, nil
 }
 
 // releaseRemovedMembersLinksTx releases the spawn links owned by the devices
