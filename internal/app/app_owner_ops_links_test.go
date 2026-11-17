@@ -95,10 +95,11 @@ func TestAnOwnerOpReachesALinkKeptAsLineage(t *testing.T) {
 	})
 }
 
-// A retry that settles a spawn while its first attempt is still making
-// the thread, and the owner's delete answered gone after it, leave nothing:
-// the first attempt cannot name its thread on the settled receipt, and
-// takes the thread back.
+// A retry while the first attempt is still making the thread is answered
+// with the pending acceptance and settles nothing. A cancel that settles
+// the spawn then, and the owner's delete answered gone after it, leave
+// nothing: the first attempt cannot name its thread on the settled
+// receipt, and takes the thread back.
 func TestASpawnSettledWhileItsThreadIsMadeKeepsNoThread(t *testing.T) {
 	t.Parallel()
 	p := newOwnerOpPair(t, false)
@@ -131,11 +132,23 @@ func TestASpawnSettledWhileItsThreadIsMadeKeepsNoThread(t *testing.T) {
 	within(t, "the thread being made there", held)
 	call := <-captured
 	var reply ThreadPeerReply
-	if err := p.source.backends.CallThreadPeer(t.Context(), p.computer, "ThreadToolCall", &reply, call); err == nil {
-		t.Fatal("the retry of a spawn with no thread yet was accepted")
+	if err := p.source.backends.CallThreadPeer(t.Context(), p.computer, "ThreadToolCall", &reply, call); err != nil ||
+		reply.Request == nil || reply.Request.State != store.ThreadReceiptAccepted || reply.Request.TargetThreadID != "" {
+		t.Fatalf("the retry of a spawn with no thread yet = %+v, %v; want the pending acceptance", reply.Request, err)
 	}
-	if receipt := p.receipt(t, call.Token); receipt.State != store.ThreadReceiptInterrupted || receipt.TargetThreadID != "" {
-		t.Fatalf("the retried receipt = %+v, want interrupted with no thread", receipt)
+	if receipt := p.receipt(t, call.Token); receipt.State != store.ThreadReceiptAccepted {
+		t.Fatalf("the retry settled the receipt: %+v", receipt)
+	}
+	cancel := ThreadPeerCall{Tool: "thread_cancel", Token: call.Token, Source: call.Source}
+	if err := p.source.backends.CallThreadPeer(t.Context(), p.computer, "ThreadToolCall", &reply, cancel); err != nil {
+		t.Fatalf("cancel the spawn while its thread is made: %v", err)
+	}
+	if receipt := p.receipt(t, call.Token); !store.ThreadReceiptSettled(receipt.State) || receipt.TargetThreadID != "" {
+		t.Fatalf("the cancelled receipt = %+v, want settled with no thread", receipt)
+	}
+	// No delivery will ever come for it, so no cancel waits for one.
+	if held, ok := p.dest.disarmRequestCancel(call.Token); ok {
+		t.Fatalf("the cancel left a wait for a delivery that cannot come: %+v", held)
 	}
 	answer, err := p.source.callOwnerOp(t.Context(), store.OwnerOp{
 		Token: call.Token, Seq: 1, Op: store.OwnerOpDelete, ComputerID: p.computer, SourceThreadID: p.caller.ID,

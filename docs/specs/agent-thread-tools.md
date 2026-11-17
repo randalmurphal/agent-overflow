@@ -754,7 +754,9 @@ no version and an older build would read an unknown effect as an
 interruption; its note for a request on another computer says nothing
 could be stopped from here and the message may still be read. A request
 that has already settled stops nothing, even when the turn that answered
-it is still running. By `label`: stops the
+it is still running. A spawn or ask whose thread is still being made
+settles cancelled with `nothing_to_stop`, and the thread being made is
+removed instead of named. By `label`: stops the
 caller's loop or watch with that label, and the run it has in flight.
 By `thread_id`:
 a thread the caller spawned is brought to rest
