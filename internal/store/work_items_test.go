@@ -548,7 +548,18 @@ func TestWorkItemOriginThreadBinding(t *testing.T) {
 	if err := s.CreateWorkItem(root); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
+	if change, err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
+		t.Fatal(err)
+	} else if change != (WorkItemOriginChange{Current: "thread-1"}) {
+		t.Fatalf("bind reported %+v; want from none to thread-1", change)
+	}
+	// A rebind reports the thread it left with the one it binds.
+	if change, err := s.UpdateWorkItemOriginThread(root.ID, "thread-9"); err != nil {
+		t.Fatal(err)
+	} else if change != (WorkItemOriginChange{Previous: "thread-1", Current: "thread-9"}) {
+		t.Fatalf("rebind reported %+v; want from thread-1 to thread-9", change)
+	}
+	if _, err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := s.GetWorkItem(root.ID)
@@ -590,15 +601,17 @@ func TestWorkItemOriginThreadBinding(t *testing.T) {
 	}
 
 	// Unbinding is the same call with an empty id.
-	if err := s.UpdateWorkItemOriginThread(root.ID, ""); err != nil {
+	if change, err := s.UpdateWorkItemOriginThread(root.ID, ""); err != nil {
 		t.Fatal(err)
+	} else if change != (WorkItemOriginChange{Previous: "thread-1"}) || len(change.Threads()) != 1 {
+		t.Fatalf("unbind reported %+v; want from thread-1 to none", change)
 	}
 	if stored, err := s.GetWorkItem(root.ID); err != nil {
 		t.Fatal(err)
 	} else if stored.OriginThreadID != "" {
 		t.Fatalf("origin thread after unbind = %q, want empty", stored.OriginThreadID)
 	}
-	if err := s.UpdateWorkItemOriginThread("missing", "thread-1"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.UpdateWorkItemOriginThread("missing", "thread-1"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing origin thread update error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -661,7 +674,7 @@ func TestCreateWorkItemRefusesBindingOnCalledRun(t *testing.T) {
 	if err := s.CreateWorkItem(child); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateWorkItemOriginThread(child.ID, "thread-1"); err == nil {
+	if _, err := s.UpdateWorkItemOriginThread(child.ID, "thread-1"); err == nil {
 		t.Fatal("store accepted binding a thread to a called run")
 	}
 }

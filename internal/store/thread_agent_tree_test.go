@@ -236,7 +236,7 @@ func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
 	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, nil, "", 10); err != nil || !slices.Contains(ids, "lead") {
 		t.Fatalf("summary candidates %v, %v; want lead among them", ids, err)
 	}
-	frames, err := s.ThreadAgentRowFrames([]string{"c-p"}, nil, nil, "local", 4)
+	frames, _, err := s.ThreadAgentRowFrames([]string{"c-p"}, nil, nil, "local", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +662,7 @@ func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.ThreadAgentRowFrames([]string{"direct", "remind", "missing"}, []string{"lead"}, []string{"peer", "z1"}, "local", 4)
+	got, _, err := s.ThreadAgentRowFrames([]string{"direct", "remind", "missing"}, []string{"lead"}, []string{"peer", "z1"}, "local", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -682,6 +682,34 @@ func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("frames %+v; want %+v", got, want)
+	}
+}
+
+// The frames' read also names the changed requests' callers that are
+// workers, whose rest an answer on its way to them moves: a thread a spawn
+// here made and one a paired computer's spawn made, each once; not one no
+// spawn made.
+func TestThreadAgentRowFramesNameTheWorkersAmongTheCallers(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "worker", "peer", "other"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "lead-worker", "lead", ThreadRequestSpawn, "worker", false, 90)
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: "their-spawn", OwnerDeviceID: "device-2", SourceThreadID: "x",
+		Kind: ThreadRequestSpawn, TargetThreadID: "peer", State: ThreadReceiptRunning}); err != nil {
+		t.Fatal(err)
+	}
+	for i, caller := range []string{"lead", "worker", "worker", "peer"} {
+		seedAgentRequest(t, s, fmt.Sprintf("ask-%d", i), caller, ThreadRequestSend, "other", true, int64(100+i))
+	}
+	_, rest, err := s.ThreadAgentRowFrames([]string{"ask-0", "ask-1", "ask-2", "ask-3", "missing"}, nil, nil, "local", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(rest)
+	if want := []string{"peer", "worker"}; !slices.Equal(rest, want) {
+		t.Fatalf("rest %v; want %v", rest, want)
 	}
 }
 

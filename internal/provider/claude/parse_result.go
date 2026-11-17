@@ -75,6 +75,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	// takeTurnUsage owns the snapshot subtraction — see
 	// usage_accounting.go for the verified semantics.
 	usage, modelUsage := p.takeTurnUsage(raw)
+	ownUsage := p.takeOwnUsage(raw, len(modelUsage) > 0)
 	usageScope := p.finishUsageSegment()
 
 	subtype := readRawString(raw["subtype"])
@@ -145,6 +146,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 			AssistantMessageID: assistantMessageID,
 			Usage:              usagePayload,
 			ModelUsage:         modelUsage,
+			OwnUsage:           ownUsage,
 			Aborted:            aborted,
 			ErrorMessage:       errorMessage,
 			FastMode:           fastMode,

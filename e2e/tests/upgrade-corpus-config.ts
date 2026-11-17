@@ -719,7 +719,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
       'origin_thread_id', 'late_reply', 'late_reply_at', 'late_delivered_at', 'wake_attempts', 'wake_next_check', 'wake_issue',
       'lineage_only', 'superseded', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
       'late_delivered_how', 'made_in_thread_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
-      'open_below_3', 'late_reply_agent', 'late_reply_agent_role',
+      'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'rest_unreported',
     ],
     values: {
       kind: ['ask'],
@@ -783,6 +783,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   // Provider accounting the mock does not report.
   { table: 'usage_ledger', reason: 'token usage the provider reports; the mock reports none' },
   { table: 'usage_pending', reason: 'token usage the provider reports; the mock reports none' },
+  { table: 'thread_tallies', columns: ['tokens'], reason: "the tokens a thread spent itself, counted from the own usage the provider reports with a turn's settlement; the mock reports none" },
   { table: 'provider_thread_cost', reason: 'cost the provider reports; the mock reports none' },
   { table: 'turns', columns: ['token_usage_json'], reason: 'token usage the provider reports; the mock reports none' },
   { table: 'threads', columns: ['last_token_usage', 'live_todo'], reason: 'token usage and a TodoWrite list, which no library scenario emits' },

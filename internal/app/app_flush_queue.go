@@ -743,6 +743,17 @@ func (a *App) queueSnapshotForThread(threadID string) []QueuedItem {
 	return a.queueSnapshotForThreadLocked(threadID)
 }
 
+// flushQueueHolds reports whether threadID has a message anywhere in the
+// chain queueSnapshotForThread reads, without building the snapshot.
+func (a *App) flushQueueHolds(threadID string) bool {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	if len(a.pendingFlushDispatchItemsLocked(threadID)) > 0 {
+		return true
+	}
+	return a.triage != nil && len(a.triage.QueuedFlushItems(threadID)) > 0
+}
+
 // Lock order is dispatch bookkeeping before triage. The triage dispatcher
 // always runs outside the router lock. Holding both stops a snapshot from
 // missing a message moving from triage into the worker.

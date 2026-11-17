@@ -409,7 +409,7 @@ func TestQueuedWakePromotesOnlyWhileItsClaimIsCurrent(t *testing.T) {
 	if err := f.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := f.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	var onDurable func()

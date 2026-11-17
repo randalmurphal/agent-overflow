@@ -23,23 +23,9 @@ func TestThreadAgentStateIsTheOpenStateASpawnOfItReads(t *testing.T) {
 		seedAgentRequest(t, s, token, chain[i], ThreadRequestSpawn, id, false, int64(110+i))
 		settleAgentRequest(t, s, token, int64(210+i))
 	}
-	const window = 10_000
 	check := func(what string, waiting, live []string, open, rows bool) {
 		t.Helper()
-		state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "root", Waiting: waiting, Live: live, SettledSince: window})
-		if err != nil {
-			t.Fatal(err)
-		}
-		listed, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{
-			Root: "lead", Waiting: waiting, Live: live, SettledSince: window, Depth: 4, Limit: 8, Tokens: []string{"to-root"},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		target := len(listed) == 1 && listed[0].TargetOpen
-		if state.OpenBelow != open || target != open || state.Rows != rows {
-			t.Fatalf("%s: state %+v, the spawn's target open %v; want open %v, rows %v", what, state, target, open, rows)
-		}
+		checkBoth(t, s, what, waiting, live, open, open, rows)
 	}
 	check("at rest", nil, nil, false, false)
 
@@ -47,9 +33,48 @@ func TestThreadAgentStateIsTheOpenStateASpawnOfItReads(t *testing.T) {
 		token := fmt.Sprintf("open-%d", depth)
 		seedAgentRequest(t, s, token, id, ThreadRequestSend, "peer", true, int64(300+depth))
 		check(fmt.Sprintf("a send owed an answer %d below", depth), nil, nil, true, true)
-		settleAgentRequest(t, s, token, int64(400+depth))
-		check(fmt.Sprintf("that send settled %d below", depth), nil, nil, false, false)
+		// Settled, its answer is on its way to the thread that sent it,
+		// which takes a turn for it: that thread is not at rest. For the
+		// thread itself that is its own state, which the spawn of it reads.
+		settleAgentRequestOwed(t, s, token, int64(400+depth))
+		if depth == 0 {
+			checkBoth(t, s, "its answer on its way to the thread", nil, nil, false, true, false)
+		} else {
+			check(fmt.Sprintf("its answer on its way %d below", depth), nil, nil, true, true)
+		}
+		if _, err := s.MarkThreadRequestDelivered(token, ThreadWakeInline, int64(450+depth), false); err != nil {
+			t.Fatal(err)
+		}
+		check(fmt.Sprintf("that send's answer delivered %d below", depth), nil, nil, false, false)
 	}
+	checkRest(t, s, check)
+}
+
+// checkBoth reads root's state and the spawn of it lead made, and wants
+// stateOpen of the one, targetOpen of the other, and rows of the state.
+func checkBoth(t *testing.T, s *Store, what string, waiting, live []string, stateOpen, targetOpen, rows bool) {
+	t.Helper()
+	const window = 10_000
+	state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "root", Waiting: waiting, Live: live, SettledSince: window})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{
+		Root: "lead", Waiting: waiting, Live: live, SettledSince: window, Depth: 4, Limit: 8, Tokens: []string{"to-root"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := len(listed) == 1 && listed[0].TargetOpen
+	if state.OpenBelow != stateOpen || target != targetOpen || state.Rows != rows {
+		t.Fatalf("%s: state %+v, the spawn's target open %v; want open %v and %v, rows %v", what, state, target, stateOpen, targetOpen, rows)
+	}
+}
+
+func checkRest(t *testing.T, s *Store, check func(what string, waiting, live []string, open, rows bool)) {
+	t.Helper()
+	const window = 10_000
+	chain := []string{"root", "a", "b", "c", "d", "e"}
 	// The thread's own liveness is its computer's to read, not the ledger's.
 	for depth, id := range chain[1:] {
 		check(fmt.Sprintf("a live thread %d below", depth+1), nil, []string{id}, true, true)

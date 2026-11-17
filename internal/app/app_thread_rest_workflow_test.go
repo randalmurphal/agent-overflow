@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflowapp"
 )
@@ -78,8 +79,9 @@ func (f *restRunFixture) startRun(t *testing.T, goal string) (store.WorkItem, st
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.store.UpdateWorkItemOriginThread(item.ID, f.worker.ID); err != nil {
-		t.Fatal(err)
+	scope := transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: f.worker.ID, ProjectID: f.project.ID}
+	if reason := f.app.bindOriginThread(scope, item); reason != "" {
+		t.Fatalf("bind the run to the worker: %s", reason)
 	}
 	return item, awaitLivePhaseSession(t, f.app, item.ID)
 }
@@ -262,7 +264,7 @@ func TestAStopLeavesAThreadARunWorksInToTheRun(t *testing.T) {
 	t.Parallel()
 	f := newRestRunFixture(t)
 	item, member := f.startRun(t, "member")
-	if err := f.app.store.UpdateWorkItemOriginThread(item.ID, member); err != nil {
+	if _, err := f.app.store.UpdateWorkItemOriginThread(item.ID, member); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
@@ -309,7 +311,7 @@ func TestAnAgentsCancelPausesTheRunsOfEveryThreadBelow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.store.UpdateWorkItemOriginThread(below.ID, grand.ID); err != nil {
+	if _, err := f.app.store.UpdateWorkItemOriginThread(below.ID, grand.ID); err != nil {
 		t.Fatal(err)
 	}
 	awaitLivePhaseSession(t, f.app, below.ID)
@@ -478,7 +480,7 @@ func TestAStopPausesTheRunsThatReportToTheThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.store.UpdateWorkItemOriginThread(unbound.ID, f.worker.ID); err != nil {
+	if _, err := f.app.store.UpdateWorkItemOriginThread(unbound.ID, f.worker.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.app.WorkflowUnbindThread(unbound.ID); err != nil {
@@ -495,4 +497,54 @@ func TestAStopPausesTheRunsThatReportToTheThread(t *testing.T) {
 			t.Fatalf("run %s = %s, %v; want it still running", id, row.State, err)
 		}
 	}
+}
+
+// A running workflow run that reports to a worker keeps it from rest: its
+// rest reads waiting on the run by its goal, and so does its spawn's row,
+// framed as the run is bound. The run paused for a person, and the turn its
+// notice started stopped, it is at rest; the run resumed keeps it from rest
+// again, framed by the run's state change alone.
+func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	item, _ := f.startRun(t, "ship it")
+	if rest, err := f.app.threadRest(f.worker.ID); err != nil || rest.unrest != workerWaiting || rest.detail != "Workflow · ship it" {
+		t.Fatalf("rest with the run running = %+v, %v; want waiting on the run", rest, err)
+	}
+	row := func() ThreadAgentRow {
+		rows, err := f.app.ListThreadAgentRows(t.Context(), f.caller.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, _ := agentRowByToken(rows.Rows, f.spawn)
+		return row
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		r := row()
+		return r.Worker == workerWaiting && r.Activity == "Workflow · ship it"
+	})
+	if err := f.app.WorkflowPauseItem(context.Background(), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	// The pause's notice starts a turn of the worker; with its session
+	// stopped, the run paused, it is at rest.
+	f.settle()
+	if err := f.app.StopSession(f.worker.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool { return row().Worker == "" })
+	if rest, err := f.app.threadRest(f.worker.ID); err != nil || rest.unrest != "" {
+		t.Fatalf("rest with the run paused = %+v, %v; want at rest", rest, err)
+	}
+	// Resumed, the run keeps it from rest: no message reaches the worker
+	// for that, so only the run's state change brings its row back to
+	// waiting.
+	if err := f.app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		r := row()
+		return r.Worker == workerWaiting && r.Activity == "Workflow · ship it"
+	})
 }

@@ -141,15 +141,18 @@ func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 
 // A chain of remote workers longer than the listing's depth, each at rest
 // with only the last one running: every spawn the listing shows is open,
-// waiting on the work below it, counted and out of Past, and the last one
-// shown says more nests below it. Its computer is asked for its state
-// alone, and the computer past it is asked nothing.
+// its request held running while the work below it runs, waiting on it,
+// counted and out of Past, and the last one shown says more nests below
+// it. Its computer is asked for its state alone, and the computer past it
+// is asked nothing.
 func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T) {
 	t.Parallel()
 	n := threadAgentRowDepth + 2
 	c := newAgentChain(t, n)
-	for i := range n - 1 {
-		installMockClaudeReplies(t, c.apps[i], "done", "noted", "noted", "noted")
+	installMockClaudeReplies(t, c.apps[0], "done", "noted", "noted", "noted")
+	release := make([]func(), n-1)
+	for i := 1; i < n-1; i++ {
+		release[i] = installChainLink(t, c.apps[i])
 	}
 	installMockClaudeTurns(t, c.apps[n-1], [][]string{{
 		mockClaudeInitLine,
@@ -157,9 +160,12 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 	}})
 	for i := range n - 1 {
 		c.spawnAlong(t, i, fmt.Sprintf("link %d", i))
+		if i > 0 {
+			release[i]()
+		}
 	}
 	for i := range n - 2 {
-		c.settle(t, i)
+		c.held(t, i)
 	}
 	c.atRest(t, 0, n-2)
 	leaf := c.threads[n-2]

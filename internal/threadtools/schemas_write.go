@@ -148,7 +148,7 @@ func replySchema() map[string]any {
 			"description": "Only for a worker's question with several parts: one answer per part, in the order the wake lists them. text is then not sent to the worker.",
 		},
 	}
-	description := "Answer the agent in another thread that sent you a message, or a worker of yours that is waiting on your answer to its question or approval. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now. A worker's prompt is answered in the worker at once; if the user answered it there first, the reply is refused."
+	description := "Answer the agent in another thread that sent you a message, or a worker of yours that is waiting on your answer to its question or approval. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, once nothing you started is still running when it spawned you, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now. A worker's prompt is answered in the worker at once; if the user answered it there first, the reply is refused."
 	return tool("thread_reply", description, properties, "token", "text")
 }
 
@@ -173,7 +173,7 @@ func statusSchema() map[string]any {
 			"minimum":     0,
 			"maximum":     MaxWaitSeconds,
 			"default":     0,
-			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests, or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", MaxWaitSeconds),
+			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests (nothing it started still running), or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", MaxWaitSeconds),
 		},
 		"after_revision": map[string]any{
 			"type":        "integer",

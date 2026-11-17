@@ -1,8 +1,11 @@
 <script lang="ts">
   // One row of the activity rail's Agents body (docs/specs/standing-agents.md,
   // "Agents segment"): a thread this thread is waiting on, or under Past one
-  // it waited on, with its provider, title, state, how long since the
-  // request (a past row: when it settled), and what it is blocked on. A row
+  // it waited on, with its provider, title, state, how long a spawned
+  // thread's turns ran (agentRowRuntimeMs; any other row: how long since the
+  // request; a past row: when it settled, the time it ran its tooltip), what
+  // a spawned thread did (its tool calls and tokens, as a subagent's row
+  // counts them), and what it is blocked on or did last. A row
   // is open while its request is, or its worker is not at rest; once its
   // request settled it shows its worker's state. The row's main button
   // opens the thread, or for a row no longer open the answer; the
@@ -10,6 +13,7 @@
   // owned worker a sidebar row; Open in Agent Pane opens the thread beside;
   // Stop, on an open row, stops the request and, for a spawn, what the
   // spawned thread runs. The body owns dispatch.
+  import { untrack } from 'svelte';
   import type { ThreadAgentRow } from '../../stores/bindings';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { formatElapsed } from '../../utils/backgroundTray';
@@ -20,6 +24,7 @@
     agentRowBlockedLabel,
     agentRowHasDigest,
     agentRowOpenTarget,
+    agentRowRuntimeMs,
     agentRowShownState,
     agentRowStateLabel,
     isOpenAgentRow,
@@ -32,6 +37,7 @@
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import UsersRound from '@lucide/svelte/icons/users-round';
   import AgentTrayRowDigest from './AgentTrayRowDigest.svelte';
+  import AgentMetrics from './AgentMetrics.svelte';
   import { activityRailIconActionClasses } from './activityRailClasses';
 
   interface Props {
@@ -64,7 +70,31 @@
   let shownState = $derived(agentRowShownState(row));
   let stateLabel = $derived(agentRowStateLabel(row));
   let blockedLabel = $derived(shownState === 'blocked' ? agentRowBlockedLabel(row) : '');
-  let elapsed = $derived(formatElapsed(Math.max(0, (!open && row.settledAt ? row.settledAt : now) - row.createdAt)));
+  // The rail's clock when this row's runtime was read: a new read of the
+  // row restarts the open turn's local count from it.
+  let readAt = $derived.by(() => {
+    void row.runtimeMs;
+    void row.turnOpen;
+    return untrack(() => now);
+  });
+  // The most this row has shown while one turn is open, so a read taken
+  // while that turn runs, which this clock may have run ahead of, never
+  // shows its runtime going back. The turn is the one its start names
+  // (`turnStartedAt`): a read of another turn, or of no open turn, shows
+  // the server's figure as it is.
+  let shownRuntime = 0;
+  let shownTurn: number | undefined;
+  let runtime = $derived.by(() => {
+    const ms = agentRowRuntimeMs(row, now, readAt);
+    if (ms === null || !row.turnOpen || row.turnStartedAt !== shownTurn) {
+      shownRuntime = 0;
+      shownTurn = row.turnOpen ? row.turnStartedAt : undefined;
+    }
+    if (ms === null || !row.turnOpen) return ms;
+    shownRuntime = Math.max(shownRuntime, ms);
+    return shownRuntime;
+  });
+  let elapsed = $derived(formatElapsed(runtime ?? Math.max(0, (!open && row.settledAt ? row.settledAt : now) - row.createdAt)));
   // A past row says when it settled; reading `now` keeps the age current.
   let settledAge = $derived.by(() => {
     if (!past || !row.settledAt) return '';
@@ -74,6 +104,11 @@
   // A worker this computer spawned that has no sidebar row.
   let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && !row.computerId && Boolean(row.threadId));
   let activity = $derived(open && !blockedLabel ? (row.activity ?? '') : '');
+  // What the spawned thread did, live while it works and final once it
+  // rests; unknown from a computer that does not report it.
+  let toolUses = $derived(row.toolCalls ? row.toolCalls : null);
+  let tokens = $derived(row.tokens ? row.tokens : null);
+  let hasMetrics = $derived(toolUses !== null || tokens !== null);
   let stateTone = $derived.by(() => {
     switch (shownState) {
       case 'blocked':
@@ -110,6 +145,10 @@
   // A spawn on a computer that cannot list or stop what it runs says so
   // wherever the row is read: here, and in the Stop's toast.
   let degraded = $derived(row.nestedUnavailable ? `Its own agents and background work are not shown: ${row.nestedUnavailable}` : '');
+  // A paired computer whose version settles a spawn when its turn ends.
+  let restUnreported = $derived(row.restUnreported
+    ? `${row.computer || 'That computer'} runs an older version: it reported this when the turn ended and cannot say whether the thread came to rest`
+    : '');
   let compact = $derived(isCompactLayout());
 
   const actionClasses =
@@ -229,15 +268,28 @@
     </div>
   {/if}
 
-  {#if blockedLabel}
-    <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-warning" title={blockedLabel} data-testid="agent-tray-row-blocked">{blockedLabel}</p>
-  {:else if activity}
-    <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-fg-hint/85" title={activity} data-testid="agent-tray-row-activity">{activity}</p>
+  {#if hasMetrics || blockedLabel || activity}
+    <p class="flex min-w-0 items-center gap-1 pb-0.5 pl-6 pr-1 text-[0.6875rem] text-fg-hint/85" data-testid="agent-tray-row-details-line">
+      {#if hasMetrics}
+        <span class="flex shrink-0 items-center gap-1 tabular-nums" data-testid="agent-tray-row-metrics">
+          <AgentMetrics {toolUses} {tokens} testIdPrefix="agent-tray-row" />
+        </span>
+        {#if blockedLabel || activity}<span aria-hidden="true">·</span>{/if}
+      {/if}
+      {#if blockedLabel}
+        <span class="min-w-0 truncate text-warning" title={blockedLabel} data-testid="agent-tray-row-blocked">{blockedLabel}</span>
+      {:else if activity}
+        <span class="min-w-0 truncate" title={activity} data-testid="agent-tray-row-activity">{activity}</span>
+      {/if}
+    </p>
   {/if}
   {#if degraded}
     <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-warning" title={degraded} data-testid="agent-tray-row-degraded">{degraded}</p>
   {:else if row.nestedHidden}
     <p class="pb-0.5 pl-6 pr-1 text-[0.6875rem] text-fg-hint" data-testid="agent-tray-row-nested-hidden">Its own agents nest deeper than the tray shows. Open it to see them.</p>
+  {/if}
+  {#if restUnreported}
+    <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-fg-hint" title={restUnreported} data-testid="agent-tray-row-rest-unreported">{restUnreported}</p>
   {/if}
   {#if stopError}
     <div class="px-1 pt-0.5" data-testid="agent-tray-row-stop-error">

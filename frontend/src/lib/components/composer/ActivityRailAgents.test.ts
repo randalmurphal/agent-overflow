@@ -119,6 +119,33 @@ describe('the Agents segment', () => {
   });
 
   for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}shows what a spawned thread did as a subagent's row does: its tools and tokens beside its latest tool call while it runs, the final counts once it settled`, async () => {
+      setCompactLayoutForTest(compact);
+      const { view, toggle } = await openTray((caller) => [
+        row('working', { callerThreadId: caller, toolCalls: 12, tokens: 18_240, activity: 'tail -f deploy.log' }),
+        row('one', { callerThreadId: caller, toolCalls: 1 }),
+        row('done', { callerThreadId: caller, state: 'finished', settledAt: Date.now(), toolCalls: 30, tokens: 1_240_000, activity: 'stale' }),
+        row('send', { callerThreadId: caller, kind: 'send' }),
+        row('blocked', { callerThreadId: caller, state: 'blocked', blockedOn: 'question', blockedDetail: 'Which branch?', toolCalls: 2, tokens: 900 }),
+      ]);
+      await fireEvent.click(toggle);
+      const [working, one, done, send, blocked] = await view.findAllByTestId('agent-tray-row');
+      expect(within(working).getByTestId('agent-tray-row-tools').textContent).toBe('12 tools');
+      expect(within(working).getByTestId('agent-tray-row-tokens').textContent).toBe('18.2k tokens');
+      expect(within(working).getByTestId('agent-tray-row-activity').textContent).toBe('tail -f deploy.log');
+      expect(within(working).getByTestId('agent-tray-row-elapsed').textContent).toBe('1m 5s');
+      expect(within(one).getByTestId('agent-tray-row-tools').textContent).toBe('1 tool');
+      expect(within(one).queryByTestId('agent-tray-row-tokens')).toBeNull();
+      expect(within(done).getByTestId('agent-tray-row-metrics').textContent?.replace(/\s+/g, ' ').trim()).toBe('30 tools · 1.2M tokens');
+      expect(within(done).queryByTestId('agent-tray-row-activity')).toBeNull();
+      expect(within(send).queryByTestId('agent-tray-row-metrics')).toBeNull();
+      expect(within(send).queryByTestId('agent-tray-row-details-line')).toBeNull();
+      expect(within(blocked).getByTestId('agent-tray-row-tools').textContent).toBe('2 tools');
+      expect(within(blocked).getByTestId('agent-tray-row-blocked').textContent).toBe('Asks: Which branch?');
+    });
+  }
+
+  for (const compact of [false, true]) {
     it(`${compact ? 'under compact, ' : ''}shows a row whose worker keeps working after its request settled as open: its state, activity, blocked line and Stop, counted once`, async () => {
       setCompactLayoutForTest(compact);
       const { view, toggle } = await openTray((caller) => [
@@ -262,6 +289,110 @@ describe('the Agents segment', () => {
     expect(within(r).getByTestId('agent-tray-row-degraded').textContent).toContain(reason);
     expect(r.getAttribute('title')).toContain(reason);
     expect(within(r).getByTestId('agent-tray-row-stop').getAttribute('title')).toContain(reason);
+  });
+
+  it('says on the row when a paired computer settled a spawn at its turn end and cannot report rest', async () => {
+    const { view, toggle } = await openTray((caller) => [
+      row('older', { callerThreadId: caller, computerId: 'peer', computer: 'Laptop', state: 'finished', settledAt: Date.now(), worker: 'idle', restUnreported: true }),
+      row('newer', { callerThreadId: caller, computerId: 'peer', computer: 'Laptop', state: 'finished', settledAt: Date.now(), worker: 'idle' }),
+    ]);
+    await fireEvent.click(toggle);
+    const [older, newer] = await view.findAllByTestId('agent-tray-row');
+    expect(within(older).getByTestId('agent-tray-row-rest-unreported').textContent).toBe(
+      'Laptop runs an older version: it reported this when the turn ended and cannot say whether the thread came to rest',
+    );
+    expect(within(newer).queryByTestId('agent-tray-row-rest-unreported')).toBeNull();
+  });
+
+  it("shows a spawn's runtime: its turns' time, moving while a turn is open, never back within it, the server's once it ends", async () => {
+    // The clock runs, skewed forward by the test; the rail's 1 Hz tick and
+    // its refresh read it.
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    const { pane, view, toggle } = await openTray((caller) => [
+      row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 }),
+    ]);
+    await fireEvent.click(toggle);
+    const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
+    // Not the 65 s since the request: the time its turns ran.
+    expect(elapsed()).toBe('4s');
+    skew += 3_000;
+    // 7 s, plus the real time the tick took to come.
+    await waitFor(() => expect(elapsed()).toMatch(/^[78]s$/), { timeout: 2_500 });
+
+    // A read while the turn still runs, its computer's clock behind this
+    // one's: the row does not go back from what it showed.
+    setBindingMock('GetThreadAgentRows', async () => [{
+      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 5_000, turnOpen: true, turnStartedAt: 1_000, activity: 'Reading' }),
+    }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
+    await waitFor(() => expect(within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-activity').textContent).toBe('Reading'));
+    expect(elapsed()).toMatch(/^[78]s$/);
+
+    // Its turn ended at 6.5 s as its computer read it: that is its runtime,
+    // shown as it is, below what the open turn's count reached, and it
+    // stands still between turns.
+    const settled = row('worker', { callerThreadId: pane.threadId!, runtimeMs: 6_500, worker: 'waiting' });
+    setBindingMock('GetThreadAgentRows', async () => [{ token: 'worker', listed: true, row: settled }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
+    await waitFor(() => expect(within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-state').textContent).toBe('waiting'));
+    expect(elapsed()).toBe('6s');
+    skew += 60_000;
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(elapsed()).toBe('6s');
+    // A later read of the same ended turn shows the same figure.
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(elapsed()).toBe('6s');
+
+    // Its next turn moves it on from its new read.
+    setBindingMock('GetThreadAgentRows', async () => [{
+      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 9_000, turnOpen: true, turnStartedAt: 2_000 }),
+    }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
+    await waitFor(() => expect(elapsed()).toBe('9s'));
+  });
+
+  it('shows an ended turn\'s runtime as its computer read it, after the open count passed it and on a new mount', async () => {
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    const settled = (caller: string) => row('worker', { callerThreadId: caller, runtimeMs: 6_500, worker: 'waiting' });
+    const first = await openTray((caller) => [row('worker', { callerThreadId: caller, runtimeMs: 4_000, turnOpen: true, turnStartedAt: 1_000 })]);
+    await fireEvent.click(first.toggle);
+    const elapsed = (view: typeof first.view) => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
+    skew += 5_000;
+    await waitFor(() => expect(elapsed(first.view)).toMatch(/^(9|10)s$/), { timeout: 2_500 });
+    // The final read comes late, after the open count went past it.
+    setBindingMock('GetThreadAgentRows', async () => [{ token: 'worker', listed: true, row: settled(first.pane.threadId!) }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: first.pane.threadId, id: 'worker' });
+    await waitFor(() => expect(elapsed(first.view)).toBe('6s'));
+    first.view.unmount();
+
+    // The segment stays open across the mount.
+    const again = await openTray((caller) => [settled(caller)]);
+    await waitFor(() => expect(elapsed(again.view)).toBe('6s'));
+  });
+
+  it("starts a new turn's runtime from the server's figure though no read saw the last turn end", async () => {
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skew);
+    const { pane, view, toggle } = await openTray((caller) => [
+      row('worker', { callerThreadId: caller, runtimeMs: 30_000, turnOpen: true, turnStartedAt: 1_000 }),
+    ]);
+    await fireEvent.click(toggle);
+    const elapsed = () => within(view.getByTestId('agent-tray-row')).getByTestId('agent-tray-row-elapsed').textContent;
+    skew += 10_000;
+    await waitFor(() => expect(elapsed()).toMatch(/^4[01]s$/), { timeout: 2_500 });
+    // That turn ended at 12 s of runtime and the next one has run 1 s;
+    // no read saw the end between them.
+    setBindingMock('GetThreadAgentRows', async () => [{
+      token: 'worker', listed: true, row: row('worker', { callerThreadId: pane.threadId!, runtimeMs: 13_000, turnOpen: true, turnStartedAt: 2_000 }),
+    }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'worker' });
+    await waitFor(() => expect(elapsed()).toBe('13s'));
   });
 
   it('under compact, gives the title up to two lines and puts state, elapsed and actions on the next', async () => {

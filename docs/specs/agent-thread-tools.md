@@ -551,7 +551,11 @@ running without having sent it anything. A wait returns as soon as any
 listed request settles or any listed thread rests, or as soon as any
 target becomes blocked on a person (a pending approval or a question
 to the user), with the request still open; duplicates and the caller's
-own thread are refused. Every request carries a `revision` that
+own thread are refused. A thread rests when it is at rest
+([at rest](standing-agents.md#at-rest)): its turn over and nothing it
+started still running; one whose turn is over and is not reports
+`resting: false` with what it waits on (`waiting_on`), and an async
+question it asks reads `awaiting_input`. Every request carries a `revision` that
 increases on each settlement and late reply; `after_revision` makes a
 wait skip what the agent has already seen, which is how it waits for a
 late reply on a request already `finished`. This is the
@@ -836,8 +840,16 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > how long this call waits, not how long the work may run. If the
 > answer arrives in time it is in the reply, with its kind: `reply`
 > means the other thread called `thread_reply`; `final` means it ended
-> its turn without replying and this is its last message, which may
-> not be the answer you asked for. If the wait ends first, the reply
+> without replying and this is its last message, which may not be the
+> answer you asked for. A thread you spawned, and a send to it, end only
+> when it has nothing left running: no background work, loop, watch or
+> reminder, and no thread it started still working; until then
+> `thread_status` reports it running, with what it waits on in
+> `waiting_on`, and a loop or watch it keeps armed holds it until you
+> stop it with `thread_cancel` on its thread id. On a paired computer
+> running an older version they end with its turn instead, and
+> `thread_status` marks that answer `rest_unreported`. If the wait ends
+> first, the reply
 > says `backgrounded` (still working) or `blocked` (waiting on the user
 > for an approval or a question: leave that to the user or cancel it; a
 > thread you spawned on this computer puts its question to you
@@ -846,11 +858,12 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > from; one message names several tokens when it answers several of
 > your requests. You do not need to poll. `thread_status` with up to
 > eight `tokens` waits again or checks state; with `thread_ids` it waits
-> for any thread to rest, even one you never messaged; without either it
+> for any thread to rest, even one you never messaged, and a thread
+> rests only once nothing it started is running; without either it
 > lists what you have started. A `thread_reply` the call did not carry
 > always arrives as a message, `notify` or not. Pass `notify: true` on a
 > spawn or send with no wait if you also want its last message when it
-> ends its turn without replying. `thread_remind` wakes you later with a
+> ends without replying. `thread_remind` wakes you later with a
 > note; use it instead of sleeping when you are waiting on something
 > slow.
 >
@@ -875,7 +888,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > reply text, so make it self-contained. If you finish your turn
 > without replying, a sender that is waiting receives your final text
 > marked as not a reply, and a sender that is not waiting receives
-> nothing. A later `thread_reply` reaches it either way. Use
+> nothing; a sender that spawned you receives it once nothing you
+> started is still running, so make your last message the result. A
+> later `thread_reply` reaches it either way. Use
 > `thread_send` to the sender only to start a separate exchange, never
 > to answer a token. A thread you spawned on this computer does
 > not wait on the user: its question or approval wakes you
@@ -1187,7 +1202,51 @@ What settles a request, in order:
    count, Q7), it settles `finished` with the final assistant text,
    flagged as no explicit reply. A later `thread_reply` still delivers
    as a second wake, so a responder that ended its turn to wait on a
-   command costs the caller nothing.
+   command costs the caller nothing. A spawn, and a send from the
+   thread that spawned its target, settle `finished` only once that
+   thread is at rest ([at rest](standing-agents.md#at-rest), read by
+   `threadRest`): a turn that ends as it would settle `finished` while
+   the thread is not at rest leaves the request `running`, its gate in
+   the turn-end registry marked held (`receiptGate.held`,
+   `app_thread_tools_rest_settle.go`), with no wake. Held is a phase of
+   the same lifecycle: each later turn end and session end of the
+   thread is read for it as its own turn's would be, and a turn already
+   read is read again before the next, the request's own included,
+   since a turn's first close is not its outcome (a soft close the
+   result later errors, or a turn the model resumes), so a later turn
+   that errors settles it `errored`, one interrupted settles it
+   `interrupted` with its cause, the person's Stop as a Stop, and a
+   session that ends during a later turn `interrupted`, saying the
+   session ended while the thread was still working, with what it
+   wrote since the request's turn. Only rest settles it `finished`,
+   with the thread's last top-level message from the request's turn on,
+   once. `thread_status` and a parked wait report it running with what
+   it waits on (`waiting_on`); a request on another computer carries it
+   in the poll's answer (`waitingOn`), and its row there reads
+   `waiting`. Every change that can bring a thread to rest reaches the
+   Agents rows' drain, which asks for a pass over the held requests;
+   a pass reads each held thread's rest itself, from facts complete when
+   it reads them, a thread's durable sources before its memory ones, so
+   an answer on its way to a thread keeps it from rest until the turn it
+   starts is open, and a workflow run's report from its rest until its
+   wake has been handed over. The
+   Stop of the thread, the person's or the spawner's `thread_cancel` by
+   thread id, and an explicit `thread_reply` settle it as before. A
+   boot holds again a running receipt whose turn ended as it would
+   settle `finished`, keeping the turn it answers from, settling it as
+   the restart's interruption if a later turn of its thread was cut, or
+   with a later turn's error; no held request settles at rest until the
+   boot has recorded every thread a recovered source keeps from rest
+   (`recoverRestAtBoot`), a pass asked for meanwhile waiting for it. A
+   source or thread the recovery could not read is read again by each
+   pass of the request sweep until it succeeds. A paired computer that
+   settles at rest says so in the poll's answer (`restRule`); one that
+   does not settles such a request when its turn ends, and its
+   `finished` answer is recorded `rest_unreported`, which
+   `thread_status` and the Agents row report, since what that thread
+   started may still be running. A
+   send or ask to a thread its caller did not spawn settles on its
+   turn's end.
 3. An errored turn settles `errored` with the error text.
 4. `thread_cancel` by token settles `cancelled`; a Stop of the request
    in the caller's Agents tray settles `cancelled` saying the user

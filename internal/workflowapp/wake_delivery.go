@@ -294,8 +294,10 @@ func (s *Service) resolveWakeThread(item store.WorkItem) (string, bool) {
 
 func (s *Service) clearStaleWakeBinding(item store.WorkItem, reason string) {
 	s.deps.Logf("workflow wake %s: %s; falling back to the unbound surface", item.ID, reason)
-	if err := s.deps.Store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
+	if change, err := s.deps.Store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
 		s.deps.Logf("workflow wake %s: clear stale binding: %v", item.ID, err)
+	} else if s.deps.OriginChanged != nil {
+		s.deps.OriginChanged(change)
 	}
 	// The record describes what a thread that no longer exists was told, so it
 	// is spent. Transition clearing skips unbound roots because it fires on every

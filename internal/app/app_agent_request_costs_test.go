@@ -148,15 +148,17 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 	}
 	// One transaction for the receipt, the request and the acknowledgement,
 	// on top of the turn end's own; the receipt read once and the request
-	// not at all. Before: three transactions, and the receipt read three
-	// times and the request twice.
+	// not at all, and one probe of whether the sender spawned the thread,
+	// which decides whether the request waits for the thread's rest
+	// (receiptAwaitsRest). Before: three transactions, and the receipt read
+	// three times and the request twice.
 	if extra := settled.commits - plainEnd.commits; extra != 1 {
 		t.Errorf("the settlement added %d transactions to the turn end (%+v against %+v), want 1", extra, settled, plainEnd)
 	}
 	receipt := readsBy["store.(*Store).GetThreadRequestReceipt"]
 	request := readsBy["store.(*Store).GetThreadRequest"] + readsBy["store.(*Store).GetThreadRequests"]
-	if receipt != 1 || request != 0 || reads > 10 {
-		t.Errorf("the settlement read the store %d times, the receipt %d and the request %d (%v), want at most 10, the receipt once and the request never",
+	if receipt != 1 || request != 0 || reads > 11 {
+		t.Errorf("the settlement read the store %d times, the receipt %d and the request %d (%v), want at most 11, the receipt once and the request never",
 			reads, receipt, request, readsBy)
 	}
 }

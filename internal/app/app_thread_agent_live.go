@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -16,9 +15,10 @@ import (
 // open prompt, no running background work, no provider timer, no armed
 // loop, watch or reminder, and no open work below it at any depth.
 // liveWorkers is the one record of why the spawned threads are not at rest
-// by their own state. It is memory, so the boot seeds it from the durable
-// sources (seedLiveWorkers); the memory sources report themselves once a
-// turn starts or a message is queued. The work below a thread is the
+// by their own state. It is memory, so the boot records every thread a
+// recovered source names before any request settles on rest
+// (recoverRestAtBoot); the memory sources report themselves once a turn
+// starts or a message is queued. The work below a thread is the
 // listing's reads' to answer: they climb from each live worker and each
 // piece of open work to every spawn above it, up to the root
 // (store.ThreadAgentRequest.TargetOpen), and the row of a spawn whose
@@ -31,8 +31,10 @@ import (
 // emit tap (tapThreadAgentRows), the provider event handler
 // (noteProviderWorkerLiveness), the process's end (unregisterSession) and
 // the sends-pending observer (runSendsPendingWorker); noteWorkerWaiting for
-// the durable ones (background work, loops, watches and reminders), from
-// the background tray and wake frames and the boot (seedLiveWorkers).
+// the durable ones (background work, loops, watches, reminders, answers
+// on their way, workflow runs and unanswered questions), from the
+// background tray, wake, request, workflow and question frames and the
+// boot (recoverRestAtBoot).
 // Every reader, the listing's reads, the row view, the change frames'
 // gates and Past, consumes only what it stored.
 
@@ -55,9 +57,9 @@ type liveWorkers struct {
 	threads  map[string]liveWorker
 }
 
-// liveWorker is one thread not at rest: why, as a row shows it; the token
-// of the local spawn that reaches it (its link), empty for a thread no
-// local spawn made; and for a spawned thread, what its durable sources
+// liveWorker is one thread not at rest: why, as a row shows it; the spawn
+// that made it (its link, workerLinkOf), empty for a thread no spawn made;
+// and for a spawned thread, what its durable sources
 // said when they last changed (waits), background when that is background
 // work. A thread no spawn made is kept while triage holds it, so it costs
 // one lookup each time it leaves rest, not one per change.
@@ -69,10 +71,68 @@ type liveWorker struct {
 }
 
 // workerRest is why a thread is not at rest, and for a waiting one what it
-// waits on, in the words of the row's activity line.
+// waits on, in the words of the row's activity line; below marks a thread
+// waiting only on open work below it (threadRest).
 type workerRest struct {
 	unrest string
 	detail string
+	below  bool
+}
+
+// threadRest says why threadID is not at rest, the zero value when it is:
+// its own state (workerUnrest) or, with nothing of its own, open work at
+// any depth below it (store.ThreadAgentState.OpenBelow), which reads
+// waiting with no detail. It is the one reading of rest, made fresh: a
+// spawn's request settles on it (restSettlement), thread_status with
+// thread_ids waits for it (threadStateNow), and a paired computer answers
+// with it, for its agent_rows (answerThreadAgentRows) and for a request's
+// poll (threadPeerRequestState). The Agents rows read the same two halves
+// from what was recorded: liveWorkers for the thread's own state, the
+// listing's TargetOpen for the work below it.
+func (a *App) threadRest(threadID string) (workerRest, error) {
+	rest, err := a.workerUnrest(threadID)
+	if err != nil || rest.unrest != "" {
+		return rest, err
+	}
+	state, err := a.threadAgentState(threadID)
+	if err != nil {
+		return workerRest{}, err
+	}
+	if state.OpenBelow {
+		return workerRest{unrest: workerWaiting, below: true}, nil
+	}
+	return workerRest{}, nil
+}
+
+// threadAgentState reads what threadID's Agents listing says of it, with
+// the parked waits and the live workers as a listing reads them.
+func (a *App) threadAgentState(threadID string) (store.ThreadAgentState, error) {
+	view := newThreadAgentView(a)
+	state, err := a.store.ReadThreadAgentState(store.ThreadAgentStateRead{
+		Thread: threadID, Waiting: view.waiting, Live: view.live, SettledSince: view.since,
+	})
+	if err != nil {
+		return store.ThreadAgentState{}, fmt.Errorf("read whether thread %s has open work: %w", threadID, err)
+	}
+	return state, nil
+}
+
+// waitingLine says what a thread not at rest waits on, for an agent reading
+// thread_status: the row's activity line, or what a waiting thread with no
+// line waits on. Empty while it runs or is blocked, which its state says.
+func (rest workerRest) waitingLine() string {
+	switch {
+	case rest.unrest == workerQueued:
+		return "messages queued for it"
+	case rest.unrest != workerWaiting:
+		return ""
+	case rest.detail != "":
+		return rest.detail
+	case rest.below:
+		return "threads it started"
+	default:
+		return "a scheduled wakeup of its own"
+	}
 }
 
 // workerUnrest says why threadID is not at rest, the zero value when it
@@ -81,13 +141,20 @@ type workerRest struct {
 // workerDurableUnrest the store, workerTimerUnrest the provider's timers;
 // a source added later is one more case in one of them, and the event that
 // changes it one more call of noteWorkerLiveness or noteWorkerWaiting.
+//
+// The store is read before triage, as reassessWorker reads them: an answer
+// on its way stops being one when the turn it starts echoes it, so a read
+// that finds it delivered then finds that turn, or that turn's end.
 func (a *App) workerUnrest(threadID string) (workerRest, error) {
+	waits, _, err := a.workerDurableUnrest(threadID)
+	if err != nil {
+		return workerRest{}, err
+	}
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}, nil
 	}
-	waits, _, err := a.workerDurableUnrest(threadID)
-	if err != nil || waits.unrest != "" {
-		return waits, err
+	if waits.unrest != "" {
+		return waits, nil
 	}
 	return a.workerTimerUnrest(threadID), nil
 }
@@ -108,17 +175,34 @@ func (a *App) workerHeldUnrest(threadID string) string {
 	return ""
 }
 
-// workerDurableUnrest is whether threadID waits on something it started
-// that the store records: running background work (what
-// runningBackgroundWorkForThread reports: Claude tasks and background
-// agents, Codex subagents and terminals, remote commands), an armed loop
-// or watch, or a reminder that has not fired. The detail is the background
-// work's summary, or the loop, watch or reminder named as its wake rows name
-// it (wakeWaitingLine); background says
-// the wait is background work. It costs the background inventory's reads,
-// then one read of the loops and watches and one of the reminders while
-// nothing earlier answered.
+// workerDurableUnrest is whether threadID waits on something the store
+// records that starts a turn there without a person: a question it asked
+// that nobody answered yet (blocked, as its prompt reads); an answer to a
+// request it made on its way to it (queued, store.ThreadAnswerDue); or,
+// waiting, running background work (what runningBackgroundWorkForThread
+// reports: Claude tasks and background agents, Codex subagents and
+// terminals, remote commands), a workflow run reporting to it that runs or
+// whose report is owed (workflowapp.Service.ReportingRuns), an armed
+// loop or watch, or a reminder that has not fired. The detail is the
+// background work's summary, the run's goal, or the loop, watch or
+// reminder named as its wake rows name it (wakeWaitingLine); background
+// says the wait is background work. Each source is one indexed read, taken
+// while nothing earlier answered.
 func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
+	asking, err := a.store.ThreadHasUnansweredAsyncQuestions(threadID)
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	if asking {
+		return workerRest{unrest: workerBlocked}, false, nil
+	}
+	due, err := a.store.ThreadAnswerDue(threadID)
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	if due {
+		return workerRest{unrest: workerQueued}, false, nil
+	}
 	work, err := a.runningBackgroundWorkForThread(threadID, "")
 	if err != nil {
 		return workerRest{}, false, fmt.Errorf("read the running background work: %w", err)
@@ -129,6 +213,13 @@ func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
 			detail = work[0].ToolName
 		}
 		return workerRest{unrest: workerWaiting, detail: detail}, true, nil
+	}
+	goal, reporting, err := a.store.WorkflowRunReportingTo(threadID, a.workflowApplication().ReportingRuns())
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	if reporting {
+		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(goal)}, false, nil
 	}
 	wakes, err := a.store.ListAgentWakes(threadID)
 	if err != nil {
@@ -168,6 +259,14 @@ func wakeWaitingLine(kind, label string) string {
 	return name + " · " + label
 }
 
+// workflowWaitingLine names a workflow run a worker waits on by its goal.
+func workflowWaitingLine(goal string) string {
+	if goal = clipLine(goal); goal == "" {
+		return "Workflow"
+	}
+	return "Workflow · " + goal
+}
+
 // workerTimerUnrest is whether threadID's provider process will resume
 // itself: a scheduled wakeup or an armed cron job, read as the idle reaper
 // reads them (PendingWakeupAt within its grace), from memory.
@@ -188,10 +287,11 @@ func (a *App) workerTimerUnrest(threadID string) workerRest {
 // What it costs:
 //
 //   - triage's sources and the timers are memory;
-//   - the spawn link is recorded, or one search for a thread not recorded;
+//   - the spawn link is recorded, or up to two searches for a thread not
+//     recorded (workerLinkOf);
 //   - with durable, for a spawned thread only, workerDurableUnrest's reads.
 //
-// It reports whether the thread is a worker, one a local spawn made, now
+// It reports whether the thread is a worker, one a spawn made, now
 // or as last recorded, so a change on either side is framed. A failed read
 // leaves the record as it was, so the next change reads again, and is
 // returned with worker true.
@@ -208,7 +308,7 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 	w.mu.Unlock()
 	next := liveWorker{link: before.link, waits: before.waits, background: before.background}
 	if !known {
-		link, _, err := a.store.SpawnLinkOf(threadID)
+		link, err := a.workerLinkOf(threadID)
 		if err != nil {
 			return true, err
 		}
@@ -241,6 +341,27 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 	return next.link != "", nil
 }
 
+// workerLinkOf is the spawn that makes threadID a worker: its local spawn
+// link or, for a thread a paired computer's spawn made here, that spawn
+// (peerSpawnLink), so this computer follows it as a worker for that
+// computer's rows (answerThreadAgentRows). Empty for any other thread.
+func (a *App) workerLinkOf(threadID string) (string, error) {
+	link, found, err := a.store.SpawnLinkOf(threadID)
+	if err != nil || found {
+		return link, err
+	}
+	token, found, err := a.store.PeerSpawnReceiptOf(threadID)
+	if err != nil || !found {
+		return "", err
+	}
+	return peerSpawnLink(token), nil
+}
+
+// peerSpawnLink is the link of a thread a paired computer's spawn made
+// here. No local request carries it, so no row here reads that thread's
+// record as its worker's (liveWorkerUnrest).
+func peerSpawnLink(token string) string { return "peer:" + token }
+
 // waitsOnBackground reports whether threadID's durable sources last said
 // it waits on background work.
 func (a *App) waitsOnBackground(threadID string) bool {
@@ -256,31 +377,6 @@ func (a *App) waitsOnBackground(threadID string) bool {
 func (a *App) noteProviderWorkerLiveness(threadID string, evt provider.ProviderEvent) {
 	if evt.Kind == provider.EventSessionWakeup || evt.Kind == provider.EventScheduledJobs {
 		a.noteWorkerLiveness(threadID)
-	}
-}
-
-// seedLiveWorkers asks, at boot, about each thread a durable source says
-// may wait: one with a loop or watch armed, a reminder that has not fired,
-// or a remote command pending. Each source is one read; each thread is then
-// reassessed off the boot's path. A source that cannot be read is logged,
-// and the others still seed.
-func (a *App) seedLiveWorkers() {
-	for _, source := range []struct {
-		what string
-		read func() ([]string, error)
-	}{
-		{"loops and watches", a.store.ThreadsWithLiveAgentWakes},
-		{"reminders", a.store.ThreadsWithOpenReminders},
-		{"remote commands", a.store.RemoteWatchThreadIDs},
-	} {
-		ids, err := source.read()
-		if err != nil {
-			log.Printf("agent rows: seed the workers waiting on %s: %v", source.what, err)
-			continue
-		}
-		for _, id := range ids {
-			a.noteWorkerWaiting(id)
-		}
 	}
 }
 
@@ -303,7 +399,7 @@ func (a *App) forgetLiveWorker(deleted string) error {
 	w.mu.Unlock()
 	var firstErr error
 	for _, id := range ids {
-		link, _, err := a.store.SpawnLinkOf(id)
+		link, err := a.workerLinkOf(id)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -331,6 +427,15 @@ func (a *App) liveWorkerUnrest(spawn store.ThreadRequest) workerRest {
 		return worker.workerRest
 	}
 	return workerRest{}
+}
+
+// liveThreadRest is why threadID is not at rest by its own state, as last
+// recorded, whichever spawn made it.
+func (a *App) liveThreadRest(threadID string) workerRest {
+	w := &a.liveWorkers
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.threads[threadID].workerRest
 }
 
 // liveWorker reports whether threadID is a worker not at rest, as last

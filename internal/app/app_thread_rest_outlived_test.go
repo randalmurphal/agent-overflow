@@ -252,15 +252,20 @@ func assertSpawnerToldOfTheUnpausedRun(t *testing.T, a *App, spawnerID, token st
 	}
 }
 
-// settleSpawnByHand settles the spawn of token as finished in s, with no
-// answer delivered, so nothing wakes its caller.
+// settleSpawnByHand settles the spawn of token as finished in s, its answer
+// recorded as having reached its caller inline, so no message wakes the
+// caller and no answer on its way keeps it from rest.
 func settleSpawnByHand(t *testing.T, s *store.Store, token string) {
 	t.Helper()
+	now := time.Now().UnixMilli()
 	if settled, err := s.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
 		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
-		SettledAt: time.Now().UnixMilli(),
+		SettledAt: now,
 	}); err != nil || !settled {
 		t.Fatalf("settle %s: %v %v", token, settled, err)
+	}
+	if _, err := s.MarkThreadRequestDelivered(token, store.ThreadWakeInline, now, false); err != nil {
+		t.Fatalf("deliver %s: %v", token, err)
 	}
 }
 

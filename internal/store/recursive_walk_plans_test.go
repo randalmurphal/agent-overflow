@@ -171,14 +171,14 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 				"SEARCH a USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
 				"SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 			},
-			seeds: []string{"idx_thread_requests_open_deep"},
+			seeds: []string{"idx_thread_requests_open_deep", "idx_thread_requests_answer_due"},
 		}, threadAgentTreeSQL(129), "lead", `{"waiting":["g-x"]}`, int64(0), 4, 160)
 		assertWalkProbesTheQueuedKey(t, s, "threadAgentNamedRowsSQL", walkPlan{
 			step: []string{
 				"SEARCH sp USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 				"SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 			},
-			seeds: []string{"idx_thread_requests_open_deep"},
+			seeds: []string{"idx_thread_requests_open_deep", "idx_thread_requests_answer_due"},
 		}, threadAgentNamedRowsSQL, "lead", `{"waiting":["g-x"]}`, int64(0), 4, 160, `["c-g"]`)
 		assertWalkProbesTheQueuedKey(t, s, "threadAgentRowFramesSQL", walkPlan{
 			step: []string{

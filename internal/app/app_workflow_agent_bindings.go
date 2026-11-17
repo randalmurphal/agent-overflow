@@ -321,9 +321,11 @@ func (a *App) bindOriginThread(scope transport.CallerScope, item store.WorkItem)
 	if err := workflowapp.ValidateBindingThread(item, thread); err != nil {
 		return fmt.Sprintf("run started unbound: %v", err)
 	}
-	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	change, err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID)
+	if err != nil {
 		return fmt.Sprintf("run started unbound: %v", err)
 	}
+	a.noteWorkflowOriginChange(change)
 	return ""
 }
 

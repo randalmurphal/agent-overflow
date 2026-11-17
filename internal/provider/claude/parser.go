@@ -355,6 +355,10 @@ type Parser struct {
 	usageCostMissingByModel map[string]bool
 	usageFlatCostMissing    bool
 	usageProgress           claudeUsageProgress
+	// usageOwnUnaccounted is the thread's own live usage of this process's
+	// turns whose result accounted nothing, which the next accounting
+	// result's cumulative delta covers (takeOwnUsage).
+	usageOwnUnaccounted provider.TokenUsage
 	// usageAccountedCostUSD mirrors usageTotalsByModel for the flat
 	// `total_cost_usd` field — the session-cumulative cost already
 	// attributed to settled turns. Single lifecycle owner:
@@ -539,6 +543,7 @@ func (p *Parser) Close() {
 	p.usageCostMissingByModel = nil
 	p.usageFlatCostMissing = false
 	p.usageProgress = claudeUsageProgress{}
+	p.usageOwnUnaccounted = provider.TokenUsage{}
 	p.usageAccountedCostUSD = 0
 }
 

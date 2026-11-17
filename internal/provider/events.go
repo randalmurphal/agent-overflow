@@ -552,8 +552,14 @@ type WireTurnCompleteMeta struct {
 	AssistantMessageID string
 	Usage              *TokenUsage
 	ModelUsage         []ModelTokenUsage
-	Aborted            bool
-	ErrorMessage       string
+	// OwnUsage is the thread's own usage over the span this settlement's
+	// ModelUsage accounts, without its native subagents': Claude's
+	// modelUsage includes its subagents' and its flat result.usage does
+	// not; a Codex turn's usage never carries its children's. Nil when
+	// the settlement accounts nothing.
+	OwnUsage     *TokenUsage
+	Aborted      bool
+	ErrorMessage string
 	// FastMode is the provider's fast-mode report for the turn that just
 	// ended. Nil when the envelope carried no fast-mode keys — see
 	// FastModeStatus for why absence is silence, not "off". Live state,

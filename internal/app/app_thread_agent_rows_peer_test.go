@@ -467,6 +467,10 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 	}
 
 	settle(pair.dest, pair.grand)
+	// Its answer reached the child: the child takes no turn for it.
+	if marked, err := pair.dest.store.MarkThreadRequestDelivered(pair.grand, store.ThreadWakeInline, time.Now().UnixMilli(), false); err != nil || !marked {
+		t.Fatalf("deliver the grandchild's answer: %v, %v", marked, err)
+	}
 	// The child's own turn there still runs, and the grandchild's, which
 	// keeps the spawn open until both rest.
 	grand, _, err := pair.dest.store.GetThreadRequest(pair.grand)

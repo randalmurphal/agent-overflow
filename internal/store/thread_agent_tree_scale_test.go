@@ -77,11 +77,12 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief 
 	} {
 		mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
 			INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
-				settled_at, created_at, updated_at)
+				settled_at, delivered_at, delivered_how, confirmed_at, created_at, updated_at)
 			SELECT printf('%s-%06d', ?2, i), `+batch.caller+`, ?3, `+batch.target+`, ?3 <> 'spawn',
 			       CASE WHEN ?4 IS NULL THEN 'running' ELSE 'finished' END,
 			       CASE WHEN ?4 IS NULL THEN NULL ELSE zeroblob(4096) END,
-			       CASE WHEN ?4 IS NULL THEN '' ELSE 'final' END, ?4, ?5 + i, ?5 + i FROM seq WHERE ?1 > 0`,
+			       CASE WHEN ?4 IS NULL THEN '' ELSE 'final' END, ?4,
+			       ?4, CASE WHEN ?4 IS NULL THEN '' ELSE 'queued' END, ?4, ?5 + i, ?5 + i FROM seq WHERE ?1 > 0`,
 			batch.n, batch.prefix, batch.kind, batch.settled, created)
 		created += int64(batch.n)
 	}

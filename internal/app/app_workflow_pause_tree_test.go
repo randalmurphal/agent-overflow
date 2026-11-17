@@ -167,7 +167,7 @@ func TestAPauseReachesARunningRunBeneathAParkedOne(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.app.store.UpdateWorkItemOriginThread(f.root, thread.ID); err != nil {
+		if _, err := f.app.store.UpdateWorkItemOriginThread(f.root, thread.ID); err != nil {
 			t.Fatal(err)
 		}
 		pid := f.pauseThenResumeTheLeaf(t)

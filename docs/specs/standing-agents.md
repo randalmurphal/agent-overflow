@@ -857,7 +857,12 @@ Ruling 36, as built:
   as `thread_status` reads it awaiting input), no running background work
   (`runningBackgroundWorkForThread`: Claude tasks and background agents,
   Codex subagents and terminals, remote commands), no armed loop or watch
-  (`agent_wakes`), no reminder that has not fired, and no provider timer
+  (`agent_wakes`), no reminder that has not fired, no workflow run that
+  reports to it running or owing it its report (from the run's rest until
+  that rest's wake job ends, whatever it did with the report:
+  `workflowapp.Service.ReportingRuns`), no answer on its way to it (a request it made
+  settled with its answer owed as a message, not yet echoed by the turn
+  that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
   wakeup or an armed cron job), and no open work below it at any depth:
   a thread whose own work is done is not at rest while a worker below it
@@ -866,20 +871,38 @@ Ruling 36, as built:
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
-  take.
+  take. A fresh read of both, `threadRest`, is what a spawn's settlement,
+  `thread_status` with `thread_ids` and a paired computer's answers take
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25));
+  every rest pass reads it for each held request's thread, whatever the
+  memory record below says, which only draws rows.
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
+  a thread a paired computer's spawn made here included,
   each with its spawn link and what its durable sources last said, and
   re-evaluates a thread only on the events that change a source: its turn,
   prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
-  and its background tray and wake frames and its session's end
-  (`noteWorkerWaiting`, which reads the background inventory, its loops
-  and watches, and its reminders again). A session's end settles the
+  and its background tray, wake, question, request and workflow frames,
+  a workflow run's binding, which names the thread it left and the one
+  it reports to now, both re-evaluated, a workflow run's owed report
+  ending, and its session's end (`noteWorkerWaiting`,
+  which reads its durable sources again: its unanswered questions, the
+  answers on their way to it, the background inventory, its workflow
+  runs, its loops and watches, and its reminders). A changed request
+  re-evaluates its caller when that caller is a worker, named by the same
+  read that names the request's frames (`ThreadAgentRowFrames`), and a
+  workflow run's state change the thread it reports to. A session's end
+  settles the
   background work it owned and ends its timers. At boot one indexed read
   per durable source (armed loops and watches, unfired reminders, pending
-  remote commands) seeds the threads to re-evaluate; the memory sources
-  report themselves once they change. A deleted thread is forgotten. A
+  remote commands, answers on their way, running workflow runs,
+  unanswered questions, queued messages) names the threads to record,
+  each re-evaluated before any request held for a thread's rest may
+  settle (`recoverRestAtBoot`); the memory sources report themselves
+  once they change. A deleted thread is forgotten. A
   thread only sent to is no worker: a send's row follows its request.
-- An open row whose request settled shows its worker's state (`blocked`,
+- An open row whose request settled, or is held until its thread rests
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)),
+  shows its worker's state (`blocked`,
   `running`, `queued`, then `waiting`, in that order;
   `ThreadAgentRow.worker`), its blocked or activity line and Stop, and
   keeps its answer in its digest. A worker with nothing of its own that
@@ -938,8 +961,9 @@ Ruling 36, as built:
 ### At rest
 
 A thread is at rest when it has no turn, no queued message, no open
-prompt, no background work, no armed loop, watch or reminder, no running
-workflow run that reports to it, and no open work below it. A Stop of a thread a thread spawned brings it to
+prompt, no background work, no armed loop, watch or reminder, no
+workflow run that reports to it running or owing it its report, no answer
+on its way to it, and no open work below it. A Stop of a thread a thread spawned brings it to
 rest: the Agents row's Stop of a spawn and Stop All
 ([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
 thread id of a thread it spawned
@@ -1579,8 +1603,56 @@ closes up their spacing so the row holds at a phone width.
   paired computer's target reports only that it waits, and on which of
   that computer's threads when its prompt went to one rather than the
   person. A
-  running target's latest activity is a second line; the chevron opens the
-  row's digest: the activity, what it is blocked on in full, the last
+  spawn's row says what its thread did as a subagent's row says what its
+  agent did, from the one formatter both use (`AgentMetrics.svelte`),
+  read with the thread's name (`store.ThreadTally`, one probe per
+  thread):
+  - Tool calls: each top-level tool call the thread executed, once. A
+    fork's copy of its source's history, an import and a restore count
+    none of theirs again.
+  - Tokens: what the thread spent itself, counted as a subagent's are
+    (fresh input, cache writes and output; a cached prompt read again is
+    no spend), the running turn's included: the same meaning as a native
+    agent row's tokens and the same scope as its tool calls. Its native
+    agents are rows of their own with their own counts, and the threads
+    it spawned count their own. The figure is the one the provider
+    reports as the thread's own with each settled turn
+    (`WireTurnCompleteMeta.OwnUsage`): Claude's flat `result.usage`,
+    which leaves its subagents out, not its subagent-inclusive
+    `modelUsage`; a Codex turn's usage, which never carries its
+    children's. The billing ledger is unchanged and keeps the inclusive
+    figure.
+  - Runtime: the time its turns ran, each ended turn's start to end plus
+    the open turn's time so far (`RuntimeMs`, `TurnOpen`); the time
+    between turns is not runtime, nor is the time the app was down: a
+    turn a crash left open ends at the last activity it recorded. The row
+    adds the open turn's time from its own clock since the read and,
+    within that open turn, never shows less than it showed. The read
+    names the open turn by its start on the computer that holds the
+    thread (`TurnStartedAt`), compared only with a later read's, so a read
+    of the next turn, or one after the turn has ended, shows the server's
+    figure as it is. A Past row's settled age is a separate fact, its
+    runtime the tooltip.
+  The counts are live while it works and kept, final, once it rests and
+  under Past. A copy of the thread to another computer starts at zero; a
+  move takes the counts with it, and a thread that moves back brings the
+  work it did there. Its row is framed again, at most every 2 s, for each new
+  tool call, one whose line reads as the last one did included, and for
+  its usage's progress. A running target's
+  latest top-level tool call is its activity, beside the counts on a
+  second line; its messages are not activity, its last one is in the
+  digest. A waiting worker's line is what it waits on instead, and a
+  blocked one's what blocks it. A paired computer reports its spawn's
+  counts and line with its `agent_rows` answer
+  (`ThreadAgentRows.ToolCalls`, `Tokens`, `RuntimeMs`, `TurnOpen`,
+  `TurnStartedAt`, `Activity`), refreshed as that answer is, its open row and its Past
+  row projected alike; a Past row reads the last answer and asks again,
+  a page's worth at most, and one whose computer did not answer or is
+  no longer paired says why (`NestedUnavailable`). One that predates
+  them shows the row without them. A request settled `finished` by a
+  paired computer that cannot report rest says so on its row
+  (`restUnreported`). The
+  chevron opens the row's digest: the activity, what it is blocked on in full, the last
   message in the thread (a request without the footer the app appended)
   and the answer once it settled. State comes from the thread tools' own
   derivation (`requestStateFrom`, which `requestStateView` runs for

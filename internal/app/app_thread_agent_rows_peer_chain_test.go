@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -166,6 +169,35 @@ func (c *agentChain) spawnAlong(t *testing.T, i int, prompt string) {
 	c.spawns, c.threads = append(c.spawns, ack.Token), append(c.threads, receipt.TargetThreadID)
 }
 
+// installChainLink has the thread a spawn starts on app end its first
+// turn, "done", only once release is called, and answer each later
+// message "noted". Releasing after the thread's own spawn has it end its
+// turn with that thread still working, as a link that started one does.
+func installChainLink(t *testing.T, app *App) (release func()) {
+	t.Helper()
+	gate := filepath.Join(t.TempDir(), "turn-ends")
+	turns := [][]string{{
+		mockClaudeInitLine,
+		testutil.MockWaitForFile(gate),
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}}
+	for range 3 {
+		turns = append(turns, []string{
+			mockClaudeInitLine,
+			`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"noted"}]}}`,
+			`{"type":"result","subtype":"success","is_error":false}`,
+		})
+	}
+	installMockClaudeTurns(t, app, turns)
+	return func() {
+		t.Helper()
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Fatalf("release the link's turn: %v", err)
+		}
+	}
+}
+
 // settle waits for the thread spawn i made to answer, then polls its
 // computer until it collects the answer.
 func (c *agentChain) settle(t *testing.T, i int) {
@@ -179,6 +211,21 @@ func (c *agentChain) settle(t *testing.T, i int) {
 		c.apps[i].threadRequestsWG.Wait()
 		row, found, err := c.apps[i].store.GetThreadRequest(c.spawns[i])
 		return err == nil && found && threadRequestSettled(row)
+	})
+}
+
+// held waits until the thread spawn i made ended its turn with a thread
+// it started still working, so its computer holds the spawn's request for
+// the thread's rest, and the spawner's computer has polled the request and
+// reads it running, waiting on that thread.
+func (c *agentChain) held(t *testing.T, i int) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool { return c.apps[i+1].restHeld(c.threads[i], c.spawns[i]) })
+	waitUntil(t, 10*time.Second, func() bool {
+		c.apps[i].pollRemoteThreadRequests(time.Now().Add(time.Hour))
+		c.apps[i].threadRequestsWG.Wait()
+		row, found, err := c.apps[i].store.GetThreadRequest(c.spawns[i])
+		return err == nil && found && row.State == store.ThreadRequestRunning && c.apps[i].requestWaitingOn(row) == "threads it started"
 	})
 }
 
@@ -236,7 +283,7 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 			t.Parallel()
 			c := newAgentChain(t, 3)
 			installMockClaudeReplies(t, c.apps[0], "noted", "noted", "noted")
-			installMockClaudeReplies(t, c.apps[1], "done", "noted", "noted", "noted")
+			release := installChainLink(t, c.apps[1])
 			installMockClaudeTurns(t, c.apps[2], [][]string{{
 				mockClaudeInitLine,
 				`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"The release is staged."}]}}`,
@@ -247,8 +294,11 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 			}})
 			c.spawnAlong(t, 0, "watch the release")
 			c.spawnAlong(t, 1, "stage the release")
-			c.settle(t, 0)
+			release()
+			// Its worker's own spawn settles first: B's thread rests once
+			// the thread it started on C does.
 			c.settle(t, 1)
+			c.settle(t, 0)
 			c.atRest(t, 0, 2)
 			// The worker on C is continued there, and asks for an approval.
 			if err := c.apps[2].SendMessage(context.Background(), c.threads[1], "now run it", nil); err != nil {

@@ -297,9 +297,10 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 		if !found {
 			continue
 		}
-		// Resting is derived here from the state, so a row cannot report
-		// a state and a restedness that disagree.
-		state.Resting = Resting(state.State)
+		// Resting is derived here from the state and what the thread still
+		// waits on, so a row cannot report a restedness that disagrees with
+		// them.
+		state.Resting = Rests(state)
 		result.Threads = append(result.Threads, state)
 	}
 	if result.TimedOut {

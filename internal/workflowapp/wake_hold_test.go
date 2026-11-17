@@ -34,7 +34,7 @@ func newHoldFixture(t *testing.T) *holdFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.UpdateWorkItemOriginThread(f.item.ID, f.thread); err != nil {
+	if _, err := f.store.UpdateWorkItemOriginThread(f.item.ID, f.thread); err != nil {
 		t.Fatal(err)
 	}
 	f.item.OriginThreadID = f.thread

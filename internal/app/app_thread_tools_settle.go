@@ -226,6 +226,15 @@ func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
 func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held map[string]bool) (threadSettlementWork, error) {
 	unlock := a.threadRequestSettleLock(token)
 	defer unlock()
+	if gate, held := a.heldReceiptGate(threadID, token); held {
+		// Its own turn ended: the session's end is one of its thread's,
+		// which cut the turn it ran then, if any.
+		receipt, found, err := a.deliveredReceiptLocked(token)
+		if err != nil || !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning {
+			return threadSettlementWork{}, err
+		}
+		return a.settleHeldReceiptLocked(receipt, gate, heldEnd{sessionEnded: true, session: session})
+	}
 	if a.receiptSession(threadID, token) != session {
 		return threadSettlementWork{}, nil
 	}
@@ -245,8 +254,17 @@ func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held ma
 		default:
 			return threadSettlementWork{}, nil
 		}
-	} else if settlement, err = a.sessionEndSettlement(threadID, receipt.TurnID); err != nil {
-		return threadSettlementWork{}, err
+	} else {
+		if settlement, err = a.sessionEndSettlement(threadID, receipt.TurnID); err != nil {
+			return threadSettlementWork{}, err
+		}
+		// A turn that ended on its own before its session did answers as
+		// any turn end does, rest included.
+		index, _ := threadRequestTurnIndex(threadID, receipt.TurnID)
+		held := false
+		if settlement, held, err = a.restSettlement(receipt, settlement, index); err != nil || held {
+			return threadSettlementWork{}, err
+		}
 	}
 	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
 	return work, err
@@ -426,6 +444,12 @@ func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (threadSettlem
 		a.forgetReceiptRunning(threadID, token)
 		return threadSettlementWork{}, "", noHold, nil
 	}
+	if gate, held := a.heldReceiptGate(threadID, token); held {
+		// Its own turn ended: the turn that ended now is a later one of its
+		// thread's.
+		work, err := a.settleHeldReceiptLocked(receipt, gate, heldEnd{})
+		return work, "", noHold, err
+	}
 	if receipt.TurnID == "" {
 		// The message is with the provider and no delivery has named its
 		// turn: the turn that ended may be one it was written during, not
@@ -452,6 +476,10 @@ func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (threadSettlem
 	}
 	settlement, err := a.turnSettlement(threadID, turn)
 	if err != nil {
+		return threadSettlementWork{}, "", noHold, err
+	}
+	settlement, held, err := a.restSettlement(receipt, settlement, index)
+	if err != nil || held {
 		return threadSettlementWork{}, "", noHold, err
 	}
 	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)

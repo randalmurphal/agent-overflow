@@ -264,7 +264,7 @@ func TestGetUsageStatsReportedTokensAreEstimatedUntilFinalCost(t *testing.T) {
 	}
 	row.OutputTokens = 60
 	row.CostUSD = 0.5
-	if err := app.store.AppendUsageAndReconcile("scope", []store.UsageLedgerRow{row}); err != nil {
+	if err := app.store.AppendUsageAndReconcile("scope", []store.UsageLedgerRow{row}, store.OwnSpend{}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := app.GetUsageStats(store.UsageQuery{ThreadID: row.ThreadID})

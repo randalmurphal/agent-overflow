@@ -235,12 +235,17 @@ func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
 	if len(meta.ModelUsage) != 1 || meta.ModelUsage[0].Model != "gpt-5.2-codex" {
 		t.Fatalf("model attribution: %+v", meta.ModelUsage)
 	}
+	// The thread's own usage is all of it: a child's never reaches the
+	// parent's tokenUsage stream.
+	if meta.OwnUsage == nil || *meta.OwnUsage != *meta.Usage {
+		t.Fatalf("own usage %+v; want the turn's %+v", meta.OwnUsage, meta.Usage)
+	}
 
 	// A turn with no new usage attaches nothing.
 	meta2 := &provider.WireTurnCompleteMeta{StopReason: "end_turn"}
 	s.attachTurnUsage(meta2)
-	if meta2.Usage != nil || meta2.ModelUsage != nil {
-		t.Fatalf("empty turn must not attach usage: %+v %+v", meta2.Usage, meta2.ModelUsage)
+	if meta2.Usage != nil || meta2.ModelUsage != nil || meta2.OwnUsage != nil {
+		t.Fatalf("empty turn must not attach usage: %+v %+v %+v", meta2.Usage, meta2.ModelUsage, meta2.OwnUsage)
 	}
 }
 

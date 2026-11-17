@@ -116,6 +116,12 @@ func (a *App) workflowApplication() *workflowapp.Service {
 			ResumeRun: func(ctx context.Context, itemID string) error {
 				return a.WorkflowResumeItem(ctx, itemID, "", false)
 			},
+			OriginChanged: a.noteWorkflowOriginChange,
+			// The thread the run reports to may rest now that its report
+			// is in its hands, or will not come.
+			ReportSettled: func(itemID string) {
+				a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.workflowRuns[itemID] = struct{}{} })
+			},
 			Attention: workflowapp.AttentionPorts{
 				Notify: func(itemID, title, body string) error {
 					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {

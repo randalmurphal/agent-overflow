@@ -152,6 +152,10 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 	for i, batch := range responses {
 		b.WriteString(fmt.Sprintf("    %d)\n", i))
 		for _, line := range batch {
+			if line == mockReplayUserMessage {
+				b.WriteString("      emit \"{\\\"isReplay\\\":true,${line#\\{}\"\n")
+				continue
+			}
 			if gate, ok := strings.CutPrefix(line, mockWaitForFilePrefix); ok {
 				b.WriteString("      while [ ! -e ")
 				b.WriteString(stringsx.ShellQuote(gate))
@@ -174,6 +178,15 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 }
 
 const mockWaitForFilePrefix = "\x00wait-for-file:"
+
+const mockReplayUserMessage = "\x00replay-user-message"
+
+// MockReplayUserMessage is a WriteMockClaudeScript batch line that echoes
+// the user message the batch answers, as the CLI's --replay-user-messages
+// does, so the app confirms the delivery of a message it queued.
+func MockReplayUserMessage() string {
+	return mockReplayUserMessage
+}
 
 // MockWaitForFile is a WriteMockClaudeScript batch line that makes the
 // mock block until `path` exists before it prints the lines after it.

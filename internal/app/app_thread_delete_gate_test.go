@@ -164,6 +164,54 @@ func TestAClaimLandingWhileABatchWaitsOnTheActionLockHoldsIt(t *testing.T) {
 	}
 }
 
+// A batch the dispatcher holds, at the thread's action lock or at a
+// delete's decision, has left triage's queue and is not the provider's
+// yet: it keeps its thread from rest, so a request held for that rest
+// (threadRest) does not settle on a thread about to take a message. A
+// refused delete's batch is then sent once; a committed one's is sent
+// nothing.
+func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
+	t.Parallel()
+	for _, refuse := range []bool{true, false} {
+		t.Run(map[bool]string{true: "refused", false: "committed"}[refuse], func(t *testing.T) {
+			t.Parallel()
+			f := newClaimFixture(t)
+			id := f.caller.ID
+			if err := f.app.StartSession(id); err != nil {
+				t.Fatal(err)
+			}
+			notAtRest := func(when string) {
+				t.Helper()
+				if n := len(f.app.triage.LiveStateSnapshotForThread(id).QueueItems); n != 0 {
+					t.Fatalf("%s: triage still queues %d messages; want the batch the dispatcher's", when, n)
+				}
+				if rest, err := f.app.threadRest(id); err != nil || rest.unrest != workerQueued {
+					t.Errorf("%s: rest %+v, %v; want queued", when, rest, err)
+				}
+			}
+			unlock := f.app.threadLocks().Lock(id)
+			marker := "rest-held-" + entityid.New()
+			queueTestWake(t, f.app, id, marker)
+			heldAtTheActionLock(t, f.app, id)
+			notAtRest("at the action lock")
+			done := deleteOf(t, f.app, id, refuse, func() {
+				waitAtGates(t, f.app, 1)
+				notAtRest("at the delete's decision")
+			})
+			unlock()
+			decided(t, done, refuse)
+			if refuse {
+				f.deliveredOnce(t, marker)
+				return
+			}
+			nothingWaits(t, f.app)
+			if n := f.sent(t, marker); n != 0 {
+				t.Fatalf("a committed thread's batch reached the provider %d times", n)
+			}
+		})
+	}
+}
+
 // A batch waiting for a delete that is refused, and claimed again by a
 // second delete before the batch reads the thread again, waits for the
 // second delete's decision too.

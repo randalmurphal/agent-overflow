@@ -229,12 +229,18 @@ type threadWaiting struct {
 // a Codex async question, which outlives its session, counts as one
 // question to its recipient only while no turn runs and nothing is queued:
 // a turn or a queued message outranks a question asked in the background.
+// A queued message is one anywhere in the queue's handoff chain
+// (queueSnapshotForThread): a batch the dispatcher holds, waiting for the
+// thread's action lock or a delete's decision, has left triage's queue.
 func (a *App) threadWaitingOn(threadID string) threadWaiting {
 	var waiting threadWaiting
 	if a.triage != nil {
 		waiting.snapshot = a.triage.LiveStateSnapshotForThread(threadID)
 	}
 	waiting.live = threadToolsLiveState(waiting.snapshot)
+	if !waiting.live.PendingSends && a.flushQueueHolds(threadID) {
+		waiting.live.PendingSends = true
+	}
 	waiting.on, waiting.detail, waiting.routedTo = threadAgentBlockedOn(waiting.snapshot)
 	if waiting.on != "" || waiting.live.ActiveTurn || waiting.live.PendingSends {
 		return waiting

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mustCreateAssistant moves threadID into home and records an assistant on
@@ -743,7 +744,7 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 		t.Fatalf("helper row = helperOf %q agent %q projects %q", helper.HelperOfAgentID, helper.AgentID, helper.AgentProjectIDs)
 	}
 	// Neither takes a placement, so a row naming either offers none.
-	names, err := s.ThreadNames([]string{"ops", "helper"})
+	names, err := s.ThreadNames([]string{"ops", "helper"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -406,6 +406,11 @@ var agentHeldSQL = `held(token, thread) AS (
        AND ps.target_thread_id = f.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
+      FROM thread_requests d INDEXED BY idx_thread_requests_answer_due CROSS JOIN thread_requests ps
+     WHERE ` + threadAnswerDueSQL("d") + `
+       AND ps.target_thread_id = d.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
+    UNION
+    SELECT ps.token, ps.caller_thread_id
       FROM held CROSS JOIN thread_requests ps
      WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + `)`
 
@@ -765,7 +770,7 @@ const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE
     r.wake_attempts, r.wake_next_check, r.wake_issue, r.lineage_only, r.created_at, r.updated_at,
     COALESCE(r.confirmed_at, 0), COALESCE(r.late_confirmed_at, 0), r.answer_agent, r.answer_agent_role,
     r.target_provider, r.nested_open, r.late_delivered_how, r.made_in_thread_id,
-    r.late_reply_agent, r.late_reply_agent_role, ` + wakeItemSQL
+    r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, ` + wakeItemSQL
 
 // wakeItemSQL is the caller's row that carried request r's answer: the late
 // reply's confirmed wake, else the first answer's, each while the caller's
@@ -844,7 +849,13 @@ type ThreadAgentRowFrame struct {
 // above it whose listing nests it, fewer than depth spawns up. Reminders
 // and requests past the retention floor are left out; a link the floor
 // reduced to its lineage frames its caller with no token.
-func (s *Store) ThreadAgentRowFrames(tokens, targets, callers []string, owner string, depth int) (_ []ThreadAgentRowFrame, err error) {
+//
+// The same statement names rest: the caller of each of tokens that is a
+// worker, spawned here (its spawn link) or by a paired computer (a spawn
+// receipt with no request here). An answer on its way to such a caller
+// keeps it from rest (ThreadAnswerDue), so a changed request is a change
+// to its caller's durable sources.
+func (s *Store) ThreadAgentRowFrames(tokens, targets, callers []string, owner string, depth int) (_ []ThreadAgentRowFrame, rest []string, err error) {
 	action := "store: name the frames of changed agent rows"
 	encoded := make([]string, 0, 3)
 	for _, list := range [][]string{tokens, targets, callers} {
@@ -853,27 +864,32 @@ func (s *Store) ThreadAgentRowFrames(tokens, targets, callers []string, owner st
 		}
 		value, err := json.Marshal(list)
 		if err != nil {
-			return nil, fmt.Errorf("%s: encode: %w", action, err)
+			return nil, nil, fmt.Errorf("%s: encode: %w", action, err)
 		}
 		encoded = append(encoded, string(value))
 	}
 	rows, err := s.reader().Query(threadAgentRowFramesSQL, encoded[0], encoded[1], owner, encoded[2], depth)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return nil, nil, fmt.Errorf("%s: %w", action, err)
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	out := []ThreadAgentRowFrame{}
 	for rows.Next() {
 		var f ThreadAgentRowFrame
-		if err := rows.Scan(&f.Token, &f.ThreadID); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
+		var isRest bool
+		if err := rows.Scan(&f.Token, &f.ThreadID, &isRest); err != nil {
+			return nil, nil, fmt.Errorf("%s: scan: %w", action, err)
+		}
+		if isRest {
+			rest = append(rest, f.ThreadID)
+			continue
 		}
 		out = append(out, f)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate: %w", action, err)
+		return nil, nil, fmt.Errorf("%s: iterate: %w", action, err)
 	}
-	return out, nil
+	return out, rest, nil
 }
 
 // threadAgentRowFramesSQL is ThreadAgentRowFrames' read: ?1 the tokens, ?2
@@ -882,7 +898,8 @@ func (s *Store) ThreadAgentRowFrames(tokens, targets, callers []string, owner st
 // the root, keyed by the queued thread; a link has one caller, so each
 // enters once and a cycle ends. `up` frames each again up to the depth.
 // The cost is one search per link above the named threads, and the depth
-// per link.
+// per link. The last arm names rest, one indexed probe per token's caller
+// (idx_thread_requests_spawn_link, then the receipts by target).
 var threadAgentRowFramesSQL = `WITH RECURSIVE
   named(token, thread) AS (
     SELECT r.token, r.caller_thread_id FROM thread_requests r
@@ -907,4 +924,12 @@ var threadAgentRowFramesSQL = `WITH RECURSIVE
     SELECT up.token, sp.caller_thread_id, up.depth + 1
       FROM up CROSS JOIN thread_requests sp
      WHERE up.depth + 1 < ?5 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.thread)
-SELECT DISTINCT token, thread FROM up`
+SELECT DISTINCT token, thread, 0 FROM up
+UNION ALL
+SELECT DISTINCT '', r.caller_thread_id, 1 FROM json_each(?1) CROSS JOIN thread_requests r
+ WHERE r.token = json_each.value AND r.lineage_only = 0
+   AND (EXISTS (SELECT 1 FROM thread_requests link
+                 WHERE link.target_thread_id = r.caller_thread_id AND ` + agentSpawnLinkSQL("link") + `)
+        OR EXISTS (SELECT 1 FROM thread_request_receipts rc
+                    WHERE rc.target_thread_id = r.caller_thread_id AND rc.kind = 'spawn'
+                      AND NOT EXISTS (SELECT 1 FROM thread_requests own WHERE own.token = rc.token)))`
