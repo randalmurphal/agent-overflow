@@ -332,6 +332,10 @@ func chromiumArgs(userDataDir string) []string {
 		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		// A window a page opens with no gesture is a popup the Manager
+		// adopts or refuses at its caps, as WebView2's are, rather than one
+		// Chromium's blocker drops with no report.
+		"--disable-popup-blocking",
 		// The kernel picks a free loopback port, and Chromium prints the
 		// browser websocket URL on it (startChromium reads that line).
 		"--remote-debugging-port=0",

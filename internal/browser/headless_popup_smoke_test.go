@@ -19,7 +19,9 @@ import (
 // popups through the Manager, against a loopback server. A popup whose
 // first navigation is a download, held from the Manager for a second,
 // downloads and closes before its tab is listed: the download is listed,
-// finished, in its opener's tab. A popup a popup opens becomes a tab of the same thread.
+// finished, in its opener's tab. A popup a popup opens becomes a tab of the
+// same thread, one the popup opens with no gesture while it is still held
+// from its listing included.
 // Gated with TestHeadlessChromiumReal.
 func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	if os.Getenv("AO_HEADLESS_CHROMIUM_SMOKE") != "1" {
@@ -34,9 +36,13 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 			w.Header().Set("Content-Disposition", `attachment; filename="popup.bin"`)
 			w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
 			_, _ = w.Write(payload)
+		case "/autoparent":
+			// Opens its own popup as it loads, with no gesture, while the
+			// Manager still holds it from its listing.
+			_, _ = fmt.Fprint(w, `<!doctype html><title>autoparent</title><script>window.open("/autochild")</script>`)
 		default:
 			name := r.URL.Path[1:]
-			_, _ = fmt.Fprintf(w, `<!doctype html><title>%s</title><button id="download" onclick='window.open("/popup.bin")'>d</button><button id="parent" onclick='window.open("/parent")'>p</button><button id="child" onclick='window.open("/child")'>c</button>`, name)
+			_, _ = fmt.Fprintf(w, `<!doctype html><title>%s</title><button id="download" onclick='window.open("/popup.bin")'>d</button><button id="parent" onclick='window.open("/parent")'>p</button><button id="child" onclick='window.open("/child")'>c</button><button id="autoparent" onclick='window.open("/autoparent")'>a</button>`, name)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -69,12 +75,19 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	}
 	await := func(t *testing.T, what string, done func() bool) {
 		t.Helper()
+		deadline := time.After(30 * time.Second)
 		for !done() {
 			select {
 			case <-ctx.Done():
-				t.Fatalf("%s never happened: tabs %+v, downloads %+v", what, manager.CompanionState(access).Pages, manager.CompanionState(access).Downloads)
+			case <-deadline:
 			case <-time.After(50 * time.Millisecond):
+				continue
 			}
+			var tabs []string
+			for _, tab := range manager.CompanionState(access).Pages {
+				tabs = append(tabs, tab.Title+" "+tab.URL)
+			}
+			t.Fatalf("%s never happened: tabs %q, downloads %+v", what, tabs, manager.CompanionState(access).Downloads)
 		}
 	}
 	tabNamed := func(title string) string {
@@ -118,5 +131,10 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 		await(t, "the parent popup's tab", func() bool { return tabNamed("parent") != "" })
 		click(t, tabNamed("parent"), "child")
 		await(t, "the child popup's tab", func() bool { return tabNamed("child") != "" })
+	})
+
+	t.Run("a popup's popup opened with no gesture before its opener's listing", func(t *testing.T) {
+		click(t, opener.ID, "autoparent")
+		await(t, "the parent's and the child's tabs", func() bool { return tabNamed("autoparent") != "" && tabNamed("autochild") != "" })
 	})
 }

@@ -313,6 +313,7 @@ func wantChromiumArgv(userDataDir string) []string {
 		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--disable-popup-blocking",
 		"--remote-debugging-port=0",
 		"about:blank",
 	}

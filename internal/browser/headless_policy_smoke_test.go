@@ -24,8 +24,8 @@ import (
 // included), through a redirect, or in a popup with or without an opener,
 // while its own workspace's files load; two worktrees sharing the project
 // jar each keep their own authority; and a window a script opens with no
-// user gesture is refused by Chromium itself, so it never reaches the
-// Manager. Gated with TestHeadlessChromiumReal.
+// user gesture becomes a tab under the same policy. Gated with
+// TestHeadlessChromiumReal.
 func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 	if os.Getenv("AO_HEADLESS_CHROMIUM_SMOKE") != "1" {
 		t.Skip("set AO_HEADLESS_CHROMIUM_SMOKE=1 to launch this machine's real Chromium")
@@ -182,13 +182,25 @@ func TestHeadlessChromiumRealNavigationPolicy(t *testing.T) {
 
 	t.Run("a window opened with no gesture", func(t *testing.T) {
 		s := sides[1]
+		// The engine turns off Chromium's popup blocker, so the window opens
+		// and becomes a tab under the opener's policy, as on WebView2.
 		before := len(smokePopups(ctx, t, manager, s.access, s.pageID))
-		if got := evalString(s.access, s.pageID, fmt.Sprintf(`String(window.open(%q))`, smokeFileURL(filepath.Join(s.own, "secret.html")))); got != "null" {
-			t.Errorf("window.open with no gesture answered %s; headless Chromium blocks it", got)
+		if got := evalString(s.access, s.pageID, fmt.Sprintf(`String(window.open(%q))`, smokeFileURL(filepath.Join(s.own, "secret.html"))+"?nogesture")); got != "[object Window]" {
+			t.Errorf("window.open with no gesture answered %s, want a window", got)
 		}
-		time.Sleep(time.Second)
-		if after := len(smokePopups(ctx, t, manager, s.access, s.pageID)); after != before {
-			t.Errorf("a window opened with no gesture became a tab: %d tabs besides the opener, was %d", after, before)
+		if got := evalString(s.access, s.pageID, fmt.Sprintf(`String(window.open(%q))`, smokeFileURL(filepath.Join(outside, "secret.html"))+"?nogesture")); got != "[object Window]" {
+			t.Errorf("window.open with no gesture answered %s, want a window", got)
+		}
+		await(t, "the no-gesture popups' tabs", func() bool {
+			return len(smokePopups(ctx, t, manager, s.access, s.pageID)) == before+2
+		})
+		await(t, "the opener's own file to load in the no-gesture popup", func() bool {
+			return smokePopupsShow(ctx, t, manager, s.access, s.pageID, "secret-"+s.ownName)
+		})
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if smokePopupsShow(ctx, t, manager, s.access, s.pageID, "secret-"+filepath.Base(outside)) {
+				t.Fatal("a no-gesture popup shows the outside file")
+			}
 		}
 	})
 
