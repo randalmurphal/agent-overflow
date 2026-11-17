@@ -591,6 +591,14 @@ and anti-changes that live only here:
   the tabs into the new jar, where they load again when used; page state is
   not carried over. Agents read the jar but cannot change it.
   `docs/architecture/browser-tools.md`.
+- A file downloaded in the browser pane is visible to the user: a downloads
+  button in the address row shows running downloads' progress in steps and
+  lists the thread's downloads with cancel, Show in folder, and open in a
+  tab for a type a tab shows. A finished download is announced once with
+  Show in folder, a failed one with its reason. Clearing the list deletes
+  no file; files stay in AO's artifact directory under its quotas and
+  seven-day pruning. Downloads never open with the system's default app.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

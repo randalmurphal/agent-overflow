@@ -19,6 +19,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import PanePromoteButton from '../panes/PanePromoteButton.svelte';
+  import BrowserDownloadsControl from './BrowserDownloadsControl.svelte';
   import BrowserJarControl from './BrowserJarControl.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
 
@@ -148,8 +149,9 @@
   }
 </script>
 
-<!-- The history buttons, the address and the pane's own controls always
-     show at full size. Below a 32rem row (36rem under compact, whose
+<!-- The history buttons, the address, the downloads button (once the
+     thread has a download) and the pane's own controls always show at
+     full size. Below a 32rem row (36rem under compact, whose
      buttons are larger) the page's secondary controls (its size, cookie
      jar, open file, show in folder, devtools) move into the More menu, so
      the address keeps its room. -->
@@ -198,6 +200,7 @@
       {/if}
       <IconButton label="Open devtools" size="sm" onClick={() => void onAct('devtools')}><Icon icon={SquareCode} size={14} /></IconButton>
     </div>
+    <BrowserDownloadsControl />
     <div class="hidden @max-[32rem]:flex compact:@max-[36rem]:flex" bind:this={moreAnchor}>
       <IconButton label="More browser actions" size="sm" testId="browser-more" ariaHaspopup="menu" ariaExpanded={moreOpen} onClick={() => (moreOpen = !moreOpen)}><Icon icon={Ellipsis} size={15} /></IconButton>
     </div>
