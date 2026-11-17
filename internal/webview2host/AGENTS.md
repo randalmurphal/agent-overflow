@@ -61,7 +61,14 @@ stays pending, and the page's next show applies it once (`present`).
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize
-reports to preserve created before later states such as closed.
+reports to preserve created before later states such as closed. The UI
+thread alone owns the page registry: membership, admission (`admit`, one
+check whose `MaxHostPages` counts every page) and teardown (`closeTaken`)
+run in `Config.OnMain` turns, which run inline on the UI thread; work for a
+later turn goes through `Config.Post`. A close a page asks for itself is
+posted and rereads the page's downloads when it runs. A page whose
+required handlers (downloads, the download dialog, new windows) cannot be
+subscribed, or whose dialog state cannot be read, is not created.
 
 Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
 reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
@@ -81,8 +88,14 @@ once it is up, or with no window when a bound (`MaxPendingPopups`,
 comes first. A popup reaches the backend as `ReportPopup` under a page id
 the launcher mints, paired with the CDP target its view has after the
 deferral completes, and only after its opener's report; its other reports
-wait for that one (`pageReport`, `heldReports`, the newest snapshot per
-download). A popup keeps its opener as a page id, never a pointer. Every
+wait for that one (`pageReport`, `heldReports`: each kind of process
+failure once, up to `maxHeldProcessFailures`, and the newest snapshot per
+download), and its address is bounded to `MaxPopupURLBytes` and dropped at
+the announcement. A popup still waiting for its controller after
+`popupCreateBound` is discarded. A `ReportPopup` the launcher could not
+deliver closes the popup (`ReportUndelivered`), and with it its popups not
+yet announced. A middle, Ctrl or Shift click opens a popup whose target
+names no opener. A popup keeps its opener as a page id, never a pointer. Every
 way a popup goes runs `departPopup`: it answers the request, freeing the
 slot, and a popup not yet announced that has download reports is announced
 then (with an empty target when it has none yet), its held reports sent,
@@ -133,9 +146,13 @@ which need an installed runtime. From WSL, build them with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the
 user's screen or takes their keyboard: the binary runs itself again on a
 desktop of its own, never switched to (`desktop_smoke_windows_test.go`),
-refuses to run the smokes when it cannot, and a smoke refuses to open a
-window on any other desktop, unless
-`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. That desktop is never the
+refuses to run the smokes when it cannot, and a smoke refuses to create a
+window from a thread whose desktop is the input desktop or `Default`,
+whatever the marker says, unless
+`AO_NATIVE_BROWSER_SMOKE_ON_USER_DESKTOP=1`. Each smoke watches the
+top-level windows (`window_watch_smoke_windows_test.go`): its baseline must
+read, and any new window must be WebView2's own, owned by the smoke's
+window. That desktop is never the
 input desktop, so the focus smoke stands in the host's foreground answer
 (`Host.foreground`).
 

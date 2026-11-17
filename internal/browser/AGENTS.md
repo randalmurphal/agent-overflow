@@ -102,14 +102,21 @@ still being adopted, or not reported yet, waits for it (`awaitOpener`). A
 download a popup starts before its tab is listed names the popup by the
 handle the Manager adopts it under (`downloadStart.Popup`), and the Manager
 parks it, newest progress only, until the popup's fate lists it in the
-popup's tab or its nearest listed opener's (`popup_adoption.go`); an engine
-keeps no download of its own for a popup. On the hosted engine a popup is
-the launcher's report (`hosted_popups.go`); until the Manager lists its
-tab, the engine holds its crash and close and delivers them at the listing
-(`adoptedPage`). The CDP engines answer the navigation policy only
-browser-wide (`profileOptions.Allow`), one pause per request, so a popup's
-requests before its adoption have its opener chain's authority; a CDP page
-installs no interception of its own. Each CDP connection keeps one record
+popup's tab or its nearest listed opener's (`popup_adoption.go`); the tab
+and its parked downloads are listed in one `parkMu` hold that a page's
+close also takes. An engine keeps no download of its own for a popup.
+Headless Chromium runs with its popup blocker off, so a window a page opens
+with no gesture is a popup there as on WebView2. On the hosted engine a
+popup is the launcher's report (`hosted_popups.go`), attached only on its
+opener's connection, within the attach timeout, and canceled by its close;
+until the Manager lists its tab, the engine holds its crash and close and
+delivers them at the listing (`adoptedPage`). The CDP engines answer the
+navigation policy only browser-wide (`profileOptions.Allow`), one pause per
+request, so a popup's requests before its adoption have its opener chain's
+authority, the launcher's popup report counting as an opener edge on the
+hosted engine. A request whose owner does not resolve yet waits up to
+`requestOwnerWait` for it, then is refused (`awaitRequestOwner`); a CDP
+page installs no interception of its own. Each CDP connection keeps one record
 of its targets (`cdp_targets.go`), which goes with the connection.
 
 The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no

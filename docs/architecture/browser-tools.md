@@ -75,7 +75,8 @@ per-platform no-op.
   is in. The CDP engines pause each document request and file read once,
   browser-wide, and answer it with the jar's policy: the authority of the
   page its frame belongs to, or for a popup not yet adopted, of its opener
-  chain; one whose owner is not resolved may open no workspace's files.
+  chain; one whose owner is not resolved yet waits up to 2 seconds for
+  its target, its popup's report or its frame, then is refused.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying
@@ -991,12 +992,15 @@ controller of its own in the opener's profile, starting at the opener's
 bounds, so no window of WebView2's own opens and `window.opener` and
 `postMessage` work as in a browser; the opener's script waits in
 `window.open` until the controller is up. A request the launcher cannot take
-(four already being created, its 64 pages, or its opener closing) opens
-nothing, and `window.open` answers null. The popup reaches the backend as a
+(four already being created, its 64 pages, or its opener closing), or
+whose controller is not up within 10 seconds, opens nothing, and
+`window.open` answers null. The popup reaches the backend as a
 report naming its opener and CDP target (`internal/webview2host/popup.go`,
 `internal/browser/hosted_popups.go`), after its opener's, and its requests
 before its adoption pass the browser-wide policy with its opener chain's
-authority. On every engine a popup opened by a popup still being adopted
+authority, the opener its report names standing in where its target names
+none (a link a click opened in a new tab). Headless Chromium runs with its
+popup blocker off, so a window opened with no gesture opens there too. On every engine a popup opened by a popup still being adopted
 waits for that adoption, up to 10 seconds, and is closed with it when that
 popup is not adopted.
 

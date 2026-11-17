@@ -167,16 +167,19 @@ Spike-verified recipes, all load-bearing:
   port); verify cross-profile cookie isolation at implementation
   start, falling back to environment-per-workspace (one port each,
   same relay) if profiles leak.
-- **Popups**: every window a page opens raises `NewWindowRequested`
-  (`IsUserInitiated` false only for a script's call with no gesture).
+- **Popups**: every window a page opens raises `NewWindowRequested`,
+  a middle, Ctrl or Shift click on a link included.
   The launcher takes the deferral, creates a hidden controller in the
   opener's profile, hands its view over with `put_NewWindow`, sets
   `Handled` and completes the deferral; no window of WebView2's own
   opens, and `window.opener` and `postMessage` work. The view gets a new
-  CDP target at the completion, naming the opener, which the launcher
+  CDP target at the completion, naming the opener unless a click opened
+  it in a new tab, which the launcher
   reports (`ReportPopup`) under a page id it mints before any other
   report of the page and after its opener's; the backend adopts or closes
-  it like any page. A popup that goes before its report is reported then,
+  it like any page. The report reaches the backend 0.5 to 3 ms before
+  the popup's first request pauses, so the policy has its opener edge
+  when the target names none (`policy_smoke_windows_test.go`). A popup that goes before its report is reported then,
   with its downloads and its close, only when it has downloads to
   report.
   `Handled` with no new window opens nothing (`window.open` answers
