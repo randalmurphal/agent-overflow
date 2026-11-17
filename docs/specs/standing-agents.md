@@ -136,7 +136,10 @@ user changes it.
     worker a thread on a paired computer spawned and owns (its spawn's
     link) asks that spawn's caller there, named with this computer; a
     prompt that computer does not say it holds for two minutes, or
-    whose link ends, goes back to the user here. A worker whose spawner
+    whose link ends, goes back to the user here. When that spawner is
+    archived or deleted, its archive or delete reaches the worker and
+    closes the prompt with it; the user there gets the prompt only while
+    the spawner's computer cannot reach theirs. A worker whose spawner
     is archived, or that another computer spawned without owning it,
     asks the user, and a prompt left open when its spawner is
     archived or deleted goes back to the user, whether or not the
@@ -857,7 +860,8 @@ Ruling 36, as built:
   worker (`ClaimLinkedDelete`), so its refusals and its gate are that
   computer's; a release ends the link. A worker given a sidebar row there
   is kept, and the delete ends its link. Every write that ends links
-  announces the workers it released (`announceReleasedWorkers`): a
+  announces the workers it released and hands back the prompts their
+  links held (`announceReleasedWorkers`): a
   release, that delete, the end of the owner device's last session there,
   and the retention floor. The delete's confirmation says when the
   threads it takes spawned workers on other computers

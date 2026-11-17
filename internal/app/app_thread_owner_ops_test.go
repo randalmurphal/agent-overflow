@@ -32,9 +32,35 @@ type ownerOpPeer struct {
 	asleep atomic.Bool
 	older  bool
 	hold   atomic.Pointer[func(op string) func()]
+	// unreachable fails every call, as a computer that cannot be reached.
+	unreachable atomic.Bool
+	// returns counts the prompt hand-backs that reached this computer.
+	returns atomic.Int32
+}
+
+var errPeerUnreachable = errors.New("the computer cannot be reached")
+
+func (p *ownerOpPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.unreachable.Load() {
+		return ThreadPeerReply{}, errPeerUnreachable
+	}
+	return p.App.ThreadToolQuery(ctx, call)
+}
+
+func (p *ownerOpPeer) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
+	if p.unreachable.Load() {
+		return ThreadPeerPollReply{}, errPeerUnreachable
+	}
+	return p.App.ThreadToolRequestStatus(ctx, poll)
 }
 
 func (p *ownerOpPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.unreachable.Load() {
+		return ThreadPeerReply{}, errPeerUnreachable
+	}
+	if call.Tool == threadAgentPeerPromptReturn {
+		p.returns.Add(1)
+	}
 	if call.Tool != threadOwnerOpTool {
 		return p.App.ThreadToolCall(ctx, call)
 	}

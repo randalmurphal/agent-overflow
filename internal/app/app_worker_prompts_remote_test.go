@@ -554,14 +554,25 @@ func TestAPromptGoesBackWhenItsHolderCannotAnswer(t *testing.T) {
 	}
 }
 
-// A prompt that arrives after its spawner here was archived is given back
-// at once: nothing is queued to the archived thread.
+// A prompt that arrives after its spawner here was archived, the archive
+// finished and owing the worker nothing (as when its computer predates
+// owner operations), is given back at once: nothing is queued to the
+// archived thread.
 func TestAPromptForAnArchivedSpawnerGoesBackAtOnce(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.openThere(t, 1)
 	if _, _, err := p.source.store.ArchiveThread(p.caller.ID); err != nil {
 		t.Fatal(err)
+	}
+	owed, err := p.source.store.OweRemoteArchives(p.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range owed {
+		if _, err := p.source.store.SettleOwnerOp(op.Token, op.Seq); err != nil {
+			t.Fatal(err)
+		}
 	}
 	waitUntil(t, 15*time.Second, func() bool {
 		p.poll(t)

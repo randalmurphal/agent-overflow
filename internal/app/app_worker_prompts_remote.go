@@ -29,8 +29,10 @@ import (
 //   - A listed prompt not registered is registered and its wake queued to
 //     its holder: the spawn's caller now (a handoff moves it), while that
 //     thread can take a prompt (store.RemotePromptHolder). One that cannot
-//     is given back at once (agent_prompt_return), and kept as returned
-//     until that computer stops listing it.
+//     is given back at once (agent_prompt_return), unless the spawner's
+//     archive or delete is on its way to the worker, which ends it there;
+//     either way it is kept as returned until that computer stops listing
+//     it.
 //   - A registered prompt no longer listed is closed and its wake
 //     withdrawn: the person answered it there, the worker stopped waiting,
 //     or that computer's lease gave it to the person.
@@ -414,7 +416,11 @@ func (a *App) rerouteRemotePromptsFrom(threadID string) {
 // its worker, which puts it to the person there, and withdraws its wake
 // here. The prompt is kept as returned until that computer stops listing
 // it. The return is best effort: a prompt this computer no longer names as
-// held goes back there when its lease runs out.
+// held goes back there when its lease runs out. Nothing is sent for a
+// worker this computer owes an archive or delete (store.OwesWorkerEnd): that
+// operation ends the prompt with the worker, so the person there is not
+// asked about a worker on its way out, and the lease covers one that
+// cannot arrive.
 func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
@@ -428,6 +434,13 @@ func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) {
 	r.mu.Unlock()
 	if returned.delivery != "" {
 		a.withdrawRemotePromptWake(returned)
+	}
+	ending, err := a.store.OwesWorkerEnd(returned.spawn.Token)
+	if err != nil {
+		log.Printf("worker prompts: %v", err)
+	}
+	if ending {
+		return
 	}
 	a.threadRequestsWG.Go(func() {
 		ctx, cancel := context.WithTimeout(a.lifeCtx(), remotePromptCallTimeout)

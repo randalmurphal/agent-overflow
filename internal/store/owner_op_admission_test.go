@@ -86,3 +86,47 @@ func TestHasRemoteSpawns(t *testing.T) {
 		}
 	}
 }
+
+// OwesWorkerEnd is true while an archive or delete is owed to the spawn's
+// worker, or its caller's archive has not finished, and not for a
+// supersede or once the archive is settled.
+func TestOwesWorkerEnd(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "lead")
+	seedRemoteSpawn(t, s, "r1", "lead", "pc-a", "worker-there")
+	owes := func(want bool, when string) {
+		t.Helper()
+		if got, err := s.OwesWorkerEnd("r1"); err != nil || got != want {
+			t.Fatalf("%s: OwesWorkerEnd = %v, %v; want %v", when, got, err, want)
+		}
+	}
+	owes(false, "before the archive")
+	if _, _, err := s.ArchiveThread("lead"); err != nil {
+		t.Fatal(err)
+	}
+	owes(true, "with the archive unfinished")
+	owed, err := s.OweRemoteArchives("lead")
+	if err != nil || len(owed) != 1 {
+		t.Fatalf("owe: %+v, %v", owed, err)
+	}
+	owes(true, "with the archive owed")
+	if _, err := s.MarkOwnerOpSent("r1", owed[0].Seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.UnarchiveThread("lead"); err != nil {
+		t.Fatal(err)
+	}
+	owes(false, "with a supersede owed")
+	if _, _, err := s.ArchiveThread("lead"); err != nil {
+		t.Fatal(err)
+	}
+	owed, err = s.OweRemoteArchives("lead")
+	if err != nil || len(owed) != 1 {
+		t.Fatalf("owe again: %+v, %v", owed, err)
+	}
+	owes(true, "with the second archive owed")
+	if _, err := s.SettleOwnerOp("r1", owed[0].Seq); err != nil {
+		t.Fatal(err)
+	}
+	owes(false, "once the archive is settled")
+}
