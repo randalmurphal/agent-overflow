@@ -354,6 +354,16 @@ func newDownloadTracker(events engineEvents, cancel func(id string)) *downloadTr
 	return &downloadTracker{events: events, cancel: cancel, downloads: newBoundedMap[string, downloadLifecycle](orderSlack)}
 }
 
+// refusedDownloadCanceler is the tracker's cancel for a download the Manager
+// refused: no caller waits on it, so a failure is logged.
+func refusedDownloadCanceler(cancel func(id string) error, logf func(string, ...any)) func(id string) {
+	return func(id string) {
+		if err := cancel(id); err != nil {
+			logf("browser: cancel refused download %s: %v", id, err)
+		}
+	}
+}
+
 func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -407,7 +417,7 @@ func cdpDownloadProgress(event cdpbrowser.EventDownloadProgress) downloadProgres
 	case cdpbrowser.DownloadProgressStateCanceled:
 		state = downloadCanceled
 	}
-	return downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, State: state, FilePath: event.FilePath}
+	return downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, Total: event.TotalBytes, State: state, FilePath: event.FilePath}
 }
 
 // subscribe connects the tracker to the download events of the browser of

@@ -369,14 +369,14 @@ func (p *wkProfile) sampleDownload(entry *wkDownload) {
 		case <-entry.stop:
 			return
 		case <-ticker.C:
-			received := wkDownloadReceived(entry.ptr)
+			received, total := wkDownloadProgress(entry.ptr)
 			select {
 			case <-entry.stop:
 				return
 			default:
 			}
 			p.engine.events.DownloadProgress(downloadProgress{
-				ID: entry.handle, Received: received, State: downloadInProgress,
+				ID: entry.handle, Received: received, Total: total, State: downloadInProgress,
 			})
 		}
 	}
@@ -396,13 +396,18 @@ func (p *wkProfile) releaseDownload(handle string) {
 	wkReleaseDownload(entry.ptr)
 }
 
-func (p *wkProfile) CancelDownload(id string) {
+func (p *wkProfile) CancelDownload(id string) error {
 	p.mu.Lock()
 	entry := p.downloads[id]
 	p.mu.Unlock()
-	if entry != nil {
-		wkCancelDownload(entry.ptr)
+	if entry == nil {
+		// Released: WebKit already reported it finished or failed.
+		return nil
 	}
+	if !wkCancelDownload(entry.ptr) {
+		return errWKUnavailable
+	}
+	return nil
 }
 
 func (p *wkProfile) Dispose(context.Context) error {

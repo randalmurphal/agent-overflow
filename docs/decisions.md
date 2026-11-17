@@ -589,6 +589,12 @@ and anti-changes that live only here:
   Windows or `\\wsl` path typed into it opens the file it names or fails
   naming the path, never a web search; a file can also be picked from the
   workspace without knowing its path.
+- The browser's address suggests only from this thread: its open tabs, its
+  dev servers and the addresses its pages recently opened. No network
+  suggestions or search queries while typing, and no inline completion: the
+  typed text is the user's until a row is chosen. Recent addresses are kept
+  in memory only, never for a private jar, and are forgotten by a jar
+  switch, Clear site data, turning the browser off and closing the thread.
 - Each thread's browser chooses its cookie jar: this worktree (default),
   the whole project, this browser only, or private. A jar shares sign-ins
   and site data only; file and navigation permissions and download quotas
@@ -597,6 +603,14 @@ and anti-changes that live only here:
   its last tab closes. Switching with tabs open asks first, then suspends
   the tabs into the new jar, where they load again when used; page state is
   not carried over. Agents read the jar but cannot change it.
+  `docs/architecture/browser-tools.md`.
+- A file downloaded in the browser pane is visible to the user: a downloads
+  button in the address row shows running downloads' progress in steps and
+  lists the thread's downloads with cancel, Show in folder, and open in a
+  tab for a type a tab shows. A finished download is announced once with
+  Show in folder, a failed one with its reason. Clearing the list deletes
+  no file; files stay in AO's artifact directory under its quotas and
+  seven-day pruning. Downloads never open with the system's default app.
   `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A

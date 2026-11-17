@@ -1,0 +1,380 @@
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import BrowserAddressBarPaneHarness from './BrowserAddressBarPaneHarness.svelte';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { resetDevServersForTest } from '../../stores/devServers.svelte';
+import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
+
+const THREAD = 'thread-1';
+
+function page(id: string, url: string, title = id) {
+  return { id, url, title, canGoBack: false, canGoForward: false };
+}
+
+const PAGES = [page('a', 'https://example.test/a', 'Page a'), page('b', 'http://localhost:5173/settings', 'Settings')];
+
+function seed(activePageId = 'a') {
+  push('worktree', 1, activePageId);
+}
+
+/** The thread's state push, with the Manager's recent-address forget generation. */
+function push(jar: string, recentGen: number, activePageId = 'a'): void {
+  applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId, visible: true, jar, recentGen, pages: PAGES } as never);
+}
+
+function mount(activePage = PAGES[0]) {
+  const onAct = vi.fn(async (..._args: unknown[]) => {});
+  const onLeave = vi.fn();
+  const view = render(BrowserAddressBarPaneHarness, {
+    threadId: THREAD,
+    activePage: activePage as never,
+    sizeLabel: '',
+    promotePaneId: null,
+    onAct,
+    onRevealPageFile: async () => {},
+    onOpenFile: () => {},
+    onLeave,
+  });
+  const input = view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement;
+  return { view, input, onAct, onLeave };
+}
+
+function key(input: HTMLInputElement, init: KeyboardEventInit): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+  input.dispatchEvent(event);
+  return event;
+}
+
+async function type(input: HTMLInputElement, text: string): Promise<void> {
+  await fireEvent.input(input, { target: { value: text } });
+  await tick();
+}
+
+function rows(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-testid="browser-address-suggestion"]'));
+}
+
+function rowText(): string[] {
+  return rows().map((row) => `${row.dataset.kind} ${row.title}`);
+}
+
+describe('<BrowserAddressSuggestions>', () => {
+  let recent: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    resetBrowserCompanionForTest();
+    resetDevServersForTest();
+    resetAirspaceForTest();
+    recent = setBindingMock('BrowserCompanionRecentAddresses', vi.fn(async () => [
+      { url: 'https://example.test/a', title: 'Page a' },
+      { url: 'https://github.test/org/repo', title: 'Repo' },
+    ]));
+    setBindingMock('GetDevServers', async () => ({
+      previewHost: '',
+      servers: [{ port: 8080, threadId: THREAD, process: 'node', listening: true, allowed: false, source: 'seen', scheme: 'http' }],
+    }));
+    seed();
+  });
+  afterEach(() => {
+    resetBrowserCompanionForTest();
+    resetDevServersForTest();
+    resetBindingMocks();
+    resetAirspaceForTest();
+  });
+
+  it('reads the recent addresses and dev servers on focus and offers them for typed text', async () => {
+    const { input } = mount();
+    input.focus();
+    await waitFor(() => expect(recent).toHaveBeenCalledWith(THREAD));
+    expect(rows()).toEqual([]);
+    await type(input, 'local');
+    await waitFor(() => expect(rowText()).toEqual(['tab http://localhost:5173/settings', 'dev-server http://localhost:8080/']));
+    await type(input, 'test');
+    // The field's own tab, and its address among the recent ones, are not offered.
+    expect(rowText()).toEqual(['recent https://github.test/org/repo']);
+    expect(input.value).toBe('test');
+    await type(input, '');
+    expect(rows()).toEqual([]);
+  });
+
+  it('moves with the arrows without touching the typed text, and Enter takes the highlighted row', async () => {
+    const { input, onAct, onLeave } = mount();
+    input.focus();
+    await type(input, 'o');
+    await waitFor(() => expect(rows().length).toBe(3));
+    expect(key(input, { key: 'ArrowDown' }).defaultPrevented).toBe(true);
+    await tick();
+    expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
+    expect(input.getAttribute('aria-activedescendant')).toBe(rows()[0].id);
+    key(input, { key: 'ArrowUp' });
+    await tick();
+    // Up from the first row returns to the typed text.
+    expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'false', 'false']);
+    expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+    key(input, { key: 'ArrowUp' });
+    await tick();
+    expect(rows()[2].getAttribute('aria-selected')).toBe('true');
+    expect(input.value).toBe('o');
+    expect(key(input, { key: 'Enter' }).defaultPrevented).toBe(true);
+    await tick();
+    expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'https://github.test/org/repo');
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(rows()).toEqual([]);
+  });
+
+  it('switches to a tab, then leaves the field for it', async () => {
+    let finish: () => void = () => {};
+    const { input, onAct, onLeave } = mount();
+    onAct.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(1));
+    key(input, { key: 'ArrowDown' });
+    await tick();
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenCalledWith('activate', 'b');
+    expect(onLeave).not.toHaveBeenCalled();
+    finish();
+    await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not take focus back after a tab switch if the user moved on', async () => {
+    let finish: () => void = () => {};
+    const { input, onAct, onLeave } = mount();
+    onAct.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(1));
+    key(input, { key: 'ArrowDown' });
+    key(input, { key: 'Enter' });
+    input.blur();
+    finish();
+    await Promise.resolve();
+    await tick();
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  it('Enter with no row highlighted navigates the typed text', async () => {
+    const { input, onAct } = mount();
+    input.focus();
+    await type(input, 'local');
+    await waitFor(() => expect(rows().length).toBe(2));
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'local');
+  });
+
+  it('Escape closes the list first and reverts on the next press', async () => {
+    const { input, onLeave } = mount();
+    input.focus();
+    await type(input, 'local');
+    await waitFor(() => expect(rows().length).toBe(2));
+    const first = key(input, { key: 'Escape' });
+    await tick();
+    expect(first.defaultPrevented).toBe(true);
+    expect(rows()).toEqual([]);
+    expect(input.value).toBe('local');
+    expect(onLeave).not.toHaveBeenCalled();
+    const second = key(input, { key: 'Escape' });
+    await tick();
+    expect(second.defaultPrevented).toBe(true);
+    expect(input.value).toBe('https://example.test/a');
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes a clicked row without moving focus off the field first', async () => {
+    const { input, onAct } = mount();
+    input.focus();
+    await type(input, 'github');
+    await waitFor(() => expect(rows().length).toBe(1));
+    const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    rows()[0].dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+    await fireEvent.mouseMove(rows()[0]);
+    expect(rows()[0].getAttribute('aria-selected')).toBe('true');
+    await fireEvent.click(rows()[0]);
+    expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'https://github.test/org/repo');
+  });
+
+  it('paints as an overlay the native view yields to, only while open', async () => {
+    const { input } = mount();
+    input.focus();
+    expect(airspaceSurfaces().length).toBe(0);
+    await type(input, 'local');
+    await waitFor(() => expect(rows().length).toBe(2));
+    expect(airspaceSurfaces().length).toBe(1);
+    expect(airspaceSurfaces()[0].contains(rows()[0])).toBe(true);
+    input.blur();
+    await tick();
+    expect(rows()).toEqual([]);
+    expect(airspaceSurfaces().length).toBe(0);
+  });
+
+  it('closes when another tab becomes active', async () => {
+    const { view, input } = mount();
+    input.focus();
+    await type(input, 'local');
+    await waitFor(() => expect(rows().length).toBe(2));
+    seed('b');
+    await view.rerender({ activePage: PAGES[1] as never });
+    await tick();
+    expect(rows()).toEqual([]);
+  });
+
+  it('says when the recent addresses could not be read', async () => {
+    setBindingMock('BrowserCompanionRecentAddresses', async () => {
+      throw new Error('browser manager unavailable');
+    });
+    const { view, input } = mount();
+    input.focus();
+    await tick();
+    await type(input, 'local');
+    expect((await view.findByTestId('browser-address-suggestions-error')).textContent).toContain('browser manager unavailable');
+  });
+
+  it('keeps Enter on the highlighted row when the list changes under it', async () => {
+    const { input, onAct } = mount();
+    input.focus();
+    await type(input, 'github');
+    await waitFor(() => expect(rowText()).toEqual(['recent https://github.test/org/repo']));
+    key(input, { key: 'ArrowDown' });
+    await tick();
+    // A tab push puts a row above the highlighted one.
+    applyBrowserCompanionState({
+      kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 1,
+      pages: [...PAGES, page('g', 'https://github.test/other', 'Other')],
+    } as never);
+    await tick();
+    expect(rowText()).toEqual(['tab https://github.test/other', 'recent https://github.test/org/repo']);
+    expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+    expect(input.getAttribute('aria-activedescendant')).toBe(rows()[1].id);
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'https://github.test/org/repo');
+  });
+
+  it('goes back to the typed text when the highlighted row leaves the list', async () => {
+    const other = page('d', 'https://d.test/settings', 'More settings');
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 1, pages: [...PAGES, other] } as never);
+    const { input, onAct } = mount();
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(2));
+    key(input, { key: 'ArrowDown' });
+    await tick();
+    expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['true', 'false']);
+    // The highlighted tab closes, and the other slides into its place.
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, jar: 'worktree', recentGen: 1, pages: [PAGES[0], other] } as never);
+    await tick();
+    expect(rowText()).toEqual(['tab https://d.test/settings']);
+    expect(rows()[0].getAttribute('aria-selected')).toBe('false');
+    key(input, { key: 'Enter' });
+    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'settings');
+  });
+
+  it('reads again for the new thread when the pane changes thread under the focused field', async () => {
+    recent.mockImplementation(async (thread: string) =>
+      thread === THREAD ? [{ url: 'https://github.test/org/repo', title: 'Repo' }] : [{ url: 'https://two.test/', title: 'Two' }]);
+    applyBrowserCompanionState({ kind: 'state', threadId: 'thread-2', activePageId: 'c', visible: true, jar: 'worktree', pages: [page('c', 'https://c.test/')] } as never);
+    const { view, input } = mount();
+    input.focus();
+    await waitFor(() => expect(recent).toHaveBeenCalledWith(THREAD));
+    await view.rerender({ threadId: 'thread-2', activePage: page('c', 'https://c.test/') as never });
+    await waitFor(() => expect(recent).toHaveBeenLastCalledWith('thread-2'));
+    expect(document.activeElement).toBe(input);
+    await type(input, 'test');
+    await waitFor(() => expect(rowText()).toEqual(['recent https://two.test/']));
+  });
+
+  it('drops the recent addresses, and a read in flight, when the Manager forgets them', async () => {
+    const answers: ((list: { url: string; title: string }[]) => void)[] = [];
+    recent.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const { input } = mount();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    push('thread', 2);
+    await waitFor(() => expect(answers.length).toBe(2));
+    // The old jar's read answers last, with what the Manager has forgotten.
+    answers[1]([]);
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await tick();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+
+    // A read the field left in flight is the old jar's even with no focus
+    // to read again for.
+    answers.length = 0;
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    input.blur();
+    push('project', 3);
+    await tick();
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await tick();
+    input.focus();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+
+    // A list already read goes with the jar too, focus or not.
+    answers.length = 0;
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await type(input, 'github');
+    await waitFor(() => expect(rows().length).toBe(1));
+    input.blur();
+    push('private', 4);
+    await tick();
+    expect(answers.length).toBe(1);
+    // A focus reads again (pending here); until it answers nothing is offered.
+    input.focus();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+  });
+
+  it('drops them after a jar round trip that ends on the same jar in one batch', async () => {
+    const answers: ((list: { url: string; title: string }[]) => void)[] = [];
+    recent.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const { input } = mount();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(1));
+    answers[0]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await type(input, 'github');
+    await waitFor(() => expect(rows().length).toBe(1));
+    // A read in flight when the batch lands.
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(2));
+    // worktree -> private -> worktree, applied together as a socket batch
+    // is, with the same tab: only the generation says the list was forgotten.
+    push('private', 2);
+    push('worktree', 3);
+    await waitFor(() => expect(answers.length).toBe(3));
+    answers[1]([{ url: 'https://github.test/org/repo', title: 'Repo' }]);
+    await tick();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+    answers[2]([]);
+    await tick();
+    await type(input, 'github');
+    expect(rows()).toEqual([]);
+  });
+
+  it('keeps the newest focus\'s read when an older one answers late', async () => {
+    const answers: ((list: { url: string; title: string }[]) => void)[] = [];
+    setBindingMock('BrowserCompanionRecentAddresses', () => new Promise((resolve) => answers.push(resolve)));
+    const { input } = mount();
+    input.focus();
+    input.blur();
+    input.focus();
+    await waitFor(() => expect(answers.length).toBe(2));
+    answers[1]([{ url: 'https://new.test/', title: '' }]);
+    await tick();
+    answers[0]([{ url: 'https://old.test/', title: '' }]);
+    await tick();
+    await type(input, '.test');
+    await waitFor(() => expect(rowText()).toContain('recent https://new.test/'));
+    expect(rowText()).not.toContain('recent https://old.test/');
+  });
+});

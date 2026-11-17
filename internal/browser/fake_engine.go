@@ -31,13 +31,15 @@ import (
 
 var errFakeEngineHasNoPage = errors.New("browser: the fake browser engine renders no page content")
 
-// fakeEngine takes no engineEvents: it opens no page of its own, loses none,
-// and downloads nothing, so it has no fact to report. Every page it holds is
-// one the Manager asked for and one the Manager closes.
+// fakeEngine opens no page of its own and loses none: every page it holds is
+// one the Manager asked for and one the Manager closes. Its one engine fact
+// is a download (fake_downloads.go), reported through events when the
+// Manager wired them (selectEngine).
 type fakeEngine struct {
 	mu      sync.Mutex
 	running bool
 	seq     atomic.Uint64
+	events  engineEvents
 }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{} }
@@ -71,20 +73,27 @@ func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineP
 	if !e.Running() {
 		return nil, errors.New("browser: engine unavailable")
 	}
-	return &fakeProfile{engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow}, nil
+	return &fakeProfile{
+		engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow,
+		downloadDir: opts.DownloadDir,
+	}, nil
 }
 
 type fakeProfile struct {
 	engine *fakeEngine
 	handle string
-	// jar, ephemeral and allow are what the profile was created with.
-	jar       string
-	ephemeral bool
-	allow     func(owners []string, rawURL string) bool
+	// jar, ephemeral, allow and downloadDir are what the profile was
+	// created with.
+	jar         string
+	ephemeral   bool
+	allow       func(owners []string, rawURL string) bool
+	downloadDir string
 
 	mu       sync.Mutex
 	disposed bool
 	pages    map[*fakePage]struct{}
+	// held are the downloads left running (fake_downloads.go), by id.
+	held map[string]fakeDownload
 }
 
 func (p *fakeProfile) Handle() string { return p.handle }
@@ -115,8 +124,6 @@ func (p *fakeProfile) AttachPage(context.Context, string, pageHooks) (pageDriver
 	return nil, errors.New("browser: the fake browser engine opens no pages of its own")
 }
 
-func (p *fakeProfile) CancelDownload(string) {}
-
 func (p *fakeProfile) Dispose(context.Context) error {
 	p.mu.Lock()
 	pages := make([]*fakePage, 0, len(p.pages))
@@ -124,6 +131,7 @@ func (p *fakeProfile) Dispose(context.Context) error {
 		pages = append(pages, page)
 	}
 	p.pages = nil
+	p.held = nil
 	p.disposed = true
 	p.mu.Unlock()
 	for _, page := range pages {
@@ -230,6 +238,10 @@ func (p *fakePage) Navigate(ctx context.Context, rawURL string) error {
 		if err := hook(ctx, rawURL); err != nil {
 			return err
 		}
+	}
+	if download, ok := fakeDownloadAddress(rawURL); ok {
+		// A response a browser saves rather than shows: the page stays.
+		return p.profile.download(p.handle, download)
 	}
 	p.mu.Lock()
 	// A navigation truncates the forward entries AFTER the current one and

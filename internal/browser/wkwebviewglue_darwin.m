@@ -26,7 +26,8 @@ extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view,
 extern int aoWKVPagePresented(uint64_t page_id);
 extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t download_id,
                                  void *download, char *uri, char *suggested);
-extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
+extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path,
+                                  char *error);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
 extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift, int repeat,
                          int composing);
@@ -1046,14 +1047,15 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   NSString *path = objc_getAssociatedObject(download, &kAODownloadPathKey);
   aoWKVDownloadFinished(ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
                         (double)[[download progress] completedUnitCount], AO_DL_COMPLETED,
-                        ao_dup(path));
+                        ao_dup(path), NULL);
 }
 
 - (void)download:(WKDownload *)download
     didFailWithError:(NSError *)error
           resumeData:(NSData *)resumeData {
   aoWKVDownloadFinished(ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
-                        (double)[[download progress] completedUnitCount], AO_DL_CANCELED, NULL);
+                        (double)[[download progress] completedUnitCount], AO_DL_CANCELED, NULL,
+                        error ? ao_dup([error localizedDescription]) : NULL);
 }
 
 @end
@@ -1602,5 +1604,15 @@ double ao_wkv_download_received(void *download) {
       return 0;
     }
     return (double)[[(WKDownload *)download progress] completedUnitCount];
+  }
+}
+
+double ao_wkv_download_total(void *download) {
+  @autoreleasepool {
+    if (download == NULL) {
+      return 0;
+    }
+    int64_t total = [[(WKDownload *)download progress] totalUnitCount];
+    return total > 0 ? (double)total : 0;
   }
 }

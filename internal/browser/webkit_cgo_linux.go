@@ -345,14 +345,16 @@ func aoWebKitDownloadStarted(profileID, pageID, downloadID C.uint64_t, download 
 		if !profile.engine.events.DownloadStarted(downloadStart{
 			Frame: frame, ID: handle, URL: target, SuggestedName: name,
 		}) {
-			profile.CancelDownload(handle)
+			if err := profile.CancelDownload(handle); err != nil {
+				log.Printf("browser: cancel refused download %s: %v", handle, err)
+			}
 		}
 	}()
 }
 
 //export aoWebKitDownloadProgress
-func aoWebKitDownloadProgress(downloadID C.uint64_t, received C.double, state C.int, path *C.char) {
-	filePath := webkitTakeString(path)
+func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, state C.int, path, failure *C.char) {
+	filePath, reason := webkitTakeString(path), webkitTakeString(failure)
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
 	// The profile that started the download owns the whole of its progress, so
 	// a report arriving after that profile is disposed is a lookup miss rather
@@ -361,7 +363,7 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received C.double, state C.
 	if profile == nil {
 		return
 	}
-	progress := downloadProgress{ID: handle, Received: float64(received), State: downloadInProgress, FilePath: filePath}
+	progress := downloadProgress{ID: handle, Received: float64(received), Total: float64(total), State: downloadInProgress, FilePath: filePath, Error: reason}
 	switch int(state) {
 	case 1:
 		progress.State = downloadCompleted
@@ -838,8 +840,9 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 	}
 }
 
-func webkitCancelDownload(download unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_download_cancel(download) })
+// webkitCancelDownload reports false when the GTK main loop could not run it.
+func webkitCancelDownload(download unsafe.Pointer) bool {
+	return gtkDo(func() { C.ao_wk_download_cancel(download) })
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {

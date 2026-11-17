@@ -62,6 +62,8 @@ func (m *Manager) closeKept(ctx context.Context, access Access, pageID string, k
 		m.mu.Lock()
 		m.dropClosedLocked(access.ThreadID, kept)
 		m.mu.Unlock()
+		// The close that took the tab may have pushed the record.
+		m.emitThreadState(access.ThreadID)
 	}
 	return err
 }
@@ -119,21 +121,24 @@ func (m *Manager) setClosedLocked(threadID string, stack []closedTab) {
 	m.closedTabs[threadID] = stack
 }
 
-// forgetClosedTabs forgets the closed tabs of threadID, or of every thread
-// when threadID is "", and pushes the state of each thread that had some.
-func (m *Manager) forgetClosedTabs(threadID string) {
-	var threads []string
-	m.mu.Lock()
-	for id := range m.closedTabs {
-		if threadID == "" || id == threadID {
-			threads = append(threads, id)
-			delete(m.closedTabs, id)
-		}
+// forgetClosedLocked forgets threadID's closed tabs, answering whether it
+// had any; the caller pushes its state when it did. The caller holds m.mu.
+// The tabs are forgotten where the recent addresses are (forgetRecentLocked).
+func (m *Manager) forgetClosedLocked(threadID string) bool {
+	_, had := m.closedTabs[threadID]
+	delete(m.closedTabs, threadID)
+	return had
+}
+
+// forgetAllClosedLocked forgets every thread's closed tabs, answering the
+// threads that had some. The caller holds m.mu.
+func (m *Manager) forgetAllClosedLocked() []string {
+	threads := make([]string, 0, len(m.closedTabs))
+	for threadID := range m.closedTabs {
+		threads = append(threads, threadID)
 	}
-	m.mu.Unlock()
-	for _, id := range threads {
-		m.emitThreadState(id)
-	}
+	clear(m.closedTabs)
+	return threads
 }
 
 // ReopenClosedTab reopens the thread's most recently closed tab at its

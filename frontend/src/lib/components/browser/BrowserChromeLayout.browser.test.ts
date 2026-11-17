@@ -4,7 +4,7 @@
 // address row fits a narrow pane, its secondary controls (the cookie jar
 // included) moving into More.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import BrowserTabStrip, { TAB_MAX_WIDTH, TAB_MIN_WIDTH } from './BrowserTabStrip.svelte';
@@ -157,6 +157,75 @@ describe('browser tab strip layout', () => {
     await raf();
     await raf();
     expect(inView(7)).toBe(true);
+  });
+
+  // A reorder moves the active tab without changing which tab is active or
+  // how many there are, and the strip keeps its width.
+  it('keeps the active tab in view when a reorder moves it', async () => {
+    host = document.createElement('div');
+    host.style.cssText = 'position:fixed;top:0;left:0;width:320px';
+    document.body.append(host);
+    const props = rawProps({ sessionName: '', pages: pages(8) as never, activePageId: 'p0', onAct: async () => {}, onNewTab: () => {} });
+    app = mount(BrowserTabStrip, { target: host, props });
+    flushSync();
+    // Two frames: the strip's resize observer reports once after mounting.
+    await raf();
+    await raf();
+    const scroller = host.querySelector<HTMLElement>('[data-testid="browser-tab-scroller"]')!;
+    const inView = () => {
+      const t = box(host!.querySelector('[data-tab-id="p0"]')!);
+      const s = box(scroller);
+      return t.left >= s.left - 0.5 && t.right <= s.right + 0.5;
+    };
+    expect(scroller.scrollLeft).toBe(0);
+    expect(inView()).toBe(true);
+    const list = pages(8);
+    props.pages = [...list.slice(1), list[0]] as never;
+    flushSync();
+    await raf();
+    await raf();
+    expect([...host.querySelectorAll('[data-tab-id]')].at(-1)?.getAttribute('data-tab-id')).toBe('p0');
+    expect(inView()).toBe(true);
+  });
+
+  // Keeping the active tab in view measures the strip, which forces a layout
+  // of the whole document. Every state push hands the strip a new page list,
+  // so the measure runs only when the active tab, its place or the tab count
+  // changed.
+  it('measures nothing for a state push that changes neither the active tab nor the tab count', async () => {
+    host = document.createElement('div');
+    host.style.cssText = 'position:fixed;top:0;left:0;width:320px';
+    document.body.append(host);
+    const props = rawProps({ sessionName: '', pages: pages(8) as never, activePageId: 'p6', onAct: async () => {}, onNewTab: () => {} });
+    app = mount(BrowserTabStrip, { target: host, props });
+    flushSync();
+    await raf();
+    const measure = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+    try {
+      const loading = pages(8).map((page, i) => (i === 3 ? { ...page, loading: true } : page));
+      props.pages = loading as never;
+      flushSync();
+      expect(host.querySelector('[data-tab-id="p3"] [data-icon="spinner"]')).not.toBeNull();
+      expect(measure).not.toHaveBeenCalled();
+
+      // The agent marker and a crash flip on a tab.
+      const marked = pages(8).map((page, i) =>
+        i === 2 ? { ...page, agent: true } : i === 4 ? { ...page, suspended: true, error: 'crashed' } : page,
+      );
+      props.pages = marked as never;
+      flushSync();
+      expect(host.querySelector('[data-tab-id="p2"] [data-testid="browser-tab-agent"]')).not.toBeNull();
+      props.pages = pages(8) as never;
+      flushSync();
+      expect(host.querySelector('[data-testid="browser-tab-agent"]')).toBeNull();
+      expect(measure).not.toHaveBeenCalled();
+
+      props.pages = pages(9) as never;
+      flushSync();
+      expect(measure).toHaveBeenCalled();
+    } finally {
+      measure.mockRestore();
+    }
   });
 });
 

@@ -309,13 +309,18 @@ func (p *webkitProfile) releaseDownload(handle string) {
 	}
 }
 
-func (p *webkitProfile) CancelDownload(id string) {
+func (p *webkitProfile) CancelDownload(id string) error {
 	p.mu.Lock()
 	download := p.downloads[id]
 	p.mu.Unlock()
-	if download != nil {
-		webkitCancelDownload(download)
+	if download == nil {
+		// Released: WebKit already reported it finished or failed.
+		return nil
 	}
+	if !webkitCancelDownload(download) {
+		return errGTKUnavailable
+	}
+	return nil
 }
 
 func (p *webkitProfile) Dispose(context.Context) error {

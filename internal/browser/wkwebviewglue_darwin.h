@@ -200,5 +200,7 @@ void ao_wkv_download_release(void *download);
 // no per-chunk callback, so the Go side samples this while a download is live —
 // which is what lets the Manager enforce its per-download byte cap mid-flight.
 double ao_wkv_download_received(void *download);
+// ao_wkv_download_total is the size NSProgress expects, 0 when unknown.
+double ao_wkv_download_total(void *download);
 
 #endif

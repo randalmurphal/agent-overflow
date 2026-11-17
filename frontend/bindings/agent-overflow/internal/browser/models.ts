@@ -46,6 +46,13 @@ export class CompanionEvent {
     "jar"?: string;
 
     /**
+     * RecentGen rides a Kind "state" event: the Manager's forget generation
+     * of recent addresses (recent.go). A client holding a thread's list
+     * drops it when this changes.
+     */
+    "recentGen"?: number;
+
+    /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
      * while the thread's page view held keyboard focus, for the frontend to
      * dispatch as if the SPA had received it.
@@ -86,6 +93,14 @@ export class CompanionEvent {
     "closedTabs"?: number;
 
     /**
+     * Downloads rides a Kind "state" event: the thread's downloads, newest
+     * first (downloads_thread.go). Download rides a Kind "download" event:
+     * one download settled other than by the user's cancel, announced once.
+     */
+    "downloads"?: ThreadDownload[];
+    "download"?: ThreadDownload | null;
+
+    /**
      * Seq rides a Kind "state" event: this process's number for the
      * snapshot, taken under the manager's lock as the snapshot is read.
      * Snapshots are published after that lock is released, and calls answer
@@ -110,17 +125,25 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
-        const $$createField12_0 = $$createType3;
-        const $$createField16_0 = $$createType5;
+        const $$createField13_0 = $$createType3;
+        const $$createField17_0 = $$createType5;
+        const $$createField19_0 = $$createType7;
+        const $$createField20_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
-            $$parsedSource["accelerator"] = $$createField12_0($$parsedSource["accelerator"]);
+            $$parsedSource["accelerator"] = $$createField13_0($$parsedSource["accelerator"]);
         }
         if ("find" in $$parsedSource) {
-            $$parsedSource["find"] = $$createField16_0($$parsedSource["find"]);
+            $$parsedSource["find"] = $$createField17_0($$parsedSource["find"]);
+        }
+        if ("downloads" in $$parsedSource) {
+            $$parsedSource["downloads"] = $$createField19_0($$parsedSource["downloads"]);
+        }
+        if ("download" in $$parsedSource) {
+            $$parsedSource["download"] = $$createField20_0($$parsedSource["download"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
@@ -151,7 +174,7 @@ export class CompanionSubscription {
      * Creates a new CompanionSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): CompanionSubscription {
-        const $$createField1_0 = $$createType6;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("state" in $$parsedSource) {
             $$parsedSource["state"] = $$createField1_0($$parsedSource["state"]);
@@ -457,6 +480,76 @@ export class PaneRect {
     }
 }
 
+/**
+ * RecentAddress is one address a thread's page loaded, with the title it had.
+ */
+export class RecentAddress {
+    "url": string;
+    "title"?: string;
+
+    /** Creates a new RecentAddress instance. */
+    constructor($$source: Partial<RecentAddress> = {}) {
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RecentAddress instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RecentAddress {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RecentAddress($$parsedSource as Partial<RecentAddress>);
+    }
+}
+
+/**
+ * ThreadDownload is one download in the thread's browser pane. ID is AO's
+ * own key for it. Source is the address of the page it began on, or the
+ * download's own address when that page had none. State is a DownloadInfo
+ * state. TotalBytes is zero when the engine does not know the size.
+ * Openable is whether a browser tab can show the finished file
+ * (downloadOpensInPage).
+ */
+export class ThreadDownload {
+    "id": string;
+    "name": string;
+    "source"?: string;
+    "state": string;
+    "receivedBytes": number;
+    "totalBytes"?: number;
+    "error"?: string;
+    "openable"?: boolean;
+
+    /** Creates a new ThreadDownload instance. */
+    constructor($$source: Partial<ThreadDownload> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("receivedBytes" in $$source)) {
+            this["receivedBytes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadDownload instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadDownload {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadDownload($$parsedSource as Partial<ThreadDownload>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
@@ -464,4 +557,7 @@ const $$createType2 = keybindings$0.Accelerator.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = FindState.createFrom;
 const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = CompanionEvent.createFrom;
+const $$createType6 = ThreadDownload.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = $Create.Nullable($$createType6);
+const $$createType9 = CompanionEvent.createFrom;

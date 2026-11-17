@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -132,6 +133,10 @@ type Manager struct {
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq  uint64
 	sessions map[string]SessionInfo
+	// recent is each thread's recent addresses, and recentGen their forget
+	// generation (recent.go).
+	recent    map[string][]RecentAddress
+	recentGen uint64
 	// viewportSyncs serializes viewport application per thread (viewport.go).
 	viewportSyncs map[string]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and
@@ -156,6 +161,14 @@ type Manager struct {
 	artifactInitMu sync.Mutex
 	artifactReady  bool
 	artifactBytes  atomic.Int64
+	// downloadsMu guards threadDownloads, each thread's downloads as its
+	// pane lists them (downloads_thread.go). It is taken inside m.mu and
+	// inside a page's downloadMu, and never held around either.
+	downloadsMu     sync.Mutex
+	threadDownloads map[string]*threadDownloadList
+	downloadKeys    atomic.Uint64
+	// downloadPushInterval overrides downloadPushInterval when set (tests).
+	downloadPushInterval time.Duration
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
@@ -164,6 +177,10 @@ type Manager struct {
 	// called after each drain pass lays the thread's pages out. Production
 	// leaves it nil.
 	viewportApplied func(threadID string)
+	// pushTaken is a test seam: called, with m.mu held, between a push's
+	// taking the unpushed records and its reading the tabs. Production
+	// leaves it nil.
+	pushTaken func()
 	// revealFileInFileManager is the test seam over the production subprocess
 	// hand-off in companion_reveal.go. Production leaves it nil.
 	revealFileInFileManager func(ctx context.Context, path string) error
@@ -358,6 +375,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		findTimeout:   findActionTimeout,
 		closedTabs:    make(map[string][]closedTab),
 		agentLinger:   agentActivityLinger,
+		recentGen:     uint64(time.Now().UnixNano()),
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
@@ -433,12 +451,32 @@ func (m *Manager) Reconfigure(config Config) error {
 		// The pages close as they always have, suspended ones included: a
 		// disabled browser keeps no browser state, and a page restored into
 		// the other site-data mode would not be the page that was open. The
-		// threads' jar settings stay unless the browser is off. Nothing
-		// closed before can be reopened.
-		m.forgetClosedTabs("")
-		return errors.Join(m.forgetAllRecords(config.Enabled), m.closeBrowser(context.Background()))
+		// threads' jar settings stay unless the browser is off.
+		return m.forgetAllPages(context.Background(), config.Enabled)
 	}
 	return nil
+}
+
+// forgetAllPages closes every page, suspended ones and their saved copies
+// included, stops the engine, and then forgets every thread's recent
+// addresses and closed tabs: an open still running then has no live page to
+// record on (recordRecentAddress), and a close the user made meanwhile is
+// forgotten too. keepJars keeps the threads' jar settings.
+func (m *Manager) forgetAllPages(ctx context.Context, keepJars bool) error {
+	err := errors.Join(m.forgetAllRecords(keepJars), m.closeBrowser(ctx))
+	m.mu.Lock()
+	threads := m.forgetAllRecentLocked()
+	for _, threadID := range m.forgetAllClosedLocked() {
+		if !slices.Contains(threads, threadID) {
+			threads = append(threads, threadID)
+		}
+	}
+	m.mu.Unlock()
+	// The closes pushed state before the forget; these carry its generation.
+	for _, threadID := range threads {
+		m.emitThreadState(threadID)
+	}
+	return err
 }
 
 func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts OpenOptions) (PageInfo, error) {
@@ -470,7 +508,7 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	if err == nil {
 		p.setInfo(info)
 		info = p.cachedInfo()
-		m.pageChanged(p)
+		m.pageUsed(p)
 	}
 	return info, err
 }
@@ -512,8 +550,9 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	if err == nil {
 		p.setInfo(info)
 		info = p.cachedInfo()
+		m.recordRecentAddress(p, info)
 	}
-	m.pageChanged(p)
+	m.pageUsed(p)
 	return info, err
 }
 
@@ -547,6 +586,8 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 			out = append(out, info)
 		}
 	}
+	// What the reads found, the tabs show.
+	m.publishPages(access.ThreadID)
 	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
 	return out, nil
 }
@@ -572,11 +613,18 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 		info.Jar = JarWorktree
 		m.sessions[threadID] = info
 	}
+	// Forgotten here for a close that stops early, and again with the
+	// session below, after any open or user close the closing pages were
+	// running.
+	m.forgetRecentLocked(threadID)
+	hadClosed := m.forgetClosedLocked(threadID)
 	m.mu.Unlock()
+	if hadClosed {
+		m.emitThreadState(threadID)
+	}
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
-	m.forgetClosedTabs(threadID)
 	m.closeThreadPending(threadID)
 	var errs []error
 	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
@@ -592,7 +640,10 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
+	m.forgetRecentLocked(threadID)
+	m.forgetClosedLocked(threadID)
 	m.mu.Unlock()
+	m.forgetThreadDownloads(threadID)
 	return errors.Join(errs...)
 }
 
@@ -606,10 +657,9 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // user-data folder, WebKit's own macOS data-store directory — implements
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
+// The recent addresses and closed tabs go with the pages (forgetAllPages).
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	// A closed tab's address is browsing history the clear removes too.
-	m.forgetClosedTabs("")
-	if err := errors.Join(m.forgetAllRecords(true), m.closeBrowser(ctx)); err != nil {
+	if err := m.forgetAllPages(ctx, true); err != nil {
 		return err
 	}
 	var errs []error
@@ -689,7 +739,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.scheduleIdleClose()
 		return nil, err
 	}
-	authorityDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(workspace))
+	authorityDir := m.workspaceDownloadDir(workspace)
 	if err := os.MkdirAll(authorityDir, 0o700); err != nil {
 		m.scheduleIdleClose()
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
@@ -917,7 +967,8 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	scope.pages[p.id] = p
 	m.mu.Unlock()
-	m.pageChanged(p)
+	// A new tab.
+	m.pageAdded(p)
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}

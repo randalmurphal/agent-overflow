@@ -136,14 +136,15 @@ func (p *headlessProfile) bindPage(browserCtx context.Context, handle string) er
 	return nil
 }
 
-func (p *headlessProfile) CancelDownload(id string) {
+func (p *headlessProfile) CancelDownload(id string) error {
 	browserCtx, ok := p.browser()
 	if !ok {
-		return
+		return fmt.Errorf("browser: profile %s has no running browser", p.handle)
 	}
 	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
-		p.engine.logf("browser: profile %s: cancel download %s: %v", p.handle, id, err)
+		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
 	}
+	return nil
 }
 
 // Dispose destroys the profile and everything in it: cancelling the browser
@@ -459,7 +460,7 @@ func (p *headlessProfile) closeTarget(handle string) {
 // bound is dropped rather than reported under a handle nobody owns.
 func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	logf := p.engine.logf
-	if err := newDownloadTracker(p.engine.events, p.CancelDownload).subscribe(browserCtx, logf); err != nil {
+	if err := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, logf)).subscribe(browserCtx, logf); err != nil {
 		return err
 	}
 	session := chromedp.FromContext(browserCtx).Browser

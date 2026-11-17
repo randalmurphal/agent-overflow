@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// tabPushes holds each tabs manager's state pushes (newTabsManager).
+var tabPushes sync.Map
 
 // newTabsManager opens one user tab per address, in order, and answers
 // their ids.
@@ -17,6 +22,8 @@ func newTabsManager(t *testing.T, addresses ...string) (*Manager, Access, []stri
 	t.Helper()
 	m := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = m.Close() })
+	tabPushes.Store(m, countStatePushes(m))
+	t.Cleanup(func() { tabPushes.Delete(m) })
 	access := Access{ThreadID: "thread", Workspace: t.TempDir(), ProjectID: "project"}
 	var ids []string
 	for _, address := range addresses {
@@ -57,7 +64,29 @@ func reopenTab(t *testing.T, m *Manager, access Access) error {
 	}
 }
 
-func closedCount(m *Manager, access Access) int { return m.CompanionState(access).ClosedTabs }
+// newestPush is the newest state the manager pushed, as a client keeps it.
+func newestPush(t *testing.T, m *Manager) CompanionEvent {
+	t.Helper()
+	pushes, ok := tabPushes.Load(m)
+	if !ok {
+		t.Fatal("the manager is not a tabs manager")
+	}
+	c := pushes.(*statePushes)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.newest
+}
+
+// closedCount is the thread's reopenable tab count, which the newest push
+// must already show.
+func closedCount(t *testing.T, m *Manager, access Access) int {
+	t.Helper()
+	read := m.CompanionState(access).ClosedTabs
+	if pushed := newestPush(t, m).ClosedTabs; pushed != read {
+		t.Fatalf("the newest push shows %d closed tabs, the state %d", pushed, read)
+	}
+	return read
+}
 
 func addr(name string) string { return "https://example.test/" + name }
 
@@ -71,7 +100,7 @@ func TestReopenClosedTabPutsItBackWhereItWas(t *testing.T) {
 	if err := m.CloseCompanionPage(t.Context(), access, ids[1]); err != nil {
 		t.Fatal(err)
 	}
-	if got := closedCount(m, access); got != 1 {
+	if got := closedCount(t, m, access); got != 1 {
 		t.Fatalf("ClosedTabs = %d, want 1", got)
 	}
 	if err := reopenTab(t, m, access); err != nil {
@@ -94,6 +123,36 @@ func TestReopenClosedTabPutsItBackWhereItWas(t *testing.T) {
 	}
 	if got := len(tabIDs(m, access)); got != 3 {
 		t.Fatalf("an empty reopen opened a tab: %d tabs", got)
+	}
+}
+
+// A reopened tab's label reaches the clients even when its address no
+// longer opens.
+func TestReopenedTabsLabelIsPushedWhenItsAddressFails(t *testing.T) {
+	m, access, _ := newTabsManager(t)
+	file := filepath.Join(access.Workspace, "notes.html")
+	if err := os.WriteFile(file, []byte("<title>notes</title>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	page, err := openTab(t, m, access, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.LabelPage(t.Context(), access, page.ID, "notes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopenTab(t, m, access); err == nil {
+		t.Fatal("the reopen of a removed file succeeded")
+	}
+	pushed := newestPush(t, m).Pages
+	if len(pushed) != 1 || pushed[0].Label != "notes" {
+		t.Fatalf("the newest push shows %+v, want the reopened tab with its label", pushed)
 	}
 }
 
@@ -162,7 +221,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	if err := m.CloseCompanionPage(t.Context(), access, "nope"); err == nil {
 		t.Fatal("closing an unknown tab succeeded")
 	}
-	if got := closedCount(m, access); got != 0 {
+	if got := closedCount(t, m, access); got != 0 {
 		t.Fatalf("ClosedTabs = %d, want 0", got)
 	}
 
@@ -175,7 +234,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := closedCount(m, access); got != maxClosedTabs {
+	if got := closedCount(t, m, access); got != maxClosedTabs {
 		t.Fatalf("ClosedTabs = %d, want the bound %d", got, maxClosedTabs)
 	}
 	if err := reopenTab(t, m, access); err != nil {
@@ -188,7 +247,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	if err := m.SetJar(access, JarPrivate); err != nil {
 		t.Fatal(err)
 	}
-	if got := closedCount(m, access); got != 0 {
+	if got := closedCount(t, m, access); got != 0 {
 		t.Fatalf("ClosedTabs = %d after the jar switch, want 0", got)
 	}
 	page, err := openTab(t, m, access, addr("private"))
@@ -198,7 +257,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := closedCount(m, access); got != 0 {
+	if got := closedCount(t, m, access); got != 0 {
 		t.Fatalf("a private tab was kept: ClosedTabs = %d", got)
 	}
 }
@@ -217,7 +276,7 @@ func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
 	if err := m.closeKept(t.Context(), access, ids[0], kept); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("close of a gone tab = %v", err)
 	}
-	if got := closedCount(m, access); got != 0 {
+	if got := closedCount(t, m, access); got != 0 {
 		t.Fatalf("ClosedTabs = %d, want the record of a tab the user did not close forgotten", got)
 	}
 
@@ -238,7 +297,7 @@ func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
 	if _, ok := findTab(m, access, ids[1]); ok {
 		t.Fatal("the tab is still there")
 	}
-	if got := closedCount(m, access); got != 1 {
+	if got := closedCount(t, m, access); got != 1 {
 		t.Fatalf("ClosedTabs = %d, want the closed tab reopenable", got)
 	}
 }
@@ -255,7 +314,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 		if err := m.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
 			t.Fatal(err)
 		}
-		if closedCount(m, access) == 0 {
+		if closedCount(t, m, access) == 0 {
 			t.Fatal("the close was not kept")
 		}
 	}
@@ -265,7 +324,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 		if err := m.ClearSiteData(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if got := closedCount(m, access); got != 0 {
+		if got := closedCount(t, m, access); got != 0 {
 			t.Fatalf("ClosedTabs = %d", got)
 		}
 	})
@@ -275,7 +334,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 		if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
 			t.Fatal(err)
 		}
-		if got := closedCount(m, access); got != 0 {
+		if got := closedCount(t, m, access); got != 0 {
 			t.Fatalf("ClosedTabs = %d", got)
 		}
 	})
@@ -285,7 +344,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 		if err := m.Reconfigure(Config{Enabled: false}); err != nil {
 			t.Fatal(err)
 		}
-		if got := closedCount(m, access); got != 0 {
+		if got := closedCount(t, m, access); got != 0 {
 			t.Fatalf("ClosedTabs = %d", got)
 		}
 	})
@@ -305,7 +364,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 		if err := m.ReopenClosedTab(t.Context(), access); err == nil {
 			t.Fatal("a reopen past the page limit succeeded")
 		}
-		if got := closedCount(m, access); got != 1 {
+		if got := closedCount(t, m, access); got != 1 {
 			t.Fatalf("ClosedTabs = %d, want the entry kept", got)
 		}
 	})

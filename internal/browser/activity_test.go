@@ -83,7 +83,10 @@ func TestAgentActivityShowsOnTransitionsOnly(t *testing.T) {
 		m.SetEventSink(nil)
 		return n
 	}
-	user := countStates(func() (context.Context, func()) { return t.Context(), func() {} })
+	asUser := func() (context.Context, func()) { return t.Context(), func() {} }
+	// Both measured runs start from the page at the run's address.
+	countStates(asUser)
+	user := countStates(asUser)
 	agent := countStates(func() (context.Context, func()) { return withAgentCall(t.Context()) })
 	if agent != user+1 {
 		t.Fatalf("an agent's run of 3 calls pushed %d states, the user's %d; want exactly one more", agent, user)

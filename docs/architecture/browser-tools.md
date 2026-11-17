@@ -144,6 +144,15 @@ per-platform no-op.
   the page with shared JavaScript, so the fetch carries the page's session:
   an image data URL within 32 KB, empty when there is none or it is refused.
   Headless Chromium has no pane and reports none.
+- The thread's state is pushed whole, every tab with its favicon, and only
+  by a change. A write that changes what a tab shows (its info, loading or
+  favicon) marks the page until a push to every client carries it; a push
+  takes the marks before it reads the tabs, and one client's read of the
+  state leaves them. Every writer then publishes, which pushes when any of
+  the thread's pages is marked, so a tool call or an engine report that
+  leaves the state as it was pushes nothing and no write waits for a later
+  change. `browser_pages`' `selected` and `lastOpened` are per call and
+  mark nothing.
 - The chat header's browser button is present wherever the native browser is
   usable for the thread, tabs or not. With no tab it opens the pane on a new
   tab, as a mod-clicked link does on a tab at the link. A new tab the user
@@ -230,6 +239,31 @@ behave as a desktop browser's:
   moves focus to the page area. DOM focus only: the native page takes
   keyboard focus from a click, as § Keyboard says. Switching tabs replaces
   an edit with the new tab's address.
+- Typing in the address opens a suggestion list
+  (`BrowserAddressSuggestions.svelte`, matching in `browserAddressMatch.ts`):
+  the thread's other open tabs (taking one switches to it), the dev servers
+  the thread's processes serve (`stores/devServers.svelte.ts`, rows whose
+  `threadId` is the thread's), then its recent addresses, each address once
+  and the field's own tab never. Arrows move the highlight without changing
+  the typed text, Enter or a click takes a row, Enter with none highlighted
+  navigates the text, and Escape closes the list before it reverts the
+  field. Nothing is fetched from the network while typing. The list is a
+  `Popover`, so the native view yields while it is open. Focusing the field
+  reads the recent addresses (`BrowserCompanionRecentAddresses`) and
+  rescans the dev servers, so neither rides the state push.
+- The recent addresses are the Manager's, per thread, in memory only
+  (`internal/browser/recent.go`): the last 50 addresses an open loaded
+  (the address bar's navigation, `browser_open`, `browser_open_file`),
+  newest first, one entry per address. A failed open, a page left on a
+  blank or internal document, a link followed in the page, history moves
+  and reloads add nothing. A private jar keeps none; a jar switch, Clear
+  site data, turning the browser off or changing site-data persistence,
+  and deleting or archiving the thread forget them, and an open those
+  overtook records nothing. Every forget advances one Manager-wide
+  generation that each thread's state push carries (`recentGen`); the
+  field drops its copy of the list, and any read in flight, when the
+  generation, the thread or the active tab changes, and reads again while
+  it has focus.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
   lock, so it stops an address-bar navigation in flight. Once the engine
   has stopped, the navigation it interrupted (not one queued behind it)
@@ -251,6 +285,27 @@ behave as a desktop browser's:
   workspace file search. The chosen absolute path navigates the active tab,
   or a new tab when none can take an address, under the file
   authorization; a refusal is the pane's banner.
+- Downloads (`internal/browser/downloads_thread.go`). Once the thread has a
+  download the address row shows a downloads button, never moved into the
+  More menu. While downloads run it shows how far they are in eighths, or a
+  stepped spinner when no running download announced its size. It opens the
+  thread's downloads, newest first (at most 20; a running one is never
+  dropped): name, the page it began on, received and total bytes, and the
+  failure. A running one cancels; a finished one shows in the file manager
+  (the reveal hand-off of Show in folder) and, for a type every engine shows
+  in a tab (PDF, PNG, JPEG, GIF, WebP, BMP, text, JSON), opens in a new tab.
+  Script-capable types (HTML, SVG, XML) are never opened from the list. There
+  is no "open with the system's default app": the OS opener refuses `file:`
+  URLs (`internal/externalurl`). Clear list drops the settled downloads and
+  deletes no file. The list is in memory and goes with the thread; the page's
+  own log for `browser_downloads` is separate and goes with the page. The
+  list rides the thread's state push: a start, a finish, a failure and a
+  cancel push at once, byte progress at most once a second per thread. A
+  download that settles other than by the user's cancel is announced once
+  (a Kind `download` event): a toast with Show in folder when it finished,
+  an error toast with the reason otherwise. `canceled` means AO stopped it
+  (the user, a quota, its size, its page closing); an end the engine
+  reports on its own is `failed`, with the engine's reason when it gives one.
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
@@ -584,7 +639,7 @@ it without relying on an optional skill.
 | `browser_evaluate` | Explicit mutation-capable JavaScript escape hatch; bounded and serialized. Takes an expression, or a function called with an optional JSON argument, as Playwright's evaluate does; other code runs as statements in an async function body and gives a value only through `return`. The engine reads the code: the Manager offers it as an expression, and as statements only when the engine reports that does not compile, so no code runs twice ([`evaluate.go`](../../internal/browser/evaluate.go)). Nothing uses the page's `eval`, so a page CSP without `'unsafe-eval'` allows it. The page encodes the result as `JSON.stringify` does, plus DOM nodes, collections, errors, `BigInt` and cycles, bounded in size and depth. |
 | `browser_clipboard` | Read/write a bounded tab-local MIME clipboard. Paste/copy chords bridge this clipboard without touching the OS clipboard. |
 | `browser_console_logs` | Read the bounded tab console/runtime ring by level and substring. |
-| `browser_downloads` | List or wait for browser downloads and return their AO-owned local paths. |
+| `browser_downloads` | List or wait for browser downloads (`in_progress`, `completed`, `failed`, `canceled`, with `totalBytes` when known) and return their AO-owned local paths. |
 | `browser_assets` | Inventory resource, DOM-attribute, computed-style, and inline-SVG assets; bundle selected images, fonts, stylesheets, or videos with page credentials into an AO-owned artifact directory. |
 
 ## Parallel agents
@@ -607,7 +662,9 @@ background subagents cannot make a visible companion flicker between tabs.
 The browser never launches with `--allow-file-access-from-files`. Public page
 JavaScript therefore does not inherit the MCP caller's file authority.
 `browser_open_file` resolves symlinks and permits files inside the thread's
-workspace or project root. Outside files require
+workspace or project root, and the workspace's own finished downloads (its
+AO-owned download directory, which the pane's downloads list opens from).
+Outside files require
 `browserAllowOutsideWorkspace`, an explicit off-by-default setting. This gate
 exists because the MCP server runs outside provider process sandboxes; OS-user
 permissions alone would make it a sandbox bypass.

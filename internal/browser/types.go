@@ -40,6 +40,10 @@ type CompanionEvent struct {
 	// Jar rides a Kind "state" event: the cookie jar the thread's pages
 	// open in (SessionInfo.Jar).
 	Jar string `json:"jar,omitempty"`
+	// RecentGen rides a Kind "state" event: the Manager's forget generation
+	// of recent addresses (recent.go). A client holding a thread's list
+	// drops it when this changes.
+	RecentGen uint64 `json:"recentGen,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.
@@ -65,6 +69,11 @@ type CompanionEvent struct {
 	// ClosedTabs rides a Kind "state" event: how many tabs the thread can
 	// reopen (companion_tabs.go).
 	ClosedTabs int `json:"closedTabs,omitempty"`
+	// Downloads rides a Kind "state" event: the thread's downloads, newest
+	// first (downloads_thread.go). Download rides a Kind "download" event:
+	// one download settled other than by the user's cancel, announced once.
+	Downloads []ThreadDownload `json:"downloads,omitempty"`
+	Download  *ThreadDownload  `json:"download,omitempty"`
 	// Seq rides a Kind "state" event: this process's number for the
 	// snapshot, taken under the manager's lock as the snapshot is read.
 	// Snapshots are published after that lock is released, and calls answer
@@ -362,6 +371,10 @@ type ConsoleOptions struct {
 	Limit  int      `json:"limit,omitempty"`
 }
 
+// DownloadInfo is one download in a page's log, as browser_downloads lists
+// it. State is in_progress, completed, failed (the engine stopped it on its
+// own, or the finished file could not be kept) or canceled (AO stopped it:
+// the user, a quota, the page closing).
 type DownloadInfo struct {
 	Sequence      uint64 `json:"sequence"`
 	ID            string `json:"id"`
@@ -370,9 +383,15 @@ type DownloadInfo struct {
 	Path          string `json:"path,omitempty"`
 	State         string `json:"state"`
 	Bytes         int64  `json:"bytes,omitempty"`
+	TotalBytes    int64  `json:"totalBytes,omitempty"`
 	Error         string `json:"error,omitempty"`
 	StartedAt     string `json:"startedAt"`
 	reservedBytes int64
+	// key is the download's entry in its thread's list (downloads_thread.go).
+	key string
+	// cancelRequested is set while the user's cancel is with the engine, so
+	// the engine's report of it reads as canceled rather than failed.
+	cancelRequested bool
 }
 
 type DownloadOptions struct {
