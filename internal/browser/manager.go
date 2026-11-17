@@ -290,9 +290,14 @@ type managedPage struct {
 	// sorts run outside m.mu.
 	tabOrder atomic.Int64
 	metaMu   sync.RWMutex
-	info     PageInfo
-	// infoGen counts commits to info, under metaMu (commitRead).
-	infoGen uint64
+	// info is what the page's tab shows; once the page is in its thread's
+	// tabs only commitInfo changes it.
+	info PageInfo
+	// infoGen counts commits of the address and history, and infoReport is
+	// the order of the newest engine report committed, both under metaMu
+	// (commitInfo).
+	infoGen    uint64
+	infoReport uint64
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load         pageLoad
@@ -494,11 +499,8 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
-	since := p.infoGeneration()
-	info, err := m.pageInfo(opCtx, p)
+	info, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
-		m.commitRead(p, info, since)
-		info = p.cachedInfo()
 		m.pageUsed(p)
 	}
 	return info, err
@@ -537,11 +539,8 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 		return PageInfo{}, err
 	}
 	p.touch()
-	since := p.infoGeneration()
-	info, err := m.pageInfo(opCtx, p)
+	info, err := m.readInfo(opCtx, p, pageListing{})
 	if err == nil {
-		m.commitRead(p, info, since)
-		info = p.cachedInfo()
 		m.recordRecentAddress(p, info)
 	}
 	m.pageUsed(p)
@@ -567,19 +566,12 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 		p.mu.Lock()
 		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-		since := p.infoGeneration()
-		info, err := m.pageInfo(opCtx, p)
+		listing := pageListing{Selected: p.id == activePageID, LastOpened: time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)}
+		info, err := m.readInfo(opCtx, p, listing)
 		cancel()
-		selected := p.id == activePageID
-		lastOpened := time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
-		if err == nil {
-			info.Selected, info.LastOpened = selected, lastOpened
-			m.commitRead(p, info, since)
-		}
 		p.mu.Unlock()
 		if err == nil {
-			info = p.cachedInfo()
-			info.Selected, info.LastOpened = selected, lastOpened
+			info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
 			out = append(out, info)
 		}
 	}

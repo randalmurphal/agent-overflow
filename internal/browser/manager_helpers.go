@@ -133,8 +133,12 @@ func operationContext(caller, pageCtx context.Context, timeout time.Duration) (c
 	return ctx, func() { stop(); cancel() }
 }
 
-// pageInfo reads and bounds one page's live URL, title, and history state.
-func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error) {
+// readInfo reads one page's live URL, title, and history state and commits
+// them with listing as a read begun before it asked (commitRead). It answers
+// the info the tab shows after, which is a newer commit's when one landed
+// during the read.
+func (m *Manager) readInfo(ctx context.Context, p *managedPage, listing pageListing) (PageInfo, error) {
+	since := p.infoGeneration()
 	location, title, err := p.driver.Info(ctx)
 	if err != nil {
 		return PageInfo{}, err
@@ -143,12 +147,12 @@ func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error
 	if err != nil {
 		return PageInfo{}, err
 	}
-	return PageInfo{
-		ID:        p.id,
-		URL:       truncateUTF8(location, maxBrowserURLBytes),
-		Title:     truncateUTF8(title, maxBrowserTitleBytes),
-		CanGoBack: back, CanGoForward: forward,
-	}, nil
+	info, _ := m.commitRead(p, pageUpdate{
+		Location: &pageLocation{URL: location, Title: title},
+		History:  &pageHistory{CanGoBack: back, CanGoForward: forward},
+		Listing:  listing,
+	}, since)
+	return info, nil
 }
 
 // truncateUTF8 bounds value to limit bytes at a rune boundary. A truncated

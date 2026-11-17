@@ -29,18 +29,14 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 		return PageInfo{}, err
 	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	since := p.infoGeneration()
-	info, infoErr := m.pageInfo(opCtx, p)
+	info, infoErr := m.readInfo(opCtx, p, pageListing{})
 	cancel()
-	if infoErr == nil {
-		m.commitRead(p, info, since)
-	}
 	p.mu.Unlock()
 	if infoErr != nil {
 		return PageInfo{}, infoErr
 	}
 	m.publishPages(access.ThreadID)
-	return p.cachedInfo(), nil
+	return info, nil
 }
 
 // selectTab makes one of the thread's tabs, in any state, the active one and
@@ -105,7 +101,7 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label st
 			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, tab.id)
 		}
 	}
-	info := p.setLabel(label)
+	info, _ := p.commitInfo(pageUpdate{Label: &label})
 	m.mu.Unlock()
 	m.emitThreadState(access.ThreadID)
 	return info, nil

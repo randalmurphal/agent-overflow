@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1388,7 +1389,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}, engineEvents{
 		PopupOpened:      func(enginePopup) {},
 		PageClosed:       func(string) {},
-		PageInfoChanged:  func(string, string, string) {},
+		PageInfoChanged:  func(string, string, string, uint64) {},
 		DownloadStarted:  func(downloadStart) bool { return true },
 		DownloadProgress: func(downloadProgress) {},
 	})
@@ -1622,4 +1623,25 @@ func readRealCookie(t *testing.T, profile *headlessProfile, name string) string 
 		}
 	}
 	return ""
+}
+
+// Headless Chromium keeps one user-data directory per persistent jar under
+// the profile tree Clear site data deletes, the worktree jar's where it
+// always was, and a private jar's nowhere under it.
+func TestHeadlessEngineKeepsOneDirectoryPerJar(t *testing.T) {
+	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
+	const workspace = "/home/dev/repo"
+	digest := sha256.Sum256([]byte(workspace))
+	worktree := testHeadlessProfile(t, engine, workspace, true)
+	if want := filepath.Join(engine.configDir, browserProfileDir, fmt.Sprintf("%x", digest[:12]), "chromium"); worktree.userDataDir != want {
+		t.Fatalf("worktree jar directory = %q, want today's %q", worktree.userDataDir, want)
+	}
+	project := testHeadlessProfile(t, engine, "project:P", true)
+	if project.userDataDir == worktree.userDataDir || !strings.HasPrefix(project.userDataDir, filepath.Join(engine.configDir, browserProfileDir)) {
+		t.Fatalf("project jar directory = %q", project.userDataDir)
+	}
+	private := testHeadlessProfile(t, engine, "private:a:token", false)
+	if strings.HasPrefix(private.userDataDir, filepath.Join(engine.configDir, browserProfileDir)) {
+		t.Fatalf("private jar directory %q is under the persistent profile tree", private.userDataDir)
+	}
 }

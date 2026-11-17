@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/keybindings"
@@ -138,6 +139,9 @@ type hostedEngine struct {
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
 	attachMu sync.Mutex
+
+	// infoOrder numbers the page info reports (engineEvents.PageInfoChanged).
+	infoOrder atomic.Uint64
 
 	mu            sync.Mutex
 	started       bool
@@ -684,7 +688,9 @@ func (e *hostedEngine) targetInfoChanged(event target.EventTargetInfoChanged) {
 		return
 	}
 	if pageID, ok := e.pageForTarget(string(event.TargetInfo.TargetID)); ok {
-		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title)
+		// The method's events arrive one at a time in the browser's order
+		// (consumeEvents), so numbering them here keeps that order.
+		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title, e.infoOrder.Add(1))
 	}
 }
 

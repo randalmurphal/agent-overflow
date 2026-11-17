@@ -145,13 +145,17 @@ per-platform no-op.
   leaves the state as it was pushes nothing and no write waits for a later
   change. `browser_pages`' `selected` and `lastOpened` are per call and
   mark nothing.
-- A page's cached info has two kinds of writer. An engine report commits
-  what the page now shows; a native view's reports reach the Manager in the
-  order it made them. A read (an operation's, `browser_pages`', a
-  selection's, the history refresh after a report) commits its answer only
-  if no other commit landed while it read, and an operation's read commits
-  inside the hold of the page lock it read under, so no navigation runs
-  between them.
+- A page's cached info has two kinds of writer, both through one commit.
+  An engine report commits what the page now shows; each engine numbers its
+  reports where it orders them (a native view on its UI thread, a CDP engine
+  in its event stream), as it does its loading reports, and the Manager
+  drops one older than a report it committed. A read (an operation's,
+  `browser_pages`', a selection's, the history refresh after a report)
+  commits its answer only if no other commit landed while it read, and an
+  operation's read commits inside the hold of the page lock it read under,
+  so no navigation runs between them. A write that does not know the
+  back/forward state (an engine report, a snapshot) keeps what the tab
+  shows.
 - The chat header's browser button is present wherever the native browser is
   usable for the thread, tabs or not. With no tab it opens the pane on a new
   tab, as a mod-clicked link does on a tab at the link. A new tab the user

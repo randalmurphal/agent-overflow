@@ -503,9 +503,8 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 //
 // Binding and unbinding happen under mu, so a popup cannot be bound after
 // the destroyed handler has looked for it. PageInfoChanged is delivered
-// outside mu but under deliver, taken before mu is released, so the Manager
-// sees info changes in the order mu handled them: a held info delivered by
-// created is never overtaken by a newer change handled after it.
+// outside mu, numbered under it in the order mu handled the changes, so the
+// Manager keeps a newer change over a held info delivered after it.
 type headlessTargets struct {
 	profile *headlessProfile
 
@@ -517,7 +516,9 @@ type headlessTargets struct {
 	gone     *boundedMap[target.ID, struct{}]
 	heldInfo *boundedMap[target.ID, *target.Info]
 
-	deliver sync.Mutex
+	// infoOrder numbers the info changes delivered, in the order mu handled
+	// them (engineEvents.PageInfoChanged). Guarded by mu.
+	infoOrder uint64
 }
 
 func newHeadlessTargets(p *headlessProfile) *headlessTargets {
@@ -558,10 +559,10 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 			h.mu.Unlock()
 			return
 		}
-		h.deliver.Lock()
+		h.infoOrder++
+		order := h.infoOrder
 		h.mu.Unlock()
-		defer h.deliver.Unlock()
-		p.engine.events.PageInfoChanged(handle, url, title)
+		p.engine.events.PageInfoChanged(handle, url, title, order)
 		return
 	}
 	defer h.mu.Unlock()
@@ -595,10 +596,10 @@ func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
 		h.mu.Unlock()
 		return
 	}
-	h.deliver.Lock()
+	h.infoOrder++
+	order := h.infoOrder
 	h.mu.Unlock()
-	defer h.deliver.Unlock()
-	p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title)
+	p.engine.events.PageInfoChanged(string(info.TargetID), info.URL, info.Title, order)
 }
 
 func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {

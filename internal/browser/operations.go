@@ -29,7 +29,10 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
-	m.commitRead(p, snapshot.PageInfo, since)
+	// The snapshot script reads the address and title, not the session
+	// history: the tab keeps its back/forward state, and the agent is told it.
+	info, _ := m.commitRead(p, pageUpdate{Location: &pageLocation{URL: snapshot.URL, Title: snapshot.Title}}, since)
+	snapshot.CanGoBack, snapshot.CanGoForward = info.CanGoBack, info.CanGoForward
 	m.pageUsed(p)
 	return snapshot, nil
 }
@@ -355,23 +358,16 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 // finishPageOperation reads and commits p's info after an operation. The
 // caller holds the page-operation lock.
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
-	since := p.infoGeneration()
-	info, err := m.pageInfo(ctx, p)
-	if err == nil {
-		m.commitRead(p, info, since)
-		info = p.cachedInfo()
-	}
+	info, err := m.readInfo(ctx, p, pageListing{})
 	m.pageUsed(p)
 	return info, err
 }
 
 // refreshPageAfterOperation is finishPageOperation with no answer.
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
-	since := p.infoGeneration()
-	info, err := m.pageInfo(ctx, p)
-	if err == nil {
-		m.commitRead(p, info, since)
-	}
+	// A failed read leaves the tab as it was; the operation's own result
+	// reports its outcome.
+	_, _ = m.readInfo(ctx, p, pageListing{})
 	m.pageUsed(p)
 }
 

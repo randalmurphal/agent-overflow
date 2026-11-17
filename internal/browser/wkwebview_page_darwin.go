@@ -75,9 +75,9 @@ type wkPage struct {
 	// loadOrder numbers the view's loading changes, on the main thread
 	// (pageHooks.Loading).
 	loadOrder atomic.Uint64
-	// infoReports carries the view's address and title reports off the main
-	// thread in order.
-	infoReports infoReports
+	// infoOrder numbers the view's address and title reports, on the main
+	// thread (engineEvents.PageInfoChanged).
+	infoOrder atomic.Uint64
 }
 
 func (p *wkPage) Lifetime() context.Context { return p.ctx }

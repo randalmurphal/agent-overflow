@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // A read of a page's info (SelectPage, Pages) commits what it read. A
@@ -80,10 +79,46 @@ func TestAReadNeverCommitsOverANavigation(t *testing.T) {
 	}
 }
 
+// operationReaders are tool calls that read a page's info after acting on
+// it, under the page-operation lock, and answer it.
+var operationReaders = []struct {
+	name string
+	read func(*testing.T, *Manager, Access, string)
+}{
+	{"Wait", func(t *testing.T, m *Manager, access Access, pageID string) {
+		if _, err := m.Wait(t.Context(), access, pageID, "", 1); err != nil {
+			t.Error(err)
+		}
+	}},
+	{"Open", func(t *testing.T, m *Manager, access Access, pageID string) {
+		if _, err := m.Open(t.Context(), access, "https://example.test/c", OpenOptions{PageID: pageID}); err != nil {
+			t.Error(err)
+		}
+	}},
+	{"Snapshot", func(t *testing.T, m *Manager, access Access, pageID string) {
+		p, _, err := m.lookupOwnedPage(access, pageID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fake := p.driver.(*lifecycleDriver).pageDriver.(*fakePage)
+		fake.mu.Lock()
+		fake.snapshot = func(context.Context) (Snapshot, error) {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			return Snapshot{PageInfo: PageInfo{URL: fake.url, Title: fake.title}}, nil
+		}
+		fake.mu.Unlock()
+		if _, err := m.Snapshot(t.Context(), access, pageID); err != nil {
+			t.Error(err)
+		}
+	}},
+}
+
 // An engine report is not under the page lock: one that lands during a read
-// (the page moved to B) wins over the read's older answer.
+// (the page moved to B), the read for itself or after an operation, wins
+// over the read's older answer.
 func TestAReadNeverCommitsOverAnEngineReport(t *testing.T) {
-	for _, reader := range infoReaders {
+	for _, reader := range append(infoReaders[:len(infoReaders):len(infoReaders)], operationReaders...) {
 		t.Run(reader.name, func(t *testing.T) {
 			manager, _ := newLifecycleManager(t)
 			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
@@ -98,7 +133,7 @@ func TestAReadNeverCommitsOverAnEngineReport(t *testing.T) {
 			manager.infoRead = func(*managedPage) {
 				if calls.Add(1) == 1 {
 					p.driver.(*lifecycleDriver).pageDriver.(*fakePage).SameDocumentNavigation(b)
-					manager.updatePageInfo(p.driver.Handle(), b, fakeTitle(b))
+					manager.updatePageInfo(p.driver.Handle(), b, fakeTitle(b), 1)
 				}
 			}
 			reader.read(t, manager, access, page.ID)
@@ -141,38 +176,4 @@ func TestAHistoryRefreshNeverCommitsOverANewerRead(t *testing.T) {
 	if info := p.cachedInfo(); info.CanGoBack || !info.CanGoForward {
 		t.Fatalf("after going back the cache reads back %v forward %v, want false true", info.CanGoBack, info.CanGoForward)
 	}
-}
-
-// A native view's reports are delivered in the order it made them, the
-// newest last, whatever runs while one is delivered.
-func TestNativeInfoReportsArriveInOrder(t *testing.T) {
-	var reports infoReports
-	delivered := make(chan string, 8)
-	release := make(chan struct{})
-	deliver := func(url, _ string) {
-		delivered <- url
-		if url == "1" {
-			<-release
-		}
-	}
-	next := func(want string) {
-		t.Helper()
-		select {
-		case got := <-delivered:
-			if got != want {
-				t.Fatalf("delivered %q, want %q", got, want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%q was not delivered", want)
-		}
-	}
-	reports.report("1", "", deliver)
-	next("1")
-	// While 1 is delivered, 2 and then 3 are made: 3 replaces 2 and follows 1.
-	reports.report("2", "", deliver)
-	reports.report("3", "", deliver)
-	close(release)
-	next("3")
-	reports.report("4", "", deliver)
-	next("4")
 }

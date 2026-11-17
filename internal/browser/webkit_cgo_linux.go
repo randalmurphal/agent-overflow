@@ -225,11 +225,10 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 		return
 	}
 	page.noteLoad(location)
-	// Off the GTK thread, in order: the Manager takes its own locks to route
-	// this.
-	page.infoReports.report(location, name, func(url, title string) {
-		page.engine.events.PageInfoChanged(page.handle, url, title)
-	})
+	// Numbered here, on the GTK thread, in the order the view changed; the
+	// Manager takes its own locks, so the report leaves the thread.
+	order := page.infoOrder.Add(1)
+	go page.engine.events.PageInfoChanged(page.handle, location, name, order)
 }
 
 //export aoWebKitPageLoading

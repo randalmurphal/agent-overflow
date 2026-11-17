@@ -393,15 +393,11 @@ func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage
 	// The page is in no thread's tabs yet, so no operation reaches it and no
 	// engine report finds it (pageByHandleLocked): the load's read is the
 	// only commit, and the registration push carries it.
-	p.setInfo(PageInfo{ID: p.id, URL: target, Title: title})
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: target, Title: title}})
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	err = p.driver.Navigate(opCtx, target)
 	if err == nil {
-		since := p.infoGeneration()
-		var info PageInfo
-		if info, err = m.pageInfo(opCtx, p); err == nil {
-			m.commitRead(p, info, since)
-		}
+		_, err = m.readInfo(opCtx, p, pageListing{})
 	}
 	cancel()
 	if err != nil {
@@ -461,13 +457,11 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	cleared := m.recordsCleared
 	m.mu.Unlock()
 	p.mu.Lock()
-	info := p.cachedInfo()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	current, err := m.pageInfo(opCtx, p)
+	_, err := m.readInfo(opCtx, p, pageListing{})
 	cancel()
-	if err == nil {
-		info.URL, info.Title = current.URL, current.Title
-	} else if p.ctx.Err() == nil {
+	info := p.cachedInfo()
+	if err != nil && p.ctx.Err() == nil {
 		log.Printf("browser: suspend page %s: read its address: %v; keeping %s", p.id, err, info.URL)
 	}
 	m.mu.Lock()

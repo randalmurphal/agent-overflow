@@ -116,13 +116,13 @@ func TestAnEngineInfoReportPushesStateOnlyWhenItChangedIt(t *testing.T) {
 	handle := p.driver.Handle()
 	pushes := countStatePushes(manager)
 
-	manager.updatePageInfo(handle, "https://example.test/next", "https://example.test/next")
-	manager.updatePageInfo(handle, "https://example.test/next", "Next")
+	manager.updatePageInfo(handle, "https://example.test/next", "https://example.test/next", 1)
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 2)
 	if n := pushes.take(); n != 2 {
 		t.Fatalf("a commit and a title pushed %d states, want 2", n)
 	}
-	manager.updatePageInfo(handle, "https://example.test/next", "Next")
-	manager.updatePageInfo(handle, "https://example.test/next", "Next")
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 3)
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 4)
 	if n := pushes.take(); n != 0 {
 		t.Fatalf("2 reports of the address and title already shown pushed %d states", n)
 	}
@@ -181,7 +181,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 			if got := pushes.shownTitle(page.ID); got != "Retitled" {
 				t.Fatalf("after the read the tabs show %q (before: %q), want what it stored", got, old)
 			}
-			manager.updatePageInfo(p.driver.Handle(), page.URL, "Retitled")
+			manager.updatePageInfo(p.driver.Handle(), page.URL, "Retitled", 1)
 			if _, err := manager.Wait(t.Context(), access, page.ID, "", 1); err != nil {
 				t.Fatal(err)
 			}
@@ -218,6 +218,25 @@ func TestListingPagesPushesNothingWhenNothingChanged(t *testing.T) {
 	if len(pages) != 1 || !pages[0].Selected || pages[0].LastOpened == "" {
 		t.Fatalf("browser_pages answers %+v", pages)
 	}
+	// The listing stays in the cache until the next read: browser_label_page
+	// answers the page as the last browser_pages listed it.
+	labeled, err := manager.LabelPage(t.Context(), access, page.ID, "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !labeled.Selected || labeled.LastOpened != pages[0].LastOpened {
+		t.Fatalf("browser_label_page after browser_pages answers %+v", labeled)
+	}
+	if _, err := manager.Wait(t.Context(), access, page.ID, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	relabeled, err := manager.LabelPage(t.Context(), access, page.ID, "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relabeled.Selected || relabeled.LastOpened != "" {
+		t.Fatalf("browser_label_page after another read answers %+v", relabeled)
+	}
 }
 
 // A write that lands while a push builds the state, after the push copied
@@ -236,7 +255,7 @@ func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 	manager.pushCopied = func() {
 		if !written {
 			written = true
-			p.setInfo(PageInfo{ID: p.id, URL: page.URL, Title: "Written mid-push"})
+			p.commitInfo(pageUpdate{Location: &pageLocation{URL: page.URL, Title: "Written mid-push"}})
 		}
 	}
 	manager.emitThreadState(access.ThreadID)
@@ -289,7 +308,7 @@ func TestAClientReadLeavesAWriteForThePush(t *testing.T) {
 		t.Fatal(err)
 	}
 	pushes := countStatePushes(manager)
-	p.setInfo(PageInfo{ID: p.id, URL: page.URL, Title: "Read by one client"})
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: page.URL, Title: "Read by one client"}})
 	if tab, _ := findTab(manager, access, page.ID); tab.Title != "Read by one client" {
 		t.Fatalf("the read answers %q", tab.Title)
 	}
@@ -317,7 +336,7 @@ func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := range writes {
-			manager.updatePageInfo(handle, page.URL, "title "+strconv.Itoa(i))
+			manager.updatePageInfo(handle, page.URL, "title "+strconv.Itoa(i), uint64(i+1))
 		}
 	}()
 	go func() {
@@ -330,5 +349,41 @@ func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	want := "title " + strconv.Itoa(writes-1)
 	if got := pushes.shownTitle(page.ID); got != want {
 		t.Fatalf("the newest push shows %q, want %q", got, want)
+	}
+}
+
+// An engine numbers its info reports where it orders them, and a native
+// engine delivers each on its own goroutine, so an older report can reach
+// the Manager after a newer one: the tab settles on the newest, and the
+// older one pushes nothing.
+func TestAnEngineInfoReportOlderThanTheShownOneIsDropped(t *testing.T) {
+	manager, _ := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page := mustOpen(t, manager, access, "https://example.test/")
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := p.driver.Handle()
+	pushes := countStatePushes(manager)
+
+	// The commit's report, before the title was parsed, lands after the
+	// title's.
+	manager.updatePageInfo(handle, "https://example.test/next", "Next", 2)
+	manager.updatePageInfo(handle, "https://example.test/next", "", 1)
+	if n := pushes.take(); n != 1 {
+		t.Fatalf("a newer report and a late older one pushed %d states, want 1", n)
+	}
+	if tab, _ := findTab(manager, access, page.ID); tab.URL != "https://example.test/next" || tab.Title != "Next" {
+		t.Fatalf("tab shows %q %q, want the newer report", tab.URL, tab.Title)
+	}
+	// A repeat of the newest order is the same report.
+	manager.updatePageInfo(handle, "https://example.test/other", "Other", 2)
+	if tab, _ := findTab(manager, access, page.ID); tab.Title != "Next" {
+		t.Fatalf("a repeated order replaced the title with %q", tab.Title)
+	}
+	manager.updatePageInfo(handle, "https://example.test/third", "Third", 3)
+	if tab, _ := findTab(manager, access, page.ID); tab.URL != "https://example.test/third" || tab.Title != "Third" {
+		t.Fatalf("tab shows %q %q after a newer report", tab.URL, tab.Title)
 	}
 }

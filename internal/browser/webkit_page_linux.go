@@ -68,9 +68,9 @@ type webkitPage struct {
 	// loadOrder numbers the view's loading changes, on the GTK thread
 	// (pageHooks.Loading).
 	loadOrder atomic.Uint64
-	// infoReports carries the view's address and title reports off the GTK
-	// thread in order.
-	infoReports infoReports
+	// infoOrder numbers the view's address and title reports, on the GTK
+	// thread (engineEvents.PageInfoChanged).
+	infoOrder atomic.Uint64
 }
 
 func (p *webkitPage) Lifetime() context.Context { return p.ctx }
