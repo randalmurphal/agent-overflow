@@ -81,9 +81,8 @@ func (a *App) collectReleasedHolders() {
 
 // completeThreadDeletes finishes the deletes of the committed threads list
 // names, as one delete that joins them (familyDelete): each is destroyed
-// with the worktree policy its commit recorded, once every thread under it
-// is gone, so an assistant's current thread goes after its past threads and
-// helpers whatever order list returns them in. A thread that fails keeps
+// once every thread under it is gone, so an assistant's current thread goes
+// after its past threads and helpers whatever order list returns them in. A thread that fails keeps
 // its commit, with the threads above it, and is logged; the next boot
 // retries it.
 func (a *App) completeThreadDeletes(ctx context.Context, walk string, list func() ([]string, error)) {

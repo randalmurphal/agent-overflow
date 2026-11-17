@@ -8,7 +8,6 @@ import (
 	"log"
 	"slices"
 	"sync"
-	"time"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
@@ -230,7 +229,7 @@ const maxFamilyChanges = 8
 type familyDelete struct {
 	app *App
 	req deleteRequest
-	// id is the operation's, the claim it writes.
+	// id is the operation's, the claim it writes (threads.delete_claim).
 	id string
 	// members is the family as last claimed, in claim order, and index
 	// each member's place in it.
@@ -249,7 +248,7 @@ func (a *App) newFamilyDelete(req deleteRequest) *familyDelete {
 	return &familyDelete{
 		app:     a,
 		req:     req,
-		id:      newDeleteOperationID(),
+		id:      entityid.New(),
 		retired: make(map[string]bool),
 		closed:  make(map[string]bool),
 	}
@@ -654,10 +653,4 @@ func (op *familyDelete) destroyMember(member store.DeleteMember) error {
 	unlock := op.app.threadLocks().Lock(member.ThreadID)
 	defer unlock()
 	return op.app.threadApplication().Destroy(member.ThreadID, ports)
-}
-
-// newDeleteOperationID mints a delete's id, the claim it writes
-// (threads.delete_claim).
-func newDeleteOperationID() string {
-	return fmt.Sprintf("%020d-%s", time.Now().UnixNano(), entityid.New())
 }
