@@ -80,9 +80,12 @@
     else if (right > scroller.scrollLeft + scroller.clientWidth) scroller.scrollLeft = right - scroller.clientWidth;
   }
 
+  // The count, not the list: every state push brings a new list, and the
+  // measure forces a layout.
+  let pageCount = $derived(pages.length);
   $effect(() => {
     const id = activePageId;
-    void pages.length;
+    void pageCount;
     if (id) revealTab(id);
   });
 

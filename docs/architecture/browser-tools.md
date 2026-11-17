@@ -136,6 +136,9 @@ per-platform no-op.
   the page with shared JavaScript, so the fetch carries the page's session:
   an image data URL within 32 KB, empty when there is none or it is refused.
   Headless Chromium has no pane and reports none.
+- The thread's state is pushed whole, every tab with its favicon, and only
+  by a change: a tool call or an engine report that leaves it as it was
+  pushes nothing.
 - The chat header's browser button is present wherever the native browser is
   usable for the thread, tabs or not. With no tab it opens the pane on a new
   tab, as a mod-clicked link does on a tab at the link. A new tab the user

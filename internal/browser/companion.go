@@ -150,11 +150,15 @@ type paneMount struct {
 	focus *mountFocus
 }
 
-func (p *managedPage) setInfo(info PageInfo) {
+// setInfo replaces the page's info, keeping its label, and reports whether
+// anything the tab shows changed, so a caller pushes state only then.
+func (p *managedPage) setInfo(info PageInfo) bool {
 	p.metaMu.Lock()
 	info.Label = p.info.Label
+	changed := info != p.info
 	p.info = info
 	p.metaMu.Unlock()
+	return changed
 }
 
 // setHistoryState updates only the back/forward flags and reports whether
@@ -183,10 +187,15 @@ func (p *managedPage) cachedInfo() PageInfo {
 	return info
 }
 
-func (m *Manager) pageChanged(p *managedPage) {
+// pageChanged follows a use of p: it counts as a use, a thread with no active
+// page takes p, and the thread's state is pushed when that or the caller's
+// own change (changed) altered it. Every push carries all the thread's tabs
+// with their favicons, so a tool call that changed nothing pushes nothing.
+func (m *Manager) pageChanged(p *managedPage, changed bool) {
 	p.touch()
-	m.ensureActivePage(p.owner, p.id)
-	m.emitThreadState(p.owner)
+	if m.ensureActivePage(p.owner, p.id) || changed {
+		m.emitThreadState(p.owner)
+	}
 	m.syncPanePresentation(p.owner)
 }
 
@@ -349,15 +358,18 @@ func (m *Manager) updatePageInfo(handle, url, title string) {
 		return
 	}
 	previous := found.cachedInfo()
-	found.setInfo(PageInfo{
+	// An engine reports the same address and title again (a target info
+	// change that touched neither); that pushes nothing.
+	if found.setInfo(PageInfo{
 		ID:    found.id,
 		URL:   truncateUTF8(url, maxBrowserURLBytes),
 		Title: truncateUTF8(title, maxBrowserTitleBytes),
 		// The engine event carries no history state; keep what is shown
 		// and let the async refresh below correct it.
 		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
-	})
-	m.emitThreadState(found.owner)
+	}) {
+		m.emitThreadState(found.owner)
+	}
 	go m.refreshHistoryState(found)
 }
 

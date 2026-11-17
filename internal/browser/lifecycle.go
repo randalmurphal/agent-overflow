@@ -200,7 +200,8 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 
 	switch {
 	case err == nil && !closed:
-		m.pageChanged(p)
+		// The tab leaves its creating state.
+		m.pageChanged(p, true)
 		return p, nil
 	case err == nil:
 		// Closed while the engine created it: the engine page is closed

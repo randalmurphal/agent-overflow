@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/css"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	cdplog "github.com/chromedp/cdproto/log"
@@ -205,6 +206,14 @@ func (p *cdpPage) installHandlers() error {
 	}
 	if _, err := chromedp.Call(ctx, network.Enable, networkEnableParams()); err != nil {
 		return fmt.Errorf("browser: enable network lifecycle: %w", err)
+	}
+	// chromedp's attach enables CSS, which sends an event for every style
+	// sheet a document adds and every media query result that changes.
+	// Nothing reads them (chromedp only needs CSS for ComputedStyle and
+	// MatchedStyle, which no driver uses), and on the hosted engine each one
+	// crosses to the backend through the launcher's relay.
+	if _, err := chromedp.Call(ctx, css.Disable, cdp.Empty{}); err != nil {
+		return fmt.Errorf("browser: disable unread style sheet events: %w", err)
 	}
 	return nil
 }
