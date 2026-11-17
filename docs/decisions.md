@@ -338,6 +338,18 @@ Mechanism in
   it. Threads selected together are one delete per computer. Placement
   is organization only: the spawn record, the reply path and the read
   mark on an answer do not change. An assistant row never joins a group.
+- Ownership crosses paired computers (owner rulings 2026-11-17,
+  [standing agents](specs/standing-agents.md#owned-workers)): a worker a
+  thread spawns on another computer is owned there through the receipt's
+  link, with no sidebar row in any window. Its prompts go to the spawner,
+  pulled by the spawner's computer, and reach the person there when the
+  spawner's computer has not said it holds them for two minutes. The
+  spawner's computer owes it the spawner's archive and delete, and that
+  computer admits them through its own archive and delete. An archive or
+  delete that computer refuses or cannot receive stands here, is named as
+  pending there and is retried; an older computer is named once. No new
+  indicator is drawn: "on <computer>" is the only mark, and a window not
+  attached to that computer cannot open or place the worker.
 - Deleting a thread never removes a worktree (owner ruling 2026-11-17):
   no delete removes, checks or is refused by a worktree, whatever work it
   holds or whoever else is on it. The worktree stays for Remove Worktree.

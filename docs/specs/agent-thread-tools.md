@@ -417,7 +417,11 @@ default to the caller's and are validated on the destination: a
 provider or model that computer does not offer is refused with the list
 it does. The destination's own account runs and bills the thread. The
 thread is created on the destination with no special marking there
-either. Owned, the default, it is in no sidebar there; grouped or
+either. Owned, the default, it is in no sidebar there: a window attached
+to that computer reaches it through the caller's Agents row, which opens
+it and gives it a sidebar row there (Show in Sidebar), and a window
+attached only to the caller's computer names the computer and can do
+neither ([Agents segment](standing-agents.md#agents-segment)); grouped or
 standalone, it appears in that computer's sidebar in every frontend
 attached to it.
 
@@ -1523,6 +1527,11 @@ work, and the accepting computer settles the request `interrupted`
 still wants the work. A target deleted while a request is open settles
 `errored` with that reason.
 
+An owned worker's prompt there is pulled the same way: the spawner's
+computer reads it from the spawn's `agent_rows` answer at the poll's
+pace and queues it to the spawner as a wake, and one the spawner cannot
+take goes back there ([reaching another computer](#reaching-another-computer)).
+
 ## Attribution (Q9, Q16)
 
 `items.meta.origin` is already a string (`external-queue`,
@@ -1850,6 +1859,25 @@ they are not thread tools calls; the caller then stops the request and
 the turn alone, records it as the user's stop, and says so on the row
 and in the Stop's report.
 
+A worker the calling device's thread spawned there and owns, through its
+spawn's link, is reached by three more forwarded write calls over
+`ThreadToolCall`, each admitted only through that link
+([owned workers](standing-agents.md#owned-workers)). The worker's prompts
+ride the `agent_rows` answer and wake the spawner here, as a local
+worker's do: the wake names the worker on its computer and opens it
+there. `agent_prompt_reply` carries the spawner's `thread_reply`, and
+`agent_prompt_return` gives a prompt back to the person there when the
+spawner here cannot take it. The destination keeps a prompt with the
+spawner while the spawner's computer names it as held on its
+`agent_rows` calls, and gives it to the person there two minutes after
+it was routed or last named. `agent_owner_op` carries what archiving or
+deleting the spawner owes the worker, sent until that computer answers.
+A computer that predates `agent_owner_op` answers that it is not a
+thread tools write call, and the operation is reported once as on a
+computer that runs an older version. An isolated boot with `AO_HARNESS_OLD_OWNER_OPS_PEER=1` answers
+`agent_owner_op` that way, and `AO_HARNESS_TIMING`'s `prompt-lease`
+shortens the two minutes; no other boot honors either.
+
 Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the
 names so the model can retry with them, and raw causes kept in host
@@ -1870,8 +1898,12 @@ happened; the token and `thread_status` do.
   about a moved request names the thread that made it as its source.
 - Deleting, archiving or moving the caller thread cancels the scratch
   asks it owns on every computer and turns `notify` off on its other
-  requests. Spawned
-  and sent threads are left alone; only the bindings are dropped. A copy
+  requests. Archiving or deleting it also archives or deletes the
+  workers it owns, here and on paired computers, where it stands
+  whether or not that computer takes it then
+  ([owned workers](standing-agents.md#owned-workers)); moving it releases
+  them. Other spawned and sent threads are left alone; only the
+  bindings are dropped. A copy
   waits for outstanding requests and wake handoff like the existing
   queued-work checks. The cancel is best-effort and logged when a
   destination cannot be reached; an unreachable scratch ask finishes on

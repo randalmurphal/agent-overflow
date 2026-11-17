@@ -255,7 +255,11 @@ wake to the spawn's caller and forwards its `thread_reply`
 one binding (`remotePromptFor`), and each delivery has its own wake send
 id. A link that ends hands its prompts back (`handBackLinkPrompts`) through
 `announceReleasedWorkers`, the one place every write that releases a
-link's thread reports it; do not call either part alone.
+link's thread reports it; do not call either part alone. The spawner's
+computer gives a prompt back at once when no thread there can take it
+(`store.RemotePromptHolder`, which applies the assistants pause). Only
+`IsolationConfig.WorkerPromptLease` shortens the lease, for tests and
+harness boots.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
@@ -276,7 +280,9 @@ end or a delete's commit owes the paired computers its threads spawned on
 is delivered by `app_thread_owner_ops.go`, and a delete or archive such a
 computer's owner sends for its worker here goes through the same
 `deleteThreads` and `runArchive`, fenced by the spawn's link; never add a
-second delete or archive path for it. A door that runs, moves or changes a thread refuses one a delete claimed, through
+second delete or archive path for it. A computer that predates owner
+operations is reported once (`threadAgentPeerOlder`);
+`IsolationConfig.OmitOwnerOps` stands one up for tests and harness boots. A door that runs, moves or changes a thread refuses one a delete claimed, through
 `CheckMutable`, `admitWork` or the store write's own check. A claimed thread
 takes app messages into its queue (`LockDeliverable`), and a start the app
 makes for it, a notice's session start or a queue dispatch, waits for the

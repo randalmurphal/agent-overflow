@@ -848,7 +848,12 @@ Ruling 36, as built:
   return: a worker whose computer has not taken it is named pending with
   its computer (`WorkerFailure.pending`, `computer`), and one on a
   computer that predates this as running an older version, which is not
-  asked again. The request sweep sends the rest, 5 s after an attempt
+  asked again. The sidebar's archive and delete say so in one toast per
+  computer, after the toast for the workers here and with no action:
+  `Archived "<owner>". Its worker "<title>" is pending on <computer>.
+  <reason>` while pending, and `Archived "<owner>", but its worker
+  "<title>" on <computer> is still open: <reason>` (a delete's: `Deleted
+  ... stays: <reason>`) for an older computer. The request sweep sends the rest, 5 s after an attempt
   doubling to 10 min, until that computer answers
   (`deliverOwedOwnerOps`); a refusal or a computer that does not answer
   never undoes the archive or delete here. That computer admits each
@@ -865,7 +870,9 @@ Ruling 36, as built:
   release, that delete, the end of the owner device's last session there,
   and the retention floor. The delete's confirmation says when the
   threads it takes spawned workers on other computers
-  (`DeleteDependents.remoteWorkers`).
+  (`DeleteDependents.remoteWorkers`), with no count: `Workers it spawned
+  on other computers are deleted there too.` (`they` for several
+  threads).
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
@@ -1074,7 +1081,8 @@ thread:
    computer, to any depth the ledger holds, a cycle ended by the
    threads already reached.
 8. Sends a prompt routed to it from a worker it left running to the
-   user.
+   user; a worker's on a paired computer goes back to that computer
+   (`agent_prompt_return`), whose user it reaches.
 
 A thread a running workflow run works in, as a phase or a fan-out unit, is
 that run's, and a Stop leaves it and the run as they are and names the run
@@ -1142,10 +1150,12 @@ its count slot, and a warning `CountBadge` with how many are waiting on
 the user, each titled with what it counts, at every density. A row
 whose thread has no open worker shows neither.
 
-**Placed workers.** An owned thread has no row (ruling 36). A standalone
-or grouped thread a local thread spawned into a project is a plain or
+**Placed workers.** An owned thread has no row (ruling 36), in the
+window of any computer. A standalone or grouped thread a local thread, or
+a thread on a paired computer through its spawn's link
+(`Thread.spawnedByComputerId`), spawned into a project is a plain or
 grouped row there, and its menu adds Remove from Sidebar, which makes it
-owned again; its panes stay open. A placement change unpins the row, as
+owned again on the computer holding it; its panes stay open. A placement change unpins the row, as
 a group move does. Helpers and past threads have no project, so no row
 and no placement item.
 
@@ -1551,7 +1561,12 @@ assistant, its current thread, its past threads and its helpers; that
 is scheduling only, not the admission. No session starts for those
 threads: an app-written message waits in its queue, and any other start
 and any new work is refused with the same message. A worker's question
-goes to the user. The pause is set from the setting at boot, before the
+goes to the user. A worker on a paired computer keeps running there, the
+pause being this computer's: its prompts, routed here, go back there the
+first time this computer sees them, and one already routed here when
+the pause lands goes back then, so the user there has them without
+waiting out the lease; turning assistants on brings none back. The pause
+is set from the setting at boot, before the
 sweep's first pass, so a restart keeps it.
 
 **Refused to a person.** A person's send, steer, edit and resend, fork,
@@ -1835,11 +1850,15 @@ closes up their spacing so the row holds at a phone width.
   once it answers, its pane with it; then the icon opens the thread
   asked (`askedThreadId`), labeled as the thread asked, never as the
   worker. A click that lands after the delete and before the row's next
-  read opens nothing and says the copy could not be opened. A spawn row
-  whose thread is owned, on the listing computer and not archived has
-  Show in Sidebar (`panel-left-open`); an assistant's helper, outside
-  every project, takes no placement and has none. It is `SetThreadPlacement` standalone on
-  that computer, after which the row's placement is standalone and the
+  read opens nothing and says the copy could not be opened. A row whose
+  thread is on a computer this window is not attached to opens nothing
+  and says `<title> is on <computer> this window is not connected to.`
+  A spawn row whose thread is owned and not archived has Show in Sidebar
+  (`panel-left-open`) when the window is attached to the computer that
+  holds the thread, this one or a paired one, nested rows included
+  (`agentThreadBackend`); an assistant's helper, outside every project,
+  takes no placement and has none. It is `SetThreadPlacement` standalone
+  on that computer, after which the row's placement is standalone and the
   button is gone; a refusal is an error toast. Both are icon buttons with
   a title and a matching label, as Background's Open in Agent Pane. Stop
   and Stop All stay text buttons.
@@ -2186,7 +2205,7 @@ ticket keys.
 | 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool. No mock speaks claude-tui, so the claude-tui leg is proven at the argv level and at the app level through the real threadmcp transport, and the only unproven step is the real Claude TUI binary reading --mcp-config and --allowedTools, which the manual provider smoke covers. |
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
-| 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
+| 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; workers owned on another computer (no row, Show in Sidebar and Remove from Sidebar on their own computer, a window attached only to the spawner's, the waiting line, the wake, the lease, archive and delete with that computer stopped or older) in `thread-tools-paired.spec.ts`, `thread-tools-three-computers.spec.ts` and `assistants-toggle-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
 | 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v154); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
 | 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
