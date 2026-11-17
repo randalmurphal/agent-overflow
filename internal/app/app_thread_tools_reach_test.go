@@ -1118,7 +1118,12 @@ func TestARecoveredRemoteForkRecordsItsInstructions(t *testing.T) {
 		case got = <-done:
 			collected = true
 		case <-time.After(100 * time.Millisecond):
-			pair.poll(t)
+			// pair.poll skips the fence that keeps the poller off a row
+			// while its attempts are out (threadRequestAdmissionFence), so
+			// it waits for the last of them to be answered.
+			if faults.calls.Load() >= int32(threadPeerAdmissionAttempts) {
+				pair.poll(t)
+			}
 		}
 	}
 	if got.err != nil {
