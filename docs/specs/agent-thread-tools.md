@@ -1401,7 +1401,10 @@ What settles a request, in order:
    `waiting`. Every change that can bring a thread to rest reaches the
    Agents rows' drain, which asks for a pass over the held requests;
    a pass reads each held thread's rest itself, from facts complete when
-   it reads them, a thread's durable sources before its memory ones, so
+   it reads them, the threads below it re-read from their sources before
+   it settles one `finished`
+   ([owned workers](standing-agents.md#owned-workers)), a thread's
+   durable sources before its memory ones, so
    an answer on its way to a thread keeps it from rest until the turn it
    starts is open, and a workflow run's report from its rest until its
    wake has been handed over. The

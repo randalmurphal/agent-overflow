@@ -29,8 +29,9 @@ import (
 // bring the thread to rest reaches the Agents rows' drain, which asks for a
 // pass over the held requests (noteRestWaitsMayChange). A pass reads rest
 // from facts complete when it reads them: the thread's own sources, durable
-// ones first (workerUnrest), and the recorded state of the workers below
-// it. At boot no held request settles at rest until every source is
+// ones first (workerUnrest), and the state of the workers below it, read
+// from their sources before it settles (heldThreadAtRest). At boot no held
+// request settles at rest until every source is
 // recovered into that record (recoverRestAtBoot): a pass asked for before
 // then, by a turn end, a recovery event or the boot itself, waits for it.
 
@@ -425,9 +426,11 @@ func (a *App) heldReceipts() []heldReceipt {
 
 // settleRestedReceipts settles every held request whose thread is at rest
 // now, together, so a caller several of them answer is told once. Each held
-// thread's rest is read fresh (threadRest), once a pass: what liveWorkers
-// records only draws rows, so a change it missed cannot hold a request. A
-// read that fails leaves the request held for the next pass.
+// thread's rest is read once a pass, and again under the token's settle
+// lock (heldThreadAtRest): its own sources, and before it settles the
+// threads below it, fresh, so what liveWorkers missed neither holds nor
+// settles a request. A read that fails leaves the request held for the
+// next pass.
 //
 // A held request on a thread under a paused assistant does not settle at
 // rest: its loops do not fire while assistants are off, and the pause

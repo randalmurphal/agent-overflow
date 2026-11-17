@@ -34,9 +34,12 @@ import (
 // the durable ones (background work, loops, watches, reminders, answers
 // on their way, workflow runs and unanswered questions), from the
 // background tray, wake, request, workflow and question frames and the
-// boot (recoverRestAtBoot).
-// Every reader, the listing's reads, the row view, the change frames'
-// gates and Past, consumes only what it stored.
+// boot (recoverRestAtBoot). A decision that cannot be taken back, a held
+// request settling or the retention sweep clearing a spawn, reassesses the
+// threads below first, on its own goroutine (reassessSpawnedBelow), since
+// the drain records a change after it happened. Every other reader, the
+// listing's reads, the row view, the change frames' gates and Past,
+// consumes only what it stored.
 
 // Why a worker is not at rest, in the order a row shows them. Waiting is
 // below the rest: background work, a loop, watch or reminder, or a timer.
@@ -82,13 +85,14 @@ type workerRest struct {
 // threadRest says why threadID is not at rest, the zero value when it is:
 // its own state (workerUnrest) or, with nothing of its own, open work at
 // any depth below it (store.ThreadAgentState.OpenBelow), which reads
-// waiting with no detail. It is the one reading of rest, made fresh: a
-// spawn's request settles on it (restSettlement), thread_status with
-// thread_ids waits for it (threadStateNow), and a paired computer answers
-// with it, for its agent_rows (answerThreadAgentRows) and for a request's
-// poll (threadPeerRequestState). The Agents rows read the same two halves
-// from what was recorded: liveWorkers for the thread's own state, the
-// listing's TargetOpen for the work below it.
+// waiting with no detail. It is the one reading of rest: its own state read
+// now, the work below over what liveWorkers recorded. A held request reads
+// it before it settles, then the work below fresh (heldThreadAtRest);
+// thread_status with thread_ids waits for it (threadStateNow), and a paired
+// computer answers with it, for its agent_rows (answerThreadAgentRows) and
+// for a request's poll (threadPeerRequestState). The Agents rows read the
+// same two halves from what was recorded: liveWorkers for the thread's own
+// state, the listing's TargetOpen for the work below it.
 func (a *App) threadRest(threadID string) (workerRest, error) {
 	rest, err := a.workerUnrest(threadID)
 	if err != nil || rest.unrest != "" {

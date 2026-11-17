@@ -932,11 +932,22 @@ Ruling 36, as built:
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
-  take. A fresh read of both, `threadRest`, is what a spawn's settlement,
-  `thread_status` with `thread_ids` and a paired computer's answers take
-  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25));
-  every rest pass reads it for each held request's thread, whatever the
-  memory record below says, which only draws rows.
+  take. A read of both, `threadRest`, is what `thread_status` with
+  `thread_ids`, a paired computer's answers and every rest pass take: the
+  thread's own sources read then, the work below it over the memory record
+  below. A decision that cannot be taken back reads both fresh, by the
+  same rule: before a held request settles `finished`
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)),
+  and before the retention sweep clears a spawn past the floor, every
+  thread a local spawn reached below the thread in question is
+  re-evaluated from its sources (`reassessSpawnedBelow`), the spawn's own
+  thread too for the sweep, and the listing's answer is read over that.
+  The settlement waits while it says open work; the sweep leaves whole a
+  spawn the listing keeps open (`agentTargetOpenSQL`) and a receipt whose
+  thread it reads not at rest (`agentThreadOpenSQL`). A read that fails
+  decides nothing until the next pass. Otherwise the memory record and
+  the counts below only draw rows, frames, summaries and Stop All's
+  selection, which the next change corrects.
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
   a thread a paired computer's spawn made here included,
   each with its spawn link and what its durable sources last said, and
@@ -1230,10 +1241,10 @@ Mechanics, as built:
   and while the thread it created exists the thread-request retention
   sweep keeps a spawn row past the floor as `lineage_only`, local or
   remote ("Owned workers"), its answer, late reply and wake cleared, once
-  no open work is under it:
-  a spawn the Agents segment lists for open work below it, local or
-  remote, waits for that work to settle, so the floor never takes rows
-  out of a tree. The ledger tools treat that
+  its thread rests:
+  a spawn the Agents segment keeps open, local or remote, waits for its
+  thread's work to end, so the floor never takes rows out of a tree. The
+  ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
   (`SpawnOwnerOf`) and the Agents tree still find the row, so work a
   reused worker opens after the sweep lists, counts and stops under
@@ -2070,9 +2081,10 @@ closes up their spacing so the row holds at a phone width.
   (`idx_thread_requests_open_deep`, which holds only those) to the root. Open work is what a thread's own listing shows
   open: a spawn, and a send or ask with its wake armed or a call parked
   on it. A parked call lives in memory and arms its wake only when its
-  wait ends, so the counts hold the armed part and each read climbs the
-  spawns above the parked requests it is given, a spawn a step: a worker's
-  quiet wait lists, and counts, under its owner as under itself. The
+  wait ends, so the counts hold the armed part and each read counts each
+  parked request it is given for its caller, then climbs the spawns above
+  that caller, a spawn a step: a worker's quiet wait lists, and counts,
+  under its owner as under itself. The
   workers not at rest are memory too, and each read climbs from their
   spawn links the same way. Each climb goes to the root, and a link
   enters it once however many seeds lie below it: a read pays one search
