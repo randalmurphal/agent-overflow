@@ -77,7 +77,10 @@ export async function runWorkerLifetime(harness: HarnessApp, page: Page, provide
   const replied = Date.now();
   const hold = await awaitGate(harness, 'worker-hold', workerP.path);
   const workerRunning = async () => Boolean((await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', worker)).activeTurn);
-  expect(await workerRunning(), 'the worker is still in its turn').toBe(true);
+  // The turn opens when the backend handles the turn start it reads from
+  // the provider's output, which can trail the provider's tool call and
+  // gate, both made out of band.
+  await expect.poll(workerRunning, { message: 'the worker is still in its turn', timeout: 10_000 }).toBe(true);
 
   await harness.open(page);
   const leadRow = projectRow(page, lead);
