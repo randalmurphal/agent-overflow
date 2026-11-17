@@ -21,10 +21,35 @@ type Computer struct {
 // and runtime mode. The thread_spawn descriptions state them so the common
 // case needs no discovery call, which is why they are part of the shape
 // rather than read at call time.
+//
+// Spawn is what the session may start, fixed when it registered.
 type Shape struct {
 	Computers []Computer
 	Defaults  SpawnDefaults
+	Spawn     SpawnShape
 }
+
+// SpawnShape is what the guide and the tool list say about spawning in one
+// session (docs/specs/agent-thread-tools.md, "Sub-thread depth" and "Agent
+// profiles").
+type SpawnShape struct {
+	// Level is the session's thread's sub-thread level and Limit the most
+	// levels of sub-threads this computer allows. A thread at the limit
+	// has no thread_spawn. A zero Limit is no limit known, as in a shape
+	// computed for no session.
+	Level, Limit int
+	// Providers are the providers this computer offers, and Profiles the
+	// names of the agent profiles it can run.
+	Providers []string
+	Profiles  []string
+}
+
+// CanSpawn reports whether the session has thread_spawn.
+func (s SpawnShape) CanSpawn() bool { return s.Limit == 0 || s.Level < s.Limit }
+
+// spawnsAtLimit reports whether a thread this session spawns is at the
+// limit, with no thread_spawn of its own.
+func (s SpawnShape) spawnsAtLimit() bool { return s.Limit != 0 && s.Level+1 >= s.Limit }
 
 // Paired reports whether this shape has other computers in it.
 func (s Shape) Paired() bool { return len(s.Computers) > 0 }
@@ -514,6 +539,11 @@ type ProviderOption struct {
 	Name         string        `json:"name,omitempty"`
 	DefaultModel string        `json:"default_model,omitempty"`
 	Models       []ModelOption `json:"models"`
+	// Unlisted are the models the provider no longer offers a new thread
+	// but still runs for one already on them, such as a spawner's own.
+	// The computer that has them resolves with them; they are never
+	// listed.
+	Unlisted []ModelOption `json:"-"`
 }
 
 // ModelOption is one model of one provider.

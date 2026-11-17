@@ -40,6 +40,8 @@ type spawnArgs struct {
 	Effort        string   `json:"effort"`
 	Mode          string   `json:"mode"`
 	RuntimeMode   string   `json:"runtime_mode"`
+	Profile       string   `json:"profile"`
+	Instructions  string   `json:"instructions"`
 	WaitSeconds   *int     `json:"wait_seconds"`
 	Notify        bool     `json:"notify"`
 	HomeFiles     []string `json:"home_files"`
@@ -81,7 +83,10 @@ type ackResult struct {
 	ExpiresAt  string `json:"expires_at,omitempty"`
 	// NextFire is when a reminder fires.
 	NextFire string `json:"next_fire,omitempty"`
-	Note     string `json:"note,omitempty"`
+	// Instructions are a spawn's, as its thread stores them
+	// (RequestAck.Instructions); the spawn's row shows them from here.
+	Instructions string `json:"instructions,omitempty"`
+	Note         string `json:"note,omitempty"`
 }
 
 func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -107,10 +112,22 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		Effort:            trim(args.Effort),
 		Mode:              trim(args.Mode),
 		RuntimeMode:       trim(args.RuntimeMode),
+		Instructions:      trim(args.Instructions),
 		Notify:            args.Notify,
 	}
 	if err := checkText(call.Prompt, "prompt"); err != nil {
 		return nil, err
+	}
+	if len(call.Instructions) > MaxSpawnInstructionsBytes {
+		return nil, invalidf("instructions must be at most %d bytes.", MaxSpawnInstructionsBytes)
+	}
+	if name := trim(args.Profile); name != "" {
+		if err := c.applyProfile(ctx, &call, name); err != nil {
+			return nil, err
+		}
+		if len(call.Instructions) > MaxSpawnInstructionsBytes {
+			return nil, invalidf("Profile %s's instructions and yours come to %d bytes together; at most %d fit. Shorten instructions.", call.Profile, len(call.Instructions), MaxSpawnInstructionsBytes)
+		}
 	}
 	files, err := homeFiles(args.HomeFiles)
 	if err != nil {
@@ -185,6 +202,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := c.checkSpawnDestination(ctx, &call); err != nil {
 		return nil, err
 	}
+	if err := c.checkProfileOffered(ctx, call); err != nil {
+		return nil, err
+	}
 	ack, err := c.app.Spawn(ctx, c.caller, call)
 	if err != nil {
 		return nil, err
@@ -217,13 +237,9 @@ func (c *session) checkSpawnDestination(ctx context.Context, call *SpawnCall) er
 	if err != nil {
 		return err
 	}
-	var answer optionsAnswerShape
-	if err := peerResult(raw, &answer); err != nil {
+	row, err := peerOptions(raw)
+	if err != nil {
 		return err
-	}
-	row := answer.computerOptions
-	if len(answer.Computers) > 0 {
-		row = answer.Computers[0]
 	}
 	return publicf(CodeInvalidRequest, "A thread on %s needs project_id: projects are registered per computer and cannot be inherited. %s offers: %s.", NameOfComputer(computer), NameOfComputer(computer), describeProjects(row.Projects))
 }
@@ -395,6 +411,8 @@ func (c *session) ack(receipt RequestAck, kind string) ackResult {
 		Notify:     receipt.Notify,
 		Delivered:  receipt.Delivered,
 		ExpiresAt:  unixMsToRFC3339(receipt.ExpiresAt),
+
+		Instructions: receipt.Instructions,
 	}
 	result.Note = ackNote(result)
 	return result

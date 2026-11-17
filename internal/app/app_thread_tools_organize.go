@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,6 +76,13 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 		result.ErrorCode = threadtools.CodeIsCaller
 		return result
 	}
+	if refusal, err := t.refuseFreeingOwnChain(caller, threadID, patch); err != nil || refusal != "" {
+		result.Error, result.ErrorCode = refusal, threadtools.CodeInvalidRequest
+		if err != nil {
+			result.Error, result.ErrorCode = organizeRefusal(threadID, err)
+		}
+		return result
+	}
 
 	applied, err := t.app.applyThreadOrganizePatch(ctx, threadID, patch)
 	if err != nil {
@@ -97,6 +105,26 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 		result.Warning = "Archived, but some of the work these threads were waiting on could not be stopped or withdrawn; the host log has the cause."
 	}
 	return result
+}
+
+// refuseFreeingOwnChain refuses a placement or group change that would
+// lift the sub-thread limit the caller works under: one of a thread on the
+// caller's own delegation chain, itself included, that is a sub-thread. A
+// move into the sidebar ends that thread's delegation (store.SubThreadLevel),
+// which is the user's to decide, not the chain's.
+func (t threadToolsApp) refuseFreeingOwnChain(caller threadtools.Caller, threadID string, patch threadapp.OrganizePatch) (string, error) {
+	if patch.Group == nil && (patch.Placement == nil || *patch.Placement == store.PlacementOwned) {
+		return "", nil
+	}
+	chain, err := t.app.store.DelegationChain(caller.ThreadID)
+	if err != nil || !slices.Contains(chain, threadID) {
+		return "", err
+	}
+	level, err := t.app.store.SubThreadLevel(threadID)
+	if err != nil || level == 0 {
+		return "", err
+	}
+	return "Only the user can move this thread into the sidebar or a group: it is a sub-thread on the chain that delegated your work, and the move would free that chain from the sub-thread limit.", nil
 }
 
 // applyThreadOrganizePatch is the write itself, with the locks, the events

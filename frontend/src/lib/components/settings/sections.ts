@@ -130,6 +130,13 @@ export const SETTINGS_SECTIONS = [
     description: "The built-in thread tools agents use to read, start and answer this computer's other conversations.",
   },
   {
+    id: 'agent-profiles',
+    label: 'Agent profiles',
+    group: 'Agents',
+    description:
+      'The agents a thread can open sub-threads with, advice on choosing among them, and how deep sub-threads may go.',
+  },
+  {
     id: 'agent-guide',
     label: 'App guide',
     group: 'Agents',

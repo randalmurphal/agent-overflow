@@ -17,6 +17,11 @@ const (
 	// SearchTimeout bounds one computer's search.
 	SearchTimeout = 10 * time.Second
 
+	// MaxSpawnInstructionsBytes bounds what a spawn appends to a thread's
+	// system prompt, a profile's instructions and the call's together.
+	// Every session of the thread carries it.
+	MaxSpawnInstructionsBytes = 8 << 10
+
 	// MaxWaitSeconds matches remote_run; both providers are configured to
 	// tolerate a call that long.
 	MaxWaitSeconds = 900

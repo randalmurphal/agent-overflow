@@ -456,6 +456,12 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 		if q.Provider != "" && q.Provider != name {
 			continue
 		}
+		// A provider the person turned off, or whose binary is not on
+		// this computer, is not offered: an agent is never told to spawn
+		// on it, and no profile on it is listed here.
+		if !t.app.providerOffered(name) {
+			continue
+		}
 		option, err := t.providerOption(name)
 		if err != nil {
 			// A provider whose catalog probe failed is still installed;
@@ -478,22 +484,15 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 	return catalog, nil
 }
 
+// providerOption answers thread_options for one provider: the models it
+// offers a new thread, and apart from them (Unlisted) the ones it still runs
+// for a thread already on them, which a spawn resolves against too.
 func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption, error) {
-	option, _, err := t.providerModelOptions(name)
-	return option, err
-}
-
-// providerModelOptions answers thread_options for one provider and also
-// returns every model this computer can resolve, listed or not. The option
-// offers what the provider lists; a spawn or fork naming an unlisted model a
-// thread already runs is still accepted against the full set.
-func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderOption, []threadtools.ModelOption, error) {
 	models, err := t.app.GetModelsForProvider(name)
 	if err != nil {
-		return threadtools.ProviderOption{}, nil, err
+		return threadtools.ProviderOption{}, err
 	}
 	option := threadtools.ProviderOption{ID: name, Name: threadToolsProviderName(name), Models: []threadtools.ModelOption{}}
-	var all []threadtools.ModelOption
 	for _, model := range models.Models {
 		entry := threadtools.ModelOption{Slug: model.Slug, Name: model.Name, Source: string(models.Provenance)}
 		for _, effort := range model.ReasoningEfforts {
@@ -507,12 +506,11 @@ func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderO
 				entry.ContextWindow = window.Tokens
 			}
 		}
-		all = append(all, entry)
-		// An unlisted row only resolves capabilities for threads already on
-		// it; the provider does not offer it to a new one.
-		if !model.Unlisted {
-			option.Models = append(option.Models, entry)
+		if model.Unlisted {
+			option.Unlisted = append(option.Unlisted, entry)
+			continue
 		}
+		option.Models = append(option.Models, entry)
 	}
 	for _, model := range models.Models {
 		if model.IsDefault && !model.Unlisted {
@@ -523,7 +521,7 @@ func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderO
 	if option.DefaultModel == "" && len(option.Models) > 0 {
 		option.DefaultModel = option.Models[0].Slug
 	}
-	return option, all, nil
+	return option, nil
 }
 
 func threadToolsProviderName(name string) string {

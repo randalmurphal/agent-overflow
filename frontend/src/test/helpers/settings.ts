@@ -24,6 +24,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     codexCustomEnv: [...SETTINGS_DEFAULTS.codexCustomEnv],
     spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
     spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
+    agentProfiles: SETTINGS_DEFAULTS.agentProfiles.map((profile) => ({ ...profile })),
+    agentNotes: SETTINGS_DEFAULTS.agentNotes.map((note) => ({ ...note })),
     ...overrides,
   };
 }

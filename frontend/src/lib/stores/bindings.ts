@@ -337,6 +337,8 @@ export {
   // Provider detection
   GetProviderStatuses,
   GetModelsForProvider,
+  // What the computer would make of each agent profile (Settings, Agents).
+  CheckAgentProfiles,
   // Whether each provider's own memory is on as the user configured it
   // (Settings, Memory).
   GetNativeMemoryStatus,

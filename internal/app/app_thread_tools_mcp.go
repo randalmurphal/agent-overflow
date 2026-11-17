@@ -26,7 +26,13 @@ const threadMCPName = threadtools.MCPServerName
 // model reads it as a capability that is off rather than a broken call.
 const threadToolsDisabledCode = "thread_tools_disabled"
 
-type threadMCPAccess struct{ ThreadID, SessionToken string }
+// threadMCPAccess is one session's registration: its thread, its token and
+// its sub-thread place when it started, which fixes whether its tool list
+// has thread_spawn for the session's life.
+type threadMCPAccess struct {
+	ThreadID, SessionToken string
+	Place                  subThreadPlace
+}
 
 type appThreadMCP struct {
 	once   sync.Once
@@ -57,7 +63,7 @@ func (a *App) threadMCPServer() *threadmcp.Server[threadMCPAccess] {
 		// recomputed per handshake: pairing a computer changes what a
 		// running session sees without adding or removing a tool.
 		server.SetInstructionsFunc(func(access threadMCPAccess) string {
-			return a.threadMCP.tools.Instructions(a.threadToolsShape(access.ThreadID))
+			return a.threadMCP.tools.Instructions(a.threadToolsShape(access.ThreadID, access.Place))
 		})
 		server.SetDisabledError(errorsx.Public(threadToolsDisabledCode,
 			"Thread tools are turned off for this conversation. Turn them on in Settings → Agents → Thread tools, or in this conversation's MCP menu.", nil))
@@ -72,14 +78,17 @@ func (a *App) threadToolsServer() *threadtools.Server {
 }
 
 // threadToolsShape is what the schemas and the guide are computed from:
-// the computers this one is paired with, and the calling thread's own
-// live provider settings, which a spawn inherits.
-func (a *App) threadToolsShape(threadID string) threadtools.Shape {
+// the computers this one is paired with, the calling thread's own live
+// provider settings, which a spawn inherits, and what it may spawn: its
+// place when its session started, and the providers and profiles this
+// computer offers.
+func (a *App) threadToolsShape(threadID string, place subThreadPlace) threadtools.Shape {
 	shape := threadtools.Shape{}
 	adapter := a.threadToolsAdapter()
 	shape.Computers = a.threadToolsShapeComputers(adapter)
 	thread, err := adapter.Thread(context.Background(), threadID)
 	if err != nil {
+		shape.Spawn = threadtools.SpawnShape{Level: place.level, Limit: place.limit}
 		return shape
 	}
 	shape.Defaults = threadtools.SpawnDefaults{
@@ -89,6 +98,7 @@ func (a *App) threadToolsShape(threadID string) threadtools.Shape {
 		Mode:        thread.Mode,
 		RuntimeMode: thread.RuntimeMode,
 	}
+	shape.Spawn = a.spawnShape(threadID, place, shape.Defaults)
 	return shape
 }
 
@@ -115,7 +125,7 @@ func (a *App) threadMCPTools(access threadMCPAccess) []map[string]any {
 	if !a.threadToolsEnabledFor(access.ThreadID) {
 		return nil
 	}
-	return a.threadToolsServer().Tools(a.threadToolsShape(access.ThreadID))
+	return a.threadToolsServer().Tools(a.threadToolsShape(access.ThreadID, access.Place))
 }
 
 // threadToolsEnabledFor is the effective per-thread answer. The settings
@@ -184,7 +194,7 @@ func (a *App) refreshThreadToolsAdmission(threadID string) {
 // server, so flipping it reaches a running session without a restart.
 // Workflow phase sessions are excluded; they run a scripted step and have
 // no business driving other threads.
-func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string) (map[string]any, error) {
+func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string, place subThreadPlace) (map[string]any, error) {
 	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Codex) {
 		return nil, nil
 	}
@@ -198,7 +208,7 @@ func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string)
 	if !a.threadMCPServer().ThreadEnabled(thread.ID) {
 		return nil, nil
 	}
-	return a.threadMCPServer().RegisterThread(thread.ID, sessionToken, threadMCPAccess{thread.ID, sessionToken})
+	return a.threadMCPServer().RegisterThread(thread.ID, sessionToken, threadMCPAccess{thread.ID, sessionToken, place})
 }
 
 // threadMCPServerConfig decorates the shared entry with what each provider

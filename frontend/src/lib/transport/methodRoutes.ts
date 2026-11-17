@@ -63,6 +63,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	378941854: 'thread', // CancelThreadRemoteCommand
 	930267104: 'thread', // CancelThreadTransfer
 	2490904523: 'thread', // CancelThreadWake
+	3008083046: 'home', // CheckAgentProfiles
 	2347956003: 'home', // CheckForUpdate
 	987486764: 'selected', // CheckProviderUpdates
 	2932719708: 'thread', // CheckThreadImportUpdates

@@ -829,6 +829,35 @@ func (s *Store) MarkThreadRequestDelivered(token, how string, at int64, late boo
 	return changed, nil
 }
 
+// RecordThreadRequestInstructions records on a spawn's source row the
+// instructions its thread on another computer was given, as that
+// computer's answer stated them from its receipt. The first record stands:
+// the receipt recorded them once, when it named the thread, so a later
+// answer restates the same text.
+func (s *Store) RecordThreadRequestInstructions(token, instructions string) error {
+	if instructions == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(`UPDATE thread_requests SET spawn_instructions = ?
+		  WHERE token = ? AND kind = '`+ThreadRequestSpawn+`' AND spawn_instructions = ''`, instructions, token); err != nil {
+		return fmt.Errorf("store: record instructions of thread request %s: %w", token, err)
+	}
+	return nil
+}
+
+// ThreadRequestSpawnInstructions reads what a spawn's source row recorded
+// of its thread's instructions: at naming for a spawn here, from the other
+// computer's answer for one there. Empty for any other request, or one
+// that recorded none.
+func (s *Store) ThreadRequestSpawnInstructions(token string) (string, error) {
+	var instructions string
+	err := s.reader().QueryRow(`SELECT spawn_instructions FROM thread_requests WHERE token = ?`, token).Scan(&instructions)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("store: read instructions of thread request %s: %w", token, err)
+	}
+	return instructions, nil
+}
+
 // SetThreadRequestTarget records where a request is being answered: the
 // computer that accepted it, and the thread that owns the answer, which for an
 // `ask` is the scratch fork the destination reports back. It is unconditional

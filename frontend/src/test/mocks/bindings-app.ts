@@ -538,6 +538,7 @@ export class NetworkSettings {
 
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');
+export const CheckAgentProfiles = dispatch('CheckAgentProfiles');
 export const GetNativeMemoryStatus = dispatch('GetNativeMemoryStatus');
 // Composer command-menu sources + the two Codex thread commands the menu
 // drives. All four are re-exported from stores/bindings.ts, so the mock has to

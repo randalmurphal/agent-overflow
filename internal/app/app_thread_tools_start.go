@@ -202,7 +202,17 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 		return threadtools.RequestAck{}, err
 	}
 	call.Prompt, call.HomeFiles = prompt, nil
+	level, err := t.refuseSpawnPastLimit(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
 	if t.remoteDestination(call.ComputerID) {
+		// The other computer has no spawn link to count, so the level of
+		// an owned spawn travels with it; one given a sidebar row is level
+		// 0 there, as it would be here.
+		if placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group); err == nil && placement == threadtools.PlacementOwned {
+			call.Level = level
+		}
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSpawn,
 			OriginThreadID: call.FromThread,
@@ -245,6 +255,10 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		return "", t.failRequest(token, err)
 	}
 	call.Placement = placement
+	call.Level = carriedLevel(origin, call.Level)
+	if err := t.refuseCarriedLevelPastLimit(call.Level); err != nil {
+		return "", t.failRequest(token, err)
+	}
 	create, err := t.spawnThreadOptions(ctx, origin, call)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -394,6 +408,13 @@ func (t threadToolsApp) sendTarget(threadID string) (store.Thread, error) {
 // landing in its transcript.
 func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call threadtools.AskCall) (threadtools.RequestAck, error) {
 	if t.remoteDestination(call.ComputerID) {
+		// The other computer has no ask here to count, so the copy's
+		// level travels with the call, as an owned spawn's does.
+		place, err := t.app.subThreadPlaceOf(caller.ThreadID)
+		if err != nil {
+			return threadtools.RequestAck{}, err
+		}
+		call.Level = place.level + 1
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestAsk,
 			OriginThreadID: call.ThreadID,
@@ -444,6 +465,9 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 			// never agreed to this conversation.
 			RuntimeMode:  string(provider.RuntimeReadOnly),
 			RequestToken: token,
+			// A local ask's copy counts from the asker by the ask itself
+			// (store.SubThreadLevel); a paired computer's carries its level.
+			SpawnLevel: carriedLevel(origin, call.Level),
 		})
 	}, false)
 	if err != nil {

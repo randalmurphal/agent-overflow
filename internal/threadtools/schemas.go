@@ -12,10 +12,13 @@ import (
 // every result carries its own recovery hint in the result itself.
 //
 // Both shapes are built from the same code: shape.Paired() decides whether
-// the computer parameters exist at all. No tool is pairing-only, so no
-// tool ever appears or disappears; only the computer parameters do.
+// the computer parameters exist at all. No tool is pairing-only, so
+// pairing never adds or removes a tool; only the computer parameters
+// change. The one tool a shape removes is thread_spawn, for a session at
+// the sub-thread limit (SpawnShape.CanSpawn).
 
-// ToolNames is the seventeen tools, in the order Tools returns them.
+// ToolNames is the seventeen tools, in the order Tools returns them; a
+// session at the sub-thread limit is listed all but thread_spawn.
 var ToolNames = []string{
 	"thread_search",
 	"thread_show",
@@ -36,14 +39,19 @@ var ToolNames = []string{
 	"thread_new_assistant",
 }
 
-// Tools returns the schemas for one shape.
+// Tools returns the schemas for one shape. A session at the sub-thread
+// limit has no thread_spawn at all.
 func (s *Server) Tools(shape Shape) []map[string]any {
-	return []map[string]any{
+	tools := []map[string]any{
 		searchSchema(shape),
 		showSchema(shape),
 		itemSchema(shape),
 		optionsSchema(shape),
-		spawnSchema(shape),
+	}
+	if shape.Spawn.CanSpawn() {
+		tools = append(tools, spawnSchema(shape))
+	}
+	return append(tools,
 		sendSchema(shape),
 		askSchema(shape),
 		replySchema(),
@@ -56,7 +64,7 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		loopSchema(s.wakeFloor),
 		watchSchema(s.wakeFloor),
 		newAssistantSchema(),
-	}
+	)
 }
 
 func tool(name, description string, properties map[string]any, required ...string) map[string]any {

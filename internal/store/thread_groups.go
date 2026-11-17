@@ -103,6 +103,29 @@ func (s *Store) CreateThreadGroup(projectID, name string) (ThreadGroup, error) {
 	return group, err
 }
 
+// EnsureThreadGroup is CreateThreadGroup reporting whether this call
+// inserted the group, for a creator that resolves a new thread's group
+// before the thread exists and takes back a group it made when the thread
+// is not made (DropEmptyThreadGroup).
+func (s *Store) EnsureThreadGroup(projectID, name string) (ThreadGroup, bool, error) {
+	return ensureThreadGroup(s.db, projectID, name)
+}
+
+// DropEmptyThreadGroup deletes the group if no thread is in it and reports
+// whether it did: a group a thread joined meanwhile stays.
+func (s *Store) DropEmptyThreadGroup(id string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM thread_groups
+	  WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM threads WHERE group_id = ?1)`, id)
+	if err != nil {
+		return false, fmt.Errorf("store: drop empty thread group %s: %w", id, err)
+	}
+	dropped, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: drop empty thread group %s: %w", id, err)
+	}
+	return dropped > 0, nil
+}
+
 // threadGroupWriter is the pool or a caller's transaction. The
 // resolve-or-insert needs both halves on the same connection, so the
 // decision it makes is the one its transaction commits.
@@ -340,6 +363,11 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) error {
 			if err := threadGroupMoveRefusal(tx, id); err != nil {
 				return fmt.Errorf("store: set thread group for %s: %w", id, err)
 			}
+		}
+		// A group move files the thread in the sidebar, which ends a
+		// delegation a paired computer carried to it.
+		if err := endCarriedLevelTx(tx, id); err != nil {
+			return err
 		}
 	}
 	return nil

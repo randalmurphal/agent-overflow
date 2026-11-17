@@ -25,6 +25,8 @@ type fakeApp struct {
 	catalog  Catalog
 	// catalogErr fails this computer's own catalog read.
 	catalogErr error
+	// roster is this computer's agent roster.
+	roster Roster
 
 	computers []Computer
 	peers     map[string]Peer
@@ -328,9 +330,14 @@ func (f *fakeApp) Catalog(_ context.Context, q CatalogQuery) (Catalog, error) {
 	return f.catalog, nil
 }
 
+func (f *fakeApp) Roster(context.Context) (Roster, error) { return f.roster, nil }
+
 func (f *fakeApp) Spawn(_ context.Context, _ Caller, call SpawnCall) (RequestAck, error) {
 	f.spawns = append(f.spawns, call)
-	return f.acked(call.Notify), nil
+	ack := f.acked(call.Notify)
+	// A fresh thread stores the call's instructions, as the app's does.
+	ack.Instructions = call.Instructions
+	return ack, nil
 }
 
 func (f *fakeApp) NewAssistant(_ context.Context, _ Caller, call NewAssistantCall) (NewAssistantAck, error) {

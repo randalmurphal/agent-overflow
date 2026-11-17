@@ -146,7 +146,7 @@
         <div class="flex gap-2">
           <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
           <dd class="min-w-0 break-all" data-testid="tool-call-card-ao-fact" data-fact={fact.label}>
-            <AoFoldedText {pane} text={fact.value} lines={FACT_LINES} max={FACT_MAX} testId="tool-call-card-ao-fact-text" />
+            <AoFoldedText {pane} text={fact.value} lines={FACT_LINES} max={fact.max ?? FACT_MAX} testId="tool-call-card-ao-fact-text" />
           </dd>
         </div>
       {/each}
@@ -227,7 +227,7 @@
                 <div class="flex gap-2">
                   <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
                   <dd class="min-w-0 break-words" data-testid="tool-call-card-ao-result-fact" data-fact={fact.label}>
-                    <AoFoldedText {pane} text={fact.value} lines={FACT_LINES} max={FACT_MAX} testId="tool-call-card-ao-result-fact-text" />
+                    <AoFoldedText {pane} text={fact.value} lines={FACT_LINES} max={fact.max ?? FACT_MAX} testId="tool-call-card-ao-result-fact-text" />
                   </dd>
                 </div>
               {/each}

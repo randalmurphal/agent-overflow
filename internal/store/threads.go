@@ -128,6 +128,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT agent_id FROM agent_helpers WHERE agent_helpers.thread_id = threads.id), ''),
     COALESCE(` + spawnerOfSQL("threads.id") + `, ''),
     attention_kind, attention_reason, attention_at,
+    spawn_instructions, spawn_level,
     threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
       WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL)`
 
@@ -253,7 +254,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID,
-		&attentionKind, &attentionReason, &attentionAt, &askCopy,
+		&attentionKind, &attentionReason, &attentionAt,
+		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -383,10 +385,10 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 		    forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source,
 		    created_by_device, created_branch, created_remote_url, created_head_commit,
-		    group_id, placement`
+		    group_id, placement, spawn_instructions, spawn_level`
 
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
 
 // ErrHelperInProject refuses a helper in a project: a helper lives under
@@ -455,6 +457,7 @@ func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error
 		// blank a thread's provenance or its git origin.
 		t.CreatedByDevice, t.Origin.Branch, "", t.Origin.HeadCommit,
 		nilIfEmpty(t.GroupID), insertedPlacement(t.GroupID),
+		t.SpawnInstructions, t.SpawnLevel,
 		t.GroupID, t.GroupID, t.ProjectID,
 	)
 	if err != nil {

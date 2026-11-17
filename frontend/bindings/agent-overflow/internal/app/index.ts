@@ -8,6 +8,7 @@ export {
     AccessSession,
     ActivityRunMembersRequest,
     AgentComputer,
+    AgentProfileCheck,
     AgentRemoteRequest,
     ArchiveThreadResult,
     AttachedBackend,

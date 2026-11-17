@@ -338,7 +338,7 @@ func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	shape := pair.source.threadToolsShape(pair.caller.ID)
+	shape := pair.source.threadToolsShape(pair.caller.ID, subThreadPlace{})
 	if len(shape.Computers) != 1 || shape.Computers[0].ID != pair.computer {
 		t.Fatalf("shape names %+v, want the paired destination alone", shape.Computers)
 	}
@@ -353,7 +353,7 @@ func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
 	if err := pair.source.RemoveBackend(pair.computer, false); err != nil {
 		t.Fatalf("forget the destination: %v", err)
 	}
-	if computers := pair.source.threadToolsShape(pair.caller.ID).Computers; len(computers) != 0 {
+	if computers := pair.source.threadToolsShape(pair.caller.ID, subThreadPlace{}).Computers; len(computers) != 0 {
 		t.Fatalf("the forgotten computer is still in the shape: %+v", computers)
 	}
 	if threadToolsOfferComputer(pair.source.threadMCPTools(threadMCPAccess{ThreadID: pair.caller.ID})) {
@@ -1076,6 +1076,66 @@ func TestThreadToolsAdmissionIsRetriedWithOneTokenAfterALostReply(t *testing.T) 
 	}
 	if prompts != 1 {
 		t.Fatalf("the retries queued the prompt %d times", prompts)
+	}
+}
+
+// A fork on another computer whose every admission reply is lost: the
+// destination did the work, and a poll during the call's wait recovers
+// it. The spawn's reply still records the instructions its thread runs
+// with, its source's before the call's, which only the destination knows:
+// its receipt recorded them when it named the thread, and the answer the
+// poll collected stated them.
+func TestARecoveredRemoteForkRecordsItsInstructions(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	var faults *peerFaults
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		wire, injected := serveFaultyApp(t, app)
+		faults = injected
+		return wire
+	})
+	installMockClaudeReplies(t, pair.dest, "forked and done")
+	faults.dropReplies.Store(int32(threadPeerAdmissionAttempts))
+	source := instructedForkableThreadOn(t, pair.dest, "instructed-lost", "Review only.")
+
+	type result struct {
+		ack threadtools.RequestAck
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
+			Prompt: "carry on", FromThread: source.ID, FromThreadComputer: pair.computer, ComputerID: pair.computer,
+			Instructions: "Be brief.", WaitSeconds: 30,
+		})
+		done <- result{ack, err}
+	}()
+	var got result
+	for collected := false; !collected; {
+		select {
+		case got = <-done:
+			collected = true
+		case <-time.After(100 * time.Millisecond):
+			pair.poll(t)
+		}
+	}
+	if got.err != nil {
+		t.Fatalf("Spawn: %v", got.err)
+	}
+	if calls := faults.calls.Load(); calls != int32(threadPeerAdmissionAttempts) {
+		t.Fatalf("the destination answered %d calls, want every one of %d attempts lost", calls, threadPeerAdmissionAttempts)
+	}
+	want := "Review only.\n\nBe brief."
+	if got.ack.Instructions != want || got.ack.ThreadID == "" {
+		t.Fatalf("the recovered spawn replies %+v, want its thread named and instructions %q", got.ack, want)
+	}
+	if recorded, err := pair.source.store.ThreadRequestSpawnInstructions(got.ack.Token); err != nil || recorded != want {
+		t.Fatalf("the source row records %q, %v", recorded, err)
+	}
+	if receipt := pair.receipt(t, got.ack.Token); receipt.SpawnInstructions != want {
+		t.Fatalf("the receipt records %q", receipt.SpawnInstructions)
 	}
 }
 
@@ -1878,6 +1938,9 @@ func TestThreadToolsReachForkLeavesItsSourcesGroup(t *testing.T) {
 				testAssistant(t, p.source, p.caller.ID)
 			}
 			installMockClaudeReplies(t, p.dest, "on it")
+			if _, err := p.dest.settings.Update(map[string]any{"subThreadLevels": 1}); err != nil {
+				t.Fatal(err)
+			}
 			source := forkableThreadOn(t, p.dest, "reach-fork-source")
 			group, err := p.dest.store.CreateThreadGroup(source.ProjectID, "Sweep")
 			if err != nil {
@@ -1894,6 +1957,19 @@ func TestThreadToolsReachForkLeavesItsSourcesGroup(t *testing.T) {
 			}
 			if fork.Placement != store.PlacementStandalone || fork.GroupID != "" {
 				t.Errorf("fork = %s in group %q, want standalone in no group", fork.Placement, fork.GroupID)
+			}
+			// Leaving the source's group is how the fork is made, not a
+			// person filing it: it keeps the level its spawn carried, and at
+			// the destination's limit starts without spawning tools of
+			// either kind.
+			if fork.SpawnLevel != 1 {
+				t.Errorf("the fork carries level %d, want 1", fork.SpawnLevel)
+			}
+			shape := sessionShapeOf(t, p.dest, fork.ID)
+			closed := shape.nativeClosed[string(provider.Claude)] && shape.nativeClosed[string(provider.ClaudeTUI)] && shape.nativeClosed[string(provider.Codex)]
+			if shape.level != 1 || !shape.threadTools || shape.spawns || !closed {
+				t.Errorf("the fork starts at level %d with thread tools %t, thread_spawn %t, native subagents closed %v; want level 1 without either way to spawn",
+					shape.level, shape.threadTools, shape.spawns, shape.nativeClosed)
 			}
 		})
 	}

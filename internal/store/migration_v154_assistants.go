@@ -42,7 +42,10 @@ import (
 // (`deleting`) recorded that its destroy removes its worktree. A claimed
 // thread stays listed and refuses execution and every move;
 // idx_threads_delete_claim holds the claimed ones, for the boot that
-// releases the claims no delete committed.
+// releases the claims no delete committed. `spawn_instructions` is the text
+// a thread_spawn appended to the thread's system prompt for its life, and
+// `spawn_level` the sub-thread level a paired computer's spawn or ask
+// carried here while that delegation lasts, zero for every other thread.
 //
 // thread_requests and thread_request_receipts gain:
 //
@@ -89,6 +92,12 @@ import (
 //   - `open_below_0` to `open_below_3` on a local spawn, and on a receipt
 //     `own_turn`, whether the turn its message was delivered into opened
 //     for it (a cancel interrupts only such a turn).
+//   - `spawn_instructions` on both: a spawn's thread's instructions
+//     (threads.spawn_instructions), recorded once when the spawn names its
+//     thread, on the receipt and, for a local spawn, the source row; a
+//     remote spawn's source row records what its computer's answer
+//     carried. A spawn's result reads them from here, whatever became of
+//     the thread since.
 //
 // A thread is reached by at most one local spawn, its link
 // (idx_thread_requests_spawn_link): every writer that names a local spawn's
@@ -220,6 +229,8 @@ CREATE TABLE session_start_failures (
 ALTER TABLE threads ADD COLUMN delete_claim TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN delete_worktrees INTEGER NOT NULL DEFAULT 0 CHECK(delete_worktrees IN (0,1));
 CREATE INDEX idx_threads_delete_claim ON threads(delete_claim) WHERE delete_claim <> '';
+ALTER TABLE threads ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN spawn_level INTEGER NOT NULL DEFAULT 0 CHECK(spawn_level >= 0);
 
 ALTER TABLE thread_requests ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
 ALTER TABLE thread_requests ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0 CHECK(superseded IN (0,1));
@@ -240,12 +251,14 @@ ALTER TABLE thread_requests ADD COLUMN open_below_0 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_1 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_2 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_3 INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_requests ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN answer_agent INTEGER NOT NULL DEFAULT 0 CHECK(answer_agent IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN answer_agent_role TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_agent IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent_role TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN own_turn INTEGER NOT NULL DEFAULT 0 CHECK(own_turn IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
+ALTER TABLE thread_request_receipts ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
 
 CREATE TEMP TABLE v154_undelivered_wakes (
     thread_id TEXT NOT NULL,

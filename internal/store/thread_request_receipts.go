@@ -83,6 +83,20 @@ type ThreadRequestReceipt struct {
 	AnswerAgent *ThreadAnswerAgent `json:"-"`
 	// LateReplyAgent is AnswerAgent for the late reply.
 	LateReplyAgent *ThreadAnswerAgent `json:"-"`
+	// SpawnInstructions are a spawn's thread's instructions, recorded when
+	// the receipt named its thread (spawnInstructionsAtNamingSQL); empty
+	// for every other kind.
+	SpawnInstructions string `json:"-"`
+}
+
+// spawnInstructionsAtNamingSQL is the spawn_instructions a naming write
+// records on a request row or receipt with kind column `kind` that it names
+// thread ?1 on: that thread's, for a spawn. Recorded once, here, so the
+// spawn's result says what its thread was given whatever becomes of the
+// thread later.
+func spawnInstructionsAtNamingSQL(kind string) string {
+	return `CASE WHEN ` + kind + ` = '` + ThreadRequestSpawn + `'
+	    THEN COALESCE((SELECT spawn_instructions FROM threads WHERE id = ?1), '') ELSE '' END`
 }
 
 const threadReceiptColumns = `token, owner_device_id, source_computer_id, source_computer_name,
@@ -91,7 +105,7 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     COALESCE(late_reply_at, 0), revision, COALESCE(settled_at, 0),
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
     created_at, updated_at, answer_agent, answer_agent_role, own_turn,
-    late_reply_agent, late_reply_agent_role`
+    late_reply_agent, late_reply_agent_role, spawn_instructions`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
@@ -104,7 +118,7 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.LateReplyAt, &r.Revision, &r.SettledAt,
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
 		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
-		&lateReplyAgent, &lateReplyAgentRole,
+		&lateReplyAgent, &lateReplyAgentRole, &r.SpawnInstructions,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
@@ -232,8 +246,9 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 	if err != nil {
 		return ListingUnchanged, fmt.Errorf("%s: %w", action, err)
 	}
-	result, err := tx.Exec(`UPDATE thread_request_receipts SET target_thread_id = ?, updated_at = ?
-		  WHERE token = ? AND target_thread_id IS NULL`, threadID, now, token)
+	result, err := tx.Exec(`UPDATE thread_request_receipts SET target_thread_id = ?1, updated_at = ?2,
+		    spawn_instructions = `+spawnInstructionsAtNamingSQL("kind")+`
+		  WHERE token = ?3 AND target_thread_id IS NULL`, threadID, now, token)
 	if err != nil {
 		return ListingUnchanged, fmt.Errorf("%s: receipt: %w", action, err)
 	}
@@ -244,9 +259,10 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (
 	}
 	var caller string
 	if err := tx.QueryRow(`UPDATE thread_requests
-		    SET target_thread_id = ?, target_thread_title = '', target_provider = '', updated_at = ?,
-		        state = CASE WHEN state = ? THEN ? ELSE state END
-		  WHERE token = ? AND target_computer_id = '' AND lineage_only = 0
+		    SET target_thread_id = ?1, target_thread_title = '', target_provider = '', updated_at = ?2,
+		        state = CASE WHEN state = ?3 THEN ?4 ELSE state END,
+		        spawn_instructions = `+spawnInstructionsAtNamingSQL("kind")+`
+		  WHERE token = ?5 AND target_computer_id = '' AND lineage_only = 0
 		  RETURNING caller_thread_id`,
 		threadID, now, ThreadRequestUnconfirmed, ThreadRequestAccepted, token).Scan(&caller); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return ListingUnchanged, fmt.Errorf("%s: source: %w", action, err)
@@ -332,8 +348,9 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string) (bool, ListingCha
 		return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
 	}
 	result, err := tx.Exec(
-		`UPDATE thread_request_receipts SET target_thread_id = ?, updated_at = ?
-		  WHERE token = ? AND target_thread_id IS NULL`,
+		`UPDATE thread_request_receipts SET target_thread_id = ?1, updated_at = ?2,
+		    spawn_instructions = `+spawnInstructionsAtNamingSQL("kind")+`
+		  WHERE token = ?3 AND target_thread_id IS NULL`,
 		threadID, nowMillis(), token,
 	)
 	if err != nil {

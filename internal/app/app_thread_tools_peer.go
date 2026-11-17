@@ -143,6 +143,11 @@ type ThreadPeerRequest struct {
 	// LateReplyAgent is AnswerAgent for the late reply, as it was when the
 	// late reply was written.
 	LateReplyAgent *ThreadPeerAgent `json:"lateReplyAgent,omitempty"`
+	// Instructions are what a spawn's thread was given for its system
+	// prompt, as its receipt recorded them when it named the thread. Every
+	// answer about the spawn states them, so the calling computer records
+	// them from the first one that reaches it, a poll included.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // ThreadPeerPoll is one source's whole outstanding set for this computer:
@@ -608,6 +613,7 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 	state.CollectedRevision = receipt.CollectedRevision
 	state.SettledAt = receipt.SettledAt
 	state.ExpiresAt = receipt.ExpiresAt
+	state.Instructions = receipt.SpawnInstructions
 	if receipt.AnswerAgent != nil {
 		state.AnswerAgent = &ThreadPeerAgent{Role: receipt.AnswerAgent.Role}
 	}

@@ -119,6 +119,73 @@ describe('AO thread tool rows', () => {
     expect(getByTestId('tool-call-card-output').textContent).not.toContain('"token"');
   });
 
+  // The instructions a spawned thread runs with for its whole life come from
+  // the spawn's own reply, so the row shows what the spawn did whatever
+  // became of the thread: deleted, on another computer, or a fork whose
+  // source's instructions the call never named. Never read from the thread.
+  describe('spawn instructions', () => {
+    const recorded = `Profile role.\n\n${'Answer in one line. '.repeat(150)}`.trim();
+    const ackWith = (extra: Record<string, unknown>) => JSON.stringify({ ...JSON.parse(spawnAck), ...extra });
+    const spawnRow = (input: Record<string, unknown>) =>
+      thread('thread_spawn', {
+        input: { prompt: 'p', ...input },
+        ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
+      }, { payloadId: 'p-spawn' });
+    let read: ReturnType<typeof vi.fn<(id: string) => Promise<unknown>>>;
+    beforeEach(() => {
+      read = vi.fn(async (_id: string) => makeThread({ id: CHILD, title: 'Docs slice' }));
+      setBindingMock('GetThread', read);
+    });
+
+    async function openedInstructions(item: Item) {
+      const view = render(GenericToolCallRow, { props: { item } });
+      await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
+      const fact = await waitFor(() => {
+        const found = view.getAllByTestId('tool-call-card-ao-result-fact').find((el) => el.dataset.fact === 'instructions');
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      return { view, fact };
+    }
+
+    it('shows them whole from the reply, with no spawned thread on this client', async () => {
+      replyWith(ackWith({ instructions: recorded }));
+      const { view, fact } = await openedInstructions(spawnRow({ profile: 'Sol', instructions: 'Answer in one line.' }));
+      // The call's own instructions are not listed again beside them.
+      expect(view.queryAllByTestId('tool-call-card-ao-fact').map((el) => el.dataset.fact)).toEqual(['prompt', 'profile']);
+      await fireEvent.click(fact.querySelector<HTMLElement>('[data-testid="tool-call-card-ao-result-fact-text-toggle"]')!);
+      expect(fact.textContent).toContain(recorded.slice(-40));
+      expect(fact.textContent).toContain('Profile role.');
+      expect(fact.textContent).not.toContain('…');
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('shows the same after a remount', async () => {
+      replyWith(ackWith({ instructions: 'Profile role.\n\nAnswer in one line.' }));
+      const item = spawnRow({ profile: 'Sol', instructions: 'Answer in one line.' });
+      const first = await openedInstructions(item);
+      first.view.unmount();
+      const again = await openedInstructions(item);
+      expect(again.fact.textContent).toContain('Profile role.');
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('shows them for a spawn on another computer', async () => {
+      replyWith(ackWith({ computer_id: 'mac', computer_name: 'Mac', instructions: 'Profile role.\n\nAnswer in one line.' }));
+      const { fact } = await openedInstructions(spawnRow({ computer_id: 'mac', profile: 'Sol', instructions: 'Answer in one line.' }));
+      expect(fact.textContent).toContain('Profile role.');
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('shows a fork\'s, which the call never named', async () => {
+      replyWith(ackWith({ instructions: 'Review only.\n\nBe brief.' }));
+      const { view, fact } = await openedInstructions(spawnRow({ from_thread: 'source-thread', instructions: 'Be brief.' }));
+      expect(fact.textContent?.trim()).toBe('Review only.\n\nBe brief.');
+      expect(view.queryAllByTestId('tool-call-card-ao-fact').some((el) => el.dataset.fact === 'instructions')).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+    });
+  });
+
   it('reads a clipped prompt from the stored row when the body opens', async () => {
     const full = `You own the docs slice.\n${'Context line.\n'.repeat(200)}`;
     const source = vi.fn(async () => ({ meta: JSON.stringify({ mcp: { server: 'ao-thread-tools', tool: 'thread_spawn' }, input: { prompt: full } }), payloadMeta: '', payloadPreviewSpans: '' }));

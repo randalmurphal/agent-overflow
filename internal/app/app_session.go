@@ -162,6 +162,13 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	// The thread's sub-thread place fixes, for this session's life, whether
+	// it has thread_spawn and its provider's own subagents.
+	place, err := a.subThreadPlaceOf(threadID)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	withoutNativeSubagents(&opts, t.Provider, place)
 	// Before anything is torn down: an assistant whose transcript the
 	// provider cleaned up continues in a new thread instead.
 	if err := a.requireAssistantSession(t, opts); err != nil {
@@ -249,7 +256,7 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: register remote tools: %w", err)
 	}
-	threadServers, err := a.threadMCPConfigForThread(t, sessionToken)
+	threadServers, err := a.threadMCPConfigForThread(t, sessionToken, place)
 	if err != nil {
 		return fmt.Errorf("start session: register thread tools: %w", err)
 	}
@@ -307,7 +314,7 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, mem, onEvent)
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, mem, place, onEvent)
 	if err != nil {
 		if codex.IsThreadNotFound(err) && agent.Block != "" {
 			// An assistant's Codex thread the provider no longer has.
@@ -541,6 +548,7 @@ func (a *App) spawnProviderSession(
 	credential aoSessionCredential,
 	agent standingAgentSession,
 	mem sessionMemory,
+	place subThreadPlace,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
 	// liveness is initialized once and attached to whichever provider
@@ -553,19 +561,14 @@ func (a *App) spawnProviderSession(
 		return session{}, err
 	}
 	accountSelection := a.captureProviderAccountSelection(t.Provider)
-	// The app guide (app_agent_guide.go) is spawn-only on every provider: it
-	// rides the Config, not the options bundle, so the reconciler never
-	// queues a restart for it and a settings change lands at the next start
-	// or resume.
-	appGuide, err := a.agentGuideFor(t, mcpServers)
+	// What the session appends to its system prompt (app_agent_guide.go) is
+	// spawn-only on every provider: it rides the Config, not the options
+	// bundle, so the reconciler never queues a restart for it and a change
+	// lands at the next start or resume.
+	prompts, err := a.sessionPromptsFor(t, mcpServers, agent.Block, place)
 	if err != nil {
 		return session{}, err
 	}
-	// A standing agent's block (app_standing_agents.go) rides the same
-	// channels, spawn-only too, and whatever the guide setting says. Memory
-	// rides a SessionStart hook instead (app_memory.go), so an edit to it
-	// leaves the prompt, and the provider's prompt cache, as they were.
-	appGuide = joinPromptParts(appGuide, agent.Block)
 	appSettings := a.currentSettings()
 
 	switch t.Provider {
@@ -575,7 +578,7 @@ func (a *App) spawnProviderSession(
 			cfg.OutputSchema = string(workflowSchema)
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.AppendSystemPrompt = appGuide
+		cfg.AppendSystemPrompt = prompts.claudeAppend
 		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
@@ -646,7 +649,7 @@ func (a *App) spawnProviderSession(
 		// sent when the tools are on, and a live switch reaches the text at
 		// the next start or resume: a resumed thread whose text changed
 		// gets it injected (codexDeveloperInstructionsDelivery).
-		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
+		cfg.DeveloperInstructions = prompts.codexDeveloper
 		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartForget = mem.Forget
 		cfg.WritableRoots = mem.Dirs
@@ -771,7 +774,7 @@ func (a *App) spawnProviderSession(
 		}, nil
 
 	case string(provider.ClaudeTUI):
-		cfg, err := a.claudeTUISessionConfig(threadID, opts, appGuide, mcpServers, credential, mem)
+		cfg, err := a.claudeTUISessionConfig(threadID, opts, prompts.claudeAppend, mcpServers, credential, mem)
 		if err != nil {
 			return session{}, err
 		}

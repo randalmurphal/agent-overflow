@@ -144,6 +144,9 @@ var tierByKey = map[string]Tier{
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
 	"agentGuideEnabled":           TierUser,
+	"agentProfiles":               TierUser,
+	"agentNotes":                  TierUser,
+	"subThreadLevels":             TierUser,
 	// The providers' own memory is a spawn-time preference of the same
 	// kind; shared memory is host tier, since it grants write access
 	// outside the workspace.

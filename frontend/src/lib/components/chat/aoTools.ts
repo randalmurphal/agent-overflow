@@ -120,7 +120,16 @@ export interface AoToolPresentation {
 export interface AoToolFact {
   label: string;
   value: string;
+  /** Characters shown unfolded, when more than FACT_MAX. */
+  max?: number;
 }
+
+/**
+ * The most a spawned thread's instructions can run to, a profile's and the
+ * call's together (internal/threadtools/limits.go
+ * MaxSpawnInstructionsBytes), so the row shows them whole.
+ */
+export const INSTRUCTIONS_FACT_MAX = 8 * 1024;
 
 type Input = Record<string, unknown>;
 
@@ -890,6 +899,10 @@ export function aoToolFacts(
     if (HIDDEN_FACTS.has(key) || value === undefined || value === null || value === '') continue;
     if (shown?.has(key)) continue;
     const text = factText(value);
+    if (mcp.tool === 'thread_spawn' && key === 'instructions') {
+      facts.push({ label: 'instructions', value: text, max: INSTRUCTIONS_FACT_MAX });
+      continue;
+    }
     facts.push({ label: FACT_LABELS[key] ?? key.replace(/_/g, ' '), value: text.length > FACT_MAX ? `${text.slice(0, FACT_MAX - 1)}…` : text });
   }
   const script = str(input, 'script');

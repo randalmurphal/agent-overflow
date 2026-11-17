@@ -47,11 +47,13 @@ type agentChain struct {
 }
 
 // countedAgentsPeer is a computer that counts the agent_rows calls it is
-// sent, and those of them that ask for the thread's state alone.
+// sent, and those of them that ask for the thread's state alone, and can
+// act as a computer from before sub-thread levels.
 type countedAgentsPeer struct {
 	*App
 	calls     atomic.Int32
 	stateOnly atomic.Int32
+	levelless atomic.Bool
 }
 
 func (p *countedAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
@@ -63,6 +65,25 @@ func (p *countedAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 		}
 	}
 	return p.App.ThreadToolQuery(ctx, call)
+}
+
+// ThreadToolCall drops the sub-thread level a spawn carries when the
+// computer is levelless, as a computer from before levels never reads it:
+// only such a chain grows past the deepest level a computer allows.
+func (p *countedAgentsPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.levelless.Load() && call.Tool == "thread_spawn" {
+		var args map[string]any
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return ThreadPeerReply{}, err
+		}
+		delete(args, "level")
+		stripped, err := json.Marshal(args)
+		if err != nil {
+			return ThreadPeerReply{}, err
+		}
+		call.Args = stripped
+	}
+	return p.App.ThreadToolCall(ctx, call)
 }
 
 // serveAppAs serves app's wire through receiver, which embeds app and

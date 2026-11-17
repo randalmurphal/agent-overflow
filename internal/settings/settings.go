@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -158,6 +159,19 @@ type Settings struct {
 	// "Settings"). Default off; spawn-only, so a change reaches a session at
 	// its next start or resume.
 	SharedMemoryEnabled bool `json:"sharedMemoryEnabled"`
+	// AgentProfiles are the agents an agent spawns a sub-thread by, and
+	// AgentNotes the notes on choosing between them (agentroster.go).
+	// Seeded from DefaultSettings: an absent key reads the current seed,
+	// and once the person edits either list the stored list is theirs. No
+	// omitempty: an emptied list is stored as empty, never read back as
+	// the seed.
+	AgentProfiles []AgentProfile `json:"agentProfiles"`
+	AgentNotes    []AgentNote    `json:"agentNotes"`
+	// SubThreadLevels is how many levels of owned sub-threads may exist
+	// under a thread the person talks to. A thread at the last level has
+	// no thread_spawn and no native subagents. Spawn-only: a session keeps
+	// the tool list it started with.
+	SubThreadLevels int `json:"subThreadLevels"`
 	// ClaudeNativeMemoryDisabled turns Claude Code's own auto memory off in
 	// this app's Claude and claude-tui sessions, through their inline
 	// settings; the user's settings files are never touched. Spawn-only.
@@ -704,6 +718,9 @@ var DefaultSettings = Settings{
 	BrowserPersistSiteData: true,
 	ThreadToolsEnabled:     true,
 	AgentGuideEnabled:      true,
+	AgentProfiles:          defaultAgentProfiles,
+	AgentNotes:             defaultAgentNotes,
+	SubThreadLevels:        DefaultSubThreadLevels,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,
 	AutoPinNewThreads:      true,
@@ -1476,6 +1493,9 @@ func copyDefaults() Settings {
 	d := DefaultSettings
 	d.RecentWorkspaces = nil
 	d.GitLabSelfHostedHosts = nil
+	// The seeds are cloned so an edit made in place never reaches them.
+	d.AgentProfiles = slices.Clone(DefaultSettings.AgentProfiles)
+	d.AgentNotes = slices.Clone(DefaultSettings.AgentNotes)
 	return d
 }
 

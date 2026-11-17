@@ -3,7 +3,6 @@ package app
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -23,13 +22,14 @@ import (
 // every refusal names what this computer offers.
 
 // createSpawnedThread makes the thread a spawn runs in: a fork of another
-// thread when from_thread names one, a fresh thread otherwise. A group the
-// call names is joined once the thread exists, through the organize patch
-// the sidebar's own grouping uses, so the group is created in the NEW
-// thread's project: a fork's source project, or the destination's. The
-// spawn's placement wins over the group a fork inherits from its source:
-// an owned fork is made in no group and the naming write owns it, and a
-// standalone one leaves the group here.
+// thread when from_thread names one, a fresh thread otherwise, created in
+// its final group and placement. A group the call names is resolved, and
+// made if missing, in the NEW thread's project (a fork's source project, or
+// the destination's) before the thread exists; with none, a fork is made in
+// no group rather than in its source's. Creation is not a move: the thread
+// never passes through a group or placement it then leaves, so nothing
+// here is the person's act that ends a delegation (store.endCarriedLevelTx),
+// and a level a paired computer's spawn carried stays with the thread.
 //
 // Nothing here announces a fresh thread or an owned fork: the spawn's
 // request names and places the thread first, and acceptRequest announces
@@ -37,30 +37,50 @@ import (
 func (t threadToolsApp) createSpawnedThread(
 	ctx context.Context, call threadtools.SpawnCall, create spawnOptions,
 ) (store.Thread, error) {
-	thread, err := t.createSpawned(ctx, call, create)
-	if err != nil || (call.Group == "" && thread.GroupID == "") {
-		return thread, err
+	var source store.Thread
+	project := create.ProjectID
+	if call.FromThread != "" {
+		// A fork runs in its source's project and workspace with its
+		// source's provider: that is what forking is, and the tools layer
+		// already refused a from_thread on another computer.
+		var err error
+		if source, err = t.localThread(call.FromThread); err != nil {
+			return store.Thread{}, err
+		}
+		project = source.ProjectID
 	}
-	group := call.Group
-	what := fmt.Sprintf("join group %q", group)
-	if group == "" {
-		what = "leave the group its source is in"
+	var group store.ThreadGroup
+	made := false
+	if call.Group != "" {
+		var err error
+		group, made, err = t.app.store.EnsureThreadGroup(project, call.Group)
+		if err != nil {
+			return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+				"That spawn could not join group %q: %v. Nothing was created; make the request again.", call.Group, err), err)
+		}
+		if made {
+			// Before the thread: a client that receives the thread's groupId
+			// before the group row has nowhere to render it.
+			t.app.emitThreadGroup("create", group)
+		}
 	}
-	applied, err := t.app.applyThreadOrganizePatch(ctx, thread.ID, threadapp.OrganizePatch{Group: &group})
-	if err == nil {
-		return applied.Thread, nil
+	thread, err := t.createSpawned(ctx, call, create, source, group.ID)
+	if err != nil && made {
+		t.dropSpawnGroup(group)
 	}
-	// The thread exists and nothing owns it yet: no receipt names it and its
-	// prompt has not been sent. Take it back, as the scratch fork does,
-	// rather than leave a thread behind a refusal the caller will retry.
-	if deleteErr := t.app.deleteThread(thread.ID); deleteErr != nil {
-		log.Printf("thread tools: delete spawned thread %s after its group patch failed: %v", thread.ID, deleteErr)
-		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-			"Thread %s was created but could not %s (%v), and removing it failed too. It is on this computer.",
-			thread.ID, what, err), errors.Join(err, deleteErr))
+	return thread, err
+}
+
+// dropSpawnGroup takes back a group a spawn made for a thread it then did
+// not make, unless a thread joined it meanwhile.
+func (t threadToolsApp) dropSpawnGroup(group store.ThreadGroup) {
+	dropped, err := t.app.store.DropEmptyThreadGroup(group.ID)
+	switch {
+	case err != nil:
+		log.Printf("thread tools: drop group %s a failed spawn made: %v", group.ID, err)
+	case dropped:
+		t.app.emitThreadGroup("delete", group)
 	}
-	return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-		"That spawn could not %s: %v. No thread was left behind; make the request again.", what, err), err)
 }
 
 // spawnOptions is what a spawn resolved: the thread's options and, for a
@@ -75,9 +95,10 @@ type spawnOptions struct {
 }
 
 func (t threadToolsApp) createSpawned(
-	ctx context.Context, call threadtools.SpawnCall, spawn spawnOptions,
+	ctx context.Context, call threadtools.SpawnCall, spawn spawnOptions, source store.Thread, groupID string,
 ) (store.Thread, error) {
 	create := spawn.CreateThreadOptions
+	create.GroupID = groupID
 	if call.FromThread == "" {
 		// createThreadCutting without its broadcast: acceptRequest announces
 		// the row once its request has placed it.
@@ -89,23 +110,19 @@ func (t threadToolsApp) createSpawned(
 		thread, _, err := t.app.createThreadRowCutting(ctx, create, spawn.worktree, false)
 		return thread, err
 	}
-	// A fork runs in its source's project and workspace with its source's
-	// provider: that is what forking is, and the tools layer already refused
-	// a from_thread on another computer. Everything else on the new thread
-	// was resolved in spawnThreadOptions from the caller's settings and the
-	// call's overrides, so it reaches the fork here rather than being
-	// dropped for the source's.
-	source, err := t.localThread(call.FromThread)
-	if err != nil {
-		return store.Thread{}, err
-	}
+	// Everything else on the new thread was resolved in spawnThreadOptions
+	// from the caller's settings and the call's overrides, so it reaches
+	// the fork here rather than being dropped for the source's.
 	return t.app.forkThreadTail(ctx, source.ID, forkOptions{
-		Mode:        create.Mode,
-		RuntimeMode: create.RuntimeMode,
-		Title:       create.Title,
-		Model:       create.Model,
-		Effort:      create.ReasoningEffort,
-		Owned:       spawn.owned,
+		Mode:         create.Mode,
+		RuntimeMode:  create.RuntimeMode,
+		Title:        create.Title,
+		Model:        create.Model,
+		Effort:       create.ReasoningEffort,
+		Owned:        spawn.owned,
+		Group:        &groupID,
+		Instructions: call.Instructions,
+		SpawnLevel:   call.Level,
 	})
 }
 
@@ -116,7 +133,7 @@ func (t threadToolsApp) createSpawned(
 // know another provider's model ids and a wrong guess should cost one call,
 // not a discovery round trip.
 func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
-	opts, err := t.resolveSpawnOptions(origin, call)
+	opts, err := t.resolveSpawnOptions(ctx, origin, call)
 	if err != nil {
 		return spawnOptions{}, err
 	}
@@ -134,9 +151,12 @@ func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadReq
 
 // resolveSpawnOptions is the resolution itself, split from the gate above so
 // the gate sees one answer for both shapes.
-func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
+func (t threadToolsApp) resolveSpawnOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
 	if call.FromThread != "" {
-		opts, err := t.forkSpawnOptions(origin, call)
+		opts, err := t.forkSpawnOptions(ctx, origin, call)
+		if err == nil {
+			err = refuseInstructionsUnappended(opts.Provider, call.Instructions)
+		}
 		return spawnOptions{CreateThreadOptions: opts}, err
 	}
 	// A spawn a paired computer forwarded has no caller thread here, so
@@ -150,12 +170,16 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 			return spawnOptions{}, err
 		}
 	}
-	settings, err := t.spawnSettings(origin, call)
+	settings, err := t.spawnSettings(ctx, origin, call)
 	if err != nil {
+		return spawnOptions{}, err
+	}
+	if err := refuseInstructionsUnappended(settings.Provider, call.Instructions); err != nil {
 		return spawnOptions{}, err
 	}
 	opts := spawnOptions{CreateThreadOptions: settings}
 	opts.Title, opts.ProjectID = call.Title, caller.ProjectID
+	opts.spawnInstructions, opts.spawnLevel = call.Instructions, call.Level
 	if call.ProjectID != "" {
 		if _, err := t.app.store.GetProject(call.ProjectID); err != nil {
 			return spawnOptions{}, errorsx.Public(threadtools.CodeNotFound,
@@ -195,7 +219,7 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 // with the call's overrides, checked against this computer's catalogs.
 // Where the thread lives is the caller's to add. A spawn and an assistant
 // that thread_new_assistant creates both take them.
-func (t threadToolsApp) spawnSettings(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) spawnSettings(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
 	opts := CreateThreadOptions{
 		Provider:        origin.inherit.Provider,
 		Model:           origin.inherit.Model,
@@ -203,7 +227,7 @@ func (t threadToolsApp) spawnSettings(origin threadRequestOrigin, call threadtoo
 		ReasoningEffort: origin.inherit.Effort,
 		RuntimeMode:     cmp.Or(call.RuntimeMode, origin.inherit.RuntimeMode),
 	}
-	if err := t.applySpawnModel(&opts, call); err != nil {
+	if err := t.applySpawnModel(ctx, &opts, call); err != nil {
 		return CreateThreadOptions{}, err
 	}
 	return opts, nil
@@ -322,7 +346,7 @@ func (t threadToolsApp) requireAssistantFork(owner store.StandingAgent, source s
 // provider. Across providers the caller's model names nothing this fork could
 // start, so the source's stands, and an explicit one is validated against the
 // source's provider like any other spawn.
-func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) forkSpawnOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
 	source, err := t.localThread(call.FromThread)
 	if err != nil {
 		return CreateThreadOptions{}, err
@@ -377,79 +401,30 @@ func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call thread
 		// empty string that means "whatever the source runs".
 		opts.RuntimeMode = source.RuntimeMode
 	}
-	if err := t.applySpawnModel(&opts, call); err != nil {
+	if err := t.applySpawnModel(ctx, &opts, call); err != nil {
 		return CreateThreadOptions{}, err
 	}
 	return opts, nil
 }
 
-// applySpawnModel resolves provider, model and effort against THIS computer's
-// catalogs. A provider override with no model takes that provider's default,
-// because the two are one choice and the caller cannot be expected to know
-// the other provider's slugs.
-func (t threadToolsApp) applySpawnModel(opts *CreateThreadOptions, call threadtools.SpawnCall) error {
-	if call.Provider != "" && call.Provider != opts.Provider {
-		opts.Provider = call.Provider
-		// The inherited model and effort belong to the provider that was
-		// replaced, and naming them to the new one would be a refusal the
-		// caller did not earn.
-		opts.Model, opts.ReasoningEffort = "", ""
+// applySpawnModel resolves provider, model and effort with the one
+// resolution thread_options lists profiles by (threadtools.ResolveSpawn):
+// opts' own as the spawner's, the call's as the choice, against what this
+// computer offers.
+func (t threadToolsApp) applySpawnModel(ctx context.Context, opts *CreateThreadOptions, call threadtools.SpawnCall) error {
+	catalog, err := t.Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
+	if err != nil {
+		return err
 	}
-	option, resolvable, err := t.providerModelOptions(opts.Provider)
-	if err != nil || len(option.Models) == 0 {
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("This computer offers no models for %q. thread_options lists what it has.", opts.Provider), err)
+	resolved, err := threadtools.ResolveSpawn(
+		threadtools.SpawnDefaults{Provider: opts.Provider, Model: opts.Model, Effort: opts.ReasoningEffort},
+		threadtools.SpawnChoice{Provider: call.Provider, Model: call.Model, Effort: call.Effort},
+		catalog.Providers, "this computer")
+	if err != nil {
+		return errorsx.Public(threadtools.CodeInvalidRequest, err.Error()+" thread_options lists what it offers.", err)
 	}
-	if call.Model != "" {
-		opts.Model = call.Model
-	}
-	if opts.Model == "" {
-		opts.Model = option.DefaultModel
-	}
-	var model threadtools.ModelOption
-	for _, candidate := range resolvable {
-		if candidate.Slug == opts.Model {
-			model = candidate
-			break
-		}
-	}
-	if model.Slug == "" {
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("%s does not offer model %q on this computer. It offers: %s.",
-				option.Name, opts.Model, strings.Join(threadToolsModelSlugs(option.Models), ", ")), nil)
-	}
-	if call.Effort != "" {
-		opts.ReasoningEffort = call.Effort
-	}
-	if len(model.Efforts) == 0 {
-		// The model has no effort dimension; an inherited one would be
-		// coerced away anyway, and an explicit one is worth saying so about.
-		if call.Effort != "" {
-			return errorsx.Public(threadtools.CodeInvalidRequest,
-				fmt.Sprintf("Model %s has no reasoning effort setting on this computer.", model.Slug), nil)
-		}
-		opts.ReasoningEffort = ""
-		return nil
-	}
-	if opts.ReasoningEffort == "" {
-		opts.ReasoningEffort = model.DefaultEffort
-	}
-	for _, effort := range model.Efforts {
-		if effort == opts.ReasoningEffort {
-			return nil
-		}
-	}
-	return errorsx.Public(threadtools.CodeInvalidRequest,
-		fmt.Sprintf("Model %s does not offer effort %q. It offers: %s.",
-			model.Slug, opts.ReasoningEffort, strings.Join(model.Efforts, ", ")), nil)
-}
-
-func threadToolsModelSlugs(models []threadtools.ModelOption) []string {
-	slugs := make([]string, 0, len(models))
-	for _, model := range models {
-		slugs = append(slugs, model.Slug)
-	}
-	return slugs
+	opts.Provider, opts.Model, opts.ReasoningEffort = resolved.Provider, resolved.Model, resolved.Effort
+	return nil
 }
 
 // applySpawnWorktree runs the thread in the worktree of call's branch or

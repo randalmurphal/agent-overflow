@@ -113,7 +113,8 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread := store.Thread{ID: uuid.NewString(), ProjectID: sourceProject.ID, Title: "Portable history", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), SessionRef: uuid.NewString(), WorkspacePath: sourcePath, CreatedAt: 1, UpdatedAt: 1}
+	thread := store.Thread{ID: uuid.NewString(), ProjectID: sourceProject.ID, Title: "Portable history", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), SessionRef: uuid.NewString(), WorkspacePath: sourcePath, CreatedAt: 1, UpdatedAt: 1,
+		SpawnInstructions: "Review only.", SpawnLevel: 2}
 	if err := source.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +171,17 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	if again, err := destination.CreateThreadTransferOffer(ctx, intent, destProject.ID, workspace, "copied-history"); err != nil || again != offer {
 		t.Fatalf("lost offer reply retry: %+v %v", again, err)
 	}
+	if !offer.SpawnInstructions {
+		t.Fatal("the destination's offer does not say it keeps spawn instructions")
+	}
+	// A destination from before spawn instructions would drop them, so the
+	// source refuses it before anything is uploaded.
+	older := offer
+	older.SpawnInstructions = false
+	_, err = source.BindThreadTransferDestination(ctx, thread.ID, older)
+	if _, message, public := errorsx.PublicDetails(err); !public || !strings.Contains(message, "runs an older version that would drop the instructions") {
+		t.Fatalf("binding a destination that predates spawn instructions = %v", err)
+	}
 	frontend, cancel := context.WithCancel(ctx)
 	if _, err := source.BindThreadTransferDestination(frontend, thread.ID, offer); err != nil {
 		t.Fatal(err)
@@ -219,6 +231,9 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	}
 	if want := map[string]store.ThreadTally{"copy": {}, "move": sourceTally}[kind]; transferTally(t, destination.store, copied.ID) != want {
 		t.Fatalf("%s's tallies %+v; want %+v", kind, transferTally(t, destination.store, copied.ID), want)
+	}
+	if copied.SpawnInstructions != "Review only." || copied.SpawnLevel != 0 {
+		t.Fatalf("the transferred thread keeps instructions %q and level %d; want the instructions and no level", copied.SpawnInstructions, copied.SpawnLevel)
 	}
 	if err := source.store.CheckThreadExecutionAccess(thread); (err != nil) != (kind == "move") {
 		t.Fatalf("original blocked after copy: %v", err)

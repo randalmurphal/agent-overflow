@@ -421,6 +421,32 @@ export class AgentComputer {
     }
 }
 
+/**
+ * AgentProfileCheck is what the roster editor shows beside one profile
+ * (threadtools.ProfileProblem): Problem, a choice that does not fit its
+ * model here, which the editor and UpdateSettings refuse; Missing, a
+ * provider or model this computer lacks, so threads here are not offered
+ * the profile.
+ */
+export class AgentProfileCheck {
+    "problem"?: string;
+    "missing"?: string;
+
+    /** Creates a new AgentProfileCheck instance. */
+    constructor($$source: Partial<AgentProfileCheck> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentProfileCheck instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentProfileCheck {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AgentProfileCheck($$parsedSource as Partial<AgentProfileCheck>);
+    }
+}
+
 export class AgentRemoteRequest {
     "computerId": string;
     "workspace": gitapp$0.WorkspaceRef;
@@ -9216,6 +9242,14 @@ export class ThreadPeerRequest {
      * late reply was written.
      */
     "lateReplyAgent"?: ThreadPeerAgent | null;
+
+    /**
+     * Instructions are what a spawn's thread was given for its system
+     * prompt, as its receipt recorded them when it named the thread. Every
+     * answer about the spawn states them, so the calling computer records
+     * them from the first one that reaches it, a poll included.
+     */
+    "instructions"?: string;
 
     /** Creates a new ThreadPeerRequest instance. */
     constructor($$source: Partial<ThreadPeerRequest> = {}) {

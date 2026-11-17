@@ -18,6 +18,14 @@ export class Offer {
     "certFingerprint"?: string;
     "grant": string;
 
+    /**
+     * SpawnInstructions says the destination keeps the instructions a
+     * spawn appended to a thread's system prompt. A destination from
+     * before them leaves it false, and the source refuses to send it a
+     * thread that has any rather than lose them.
+     */
+    "spawnInstructions"?: boolean;
+
     /** Creates a new Offer instance. */
     constructor($$source: Partial<Offer> = {}) {
         if (!("ownershipEpoch" in $$source)) {
