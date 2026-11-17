@@ -26,7 +26,8 @@ Some SQLite rows are authoritative because no provider history can reconstruct
 them. This includes account and credential records, personal membership,
 accepted messages awaiting dispatch, transfer ownership and recovery state,
 remote command acceptance, remote completion notification ownership, and
-agent thread requests with the receipts that answer them. Never
+agent thread requests with the receipts that answer them and the owner
+operations owed for them. Never
 apply generic history retention or cleanup logic to these tables. Snapshot
 restore must handle each authoritative family deliberately rather than treating
 it as disposable provider history.
@@ -193,8 +194,10 @@ an atomic persistence decision; they must not become a business-logic layer.
   message's queue write passes it (`CheckThreadDeliverable`), and due reads
   ignore it. Claim, release
   and commit each change one delete's family in one transaction, and a
-  worker's claim takes its owner as its fence (`thread_delete.go`); keep that
-  fence a parameter, not a read of this computer's state.
+  worker's claim takes its owner, or the link a paired computer's owner
+  reaches it by, as its fence (`deleteFence`); keep that fence a parameter,
+  not a read of this computer's state. The commit owes the paired computers
+  its threads spawned on in the same transaction (`thread_owner_ops.go`).
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

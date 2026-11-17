@@ -1162,7 +1162,7 @@ Mechanics, as built:
   remote, waits for that work to settle, so the floor never takes rows
   out of a tree. The ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
-  (`SpawnerOf`) and the Agents tree still find the row, so work a
+  (`SpawnOwnerOf`) and the Agents tree still find the row, so work a
   reused worker opens after the sweep lists, counts and stops under
   its owner as before it. On the computer a remote spawn reached, the
   same sweep keeps the spawn's receipt as `lineage_only` while the
