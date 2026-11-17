@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
@@ -493,10 +494,8 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 	}
 	var reported []*hostPage
 	h.config.OnMain(func() {
+		reported = h.departTaken(closing)
 		for _, page := range closing {
-			if h.depart(page) {
-				reported = append(reported, page)
-			}
 			h.teardown(page)
 		}
 	})
@@ -508,7 +507,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 // takeLocked removes from the registry the pages match selects and, with
 // each, every popup of its not announced yet, transitively: the backend
 // cannot hear of a popup whose opener it has stopped knowing. It answers
-// them each before its popups. The caller holds h.mu.
+// them each after the openers taken with it. The caller holds h.mu.
 func (h *Host) takeLocked(match func(*hostPage) bool) []*hostPage {
 	var taken []*hostPage
 	for id, page := range h.pages {
@@ -525,17 +524,53 @@ func (h *Host) takeLocked(match func(*hostPage) bool) []*hostPage {
 			}
 		}
 	}
+	byID := make(map[string]*hostPage, len(taken))
+	for _, page := range taken {
+		byID[page.id] = page
+	}
+	depth := make(map[*hostPage]int, len(taken))
+	for _, page := range taken {
+		// A popup has one opener, so the chain is at most every page taken.
+		for p := page; p.popup != nil && depth[page] < len(taken); depth[page]++ {
+			if p = byID[p.popup.openerID]; p == nil {
+				break
+			}
+		}
+	}
+	slices.SortStableFunc(taken, func(a, b *hostPage) int { return depth[a] - depth[b] })
 	return taken
 }
 
-// depart settles a page taken from the registry with what the backend
-// hears of it, before its teardown: a popup leaves through departPopup, and
-// a page the backend created is reported closed. Runs on the UI thread.
-func (h *Host) depart(page *hostPage) bool {
-	if page.popup != nil {
-		return h.departPopup(page)
+// departTaken settles pages taken from the registry together, openers
+// first, with what the backend hears of them, before their teardown, and
+// answers those to report closed: a page the backend created, and a popup
+// as departPopup says. A popup not announced is announced as it goes when
+// it or a popup of it going with it has a download to report, so the
+// backend hears of every opener of a popup it hears of. Runs on the UI
+// thread.
+func (h *Host) departTaken(taken []*hostPage) []*hostPage {
+	byID := make(map[string]*hostPage, len(taken))
+	for _, page := range taken {
+		byID[page.id] = page
 	}
-	return true
+	announce := make(map[*hostPage]bool)
+	for i := len(taken) - 1; i >= 0; i-- {
+		page := taken[i]
+		if page.popup == nil || !announce[page] && len(page.popup.held.downloads) == 0 {
+			continue
+		}
+		announce[page] = true
+		if opener := byID[page.popup.openerID]; opener != nil {
+			announce[opener] = true
+		}
+	}
+	var reported []*hostPage
+	for _, page := range taken {
+		if page.popup == nil || h.departPopup(page, announce[page]) {
+			reported = append(reported, page)
+		}
+	}
+	return reported
 }
 
 // teardown lets go of a page taken from the registry: its handlers, view
@@ -977,7 +1012,7 @@ func (h *Host) failUncreated(page *hostPage, detail string) {
 	if page.popup != nil {
 		// Never created, so it made no report: it goes unheard, its window
 		// request answered with no window.
-		h.departPopup(page)
+		h.departPopup(page, false)
 		h.config.Logf("browser host: popup %s of page %s: %s", page.id, page.popup.openerID, detail)
 		return
 	}
@@ -1015,12 +1050,9 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 		// the controller and their closed report is the final word.
 		return
 	}
-	var reported []*hostPage
+	reported := h.departTaken(taken)
 	for _, p := range taken {
 		if p.popup != nil {
-			if h.departPopup(p) {
-				reported = append(reported, p)
-			}
 			h.config.Logf("browser host: popup %s of page %s: %s", p.id, p.popup.openerID, detail)
 		}
 		h.teardown(p)

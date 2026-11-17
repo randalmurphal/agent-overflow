@@ -222,53 +222,83 @@ func TestAPopupKeepsNoOpenerThatWent(t *testing.T) {
 
 // The host's close settles a popup in every state: its request answered
 // once, an announced one reported closed, one with a download announced
-// with it and closed, and every other unheard.
+// with it and closed, and every other unheard. Every popup is reported
+// closed before its opener, whatever order the registry holds them in.
 func TestHostCloseSettlesPopupsInEveryState(t *testing.T) {
-	r := newPopupRig(t)
-	_, opener := r.createPage("opener", "prof", false)
-	announced, announcedController := r.openPopup(opener, newFakeWindowArgs(popupURL))
-	answerTarget(t, announcedController, "T-announced")
-	created, createdController := r.openPopup(opener, newFakeWindowArgs(popupURL))
-	created.popup.held.findUnavailable = false
-	waiting, waitingController := r.openPopup(createdController, newFakeWindowArgs(popupURL))
-	waiting.popup.held.findUnavailable = false
-	answerTarget(t, waitingController, "T-waiting")
-	downloading, downloadingController := r.openPopup(opener, newFakeWindowArgs(popupURL))
-	downloading.popup.held.findUnavailable = false
-	r.startDownload(downloading, "dl-1")
-	requested := newFakeWindowArgs(popupURL)
-	opener.view.requestWindow(requested)
-	r.takeReports()
+	for round := range 50 {
+		r := newPopupRig(t)
+		_, opener := r.createPage("opener", "prof", false)
+		announced, announcedController := r.openPopup(opener, newFakeWindowArgs(popupURL))
+		answerTarget(t, announcedController, "T-announced")
+		grandchild, grandchildController := r.openPopup(announcedController, newFakeWindowArgs(popupURL))
+		answerTarget(t, grandchildController, "T-grandchild")
+		created, createdController := r.openPopup(opener, newFakeWindowArgs(popupURL))
+		created.popup.held.findUnavailable = false
+		waiting, waitingController := r.openPopup(createdController, newFakeWindowArgs(popupURL))
+		waiting.popup.held.findUnavailable = false
+		answerTarget(t, waitingController, "T-waiting")
+		downloading, downloadingController := r.openPopup(opener, newFakeWindowArgs(popupURL))
+		downloading.popup.held.findUnavailable = false
+		r.startDownload(downloading, "dl-1")
+		requested := newFakeWindowArgs(popupURL)
+		opener.view.requestWindow(requested)
+		r.takeReports()
 
-	r.host.Close()
-	got := kinds(t, r.takeReports())
-	want := map[string]bool{
-		downloading.id + ":popup(opener,)":             true,
-		downloading.id + ":download(dl-1,interrupted)": true,
-		downloading.id + ":closed":                     true,
-		announced.id + ":closed":                       true,
-		"opener:closed":                                true,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("the host's close reported %v", got)
-	}
-	for _, report := range got {
-		if !want[report] {
-			t.Fatalf("the host's close reported %v", got)
+		r.host.Close()
+		got := kinds(t, r.takeReports())
+		want := map[string]bool{
+			downloading.id + ":popup(opener,)":             true,
+			downloading.id + ":download(dl-1,interrupted)": true,
+			downloading.id + ":closed":                     true,
+			announced.id + ":closed":                       true,
+			grandchild.id + ":closed":                      true,
+			"opener:closed":                                true,
+		}
+		if len(got) != len(want) {
+			t.Fatalf("round %d: the host's close reported %v", round, got)
+		}
+		at := map[string]int{}
+		for i, report := range got {
+			if !want[report] {
+				t.Fatalf("round %d: the host's close reported %v", round, got)
+			}
+			at[report] = i
+		}
+		for popup, opener := range map[string]string{grandchild.id: announced.id, announced.id: "opener", downloading.id: "opener"} {
+			if at[popup+":closed"] > at[opener+":closed"] {
+				t.Fatalf("round %d: %s was reported closed before its popup %s: %v", round, opener, popup, got)
+			}
+		}
+		settled(t, requested, nil)
+		if r.host.pendingPopups != 0 {
+			t.Errorf("%d window requests pending", r.host.pendingPopups)
+		}
+		r.done()
+		for _, controller := range []*fakeController{opener, announcedController, grandchildController, createdController, waitingController, downloadingController} {
+			closed(t, controller)
 		}
 	}
-	if got[len(got)-1] != "opener:closed" {
-		t.Errorf("the opener was reported closed before its popups: %v", got)
-	}
-	settled(t, requested, nil)
-	if r.host.pendingPopups != 0 {
-		t.Errorf("%d window requests pending", r.host.pendingPopups)
-	}
-	_ = waiting
+}
+
+// A popup not announced that goes with a popup of its own that downloaded
+// is announced with it, before it, so the backend knows the opener of the
+// popup it hears of.
+func TestAPopupGoneWithADownloadingPopupOfItsOwnIsAnnounced(t *testing.T) {
+	r := newPopupRig(t)
+	_, opener := r.createPage("opener", "prof", false)
+	parent, parentController := r.openPopup(opener, newFakeWindowArgs(popupURL))
+	parent.popup.held.findUnavailable = false
+	child, childController := r.openPopup(parentController, newFakeWindowArgs(popupURL))
+	child.popup.held.findUnavailable = false
+	d := r.startDownload(child, "dl-1")
+	r.host.endDownload(d, d.snapshot(DownloadCompleted, ""))
+	parentController.view.raise("close-requested")
+	sameReports(t, "a popup going with its downloading popup", kinds(t, r.awaitReports(5)),
+		parent.id+":popup(opener,)", child.id+":popup("+parent.id+",)", child.id+":download(dl-1,completed)",
+		child.id+":closed", parent.id+":closed")
 	r.done()
-	for _, controller := range []*fakeController{opener, announcedController, createdController, waitingController, downloadingController} {
-		closed(t, controller)
-	}
+	closed(t, parentController)
+	closed(t, childController)
 }
 
 // A popup starts at most maxHeldPopupDownloads downloads before it is

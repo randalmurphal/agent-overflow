@@ -306,17 +306,18 @@ func (h *Host) reportPopup(page *hostPage) error {
 // registry. Its window request is answered if still open, which frees its
 // place at once (a late controller completion then only closes what it
 // created). The backend hears closed of an announced popup. One it has not
-// heard of that made a download is announced, with its held reports, then
-// closed, so a download is never saved unlisted, under the target it has,
-// or none when it went before its target was read, which the backend never
-// attaches; one that made none goes unheard. Runs on the UI thread before
-// the page's handlers retire, and answers whether to report it closed.
-func (h *Host) departPopup(page *hostPage) bool {
+// heard of that made a download, or with announce set (departTaken), is
+// announced, with its held reports, then closed, so a download is never
+// saved unlisted, under the target it has, or none when it went before its
+// target was read, which the backend never attaches; any other goes
+// unheard. Runs on the UI thread before the page's handlers retire, and
+// answers whether to report it closed.
+func (h *Host) departPopup(page *hostPage, announce bool) bool {
 	h.answerNoWindow(page)
 	if !page.unannounced() {
 		return true
 	}
-	if len(page.popup.held.downloads) == 0 {
+	if !announce && len(page.popup.held.downloads) == 0 {
 		return false
 	}
 	// The page's teardown cancels what still runs and reports nothing; the
