@@ -191,11 +191,16 @@ var (
 const (
 	smokeClassName       = "AOFindSmokeWindow"
 	wsOverlappedWindow   = 0x00CF0000
-	wsVisible            = 0x10000000
+	wsExToolWindow       = 0x00000080
+	wsExNoActivate       = 0x08000000
+	swShowNoActivate     = 4
 	pmRemove             = 0x0001
 	smokeMessageWords    = 8
 	smokeWindowDimension = 800
 )
+
+// smokeWindowOrigin places a smoke window far outside any monitor layout.
+var smokeWindowOrigin = int32(-30000)
 
 // smokeUIThread is a locked OS thread with an STA, a top-level window and a
 // message pump that also runs queued functions.
@@ -258,9 +263,14 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { close(stop); wg.Wait() })
+	watchSmokeWindows(t)
 	return ui
 }
 
+// createSmokeWindow creates the one kind of top-level window a smoke uses:
+// a tool window (no taskbar button), shown without activation, placed off
+// every monitor. It never appears on the user's screen and never takes the
+// keyboard; watchSmokeWindows asserts both for the run.
 func createSmokeWindow() (uintptr, error) {
 	var module windows.Handle
 	if err := windows.GetModuleHandleEx(0, nil, &module); err != nil {
@@ -280,13 +290,14 @@ func createSmokeWindow() (uintptr, error) {
 		return 0, callErr
 	}
 	hwnd, _, callErr := procCreateWindowEx.Call(
-		0, uintptr(unsafe.Pointer(name)), 0,
-		wsOverlappedWindow|wsVisible,
-		0, 0, smokeWindowDimension, smokeWindowDimension,
+		wsExToolWindow|wsExNoActivate, uintptr(unsafe.Pointer(name)), 0,
+		wsOverlappedWindow,
+		uintptr(smokeWindowOrigin), uintptr(smokeWindowOrigin), smokeWindowDimension, smokeWindowDimension,
 		0, 0, uintptr(module), 0,
 	)
 	if hwnd == 0 {
 		return 0, callErr
 	}
+	_, _, _ = procShowWindow.Call(hwnd, swShowNoActivate)
 	return hwnd, nil
 }

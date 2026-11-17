@@ -41,6 +41,10 @@ type Host struct {
 	accelerators keybindings.AcceleratorSet
 
 	cdpPort int
+	// foreground answers whether the launcher window is the foreground
+	// window (isForeground). A smoke stands in its answer so it never takes
+	// the user's foreground.
+	foreground func(hwnd uintptr) bool
 }
 
 // Config wires the host to the launcher without importing Wails here.
@@ -184,6 +188,8 @@ func New(config Config) (*Host, error) {
 		config:  config,
 		pages:   make(map[string]*hostPage, 4),
 		cdpPort: port,
+
+		foreground: isForeground,
 	}
 	h.env = newPaneEnvironment(config.OnMain, h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
 	return h, nil
@@ -264,7 +270,7 @@ func (h *Host) applyPendingFocus(page *hostPage) {
 		mount, intent, ok = h.config.Focus.Take(page.id)
 		return ok
 	}
-	if focusDecision(page.shown, isForeground(h.config.HostWindow()), take) != focusMove {
+	if focusDecision(page.shown, h.foreground(h.config.HostWindow()), take) != focusMove {
 		return
 	}
 	report := FocusReport{Mount: mount, Intent: intent}

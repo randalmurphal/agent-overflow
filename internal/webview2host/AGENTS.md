@@ -78,8 +78,15 @@ Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
 `crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
 `background_smoke_windows_test.go`),
-which need an installed runtime and open a window. From WSL, build them with
+which need an installed runtime. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
-`WSLENV=AO_NATIVE_BROWSER_SMOKE`.
+`WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the
+user's screen or takes their keyboard: its one window comes from
+`startSmokeUIThread` (an inactive tool window off every monitor), which
+also locks `SetForegroundWindow` and watches every top-level window of the
+test's process tree for the whole smoke (`offscreen_smoke_windows_test.go`),
+failing it for one on a monitor or in the foreground. A smoke never takes
+the foreground; the focus smoke stands in the host's foreground answer
+(`Host.foreground`).
 
 See [embedded browser specification](../../docs/specs/embedded-browser.md).
