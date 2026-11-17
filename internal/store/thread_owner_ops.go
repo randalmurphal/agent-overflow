@@ -150,31 +150,27 @@ var archivedOwnedCallersSQL = `WITH RECURSIVE under(id) AS (
 		)
 		SELECT id FROM under`
 
-// HasRemoteSpawns reports whether any of threadIDs spawned a thread on a
-// paired computer, its spawn's acceptance answered or not: what a delete of
-// them owes there (CommitDeleteClaim), for its confirmation to say. One
-// probe of idx_thread_requests_caller per thread.
-func (s *Store) HasRemoteSpawns(threadIDs []string) (bool, error) {
+// ListRemoteSpawnTokens lists the tokens of the spawns any of threadIDs
+// made on a paired computer, their acceptance answered or not: what a
+// delete of them owes there (CommitDeleteClaim), for its confirmation to
+// say. One probe of idx_thread_requests_caller per thread.
+func (s *Store) ListRemoteSpawnTokens(threadIDs []string) ([]string, error) {
 	ids := uniqueNonEmptyStrings(threadIDs)
 	if len(ids) == 0 {
-		return false, nil
+		return nil, nil
 	}
 	encoded, err := json.Marshal(ids)
 	if err != nil {
-		return false, fmt.Errorf("store: encode the threads to probe for remote spawns: %w", err)
+		return nil, fmt.Errorf("store: encode the threads to probe for remote spawns: %w", err)
 	}
-	var found bool
-	if err := s.reader().QueryRow(hasRemoteSpawnsSQL, string(encoded)).Scan(&found); err != nil {
-		return false, fmt.Errorf("store: probe for remote spawns: %w", err)
-	}
-	return found, nil
+	return s.queryThreadIDs("store: list remote spawns", remoteSpawnTokensSQL, string(encoded))
 }
 
-// hasRemoteSpawnsSQL is true when a thread of the JSON array ?1 made a
-// spawn on another computer.
-const hasRemoteSpawnsSQL = `SELECT EXISTS (SELECT 1 FROM json_each(?1) AS caller
+// remoteSpawnTokensSQL lists the spawns on other computers the threads of
+// the JSON array ?1 made.
+const remoteSpawnTokensSQL = `SELECT thread_requests.token FROM json_each(?1) AS caller
 	  CROSS JOIN thread_requests ON thread_requests.caller_thread_id = caller.value
-	 WHERE thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> '')`
+	 WHERE thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> ''`
 
 // OwesWorkerEnd reports whether an archive or delete is owed to the worker
 // the spawn token made on a paired computer (owed): its spawner's archive

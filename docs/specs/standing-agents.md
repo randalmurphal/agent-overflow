@@ -897,7 +897,9 @@ Ruling 36, as built:
   release, that delete, the end of the owner device's last session there,
   and the retention floor. The delete's confirmation says when the
   threads it takes spawned workers on other computers
-  (`DeleteDependents.remoteWorkers`), with no count: `Workers it spawned
+  (`DeleteDependents.remoteWorkers`), leaving out a worker its computer
+  last said has a sidebar row there, which the delete keeps, and keeping
+  one whose placement is not known here, with no count: `Workers it spawned
   on other computers are deleted there too.` (`they` for several
   threads). Unknown is not none: until every read of what the delete
   takes has answered, Delete cannot be confirmed; when one failed, the

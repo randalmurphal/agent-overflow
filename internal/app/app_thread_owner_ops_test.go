@@ -807,6 +807,32 @@ func TestTheDeleteConfirmationSaysWhenWorkersOnOtherComputersGoToo(t *testing.T)
 	}
 }
 
+// A worker the person gave a sidebar row on its computer stays when its
+// spawner is deleted, so the confirmation leaves it out once this computer
+// has heard that placement; until it has, the confirmation says so.
+func TestTheDeleteConfirmationLeavesOutAWorkerWithASidebarRowThere(t *testing.T) {
+	t.Parallel()
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	ack := pair.spawnThere(t, "for the user", map[string]any{"placement": threadtools.PlacementStandalone})
+	if got, err := pair.source.GetDeleteDependents([]string{pair.caller.ID}); err != nil || !got.RemoteWorkers {
+		t.Fatalf("GetDeleteDependents before the placement is known = %+v, %v; want workers on other computers", got, err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		if _, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID); err != nil {
+			t.Fatal(err)
+		}
+		c := &pair.source.threadAgentPeers
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		entry := c.entries[ack.Token]
+		return entry != nil && entry.listing.Placement == threadtools.PlacementStandalone
+	})
+	if got, err := pair.source.GetDeleteDependents([]string{pair.caller.ID}); err != nil || got.RemoteWorkers {
+		t.Fatalf("GetDeleteDependents = %+v, %v; want no workers on other computers", got, err)
+	}
+}
+
 // A delete after an archive the other computer answered still applies: the
 // operations are ordered by their sequence, not by a clock.
 func TestADeleteAfterAnAnsweredArchiveApplies(t *testing.T) {
