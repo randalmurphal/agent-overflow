@@ -90,7 +90,7 @@ func TestCDPTargetsSettleInEveryOrder(t *testing.T) {
 
 // A target destroyed before its creation is handled leaves no opener
 // behind for the navigation policy to follow, and nothing for good.
-func TestBP4DestroyedBeforeCreatedLeavesNoLiveOpener(t *testing.T) {
+func TestTargetDestroyedBeforeCreatedLeavesNoLiveOpener(t *testing.T) {
 	targets := newCDPTargets(nil)
 	targets.destroyed("T-popup", nil)
 	if targets.created(&target.Info{TargetID: "T-popup", Type: "page", OpenerID: "T-opener"}, func(*target.Info, bool, uint64) {

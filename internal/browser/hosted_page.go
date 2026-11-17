@@ -195,11 +195,17 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.scales, pageID)
 	delete(e.noFind, pageID)
 	delete(e.pageProfile, pageID)
-	e.forgetDownloadsLocked(pageID)
 	e.mu.Unlock()
 	if !known {
 		return
 	}
+	// A snapshot being applied reaches the Manager before the close does:
+	// the launcher sends a download's end before its page's close, and a
+	// report whose call timed out there may still be applied here.
+	e.joinDownloadReports(pageID, "")
+	e.mu.Lock()
+	e.forgetDownloadsLocked(pageID)
+	e.mu.Unlock()
 	e.events.PageClosed(pageID)
 }
 
@@ -280,7 +286,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	if pending {
 		// The launcher cancels the page's downloads with it and reports
 		// nothing, and the Manager never listed the page to settle them.
-		e.endUnlistedDownloads(pageID, popupDiscardedReason)
+		e.joinDownloadReports(pageID, popupDiscardedReason)
 	}
 	e.mu.Lock()
 	targetID := e.targetByPage[pageID]

@@ -283,7 +283,7 @@ func (e *hostedEngine) retirePendingLocked(pageID string) bool {
 // while its opener is still listed. The popup's listing, if its adoption
 // is still under way, delivers the close again (popupListed).
 func (e *hostedEngine) pendingClosed(pageID string) {
-	e.endUnlistedDownloads(pageID, popupClosedReason)
+	e.joinDownloadReports(pageID, popupClosedReason)
 	e.events.PageClosed(pageID)
 }
 

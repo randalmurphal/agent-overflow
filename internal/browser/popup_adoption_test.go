@@ -193,7 +193,7 @@ func listed(m *Manager, handle string) bool {
 
 // A download a popup started and finished before its adoption began is
 // listed in the popup's tab, finished.
-func TestBP4CompletedDownloadBeforeAdoptionStarts(t *testing.T) {
+func TestCompletedDownloadBeforeAdoptionStarts(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
 	if !popupDownload(manager, engine, "popup", "dl-1", opener) {
 		t.Fatal("the popup's download was refused")
@@ -241,7 +241,7 @@ func TestAPopupThatIsNotAdoptedLeavesItsDownloadsWithItsOpener(t *testing.T) {
 
 // A popup opened by a popup still being adopted waits for that adoption
 // and joins its tabs; a download it started meanwhile is in its own tab.
-func TestBP4NestedPopupBeforeParentListed(t *testing.T) {
+func TestNestedPopupBeforeParentListed(t *testing.T) {
 	manager, engine, access, opener := newAdoptionManager(t)
 	release := engine.gate("parent")
 	defer release()
@@ -426,13 +426,14 @@ func TestParkedDownloadsGoToTheOpenerAfterTheTimeout(t *testing.T) {
 	for i := range 50 {
 		manager.downloadProgress(progressOf("dl-1", downloadInProgress, float64(i)))
 	}
-	for deadline := time.Now().Add(hostedTestDeadline); len(downloadsOf(manager, opener)) == 0; {
+	// The row is listed, then takes its newest progress.
+	want := []string{"dl-1 in_progress 49"}
+	for deadline := time.Now().Add(hostedTestDeadline); !slices.Equal(downloadsOf(manager, opener), want); {
 		if time.Now().After(deadline) {
-			t.Fatal("the parked download was never listed")
+			t.Fatalf("tab %s lists %q, want %q", opener, downloadsOf(manager, opener), want)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	wantDownloads(t, manager, opener, "dl-1 in_progress 49")
 }
 
 // A popup parks at most maxParkedDownloads downloads, and the Manager at

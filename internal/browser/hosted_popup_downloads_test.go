@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -47,7 +49,7 @@ func (l *popupLauncher) pageDownloads(threadID, handle string) []string {
 // A popup that finishes a download and closes before the Manager lists it
 // leaves the finished download in its opener's tab, and the one it left
 // running ends there.
-func TestBP4CompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
+func TestCompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
 	l := newPopupLauncher(t)
 	access := popupTestAccess(t, "thread")
 	_, opener := l.open(access)
@@ -107,7 +109,7 @@ func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
 
 // A download's terminal snapshot reaches the popup's tab however many
 // snapshots came before it while the popup was adopted.
-func TestBP4TerminalDownloadSurvivesHeldReportBound(t *testing.T) {
+func TestTerminalDownloadSurvivesHeldReportBound(t *testing.T) {
 	l := newPopupLauncher(t)
 	access := popupTestAccess(t, "thread")
 	_, opener := l.open(access)
@@ -130,7 +132,7 @@ func TestBP4TerminalDownloadSurvivesHeldReportBound(t *testing.T) {
 
 // A popup opened by a popup the Manager is still attaching becomes a tab
 // after it, and a download it started meanwhile is in its own tab.
-func TestBP4NestedHostedPopupBeforeParentListed(t *testing.T) {
+func TestNestedHostedPopupBeforeParentListed(t *testing.T) {
 	l := newPopupLauncher(t)
 	access := popupTestAccess(t, "thread")
 	_, opener := l.open(access)
@@ -151,4 +153,66 @@ func TestBP4NestedHostedPopupBeforeParentListed(t *testing.T) {
 		t.Fatalf("the child's tab lists %v", got)
 	}
 	l.settledEngine()
+}
+
+// A download's end still being applied when its page's close arrives (its
+// call timed out at the launcher while the path lookup ran) reaches the
+// Manager first: the row ends completed, never canceled for the close,
+// whether the popup is listed or still being adopted.
+func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
+	for _, listed := range []bool{false, true} {
+		name := "during-adoption"
+		if listed {
+			name = "after-listing"
+		}
+		t.Run(name, func(t *testing.T) {
+			l := newPopupLauncher(t)
+			access := popupTestAccess(t, "thread")
+			_, opener := l.open(access)
+			entered, releasePath := make(chan struct{}), make(chan struct{})
+			l.engine.backendPath = func(_ context.Context, _ string) (string, error) {
+				close(entered)
+				<-releasePath
+				return "", errors.New("no test download file")
+			}
+			releaseAttach := func() {}
+			if !listed {
+				releaseAttach = l.gate("PT-1")
+				defer releaseAttach()
+			}
+			popup, _ := l.popup(opener, "https://example.test/popup")
+			if listed {
+				l.awaitTab(access.ThreadID, popup, true)
+				l.settledEngine()
+			} else {
+				l.awaitAttach("PT-1")
+			}
+			reportDownload(t, l.engine, popup, snapshot("dl-1", webview2host.DownloadRunning, 10))
+			terminal := make(chan struct{})
+			go func() {
+				defer close(terminal)
+				reportDownload(t, l.engine, popup, snapshot("dl-1", webview2host.DownloadCompleted, 100))
+			}()
+			<-entered
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				l.report(popup, webview2host.ReportClosed, "")
+			}()
+			early := false
+			select {
+			case <-closed:
+				early = true
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(releasePath)
+			<-terminal
+			<-closed
+			releaseAttach()
+			if early {
+				t.Error("the close passed the pending terminal snapshot")
+			}
+			l.awaitDownloads(access, downloadStateCompleted)
+		})
+	}
 }
