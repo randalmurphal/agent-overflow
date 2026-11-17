@@ -1241,8 +1241,23 @@ func TestThreadToolsUncollectedRemoteAnswerExpires(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	installMockClaudeReplies(t, pair.dest, "nobody collects this")
+	// The worker's turn ends only once the spawn has returned: a worker
+	// that rested before the spawn's reply was read would hand the answer
+	// back on that reply, and the source would have collected it.
+	spawned := filepath.Join(t.TempDir(), "spawned")
+	installMockClaudeTurns(t, pair.dest, [][]string{{
+		mockClaudeInitLine,
+		testutil.MockWaitForFile(spawned),
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"nobody collects this"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}})
 	spawn := pair.spawnThere(t, "answer into the void", nil)
+	if row := pair.request(t, spawn.Token); threadRequestSettled(row) {
+		t.Fatalf("the spawn's reply carried its answer: %q", row.State)
+	}
+	if err := os.WriteFile(spawned, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	waitUntilE2E(t, 30*time.Second, "the destination settles the spawn", func() bool {
 		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(spawn.Token)
 		return err == nil && found && receipt.SettledAt != 0
