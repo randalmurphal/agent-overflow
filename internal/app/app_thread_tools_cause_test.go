@@ -134,3 +134,16 @@ func TestAnInterruptionsCauseCrossesComputersAsData(t *testing.T) {
 		}
 	})
 }
+
+// A turn that wrote nothing but white space wrote nothing: its
+// interruption's answer is the cause's sentence alone.
+func TestAnInterruptionKeepsNoBlankText(t *testing.T) {
+	t.Parallel()
+	cause := threadtools.Cause{Code: threadtools.CauseSessionEndedMidTurn}
+	if settlement := interruptedSettlement(cause, " \n\t"); len(settlement.Answer) != 0 || settlement.Cause != cause.Code {
+		t.Fatalf("settlement = %+v, want the cause and no text", settlement)
+	}
+	if settlement := interruptedSettlement(cause, "Half done."); string(settlement.Answer) != "Half done." {
+		t.Fatalf("settlement = %+v, want what the turn wrote", settlement)
+	}
+}
