@@ -132,6 +132,8 @@ type Manager struct {
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq  uint64
 	sessions map[string]SessionInfo
+	// recent is each thread's recent addresses (recent.go).
+	recent map[string][]RecentAddress
 	// viewportSyncs serializes viewport application per thread (viewport.go).
 	viewportSyncs map[string]*viewportSync
 	// presenting holds, per thread, whether a presentation pass runs and
@@ -499,6 +501,7 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	if err == nil {
 		p.setInfo(info)
 		info = p.cachedInfo()
+		m.recordRecentAddress(p, info)
 	}
 	m.pageChanged(p)
 	return info, err
@@ -559,6 +562,9 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 		info.Jar = JarWorktree
 		m.sessions[threadID] = info
 	}
+	// Forgotten here for a close that stops early, and again with the
+	// session below, after any open the closing pages were running.
+	delete(m.recent, threadID)
 	m.mu.Unlock()
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
@@ -578,6 +584,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
+	delete(m.recent, threadID)
 	m.mu.Unlock()
 	return errors.Join(errs...)
 }
@@ -592,8 +599,15 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // user-data folder, WebKit's own macOS data-store directory — implements
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
+//
+// The recent addresses go too, once the pages are closed: an open still
+// running then has no live page to record on (recordRecentAddress).
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	if err := errors.Join(m.forgetAllRecords(true), m.closeBrowser(ctx)); err != nil {
+	err := errors.Join(m.forgetAllRecords(true), m.closeBrowser(ctx))
+	m.mu.Lock()
+	m.recent = nil
+	m.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	var errs []error

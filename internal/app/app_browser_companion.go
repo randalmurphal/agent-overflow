@@ -145,6 +145,23 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	return err
 }
 
+// BrowserCompanionRecentAddresses answers the addresses the thread's pages
+// recently opened, newest first, for the address bar's suggestions. Read when
+// the address field takes focus rather than carried by every state push.
+//
+//ao:scope host
+//ao:route home
+func (a *App) BrowserCompanionRecentAddresses(threadID string) ([]appbrowser.RecentAddress, error) {
+	if a.browser.manager == nil {
+		return nil, fmt.Errorf("browser manager unavailable")
+	}
+	access, err := a.browserAccess(threadID)
+	if err != nil {
+		return nil, err
+	}
+	return a.browser.manager.RecentAddresses(access), nil
+}
+
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {
