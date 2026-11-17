@@ -979,6 +979,29 @@ func TestCDPPageEnablesNetworkWithNoRetainedBodies(t *testing.T) {
 	}
 }
 
+// Every CDP page leaves the CSS domain that chromedp's attach enabled turned
+// off: no driver reads its events, and on the hosted engine each would cross
+// the launcher's relay (one per style sheet a document adds).
+func TestCDPPageLeavesTheUnreadCSSDomainDisabled(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	last := ""
+	for _, call := range browser.calls() {
+		if call.SessionID != "" && (call.Method == "CSS.enable" || call.Method == "CSS.disable") {
+			last = call.Method
+		}
+	}
+	if last != "CSS.disable" {
+		t.Fatalf("the page's last CSS domain call is %q, want CSS.disable", last)
+	}
+}
+
 func ptrValue(v *int64) any {
 	if v == nil {
 		return "absent"
