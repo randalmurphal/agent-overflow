@@ -50,6 +50,34 @@ func TestThreadAgentStateIsTheOpenStateASpawnOfItReads(t *testing.T) {
 	checkRest(t, s, check)
 }
 
+// A send or ask a call is parked on, with no wake armed, is open work of
+// the thread that made it as well as of every spawn above that thread: the
+// thread's own state and its spawn's row agree, a thread no spawn made
+// included, and neither reads it once the call returns.
+func TestAParkedRequestIsOpenWorkOfItsCaller(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "root", "peer"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "to-root", "lead", ThreadRequestSpawn, "root", false, 100)
+	settleAgentRequest(t, s, "to-root", 200)
+	seedAgentRequest(t, s, "parked", "root", ThreadRequestSend, "peer", false, 300)
+	checkBoth(t, s, "a call parked on the thread's own quiet send", []string{"parked"}, nil, true, true, true)
+	checkBoth(t, s, "the call returned", nil, nil, false, false, false)
+
+	seedAgentRequest(t, s, "lead-parked", "lead", ThreadRequestAsk, "peer", false, 400)
+	for _, c := range []struct {
+		waiting []string
+		open    bool
+	}{{[]string{"lead-parked"}, true}, {nil, false}} {
+		state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "lead", Waiting: c.waiting, SettledSince: 10_000})
+		if err != nil || state.OpenBelow != c.open {
+			t.Fatalf("a thread no spawn made, parked on %v: state %+v, %v; want open %v", c.waiting, state, err, c.open)
+		}
+	}
+}
+
 // checkBoth reads root's state and the spawn of it lead made, and wants
 // stateOpen of the one, targetOpen of the other, and rows of the state.
 func checkBoth(t *testing.T, s *Store, what string, waiting, live []string, stateOpen, targetOpen, rows bool) {
