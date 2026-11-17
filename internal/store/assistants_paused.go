@@ -87,6 +87,15 @@ func (s *Store) ListThreadsUnderAssistants() ([]string, error) {
 		 UNION ALL SELECT thread_id FROM agent_past_threads`)
 }
 
+// ListQueuedThreadsUnderAssistants names the threads under an assistant
+// that hold a queued message, from the queue's thread index: what turning
+// assistants on starts.
+func (s *Store) ListQueuedThreadsUnderAssistants() ([]string, error) {
+	return s.queryThreadIDs("store: list the queued threads under assistants",
+		`SELECT DISTINCT thread_id FROM flush_queue_items
+		  WHERE `+threadUnderAssistantSQL("flush_queue_items.thread_id")+` ORDER BY thread_id`)
+}
+
 // PauseAgentWakeRun records on a row whose run the pause stopped that it did
 // not finish, and arms it again: an interval row is due once more at the
 // fire the run was for, so turning assistants on serves that fire, and a

@@ -110,6 +110,16 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 	if !slices.Equal(threads, []string{"helper", "ops"}) {
 		t.Errorf("ListThreadsUnderAssistants = %v", threads)
 	}
+	// Of those, the ones holding a queued message: one row of ops' two
+	// names it once, and plain's queue is no assistant's.
+	for _, item := range []FlushQueueItem{{ID: "q1", ThreadID: "ops"}, {ID: "q2", ThreadID: "ops"}, {ID: "q3", ThreadID: "plain"}} {
+		if err := s.InsertFlushQueueItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if queued, err := s.ListQueuedThreadsUnderAssistants(); err != nil || !slices.Equal(queued, []string{"ops"}) {
+		t.Errorf("ListQueuedThreadsUnderAssistants = %v, %v; want ops", queued, err)
+	}
 	for id, want := range map[string]bool{"ops": true, "helper": true, "plain": false} {
 		under, err := s.ThreadUnderAssistant(id)
 		if err != nil || under != want {
