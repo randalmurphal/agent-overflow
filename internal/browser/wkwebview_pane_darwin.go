@@ -27,11 +27,12 @@ import (
 // moved only its clip, its scale or its background colour still reaches
 // AppKit, and one that changed nothing still costs no main-thread dispatch.
 
-// wkNoBackground is what a pane with no resolved colour reports to the
+// wkNoBackground is what a placement with no resolved colour reports to the
 // Objective-C half, which then leaves the engine default in place.
 const wkNoBackground = -1
 
-// wkBackgroundCode turns PaneRect.Background into the packed 0xRRGGBB the host
+// wkBackgroundCode turns a placement's Background (the page's base,
+// pageBase) into the packed 0xRRGGBB the host
 // takes. Only "#rrggbb" is a colour: the value reaches an NSColor and a layer,
 // so anything else (empty, rgb(), a name, a short hex) is "no colour" rather
 // than a half-parsed one. Byte-wise and allocation-free — this runs on every

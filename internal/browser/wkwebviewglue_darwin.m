@@ -490,9 +490,9 @@ static NSColor *ao_bg_color(int bg) {
                              alpha:1.0];
 }
 
-// ao_apply_background paints the pane's resolved colour where the page has not
-// presented yet, so a strip exposed by a resize matches the pane instead of
-// flashing the engine default. Three surfaces need it: WKWebView's own
+// ao_apply_background paints the page's base colour (the Manager's pageBase:
+// white under a document, the pane's colour under a blank tab) where the page
+// has not presented yet. Three surfaces need it: WKWebView's own
 // under-page colour (what WebKit paints outside the drawn content)
 // and both layers, because the web content arrives on a remote layer that can
 // lag the view's own frame by a frame or two — the clip container is the thing

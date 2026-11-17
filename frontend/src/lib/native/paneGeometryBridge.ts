@@ -29,7 +29,6 @@ export interface PaneGeometryReport {
   viewportHeight: number;
   devicePixelRatio: number;
   visible: boolean;
-  background: string;
 }
 
 interface BridgeWindow {

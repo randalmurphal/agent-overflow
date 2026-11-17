@@ -40,9 +40,9 @@ const (
 // the engine crops it: the view keeps the full rect's size (the page must not
 // relayout because it scrolled half behind the sidebar) and the host clips its
 // presentation to the clip rect. An unclipped pane reports clip == rect.
-// Background is the pane surface's resolved CSS color ("#rrggbb"); engines
-// paint it where the page has not presented yet, so freshly exposed strips
-// match the pane instead of flashing the engine default.
+// Background is the pane surface's resolved CSS color ("#rrggbb"). The
+// Manager decides from it the base color painted under a presented page
+// (pageBase).
 //
 // DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
 // webview zoom. An engine whose page renders at the OS scale alone (the
@@ -76,8 +76,10 @@ type PaneRect struct {
 // page following the pane is its size and Scale is 1; a pinned page larger
 // than the pane scales down. Rect is the FITTED rect in the SPA's CSS pixels
 // (paneplace.Fit), with its clip already intersected with the host rect's
-// visible clip. Rect's viewport, background and device pixel ratio are the
-// host rect's own. Mount is the pane mount whose rect it was placed in, which
+// visible clip. Rect's viewport and device pixel ratio are the host rect's
+// own; its Background is the page's base (pageBase), which an engine paints
+// wherever the page's document leaves its own background transparent or
+// has not painted yet. Mount is the pane mount whose rect it was placed in, which
 // lets a host that measures the mount itself place the page from its own,
 // newer rect (the Windows launcher).
 type PanePlacement struct {
@@ -187,6 +189,14 @@ type pageUpdate struct {
 	Listing pageListing
 	// Label, when set, replaces the label; nil keeps it.
 	Label *string
+	// DocumentTitle is the page's document reporting its own title and the
+	// address it was at (pageHooks.DocumentTitle). It becomes the page's
+	// docTitle, and the tab's title while the tab shows that address. An
+	// engine report of that address shows the document's title in place of
+	// its own: the two arrive on separate subscriptions in either order,
+	// and a report's title is the browser's placeholder until the document
+	// has one. A read is not changed by it; it asks the document itself.
+	DocumentTitle *pageLocation
 	// Report is an engine report's order (pageHooks.Info), zero for any
 	// other write. A report is committed only if newer than every report
 	// committed before it.
@@ -233,9 +243,24 @@ func (p *managedPage) commitInfo(u pageUpdate) (PageInfo, bool) {
 	if u.Location != nil && stamp > p.locationStamp {
 		info.URL = truncateUTF8(u.Location.URL, maxBrowserURLBytes)
 		info.Title = truncateUTF8(u.Location.Title, maxBrowserTitleBytes)
+		if u.Report != 0 && p.docTitle.URL == info.URL {
+			info.Title = p.docTitle.Title
+		}
 		info.Selected, info.LastOpened = u.Listing.Selected, u.Listing.LastOpened
 		p.locationStamp = stamp
 		located = true
+	}
+	if doc := u.DocumentTitle; doc != nil {
+		p.docTitle = pageLocation{
+			URL:   truncateUTF8(doc.URL, maxBrowserURLBytes),
+			Title: truncateUTF8(doc.Title, maxBrowserTitleBytes),
+		}
+		// A title write like any other: a read begun before it carries an
+		// older title and is not committed over it.
+		if p.docTitle.URL == info.URL && stamp > p.locationStamp {
+			info.Title = p.docTitle.Title
+			p.locationStamp = stamp
+		}
 	}
 	if u.History != nil && stamp > p.historyStamp {
 		info.CanGoBack, info.CanGoForward = u.History.CanGoBack, u.History.CanGoForward
@@ -267,7 +292,11 @@ func (m *Manager) commitRead(p *managedPage, u pageUpdate, stamp uint64) (PageIn
 		m.infoRead(p)
 	}
 	u.Stamp = stamp
-	return p.commitInfo(u)
+	info, located := p.commitInfo(u)
+	if located {
+		m.presentAddressCommitted(p)
+	}
+	return info, located
 }
 
 // pushedInfo is info without its listing (pageListing).
@@ -607,6 +636,7 @@ func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64
 		// A newer report was committed first and runs its own refresh.
 		return
 	}
+	m.presentAddressCommitted(p)
 	m.mu.Lock()
 	listed := m.pageListedLocked(p)
 	m.mu.Unlock()
@@ -618,6 +648,18 @@ func (m *Manager) pageInfoReport(p *managedPage, url, title string, order uint64
 	// change that touched neither); that alone pushes nothing.
 	m.publishPages(p.owner)
 	go m.refreshHistoryState(p, stamp)
+}
+
+// pageDocumentTitle is pageHooks.DocumentTitle. Like an engine report it is
+// committed wherever p is, and only a listed page pushes it.
+func (m *Manager) pageDocumentTitle(p *managedPage, url, title string) {
+	p.commitInfo(pageUpdate{DocumentTitle: &pageLocation{URL: url, Title: title}})
+	m.mu.Lock()
+	listed := m.pageListedLocked(p)
+	m.mu.Unlock()
+	if listed {
+		m.publishPages(p.owner)
+	}
 }
 
 // refreshHistoryState re-reads one page's back/forward availability after an
@@ -876,6 +918,60 @@ func (m *Manager) syncPanePresentation(threadID string) {
 // dirty when another was asked for. Guarded by Manager.mu.
 type presentSync struct{ busy, dirty bool }
 
+// presentedPage is the page a presentation pass showed, and whether it
+// painted the document base under it (pageBase).
+type presentedPage struct {
+	id       string
+	document bool
+}
+
+// documentBase is the base color under a page that shows a document: the
+// white every browser paints where a document leaves its own background
+// transparent. A page whose address carries no document (a blank new tab)
+// shows the pane's own color instead.
+const documentBase = "#ffffff"
+
+// pageShowsDocument answers whether a page at url shows a document. A blank
+// new tab, and a page the engine has not given an address yet, show none.
+func pageShowsDocument(url string) bool {
+	switch {
+	case url == "", url == "about:blank":
+		return false
+	case strings.HasPrefix(url, "about:blank#"), strings.HasPrefix(url, "about:blank?"):
+		return false
+	}
+	return true
+}
+
+// pageBase is the color an engine paints under a presented page: the
+// document base when the page shows a document, and the pane's own color
+// (the host rect's Background) when it shows none, so an empty tab is the
+// pane and a page without a background of its own reads as it does in any
+// browser. The decision is the Manager's because only it knows the page's
+// address; a host paints what it is told.
+func pageBase(document bool, pane string) string {
+	if document {
+		return documentBase
+	}
+	return pane
+}
+
+// presentAddressCommitted follows a committed change of p's address: when p
+// is the page its thread's pane shows and the address changed whether it
+// shows a document, the pane is presented again so the engine paints the
+// base the new address calls for. A pass under way when the address was
+// committed may have read the old one, so it is asked for another.
+func (m *Manager) presentAddressCommitted(p *managedPage) {
+	document := pageShowsDocument(p.cachedInfo().URL)
+	m.mu.Lock()
+	shown, ok := m.presented[p.owner]
+	stale := m.presenting[p.owner] != nil || ok && shown.id == p.id && shown.document != document
+	m.mu.Unlock()
+	if stale {
+		m.syncPanePresentation(p.owner)
+	}
+}
+
 // presentPanes is one presentation pass of syncPanePresentation.
 //
 // The pass hides every page but the one the thread had selected when it
@@ -934,8 +1030,11 @@ func (m *Manager) presentPanes(threadID string) {
 		m.presentDeciding(threadID, candidate)
 	}
 	show, placement, lagging := m.decidePresentation(threadID, candidate)
+	document := false
 	if candidate != nil {
 		if show {
+			document = pageShowsDocument(candidate.cachedInfo().URL)
+			placement.Rect.Background = pageBase(document, placement.Rect.Background)
 			host.SetPageBounds(candidate.driver.Handle(), placement)
 			host.ShowPage(candidate.driver.Handle())
 		} else {
@@ -944,10 +1043,10 @@ func (m *Manager) presentPanes(threadID string) {
 	}
 	m.mu.Lock()
 	if m.presented == nil {
-		m.presented = make(map[string]string)
+		m.presented = make(map[string]presentedPage)
 	}
 	if show {
-		m.presented[threadID] = candidate.id
+		m.presented[threadID] = presentedPage{id: candidate.id, document: document}
 	} else {
 		delete(m.presented, threadID)
 	}
@@ -986,7 +1085,7 @@ func (m *Manager) decidePresentation(threadID string, candidate *managedPage) (s
 	if !show {
 		return false, PanePlacement{}, false
 	}
-	if candidate.id != m.presented[threadID] {
+	if candidate.id != m.presented[threadID].id {
 		want := packViewport(pageW, pageH)
 		if candidate.viewport.Load() != want && candidate.viewportFailed.Load() != want {
 			if m.awaitingLayout == nil {

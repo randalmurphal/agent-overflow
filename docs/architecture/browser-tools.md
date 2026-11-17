@@ -184,7 +184,13 @@ per-platform no-op.
   adopted; a CDP engine reports by handle, and the Manager holds the newest
   report for a handle no page answers to yet (a page created or restored
   before its attach, a popup during its adoption) until its page takes it.
-  A report for a page that left its tabs changes nothing shown. A read (an
+  A report for a page that left its tabs changes nothing shown. A CDP
+  engine's report carries the browser's placeholder title (the address), and
+  Chromium sends no report when the document sets its title; the document
+  reports its address and title itself, from an isolated world through a
+  `Runtime.addBinding` binding (`cdp_page.go`), and that title is the tab's
+  while the tab shows that address, whichever of the two arrives first. A
+  read (an
   operation's, `browser_pages`', a selection's, the history refresh after a
   report) is stamped before it asks; the address and the back/forward state
   each keep the stamp of the write that set them, and a read's part is

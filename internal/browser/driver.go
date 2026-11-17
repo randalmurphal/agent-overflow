@@ -194,6 +194,12 @@ type pageHooks struct {
 	// reports none before its adoption and reports its address and title as
 	// it is adopted. Never called on a UI thread (it takes Manager locks).
 	Info func(url, title string, order uint64)
+	// DocumentTitle reports the title the page's document holds, read in
+	// the document at address url (cdp_page.go: a CDP engine's reports
+	// carry a navigation's placeholder title and miss later changes). It
+	// names no address the tab should show; the Manager applies it only to
+	// that address (commitInfo). Never called on a UI thread.
+	DocumentTitle func(url, title string)
 }
 
 // pageDriver is one engine's implementation of every per-page operation the

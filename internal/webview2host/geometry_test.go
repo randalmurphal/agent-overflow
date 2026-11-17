@@ -16,7 +16,7 @@ func geometryMessage(t *testing.T, fields map[string]any) string {
 		"x": 10, "y": 20, "width": 800, "height": 600,
 		"clipX": 10, "clipY": 20, "clipWidth": 800, "clipHeight": 600,
 		"viewportWidth": 1600, "viewportHeight": 900, "devicePixelRatio": 1.5,
-		"visible": true, "background": "#112233",
+		"visible": true,
 	}
 	for k, v := range fields {
 		if v == nil {
@@ -37,7 +37,7 @@ func TestParseGeometryMessageAcceptsAReportAndIgnoresOtherMessages(t *testing.T)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if g.Mount != "mount-1" || g.Seq != 1 || g.X != 10 || g.Width != 800 || g.DevicePixelRatio != 1.5 || !g.Visible || g.Background != "#112233" {
+	if g.Mount != "mount-1" || g.Seq != 1 || g.X != 10 || g.Width != 800 || g.DevicePixelRatio != 1.5 || !g.Visible {
 		t.Fatalf("parsed %+v", g)
 	}
 	// A pane with nothing to show is a valid report: it hides the page.
@@ -64,7 +64,6 @@ func TestParseGeometryMessageRejectsMalformedReports(t *testing.T) {
 		"half viewport":       {"viewportHeight": 0},
 		"negative dpr":        {"devicePixelRatio": -1},
 		"absurd dpr":          {"devicePixelRatio": 1000},
-		"named background":    {"background": "red"},
 		"string where number": {"x": "10"},
 	} {
 		if _, err := ParseGeometryMessage(geometryMessage(t, fields)); err == nil {

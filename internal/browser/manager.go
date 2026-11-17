@@ -144,8 +144,9 @@ type Manager struct {
 	// on first use, and an idle thread's entry is removed.
 	presenting map[string]*presentSync
 	// presented is, per thread, the page the last presentation pass showed
-	// (presentPanes); a thread showing none has no entry. Guarded by mu.
-	presented map[string]string
+	// and the base it painted under it (presentPanes); a thread showing none
+	// has no entry. Guarded by mu.
+	presented map[string]presentedPage
 	// awaitingLayout is, per thread, the active page the last presentation
 	// pass held hidden because it lagged the thread viewport. Whichever
 	// apply lays it out first (applyViewportLocked) asks for the pass that
@@ -321,6 +322,10 @@ type managedPage struct {
 	// under metaMu (commitInfo).
 	infoStamp, locationStamp, historyStamp uint64
 	infoReport                             uint64
+	// docTitle is the newest title the page's document reported of itself
+	// and the address it was at (pageHooks.DocumentTitle), bounded as info
+	// is, under metaMu (commitInfo).
+	docTitle pageLocation
 	// load is the page's loading state and favicon (pagestate.go), guarded
 	// by metaMu.
 	load        pageLoad
@@ -928,6 +933,7 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 		DocumentCommitted: func() func() { return m.documentCommitted(p) },
 		Loading:           func(loading bool, order uint64) { m.pageLoading(p, loading, order) },
 		Info:              func(url, title string, order uint64) { m.pageInfoReport(p, url, title, order) },
+		DocumentTitle:     func(url, title string) { m.pageDocumentTitle(p, url, title) },
 	}
 }
 

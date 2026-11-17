@@ -26,7 +26,7 @@ func localGeometry(x float64) PaneGeometry {
 		X: x, Y: 20, Width: 800.5, Height: 600.5,
 		ClipX: x, ClipY: 20, ClipWidth: 800.5, ClipHeight: 600.5,
 		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 1.5,
-		Visible: true, Background: "#ffffff",
+		Visible: true,
 	}
 }
 
@@ -43,8 +43,10 @@ func TestPresenterPlacesFromLocalGeometry(t *testing.T) {
 	}
 	b := view.bounds
 	// A following page starts at the local rect's origin (paneplace.Fit) at
-	// the directive's page size, and carries the local ratio and color.
-	if b.X != 300 || b.Y != 20 || b.W != 800 || b.H != 600 || b.DPR != 1.5 || b.Bg != "#ffffff" || b.VW != 1600 {
+	// the directive's page size, and carries the local ratio and the
+	// directive's base color: the base is the page's, decided from its
+	// address by the backend, never the mount's.
+	if b.X != 300 || b.Y != 20 || b.W != 800 || b.H != 600 || b.DPR != 1.5 || b.Bg != "#000000" || b.VW != 1600 {
 		t.Fatalf("local placement = %+v", b)
 	}
 	if b.CX != 300 || b.CW != 800 {

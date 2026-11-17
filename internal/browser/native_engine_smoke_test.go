@@ -77,7 +77,8 @@ func runInNativeWindow(m *testing.M) int {
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 			Title: "AO native browser smoke", Width: 1280, Height: 800,
-			HTML: "<!doctype html><title>AO native browser smoke</title>",
+			// Grey, so a pixel check tells a page's white from the window.
+			HTML: `<!doctype html><title>AO native browser smoke</title><body style="background:#808080">`,
 		})
 		go func() {
 			code := 1

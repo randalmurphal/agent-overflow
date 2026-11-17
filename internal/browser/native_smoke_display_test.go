@@ -88,8 +88,10 @@ func runUnderHeadlessWeston(weston string) int {
 		return 1
 	}
 	socket := fmt.Sprintf("ao-native-smoke-%d", os.Getpid())
+	// --debug lets the run's own clients capture the output
+	// (westonScreenshot); the compositor serves nothing else.
 	compositor := exec.Command(weston, "--backend=headless", "--renderer=pixman", "--socket="+socket,
-		"--width=1280", "--height=800", "--no-config")
+		"--width=1280", "--height=800", "--no-config", "--debug")
 	// The compositor itself sees no display: it must not nest in the
 	// session's.
 	compositor.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
