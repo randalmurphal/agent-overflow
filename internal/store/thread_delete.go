@@ -278,7 +278,7 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMemb
 		if member.Committed || member.Claim == op {
 			continue
 		}
-		fence := deleteFence{}
+		fence := workerFence{}
 		if member.Kind == DeleteWorker {
 			fence.owner = member.Under
 		}
@@ -293,33 +293,20 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMemb
 	return members, nil
 }
 
-// deleteFence is what a worker's claim holds through: its owner here, or
-// the link a paired computer's owner reaches it by. The zero fence claims
-// the thread unconditionally.
-type deleteFence struct {
-	owner string
-	link  *LinkFence
-}
-
 // claimThreadDeleteTx claims id for the delete op. For a worker its owner's
 // delete takes, fence names that owner, or the link of an owner on a paired
 // computer, and the claim holds only while that owner still owns the
 // thread (ErrWorkerNotOwned), so a delete admitted from elsewhere claims a
 // worker only through its owner. A thread committed or claimed by another
 // delete is not claimed (ErrThreadDeleting).
-func claimThreadDeleteTx(tx *sql.Tx, op, id string, fence deleteFence) error {
+func claimThreadDeleteTx(tx *sql.Tx, op, id string, fence workerFence) error {
 	query := `UPDATE threads SET delete_claim = ? WHERE id = ? AND deleting = 0 AND delete_claim IN ('', ?)`
 	args := []any{op, id, op}
-	fenced := true
-	switch {
-	case fence.link != nil:
-		query += ` AND ` + linkedBySQL
-		args = append(args, fence.link.Token, fence.link.DeviceID)
-	case fence.owner != "":
-		query += ` AND ` + ownedBySQL("?")
-		args = append(args, fence.owner)
-	default:
-		fenced = false
+	condition, fenceArgs := fence.condition()
+	fenced := condition != ""
+	if fenced {
+		query += ` AND ` + condition
+		args = append(args, fenceArgs...)
 	}
 	result, err := tx.Exec(query, args...)
 	if err != nil {

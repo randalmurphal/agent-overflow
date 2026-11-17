@@ -146,7 +146,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		result.Changed = result.Changed || changed
 	}
 	if write.Archived != nil {
-		_, changed, err := applyThreadRowWriteTx(tx, threadArchivedWrite(threadID, *write.Archived))
+		_, changed, err := setThreadArchivedTx(tx, threadID, *write.Archived, workerFence{})
 		if err != nil {
 			return ThreadOrganizeResult{}, err
 		}

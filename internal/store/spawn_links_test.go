@@ -528,11 +528,11 @@ func TestALinkFencesADeleteClaim(t *testing.T) {
 		"a sidebar thread": {"placed", LinkFence{Token: "tok-placed", DeviceID: "dev"}},
 	} {
 		fence := claim.fence
-		if err := claimThreadDeleteTx(tx, "op", claim.id, deleteFence{link: &fence}); !errors.Is(err, ErrWorkerNotOwned) {
+		if err := claimThreadDeleteTx(tx, "op", claim.id, workerFence{link: &fence}); !errors.Is(err, ErrWorkerNotOwned) {
 			t.Errorf("%s: claim = %v, want ErrWorkerNotOwned", name, err)
 		}
 	}
-	if err := claimThreadDeleteTx(tx, "op", "worker", deleteFence{link: &LinkFence{Token: "tok", DeviceID: "dev"}}); err != nil {
+	if err := claimThreadDeleteTx(tx, "op", "worker", workerFence{link: &LinkFence{Token: "tok", DeviceID: "dev"}}); err != nil {
 		t.Fatalf("the link's claim: %v", err)
 	}
 }

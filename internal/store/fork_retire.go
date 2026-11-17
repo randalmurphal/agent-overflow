@@ -102,7 +102,7 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 		        branch = NULL, session_ref = NULL, pending_fork_session_ref = NULL,
 		        pending_fork_resume_at = '', fork_preparing = 0,
 		        forked_from_thread_id = NULL, pinned_at = NULL,
-		        pin_group = NULL, group_id = NULL, placement = 'standalone', archived = 0, live_todo = '',
+		        pin_group = NULL, group_id = NULL, placement = 'standalone', live_todo = '',
 		        worktree_setup_state = '', fork_source_thread_id = ''
 		  WHERE id = ?`, threadmode.ModeHolder, id)
 	if err != nil {
@@ -110,6 +110,9 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 	}
 	if err := requireRowsAffected(result, "store: retire thread "+id+" to a holder"); err != nil {
 		return false, err
+	}
+	if _, _, err := setThreadArchivedTx(tx, id, false, workerFence{}); err != nil {
+		return false, fmt.Errorf("store: retire thread %s to a holder: %w", id, err)
 	}
 	return true, nil
 }

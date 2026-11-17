@@ -857,8 +857,7 @@ const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?
     workspace_path=?, worktree_path=?, branch=?, session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
     auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
-    forked_from_thread_id=?, last_token_usage=?,
-    archived=?`
+    forked_from_thread_id=?, last_token_usage=?`
 
 func normalizeThreadForUpdate(t Thread) (Thread, error) {
 	t.Mode = normalizeMode(t.Mode)
@@ -890,7 +889,6 @@ func updateThreadArgs(t Thread) []any {
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
-		boolToInt(t.Archived),
 	}
 }
 
@@ -1032,10 +1030,11 @@ func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) e
 // ArchiveThread flips the archived column to 1 and bumps updated_at so the
 // thread leaves the active sidebar. Returns the archived row plus whether the
 // write moved anything: re-archiving an already-archived thread changes
-// nothing, so it must not bump updated_at and must not broadcast. A missing
+// nothing, so it must not bump updated_at and must not broadcast, though
+// its archive is marked unfinished again (setThreadArchivedTx). A missing
 // id is still sql.ErrNoRows.
 func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadArchivedWrite(id, true))
+	return s.setThreadArchived(id, true, workerFence{})
 }
 
 // UnarchiveThread flips the archived column back to 0 for a thread and bumps
@@ -1044,24 +1043,7 @@ func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
 // that was already active is a no-op, not a reshuffle. Returns sql.ErrNoRows
 // if no row matches the id.
 func (s *Store) UnarchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadArchivedWrite(id, false))
-}
-
-// threadArchivedWrite is the one definition of the archive flip, shared by
-// the two accessors and by the organize transaction that writes it beside a
-// title, a group and a pin.
-func threadArchivedWrite(id string, archived bool) rowWrite {
-	flag, action := "1", "archive"
-	if !archived {
-		flag, action = "0", "unarchive"
-	}
-	return rowWrite{
-		Action:  fmt.Sprintf("store: %s thread %s", action, id),
-		ID:      id,
-		Set:     "archived = " + flag + ", updated_at = ?",
-		SetArgs: []any{nowMillis()},
-		Change:  "archived IS NOT " + flag,
-	}
+	return s.setThreadArchived(id, false, workerFence{})
 }
 
 // MarkThreadActivity bumps threads.updated_at to `at`. Sidebar sort and

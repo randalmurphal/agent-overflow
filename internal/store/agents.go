@@ -652,7 +652,7 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 	if handOff.MovedRequests, err = moved.RowsAffected(); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: move the requests: %w", action, err)
 	}
-	if handOff.Old, _, err = applyThreadRowWriteTx(tx, threadArchivedWrite(oldThreadID, true)); err != nil {
+	if handOff.Old, _, err = setThreadArchivedTx(tx, oldThreadID, true, workerFence{}); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: archive the old thread: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {

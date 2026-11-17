@@ -195,9 +195,13 @@ an atomic persistence decision; they must not become a business-logic layer.
   ignore it. Claim, release
   and commit each change one delete's family in one transaction, and a
   worker's claim takes its owner, or the link a paired computer's owner
-  reaches it by, as its fence (`deleteFence`); keep that fence a parameter,
+  reaches it by, as its fence (`workerFence`); keep that fence a parameter,
   not a read of this computer's state. The commit owes the paired computers
   its threads spawned on in the same transaction (`thread_owner_ops.go`).
+- `threads.archived` has one writer, `setThreadArchivedTx`
+  (`thread_archive.go`): it marks the archive unfinished and an unarchive
+  withdraws what the archive owed, in the flip's transaction. A new path
+  that archives or reopens a thread calls it with its fence.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by
