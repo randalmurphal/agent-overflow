@@ -296,6 +296,9 @@ type harnessTiming struct {
 	// WakeFloor is the shortest interval a loop or watch may register
 	// (app.IsolationConfig.AgentWakeFloor).
 	WakeFloor time.Duration
+	// WatchFailureWindow is how long a watch keeps failing before the person
+	// is told (app.IsolationConfig.AgentWatchFailureWindow).
+	WatchFailureWindow time.Duration
 	// RemoteWatchPoll is how often the remote-job watcher asks the
 	// destination about a running job (app.IsolationConfig.RemoteWatchPoll).
 	RemoteWatchPoll time.Duration
@@ -318,25 +321,26 @@ type harnessTiming struct {
 func parseHarnessTiming(value string) (harnessTiming, error) {
 	var timing harnessTiming
 	fields := map[string]*time.Duration{
-		"pairing-probe":     &timing.PairingProbe,
-		"watermark":         &timing.Watermark,
-		"thread-poll":       &timing.ThreadPoll,
-		"transfer-retry":    &timing.TransferRetry,
-		"pr-update":         &timing.PRUpdate,
-		"pr-update-retry":   &timing.PRUpdateRetry,
-		"pr-ci-live":        &timing.PRCILive,
-		"pr-ci-follow":      &timing.PRCIFollow,
-		"pr-ci-log-wait":    &timing.PRCILogWait,
-		"merged-pr-poll":    &timing.MergedPRPoll,
-		"pr-lookup-retry":   &timing.PRLookupRetry,
-		"idle-reap":         &timing.IdleReap,
-		"idle-reap-sweep":   &timing.IdleReapSweep,
-		"wakeup-grace":      &timing.WakeupGrace,
-		"wake-floor":        &timing.WakeFloor,
-		"remote-watch-poll": &timing.RemoteWatchPoll,
-		"drain-stall":       &timing.DrainStall,
-		"usage-probe-gap":   &timing.UsageProbeGap,
-		"prompt-lease":      &timing.PromptLease,
+		"pairing-probe":        &timing.PairingProbe,
+		"watermark":            &timing.Watermark,
+		"thread-poll":          &timing.ThreadPoll,
+		"transfer-retry":       &timing.TransferRetry,
+		"pr-update":            &timing.PRUpdate,
+		"pr-update-retry":      &timing.PRUpdateRetry,
+		"pr-ci-live":           &timing.PRCILive,
+		"pr-ci-follow":         &timing.PRCIFollow,
+		"pr-ci-log-wait":       &timing.PRCILogWait,
+		"merged-pr-poll":       &timing.MergedPRPoll,
+		"pr-lookup-retry":      &timing.PRLookupRetry,
+		"idle-reap":            &timing.IdleReap,
+		"idle-reap-sweep":      &timing.IdleReapSweep,
+		"wakeup-grace":         &timing.WakeupGrace,
+		"wake-floor":           &timing.WakeFloor,
+		"watch-failure-window": &timing.WatchFailureWindow,
+		"remote-watch-poll":    &timing.RemoteWatchPoll,
+		"drain-stall":          &timing.DrainStall,
+		"usage-probe-gap":      &timing.UsageProbeGap,
+		"prompt-lease":         &timing.PromptLease,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -496,6 +500,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		IdleReapInterval:        opts.Timing.IdleReapSweep,
 		WakeupReapGrace:         opts.Timing.WakeupGrace,
 		AgentWakeFloor:          opts.Timing.WakeFloor,
+		AgentWatchFailureWindow: opts.Timing.WatchFailureWindow,
 		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,

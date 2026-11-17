@@ -173,6 +173,7 @@ worker's queue.
 
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
+a watch's failure episode and its notice in `app_agent_watch_failure.go`,
 rendering and queueing in `app_agent_wake_delivery.go`, assistant records,
 creation and handoff in `app_standing_agents.go`, and the background tray's reads, Wake now and
 Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or

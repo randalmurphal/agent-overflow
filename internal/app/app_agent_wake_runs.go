@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appimage"
+	"agent-overflow/internal/notify"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -137,8 +138,13 @@ func (a *App) fireDueAgentWakes(now time.Time) {
 // `cancelled-by-quit` and runs again now, an interval row whose fire came due
 // while the app was closed fires once with how many it missed, and every
 // long-running watch starts from scratch. The rows of paused assistants wait
-// for assistants to be turned on (resumeAssistants).
+// for assistants to be turned on (resumeAssistants). A watch whose failure
+// notice a previous process raised resumes its episode first, so its next
+// clean run withdraws the notice.
 func (a *App) recoverAgentWakesAtBoot() {
+	if err := a.loadAgentWatchFailures(); err != nil {
+		logThreadRequestSweep("read the watches whose failure was raised", err)
+	}
 	a.agentWakes.lifecycle.Lock()
 	rows, err := a.store.ListLiveAgentWakes()
 	if err != nil {
@@ -332,9 +338,18 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			return
 		}
 		a.noteAgentWakeStderr(run, row, result.stderr)
+		failure, failed := result.failure(agentWatchTimeout(row))
+		if !failed {
+			a.endAgentWatchFailure(row.ID)
+		}
 		if outcome, wakes := result.outcome(agentWatchTimeout(row)); !wakes {
 			a.retryHeldAgentWake(ctx, row)
-			a.finishAgentWakeFire(run, row, outcome, "", fire.missed, store.AgentWakeNoWake)
+			a.retireAgentWakeRun(run, row, func() {
+				a.writeAgentWakeFinish(row, outcome, "", fire.missed, store.AgentWakeNoWake)
+				if failed {
+					a.noteAgentWatchFailed(row, failure, time.Now())
+				}
+			})
 			return
 		}
 		current = a.currentAgentWake(row)
@@ -388,15 +403,18 @@ func (a *App) settleAgentWakeDelivery(run *agentWakeRun, row store.AgentWake, fi
 func (a *App) finishAgentWakeFire(
 	run *agentWakeRun, row store.AgentWake, outcome, output string, missed int64, carry store.AgentWakeCarry,
 ) {
-	a.retireAgentWakeRun(run, row, func() {
-		if finished, applied, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
-			logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
-		} else if applied {
-			a.emitAgentWakeRow(row.ThreadID, finished)
-		} else {
-			a.emitAgentWakeChanged(row.ThreadID, row.ID)
-		}
-	})
+	a.retireAgentWakeRun(run, row, func() { a.writeAgentWakeFinish(row, outcome, output, missed, carry) })
+}
+
+// writeAgentWakeFinish is a finish's write, run inside retireAgentWakeRun.
+func (a *App) writeAgentWakeFinish(row store.AgentWake, outcome, output string, missed int64, carry store.AgentWakeCarry) {
+	if finished, applied, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
+		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
+	} else if applied {
+		a.emitAgentWakeRow(row.ThreadID, finished)
+	} else {
+		a.emitAgentWakeChanged(row.ThreadID, row.ID)
+	}
 }
 
 // retireAgentWakeRun ends an interval run and publishes the row it leaves
@@ -436,6 +454,25 @@ type agentWatchResult struct {
 	stderr   cappedOutput
 	err      error
 	timedOut bool
+	// notStarted says err kept the process from starting at all.
+	notStarted bool
+}
+
+// failure is how a run that had timeout to finish failed, for the watch's
+// failure episode; false for a clean exit, with or without output.
+func (r agentWatchResult) failure(timeout time.Duration) (notify.WatchFailure, bool) {
+	var exit *exec.ExitError
+	switch {
+	case r.notStarted:
+		return notify.WatchFailure{Cause: notify.WatchNotStarted}, true
+	case r.timedOut:
+		return notify.WatchFailure{Cause: notify.WatchTimedOut, Timeout: timeout}, true
+	case errors.As(r.err, &exit):
+		return notify.WatchFailure{Cause: notify.WatchExitStatus, ExitCode: exit.ExitCode()}, true
+	case r.err != nil:
+		return notify.WatchFailure{Cause: notify.WatchErrored}, true
+	}
+	return notify.WatchFailure{}, false
 }
 
 // outcome is the row's outcome for a run that had timeout to finish, and
@@ -477,7 +514,7 @@ func stderrSummary(stderr cappedOutput) string {
 func (a *App) runAgentWatchScript(ctx context.Context, run *agentWakeRun, row store.AgentWake) agentWatchResult {
 	command, err := a.agentWatchCommand(row)
 	if err != nil {
-		return agentWatchResult{err: err}
+		return agentWatchResult{err: err, notStarted: true}
 	}
 	run.runIn(command.dir)
 	defer run.runIn("")
@@ -487,7 +524,11 @@ func (a *App) runAgentWatchScript(ctx context.Context, run *agentWakeRun, row st
 	stderr := newTailOutput(agentWakeStderrCap)
 	// In-memory writers never block, so the group's drain ends as soon as the
 	// script and anything it left behind have closed the pipes.
-	outcome, err := procutil.RunGroup(runCtx, a.groupReaper(agentWatchOwner(row)), a.agentWatchGroup(row, command, stdout, stderr))
+	group, err := procutil.StartGroup(runCtx, a.groupReaper(agentWatchOwner(row)), a.agentWatchGroup(row, command, stdout, stderr))
+	if err != nil {
+		return agentWatchResult{err: err, notStarted: true}
+	}
+	outcome, err := group.Wait()
 	if err == nil {
 		err = outcome.OutputErr()
 	}
@@ -593,10 +634,17 @@ func (a *App) superviseAgentWatch(ctx context.Context, run *agentWakeRun, wakeID
 		}
 		a.emitAgentWakeChanged(row.ThreadID, row.ID)
 		startedAt := time.Now()
-		outcome := a.runAgentWatchProcess(ctx, run, row)
+		outcome, failure := a.runAgentWatchProcess(ctx, run, row)
 		if ctx.Err() != nil {
 			return
 		}
+		// Every end of the process is a failed attempt: it is meant to keep
+		// running. A stop takes the run out under the lifecycle lock first.
+		a.agentWakes.lifecycle.Lock()
+		if !run.wasStopped() {
+			a.noteAgentWatchFailed(row, failure, time.Now())
+		}
+		a.agentWakes.lifecycle.Unlock()
 		if time.Since(startedAt) >= agentWakeHealthyRun {
 			backoff = agentWakeRestartBase
 		}
@@ -672,13 +720,15 @@ type agentWatchLine struct {
 }
 
 // runAgentWatchProcess runs one long-running watch process to its exit and
-// returns its outcome. Each stdout line is an event; lines that arrive within
+// returns its outcome and how it failed. Each stdout line is an event, and
+// the first one ends the watch's failure episode; lines that arrive within
 // agentWakeBatchWindow of the first are one wake. A batch whose previous wake
 // is still queued keeps collecting until it can be queued.
-func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row store.AgentWake) string {
+func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row store.AgentWake) (string, notify.WatchFailure) {
+	notStarted := notify.WatchFailure{Cause: notify.WatchNotStarted}
 	command, err := a.agentWatchCommand(row)
 	if err != nil {
-		return "error: " + err.Error()
+		return "error: " + err.Error(), notStarted
 	}
 	run.runIn(command.dir)
 	defer run.runIn("")
@@ -691,7 +741,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 	group, err := procutil.StartGroup(ctx, a.groupReaper(agentWatchOwner(row)), a.agentWatchGroup(row, command, stdoutSink, stderr))
 	if err != nil {
 		_ = stdoutSink.Close()
-		return "error: could not start: " + err.Error()
+		return "error: could not start: " + err.Error(), notStarted
 	}
 	type groupEnd struct {
 		outcome procutil.GroupOutcome
@@ -708,6 +758,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 
 	batch := newHeadOutput(agentWakeOutputCap)
 	var flush <-chan time.Time
+	printed := false
 	render := func(current store.AgentWake, stderrPart cappedOutput) (usermessage.AgentMessage, error) {
 		return renderAgentWatchWake(current, agentWakeFire{}, batch.peek(), stderrPart)
 	}
@@ -760,7 +811,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 				}()
 			}
 			<-ended
-			return ""
+			return "", notify.WatchFailure{}
 		case line, open := <-lines:
 			if !open {
 				lines = nil
@@ -768,6 +819,10 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 					flush = time.After(0)
 				}
 				continue
+			}
+			if !printed {
+				printed = true
+				a.endAgentWatchFailure(row.ID)
 			}
 			batch.writeLine(line)
 			if flush == nil {
@@ -791,11 +846,12 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit):
-		return fmt.Sprintf("error: exit status %d%s", exit.ExitCode(), tail)
+		return fmt.Sprintf("error: exit status %d%s", exit.ExitCode(), tail),
+			notify.WatchFailure{Cause: notify.WatchExitStatus, ExitCode: exit.ExitCode()}
 	case err != nil:
-		return "error: " + err.Error() + tail
+		return "error: " + err.Error() + tail, notify.WatchFailure{Cause: notify.WatchErrored}
 	}
-	return "exited" + tail
+	return "exited" + tail, notify.WatchFailure{Cause: notify.WatchExited}
 }
 
 // readAgentWatchLines splits a watch's stdout into lines, each clipped to the

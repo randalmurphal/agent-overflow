@@ -850,7 +850,9 @@ credentials. Refused with the reason on a thread that is not an
 assistant's current thread. An interval run longer than `timeout_seconds` (default 600, at
 most 3600) is stopped with its process group. A non-zero exit or a
 timeout wakes nothing; it is the row's `last_outcome`, with the last
-line of stderr. The interval bounds and the count limit are
+line of stderr. A watch that keeps failing notifies the person once and
+still wakes nothing
+([standing agents](standing-agents.md#wake-supervisor)). The interval bounds and the count limit are
 `thread_loop`'s.
 
 Loops and watches are owned by the wake supervisor: delivery, the

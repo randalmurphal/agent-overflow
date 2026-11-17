@@ -59,6 +59,8 @@ type agentWakeState struct {
 	// (noteAgentTurnIntake). It holds the turns from the last one that
 	// ended on.
 	intake map[string]map[int]map[string]bool
+	// failures is each watch's failure episode (app_agent_watch_failure.go).
+	failures agentWatchFailures
 }
 
 // agentWakeRun is one run in flight.
@@ -220,6 +222,7 @@ func (a *App) cancelAgentWake(threadID, label, kind string) (store.AgentWake, bo
 	if err != nil || !cancelled {
 		return store.AgentWake{}, false, err
 	}
+	a.endAgentWatchFailure(row.ID)
 	if err := a.withdrawCancelledAgentWakes(row.ThreadID, row.ID); err != nil {
 		log.Printf("agent wakes: %v", err)
 		return store.AgentWake{}, false, fmt.Errorf("the %s %q is cancelled, but its wake already queued could not be taken back and may still arrive", row.Kind, row.Label)
@@ -266,6 +269,8 @@ func (a *App) registerAgentWake(row store.AgentWake, session string) (store.Agen
 	a.emitAgentWakeChanged(stored.ThreadID, stored.ID)
 	if stored.Kind == store.AgentWakeWatch {
 		a.stopLongRunningAgentWatch(stored.ID)
+		// A replaced watch's failures were the old command's.
+		a.endAgentWatchFailure(stored.ID)
 		if stored.LongRunning {
 			a.startAgentWatchProcess(stored)
 		}
@@ -301,6 +306,9 @@ func (a *App) cancelAgentWakesForThread(threadID, outcome string) error {
 	}
 	a.stopAgentWakeRunsForThread(threadID)
 	a.agentWakes.lifecycle.Unlock()
+	for _, id := range ids {
+		a.endAgentWatchFailure(id)
+	}
 	if err != nil {
 		return fmt.Errorf("cancel the loops and watches of %s: %w", threadID, err)
 	}

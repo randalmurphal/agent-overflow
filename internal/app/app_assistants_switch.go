@@ -361,6 +361,8 @@ func (a *App) pauseAgentWakeRuns(threadID string) error {
 	}
 	var errs []error
 	for _, row := range rows {
+		// A paused watch is not failing: its episode ends with the pause.
+		a.endAgentWatchFailure(row.ID)
 		if row.State != store.AgentWakeRunning {
 			continue
 		}

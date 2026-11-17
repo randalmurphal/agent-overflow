@@ -89,6 +89,10 @@ type IsolationConfig struct {
 	// register (agentWakeFloor), so a test can watch fires without waiting
 	// out a minute each. Zero keeps the product floor.
 	AgentWakeFloor time.Duration
+	// AgentWatchFailureWindow replaces how long a watch keeps failing before
+	// the person is told (agentWatchFailureWindow). Zero keeps the product
+	// window.
+	AgentWatchFailureWindow time.Duration
 	// RemoteWatchPoll replaces how often the remote-job watcher asks the
 	// destination about a job still running, so a test can act between two
 	// of its checks. Zero keeps the product cadence.
@@ -147,6 +151,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 		wakeupGrace: config.WakeupReapGrace,
 	}
 	a.agentWakes.floorOverride = config.AgentWakeFloor
+	a.agentWakes.failures.windowOverride = config.AgentWatchFailureWindow
 	a.remoteWatchPoll = config.RemoteWatchPoll
 	a.providerEvents.drainStall = config.ProviderEventDrainStall
 	a.mergedPRs.interval = config.MergedPRPollInterval
