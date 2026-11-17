@@ -67,12 +67,8 @@ func writeOwnDevice(tx *sql.Tx, m owndevices.Member) error {
 
 // MergeOwnDevices commits membership and revokes obsolete group sessions together.
 // Returned IDs must be invalidated in the identity cache after the transaction.
-// In the same transaction it releases the spawn links owned by the devices
-// of the sessions opened for the members it removes and, when it withdraws
-// this computer from the group, of every personal session it revokes, once
-// no live session of the device remains: a worker is owned only while its
-// owner's device can reach this computer. released names the threads they
-// named (spawn_links.go).
+// The revocation releases the spawn links of the devices it leaves with no
+// unrevoked session here, and released names their threads (session_end.go).
 func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID string) (changed bool, ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
@@ -117,79 +113,14 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 	if e != nil {
 		return false, nil, nil, e
 	}
-	rows, e := tx.Query(`UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation) RETURNING id`, at, hostingRemoved)
+	ids, released, e = endSessionsTx(tx, revokeSessions, at, nil, `id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation)`, hostingRemoved)
 	if e != nil {
-		return false, nil, nil, e
-	}
-	ids = []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return false, nil, nil, e
-		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return false, nil, nil, e
-	}
-	withdrawn := []string{}
-	if hostingRemoved {
-		withdrawn = ids
-	}
-	if released, e = releaseUnreachableOwnersLinksTx(tx, newlyRemovedKeys(old, next), withdrawn); e != nil {
 		return false, nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
 		return false, nil, nil, e
 	}
 	return true, ids, released, nil
-}
-
-// unreachableOwnerSQL selects, over thread_request_receipts, the links owned
-// by the devices of the sessions opened for the members whose keys the first
-// argument lists (own_device_sessions) or named by the second, once no live
-// session of the device remains here.
-const unreachableOwnerSQL = `owner_device_id IN (SELECT s.device_id FROM sessions s
-	  WHERE s.id IN (SELECT session_id FROM own_device_sessions
-	                  WHERE key_thumbprint IN (SELECT value FROM json_each(?)))
-	     OR s.id IN (SELECT value FROM json_each(?)))
-	AND NOT EXISTS (SELECT 1 FROM sessions live
-	  WHERE live.device_id = thread_request_receipts.owner_device_id AND live.revoked_at IS NULL)`
-
-// releaseUnreachableOwnersLinksTx releases, after the merge's revocations,
-// the links of the devices of the removed members' sessions and of the
-// withdrawn sessions that no live session still pairs with this computer.
-func releaseUnreachableOwnersLinksTx(tx *sql.Tx, removedKeys, withdrawn []string) ([]string, error) {
-	if len(removedKeys) == 0 && len(withdrawn) == 0 {
-		return nil, nil
-	}
-	keys, err := json.Marshal(removedKeys)
-	if err != nil {
-		return nil, err
-	}
-	sessions, err := json.Marshal(withdrawn)
-	if err != nil {
-		return nil, err
-	}
-	return releaseSpawnLinksTx(tx, unreachableOwnerSQL, string(keys), string(sessions))
-}
-
-// newlyRemovedKeys lists the members next removes and old did not.
-func newlyRemovedKeys(old, next []owndevices.Member) []string {
-	wasRemoved := make(map[string]bool, len(old))
-	for _, m := range old {
-		wasRemoved[m.KeyThumbprint] = m.Removed
-	}
-	removed := []string{}
-	for _, m := range next {
-		if m.Removed && !wasRemoved[m.KeyThumbprint] {
-			removed = append(removed, m.KeyThumbprint)
-		}
-	}
-	return removed
 }
 
 // RegisterOwnDevice changes metadata only, never membership or removal state.
@@ -317,38 +248,26 @@ func (s *Store) PairingLinkByTokenHash(hash []byte) (PairingLink, error) {
 
 // RetireOwnIntroductions replaces only enrollments whose first renewal was never
 // acknowledged. A completed independent session is never revoked by a retry.
-func (s *Store) RetireOwnIntroductions(key string, at int64) ([]string, error) {
+// The revocation releases the spawn links of the devices it leaves with no
+// unrevoked session here, and released names their threads (session_end.go).
+func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []string, e error) {
 	tx, e := s.db.Begin()
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	defer tx.Rollback()
 	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NULL AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, key)
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
-	rows, e := tx.Query(`UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND id IN(SELECT session_id FROM pairing_links WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NOT NULL) RETURNING id`, at, key)
+	ids, released, e = endSessionsTx(tx, revokeSessions, at, nil, `id IN(SELECT session_id FROM pairing_links WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NOT NULL)`, key)
 	if e != nil {
-		return nil, e
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
-		return nil, e
+		return nil, nil, e
 	}
-	return ids, nil
+	return ids, released, nil
 }
 
 // PrepareOwnPairing freezes the generation authorized by this human approval.

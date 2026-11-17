@@ -56,7 +56,8 @@ func Bootstrap(st *store.Store, backendID, ownerName string) (*Sessions, Bootstr
 		}
 		result.RecoveryCodes = codes
 	}
-	if err := st.RetirePendingPairings(sessions.Now()); err != nil {
+	// Before anything serves, so a released worker is read from its row.
+	if _, err := st.RetirePendingPairings(sessions.Now()); err != nil {
 		return nil, BootstrapResult{}, fmt.Errorf("identity: retire unfinished pairing: %w", err)
 	}
 	return sessions, result, nil

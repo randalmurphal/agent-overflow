@@ -313,45 +313,15 @@ func TestLeavingThePersonalGroupReleasesTheMembersLinks(t *testing.T) {
 	}
 }
 
-// A merge that moves a member to a new generation revokes its old session
-// while the member and this computer stay in the group: its device keeps
-// its pairing, and its links.
-func TestANewGenerationKeepsTheMembersLinks(t *testing.T) {
-	s, link := approvedOwnPair(t)
-	if e := s.AdmitOwnPairing(link); e != nil {
-		t.Fatal(e)
-	}
-	session, err := s.GetSession(link.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustCreateThread(t, s, "member-worker")
-	acceptLink(t, s, "tok-member", session.DeviceID, "member-worker", 1000)
-	member, err := s.OwnDeviceForSession(link.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	member.Generation++
-	changed, revoked, released, err := s.MergeOwnDevices([]owndevices.Member{member}, 2200, "93fd7522-831e-4401-8aa0-6dca4e65bcb0")
-	if err != nil || !changed || !slices.Equal(revoked, []string{link.SessionID}) {
-		t.Fatalf("a new generation = changed %v revoked %v, %v; want the old session revoked", changed, revoked, err)
-	}
-	if len(released) != 0 {
-		t.Fatalf("a new generation released %v, want none", released)
-	}
-	if got, _ := placementOf(t, s, "member-worker"); got != PlacementOwned {
-		t.Fatalf("a member's worker after a new generation = %s, want owned", got)
-	}
-}
-
 // A merge that revokes a device's personal session releases the device's
 // links only when no live session of the device remains here: a device
 // still paired with this computer outside the group can still reach it.
-// Both the merge that withdraws this computer and the one that removes the
-// member read the sessions left after their own revocation.
+// The merge that withdraws this computer, the one that removes the member
+// and the one that moves it to a new generation all read the sessions left
+// after their own revocation.
 func TestAMergeKeepsTheLinksOfADeviceStillPairedHere(t *testing.T) {
 	const backendID = "93fd7522-831e-4401-8aa0-6dca4e65bcb0"
-	for _, merge := range []string{"leave", "remove"} {
+	for _, merge := range []string{"leave", "remove", "generation"} {
 		for _, ordinary := range []string{"none", "revoked", "live"} {
 			t.Run(merge+"/"+ordinary, func(t *testing.T) {
 				s, link := approvedOwnPair(t)
@@ -368,7 +338,7 @@ func TestAMergeKeepsTheLinksOfADeviceStillPairedHere(t *testing.T) {
 						t.Fatal(err)
 					}
 					if ordinary == "revoked" {
-						if moved, err := s.RevokeSession(extra.ID, 1500); err != nil || !moved {
+						if moved, _, err := s.RevokeSession(extra.ID, 1500); err != nil || !moved {
 							t.Fatalf("revoke the ordinary session: %v, %v", moved, err)
 						}
 					}
@@ -387,7 +357,11 @@ func TestAMergeKeepsTheLinksOfADeviceStillPairedHere(t *testing.T) {
 				} else if in, err = s.OwnDeviceForSession(link.SessionID); err != nil {
 					t.Fatal(err)
 				}
-				in.Removed = true
+				if merge == "generation" {
+					in.Generation++
+				} else {
+					in.Removed = true
+				}
 				changed, revoked, released, err := s.MergeOwnDevices([]owndevices.Member{in}, 2200, backendID)
 				if err != nil || !changed || !slices.Equal(revoked, []string{link.SessionID}) {
 					t.Fatalf("merge = changed %v revoked %v, %v; want the personal session revoked", changed, revoked, err)
