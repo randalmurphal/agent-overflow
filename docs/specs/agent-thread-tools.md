@@ -1436,8 +1436,9 @@ What settles a request, in order:
    interrupt names who is stopping the turn, recorded before the
    interrupt is sent; the stopped thread's timeline row names the same
    stopper. The user's own Stop of the thread settles `interrupted`
-   with what the turn said by then as its `final` answer; its wake says
-   the user stopped the turn.
+   with its cause and what the turn said by then as its `final` answer,
+   which is all `thread_status` reports as its text; its wake says the
+   user stopped the turn.
 
 An interruption's cause is data, recorded where its settlement decides
 it: a code from one closed vocabulary (`threadtools.Cause`) and the one
@@ -1448,11 +1449,14 @@ text is then what the turn had written, if anything, and a paired
 computer reports it beside the answer (`cause`, with what the turn
 wrote). Every reader renders words from the cause: `thread_status`, a
 written answer file, the wake and the facts its row shows
-(`Stopped by: ...`); none reads a cause out of text, so a sentence
-reworded on one computer leaves the other's facts as they were. An
+(`Stopped by: ...`); none reads a cause out of text or out of the
+answer's kind, so a sentence reworded on one computer leaves the
+other's facts as they were. A wake, single or a digest, says the
+cause's reason whole and clips only the answer text to the preview. An
 interruption recorded with no cause, by a build before causes or a
 computer that reports none or one this computer does not know, is its
-text: shown whole as the answer, naming no stopper. The answer a
+text: shown whole as the answer, naming no stopper, whatever its
+answer's kind. The answer a
 paired computer reports beside the cause is the same in its own words,
 which is what an earlier build there reads.
 
