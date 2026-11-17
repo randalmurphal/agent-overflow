@@ -685,7 +685,7 @@ func (s *Store) UpdateWorkItemOriginThread(id, threadID string) (WorkItemOriginC
 	if err != nil {
 		return WorkItemOriginChange{}, fmt.Errorf("%s: begin: %w", label, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var previous string
 	if err := tx.QueryRow(`SELECT origin_thread_id FROM work_items WHERE id = ?`, id).Scan(&previous); err != nil {
 		return WorkItemOriginChange{}, fmt.Errorf("%s: %w", label, err)

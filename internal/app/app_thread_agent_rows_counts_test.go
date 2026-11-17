@@ -92,10 +92,7 @@ func TestADelegatingWorkerRowCountsItsOwnSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var turn []string
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		turn = append(turn, line)
-	}
+	turn := strings.Split(strings.TrimSpace(string(data)), "\n")
 	installMockClaudeTurns(t, f.app, [][]string{turn})
 	ack := f.spawnWorker(t, "work out 17*23 with a helper")
 	var row ThreadAgentRow
