@@ -154,8 +154,11 @@ func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result 
 // it is what turns an older destination into a clear refusal instead of a
 // method error.
 func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
 		if errors.Is(err, deviceclient.ErrNoSession) {
 			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
 		}

@@ -149,7 +149,7 @@ func TestAgentCallsInABurstShareOneConnectionAndTicket(t *testing.T) {
 func TestAConnectionTheFarSideClosedIsNotReused(t *testing.T) {
 	m, p := newThreadPeerManager(t)
 	first := query(t, m, p.id)
-	held, err := m.carrier(p.id)
+	held, err := m.carrier(context.Background(), p.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestACancelledCallEndsOnlyItsOwnConnection(t *testing.T) {
 	hung := make(chan error, 1)
 	go func() { hung <- m.CallThreadPeer(ctx, p.id, "ThreadToolCall", nil) }()
 	waitFor(t, "the hung call to take the idle connection", func() bool {
-		held, err := m.carrier(p.id)
+		held, err := m.carrier(context.Background(), p.id)
 		if err != nil {
 			return false
 		}
@@ -202,7 +202,7 @@ func TestACancelledCallEndsOnlyItsOwnConnection(t *testing.T) {
 func TestIdleConnectionsEndAfterTheirWindowAndWithTheCarrier(t *testing.T) {
 	m, p := newThreadPeerManager(t)
 	expired := query(t, m, p.id)
-	held, err := m.carrier(p.id)
+	held, err := m.carrier(context.Background(), p.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestAConnectionWhosePathDiedSilentlyIsReplaced(t *testing.T) {
 	// The ticket mint's idle HTTP connections died with the path too, inside
 	// deviceclient's idle window (pinnedIdleConnTimeout). They are dropped
 	// here to leave only the pooled socket under test.
-	held, err := m.carrier(p.id)
+	held, err := m.carrier(context.Background(), p.id)
 	if err != nil {
 		t.Fatal(err)
 	}

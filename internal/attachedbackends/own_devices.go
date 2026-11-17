@@ -40,7 +40,7 @@ func (m *Manager) CallOwnDevice(ctx context.Context, id, method string, result a
 	default:
 		return errors.New("this method is not part of own-device enrollment")
 	}
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package attachedbackends
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -111,7 +112,7 @@ func TestRemoveForgetsTheSessionAndKeepsTheDeviceKey(t *testing.T) {
 		BackendID: "aaa", Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1",
 	})
 	// Build the carrier first, so the removal has a cached one to drop.
-	if manager.Carrier("aaa") == nil {
+	if manager.Carrier(context.Background(), "aaa") == nil {
 		t.Fatal("no carrier for a stored profile")
 	}
 	old := manager.carriers["aaa"].client
@@ -121,7 +122,7 @@ func TestRemoveForgetsTheSessionAndKeepsTheDeviceKey(t *testing.T) {
 	if profiles := manager.Attached(); len(profiles) != 0 {
 		t.Errorf("attached after removal = %+v, want none", profiles)
 	}
-	if manager.Carrier("aaa") != nil {
+	if manager.Carrier(context.Background(), "aaa") != nil {
 		t.Error("a removed backend still has a carrier")
 	}
 	if old.Session().Credential != "" {
@@ -144,7 +145,7 @@ func TestRemoveForgetsTheSessionAndKeepsTheDeviceKey(t *testing.T) {
 // not nil, and the transport registers its refusal on exactly that test.
 func TestCarrierIsNilForAnUnknownBackend(t *testing.T) {
 	manager, _ := newManager(t)
-	if carrier := manager.Carrier("never-paired"); carrier != nil {
+	if carrier := manager.Carrier(context.Background(), "never-paired"); carrier != nil {
 		t.Fatalf("carrier for an unknown backend = %#v, want an untyped nil", carrier)
 	}
 }
