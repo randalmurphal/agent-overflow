@@ -1841,8 +1841,10 @@ export class DeleteDependents {
     /**
      * RemoteWorkers is whether any of them spawned a thread on another
      * computer, which the delete deletes there too: a worker there that
-     * still belongs to its spawner. Not counted, because only that computer
-     * knows which do.
+     * still belongs to its spawner. A worker that computer last said has a
+     * sidebar row there stays and is left out (peerWorkerStandalone); one
+     * whose placement is not known here is in. Not counted, because only
+     * that computer knows which belong.
      */
     "remoteWorkers": boolean;
 
@@ -8379,8 +8381,8 @@ export class ThreadAgentRows {
     /**
      * Open is whether the listed thread is not at rest or has open work at
      * any depth below it, answered by agent_rows whatever rows it has room
-     * for (answerThreadAgentRows). Nil from a computer that predates it,
-     * whose rows say what they can (peerListingOpen).
+     * for (answerThreadAgentRows); nil only in a listing of this computer's
+     * own rows, which no agent_rows answer carries.
      */
     "open"?: boolean | null;
 
