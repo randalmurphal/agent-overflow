@@ -9,22 +9,60 @@ import (
 	"agent-overflow/internal/secret"
 )
 
-// scrubRef is what a Response, a *StatusError and an *AuthError keep for
-// Scrub: the client and the credential the request carried. Both are
-// pointers, which every fmt path prints as an address, and the secret
-// stays in the Credential's secret.Bytes: none of them holds a copy.
+// scrubRef is what a Response, a *StatusError and an *AuthError keep of
+// the credential their request carried, for Scrub and CredentialMark: the
+// client, the credential and the generation of the read that stored it.
+// The client and credential are pointers, which every fmt path prints as
+// an address, and the secret stays in the Credential's secret.Bytes: none
+// of them holds a copy.
 type scrubRef struct {
 	c    *Client
 	cred *Credential
+	read uint64
 }
 
-// scrubRef is what an answer to a hop that sent sent keeps for Scrub; nil
-// when the request carried no credential.
+// scrubRef is what an answer to a hop that sent sent keeps; nil when the
+// request carried no credential.
 func (c *Client) scrubRef(sent sentWith) *scrubRef {
 	if !sent.carried {
 		return nil
 	}
-	return &scrubRef{c: c, cred: sent.cred}
+	return &scrubRef{c: c, cred: sent.cred, read: sent.read}
+}
+
+// mark is the CredentialMark of every type that keeps r; zero when the
+// request carried no credential.
+func (r *scrubRef) mark() CredentialMark {
+	if r == nil {
+		return CredentialMark{}
+	}
+	return CredentialMark{client: r.c.tag, read: r.read}
+}
+
+// CredentialMark tells which read of the client's credential source this
+// answer's request carried; zero when it carried none. Compare two marks
+// to learn whether two answers were drawn under the same credential.
+func (r *Response) CredentialMark() CredentialMark {
+	if r == nil {
+		return CredentialMark{}
+	}
+	return r.scrub.mark()
+}
+
+// CredentialMark is Response.CredentialMark for the answer e came from.
+func (e *StatusError) CredentialMark() CredentialMark {
+	if e == nil {
+		return CredentialMark{}
+	}
+	return e.scrub.mark()
+}
+
+// CredentialMark is Response.CredentialMark for the answer e came from.
+func (e *AuthError) CredentialMark() CredentialMark {
+	if e == nil {
+		return CredentialMark{}
+	}
+	return e.scrub.mark()
 }
 
 // text is every Scrub method: text with the credential replaced, the

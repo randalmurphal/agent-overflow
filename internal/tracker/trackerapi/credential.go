@@ -142,6 +142,22 @@ func (cr *Credential) equal(other *Credential) bool {
 		subtle.ConstantTimeCompare(cr.secret.Reveal(), other.secret.Reveal()) == 1
 }
 
+// CredentialMark tells which read of a client's credential source a
+// request carried. Two marks are equal exactly when their requests
+// carried the credential stored by the same read on the same client; a
+// re-read that returns an equal credential keeps the one held, and its
+// mark. The zero mark is a request that carried no credential (off the
+// base origin) and equals no other. A mark holds a generation number and a
+// per-client tag, never secret bytes.
+type CredentialMark struct {
+	client *clientTag
+	read   uint64
+}
+
+// clientTag identifies a client in its marks. It has a size, so two tags
+// never share an address.
+type clientTag struct{ _ byte }
+
 // CredentialSource reads a client's credential. Credential returns a new
 // Credential on each call, which the client owns from then on, and
 // returns when ctx ends. The client calls it from one goroutine at a time.
@@ -261,6 +277,7 @@ func (c *Client) storeCredential(ctx context.Context, epoch uint64) error {
 	default:
 		c.cred.Zero()
 		c.cred = cred
+		c.credRead = c.credGen + 1 // the generation this read completes
 	}
 	c.credGen++
 	return nil

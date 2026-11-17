@@ -31,12 +31,14 @@ const (
 )
 
 // sentWith is what a hop put on the wire: whether it went to the base
-// origin and, when it did, the credential, its generation and whether
-// the request carried it (a zeroed credential sets no header).
+// origin and, when it did, the credential, the client's generation, the
+// generation of the read that stored the credential, and whether the
+// request carried it (a zeroed credential sets no header).
 type sentWith struct {
 	onBase  bool
 	cred    *Credential
 	gen     uint64
+	read    uint64
 	carried bool
 }
 
@@ -132,7 +134,7 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 	var with sentWith
 	if originOf(target) == c.origin {
 		c.credMu.RLock()
-		with = sentWith{onBase: true, cred: c.cred, gen: c.credGen, carried: c.cred.authorize(req.Header)}
+		with = sentWith{onBase: true, cred: c.cred, gen: c.credGen, read: c.credRead, carried: c.cred.authorize(req.Header)}
 		c.credMu.RUnlock()
 	}
 	resp, err := c.transport.RoundTrip(req)

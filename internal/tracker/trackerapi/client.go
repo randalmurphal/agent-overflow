@@ -127,9 +127,15 @@ type Client struct {
 	// credGen counts completed reads. A request records the generation it
 	// sent, so a 401 reads again only when no read completed since.
 	credGen uint64
+	// credRead is the generation of the read that stored cred. A re-read
+	// that returns an equal credential keeps cred and its credRead.
+	credRead uint64
 	// epoch changes with ForgetCredential and Close; a read started under
 	// an older epoch stores nothing.
 	epoch uint64
+
+	// tag tells this client's credential marks from another client's.
+	tag *clientTag
 }
 
 // New builds a Client. Nothing is read or dialed until the first call.
@@ -173,6 +179,7 @@ func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
 		transport:   transport,
 		closeIdle:   func() {},
 		onAnswer:    opts.OnAnswer,
+		tag:         &clientTag{},
 		now:         time.Now,
 		sleep:       sleep,
 	}

@@ -71,6 +71,8 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 func (c *Client) Location(ctx context.Context, r Request) (string, error) // a redirect's target, not followed
 func (c *Client) ForgetCredential()
 func (c *Client) Close()
+func (r *Response) Scrub(text string) string       // also on *StatusError and *AuthError
+func (r *Response) CredentialMark() CredentialMark // also on *StatusError and *AuthError
 
 type Request struct {
     Method       string
@@ -93,7 +95,12 @@ type Request struct {
   formatter prints it redacted. The client reads its `CredentialSource` at
   first use, keeps the credential, reads again after one 401 and zeroes the
   bytes it replaces. `ForgetCredential` drops it for a caller that knows
-  the key file changed. `Close` zeroes it.
+  the key file changed. `Close` zeroes it. Equal `CredentialMark` values
+  mean two requests carried the credential from the same read of the
+  source on the same client: a re-read that returns an equal credential
+  keeps its mark, one that replaces it or follows `ForgetCredential` gives
+  a new one, and a request off the base origin has the zero mark. A mark
+  holds no secret.
 - **Where a secret may go.** A credential is sent only to the origin of
   `BaseURL`. A redirect to another origin, and an absolute URL on another
   origin, are requested without it. Answer text in an error
@@ -236,8 +243,10 @@ to read and write each one.
 - **Identity.** Jira answers some paths with a 404 when the credential is
   bad. After a 404 the client asks who it is signed in as, with a check
   that starts after the 404 arrived, and reports a refused credential as
-  `*trackerapi.AuthError`. Concurrent 404s share checks; nothing is reused
-  over time.
+  `*trackerapi.AuthError`. The check vouches for the 404 only when both
+  answers carry the same `CredentialMark`; otherwise the 404 is
+  unconfirmed and the caller runs the call again. Concurrent 404s share
+  checks; nothing is reused over time.
 - **Boards.** Boards of a project, a board's configuration (columns and
   their statuses, the estimation field, the rank field), its sprints, and
   the issues of a board, a backlog and a sprint on the
