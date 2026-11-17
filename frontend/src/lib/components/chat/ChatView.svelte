@@ -5,7 +5,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
-  import { ASSISTANTS_OFF_NOTE, hiddenAssistantThread } from '../../stores/assistants.svelte';
+  import { assistantsOffNote, hiddenAssistantThread, threadComputer } from '../../stores/assistants.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ShellRunCard from '../composer/ShellRunCard.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
@@ -91,10 +91,14 @@
   // ask's copy (Thread.askCopy) takes no message from a person, so it is
   // offered neither, as an agent pane, which passes no actions, is not.
   const askCopy = $derived(Boolean(pane.thread?.askCopy));
-  // An assistant's thread while assistants are off stays readable and
-  // takes nothing: its composer gives way to a line saying why, and its
-  // messages offer no fork, edit or run.
+  // An assistant's thread while its computer has assistants off stays
+  // readable and takes nothing: its composer gives way to a line saying
+  // why, and its messages offer no fork, edit or run. An edit open when
+  // they go off closes, its text kept in the composer's draft.
   const assistantsOff = $derived(pane.thread ? hiddenAssistantThread(pane.thread) : false);
+  $effect(() => {
+    if (assistantsOff && editResend.stage !== null) editResend.closeKeepingDraft();
+  });
   const supportsMessageAnchorActions = $derived(
     !askCopy
       && !assistantsOff
@@ -537,7 +541,7 @@
         {#if assistantsOff}
           <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-4 compact:pb-[max(1rem,env(safe-area-inset-bottom))]">
             <p class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-3 py-2 text-xs text-fg-muted" data-testid="assistants-off-note">
-              {ASSISTANTS_OFF_NOTE}
+              {assistantsOffNote(threadComputer(pane.thread?.id ?? ''))}
             </p>
           </div>
         {/if}

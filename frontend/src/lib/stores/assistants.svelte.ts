@@ -22,13 +22,34 @@ import { userFacingError } from '../utils/userFacingError';
 import { TransportError } from '../transport/wsClient';
 
 /**
- * Whether this window shows assistants: the Assistants setting of the
- * computer it runs on ("Turning assistants off"). Off hides every
- * assistant in this window, on whichever computer it lives; nothing of
- * theirs is deleted, and turning it on shows them again.
+ * Whether a computer's assistants are shown and running: that computer's
+ * own Assistants setting ("Turning assistants off"). Every surface decides
+ * an assistant by the computer it lives on, so a window attached to one
+ * computer with them off and another with them on shows the second one's
+ * and not the first one's. Nothing of theirs is deleted, and turning the
+ * setting on shows them again.
  */
-export function assistantsShown(): boolean {
-  return getSettings().assistantsEnabled;
+export function assistantsOn(backend: BackendKey): boolean {
+  return getSettings(backend).assistantsEnabled;
+}
+
+/** The computer a thread lives on. */
+export function threadComputer(threadId: string): BackendKey {
+  return threadBackend(threadId) ?? HOME_BACKEND;
+}
+
+/**
+ * Which computers this window shows have assistants on, as one value a
+ * list that each computer filters for itself reads to requery when any
+ * of them changes.
+ */
+export function assistantsSignature(): string {
+  return getAttachedBackends().map((entry) => `${entry.id}:${assistantsOn(entry.id) ? 1 : 0}`).join(',');
+}
+
+/** Whether any computer this window shows has its assistants on. */
+export function anyAssistantsOn(): boolean {
+  return getAttachedBackends().some((entry) => assistantsOn(entry.id));
 }
 
 /** Whether a thread lives under an assistant: its current thread, a past thread or a helper. */
@@ -36,13 +57,23 @@ export function livesUnderAssistant(thread: Pick<Thread, 'agentId' | 'pastAgentI
   return Boolean(thread.agentId || thread.pastAgentId || thread.helperOfAgentId);
 }
 
-/** Whether this window hides the thread because assistants are off. */
-export function hiddenAssistantThread(thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'helperOfAgentId'>): boolean {
-  return !assistantsShown() && livesUnderAssistant(thread);
+/** Whether a thread is hidden: it lives under an assistant on a computer with assistants off. */
+export function hiddenAssistantThread(thread: Pick<Thread, 'id' | 'agentId' | 'pastAgentId' | 'helperOfAgentId'>): boolean {
+  return livesUnderAssistant(thread) && !assistantsOn(threadComputer(thread.id));
 }
 
-/** What a pane showing an assistant's thread says while assistants are off. */
-export const ASSISTANTS_OFF_NOTE = 'Assistants are turned off in Settings. Turn them on to continue this thread.';
+/** Why something of a computer's assistants is unavailable while it has them off. */
+export function assistantsOffOn(backend: BackendKey): string {
+  const entry = getAttachedBackends().find((candidate) => candidate.id === backend);
+  return entry && getAttachedBackends().length > 1
+    ? `Assistants are turned off in Settings on ${backendDisplayName(entry)}.`
+    : 'Assistants are turned off in Settings.';
+}
+
+/** What a pane showing an assistant's thread says while its computer has assistants off. */
+export function assistantsOffNote(backend: BackendKey): string {
+  return `${assistantsOffOn(backend)} Turn them on to continue this thread.`;
+}
 
 /**
  * End Session: end the thread's provider process with its background agents

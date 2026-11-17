@@ -545,6 +545,46 @@ describe('<ChatView>', () => {
     });
   });
 
+  // An edit open on an assistant's message when its computer turns
+  // assistants off closes, and so does its kill confirmation: nothing is
+  // reverted or sent, and the edited text waits in the composer's draft for
+  // when they are back. Desktop and compact.
+  for (const compact of [false, true]) {
+    for (const confirming of [false, true]) {
+      it(`closes an open edit${confirming ? ' and its confirmation' : ''} keeping the text when assistants go off${compact ? ' under compact' : ''}`, async () => {
+        setCompactLayoutForTest(compact);
+        try {
+          const thread: Thread = { ...seedThread(), projectId: '', agentId: 'ops', title: 'Ops' };
+          const item = userItem('user:1', 1, 'Update one of the lines', thread.id);
+          const pane = await buildPane(thread, [item]);
+          mockDrafts(new Map([[thread.id, '']]));
+          const saved: string[] = [];
+          setBindingMock('SaveDraft', async (_threadId: string, content: string) => { saved.push(content); });
+          setBindingMock('CountRunningBackgroundTasks', async () => (confirming ? 1 : 0));
+          const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
+
+          const view = render(ChatView, { props: { pane } });
+          const editor = await openMessageEditor(view);
+          await typeInEditor(editor, 'Update TWO of the lines');
+          if (confirming) {
+            await fireEvent.click(view.getByTestId('user-message-edit-send'));
+            await view.findByText('Revert to this message?');
+          }
+
+          applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+          await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+          await waitFor(() => expect(view.queryByText('Revert to this message?')).toBeNull());
+          await waitFor(() => expect(view.getAllByLabelText('Message Input')[0]).toHaveValue('Update TWO of the lines'));
+          await waitFor(() => expect(saved.at(-1)).toBe('Update TWO of the lines'));
+          expect(view.getByTestId('assistants-off-note')).toBeInTheDocument();
+          expect(resend).not.toHaveBeenCalled();
+        } finally {
+          setCompactLayoutForTest(false);
+        }
+      });
+    }
+  }
+
   it('declining the kill confirmation returns to the editor with the edit intact', async () => {
     const thread = seedThread();
     const item = userItem('user:1', 1, 'Update one of the lines');

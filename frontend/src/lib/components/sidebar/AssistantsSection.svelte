@@ -11,6 +11,7 @@
   import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  import { assistantsOffOn, assistantsOn } from '../../stores/assistants.svelte';
   import { hasScope } from '../../transport/scopes';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -29,6 +30,9 @@
   let { assistants, pane, searching }: Props = $props();
   let shown = $derived(isSidebarSectionShown('assistants', searching));
   let createUngranted = $derived(!hasScope('threads:autonomy', selectedBackend()));
+  // New Assistant creates on the selected computer, which may have its
+  // assistants off while another computer's show here.
+  let createOff = $derived(!assistantsOn(selectedBackend()));
 
   // A row's third line: the projects its assistant serves.
   function servedProjectsLabel(agent: Thread): string {
@@ -52,9 +56,9 @@
     </h2>
     <IconButton
       label="New Assistant"
-      title={createUngranted ? 'Not granted to this device' : undefined}
+      title={createUngranted ? 'Not granted to this device' : createOff ? assistantsOffOn(selectedBackend()) : undefined}
       size="sm"
-      disabled={createUngranted}
+      disabled={createUngranted || createOff}
       onClick={(e) => openNewAssistantDialog({ targetPane: pane, openInNewPane: shouldOpenProjectThreadInNewPane(e) })}
     >
       {#snippet children()}

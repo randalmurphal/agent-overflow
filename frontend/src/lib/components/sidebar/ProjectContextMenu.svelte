@@ -30,7 +30,7 @@
   import { hasScope } from '../../transport/scopes';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { newThreadGroupInProject } from './threadGroupActions';
-  import { assistantsShown } from '../../stores/assistants.svelte';
+  import { assistantsOn } from '../../stores/assistants.svelte';
 
   interface Props {
     project: ProjectWithCounts;
@@ -176,7 +176,7 @@
             }}
           />
         {/if}
-        {#if assistantsShown()}
+        {#if assistantsOn(projectBackend(project.project.id) ?? HOME_BACKEND)}
           <MenuItem
             label="New Assistant…"
             disabled={newAssistantUngranted}

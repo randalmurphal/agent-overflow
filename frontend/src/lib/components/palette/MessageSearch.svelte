@@ -10,6 +10,7 @@
   import { searchHighlightSegments } from '../../utils/highlight';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
+  import { assistantsSignature } from '../../stores/assistants.svelte';
 
   interface Props {
     open: boolean;
@@ -75,12 +76,15 @@
     }
   }
 
-  // Re-run (debounced) when the query changes OR when the dialog opens. The
-  // searchSeq guard inside runSearch still discards any stale response that
-  // lands out of order; debounce additionally avoids issuing the scans at all.
+  // Re-run (debounced) when the query changes, when the dialog opens, or
+  // when a computer turns its assistants on or off: each computer leaves
+  // out its own while they are off. The searchSeq guard inside runSearch
+  // still discards any stale response that lands out of order; debounce
+  // additionally avoids issuing the scans at all.
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     if (!open) return;
+    void assistantsSignature();
     const q = query;
     clearTimeout(debounceTimer);
     // An empty query is a local clear — nothing to debounce.

@@ -19,7 +19,7 @@ import { noteThread, threadBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { userFacingError } from '../utils/userFacingError';
 import { addErrorToast } from './toast.svelte';
-import { assistantsShown } from './assistants.svelte';
+import { assistantsOn } from './assistants.svelte';
 
 /** Rows one page reads, and one "Show N more…" reveals. */
 export const PREVIOUS_THREADS_PAGE = 20;
@@ -57,10 +57,10 @@ export function getPreviousThreads(): PreviousThreadsState | null {
  * Opens the dialog for the assistant whose current thread this is and reads
  * its first page; any other thread has none. An unknown owner is reported
  * as the dialog's error rather than read from another computer. Nothing
- * opens while assistants are turned off.
+ * opens while its computer has assistants turned off.
  */
 export function openPreviousThreadsDialog(thread: Pick<Thread, 'id' | 'agentId'>, targetPane: ThreadPane | null): void {
-  if (!thread.agentId || !assistantsShown()) return;
+  if (!thread.agentId) return;
   let backend: BackendKey;
   try {
     backend = requireEntityBackend(threadBackend(thread.id));
@@ -68,6 +68,7 @@ export function openPreviousThreadsDialog(thread: Pick<Thread, 'id' | 'agentId'>
     addErrorToast(userFacingError(err), err);
     return;
   }
+  if (!assistantsOn(backend)) return;
   const opening: PreviousThreadsOpening = { agentId: thread.agentId, backend, targetPane };
   state = { opening, threads: [], next: { supersededAt: 0, threadId: '' }, loading: false, loaded: false, error: null };
   void readPage(opening);

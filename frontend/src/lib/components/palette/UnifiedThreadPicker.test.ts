@@ -75,6 +75,32 @@ describe('<UnifiedThreadPicker> — assistants turned off', () => {
     await tick();
     expect(hits()?.sort()).toEqual(['thread-picker-hit-agent', 'thread-picker-hit-helper', 'thread-picker-hit-past', 'thread-picker-hit-plain']);
   });
+
+  // Each thread by its own computer's setting: this computer's assistant is
+  // offered while the laptop has its off, and the other way round.
+  it("offers each computer's assistants by that computer's setting", async () => {
+    await seedThreads([
+      makeThread({ id: 'agent', title: 'Ops', agentId: 'ops' }),
+      makeThread({ id: 'remote-agent', title: 'Scout', agentId: 'scout' }),
+    ]);
+    stageBackend();
+    noteThread('remote-agent', 'laptop', 2);
+    try {
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      const view = render(UnifiedThreadPicker, { open: true, pane: makePane(), onClose: vi.fn() });
+      const hits = () => Array.from(view.container.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="thread-picker-hit-"]'), (el) => el.dataset.testid);
+      expect(hits()).toEqual(['thread-picker-hit-agent']);
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }), 'laptop');
+      await tick();
+      expect(hits()).toEqual(['thread-picker-hit-remote-agent']);
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    }
+  });
 });
 
 // ---- Visibility ----

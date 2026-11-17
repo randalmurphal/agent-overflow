@@ -6,8 +6,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ProjectContextMenu from './ProjectContextMenu.svelte';
 import { tick } from 'svelte';
-import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteProject } from '../../transport/entityIndex';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import {
@@ -365,6 +367,26 @@ describe('<ProjectContextMenu> New Assistant…', () => {
       expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).toBeNull();
     });
   }
+
+  // It creates on the project's computer: a project on the laptop offers it
+  // while the laptop has assistants on, whatever this computer has.
+  it("follows the project's computer", async () => {
+    stageBackend();
+    noteProject('project-1', 'laptop');
+    try {
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      const view = renderMenu();
+      expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).not.toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      await tick();
+      expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).toBeNull();
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      resetSettingsForTest();
+    }
+  });
 });
 
 describe('<ProjectContextMenu> project writes without the grant', () => {

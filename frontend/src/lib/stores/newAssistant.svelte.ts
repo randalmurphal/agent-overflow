@@ -14,7 +14,9 @@
 import type { BackendKey } from '../transport/backendKey';
 import type { Thread } from '../types/models';
 import { selectedBackend } from './selectedBackend.svelte';
-import { assistantsShown } from './assistants.svelte';
+import { assistantsOn, threadComputer } from './assistants.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { projectBackend } from '../transport/entityIndex';
 import type { ThreadPane } from './thread.svelte';
 
 export interface NewAssistantRequest {
@@ -48,10 +50,15 @@ export function getNewAssistantRequest(): NewAssistantOpening | null {
   return pending;
 }
 
-/** Opens New Assistant; nothing while assistants are turned off. */
+/**
+ * Opens New Assistant; nothing while the computer it would create on, the
+ * project's or the selected one, has assistants turned off.
+ */
 export function openNewAssistantDialog(request: NewAssistantRequest): void {
-  if (!assistantsShown()) return;
-  pending = { ...request, selectedBackend: request.projectId ? undefined : selectedBackend() };
+  const selected = request.projectId ? undefined : selectedBackend();
+  const target = request.projectId ? projectBackend(request.projectId) : selected;
+  if (!assistantsOn(target ?? HOME_BACKEND)) return;
+  pending = { ...request, selectedBackend: selected };
 }
 
 /** Whether `opening` is the dialog's current opening, so a late answer may still act on it. */
@@ -76,10 +83,11 @@ export function getAssistantProjectsAgentId(): string | null {
 
 /**
  * Opens the Projects dialog of the assistant whose current thread this is;
- * any other thread has none, and nothing opens while assistants are off.
+ * any other thread has none, and nothing opens while its computer has
+ * assistants off.
  */
-export function openAssistantProjectsDialog(thread: Pick<Thread, 'agentId'>): void {
-  if (thread.agentId && assistantsShown()) projectsOf = { agentId: thread.agentId };
+export function openAssistantProjectsDialog(thread: Pick<Thread, 'id' | 'agentId'>): void {
+  if (thread.agentId && assistantsOn(threadComputer(thread.id))) projectsOf = { agentId: thread.agentId };
 }
 
 /** Whether `opening` is the Projects dialog's current opening. */

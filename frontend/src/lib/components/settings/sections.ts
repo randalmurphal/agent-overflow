@@ -285,6 +285,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'thread-tools', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
+    'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage', 'voice'].includes(section);
 }

@@ -14,8 +14,9 @@ import { makeThread } from '../../../test/helpers/chat';
 import { __resetEntityIndexForTest } from '../../transport/entityIndex';
 import { TransportError } from '../../transport/wsClient';
 import type { Project } from '../../types/models';
-import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 function project(id: string, name: string): Project {
   return { id, path: `/repo/${id}`, name, sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
@@ -223,5 +224,27 @@ describe('<NewAssistantDialog>', () => {
     applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
     await tick();
     expect(view.queryByTestId('new-assistant-dialog')).toBeNull();
+  });
+
+  // It follows the computer it creates on, not this one.
+  it('closes when the computer it creates on turns them off', async () => {
+    stageBackend();
+    setSelectedBackend('laptop');
+    try {
+      const view = render(NewAssistantDialog);
+      openNewAssistantDialog({});
+      await tick();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      await tick();
+      expect(getNewAssistantRequest()?.selectedBackend).toBe('laptop');
+      expect(view.queryByTestId('new-assistant-dialog')).not.toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
+      await tick();
+      expect(getNewAssistantRequest()).toBeNull();
+    } finally {
+      setSelectedBackend(HOME_BACKEND);
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
   });
 });

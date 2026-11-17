@@ -10,7 +10,7 @@
   import Button from '../primitives/Button.svelte';
   import { CreateAssistant } from '../../stores/bindings';
   import { closeNewAssistantDialog, getNewAssistantRequest, isNewAssistantOpening } from '../../stores/newAssistant.svelte';
-  import { assistantsShown } from '../../stores/assistants.svelte';
+  import { assistantsOn } from '../../stores/assistants.svelte';
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { getPane, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
@@ -59,10 +59,10 @@
     });
   });
 
-  // Turning assistants off closes the dialog; turning them on does not
-  // bring it back.
+  // Turning assistants off on the computer it creates on closes the
+  // dialog; turning them on does not bring it back.
   $effect(() => {
-    if (request !== null && !assistantsShown()) closeNewAssistantDialog(request);
+    if (request !== null && backend !== undefined && !assistantsOn(backend)) closeNewAssistantDialog(request);
   });
 
   function close(): void {
