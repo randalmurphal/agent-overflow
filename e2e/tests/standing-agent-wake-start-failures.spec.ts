@@ -231,7 +231,6 @@ echo "the report nobody could read"
       const raised = harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
       await writeFile(join(project, 'once.release'), '');
       const failure = await raised;
-      console.log(`${provider}: notification: ${JSON.stringify(failure)}`);
       expect(failure).toMatchObject({
         kind: 'error',
         title: 'Broken starter',
@@ -252,7 +251,6 @@ echo "the report nobody could read"
         }
       };
       await expect.poll(() => errorRows().some((row) => row.startsWith(rowPrefix)), { timeout: 15_000 }).toBe(true);
-      console.log(`${provider}: error rows: ${JSON.stringify(errorRows())}`);
       // The start's one row, naming what failed.
       expect(errorRows()).toEqual([
         rowPrefix +
@@ -291,7 +289,7 @@ echo "the report nobody could read"
       );
       const withdrawn = harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
       await harness.rpc('StartSession', thread);
-      console.log(`${provider}: withdrawn: ${JSON.stringify(await withdrawn)}`);
+      await withdrawn;
       const wake = await wakeInput(harness, home, 'Watch "once" reported.');
       expect(wake.report.input).toContain('"the report nobody could read"');
       await awaitTurnCompleted(harness, thread);
@@ -467,7 +465,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         page.getByTestId('thread-row').filter({ hasText: 'Retrying starter' }).first(),
         page.getByLabel('Message Input'),
       );
-      console.log(`${provider}: error rows while failing: ${JSON.stringify(errorRows())}`);
       expect(errorRows()).toHaveLength(1);
       expect(raises()).toBe(1);
       expect(retracts()).toBe(0);
@@ -482,7 +479,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
       await expect.poll(() => reported('report 1') > 0 && reported('report 3') > 0, { timeout: 60_000 }).toBe(true);
       await settled();
-      console.log(`${provider}: the run after the mend delivered the held wake and its own`);
       expect(reported('report 2')).toBe(0);
       expect(raises()).toBe(1);
       expect(retracts()).toBe(1);
@@ -493,14 +489,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await say('report 4');
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
       expect(raises()).toBe(2);
-      console.log(`${provider}: a second run of failures raised the notification again`);
       await hold();
       await mend(`wakes-start-retry-quiet-${provider}`);
       await release();
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
       await expect.poll(() => reported('report 4'), { timeout: 60_000 }).toBeGreaterThan(0);
       await settled();
-      console.log(`${provider}: a quiet run started the thread and delivered the held wake`);
       expect(raises()).toBe(2);
       expect(retracts()).toBe(2);
 
@@ -542,7 +536,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const sent = await threadSend(dataDir, [thread, 'deploy 21 is done']);
       expect(sent.code, sent.stderr).toBe(0);
       await raised;
-      console.log(`${provider}: the start failure raised its notification`);
 
       await harness.close();
       harness = undefined;
@@ -557,7 +550,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const withdrawn = h.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
       await h.rpc('StartSession', thread);
       await withdrawn;
-      console.log(`${provider}: the first start after the restart withdrew it`);
       await h.rpc('StopSession', thread);
       await h.rpc('StartSession', thread);
       await h.rpc('StopSession', thread);
@@ -659,7 +651,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(sent.stderr).toBe('');
       expect(sent.code).toBe(0);
       await expect.poll(queued, { timeout: 15_000 }).toEqual(['agent-wake', 'agent-send']);
-      console.log(`${provider}: held behind the failed start: ${JSON.stringify(queued())}`);
 
       // Archived while stopped: both come back out of the queue, the watch
       // is cancelled and the send leaves its notice.
@@ -669,7 +660,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(dbWakes(dataDir, thread)).toEqual([
         { kind: 'watch', label: 'tick', state: 'cancelled', last_outcome: 'cancelled: the thread was archived' },
       ]);
-      console.log(`${provider}: archived: queue empty, the send's notice written, the watch cancelled`);
 
       // Unarchived and mended, the person's start delivers neither.
       await harness.rpc('UnarchiveThread', thread);
@@ -695,7 +685,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(countInputs(harness, home, 'deploy 13 is done')).toBe(0);
       expect(queued()).toEqual([]);
       expect(notices()).toBe(1);
-      console.log(`${provider}: the person's start after unarchive delivered neither the wake nor the send`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Shelved starter', { exact: true }).click();
@@ -809,18 +798,19 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
       await expect.poll(queued, { timeout: 15_000 }).toEqual(['remote-completion']);
       expect(watch()).toBe('queued');
-      console.log(`${provider}: held behind the failed start: ${JSON.stringify(queued())}, watch ${watch()}`);
 
       // Archived: the completion goes back to its watch, and the watcher
       // leaves it there while the thread stays archived.
       await harness.rpc('ArchiveThread', thread);
       await expect.poll(queued, { timeout: 15_000 }).toEqual([]);
       expect(watch()).toBe('pending');
+      // Six seconds of the watcher's normal pace, then the same state. No
+      // signal marks a watcher pass over this row, so this shows nothing came
+      // back in that time, not that a given number of passes saw the row.
       await new Promise((resolve) => setTimeout(resolve, 6_000));
       expect(queued()).toEqual([]);
       expect(watch()).toBe('pending');
       expect(countInputs(harness, cwd, completion)).toBe(0);
-      console.log(`${provider}: archived: queue empty, watch pending after three watcher ticks`);
 
       // Unarchived and mended, the watcher delivers it, once.
       await setScenario(
@@ -843,7 +833,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(countInputs(harness, cwd, completion)).toBe(1);
       expect(queued()).toEqual([]);
       expect(watch()).toBe('queued');
-      console.log(`${provider}: unarchived: the completion arrived once`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
@@ -947,8 +936,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect(incoming).toHaveCount(1);
       await expect(incoming).toHaveAttribute('data-kind', 'wake');
 
-      // Stopped, it is dismissed on its watch, not handed back: three watcher
-      // ticks later nothing is queued and the row stays gone.
+      // Stopped, it is dismissed on its watch, not handed back: nothing is
+      // queued and the row stays gone six seconds later. No signal marks a
+      // watcher pass over this row, so the wait shows nothing came back in
+      // that time, not that a given number of passes saw the row.
       await incoming.getByTestId('agent-incoming-row-stop').click();
       await expect(page.getByTestId('toast').filter({ hasText: /Withdrew .* before this thread's agent read it\./ })).toBeVisible({ timeout: 30_000 });
       await expect(incoming).toHaveCount(0);
@@ -972,7 +963,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const job = jobs.find((j) => j.requestId === requestId);
       expect(job?.notification).toBe('dismissed');
       expect(job?.receipt.state).not.toBe('running');
-      console.log(`${provider}: stopped completion: watch ${JSON.stringify(watch())}, job ${job?.receipt.state}`);
     } finally {
       await breaker?.cleanup();
       await Promise.allSettled([harness.close(), remote.close()]);
