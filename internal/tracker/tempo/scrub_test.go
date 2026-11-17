@@ -12,7 +12,9 @@ import (
 // escToken is testToken as JSON writes it with its first letter escaped:
 // scrubbing the raw answer would miss it, so only text scrubbed after it
 // is decoded comes out clean.
-const escToken = `fake-tempo-token`
+// The escape is built here because a literal one does not survive every
+// editor: "\x5c" is the backslash.
+const escToken = "\x5c" + "u0066" + "ake-tempo-token"
 
 // scrubbed fails t for each named value that holds the credential or
 // lacks the redaction mark.
