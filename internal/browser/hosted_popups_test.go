@@ -349,14 +349,13 @@ func TestHostedPopupReportsMadeDuringAdoptionReachItsTab(t *testing.T) {
 	}
 	l.settledEngine()
 
-	// Its close, held until it is listed, closes the tab.
+	// Its close during the attach ends the attach, and no tab is left.
 	release2 := l.gate("PT-2")
 	defer release2()
 	second, _ := l.popup(opener, "https://example.test/2")
 	l.awaitAttach("PT-2")
 	l.report(second, webview2host.ReportClosed, "")
 	release2()
-	// Listed first, then closed.
 	l.settledEngine()
 	l.awaitTabGone(access.ThreadID, second)
 }

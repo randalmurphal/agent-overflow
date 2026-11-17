@@ -288,6 +288,9 @@ func (e *hostedEngine) Stop() {
 	e.scales = make(map[string]*viewScaleState)
 	e.noFind = make(map[string]bool)
 	e.pageProfile = make(map[string]string)
+	for _, popup := range e.popups {
+		popup.cancelAttachLocked()
+	}
 	e.popups = make(map[string]*hostedPopup)
 	e.popupByTarget = make(map[string]string)
 	e.targets = e.newTargets()

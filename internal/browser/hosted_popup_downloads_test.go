@@ -68,6 +68,43 @@ func TestBP4CompletedDownloadOfAPopupClosedBeforeItsListing(t *testing.T) {
 	l.settledEngine()
 }
 
+// A popup that closes while its attach is under way ends the attach at
+// once, and what it downloaded settles in its opener's tab; an attach that
+// never answers ends at the engine's attach bound.
+func TestHostedPopupAttachEndsAtItsCloseOrItsBound(t *testing.T) {
+	t.Run("closed", func(t *testing.T) {
+		l := newPopupLauncher(t)
+		access := popupTestAccess(t, "thread")
+		_, opener := l.open(access)
+		release := l.gate("PT-1")
+		defer release()
+		popupID, _ := l.popup(opener, "https://example.test/popup")
+		l.awaitAttach("PT-1")
+		reportDownload(t, l.engine, popupID, snapshot("dl-1", webview2host.DownloadRunning, 10))
+		l.report(popupID, webview2host.ReportClosed, "")
+		// The attach is still held: only its cancel ends the adoption,
+		// which discards the popup.
+		l.awaitTab(access.ThreadID, popupID, false)
+		l.awaitDownloads(access, downloadStateCanceled)
+		if got := l.pageDownloads(access.ThreadID, opener); !slices.Equal(got, []string{downloadStateCanceled}) {
+			t.Fatalf("the opener's tab lists %v", got)
+		}
+		l.settledEngine()
+	})
+	t.Run("bound", func(t *testing.T) {
+		l := newPopupLauncher(t)
+		l.engine.attachTimeout = 200 * time.Millisecond
+		access := popupTestAccess(t, "thread")
+		_, opener := l.open(access)
+		release := l.gate("PT-1")
+		defer release()
+		popupID, _ := l.popup(opener, "https://example.test/popup")
+		l.awaitAttach("PT-1")
+		l.awaitTab(access.ThreadID, popupID, false)
+		l.settledEngine()
+	})
+}
+
 // A download's terminal snapshot reaches the popup's tab however many
 // snapshots came before it while the popup was adopted.
 func TestBP4TerminalDownloadSurvivesHeldReportBound(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"agent-overflow/internal/webview2host"
 
@@ -35,7 +36,9 @@ import (
 // it) is never attached: the Manager discards it, and its downloads go to
 // its opener. A popup's target is on its opener's browser connection, so
 // it is attached on that connection or not at all, and a popup whose
-// opener has no live connection is refused at its report.
+// opener has no live connection is refused at its report. Its attach is
+// bounded by the engine's attach timeout and ends at its close, its
+// discard or Stop; its downloads are settled by the close, not the attach.
 //
 // The popup navigates as soon as the launcher hands its view over, before
 // the engine has heard of it. The engine answers the navigation policy
@@ -64,6 +67,17 @@ type hostedPopup struct {
 	// crashed is the reason its page crashed, and closed says it closed.
 	crashed string
 	closed  bool
+	// cancelAttach ends its attach while one is under way.
+	cancelAttach context.CancelFunc
+}
+
+// cancelAttachLocked ends the attach of popup, if one is under way. The
+// caller holds e.mu.
+func (popup *hostedPopup) cancelAttachLocked() {
+	if popup.cancelAttach != nil {
+		popup.cancelAttach()
+		popup.cancelAttach = nil
+	}
 }
 
 // popupReported takes the launcher's report of a popup: the engine knows
@@ -157,7 +171,28 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 		return nil, fmt.Errorf("browser: popup %s: its opener's connection to the pane browser was lost", handle)
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
+	// The attach is bounded on its own clock, and the popup's close or
+	// discard cancels it (cancelAttachLocked); its downloads are settled
+	// by that close, not by the attach.
+	e.mu.Lock()
+	if e.popups[handle] != popup || popup.closed {
+		e.mu.Unlock()
+		pageCancel()
+		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
+	}
+	popup.cancelAttach = pageCancel
+	e.mu.Unlock()
+	expire := time.AfterFunc(e.attachTimeout, pageCancel)
 	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
+	expire.Stop()
+	e.mu.Lock()
+	popup.cancelAttach = nil
+	canceled := pageCtx.Err()
+	e.mu.Unlock()
+	if err == nil && canceled != nil {
+		driver.Close()
+		err = fmt.Errorf("browser: attach popup %s: %w", handle, canceled)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +273,7 @@ func (e *hostedEngine) retirePendingLocked(pageID string) bool {
 		return false
 	}
 	popup.closed = true
+	popup.cancelAttachLocked()
 	return true
 }
 
@@ -255,6 +291,7 @@ func (e *hostedEngine) pendingClosed(pageID string) {
 // e.mu.
 func (e *hostedEngine) forgetPopupLocked(pageID string) {
 	if popup := e.popups[pageID]; popup != nil {
+		popup.cancelAttachLocked()
 		delete(e.popupByTarget, popup.target)
 		delete(e.popups, pageID)
 	}
