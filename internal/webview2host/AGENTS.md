@@ -118,7 +118,8 @@ Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
 `process_smoke_windows_test.go`, `download_smoke_windows_test.go`,
 `crash_smoke_windows_test.go`, `title_smoke_windows_test.go`,
-`background_smoke_windows_test.go`, `popup_smoke_windows_test.go`),
+`background_smoke_windows_test.go`, `popup_smoke_windows_test.go`,
+`policy_smoke_windows_test.go`),
 which need an installed runtime. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`. A smoke never shows anything on the

@@ -371,6 +371,18 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	}
 }
 
+// A page and a popup attached, the hosted engine still pauses a request
+// once: the browser-wide policy is the only one.
+func TestHostedEnginePausesARequestOnce(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := popupTestAccess(t, "thread")
+	_, opener := l.open(access)
+	popupID, _ := l.popup(opener, "https://example.test/popup")
+	l.awaitTab(access.ThreadID, popupID, true)
+	l.settledEngine()
+	assertOnePolicyPause(t, l.endpoint.calls, l.endpoint.send)
+}
+
 // The browser-wide policy is installed on the connection and answers what
 // it pauses there.
 func TestHostedBrowserPolicyAnswersPausedRequests(t *testing.T) {

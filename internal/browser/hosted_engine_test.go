@@ -929,6 +929,39 @@ func browserCallParams[T any](t *testing.T, calls []fakeCDPCall, method string) 
 	return out
 }
 
+// assertOnePolicyPause holds a CDP engine to one navigation-policy
+// interception: Fetch.enable once, on the browser session, whatever pages
+// are attached, and one answer to a paused document request. A second
+// interception (a page's own) would pause every request twice, on the
+// hosted engine each time across the relay.
+func assertOnePolicyPause(t *testing.T, calls func() []fakeCDPCall, send func(map[string]any)) {
+	t.Helper()
+	var enables []string
+	for _, call := range calls() {
+		if call.Method == "Fetch.enable" {
+			enables = append(enables, "session "+call.SessionID)
+		}
+	}
+	if len(enables) != 1 || enables[0] != "session " {
+		t.Fatalf("Fetch.enable ran on %v, want once on the browser session", enables)
+	}
+	send(pausedRequest("R-once", "F-any", "https://example.test/"))
+	answers := func() int {
+		n := 0
+		for _, call := range calls() {
+			if call.Method == "Fetch.continueRequest" || call.Method == "Fetch.failRequest" {
+				n++
+			}
+		}
+		return n
+	}
+	eventually(t, "the paused request to be answered", func() bool { return answers() > 0 })
+	time.Sleep(50 * time.Millisecond)
+	if n := answers(); n != 1 {
+		t.Fatalf("one paused request was answered %d times", n)
+	}
+}
+
 // requestAnswer is the part of Fetch.continueRequest and Fetch.failRequest
 // a test reads.
 type requestAnswer struct {

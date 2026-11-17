@@ -318,10 +318,9 @@ func (p *headlessProfile) connect(browserCtx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("browser: pin downloads to %s: %w", p.downloadDir, err)
 	}
-	// Chromium runs a popup before the Manager can adopt it, and a
-	// noopener popup's renderer cannot be held for AttachPage, so the
-	// policy is enabled browser-wide as well as on each page. A page's
-	// requests pass both.
+	// The policy's one interception: browser-wide, so it sees a popup's
+	// requests before the Manager adopts it (a noopener popup's renderer
+	// cannot be held for AttachPage) as well as every page's.
 	if _, err := chromedp.CallBrowser(browserCtx, fetch.Enable, fetch.EnableParams{Patterns: navigationPolicyPatterns}); err != nil {
 		return fmt.Errorf("browser: install the workspace navigation policy: %w", err)
 	}

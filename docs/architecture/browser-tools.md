@@ -72,11 +72,10 @@ per-platform no-op.
 - A jar shares site data and nothing else. Navigation and file permissions,
   the record of finished downloads, and headless Chromium's download
   directory and quota stay per canonical workspace, whichever jar a page
-  is in. A request the jar's own policy
-  sees (the CDP engines' browser-wide interception) has the authority of
-  the page its frame belongs to, or for a popup not yet adopted, of its
-  opener chain; one whose owner is not resolved may open no workspace's
-  files.
+  is in. The CDP engines pause each document request and file read once,
+  browser-wide, and answer it with the jar's policy: the authority of the
+  page its frame belongs to, or for a popup not yet adopted, of its opener
+  chain; one whose owner is not resolved may open no workspace's files.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying

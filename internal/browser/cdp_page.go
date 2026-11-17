@@ -261,9 +261,6 @@ func (p *cdpPage) installHandlers() error {
 			logf("browser: answer a %s dialog: %v", event.Type, err)
 		}
 	})
-	onTargetEvent(ctx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
-		answerPausedRequest(ctx, session, event, p.hooks.Allow)
-	})
 	onTargetEvent(ctx, page.FrameAttached, logf, func(event page.EventFrameAttached) {
 		p.frames.attached(event.FrameID)
 	})
@@ -325,9 +322,6 @@ func (p *cdpPage) installHandlers() error {
 	})
 	if err := p.watchDocumentTitle(); err != nil {
 		return err
-	}
-	if _, err := chromedp.Call(ctx, fetch.Enable, fetch.EnableParams{Patterns: navigationPolicyPatterns}); err != nil {
-		return fmt.Errorf("browser: install navigation policy: %w", err)
 	}
 	if _, err := chromedp.Call(ctx, cdplog.Enable, cdp.Empty{}); err != nil {
 		return fmt.Errorf("browser: enable console log capture: %w", err)

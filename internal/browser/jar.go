@@ -28,8 +28,10 @@ import (
 //
 // The jar is only the engine's storage partition. Authority stays with the
 // page's workspace: navigation and file permissions are the page's own
-// Access (pageHooks.Allow, and for a frame or popup the profile's policy
-// sees, its owning page's or opener's: jarAllows), and download accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
+// Access (pageHooks.Allow on the in-process engines; on the CDP engines
+// the profile's policy, which answers with the Access of the page a
+// request's frame belongs to or its opener's: jarAllows), and download
+// accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
 // setting become a jar identity; an engine receives only that identity and
 // whether the jar is ephemeral (profileOptions).
 

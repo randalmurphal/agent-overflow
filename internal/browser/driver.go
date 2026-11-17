@@ -212,9 +212,9 @@ type profileOptions struct {
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
 	Ephemeral bool
-	// Allow is the policy for a request an engine intercepts outside any one
-	// page's own policy: the headless engine's browser-wide interception,
-	// which also sees a popup before the Manager adopts it. owners is the
+	// Allow is the CDP engines' whole navigation policy: one browser-wide
+	// interception per connection, which also sees a popup before the
+	// Manager adopts it, so no page installs one of its own. owners is the
 	// frame the request belongs to followed by the pages that opened its
 	// page, nearest first, as far as the engine knows them. The Manager
 	// answers with the authority of the first owner it resolves to one of
@@ -232,7 +232,9 @@ type pageHooks struct {
 	// PageURL reports the page's last known URL, attributed to entries the
 	// engine reports without one of their own.
 	PageURL func() string
-	// Allow answers the navigation-authority question for one request URL.
+	// Allow answers the navigation-authority question for one request URL
+	// of an in-process engine's page (WebKitGTK, WKWebView, the fake). The
+	// CDP engines ask the profile's policy instead (profileOptions.Allow).
 	Allow func(url string) bool
 	// DocumentCommitted reports that the page's main frame committed a new
 	// document: a load, a reload, or a history move to another document. A

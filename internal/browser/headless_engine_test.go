@@ -413,6 +413,20 @@ func TestHeadlessProfileReusesItsBrowserForEveryPage(t *testing.T) {
 	}
 }
 
+// Two pages attached, the headless engine still pauses a request once: the
+// browser-wide policy is the only one.
+func TestHeadlessEnginePausesARequestOnce(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	for range 2 {
+		if _, err := profile.NewPage(context.Background(), testPageHooks()); err != nil {
+			t.Fatalf("new page: %v", err)
+		}
+	}
+	assertOnePolicyPause(t, browser.calls, browser.send)
+}
+
 func testPageHooks() pageHooks {
 	return pageHooks{
 		Console: func(ConsoleLog) {},
@@ -714,10 +728,9 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 	}
 }
 
-// Chromium runs a page it opened by itself before the Manager can adopt it
-// and AttachPage can install the page's own policy, so the profile enables
-// the jar's policy on the browser session at launch, for every request the
-// page policy intercepts, and answers what it pauses there with the
+// The profile enables the jar's policy on the browser session at launch, so
+// it sees a page Chromium opened by itself before the Manager adopts it as
+// well as every page's requests, and answers what it pauses there with the
 // Manager's policy for the jar. In a jar two worktrees share, a request has
 // the authority of the page its frame belongs to, or of its popup's openers;
 // a request whose owner is not resolved (a popup's request before Chromium

@@ -101,9 +101,10 @@ Manager alone adopts or discards it (`adoptPopup`). On the hosted engine a
 popup is the launcher's report (`hosted_popups.go`); until the Manager lists
 its tab, the engine holds the popup's downloads, crash and close and
 delivers them at the listing (`adoptedPage`), since the Manager acts on them
-only for a listed page. Both CDP engines answer the navigation policy
-browser-wide as well as per page, so a popup's requests before its
-adoption have its opener chain's authority.
+only for a listed page. The CDP engines answer the navigation policy only
+browser-wide (`profileOptions.Allow`), one pause per request, so a popup's
+requests before its adoption have its opener chain's authority; a CDP page
+installs no interception of its own.
 
 The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes

@@ -27,9 +27,8 @@ import (
 // its popup report is held by target, the newest per target, bounded.
 //
 // The popup navigates as soon as the launcher hands its view over, before
-// the engine has heard of it, so the page-level navigation policy
-// (cdp_page.go) cannot see its first requests. The engine also answers the
-// policy browser-wide, as the headless engine does: a request has the
+// the engine has heard of it. The engine answers the navigation policy
+// browser-wide, as the headless engine does, and only there: a request has the
 // authority of the page its frame belongs to, or for a popup not yet
 // adopted, of the pages that opened it, nearest first, as the browser
 // names them (jarAllows).
