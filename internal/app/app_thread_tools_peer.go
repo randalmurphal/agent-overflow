@@ -268,7 +268,9 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 	case threadAgentPeerStop:
 		return a.serveThreadAgentPeer(ctx, owner, call)
 	case threadOwnerOpTool:
-		return a.serveThreadOwnerOp(ctx, owner, call)
+		if !a.ownerOpsOmitted {
+			return a.serveThreadOwnerOp(ctx, owner, call)
+		}
 	case threadAgentPeerPromptReply, threadAgentPeerPromptReturn:
 		return a.servePeerPrompt(ctx, owner, call)
 	}

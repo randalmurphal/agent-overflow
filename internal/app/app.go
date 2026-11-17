@@ -901,6 +901,9 @@ type App struct {
 	// paired computer (workerPromptLease) for a test. Zero keeps the
 	// product lease.
 	workerPromptLeaseOverride time.Duration
+	// ownerOpsOmitted answers agent_owner_op as a build before owner
+	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
+	ownerOpsOmitted bool
 	// remoteWatchPoll replaces the remote-job watcher's cadence for a
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.

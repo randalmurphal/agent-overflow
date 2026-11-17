@@ -59,3 +59,22 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 		t.Fatalf("transfer pending retry = %s, want %s", got, retry)
 	}
 }
+
+// TestIsolationReachesThePromptLeaseAndTheOlderOwnerOpsPeer: a harness boot's
+// shortened prompt lease is the lease a routed prompt is held for, and its
+// older-peer switch is what the owner operation door reads.
+func TestIsolationReachesThePromptLeaseAndTheOlderOwnerOpsPeer(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	if f.app.promptLease() != workerPromptLease || f.app.ownerOpsOmitted {
+		t.Fatalf("an unconfigured app has lease %s and owner ops omitted %v", f.app.promptLease(), f.app.ownerOpsOmitted)
+	}
+	const lease = 7 * time.Second
+	ConfigureIsolation(f.app, IsolationConfig{WorkerPromptLease: lease, OmitOwnerOps: true})
+	if got := f.app.promptLease(); got != lease {
+		t.Fatalf("prompt lease = %s, want %s", got, lease)
+	}
+	if !f.app.ownerOpsOmitted {
+		t.Fatal("the older owner operations peer was not configured")
+	}
+}

@@ -9,11 +9,11 @@ import (
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,merged-pr-poll=300ms,pr-lookup-retry=600ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,remote-watch-poll=90s,drain-stall=750ms,usage-probe-gap=700ms,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,merged-pr-poll=300ms,pr-lookup-retry=600ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,remote-watch-poll=90s,drain-stall=750ms,usage-probe-gap=700ms,prompt-lease=4s,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, MergedPRPoll: 300 * time.Millisecond, PRLookupRetry: 600 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, RemoteWatchPoll: 90 * time.Second, DrainStall: 750 * time.Millisecond, UsageProbeGap: 700 * time.Millisecond}
+	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, MergedPRPoll: 300 * time.Millisecond, PRLookupRetry: 600 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, RemoteWatchPoll: 90 * time.Second, DrainStall: 750 * time.Millisecond, UsageProbeGap: 700 * time.Millisecond, PromptLease: 4 * time.Second}
 	if got != want {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
@@ -48,9 +48,11 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		uses := strings.Contains(readRootSource(t, name), "os.Getenv(diagenv.HarnessTiming)")
-		if uses != (name == "main_harness.go") {
-			t.Errorf("%s reads diagenv.HarnessTiming: %v", name, uses)
+		for _, variable := range []string{"diagenv.HarnessTiming", "diagenv.HarnessOldOwnerOpsPeer"} {
+			uses := strings.Contains(readRootSource(t, name), "os.Getenv("+variable+")")
+			if uses != (name == "main_harness.go") {
+				t.Errorf("%s reads %s: %v", name, variable, uses)
+			}
 		}
 	}
 	// The parsed value reaches each owner: the App's isolation pins, and the
@@ -75,6 +77,9 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`MergedPRPollInterval:\s+opts\.Timing\.MergedPRPoll,`,
 			`PRLookupRetryBase:\s+opts\.Timing\.PRLookupRetry,`,
 			`UsageProbeGap:\s+opts\.Timing\.UsageProbeGap,`,
+			`WorkerPromptLease:\s+opts\.Timing\.PromptLease,`,
+			`OmitOwnerOps:\s+opts\.OldOwnerOpsPeer,`,
+			`isolation\.OldOwnerOpsPeer = envTruthy\(os\.Getenv\(diagenv\.HarnessOldOwnerOpsPeer\)\)`,
 		},
 		"main.go": {
 			`WatermarkInterval:\s+opts\.HarnessTiming\.Watermark,`,

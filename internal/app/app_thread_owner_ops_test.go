@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/entityid"
-	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
@@ -24,13 +23,11 @@ import (
 // (docs/specs/standing-agents.md, Owned workers).
 
 // ownerOpPeer is a destination whose answers to owner operations a test
-// controls: asleep refuses them as an unreachable computer does, older as a
-// computer from before them does, and hold, when set, runs before an
-// archive reaches the app and after it returns.
+// controls: asleep refuses them as an unreachable computer does, and hold,
+// when set, runs before an archive reaches the app and after it returns.
 type ownerOpPeer struct {
 	*App
 	asleep atomic.Bool
-	older  bool
 	hold   atomic.Pointer[func(op string) func()]
 	// unreachable fails every call, as a computer that cannot be reached.
 	unreachable atomic.Bool
@@ -64,9 +61,6 @@ func (p *ownerOpPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (
 	if call.Tool != threadOwnerOpTool {
 		return p.App.ThreadToolCall(ctx, call)
 	}
-	if p.older {
-		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, call.Tool+" is not a thread tools write call.", nil)
-	}
 	if p.asleep.Load() {
 		return ThreadPeerReply{}, errors.New("the computer is asleep")
 	}
@@ -93,7 +87,10 @@ func newOwnerOpPair(t *testing.T, older bool) *ownerOpPair {
 	t.Helper()
 	var peer *ownerOpPeer
 	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
-		peer = &ownerOpPeer{App: app, older: older}
+		peer = &ownerOpPeer{App: app}
+		// An older computer answers as a build before owner operations
+		// does, as a harness boot stands one up (IsolationConfig.OmitOwnerOps).
+		app.ownerOpsOmitted = older
 		return serveAppAs(t, app, peer)
 	})
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})

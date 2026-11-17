@@ -114,7 +114,8 @@ type threadPromptPeerAnswer struct {
 var errPeerPromptNotYours = errorsx.Public(threadtools.CodeRequestNotYours,
 	"That token names no prompt this computer routed to your thread through that spawn.", nil)
 
-// promptLease is workerPromptLease, or the shorter one a test set.
+// promptLease is workerPromptLease, or the shorter one a test or a harness
+// boot set (IsolationConfig.WorkerPromptLease).
 func (a *App) promptLease() time.Duration {
 	if a.workerPromptLeaseOverride > 0 {
 		return a.workerPromptLeaseOverride

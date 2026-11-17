@@ -118,6 +118,7 @@ func runHarness(flags cliFlags) {
 
 	isolation := isolationOptionsFor(flags)
 	isolation.Timing = timing
+	isolation.OldOwnerOpsPeer = envTruthy(os.Getenv(diagenv.HarnessOldOwnerOpsPeer))
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolation)
 	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
@@ -304,6 +305,10 @@ type harnessTiming struct {
 	// UsageProbeGap is the shortest gap between two usage probes of one
 	// provider (app.IsolationConfig.UsageProbeGap).
 	UsageProbeGap time.Duration
+	// PromptLease is how long a worker's prompt stays routed to its spawner
+	// on a paired computer without that computer saying it holds it
+	// (app.IsolationConfig.WorkerPromptLease).
+	PromptLease time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -330,6 +335,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"remote-watch-poll": &timing.RemoteWatchPoll,
 		"drain-stall":       &timing.DrainStall,
 		"usage-probe-gap":   &timing.UsageProbeGap,
+		"prompt-lease":      &timing.PromptLease,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -373,6 +379,11 @@ type isolationOptions struct {
 	// sets it (diagenv.HarnessTiming); the zero value keeps every product
 	// interval.
 	Timing harnessTiming
+	// OldOwnerOpsPeer makes this computer answer a paired spawner's
+	// archive or delete as a build before owner operations does. Only a
+	// harness boot sets it (diagenv.HarnessOldOwnerOpsPeer); the zero
+	// value serves them.
+	OldOwnerOpsPeer bool
 }
 
 // isolationOptionsFor is the one mapping from boot flags to isolation
@@ -437,6 +448,8 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
+		WorkerPromptLease:       opts.Timing.PromptLease,
+		OmitOwnerOps:            opts.OldOwnerOpsPeer,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

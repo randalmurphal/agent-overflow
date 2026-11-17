@@ -35,6 +35,14 @@ const (
 	// test can stand up a destination that does not have the surface.
 	HarnessOldPeer = "AO_HARNESS_OLD_THREAD_TOOLS_PEER"
 
+	// HarnessOldOwnerOpsPeer makes an isolated boot answer agent_owner_op
+	// as a build before owner operations does, an unknown thread tools
+	// write call, so a paired computer archiving or deleting a spawner
+	// whose worker is here names this one as running an older version.
+	// Test isolation only: honored solely by a harness boot, and the only
+	// way an end-to-end test can stand up such a destination.
+	HarnessOldOwnerOpsPeer = "AO_HARNESS_OLD_OWNER_OPS_PEER"
+
 	// HarnessHoldStartup holds a harness boot before App.Start until the
 	// file it names exists. Meanwhile the backend serves the page and
 	// answers its bootstrap with a starting report, which is how an
