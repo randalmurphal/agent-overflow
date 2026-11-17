@@ -383,7 +383,7 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 	// From here to the end of the rest the thread takes no app-written
 	// message and starts nothing, and what it had started is recorded where
 	// the steps below read it.
-	release := a.resting.hold(threadID)
+	release := a.holdRest(threadID)
 	defer release()
 	reopen := a.resting.close(threadID)
 	defer reopen()
@@ -416,6 +416,18 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 	// A prompt of a worker left running goes back to the user; the workers
 	// brought to rest took theirs with their sessions.
 	a.reroutePromptsFrom(threadID)
+}
+
+// holdRest holds threadID's rest fence for a stop (threadRestFence.hold).
+// A request held for the thread's rest does not settle at rest meanwhile
+// (heldThreadAtRest); one the stop left open reads the rest again once it is
+// released.
+func (a *App) holdRest(threadID string) func() {
+	release := a.resting.hold(threadID)
+	return func() {
+		release()
+		a.noteRestWaitsMayChange()
+	}
 }
 
 // captureThreadRest captures the work of a thread its rest has fenced, under

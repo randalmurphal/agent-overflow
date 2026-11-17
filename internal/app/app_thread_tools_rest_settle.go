@@ -106,12 +106,14 @@ func (a *App) restSettlement(receipt store.ThreadRequestReceipt, settlement stor
 }
 
 // heldThreadAtRest reads threadID's rest for a held request, false while
-// the boot has not recovered every source of it.
+// the boot has not recovered every source of it, and while a stop brings the
+// thread to rest (holdRest): the stop cancels what held it before it settles
+// the requests on it, which it settles itself.
 func (a *App) heldThreadAtRest(threadID string) (bool, error) {
 	a.threadRequests.mu.Lock()
 	barred := a.threadRequests.rest.barred
 	a.threadRequests.mu.Unlock()
-	if barred {
+	if barred || a.resting.holds(threadID) {
 		return false, nil
 	}
 	rest, err := a.threadRest(threadID)

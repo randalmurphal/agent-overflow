@@ -345,6 +345,39 @@ func TestAHeldSpawnEndsByAStopOrAReply(t *testing.T) {
 	waitUntil(t, 5*time.Second, func() bool { return !f.app.restHeld(replied.ThreadID, replied.Token) })
 }
 
+// A stop cancels a worker's loop before it settles the requests on the
+// worker. The pass the loop's cancel asks for meanwhile leaves the held
+// request to the stop; one the stop left open reads the rest once the stop
+// lets go of the thread.
+func TestAHeldSpawnIsTheStopsWhileItBringsTheWorkerToRest(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	f.holdCallerSession()
+	gate := filepath.Join(t.TempDir(), "turn")
+	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Looping.")})
+	ack := f.spawnWorker(t, "loop on it")
+	f.awaitTurnRunning(t, ack.Token)
+	f.armLoop(t, ack.ThreadID, "stopping")
+	release(t, gate)
+	f.awaitRestHold(t, ack)
+
+	letGo := f.app.holdRest(ack.ThreadID)
+	if err := f.app.cancelAgentWakesForThread(ack.ThreadID, agentWakeOutcomeCancelled); err != nil {
+		t.Fatal(err)
+	}
+	f.app.settleRestedReceipts()
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, ack.Token); row.State != store.ThreadRequestRunning || !f.app.restHeld(ack.ThreadID, ack.Token) {
+		t.Fatalf("request %+v settled at rest while a stop brings its worker to rest", row)
+	}
+	letGo()
+	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if string(row.Answer) != "Looping." {
+		t.Fatalf("settled %+v; want the worker's last message", row)
+	}
+}
+
 // A send to the thread the caller spawned waits for its rest as the spawn
 // did; a send to a thread it did not spawn settles when its turn ends,
 // whatever it left running.
