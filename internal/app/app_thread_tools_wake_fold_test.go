@@ -519,7 +519,7 @@ func TestWakesFoldOnlyWhenTheySayTheSameThing(t *testing.T) {
 	// Each request is made a millisecond after the last, so "oldest first"
 	// is the order they are seeded in and not the order of their tokens.
 	made := time.Now().UnixMilli()
-	settled := func(answer string) threadWakeRef {
+	settledAs := func(settlement store.ThreadRequestSettlement) threadWakeRef {
 		token := uuid.NewString()
 		made++
 		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
@@ -529,17 +529,34 @@ func TestWakesFoldOnlyWhenTheySayTheSameThing(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("InsertThreadRequest: %v", err)
 		}
-		if _, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State: store.ThreadRequestFinished, Answer: []byte(answer), AnswerKind: store.ThreadAnswerFinal,
-		}); err != nil {
+		if _, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), settlement); err != nil {
 			t.Fatalf("SettleThreadRequest: %v", err)
 		}
 		return threadWakeRef{token: token}
+	}
+	settled := func(answer string) threadWakeRef {
+		return settledAs(store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte(answer), AnswerKind: store.ThreadAnswerFinal,
+		})
+	}
+	interrupted := func(cause threadtools.Cause) threadWakeRef {
+		return settledAs(interruptedSettlement(cause, ""))
 	}
 
 	messages := f.app.threadWakeMessages([]threadWakeRef{settled("tests pass"), settled("lint fails"), settled("tests pass")})
 	if len(messages) != 2 || len(messages[0].rows) != 2 || len(messages[1].rows) != 1 {
 		t.Fatalf("messages = %d with %v rows, want the two that agree folded and the other alone", len(messages), messageSizes(messages))
+	}
+	// Interruptions with no text say the same thing only when their causes
+	// are the same.
+	messages = f.app.threadWakeMessages([]threadWakeRef{
+		interrupted(threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Desk"}),
+		interrupted(threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Laptop"}),
+		interrupted(threadtools.Cause{Code: threadtools.CauseRestart}),
+		interrupted(threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Desk"}),
+	})
+	if len(messages) != 3 || len(messages[0].rows) != 2 || messages[1].cause.Arg != "Laptop" || messages[2].cause.Code != threadtools.CauseRestart {
+		t.Fatalf("interruptions folded into %v, want the two moves to Desk together and the others alone", messageSizes(messages))
 	}
 
 	var many []threadWakeRef

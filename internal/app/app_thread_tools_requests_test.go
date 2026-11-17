@@ -3080,6 +3080,35 @@ func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
 	}
 }
 
+// An interrupted request's answer file and thread_status say its cause in
+// its words, with what the turn had written after them.
+func TestAnInterruptedAnswerIsWrittenOutInItsWords(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := newThreadRequestToken()
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: f.caller.ID, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(),
+		interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedWorking}, "Half done.")); err != nil {
+		t.Fatal(err)
+	}
+	const words = "The thread's session ended while it was still working on the request. What it had written by then:\n\nHalf done."
+	export, err := f.adapter().ExportAnswer(t.Context(), f.callerIdentity(), token)
+	if err != nil {
+		t.Fatalf("ExportAnswer: %v", err)
+	}
+	if body, err := os.ReadFile(export.Path); err != nil || string(body) != words || export.Size != int64(len(words)) {
+		t.Fatalf("export = %q (%d bytes), %v; want %q", body, export.Size, err, words)
+	}
+	if state := f.adapter().requestStateView(f.request(t, token)); state.Answer != words {
+		t.Fatalf("thread_status answer = %q, want %q", state.Answer, words)
+	}
+}
+
 // The ledger is readable without a token: a thread can list what it asked
 // for, open work first, and read a whole answer out to a file.
 func TestThreadRequestsListAndExport(t *testing.T) {

@@ -877,7 +877,7 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 // answer, whole and with no cause, which is what a computer that reports no
 // cause, or one this computer does not know, gives.
 func remoteAnswerCause(answer ThreadPeerRequest) (string, threadtools.Cause) {
-	if reported := answer.Cause; reported != nil && answer.State == store.ThreadReceiptInterrupted {
+	if reported := answer.Cause; reported != nil {
 		if cause := (threadtools.Cause{Code: reported.Code, Arg: reported.Arg}); cause.Known() {
 			return reported.Written, cause
 		}
