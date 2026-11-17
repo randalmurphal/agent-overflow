@@ -80,9 +80,17 @@ once it is up, or with no window when a bound (`MaxPendingPopups`,
 `MaxHostPages`), the opener's close, a failed create or the host's close
 comes first. A popup reaches the backend as `ReportPopup` under a page id
 the launcher mints, paired with the CDP target its view has after the
-deferral completes; its other reports wait for that one (`pageReport`).
-A handler detached from its page still refuses a late request. A page's
-`WindowCloseRequested` closes it, once its downloads end if any run.
+deferral completes, and only after its opener's report; its other reports
+wait for that one (`pageReport`, `heldReports`, the newest snapshot per
+download). A popup keeps its opener as a page id, never a pointer. Every
+way a popup goes runs `departPopup`: it answers the request, freeing the
+slot, and a popup not yet announced that has download reports is announced
+then (with an empty target when it has none yet), its held reports sent,
+its running downloads ended with `PopupGoneReason`, then closed; one with
+nothing to report leaves no trace. A page that goes takes its unannounced
+popups with it, closed popups first. A handler detached from its page still
+refuses a late request. A page's `WindowCloseRequested` closes it, once its
+downloads end if any run.
 
 A page's downloads are the launcher's (`download_windows.go`): it handles
 each `DownloadStarting`, so WebView2's dialog does not open for it, keeps the

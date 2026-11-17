@@ -109,6 +109,14 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		h.config.Logf("browser host: page %s: a download has no operation: %v", page.id, err)
 		return
 	}
+	if page.popupDownloadRefused() {
+		h.config.Logf("browser host: page %s: cancel a download past the %d a popup may start before it is reported", page.id, maxHeldPopupDownloads)
+		if err := op.cancel(); err != nil {
+			h.config.Logf("browser host: page %s: cancel a download: %v", page.id, err)
+		}
+		op.release()
+		return
+	}
 	path, uri := args.resultFilePath(), op.uri()
 	if reason := op.interruptReason(); reason != 0 {
 		if d := page.resumedDownload(uri); d != nil {
@@ -296,12 +304,15 @@ func (h *Host) downloadStateChanged(d *hostDownload) {
 
 // report sends one snapshot of a page's download.
 func (h *Host) report(page *hostPage, r DownloadReport) {
+	if h.holdDownload(page, r) {
+		return
+	}
 	detail, err := r.Encode()
 	if err != nil {
 		h.config.Logf("browser host: download %s: %v", r.ID, err)
 		return
 	}
-	h.pageReport(page, ReportDownload, detail)
+	h.config.Report(page.id, ReportDownload, detail)
 }
 
 // endDownload ends a download with its terminal snapshot: every operation

@@ -24,6 +24,34 @@ import (
 // started in the view reaches its DownloadStarting, and window.close()
 // raises WindowCloseRequested on the view, where the page may close itself
 // (a popup, or a page with one history entry).
+//
+// A popup's life from its request to its announcement is one state
+// (popupState.stage), changed only here:
+//
+//   - requested: its controller is being created, its window request open
+//     and counted in pendingPopups (newWindowRequested);
+//   - created: its view answered the request, its target is being read
+//     (popupReady);
+//   - targeted: its target is known, and it waits for its opener to be
+//     announced (popupTargeted);
+//   - announced: the backend has its report and every report since
+//     (announcePopup).
+//
+// The backend knows a popup's opener only once the opener is announced, so
+// a popup is announced after its opener, by its opener's announcement if
+// its own target came first. A page that goes takes its popups that are not
+// announced yet with it (takeLocked), and every popup that goes leaves the
+// same way (departPopup).
+
+// popupStage is where a popup is between its request and its announcement.
+type popupStage int
+
+const (
+	popupRequested popupStage = iota
+	popupCreated
+	popupTargeted
+	popupAnnounced
+)
 
 // popupRequest is a NewWindowRequested a popup answers: its args, held
 // with a reference, and the deferral that keeps the opener's script
@@ -34,27 +62,37 @@ type popupRequest struct {
 }
 
 // popupState is a popup page's link to the window request it answers and,
-// until the backend hears of it, the reports it made.
+// until the backend hears of it, the reports it made. The opener is kept
+// by id, so a popup keeps no page that went alive.
 type popupState struct {
-	opener  *hostPage
-	request popupRequest
-	uri     string
-	// announced is set once the popup report is out. Until then the page's
-	// reports wait in held, in order (pageReport).
-	announced bool
-	held      []heldReport
+	openerID string
+	stage    popupStage
+	request  popupRequest
+	uri      string
+	target   string
+	held     heldReports
 }
 
-type heldReport struct {
-	kind   ReportKind
-	detail string
+// heldReports are a popup's reports before its announcement: whether its
+// runtime has no find API, its newest process failure, and the newest
+// snapshot of each download, in the order the downloads started. Each kind
+// is whole in its newest report, so nothing older is kept.
+type heldReports struct {
+	findUnavailable bool
+	processFailed   string
+	downloads       []DownloadReport
 }
 
-// maxHeldPopupReports bounds the reports a popup makes between its
-// navigation's start and its popup report, one target-info round trip. A
-// page cannot report more than a handful in that time; past the bound the
-// newest are dropped, and a download's next snapshot heals its row.
-const maxHeldPopupReports = 64
+// maxHeldPopupDownloads bounds the downloads a popup starts before its
+// announcement, one target-info round trip after its view is up. A download
+// past it is canceled as it starts, so nothing is saved that the backend
+// would not hear of.
+const maxHeldPopupDownloads = 16
+
+// unannounced reports whether page is a popup the backend has not heard of.
+func (p *hostPage) unannounced() bool {
+	return p.popup != nil && p.popup.stage != popupAnnounced
+}
 
 // watchWindows takes every window the page opens and its own close.
 func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) {
@@ -100,7 +138,7 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 	h.popupSeq++
 	page := &hostPage{
 		id: popupPageID(h.downloadToken, h.popupSeq), profileID: opener.profileID, ephemeral: opener.ephemeral,
-		popup: &popupState{opener: opener, request: popupRequest{args: args, deferral: deferral}, uri: args.uri()},
+		popup: &popupState{openerID: opener.id, request: popupRequest{args: args, deferral: deferral}, uri: args.uri()},
 	}
 	h.pendingPopups++
 	h.mu.Lock()
@@ -124,8 +162,8 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 
 // settlePopup answers page's window request once: with view as the new
 // window, or, with view nil or one put_NewWindow refuses, with no window.
-// It completes the deferral and lets the request go, and is a no-op for a
-// page with no request open.
+// It completes the deferral, lets the request go and frees its place under
+// MaxPendingPopups, and is a no-op for a page with no request open.
 func (h *Host) settlePopup(page *hostPage, view *iCoreWebView2) error {
 	if page.popup == nil || page.popup.request.args == nil {
 		return nil
@@ -159,13 +197,16 @@ func (h *Host) answerNoWindow(page *hostPage) {
 }
 
 // popupReady hands the popup's new view to its request, once its controller
-// is up and every handler is attached, and reports the page under the CDP
-// target the view has then. The view starts at its opener's bounds, hidden,
-// so the window lays out at its opener's size until the backend sets its
-// viewport.
+// is up and every handler is attached, and reads the CDP target the view
+// has then. The view starts at its opener's bounds, hidden, so the window
+// lays out at its opener's size until the backend sets its viewport.
 func (h *Host) popupReady(page *hostPage, view *iCoreWebView2) {
-	opener := page.popup.opener
-	if !h.pageRegistered(opener) {
+	h.mu.Lock()
+	opener := h.pages[page.popup.openerID]
+	h.mu.Unlock()
+	if opener == nil || opener.controller == nil {
+		// A page that goes takes its popups (takeLocked), so this one is
+		// already going; its teardown answers the request.
 		h.discardCreated(page, "its opener closed")
 		return
 	}
@@ -178,6 +219,7 @@ func (h *Host) popupReady(page *hostPage, view *iCoreWebView2) {
 		h.discardCreated(page, err.Error())
 		return
 	}
+	page.popup.stage = popupCreated
 	// The window's own target exists once the deferral completed.
 	done := newDevToolsCompletedHandler(func(hr uintptr, resultJSON string) {
 		if !h.pageRegistered(page) {
@@ -192,7 +234,7 @@ func (h *Host) popupReady(page *hostPage, view *iCoreWebView2) {
 			h.discardCreated(page, err.Error())
 			return
 		}
-		h.announcePopup(page, targetID)
+		h.popupTargeted(page, targetID)
 	})
 	page.targetInfo = done
 	err := view.callDevToolsProtocolMethod("Target.getTargetInfo", "{}", done)
@@ -202,33 +244,141 @@ func (h *Host) popupReady(page *hostPage, view *iCoreWebView2) {
 	}
 }
 
-// announcePopup reports the popup, then every report it made meanwhile.
-func (h *Host) announcePopup(page *hostPage, targetID string) {
-	detail, err := PopupReport{Opener: page.popup.opener.id, Target: targetID, URL: page.popup.uri}.Encode()
-	if err != nil {
+// popupTargeted records the popup's target and announces it, unless its
+// opener is a popup not announced yet, whose announcement then announces
+// this one.
+func (h *Host) popupTargeted(page *hostPage, targetID string) {
+	page.popup.target, page.popup.stage = targetID, popupTargeted
+	h.mu.Lock()
+	opener := h.pages[page.popup.openerID]
+	h.mu.Unlock()
+	if opener != nil && opener.unannounced() {
+		return
+	}
+	h.announcePopup(page)
+}
+
+// announcePopup reports the popup, then what it held, then announces each
+// of its own popups that waited for it.
+func (h *Host) announcePopup(page *hostPage) {
+	if err := h.reportPopup(page); err != nil {
 		h.discardCreated(page, err.Error())
 		return
 	}
-	page.popup.announced = true
-	h.config.Report(page.id, ReportPopup, detail)
-	for _, held := range page.popup.held {
-		h.config.Report(page.id, held.kind, held.detail)
+	h.mu.Lock()
+	var waiting []*hostPage
+	for _, child := range h.pages {
+		if child.popup != nil && child.popup.openerID == page.id && child.popup.stage == popupTargeted {
+			waiting = append(waiting, child)
+		}
 	}
-	page.popup.held = nil
+	h.mu.Unlock()
+	for _, child := range waiting {
+		h.announcePopup(child)
+	}
+}
+
+// reportPopup sends the popup report and the reports it held, in that
+// order, and marks the popup announced.
+func (h *Host) reportPopup(page *hostPage) error {
+	detail, err := PopupReport{Opener: page.popup.openerID, Target: page.popup.target, URL: page.popup.uri}.Encode()
+	if err != nil {
+		return err
+	}
+	page.popup.stage = popupAnnounced
+	held := page.popup.held
+	page.popup.held = heldReports{}
+	h.config.Report(page.id, ReportPopup, detail)
+	if held.findUnavailable {
+		h.config.Report(page.id, ReportFindUnavailable, "")
+	}
+	for _, download := range held.downloads {
+		h.report(page, download)
+	}
+	if held.processFailed != "" {
+		h.config.Report(page.id, ReportProcessFailed, held.processFailed)
+	}
+	return nil
+}
+
+// departPopup is how every popup goes, by its page's close, its opener's,
+// the host's, a failed create or the backend's close, once it is out of the
+// registry. Its window request is answered if still open, which frees its
+// place at once (a late controller completion then only closes what it
+// created). The backend hears closed of an announced popup. One it has not
+// heard of that made a download is announced, with its held reports, then
+// closed, so a download is never saved unlisted, under the target it has,
+// or none when it went before its target was read, which the backend never
+// attaches; one that made none goes unheard. Runs on the UI thread before
+// the page's handlers retire, and answers whether to report it closed.
+func (h *Host) departPopup(page *hostPage) bool {
+	h.answerNoWindow(page)
+	if !page.unannounced() {
+		return true
+	}
+	if len(page.popup.held.downloads) == 0 {
+		return false
+	}
+	// The page's teardown cancels what still runs and reports nothing; the
+	// backend, which never listed the page, would settle none of it.
+	for _, d := range page.downloads {
+		h.holdDownload(page, d.snapshot(DownloadInterrupted, PopupGoneReason))
+	}
+	if err := h.reportPopup(page); err != nil {
+		h.config.Logf("browser host: popup %s: announce it as it goes: %v; its downloads are not listed", page.id, err)
+		return false
+	}
+	return true
+}
+
+// holdReport keeps one report of a popup the backend has not heard of,
+// newest of each kind, and reports whether it held it.
+func (h *Host) holdReport(page *hostPage, kind ReportKind, detail string) bool {
+	if !page.unannounced() {
+		return false
+	}
+	switch kind {
+	case ReportFindUnavailable:
+		page.popup.held.findUnavailable = true
+	case ReportProcessFailed:
+		page.popup.held.processFailed = detail
+	default:
+		// A key chord is the only other: a popup is hidden until the
+		// backend shows it, and a chord is not worth keeping.
+		h.config.Logf("browser host: page %s: drop a %s report made before the page was reported", page.id, kind)
+	}
+	return true
+}
+
+// holdDownload keeps a download snapshot of a popup the backend has not
+// heard of, in place of the download's older one, and reports whether it
+// held it.
+func (h *Host) holdDownload(page *hostPage, r DownloadReport) bool {
+	if !page.unannounced() {
+		return false
+	}
+	for i := range page.popup.held.downloads {
+		if page.popup.held.downloads[i].ID == r.ID {
+			page.popup.held.downloads[i] = r
+			return true
+		}
+	}
+	page.popup.held.downloads = append(page.popup.held.downloads, r)
+	return true
+}
+
+// popupDownloadRefused reports whether a download page starts now would be
+// past maxHeldPopupDownloads.
+func (p *hostPage) popupDownloadRefused() bool {
+	return p.unannounced() && len(p.popup.held.downloads) >= maxHeldPopupDownloads
 }
 
 // pageReport reports one of a page's own events, holding it while the page
 // is a popup the backend has not heard of.
 func (h *Host) pageReport(page *hostPage, kind ReportKind, detail string) {
-	if page.popup == nil || page.popup.announced {
+	if !h.holdReport(page, kind, detail) {
 		h.config.Report(page.id, kind, detail)
-		return
 	}
-	if len(page.popup.held) >= maxHeldPopupReports {
-		h.config.Logf("browser host: page %s: drop a %s report made before the page was reported", page.id, kind)
-		return
-	}
-	page.popup.held = append(page.popup.held, heldReport{kind: kind, detail: detail})
 }
 
 // windowCloseRequested closes a page whose document asked to close

@@ -480,15 +480,13 @@ func (h *Host) withPage(pageID string, fn func(*hostPage)) {
 	h.config.OnMain(func() { fn(page) })
 }
 
+// closePages closes the pages match selects, with every popup of theirs
+// not announced yet (takeLocked), and reports closed for each the backend
+// knows: a popup before its opener, so the backend still knows the opener
+// when it hears of the popup.
 func (h *Host) closePages(match func(*hostPage) bool) {
 	h.mu.Lock()
-	var closing []*hostPage
-	for id, page := range h.pages {
-		if match(page) {
-			closing = append(closing, page)
-			delete(h.pages, id)
-		}
-	}
+	closing := h.takeLocked(match)
 	h.mu.Unlock()
 	if len(closing) == 0 {
 		return
@@ -496,42 +494,81 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 	var reported []*hostPage
 	h.config.OnMain(func() {
 		for _, page := range closing {
-			// A popup still being created answers its window request with no
-			// window. The backend hears of a close only for a page it knows.
-			h.answerNoWindow(page)
-			if page.popup == nil || page.popup.announced {
+			if h.depart(page) {
 				reported = append(reported, page)
 			}
-			h.retireHandlers(page)
-			if page.view != nil {
-				page.view.release()
-			}
-			if page.controller2 != nil {
-				page.controller2.release()
-				page.controller2 = nil
-			}
-			if page.controller != nil {
-				held := focusWithin(page.raiseTarget())
-				if err := page.controller.close(); err != nil {
-					h.config.Logf("browser host: close page %s: %v", page.id, err)
-				}
-				page.controller.release()
-				// After the controller, always: closing it destroys the window
-				// inside the container, and a container that outlives its page
-				// is an invisible window eating every click over its rectangle.
-				destroyWindow(page.container)
-				page.container = 0
-				h.releaseFocus(page, held)
-			}
-			// A container with no controller is the parent of an asynchronous
-			// create still in flight. Its completion owns both the controller
-			// and container after observing that this page was unregistered;
-			// destroying the parent now destabilizes the WebView2 create itself.
+			h.teardown(page)
 		}
 	})
-	for _, page := range reported {
-		h.config.Report(page.id, ReportClosed, "")
+	for i := len(reported) - 1; i >= 0; i-- {
+		h.config.Report(reported[i].id, ReportClosed, "")
 	}
+}
+
+// takeLocked removes from the registry the pages match selects and, with
+// each, every popup of its not announced yet, transitively: the backend
+// cannot hear of a popup whose opener it has stopped knowing. It answers
+// them each before its popups. The caller holds h.mu.
+func (h *Host) takeLocked(match func(*hostPage) bool) []*hostPage {
+	var taken []*hostPage
+	for id, page := range h.pages {
+		if match(page) {
+			taken = append(taken, page)
+			delete(h.pages, id)
+		}
+	}
+	for i := 0; i < len(taken); i++ {
+		for id, page := range h.pages {
+			if page.unannounced() && page.popup.openerID == taken[i].id {
+				taken = append(taken, page)
+				delete(h.pages, id)
+			}
+		}
+	}
+	return taken
+}
+
+// depart settles a page taken from the registry with what the backend
+// hears of it, before its teardown: a popup leaves through departPopup, and
+// a page the backend created is reported closed. Runs on the UI thread.
+func (h *Host) depart(page *hostPage) bool {
+	if page.popup != nil {
+		return h.departPopup(page)
+	}
+	return true
+}
+
+// teardown lets go of a page taken from the registry: its handlers, view
+// and controller, and the clip container once the controller is closed.
+// Runs on the UI thread.
+func (h *Host) teardown(page *hostPage) {
+	h.retireHandlers(page)
+	if page.view != nil {
+		page.view.release()
+		page.view = nil
+	}
+	if page.controller2 != nil {
+		page.controller2.release()
+		page.controller2 = nil
+	}
+	if page.controller != nil {
+		held := focusWithin(page.raiseTarget())
+		if err := page.controller.close(); err != nil {
+			h.config.Logf("browser host: close page %s: %v", page.id, err)
+		}
+		page.controller.release()
+		page.controller = nil
+		// After the controller, always: closing it destroys the window
+		// inside the container, and a container that outlives its page
+		// is an invisible window eating every click over its rectangle.
+		destroyWindow(page.container)
+		page.container = 0
+		h.releaseFocus(page, held)
+	}
+	// A container with no controller is the parent of an asynchronous
+	// create still in flight. Its completion owns both the controller and
+	// container after observing that this page was unregistered;
+	// destroying the parent now destabilizes the WebView2 create itself.
 }
 
 // ---------------------------------------------------------------------
@@ -938,10 +975,10 @@ func (h *Host) failUncreated(page *hostPage, detail string) {
 	destroyWindow(page.container)
 	page.container = 0
 	if page.popup != nil {
-		// The backend never heard of the popup: its window request is
-		// answered with no window.
-		h.answerNoWindow(page)
-		h.config.Logf("browser host: popup %s of page %s: %s", page.id, page.popup.opener.id, detail)
+		// Never created, so it made no report: it goes unheard, its window
+		// request answered with no window.
+		h.departPopup(page)
+		h.config.Logf("browser host: popup %s of page %s: %s", page.id, page.popup.openerID, detail)
 		return
 	}
 	if mine {
@@ -966,44 +1003,34 @@ func (h *Host) pageRegistered(page *hostPage) bool {
 func (h *Host) discardCreated(page *hostPage, detail string) {
 	// Take the registry entry atomically: whichever of this and
 	// closePages removes the page owns its teardown, so the controller
-	// can never be closed twice.
+	// can never be closed twice. A popup takes its own popups with it.
 	h.mu.Lock()
-	mine := h.pages[page.id] == page
-	if mine {
-		delete(h.pages, page.id)
+	var taken []*hostPage
+	if h.pages[page.id] == page {
+		taken = h.takeLocked(func(p *hostPage) bool { return p == page })
 	}
 	h.mu.Unlock()
-	if !mine {
+	if len(taken) == 0 {
 		// Already settled by close or close-profile; their teardown owns
 		// the controller and their closed report is the final word.
 		return
 	}
-	// A popup's window request is answered before its view goes.
-	h.answerNoWindow(page)
-	h.retireHandlers(page)
-	if page.view != nil {
-		page.view.release()
-		page.view = nil
-	}
-	if page.controller2 != nil {
-		page.controller2.release()
-		page.controller2 = nil
-	}
-	if page.controller != nil {
-		if err := page.controller.close(); err != nil {
-			h.config.Logf("browser host: page %s discard: %v", page.id, err)
+	var reported []*hostPage
+	for _, p := range taken {
+		if p.popup != nil {
+			if h.departPopup(p) {
+				reported = append(reported, p)
+			}
+			h.config.Logf("browser host: popup %s of page %s: %s", p.id, p.popup.openerID, detail)
 		}
-		page.controller.release()
-		page.controller = nil
+		h.teardown(p)
 	}
-	destroyWindow(page.container)
-	page.container = 0
-	if page.popup != nil {
-		// Reached before the popup report: the backend never heard of it.
-		h.config.Logf("browser host: popup %s of page %s: %s", page.id, page.popup.opener.id, detail)
-		return
+	for i := len(reported) - 1; i >= 0; i-- {
+		h.config.Report(reported[i].id, ReportClosed, "")
 	}
-	h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
+	if page.popup == nil {
+		h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
+	}
 }
 
 // retireHandlers detaches the callbacks of a page that is going, so a late

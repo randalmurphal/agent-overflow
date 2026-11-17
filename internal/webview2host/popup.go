@@ -31,13 +31,22 @@ const MaxPendingPopups = 4
 // a popup refused here is one the backend would refuse.
 const MaxHostPages = 64
 
+// PopupGoneReason is the reason of the interrupted snapshot that ends a
+// running download of a popup that went before the launcher reported it:
+// the launcher canceled the download with the popup's page, which the
+// backend lists as canceled, as it does a download of any page that goes.
+const PopupGoneReason = "the window it began in closed before it opened"
+
 // MaxPopupURLBytes bounds the address a popup report carries. The backend
 // shows it until the page's own reports arrive.
 const MaxPopupURLBytes = 2048
 
 // PopupReport is the detail of a ReportPopup: the page id of the page that
 // opened the window, the popup's CDP target, and the address it was asked
-// to open.
+// to open. A popup is reported after its opener. One that goes before the
+// backend heard of it is reported only if it made a download, then its
+// held reports, then closed (departPopup); its Target is empty when it went
+// before its target was read, and the backend never attaches it.
 type PopupReport struct {
 	Opener string `json:"opener"`
 	Target string `json:"target"`
@@ -85,8 +94,10 @@ func (r PopupReport) validate() error {
 	if err := ValidatePageID(r.Opener); err != nil {
 		return fmt.Errorf("popup opener: %w", err)
 	}
-	if err := validateToken("popup target", r.Target, maxPageIDLen); err != nil {
-		return err
+	if r.Target != "" {
+		if err := validateToken("popup target", r.Target, maxPageIDLen); err != nil {
+			return err
+		}
 	}
 	if len(r.URL) > MaxPopupURLBytes {
 		return errors.New("popup address exceeds its bound")

@@ -58,7 +58,6 @@ func TestParsePopupReportRefusesMalformedReports(t *testing.T) {
 		"not json":           "popup",
 		"no opener":          `{"target":"t"}`,
 		"opener not an id":   `{"opener":"a/b","target":"t"}`,
-		"no target":          `{"opener":"p"}`,
 		"target not a token": `{"opener":"p","target":"t\n"}`,
 		"address too long":   `{"opener":"p","target":"t","url":"` + strings.Repeat("a", MaxPopupURLBytes+1) + `"}`,
 	} {
@@ -66,8 +65,13 @@ func TestParsePopupReportRefusesMalformedReports(t *testing.T) {
 			t.Errorf("%s: parsed", name)
 		}
 	}
-	if _, err := (PopupReport{Opener: "p"}).Encode(); err == nil {
-		t.Error("a report with no target encoded")
+	// A popup that went before its target was read is reported with none.
+	detail, err := (PopupReport{Opener: "p"}).Encode()
+	if err != nil {
+		t.Fatalf("a report with no target: %v", err)
+	}
+	if got, err := ParsePopupReport(detail); err != nil || got.Target != "" {
+		t.Errorf("a report with no target parsed as %+v, %v", got, err)
 	}
 }
 
