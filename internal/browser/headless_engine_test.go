@@ -96,10 +96,18 @@ func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call f
 			// whether it attached to a worker. A page answers Window.
 			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
 		case "Page.getFrameTree":
-			return map[string]any{"frameTree": map[string]any{"frame": map[string]any{
-				"id": "F-1", "loaderId": "L-1", "url": "about:blank",
-				"securityOrigin": "://", "mimeType": "text/html",
-			}}}
+			// A page whose frames attached before the attach, as a popup's
+			// made before its adoption did: a child and its child.
+			frame := func(id, parent string) map[string]any {
+				return map[string]any{"id": id, "parentId": parent, "loaderId": "L-1", "url": "about:blank", "securityOrigin": "://", "mimeType": "text/html"}
+			}
+			return map[string]any{"frameTree": map[string]any{
+				"frame": frame("F-1", ""),
+				"childFrames": []any{map[string]any{
+					"frame":       frame("F-child", "F-1"),
+					"childFrames": []any{map[string]any{"frame": frame("F-grandchild", "F-child")}},
+				}},
+			}}
 		case "DOM.getDocument":
 			// Attaching to a target that already exists, as adopting a
 			// popup does, reads its document at once.
@@ -411,6 +419,26 @@ func TestHeadlessProfileReusesItsBrowserForEveryPage(t *testing.T) {
 		if !ok || owner != profile {
 			t.Fatalf("page %q is bound to %v", driver.Handle(), owner)
 		}
+	}
+}
+
+// A page knows the frames it had before its attach, which no frame event
+// reports: a popup's iframe made before its adoption is the popup's.
+func TestCDPPageOwnsTheFramesItHadBeforeItsAttach(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frame := range []string{"F-child", "F-grandchild"} {
+		if !page.OwnsFrame(frame) {
+			t.Errorf("the page does not own its frame %s", frame)
+		}
+	}
+	if page.OwnsFrame("F-stranger") {
+		t.Error("the page owns a frame it never had")
 	}
 }
 
@@ -736,7 +764,8 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 // the authority of the page its frame belongs to, or of its popup's openers.
 // A request whose owner is not resolved (a popup's request before Chromium
 // reports the popup, a subframe no page reported, a popup whose opener
-// closed) waits for one within the owner bound, then is refused.
+// closed) is allowed at once what a page with no workspace's authority may
+// open; any other waits for one within the owner bound, then is refused.
 func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	manager, jars := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
@@ -817,7 +846,7 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 
 	expect("before the popup is reported", map[string][3]string{
 		"R-early":         {"P-popup", files["one"], "refuse"},
-		"R-early-web":     {"P-popup", "https://example.test/", "refuse"},
+		"R-early-web":     {"P-popup", "https://example.test/", "allow"},
 		"R-unknown-frame": {"F-unknown", files["one"], "refuse"},
 		"R-frame":         {"F-of-A", files["one"], "allow"},
 		"R-frame-other":   {"F-of-A", files["two"], "refuse"},

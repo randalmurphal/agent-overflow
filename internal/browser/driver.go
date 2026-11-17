@@ -218,9 +218,11 @@ type profileOptions struct {
 	// frame the request belongs to followed by the pages that opened its
 	// page, nearest first, as far as the engine knows them. The Manager
 	// answers with the authority of the first owner it resolves to one of
-	// its pages, and answers resolved false when none resolves (jarAllows);
-	// the engine then asks again as it learns more owners and refuses the
-	// request past requestOwnerWait (awaitRequestOwner). The WebKit engines
+	// its pages, and when none resolves answers resolved false with what a
+	// page with no workspace's authority may open (jarAllows). The engine
+	// allows that at once; for anything else it asks again as it learns
+	// more owners and refuses the request past requestOwnerWait
+	// (awaitRequestOwner). The WebKit engines
 	// need none: their glue names a popup's opener for every navigation
 	// decision.
 	Allow func(owners []string, rawURL string) (allowed, resolved bool)

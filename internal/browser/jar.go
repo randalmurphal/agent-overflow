@@ -147,7 +147,9 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 // opener's authority, which is what it is allowed once adopted. A request
 // none of whose owners resolves (a frame no page has reported yet, a popup
 // seen before its opener is known or after its opener closed) is answered
-// unresolved, and its engine asks again or refuses it.
+// unresolved, with what a page with no workspace's authority may open: its
+// engine allows that at once, and asks again for anything else
+// (awaitRequestOwner).
 func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (allowed, resolved bool) {
 	var access Access
 	m.mu.Lock()
@@ -158,10 +160,7 @@ func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) (al
 		}
 	}
 	m.mu.Unlock()
-	if !resolved {
-		return false, false
-	}
-	return m.navigationAllowed(access, rawURL), true
+	return m.navigationAllowed(access, rawURL), resolved
 }
 
 // framePageLocked answers the page of scope, live or being created, that

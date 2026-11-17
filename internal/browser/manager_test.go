@@ -951,8 +951,12 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 		t.Fatal("the profile was created without a navigation policy")
 	}
 	allow := resolvedPolicy(t, policy)
-	if allowed, resolved := policy([]string{"F-none"}, "https://example.test/"); allowed || resolved {
-		t.Errorf("a request no page owns was answered allowed %v, resolved %v", allowed, resolved)
+	// A request no page owns is answered unresolved, with what a page with
+	// no workspace's authority may open.
+	for url, want := range map[string]bool{"https://example.test/": true, "file://" + files["workspace"]: false} {
+		if allowed, resolved := policy([]string{"F-none"}, url); allowed != want || resolved {
+			t.Errorf("a request no page owns for %s was answered allowed %v, resolved %v", url, allowed, resolved)
+		}
 	}
 	for url, want := range map[string]bool{
 		"file://" + files["workspace"]: true,

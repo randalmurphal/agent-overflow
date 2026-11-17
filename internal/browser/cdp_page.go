@@ -283,6 +283,14 @@ func (p *cdpPage) installHandlers() error {
 	onTargetEvent(ctx, page.FrameDetached, logf, func(event page.EventFrameDetached) {
 		p.frames.detached(event.FrameID)
 	})
+	// A frame that attached before the subscriptions above, as a popup's
+	// iframe made before its adoption did, sends no event of its own: the
+	// frame tree names it, read once they are in place.
+	tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{})
+	if err != nil {
+		return fmt.Errorf("browser: read the page's frames: %w", err)
+	}
+	p.frames.seed(tree.FrameTree)
 	// The main frame's id is the target's.
 	onTargetEvent(ctx, page.FrameStartedLoading, logf, func(event page.EventFrameStartedLoading) {
 		if string(event.FrameID) == p.handle {
@@ -399,20 +407,23 @@ func answerPausedRequest(lifetime context.Context, session cdp.Session, event fe
 	}()
 }
 
-// requestOwnerWait bounds how long a paused request whose owners no page
-// answers to yet waits for one: its target's creation, which chromedp
-// delivers on a subscription of its own, in no fixed order with the pause;
-// its popup's report from the launcher; or its frame's attach. Past it the
-// request is refused. requestOwnerPoll is how often it asks again.
+// requestOwnerWait bounds how long a paused request that needs an owner's
+// authority, and whose owners no page answers to yet, waits for one: its
+// target's creation, which chromedp delivers on a subscription of its own,
+// in no fixed order with the pause; its popup's report from the launcher;
+// or its frame's attach. Past it the request is refused. requestOwnerPoll
+// is how often it asks again.
 const (
 	requestOwnerWait = 2 * time.Second
 	requestOwnerPoll = 5 * time.Millisecond
 )
 
 // awaitRequestOwner answers a paused request with decide's answer once
-// decide resolves an owner, asking again every requestOwnerPoll for up to
-// wait (requestOwnerWait when zero), and refuses it when none resolves by
-// then or lifetime ends. Runs off the event reader (answerPausedRequest).
+// decide resolves an owner, or at once when decide allows it with none (a
+// page with no workspace's authority may make it). Otherwise it asks again
+// every requestOwnerPoll for up to wait (requestOwnerWait when zero), and
+// refuses the request when no owner resolves by then or lifetime ends.
+// Runs off the event reader (answerPausedRequest).
 func awaitRequestOwner(lifetime context.Context, wait time.Duration, decide func() (allowed, resolved bool), logf func(string, ...any)) bool {
 	if wait <= 0 {
 		wait = requestOwnerWait
@@ -420,7 +431,7 @@ func awaitRequestOwner(lifetime context.Context, wait time.Duration, decide func
 	deadline := time.Now().Add(wait)
 	for {
 		allowed, resolved := decide()
-		if resolved {
+		if resolved || allowed {
 			return allowed
 		}
 		if !time.Now().Before(deadline) {

@@ -308,24 +308,37 @@ func (e *hostedEngine) forgetPopupLocked(pageID string) func() {
 // owners resolve to, asked with those owners, which are the frame, then
 // the pages that opened its page, nearest first, as the connection's
 // targets name them and, past a popup the launcher reported, as its report
-// names its opener (reportedOpenersLocked). It answers unresolved when no
-// owner resolves to a page of the engine's.
+// names its opener (reportedOpenersLocked). When no owner resolves to a
+// page of the engine's, every profile's policy is asked in turn, in case a
+// page the engine has not bound yet is one of its jar's, and the last
+// answers unresolved with what a page with no workspace's authority may
+// open (jarAllows); with no profile, it is refused unresolved.
 func (e *hostedEngine) allowRequest(targets *cdpTargets, frame, rawURL string) (allowed, resolved bool) {
 	owners := targets.owners(frame)
 	e.mu.Lock()
 	owners = e.reportedOpenersLocked(owners)
-	var allow func([]string, string) (bool, bool)
+	var policies []func([]string, string) (bool, bool)
 	for _, owner := range owners {
 		if pageID, ok := e.ownerPageLocked(owner); ok {
-			allow = e.policies[e.pageProfile[pageID]]
+			policies = append(policies, e.policies[e.pageProfile[pageID]])
 			break
 		}
 	}
-	e.mu.Unlock()
-	if allow == nil {
-		return false, false
+	if len(policies) == 0 {
+		for _, policy := range e.policies {
+			policies = append(policies, policy)
+		}
 	}
-	return allow(owners, rawURL)
+	e.mu.Unlock()
+	for _, allow := range policies {
+		if allow == nil {
+			continue
+		}
+		if allowed, resolved = allow(owners, rawURL); resolved {
+			return allowed, true
+		}
+	}
+	return allowed, false
 }
 
 // reportedOpenersLocked extends owners, a frame and the pages that opened

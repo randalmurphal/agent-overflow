@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +22,8 @@ import (
 // downloads and closes before its tab is listed: the download is listed,
 // finished, in its opener's tab. A popup a popup opens becomes a tab of the
 // same thread, one the popup opens with no gesture while it is still held
-// from its listing included.
+// from its listing included. A frame a popup makes while held is the
+// popup's once it is listed.
 // Gated with TestHeadlessChromiumReal.
 func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	if os.Getenv("AO_HEADLESS_CHROMIUM_SMOKE") != "1" {
@@ -29,22 +31,36 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	}
 	t.Setenv("HOME", t.TempDir())
 	payload := bytes.Repeat([]byte("p"), 50_000)
+	var seenMu sync.Mutex
+	seen := map[string]bool{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMu.Lock()
+		seen[r.URL.Path] = true
+		seenMu.Unlock()
 		switch r.URL.Path {
-		case "/popup.bin":
+		case "/popup.bin", "/framed.bin":
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", `attachment; filename="popup.bin"`)
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, r.URL.Path[1:]))
 			w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
 			_, _ = w.Write(payload)
 		case "/autoparent":
 			// Opens its own popup as it loads, with no gesture, while the
 			// Manager still holds it from its listing.
 			_, _ = fmt.Fprint(w, `<!doctype html><title>autoparent</title><script>window.open("/autochild")</script>`)
+		case "/framer":
+			// Makes a same-origin frame as it loads, while the Manager
+			// still holds it from its listing.
+			_, _ = fmt.Fprint(w, `<!doctype html><title>framer</title><iframe id="f" src="/inner"></iframe>`)
 		default:
 			name := r.URL.Path[1:]
-			_, _ = fmt.Fprintf(w, `<!doctype html><title>%s</title><button id="download" onclick='window.open("/popup.bin")'>d</button><button id="parent" onclick='window.open("/parent")'>p</button><button id="child" onclick='window.open("/child")'>c</button><button id="autoparent" onclick='window.open("/autoparent")'>a</button>`, name)
+			_, _ = fmt.Fprintf(w, `<!doctype html><title>%s</title><button id="download" onclick='window.open("/popup.bin")'>d</button><button id="parent" onclick='window.open("/parent")'>p</button><button id="child" onclick='window.open("/child")'>c</button><button id="autoparent" onclick='window.open("/autoparent")'>a</button><button id="framer" onclick='window.open("/framer")'>f</button>`, name)
 		}
 	}))
+	served := func(path string) bool {
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		return seen[path]
+	}
 	t.Cleanup(server.Close)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{HeadlessChromium: &HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}})
 	engine, ok := manager.engine.(*headlessEngine)
@@ -136,5 +152,43 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	t.Run("a popup's popup opened with no gesture before its opener's listing", func(t *testing.T) {
 		click(t, opener.ID, "autoparent")
 		await(t, "the parent's and the child's tabs", func() bool { return tabNamed("autoparent") != "" && tabNamed("autochild") != "" })
+	})
+
+	// The frame is the popup's from its listing on, though it reported
+	// itself before: a download in it is listed in the popup's tab, and a
+	// navigation of it reaches the server.
+	t.Run("a frame a popup made before its listing", func(t *testing.T) {
+		click(t, opener.ID, "framer")
+		await(t, "the framer's tab", func() bool { return tabNamed("framer") != "" })
+		framer := tabNamed("framer")
+		await(t, "the frame's document", func() bool { return served("/inner") })
+		navigateFrame := func(path string) {
+			t.Helper()
+			if _, _, err := manager.Evaluate(ctx, access, framer, fmt.Sprintf(`document.getElementById("f").contentWindow.location.href = %q; true`, path), nil); err != nil {
+				t.Fatalf("navigate the frame to %s: %v", path, err)
+			}
+		}
+		// A download commits no document, so the frame's attach is still
+		// the one no event of the tab's reported.
+		navigateFrame("/framed.bin")
+		await(t, "the frame's download to finish in the framer's tab", func() bool {
+			p, _, err := manager.lookupOwnedPage(access, framer)
+			if err != nil {
+				return false
+			}
+			p.downloadMu.Lock()
+			defer p.downloadMu.Unlock()
+			for _, d := range p.downloads {
+				if d.SuggestedName == "framed.bin" {
+					if d.State != downloadStateCompleted && d.State != downloadStateRunning {
+						t.Fatalf("the frame's download ended %s", d.State)
+					}
+					return d.State == downloadStateCompleted
+				}
+			}
+			return false
+		})
+		navigateFrame("/framed-later")
+		await(t, "the frame's navigation to reach the server", func() bool { return served("/framed-later") })
 	})
 }

@@ -114,10 +114,13 @@ delivers them at the listing (`adoptedPage`). The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per
 request, so a popup's requests before its adoption have its opener chain's
 authority, the launcher's popup report counting as an opener edge on the
-hosted engine. A request whose owner does not resolve yet waits up to
-`requestOwnerWait` for it, then is refused (`awaitRequestOwner`); a CDP
-page installs no interception of its own. Each CDP connection keeps one record
-of its targets (`cdp_targets.go`), which goes with the connection.
+hosted engine. A request whose owner does not resolve yet is answered at
+once with what a page with no workspace's authority may open (`jarAllows`);
+only one that needs an owner's authority waits up to `requestOwnerWait`
+for it, then is refused (`awaitRequestOwner`). A CDP page seeds its frames
+from its frame tree at attach and installs no interception of its own.
+Each CDP connection keeps one bounded record of its targets
+(`cdp_targets.go`), which goes with the connection.
 
 The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes

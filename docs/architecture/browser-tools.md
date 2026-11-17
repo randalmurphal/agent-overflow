@@ -75,8 +75,12 @@ per-platform no-op.
   is in. The CDP engines pause each document request and file read once,
   browser-wide, and answer it with the jar's policy: the authority of the
   page its frame belongs to, or for a popup not yet adopted, of its opener
-  chain; one whose owner is not resolved yet waits up to 2 seconds for
-  its target, its popup's report or its frame, then is refused.
+  chain. One whose owner is not resolved yet is allowed at once what a
+  page with no workspace's authority may open (a web address); one that
+  needs an owner's authority (a workspace file) waits up to 2 seconds for
+  its target, its popup's report or its frame, then is refused. A page
+  attached after its frames were made, a popup at its adoption, reads
+  them from its frame tree.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying

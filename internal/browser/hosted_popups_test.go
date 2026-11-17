@@ -392,19 +392,26 @@ func TestHostedPopupCrashDuringAdoptionReachesItsTab(t *testing.T) {
 }
 
 // policyRecorder stands in for the profiles' policies: each answers
-// resolved, allowing what profile "a" asks, and records the profile asked
-// and the owners it was asked with.
+// resolved for owners that name one of its frames, allowing what profile
+// "a" asks, and otherwise answers unresolved, allowing a web address alone,
+// as a jar does with no workspace's authority (jarAllows). It records the
+// profile asked and the owners it was asked with.
 type policyRecorder struct {
 	mu    sync.Mutex
 	asked [][]string
 }
 
-func (r *policyRecorder) policy(name string) func([]string, string) (bool, bool) {
-	return func(owners []string, _ string) (bool, bool) {
+func (r *policyRecorder) policy(name string, frames ...string) func([]string, string) (bool, bool) {
+	return func(owners []string, rawURL string) (bool, bool) {
 		r.mu.Lock()
 		r.asked = append(r.asked, append([]string{name}, owners...))
 		r.mu.Unlock()
-		return name == "a", true
+		for _, owner := range owners {
+			if slices.Contains(frames, owner) {
+				return name == "a", true
+			}
+		}
+		return strings.HasPrefix(rawURL, "https:"), false
 	}
 }
 
@@ -428,8 +435,8 @@ func newPolicyEngine(t *testing.T) (*hostedEngine, *policyRecorder) {
 	t.Cleanup(engine.Stop)
 	r := &policyRecorder{}
 	engine.mu.Lock()
-	engine.policies["prof-a"] = r.policy("a")
-	engine.policies["prof-b"] = r.policy("b")
+	engine.policies["prof-a"] = r.policy("a", "T-a", "F-sub")
+	engine.policies["prof-b"] = r.policy("b", "T-b")
 	engine.pageProfile["page-a"] = "prof-a"
 	engine.pageProfile["page-b"] = "prof-b"
 	engine.mu.Unlock()
@@ -440,15 +447,14 @@ func newPolicyEngine(t *testing.T) (*hostedEngine, *policyRecorder) {
 
 // The browser-wide policy answers a request with the policy of the page its
 // frame belongs to, or, for a popup no page answers to yet, of its openers,
-// nearest first; with no owner resolved, it answers unresolved and asks no
-// policy.
+// nearest first. With no owner resolved, it answers unresolved with what
+// the profiles' policies allow a page with no workspace's authority.
 func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	engine, r := newPolicyEngine(t)
 	engine.currentTargets().created(&target.Info{TargetID: "T-popup", Type: "page", OpenerID: "T-a"}, nil)
 	engine.currentTargets().created(&target.Info{TargetID: "T-grand", Type: "page", OpenerID: "T-popup"}, nil)
 
-	// want is the policy asked, then the owners it is asked with; none for
-	// an unresolved request.
+	// want is the policy asked, then the owners it is asked with.
 	for _, tc := range []struct {
 		frame string
 		want  []string
@@ -456,26 +462,32 @@ func TestHostedBrowserPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		{"T-a", []string{"a", "T-a"}},
 		{"T-b", []string{"b", "T-b"}},
 		{"T-grand", []string{"a", "T-grand", "T-popup", "T-a"}},
-		{"T-stranger", nil},
 	} {
 		allowed, resolved := engine.allowRequest(engine.currentTargets(), tc.frame, "https://example.test/")
 		asked := r.take()
 		switch {
-		case tc.want == nil:
-			if resolved || len(asked) != 0 {
-				t.Errorf("%s: resolved %v, asked %v, want unresolved", tc.frame, resolved, asked)
-			}
 		case !resolved || len(asked) != 1 || !slices.Equal(asked[0], tc.want):
 			t.Errorf("%s: resolved %v, asked %v, want %v", tc.frame, resolved, asked, tc.want)
 		case allowed != (tc.want[0] == "a"):
 			t.Errorf("%s: allowed %v by policy %s", tc.frame, allowed, tc.want[0])
 		}
 	}
+	wantNoAuthority := func(step, frame string) {
+		t.Helper()
+		for url, want := range map[string]bool{"https://example.test/": true, "file:///w/one.html": false} {
+			allowed, resolved := engine.allowRequest(engine.currentTargets(), frame, url)
+			if allowed != want || resolved {
+				t.Errorf("%s: %s was answered allowed %v, resolved %v; want %v unresolved", step, url, allowed, resolved, want)
+			}
+			if asked := r.take(); len(asked) == 0 || asked[0][1] != frame {
+				t.Errorf("%s: asked %v, want a policy asked for %s", step, asked, frame)
+			}
+		}
+	}
+	wantNoAuthority("a frame no page answers for", "T-stranger")
 	// A destroyed target's link to its opener goes with it.
 	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "T-popup"})
-	if _, resolved := engine.allowRequest(engine.currentTargets(), "T-grand", "https://example.test/"); resolved {
-		t.Errorf("after the destroy the popup's popup resolved: %v", r.take())
-	}
+	wantNoAuthority("after the destroy, the popup's popup", "T-grand")
 	// With no profile's policy, nothing resolves.
 	engine.mu.Lock()
 	clear(engine.policies)
@@ -518,10 +530,11 @@ func TestHostedBrowserPolicyResolvesASubframeToItsPage(t *testing.T) {
 	}
 }
 
-// A request paused before anything names its owner waits for it, whichever
-// comes second of the pause and its target's creation, or of the pause and
-// the launcher's report of its popup, and is refused when nothing names one
-// within the bound.
+// A request that needs an owner's authority, paused before anything names
+// its owner, waits for it, whichever comes second of the pause and its
+// target's creation, or of the pause and the launcher's report of its
+// popup, and is refused when nothing names one within the bound. One a page
+// with no workspace's authority may make is allowed at once.
 func TestHostedPausedRequestWaitsForItsOwner(t *testing.T) {
 	learn := map[string]func(e *hostedEngine){
 		"target created": func(e *hostedEngine) {
@@ -542,7 +555,7 @@ func TestHostedPausedRequestWaitsForItsOwner(t *testing.T) {
 				answered := make(chan bool, 1)
 				go func() {
 					answered <- awaitRequestOwner(t.Context(), engine.ownerWait, func() (bool, bool) {
-						return engine.allowRequest(engine.currentTargets(), "T-pop", "https://example.test/")
+						return engine.allowRequest(engine.currentTargets(), "T-pop", "file:///w/one.html")
 					}, t.Logf)
 				}()
 				if pausedFirst {
@@ -557,25 +570,35 @@ func TestHostedPausedRequestWaitsForItsOwner(t *testing.T) {
 				if !<-answered {
 					t.Fatalf("the request was refused: asked %v", r.take())
 				}
-				if asked := r.take(); len(asked) != 1 || !slices.Equal(asked[0], []string{"a", "T-pop", "T-a"}) {
+				if asked := r.take(); len(asked) == 0 || !slices.Equal(asked[len(asked)-1], []string{"a", "T-pop", "T-a"}) {
 					t.Fatalf("asked %v", asked)
 				}
 			})
 		}
 	}
 	t.Run("nothing names one", func(t *testing.T) {
-		engine, r := newPolicyEngine(t)
+		engine, _ := newPolicyEngine(t)
 		start := time.Now()
 		if awaitRequestOwner(t.Context(), 50*time.Millisecond, func() (bool, bool) {
-			return engine.allowRequest(engine.currentTargets(), "T-stranger", "https://example.test/")
+			return engine.allowRequest(engine.currentTargets(), "T-stranger", "file:///w/one.html")
 		}, t.Logf) {
 			t.Fatal("a request no page answers for was allowed")
 		}
 		if waited := time.Since(start); waited < 50*time.Millisecond {
 			t.Fatalf("refused after %v, before the bound", waited)
 		}
-		if asked := r.take(); len(asked) != 0 {
-			t.Fatalf("asked %v", asked)
+	})
+	// What a page with no workspace's authority may open needs no owner.
+	t.Run("none is needed", func(t *testing.T) {
+		engine, _ := newPolicyEngine(t)
+		start := time.Now()
+		if !awaitRequestOwner(t.Context(), hostedTestDeadline, func() (bool, bool) {
+			return engine.allowRequest(engine.currentTargets(), "T-stranger", "https://example.test/")
+		}, t.Logf) {
+			t.Fatal("a web request no page answers for was refused")
+		}
+		if waited := time.Since(start); waited >= hostedTestDeadline/2 {
+			t.Fatalf("allowed after %v, waiting for an owner it does not need", waited)
 		}
 	})
 }
