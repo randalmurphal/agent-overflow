@@ -73,7 +73,7 @@ type jarIdentity struct {
 }
 
 // jarScope is one open cookie jar: its engine profile and the pages in it,
-// which may belong to several workspaces' authority (jar.go).
+// which may belong to several workspaces' authority.
 type jarScope struct {
 	jar     jarIdentity
 	profile engineProfile

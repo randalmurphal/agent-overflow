@@ -50,7 +50,7 @@ type pageLoad struct {
 	reads uint64
 	// unpushed is set by a change to anything the thread's state push shows
 	// of the page (its info, loading or favicon) and cleared by the next push
-	// to every client (companion.go).
+	// to every client (state_push.go).
 	unpushed bool
 }
 
