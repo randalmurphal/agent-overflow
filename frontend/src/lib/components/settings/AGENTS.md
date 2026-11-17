@@ -47,5 +47,7 @@ on `remoteAccessAvailable()`. Rail, search and deep links read the filtered
 views (`settingsSectionGroups`, `settingsFields`, `settingsSectionAvailable`).
 
 A hint that names assistants carries its wording without them as
-`assistantsOffHint` in `fields.ts`; the page renders `settingsFieldHint`,
-which, like `settingsFields`, reads it while assistants are off.
+`assistantsOffHint` in `fields.ts`; the page renders `settingsFieldHint`
+with its computer, which reads it while that computer has assistants off.
+`settingsFields`, for rail and search, reads it while no attached computer
+has them on.

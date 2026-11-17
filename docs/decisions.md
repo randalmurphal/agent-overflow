@@ -302,8 +302,9 @@ Mechanism in
 - Turning assistants off pauses and hides them; it never deletes. Every assistant, thread, home, memory folder, wake
   registration and draft stays as it was, and turning them on resumes
   each loop and watch, serving the fires it missed once with their
-  count. The setting is the computer's: it hides assistants in that
-  computer's window wherever they live, and pauses only that computer's
+  count. The setting is the computer's: its assistants are shown and
+  running, or hidden and paused, in every window, by that computer's
+  setting alone, and Settings changes the computer its picker shows
   ([standing agents](specs/standing-agents.md), "Turning assistants off").
 - Multi-agent discussions are removed. No thread nests under another in
   the sidebar; a thread renders flat under its project or group, and a

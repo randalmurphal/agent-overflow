@@ -1428,28 +1428,56 @@ is in Settings under Agents, between Thread tools and Agent profiles,
 beside the other settings about what agents get. Off pauses and hides;
 it never deletes ([decisions](../decisions.md#sidebar-threads-drafts)).
 
-**Hidden in this window.** The window reads the setting of the computer
-it runs on and hides every assistant, on whichever computer it lives:
-the Assistants section, New Assistant in a project's menu, New Thread,
-Same Assistant, the Projects and Previous Threads dialogs (one that is
-open closes, and does not come back when the setting is turned on), the
-threads under an assistant in the thread picker, message search and
-archived threads, and the memory page's sentence about assistants. A
-pane already showing a thread under an assistant stays, readable: its
-composer gives way to "Assistants are turned off in Settings. Turn them
-on to continue this thread." and its messages offer no fork, edit or
-run. Closing it would lose the layout the person comes back to.
+**One state per computer.** Each computer's setting decides its own
+assistants, in every window: they are shown and running, or hidden and
+paused. A window attached to a computer with them off and another with
+them on shows and runs the second one's and not the first one's. The
+Settings page follows the computer picker at the top of Settings, so a
+window changes the setting of the computer it picks. A standalone
+frontend's own home has no assistants: its switch is disabled and the
+page never writes there.
 
-**Paused on this computer.** One rule decides what fires: while
-`store.PauseAssistants` is set, the store's due reads (the due loops,
-watches and reminders, the sweep's next moment and the live watch list)
-leave out every thread that lives under an assistant, its current
-thread, its past threads and its helpers. Nothing else fires a wake. No
-session starts for those threads: an app-written message waits in its
-queue, and any other start and any new work is refused with
-"Assistants are turned off in Settings on this computer." A worker's
-question goes to the user. The pause is set from the setting at boot,
-before the sweep's first pass, so a restart keeps it.
+**Hidden.** Every surface decides an assistant by the computer it lives
+on: the Assistants section (shown while any attached computer has them
+on), its New Assistant (disabled for the selected computer while it has
+them off), New Assistant in a project's menu (by the project's
+computer), New Thread, Same Assistant, the Projects and Previous Threads
+dialogs (one that is open closes, and does not come back when the
+setting is turned on), the threads under an assistant in the sidebar,
+the thread picker and archived threads, and the memory page's sentence
+about assistants (by the computer the page shows). Message search leaves
+them out on the computer that searches, by its own store rule; an open
+search asks again when any computer changes the setting. A pane already
+showing a thread under an assistant stays, readable: an edit or
+confirmation open in it closes, keeping the edited text as the draft,
+its composer gives way to "Assistants are turned off in Settings. Turn
+them on to continue this thread." (naming the computer when the window
+shows more than one) and its messages offer no fork, edit or run.
+Closing it would lose the layout the person comes back to.
+
+**Paused.** The computer whose setting it is decides what fires, under
+the lock that owns each start, so a fire selected before the pause and
+claimed after it does not run: a loop or watch fire and Wake now are
+refused where the row is claimed, a long-running watch's process where
+it is started (a refused restart arms the row again), and a reminder
+where it settles. Wake now on a paused loop, watch or reminder is
+refused with "Assistants are turned off in Settings on this computer."
+and changes nothing. While `store.PauseAssistants` is set, the store's
+due reads (the due loops, watches and reminders, the sweep's next moment
+and the live watch list) also leave out every thread that lives under an
+assistant, its current thread, its past threads and its helpers; that
+is scheduling only, not the admission. No session starts for those
+threads: an app-written message waits in its queue, and any other start
+and any new work is refused with the same message. A worker's question
+goes to the user. The pause is set from the setting at boot, before the
+sweep's first pass, so a restart keeps it.
+
+**Refused to a person.** A person's send, steer, edit and resend, fork,
+fork from a message, side chat, move or copy to another computer,
+shell command or workflow run on a thread under a paused assistant is
+refused before anything is staged, stopped or cut, under the thread's
+action lock. One the computer admitted before the pause finishes. A
+message queued in the composer waits until the setting is on.
 
 Turning it off also stops what is running, thread by thread: watch
 scripts and long-running watches end and their rows are armed again
@@ -1460,21 +1488,26 @@ assistants were turned off") and the session ends, with the messages
 queued behind it back in the composer. A thread that could not be
 stopped completely says so in its pane.
 
-Turning it on starts the long-running watches again, reruns a run a
-quit cut, lets the sweep serve each loop and watch that came due
-meanwhile once, saying how many fires it missed since the previous
-wake, fires the reminders that came due, and starts the session of each
-thread with messages waiting. Toggling quickly ends in the state the
-setting ends in.
+Turning it on first recovers, while the pause still holds, what a quit
+left running: a run with no live process is settled, and a run still
+registered as live is left alone. Then the pause is released, if the
+setting is still on, and only the runs it recovered are run again: the
+long-running watches start, the sweep serves each loop and watch that
+came due meanwhile once, saying how many fires it missed since the
+previous wake, fires the reminders that came due, and starts the session
+of each thread with messages waiting. Toggling quickly ends in the state
+the setting ends in, with no run started twice and none left stopped.
 
 **Not offered to agents.** A session's tools leave out
 `thread_new_assistant`, `thread_watch`, `home_files` and the `agents`
 search filter, and the guide says nothing of assistants. A session that
 started before the change keeps its tool list; a call that needs
-assistants is refused with the same message. An assistant's name, or
-the id of a thread under one, is no address, and `thread_search` lists
-none of their threads, a paired computer's included. A caller on a
-paired computer is told which computer has them off.
+assistants is refused with the same message. On the computer with them
+off, an assistant's name, or the id of a thread under one, is no
+address, and `thread_search` lists none of their threads. Each computer
+decides for its own assistants: a caller on a paired computer reaches
+the assistants of a computer that has them on, whatever the caller's
+computer has, and is told which computer has them off when it does.
 
 **Notifications.** A moment of a thread under a paused assistant is a
 hidden thread's, raised only where `notifyHiddenThreads` is on.
@@ -1485,11 +1518,6 @@ assistant's home memory is neither read nor written while it is
 paused. Project and user memory ([memory](memory.md)) are not affected:
 threads that read them with shared memory on still do, and nobody
 receives the maintenance warnings, which only assistants get.
-
-**Paired computers.** The setting is this computer's. Hiding follows the
-setting of the computer the window runs on, wherever an assistant
-lives; pausing applies only to the computer whose setting it is, so a
-paired computer with it on keeps running and showing its own.
 
 ### Attention
 
