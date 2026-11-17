@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -16,10 +19,10 @@ import (
 // downloads itself, as WebView2 does.
 type adoptionEngine struct {
 	*fakeEngine
-	mu        sync.Mutex
-	gates     map[string]chan struct{}
-	reached   chan string
-	failing   map[string]bool
+	mu      sync.Mutex
+	gates   map[string]chan struct{}
+	reached chan string
+	failing map[string]bool
 	// histories is each popup's history as its attach finds it, newest last.
 	histories map[string][]string
 	discarded []string
@@ -29,13 +32,20 @@ type adoptionEngine struct {
 
 func newAdoptionManager(t *testing.T) (*Manager, *adoptionEngine, Access, string) {
 	t.Helper()
+	return newAdoptionManagerSaving(t, downloadsSavedByEngine)
+}
+
+// newAdoptionManagerSaving is newAdoptionManager with an engine whose
+// downloads go where saving says, from the jar's creation on.
+func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *adoptionEngine, Access, string) {
+	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
 	engine := &adoptionEngine{
 		fakeEngine: newFakeEngine(), gates: map[string]chan struct{}{},
 		reached: make(chan string, 16), failing: map[string]bool{}, histories: map[string][]string{},
 	}
-	engine.saving = downloadsSavedByEngine
+	engine.saving = saving
 	manager.engine = engine
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
@@ -518,12 +528,68 @@ func TestAPopupOfAnOpenerThatLeftIsDiscardedAtOnce(t *testing.T) {
 // A finished download listed only at its popup's adoption is held to the
 // per-download cap of an engine whose downloads are AO's.
 func TestAParkedFinishedDownloadOverTheCapIsNotKept(t *testing.T) {
-	manager, engine, _, opener := newAdoptionManager(t)
-	engine.saving = downloadsAsArtifacts
+	manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	file := engineArtifact(t, manager, "dl-1")
 	popupDownload(manager, engine, "popup", "dl-1", opener)
 	manager.downloadProgress(downloadProgress{ID: "dl-1", Received: maxDownloadBytes + 1, State: downloadCompleted})
 	manager.adoptPopup(engine.popup(opener, "popup"))
 	wantDownloads(t, manager, "popup", fmt.Sprintf("dl-1 canceled %d", maxDownloadBytes+1))
+	awaitRemoved(t, file)
+}
+
+// A popup's download refused at its fate (here its workspace's quota) is
+// listed in no tab, and its file in the jar's download directory goes with
+// it: nothing keeps it, so it would sit outside every quota.
+func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
+	for _, state := range []string{downloadCompleted, downloadInProgress} {
+		t.Run(state, func(t *testing.T) {
+			manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+			file := engineArtifact(t, manager, "dl-1")
+			popupDownload(manager, engine, "popup", "dl-1", opener)
+			manager.downloadProgress(progressOf("dl-1", state, 100))
+			p, _, err := manager.lookupOwnedPage(access, manager.CompanionState(access).Pages[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.authority.downloadBytes.Store(maxWorkspaceDownloadBytes)
+			manager.removeClosedPage("popup")
+			wantDownloads(t, manager, opener, "dl-1 canceled 0")
+			awaitRemoved(t, file)
+		})
+	}
+}
+
+// engineArtifact makes the file an engine keeping downloads as artifacts
+// writes for download id in the thread's jar, and answers its path.
+func engineArtifact(t *testing.T, m *Manager, id string) string {
+	t.Helper()
+	m.mu.Lock()
+	var dir string
+	for _, scope := range m.scopes {
+		dir = scope.downloadDir
+	}
+	m.mu.Unlock()
+	if dir == "" {
+		t.Fatal("the jar keeps no download directory")
+	}
+	path := filepath.Join(dir, id)
+	if err := os.WriteFile(path, []byte("bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// awaitRemoved waits for path to be gone.
+func awaitRemoved(t *testing.T, path string) {
+	t.Helper()
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s is still on disk", path)
+		}
+	}
 }
 
 // A popup reported before its opener, as goroutines may deliver them,

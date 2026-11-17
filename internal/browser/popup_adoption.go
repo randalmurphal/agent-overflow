@@ -31,9 +31,10 @@ import (
 // download the popup starts after it goes the same way at once. The tab
 // and its downloads are listed in one m.parkMu hold, which a page's close
 // also takes (removeClosedPage), so a close never takes the tab before the
-// downloads, with their newest progress, are in it. With no
-// listed page left to take it, the download is refused, and its engine
-// cancels it, or, if it finished, its file stays where the engine saved it.
+// downloads, with their newest progress, are in it. A download no listed
+// page takes, or its workspace refuses, is refused: its engine cancels it
+// and the file AO keeps for it (staged or an artifact) goes; WebView2's
+// finished file stays in the Downloads folder, where it saved it itself.
 //
 // Its engine settles a running one as it would any: on WebView2 the
 // launcher cancels it with the popup's page and the engine ends it
@@ -269,32 +270,29 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 }
 
 // refuseParked ends a parked download no tab took: its engine cancels a
-// running one, and a staged file goes.
+// running one, and the file AO keeps for it, staged or in the jar's
+// download directory, goes once the cancel returns.
 func (m *Manager) refuseParked(d *parkedDownload) {
-	if d.newest == nil || d.newest.State == downloadInProgress {
-		m.mu.Lock()
-		var profile engineProfile
-		for _, scope := range m.scopes {
-			if scope.profile.Handle() == d.start.Profile {
-				profile = scope.profile
-				break
+	m.mu.Lock()
+	var scope *jarScope
+	for _, candidate := range m.scopes {
+		if candidate.profile.Handle() == d.start.Profile {
+			scope = candidate
+			break
+		}
+	}
+	m.mu.Unlock()
+	running := d.newest == nil || d.newest.State == downloadInProgress
+	// With its profile gone, so is the browser that ran it. Off the
+	// caller's locks: a cancel may wait on the engine's UI thread.
+	go func() {
+		if running && scope != nil {
+			if err := scope.profile.CancelDownload(d.start.ID); err != nil && !errors.Is(err, errDownloadEnded) {
+				log.Printf("browser: cancel download %s listed in no tab: %v", d.start.ID, err)
 			}
 		}
-		m.mu.Unlock()
-		// With its profile gone, so is the browser that ran it.
-		if profile != nil {
-			// Off the caller's locks: a cancel may wait on the engine's UI
-			// thread.
-			go func() {
-				if err := profile.CancelDownload(d.start.ID); err != nil && !errors.Is(err, errDownloadEnded) {
-					log.Printf("browser: cancel download %s listed in no tab: %v", d.start.ID, err)
-				}
-			}()
-		}
-	}
-	if m.downloadsStagedHere() {
-		m.releaseStagedDownload(d.start.ID)
-	}
+		m.removePartialDownload(scope, d.start.ID)
+	}()
 }
 
 // fateTarget answers the page that takes a popup's downloads: its tab while
