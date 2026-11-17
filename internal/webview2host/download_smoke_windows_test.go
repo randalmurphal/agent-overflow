@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -74,10 +75,20 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 	}
 
 	held := s.navigateStarted("slow.bin", "/slow/slow.bin")
+	canceled := time.Now()
 	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: held.id})
 	s.settle(held)
 	if held.final.State != DownloadInterrupted || held.final.Reason != downloadInterruptReason(downloadUserCanceled) {
 		t.Fatalf("the canceled download ended %+v", held.final)
+	}
+	// WebView2 ends a running download's cancel itself, well inside the
+	// bound after which the launcher would.
+	t.Logf("WebView2 ended the canceled download in %v", time.Since(canceled))
+	if took := time.Since(canceled); took > downloadCancelBound/2 {
+		t.Fatalf("WebView2 took %v to end a canceled download; the bound is %v", took, downloadCancelBound)
+	}
+	if extra := s.quietFor(downloadCancelBound + time.Second); len(extra) != 0 {
+		t.Fatalf("after the cancel ended, more reports: %+v", extra)
 	}
 	s.expectNoFile("slow.bin")
 
@@ -166,18 +177,22 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 // WebView2 itself as a new DownloadStarting, and the launcher reports it as
 // the one download it started as, under its own name: from a server with
 // ranges WebView2 continues from the bytes it has (Range bytes=65536-, the
-// first attempt's bytes kept), and from one that answers the Range request
-// with the whole body it starts over (the first attempt's bytes dropped).
-// Either way the file is byte for byte the server's and no "name (1)" file
-// appears. The resuming start alone carries the interruption's reason (24,
-// the length mismatch); no StateChanged reports an interruption first, and
-// none of FILE_TOO_SHORT, FILE_HASH_MISMATCH and SERVER_NO_RANGE arrives.
+// first attempt's bytes kept), from one that answers the Range request
+// with the whole body it starts over (the first attempt's bytes dropped),
+// and from one with no validator to resume against it restarts with no
+// Range, proposing the download's own name. Each time the dropped
+// operation reads as dropped when the resume starts, so the resume is
+// adopted; the file is byte for byte the server's and no "name (1)" file
+// appears. The resuming start and the dropped operation carry the
+// interruption's reason (24, the length mismatch); no StateChanged reports
+// an interruption first, and none of FILE_TOO_SHORT, FILE_HASH_MISMATCH and
+// SERVER_NO_RANGE arrives.
 func TestDownloadSmokeFollowsWebView2sOwnResume(t *testing.T) {
 	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
 		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
 	}
 	s := startDownloadSmoke(t)
-	for _, kind := range []string{"resume", "norange"} {
+	for _, kind := range []string{"resume", "norange", "novalidator"} {
 		name := kind + ".bin"
 		d := s.navigateDownload(name, "/"+kind+"/"+name)
 		t.Logf("%s: %d requests, ranges %q, %d running reports, ended %+v", kind, s.requests(name), s.rangesAsked(name), d.progress, d.final)
@@ -191,7 +206,13 @@ func TestDownloadSmokeFollowsWebView2sOwnResume(t *testing.T) {
 				t.Fatalf("%s: byte %d of the resumed file is %d, want %d", kind, i, b, droppedByte(i))
 			}
 		}
-		if ranges := s.rangesAsked(name); len(ranges) != 2 || ranges[0] != "" || ranges[1] != "bytes=65536-" {
+		ranges := s.rangesAsked(name)
+		if kind == "novalidator" {
+			// Nothing to resume against: WebView2 restarts from nothing.
+			if len(ranges) != 2 || ranges[0] != "" || ranges[1] != "" {
+				t.Fatalf("%s: the requests asked for %q; the restart this smoke covers did not happen", kind, ranges)
+			}
+		} else if len(ranges) != 2 || ranges[0] != "" || ranges[1] != "bytes=65536-" {
 			t.Fatalf("%s: the requests asked for %q; the resume this smoke covers did not happen", kind, ranges)
 		}
 		if matches, _ := filepath.Glob(filepath.Join(s.downloads, s.prefix+kind+"*")); len(matches) != 1 {
@@ -199,6 +220,211 @@ func TestDownloadSmokeFollowsWebView2sOwnResume(t *testing.T) {
 		}
 		if extra := s.quietFor(2 * time.Second); len(extra) != 0 {
 			t.Fatalf("%s: after the end, more reports: %+v", kind, extra)
+		}
+	}
+}
+
+// The reviewer's sequence: two downloads from one address save to
+// "pair.bin" and "pair (1).bin", and only the second drops. Its operation
+// alone reads as dropped when WebView2's resume of it starts, so the
+// resume is that download's: its row and its file, completed byte for
+// byte, while the healthy first download keeps its row and file and
+// completes byte for byte too, and no third file appears.
+func TestDownloadSmokeAResumeReturnsToTheDroppedDownload(t *testing.T) {
+	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
+		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
+	}
+	s := startDownloadSmoke(t)
+	a := s.navigateStarted("pair.bin", "/pair/pair.bin")
+	b := s.navigateStarted("pair.bin", "/pair/pair.bin")
+	if !strings.EqualFold(a.path, filepath.Join(s.downloads, s.prefix+"pair.bin")) || !strings.EqualFold(b.path, filepath.Join(s.downloads, s.prefix+"pair (1).bin")) {
+		t.Fatalf("the two downloads save to %s and %s", a.path, b.path)
+	}
+	s.settleAmong(b, a.id)
+	t.Logf("the dropped download ended %+v; %d requests, ranges %q", b.final, s.requests("pair.bin"), s.rangesAsked("pair.bin"))
+	s.expectCompleted(b, "pair (1).bin", droppedSize)
+	s.expectBytes(b.path, droppedSize)
+	if ranges := s.rangesAsked("pair.bin"); len(ranges) != 3 || ranges[2] != "bytes=65536-" {
+		t.Fatalf("the requests asked for %q; the resume this smoke covers did not happen", ranges)
+	}
+
+	close(s.pairGo)
+	s.settle(a)
+	s.expectCompleted(a, "pair.bin", droppedSize)
+	s.expectBytes(a.path, droppedSize)
+	if matches, _ := filepath.Glob(filepath.Join(s.downloads, s.prefix+"pair*")); len(matches) != 2 {
+		t.Fatalf("two clicks left %v", matches)
+	}
+}
+
+// stallBesideAResumed makes the ambiguous case: download a drops and its
+// resume, adopted, runs held at the server; then download b from the same
+// address drops. a's operation is its resume's, which reads its reason for
+// good, so two read as dropped and b's resume is a row of its own (own),
+// saving where WebView2 chose, while b stays running, unreplaced. Both
+// resumes run held until twinGo.
+func stallBesideAResumed(t *testing.T, s *downloadSmoke) (a, b, own *smokeDownload) {
+	t.Helper()
+	a = s.navigateStarted("twin.bin", "/twin/twin.bin")
+	s.waitRequests("twin.bin", 2)
+	b = s.navigateStarted("twin.bin", "/twin/twin.bin")
+	s.waitRequests("twin.bin", 4)
+	for own == nil {
+		r := s.nextReport()
+		switch {
+		case r.ID == a.id || r.ID == b.id:
+			if r.State != DownloadRunning {
+				t.Fatalf("a download ended before its resume: %+v", r)
+			}
+		case r.State == DownloadRunning:
+			own = &smokeDownload{id: r.ID, uri: r.URI, path: r.Path, seq: r.Seq}
+		default:
+			t.Fatalf("waiting for b's resume, the launcher reported %+v", r)
+		}
+	}
+	t.Logf("b's resume is a row of its own saving to %s; ranges %q", own.path, s.rangesAsked("twin.bin"))
+	if strings.EqualFold(own.path, a.path) || strings.EqualFold(own.path, b.path) {
+		t.Fatalf("b's resume saves to %s, a file of the two", own.path)
+	}
+	s.ui.do(func() {
+		d := s.page().downloads[b.id]
+		if d == nil || d.op == nil || len(d.stale) != 0 || d.op.state() != downloadStateInProgress || d.op.interruptReason() == 0 {
+			t.Errorf("b does not read as dropped and unreplaced: %+v", d)
+		}
+	})
+	return a, b, own
+}
+
+// cancelStalled cancels b, which WebView2 never ends, and asserts the
+// launcher ends it canceled once downloadCancelBound passes.
+func cancelStalled(t *testing.T, s *downloadSmoke, b *smokeDownload, others ...string) {
+	t.Helper()
+	canceled := time.Now()
+	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id})
+	s.settleAmong(b, others...)
+	took := time.Since(canceled)
+	t.Logf("the stalled download ended after %v: %+v", took, b.final)
+	if b.final.State != DownloadInterrupted || b.final.Reason != downloadInterruptReason(downloadUserCanceled) || took < downloadCancelBound {
+		t.Fatalf("the stalled download ended after %v as %+v", took, b.final)
+	}
+}
+
+// The ambiguous case left to run: both resumes complete byte for byte, a's
+// in its own row and file, and b stays running, saying nothing. The
+// backend's cancel of b, which WebView2 ignores, ends it after
+// downloadCancelBound; the finished files stay, and nothing more is
+// reported.
+func TestDownloadSmokeAStalledDownloadsCancelSettles(t *testing.T) {
+	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
+		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
+	}
+	s := startDownloadSmoke(t)
+	a, b, own := stallBesideAResumed(t, s)
+	close(s.twinGo)
+	for _, d := range []*smokeDownload{a, own} {
+		s.settleAmong(d, a.id, own.id)
+		if d.final.State != DownloadCompleted {
+			t.Fatalf("%s ended %+v", d.id, d.final)
+		}
+		s.expectBytes(d.path, droppedSize)
+	}
+	if !strings.EqualFold(a.path, filepath.Join(s.downloads, s.prefix+"twin.bin")) {
+		t.Fatalf("a's resume completed at %s, not a's file", a.path)
+	}
+	if extra := s.quietFor(2 * time.Second); len(extra) != 0 {
+		t.Fatalf("b reported %+v", extra)
+	}
+	cancelStalled(t, s, b)
+	for _, d := range []*smokeDownload{a, own} {
+		s.expectBytes(d.path, droppedSize)
+	}
+	if extra := s.quietFor(2 * time.Second); len(extra) != 0 {
+		t.Fatalf("after every end, more reports: %+v", extra)
+	}
+}
+
+// In WebView2 a dropped download and its resume are one download: the
+// backend's cancel of b while its resume runs as a row of its own ends
+// that resume, canceled, at once, by WebView2's own report; b, which
+// WebView2 never ends, ends canceled after downloadCancelBound. a is left
+// alone and completes byte for byte.
+func TestDownloadSmokeAStalledDownloadsCancelEndsItsResume(t *testing.T) {
+	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
+		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
+	}
+	s := startDownloadSmoke(t)
+	a, b, own := stallBesideAResumed(t, s)
+	canceled := time.Now()
+	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id})
+	s.settleAmong(own, a.id, b.id)
+	t.Logf("b's cancel ended its resume after %v: %+v", time.Since(canceled), own.final)
+	if own.final.State != DownloadInterrupted || own.final.Reason != downloadInterruptReason(downloadUserCanceled) {
+		t.Fatalf("b's resume ended %+v", own.final)
+	}
+	s.settleAmong(b, a.id)
+	if took := time.Since(canceled); b.final.State != DownloadInterrupted || took < downloadCancelBound {
+		t.Fatalf("b ended after %v as %+v", took, b.final)
+	}
+	close(s.twinGo)
+	s.settle(a)
+	s.expectCompleted(a, "twin.bin", droppedSize)
+	s.expectBytes(a.path, droppedSize)
+	s.expectNoFile("twin (")
+}
+
+// waitRequests waits until name was requested n times.
+func (s *downloadSmoke) waitRequests(name string, n int) {
+	s.t.Helper()
+	for deadline := time.Now().Add(60 * time.Second); s.requests(name) < n; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			s.t.Fatalf("%s was requested %d times, want %d", name, s.requests(name), n)
+		}
+	}
+}
+
+// settleAmong is settle, letting running reports of the other ids pass.
+func (s *downloadSmoke) settleAmong(d *smokeDownload, others ...string) {
+	s.t.Helper()
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case report := <-s.reports:
+			r, ok := s.downloadReport(report)
+			if !ok {
+				continue
+			}
+			if r.ID != d.id {
+				if !slices.Contains(others, r.ID) || r.State != DownloadRunning {
+					s.t.Fatalf("waiting for %s to end, the launcher reported %+v", d.id, r)
+				}
+				continue
+			}
+			if r.Seq <= d.seq {
+				s.t.Fatalf("%s reported snapshot %d after %d", d.id, r.Seq, d.seq)
+			}
+			d.seq = r.Seq
+			if !r.Terminal() {
+				d.progress++
+				continue
+			}
+			d.final, d.path = r, r.Path
+			return
+		case <-deadline:
+			s.t.Fatalf("%s never ended", d.id)
+		}
+	}
+}
+
+// expectBytes asserts the file at path is a dropped download's whole body.
+func (s *downloadSmoke) expectBytes(path string, size int) {
+	s.t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) != size {
+		s.t.Fatalf("%s: %d bytes, %v; want %d", path, len(data), err, size)
+	}
+	for i, b := range data {
+		if b != droppedByte(i) {
+			s.t.Fatalf("%s: byte %d is %d, want %d", path, i, b, droppedByte(i))
 		}
 	}
 }
@@ -218,6 +444,9 @@ type downloadSmoke struct {
 	ranges    map[string][]string
 	hitsMu    chan struct{}
 	perm      *smokePermissions
+	// pairGo lets the first /pair download finish, and twinGo the /twin
+	// resumes.
+	pairGo, twinGo chan struct{}
 }
 
 // smokeDownload is what the launcher reported of one download.
@@ -239,15 +468,27 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 	s := &downloadSmoke{
 		t: t, downloads: downloads, prefix: "ao-download-smoke-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-",
 		reports: make(chan smokeReport, 4096), hits: map[string]int{}, ranges: map[string][]string{}, hitsMu: make(chan struct{}, 1),
+		pairGo: make(chan struct{}), twinGo: make(chan struct{}),
 	}
 	partialsBefore := s.partials()
 	// Registered first, so it runs last: after the host is gone and every
 	// file is closed.
 	t.Cleanup(func() {
-		matches, _ := filepath.Glob(filepath.Join(downloads, s.prefix+"*"))
-		for _, match := range matches {
-			if err := os.Remove(match); err != nil {
-				t.Errorf("remove %s: %v", match, err)
+		// WebView2's processes may hold a file a moment after the host goes.
+		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
+			matches, _ := filepath.Glob(filepath.Join(downloads, s.prefix+"*"))
+			var failed []error
+			for _, match := range matches {
+				if err := os.Remove(match); err != nil {
+					failed = append(failed, err)
+				}
+			}
+			if len(failed) == 0 {
+				break
+			}
+			if time.Since(start) > 15*time.Second {
+				t.Errorf("remove the smoke's files: %v", failed)
+				break
 			}
 		}
 		for name := range s.partials() {
@@ -341,8 +582,11 @@ func (s *downloadSmoke) serve(release chan struct{}) func(http.ResponseWriter, *
 		s.ranges[name] = append(s.ranges[name], r.Header.Get("Range"))
 		<-s.hitsMu
 		switch kind {
-		case "resume", "norange":
-			s.serveDropped(w, r, kind == "resume", name)
+		case "resume", "norange", "novalidator":
+			s.serveDropped(w, r, kind, name)
+			return
+		case "pair", "twin":
+			s.servePair(w, r, kind, name)
 			return
 		case "page":
 			w.Header().Set("Content-Type", "text/html")
@@ -395,13 +639,74 @@ func droppedByte(i int) byte { return byte(i % 251) }
 
 // serveDropped answers the first request for name with its headers and a
 // part of its body, then drops the connection, as a server whose response
-// is shorter than its Content-Length. A later request gets the rest: with
-// ranges, a Range request is answered 206 from its offset; without, every
-// later request gets the whole body with 200.
-func (s *downloadSmoke) serveDropped(w http.ResponseWriter, r *http.Request, ranges bool, name string) {
+// is shorter than its Content-Length. A later request gets the rest: for
+// "resume", a Range request is answered 206 from its offset; for "norange"
+// and "novalidator", every later request gets the whole body with 200, and
+// "novalidator" names no Last-Modified to resume against either.
+func (s *downloadSmoke) serveDropped(w http.ResponseWriter, r *http.Request, kind, name string) {
+	body := droppedHeaders(w, r, kind, s.prefix+name)
+	if s.requests(name) == 1 {
+		dropAfterPart(w, body)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+// servePair answers the /pair and /twin downloads, each request reaching
+// the server (no-store), with ranges. /pair: the first request holds after
+// a part of its body until pairGo, the second drops after a part, and a
+// later one, its resume, gets the rest. /twin: each odd request (a
+// download) drops after a part, and each even one (its resume) sends a
+// part, holds until twinGo, then sends the rest.
+func (s *downloadSmoke) servePair(w http.ResponseWriter, r *http.Request, kind, name string) {
+	w.Header().Set("Cache-Control", "no-store")
+	body := droppedHeaders(w, r, "resume", s.prefix+name)
+	n := s.requests(name)
+	switch {
+	case kind == "pair" && n == 1:
+		_, _ = w.Write(body[:64<<10])
+		w.(http.Flusher).Flush()
+		select {
+		case <-s.pairGo:
+			_, _ = w.Write(body[64<<10:])
+		case <-r.Context().Done():
+		}
+	case kind == "pair" && n == 2:
+		dropAfterPart(w, body)
+	case kind == "twin" && n%2 == 1:
+		dropAfterPart(w, body)
+	case kind == "twin":
+		_, _ = w.Write(body[:16<<10])
+		w.(http.Flusher).Flush()
+		select {
+		case <-s.twinGo:
+			_, _ = w.Write(body[16<<10:])
+		case <-r.Context().Done():
+		}
+	default:
+		_, _ = w.Write(body)
+	}
+}
+
+// dropAfterPart writes a part of body and drops the connection.
+func dropAfterPart(w http.ResponseWriter, body []byte) {
+	_, _ = w.Write(body[:64<<10])
+	w.(http.Flusher).Flush()
+	if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+		_ = conn.Close()
+	}
+}
+
+// droppedHeaders writes the headers of a dropped download's response saved
+// as file and answers the body to write: for "resume" with validators and
+// ranges, a Range request answered from its offset.
+func droppedHeaders(w http.ResponseWriter, r *http.Request, kind, file string) []byte {
+	ranges := kind == "resume"
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+s.prefix+name+`"`)
-	w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+file+`"`)
+	if kind != "novalidator" {
+		w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+	}
 	if ranges {
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("ETag", `"ao-smoke-1"`)
@@ -419,15 +724,7 @@ func (s *downloadSmoke) serveDropped(w http.ResponseWriter, r *http.Request, ran
 	for i := range body {
 		body[i] = droppedByte(from + i)
 	}
-	if s.requests(name) == 1 {
-		_, _ = w.Write(body[:64<<10])
-		w.(http.Flusher).Flush()
-		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
-			_ = conn.Close()
-		}
-		return
-	}
-	_, _ = w.Write(body)
+	return body
 }
 
 // rangesAsked answers the Range header of every request for name, "" for

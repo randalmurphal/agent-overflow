@@ -84,17 +84,21 @@ backend never creates a row from: a running one's, an ended one's kept
 terminal snapshot under its own number (up to `MaxEndedDownloads` per page
 while the page lives), or `DownloadUnknown` for an id with no record. A
 report is bounded: the address is shortened, then the path left out,
-never the start or end. WebView2 resumes a
-dropped download as a new `DownloadStarting` whose operation carries the
-interruption's reason; it is adopted into the page's running download from
-that address (the one saving to its file, else the oldest), set back to
-that download's file, and the operations it replaced are kept, detached,
-until the download ends, because releasing them stops the new one's
-reports. A download ends, its handlers detached and every operation
-released, at its terminal state (an interrupted operation canceled first)
-or when its page goes (`retireDownloads`), which cancels it and reports
-nothing. What the real runtime does on a drop is recorded at
-`downloadStateChanged` and in `download_smoke_windows_test.go`.
+never the start or end. WebView2 resumes a dropped download as a new
+`DownloadStarting` whose operation carries the
+interruption's reason, while the dropped operation stays in progress with
+that reason and never ends. The resume is adopted only when exactly one
+running download from that address reads so (`resumedDownload`): it is set
+back to that download's file, and the operations it replaced are kept,
+detached, until the download ends, because releasing them stops the new
+one's reports. Otherwise it is a row of its own and nothing running is
+touched. A cancel always settles: WebView2's report ends it, or the
+launcher does after `downloadCancelBound` (`settleCancel`). A download
+ends, its handlers detached and every operation released, at its terminal
+state (an interrupted operation canceled first) or when its page goes
+(`retireDownloads`), which cancels it and reports nothing. What the real
+runtime does on a drop is recorded at `downloadStateChanged`,
+`settleCancel` and in `download_smoke_windows_test.go`.
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,

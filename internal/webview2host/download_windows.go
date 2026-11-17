@@ -18,12 +18,19 @@ import (
 // function here runs on the UI thread: WebView2 raises DownloadStarting and
 // the operation's events there, and directives reach it through OnMain.
 
+// downloadCancelBound is how long after the backend's cancel the launcher
+// waits for WebView2 to end the download before ending it itself
+// (settleCancel). On the real runtime WebView2 ends a running download, or
+// a resume, within a few milliseconds of its cancel (4 ms and 2 ms
+// measured), and a dropped download's old operation never; the bound is
+// three orders of magnitude past the first and still clears a stuck row
+// promptly.
+const downloadCancelBound = 5 * time.Second
+
 // hostDownload is one download a page started, from its DownloadStarting
 // until it ends or its page goes.
 type hostDownload struct {
-	id string
-	// seq orders the page's downloads by start, oldest first.
-	seq   uint64
+	id    string
 	page  *hostPage
 	op    *iCoreWebView2DownloadOperation
 	bytes *iDownloadEventHandler
@@ -83,16 +90,17 @@ func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) {
 // snapshot.
 //
 // WebView2 resumes a download whose connection dropped by starting it
-// again: a new DownloadStarting with a new operation, while the old
-// operation stays in progress and never reports again. Measured on the real
-// runtime, the new operation alone carries the interruption's reason while
-// in progress (a fresh download's is 0), and its file is the running
-// download's when WebView2 restarts from nothing, or "name (1)" when it
-// continues from the bytes it has. Such a start is that download's resume
-// (resumedDownload): it takes the old operation's place under the same id,
-// saving to the file the download started with, so one click is one row,
-// one file and one end. A resume with no running download to take (its row
-// ended) is a new download.
+// again: a new DownloadStarting with a new operation carrying the
+// interruption's reason, while the old operation stays in progress, reports
+// nothing more and ignores a cancel. Measured on the real runtime, the old
+// operation then reads as dropped (in progress with that reason) while a
+// healthy download that never resumed reads 0, and the new operation saves
+// to "name (N)" whether it continues from the bytes it has or restarts.
+// Such a start is the dropped download's resume when exactly one running
+// download from its address reads as dropped (resumedDownload): it takes
+// the old operation's place under the same id, saving to the file the
+// download started with, so one click is one row, one file and one end.
+// Otherwise it is a new download saving where WebView2 chose.
 func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs) {
 	if args == nil {
 		return
@@ -107,13 +115,13 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 	}
 	path, uri := args.resultFilePath(), op.uri()
 	if reason := op.interruptReason(); reason != 0 {
-		if d := page.resumedDownload(uri, path); d != nil {
+		if d := page.resumedDownload(uri); d != nil {
 			h.resumeDownload(d, args, op, path, reason)
 			return
 		}
 	}
 	h.downloadSeq++
-	d := &hostDownload{id: downloadID(h.downloadToken, h.downloadSeq), seq: h.downloadSeq, page: page, path: path, uri: uri}
+	d := &hostDownload{id: downloadID(h.downloadToken, h.downloadSeq), page: page, path: path, uri: uri}
 	h.attachOperation(d, op)
 	if page.downloads == nil {
 		page.downloads = make(map[string]*hostDownload)
@@ -125,26 +133,28 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 	h.downloadStateChanged(d)
 }
 
-// resumedDownload answers the page's running download a resume from uri
-// saving to path continues: the one saving to path, otherwise the oldest
-// from uri. A resume names nothing else of the download it continues, so
-// with two downloads from one address running and both resumed into
-// "name (1)" files, each may take the other's row: each row still ends once,
-// naming the file its own operation wrote.
-func (p *hostPage) resumedDownload(uri, path string) *hostDownload {
-	var oldest *hostDownload
+// resumedDownload answers the running download a resume from uri
+// continues: the one running download from uri whose operation reads as
+// dropped, in progress with a nonzero interrupt reason. A download that
+// never resumed reads 0 while healthy, so it is never taken. A resume names
+// nothing else of its download, so where none or several read as dropped
+// it answers nil and the resume is a download of its own, every running
+// download left as it is. Several read so when two downloads from one
+// address dropped at once, or when one dropped beside a download that
+// already resumed once, whose operation (a resume's) reads its reason for
+// good, dropped or not.
+func (p *hostPage) resumedDownload(uri string) *hostDownload {
+	var dropped *hostDownload
 	for _, d := range p.downloads {
-		if d.op == nil || d.uri != uri {
+		if d.op == nil || d.uri != uri || d.op.state() != downloadStateInProgress || d.op.interruptReason() == 0 {
 			continue
 		}
-		if path != "" && strings.EqualFold(d.path, path) {
-			return d
+		if dropped != nil {
+			return nil
 		}
-		if oldest == nil || d.seq < oldest.seq {
-			oldest = d
-		}
+		dropped = d
 	}
-	return oldest
+	return dropped
 }
 
 // resumeDownload makes op, which WebView2 started to resume d after an
@@ -320,9 +330,10 @@ func (h *Host) releaseOperations(d *hostDownload) {
 
 // answerDownload answers a directive naming one of the page's downloads
 // with its snapshot, marked as an answer. A cancel cancels a running
-// download first, and its end follows from the operation's state change.
-// An ended download's answer is its terminal snapshot again; an id with no
-// record gets DownloadUnknown.
+// download first, and its end follows from the operation's state change,
+// or from settleCancel when WebView2 reports none. An ended download's
+// answer is its terminal snapshot again; an id with no record gets
+// DownloadUnknown.
 func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 	d := page.downloads[id]
 	if d == nil {
@@ -330,15 +341,55 @@ func (h *Host) answerDownload(page *hostPage, id string, cancel bool) {
 		return
 	}
 	if cancel && d.op != nil {
+		first := !d.cancelRequested
 		// Kept for a resume that replaces the operation.
 		d.cancelRequested = true
 		if err := d.op.cancel(); err != nil {
 			h.config.Logf("browser host: cancel download %s: %v", id, err)
 		}
+		if first {
+			h.settleCancelAfter(d)
+		}
 	}
 	answer := d.snapshot(DownloadRunning, "")
 	answer.Answer = true
 	h.report(page, answer)
+}
+
+// settleCancelAfter ends a canceled download as canceled once
+// downloadCancelBound passes with no end from WebView2 (settleCancel).
+func (h *Host) settleCancelAfter(d *hostDownload) {
+	after := h.cancelTimer
+	if after == nil {
+		after = func(wait time.Duration, fn func()) { time.AfterFunc(wait, fn) }
+	}
+	after(downloadCancelBound, func() {
+		h.mu.Lock()
+		live := h.pages[d.page.id] == d.page
+		h.mu.Unlock()
+		if live {
+			h.config.OnMain(func() { h.settleCancel(d) })
+		}
+	})
+}
+
+// settleCancel ends a download the backend canceled that WebView2 has not
+// ended: the operation of a dropped download whose resume became a row of
+// its own stays in progress and never ends, so its row would run for good.
+// It ends canceled, its handlers detached, and its operations go. Measured
+// on the real runtime: the old operation and its resume are one download in
+// WebView2, so this cancel ends that resume too, at once and by WebView2's
+// own report, and once the resume finished the cancel and the release
+// leave its file as it is. The cost: a download that really finishes after
+// the bound is listed canceled, and its file stays in the Downloads folder,
+// listed nowhere; its late state change reaches no handler.
+func (h *Host) settleCancel(d *hostDownload) {
+	if d.page.downloads[d.id] != d {
+		// Ended by WebView2's own report, or its page went.
+		return
+	}
+	h.config.Logf("browser host: download %s: WebView2 did not end it within %v of its cancel; it ends canceled here", d.id, downloadCancelBound)
+	h.endDownload(d, d.snapshot(DownloadInterrupted, downloadInterruptReason(downloadUserCanceled)))
 }
 
 // retireDownloads cancels and lets go every download of a page that is

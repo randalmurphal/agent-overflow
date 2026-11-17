@@ -45,6 +45,9 @@ type Host struct {
 	// (download.go); downloadSeq is UI thread only.
 	downloadToken string
 	downloadSeq   uint64
+	// cancelTimer runs fn after wait, on a goroutine of its own
+	// (settleCancelAfter); nil is time.AfterFunc. A test stands in its own.
+	cancelTimer func(wait time.Duration, fn func())
 	// foreground answers whether the launcher window is the foreground
 	// window (isForeground). A smoke stands in its answer so it never takes
 	// the user's foreground.

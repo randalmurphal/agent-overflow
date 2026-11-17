@@ -413,10 +413,21 @@ behave as a desktop browser's:
   resumes a dropped download itself, as a new download start that carries
   the interruption's reason; the launcher keeps it as the same row, saving
   to the file the download started with, so one click is one row, one file
-  and one end. A resume names nothing else of its download: with two
-  downloads of one address running and both resumed, each may take the
-  other's row. A second download a script starts with
-  no user gesture gets WebView2's own "download multiple files" prompt in
+  and one end. A resume names nothing else of its download, so the launcher
+  adopts it only when exactly one running download from that address
+  reads as dropped (in progress with an interrupt reason; a healthy one
+  that never resumed reads none). Otherwise, with two dropped at once or
+  one dropped beside a download that already resumed, the resume is a row
+  of its own saving where WebView2 chose, and the dropped download's row
+  stays running until the user cancels it. A cancel always settles: by
+  WebView2's report, within milliseconds when it comes, or by the
+  launcher after five seconds, since a dropped download's operation never
+  ends. In WebView2 that dropped download and its resume are one, so the
+  cancel ends the resume's row too if it still runs. A download that
+  really finishes after the five seconds is listed canceled, and its file
+  stays in the Downloads folder, listed nowhere. A second download a
+  script starts with no user gesture gets WebView2's own "download
+  multiple files" prompt in
   the page and has no row until it is allowed. A window WebView2 opened
   itself rather than as an AO tab keeps WebView2's own handling: its
   dialog, the file in the Downloads folder, no row.

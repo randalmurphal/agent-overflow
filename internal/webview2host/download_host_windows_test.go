@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -168,6 +169,10 @@ type downloadRig struct {
 	page    *hostPage
 	reports []DownloadReport
 	base    int
+	// timers are the cancel bounds started, in order; a test fires one.
+	timers []func()
+	// extra are operations a test's setup made beyond the ones it answers.
+	extra []*fakeOp
 }
 
 func newDownloadRig(t *testing.T) *downloadRig {
@@ -185,6 +190,13 @@ func newDownloadRig(t *testing.T) *downloadRig {
 	}
 	r.page = &hostPage{id: "p"}
 	r.page.downloadStarting = newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { r.host.downloadStarting(r.page, args) })
+	r.host.pages = map[string]*hostPage{"p": r.page}
+	r.host.cancelTimer = func(wait time.Duration, fn func()) {
+		if wait != downloadCancelBound {
+			t.Errorf("a cancel bound of %v, want %v", wait, downloadCancelBound)
+		}
+		r.timers = append(r.timers, fn)
+	}
 	return r
 }
 
@@ -346,6 +358,7 @@ func TestAResumeIsTheSameDownload(t *testing.T) {
 	r := newDownloadRig(t)
 	first := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, first)
+	drop(first)
 	// Continued from its bytes: WebView2 names another file.
 	continued := newFakeOp(`C:\D\f (1).bin`)
 	if args := resume(t, r.page, continued); args.put != `C:\D\f.bin` || continued.path != `C:\D\f.bin` {
@@ -380,31 +393,108 @@ func TestAResumeIsTheSameDownload(t *testing.T) {
 	r.done(t, first, continued, restarted, fresh)
 }
 
-// A resume continues the running download saving to its file, else the
-// oldest from its address.
-func TestAResumeTakesTheDownloadOfItsFileElseTheOldest(t *testing.T) {
+// drop marks op as WebView2 marks a dropped download's operation when it
+// starts the download's resume: still in progress, with the reason.
+func drop(op *fakeOp) { op.reason = 24 }
+
+// untouched asserts a running download kept its operation, the operations
+// it replaced (stale) and its file.
+func untouched(t *testing.T, r *downloadRig, id string, op *fakeOp, stale int, path string) {
+	t.Helper()
+	d := r.page.downloads[id]
+	if d == nil || d.op != op.com() || len(d.stale) != stale || d.path != path || op.path != path || op.canceled != 0 {
+		t.Fatalf("%s was touched: %+v", id, d)
+	}
+}
+
+// The reviewer's sequence: a and b from one address save to f.bin and
+// f (1).bin, and only b drops. b alone reads as dropped, so WebView2's
+// resume, proposing f (2).bin, is b's: b's row, set back to b's file, and
+// a is untouched.
+func TestAResumeTakesTheOneDroppedDownload(t *testing.T) {
 	r := newDownloadRig(t)
 	other := newFakeOp(`C:\D\g.bin`)
 	other.uri = "https://example.test/g"
 	start(t, r.page, other)
+	drop(other)
 	a := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, a)
 	b := newFakeOp(`C:\D\f (1).bin`)
 	start(t, r.page, b)
-	ofB := newFakeOp(`C:\D\f (1).bin`)
-	resume(t, r.page, ofB)
-	ofA := newFakeOp(`C:\D\f (2).bin`)
-	resume(t, r.page, ofA)
-	if got := r.page.downloads["dl-t-3"].op; got != ofB.com() {
-		t.Fatal("the resume to f (1).bin did not take the download saving there")
+	drop(b)
+	ofB := newFakeOp(`C:\D\f (2).bin`)
+	if args := resume(t, r.page, ofB); args.put != `C:\D\f (1).bin` {
+		t.Fatalf("the resume put %q, want b's file", args.put)
 	}
-	if got := r.page.downloads["dl-t-2"].op; got != ofA.com() || ofA.path != `C:\D\f.bin` {
-		t.Fatal("the resume to a new file did not take the oldest download from its address")
+	if got := r.page.downloads["dl-t-3"]; got.op != ofB.com() || got.path != `C:\D\f (1).bin` {
+		t.Fatal("the resume did not take the dropped download")
 	}
+	untouched(t, r, "dl-t-2", a, 0, `C:\D\f.bin`)
+	untouched(t, r, "dl-t-1", other, 0, `C:\D\g.bin`)
 	if got := states(r.take()); got != "dl-t-1:running dl-t-2:running dl-t-3:running" {
 		t.Fatalf("reports %s", got)
 	}
-	r.done(t, a, b, other, ofB, ofA)
+	r.done(t, a, b, other, ofB)
+}
+
+// A resume that is not certain is a row of its own saving where WebView2
+// chose, and every running download is left as it is: with none reading as
+// dropped, with two that dropped together, and with one that dropped beside
+// a download that already resumed once, whose operation reads its reason
+// for good.
+func TestAnUncertainResumeIsANewRowAndTouchesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// setup starts a and b, from one address, saving to f.bin and
+		// f (1).bin, and answers the operations each runs on.
+		setup func(t *testing.T, r *downloadRig) (a, b *fakeOp)
+		ops   int
+	}{
+		{"none dropped", func(t *testing.T, r *downloadRig) (*fakeOp, *fakeOp) {
+			a, b := newFakeOp(`C:\D\f.bin`), newFakeOp(`C:\D\f (1).bin`)
+			start(t, r.page, a)
+			start(t, r.page, b)
+			return a, b
+		}, 0},
+		{"two dropped together", func(t *testing.T, r *downloadRig) (*fakeOp, *fakeOp) {
+			a, b := newFakeOp(`C:\D\f.bin`), newFakeOp(`C:\D\f (1).bin`)
+			start(t, r.page, a)
+			start(t, r.page, b)
+			drop(a)
+			drop(b)
+			return a, b
+		}, 0},
+		{"one dropped beside one resumed", func(t *testing.T, r *downloadRig) (*fakeOp, *fakeOp) {
+			first := newFakeOp(`C:\D\f.bin`)
+			start(t, r.page, first)
+			drop(first)
+			a := newFakeOp(`C:\D\f (1).bin`)
+			resume(t, r.page, a)
+			b := newFakeOp(`C:\D\f (1).bin`)
+			start(t, r.page, b)
+			drop(b)
+			r.extra = append(r.extra, first)
+			return a, b
+		}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newDownloadRig(t)
+			a, b := tc.setup(t, r)
+			aPath, bPath := a.path, b.path
+			r.take()
+			late := newFakeOp(`C:\D\f (2).bin`)
+			if args := resume(t, r.page, late); args.put != "" {
+				t.Fatalf("an uncertain resume was retargeted to %q", args.put)
+			}
+			untouched(t, r, "dl-t-1", a, tc.ops, aPath)
+			untouched(t, r, "dl-t-2", b, 0, bPath)
+			reports := r.take()
+			if states(reports) != "dl-t-3:running" || reports[0].Path != `C:\D\f (2).bin` {
+				t.Fatalf("the uncertain resume reported %+v", reports)
+			}
+			r.done(t, append([]*fakeOp{a, b, late}, r.extra...)...)
+		})
+	}
 }
 
 // A resume with no running download from its address is a new row.
@@ -429,6 +519,7 @@ func TestAResumeThatCannotKeepItsFileNamesTheFileItWrites(t *testing.T) {
 	r := newDownloadRig(t)
 	first := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, first)
+	drop(first)
 	continued := newFakeOp(`C:\D\f (1).bin`)
 	continued.reason = 24
 	args := &fakeStartingArgs{vtbl: &fakeStartingArgsVtbl, op: continued, refusePut: true}
@@ -448,6 +539,7 @@ func TestACancelHoldsForAResume(t *testing.T) {
 	first := newFakeOp(`C:\D\f.bin`)
 	start(t, r.page, first)
 	r.host.answerDownload(r.page, "dl-t-1", true)
+	drop(first)
 	again := newFakeOp(`C:\D\f.bin`)
 	resume(t, r.page, again)
 	if first.canceled != 1 || again.canceled != 1 {
@@ -490,6 +582,7 @@ func TestAClosingPageCancelsAndReleasesItsDownloads(t *testing.T) {
 	replaced := newFakeOp(`C:\D\g.bin`)
 	replaced.uri = "https://example.test/g"
 	start(t, r.page, replaced)
+	drop(replaced)
 	resumed := newFakeOp(`C:\D\g.bin`)
 	resumed.uri = replaced.uri
 	resume(t, r.page, resumed)
@@ -505,6 +598,90 @@ func TestAClosingPageCancelsAndReleasesItsDownloads(t *testing.T) {
 	if args.handled || late.refs != 1 || len(r.take()) != 0 {
 		t.Fatal("a closed page reported or took a download")
 	}
+}
+
+// A canceled download WebView2 does not end (a dropped one, whose resume
+// went to a row of its own) ends canceled when the bound passes: one
+// terminal snapshot, its operation let go, and a state change after that
+// reaches nobody. A repeated cancel starts no second bound.
+func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	drop(op)
+	r.take()
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	if got := r.take(); states(got) != "dl-t-1:running dl-t-1:running" || len(r.timers) != 1 {
+		t.Fatalf("two cancels answered %s and started %d bounds", states(got), len(r.timers))
+	}
+	r.timers[0]()
+	end := r.take()
+	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadInterruptReason(downloadUserCanceled) || end[0].Answer {
+		t.Fatalf("at the bound the download ended %+v", end)
+	}
+	if op.refs != 1 || len(op.subs) != 0 {
+		t.Fatalf("the settled download kept its operation: %d refs, %d subscriptions", op.refs, len(op.subs))
+	}
+	op.received = 100
+	op.set(downloadStateCompleted, 0)
+	op.fire()
+	r.host.answerDownload(r.page, "dl-t-1", false)
+	if got := r.take(); len(got) != 1 || !got[0].Answer || got[0].State != DownloadInterrupted {
+		t.Fatalf("after the settled end: %+v", got)
+	}
+	r.done(t, op)
+}
+
+// A canceled download WebView2 ends settles by WebView2's own report, once;
+// the bound that passes after it does nothing.
+func TestACanceledDownloadSettlesByWebView2sReport(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	op.set(downloadStateInterrupted, downloadUserCanceled)
+	r.timers[0]()
+	if got := states(r.take()); got != "dl-t-1:running dl-t-1:running dl-t-1:interrupted" {
+		t.Fatalf("reports %s, want one end", got)
+	}
+	r.done(t, op)
+}
+
+// A bound that passes after the page went does nothing.
+func TestACancelBoundAfterThePageWentDoesNothing(t *testing.T) {
+	r := newDownloadRig(t)
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	r.host.answerDownload(r.page, "dl-t-1", true)
+	r.take()
+	r.done(t, op)
+	delete(r.host.pages, "p")
+	hops := 0
+	r.host.config.OnMain = func(fn func()) { hops++; fn() }
+	r.timers[0]()
+	if got := r.take(); len(got) != 0 || hops != 0 {
+		t.Fatalf("a bound after the page went reported %+v and asked the UI thread %d times", got, hops)
+	}
+}
+
+// An operation that already reads interrupted, its state change still on
+// the way, is not a dropped download a resume continues.
+func TestAResumeSkipsAnOperationThatReadsInterrupted(t *testing.T) {
+	r := newDownloadRig(t)
+	a := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, a)
+	a.st, a.reason = downloadStateInterrupted, 24
+	b := newFakeOp(`C:\D\f (1).bin`)
+	start(t, r.page, b)
+	drop(b)
+	ofB := newFakeOp(`C:\D\f (2).bin`)
+	resume(t, r.page, ofB)
+	if got := r.page.downloads["dl-t-2"]; got.op != ofB.com() {
+		t.Fatal("the resume did not take the one in-progress dropped download")
+	}
+	r.take()
+	r.done(t, a, b, ofB)
 }
 
 // DownloadStarting and the operation's slots are where the SDK header puts
