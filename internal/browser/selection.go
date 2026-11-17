@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -15,22 +16,30 @@ import (
 // that order, so each does what it says and nothing is replayed or skipped
 // by rule:
 //
-//   - The next number takes its turn at once; its selection part (the
-//     m.mu hold that picks and records the active tab, and for an opening
-//     the hold that adds the tab) runs, and the count advances. Page work,
-//     a restore or a navigation, runs after the turn, outside it.
-//   - A higher number waits for its predecessors' selection parts, never for
-//     their page work. A predecessor that never arrives (its request failed
-//     in transit) is given up on once no turn has been taken for
-//     selectionGapWait: the count moves to the lowest number waiting, and
-//     the numbers skipped are passed.
-//   - A number already passed, a repeat of one admitted or waiting, and any
-//     number from a mount the Manager does not have (detached, never
-//     attached, or another thread's) is a quiet success that selects,
-//     opens and restores nothing: that pane is gone or the action already
-//     happened. A detach releases the mount's waiters the same way.
+//   - The next number takes its turn at once. Its commit (the m.mu hold
+//     that picks and records the active tab, or for an opening the hold
+//     that adds the tab) ends the turn through commitSelectionLocked, and
+//     the count advances. Page work, a restore or a navigation, runs after
+//     the commit, outside the turn.
+//   - A higher number waits for its predecessors' commits, never for their
+//     page work. When no turn has been taken for selectionGapWait the count
+//     moves to the lowest number waiting. The numbers it moved past lose
+//     their place, not their effect: they are recorded (maxSkippedSelections
+//     per mount), and one that arrives later is admitted at once, in
+//     arrival order, as an unnumbered selection would be. A skipped number
+//     the record no longer holds is refused with an error when it arrives;
+//     so is a repeat of an admitted number at or below the highest one
+//     dropped, which the record cannot tell from it.
+//   - A repeat of a number admitted or waiting, and any number from a mount
+//     the Manager does not have (detached, never attached, or another
+//     thread's), is a quiet success that selects, opens and restores
+//     nothing: the action already happened, or its pane is gone. A detach
+//     releases the mount's waiters the same way, and a turn admitted before
+//     its mount detached commits nothing (commitSelectionLocked).
 //   - Past maxSelectionWaiters waiting in one mount a selection is refused
-//     with an error and selects nothing; its number then becomes a gap.
+//     with an error and selects nothing. Its number becomes a gap: sent
+//     again before the count passes it, it waits its turn; after, it is a
+//     skipped number.
 //
 // A selection with no number (an older client) or no mount, an agent's
 // browser_select_page, the chat header's show, the pane's restore of the
@@ -61,21 +70,33 @@ func selectionOf(ctx context.Context) Selection {
 
 const (
 	// selectionGapWait is how long waiting selections wait, with no turn
-	// taken, for a predecessor before giving it up.
+	// taken, for a predecessor before it loses its place.
 	selectionGapWait = time.Second
 	// maxSelectionWaiters bounds the selections waiting in one mount.
 	maxSelectionWaiters = 256
+	// maxSkippedSelections bounds the numbers a mount remembers as skipped.
+	maxSkippedSelections = 256
 )
+
+// errSelectionPassed is a selection's commit finding its turn's mount gone:
+// it acts on nothing, and the caller answers success.
+var errSelectionPassed = errors.New("browser: the pane this tab action came from is gone")
+
+// errSelectionLost answers a skipped number the mount no longer remembers.
+var errSelectionLost = errors.New("browser: this tab action arrived too late to apply; try it again")
 
 // mountSelection is one mount's admission state. Guarded by Manager.mu.
 type mountSelection struct {
 	// next is the number admitted next.
 	next uint64
-	// taken is set while next holds its turn: admitted, its selection part
-	// not yet done.
+	// taken is set while next holds its turn: admitted, not yet committed.
 	taken bool
 	// waiting holds the numbers above next waiting for their turn.
 	waiting map[uint64]struct{}
+	// skipped holds numbers below next the count moved past before they
+	// arrived. lostThrough is the highest one dropped from it at the bound.
+	skipped     map[uint64]struct{}
+	lostThrough uint64
 	// gone is set when the mount detached.
 	gone bool
 	// changed is closed, and replaced, on every change a waiter waits for.
@@ -98,10 +119,37 @@ func (o *mountSelection) lowestWaitingLocked() uint64 {
 	return low
 }
 
-// selectionTurn is an admitted selection's turn. The selecting m.mu hold
-// ends it (landedLocked); the caller ends it anyway once it is done
-// (finishSelectionTurn), so a selection that failed before selecting still
-// lets the next one in. A turn with no order is an unordered selection.
+// skipToLocked moves the count to low, recording the numbers it passes.
+// Past maxSkippedSelections the lowest are dropped into lostThrough.
+func (o *mountSelection) skipToLocked(low uint64) {
+	from := o.next
+	if low-from > maxSkippedSelections {
+		from = low - maxSkippedSelections
+		o.lostThrough = max(o.lostThrough, from-1)
+	}
+	for seq := from; seq < low; seq++ {
+		if len(o.skipped) >= maxSkippedSelections {
+			var lowest uint64
+			for s := range o.skipped {
+				if lowest == 0 || s < lowest {
+					lowest = s
+				}
+			}
+			delete(o.skipped, lowest)
+			o.lostThrough = max(o.lostThrough, lowest)
+		}
+		o.skipped[seq] = struct{}{}
+	}
+	o.next = low
+	o.wakeLocked()
+}
+
+// selectionTurn is an admitted selection's turn. The m.mu hold that commits
+// the selection ends it through commitSelectionLocked; the caller releases
+// it anyway once done (releaseSelectionTurn), so a selection that failed
+// before committing still lets the next one in. A turn with no order is an
+// unordered selection. A skipped number admitted on arrival is below next,
+// so ending its turn moves nothing.
 type selectionTurn struct {
 	order  *mountSelection
 	seq    uint64
@@ -109,12 +157,28 @@ type selectionTurn struct {
 	done   bool
 }
 
-// landedLocked ends the turn: the next number may take its own. The caller
-// holds m.mu. Repeated calls do nothing.
-func (t *selectionTurn) landedLocked() {
-	if t == nil || t.order == nil || t.done {
-		return
+// commitSelectionLocked ends t and answers whether its commit may act: false
+// when t's mount detached after admitting it, and the commit then selects,
+// opens and consumes nothing. Every commit of a user's selection calls it in
+// the m.mu hold that commits. A turn already ended answers false.
+func (m *Manager) commitSelectionLocked(t *selectionTurn) bool {
+	if t.done {
+		return false
 	}
+	if t.order == nil {
+		t.done = true
+		return true
+	}
+	m.endTurnLocked(t)
+	return !t.order.gone
+}
+
+// liveSelectionLocked is whether t may still commit, without ending it.
+func liveSelectionLocked(t *selectionTurn) bool {
+	return !t.done && (t.order == nil || !t.order.gone)
+}
+
+func (m *Manager) endTurnLocked(t *selectionTurn) {
 	t.done = true
 	if o := t.order; o.taken && o.next == t.seq {
 		o.taken = false
@@ -123,20 +187,24 @@ func (t *selectionTurn) landedLocked() {
 	}
 }
 
-func (m *Manager) finishSelectionTurn(t *selectionTurn) {
+// releaseSelectionTurn ends t if no commit did.
+func (m *Manager) releaseSelectionTurn(t *selectionTurn) {
 	if t == nil || t.order == nil {
 		return
 	}
 	m.mu.Lock()
-	t.landedLocked()
+	if !t.done {
+		m.endTurnLocked(t)
+	}
 	m.mu.Unlock()
 }
 
 // awaitSelectionTurn admits sel, a selection for threadID: it answers once
-// sel's turn has come, or at once with a passed turn, which must select
-// nothing, or for an unordered selection. The caller selects in an m.mu
-// hold that calls the turn's landedLocked, and calls finishSelectionTurn
-// when done. ctx ends a wait with its error.
+// sel's turn has come, at once for an unordered selection or a skipped
+// number arriving late, or at once with a passed turn, which must act on
+// nothing. The caller commits in an m.mu hold that calls
+// commitSelectionLocked, and calls releaseSelectionTurn when done. ctx ends
+// a wait with its error.
 func (m *Manager) awaitSelectionTurn(ctx context.Context, threadID string, sel Selection) (*selectionTurn, error) {
 	if sel.Seq == 0 || sel.Mount == "" {
 		return &selectionTurn{}, nil
@@ -150,12 +218,29 @@ func (m *Manager) awaitSelectionTurn(ctx context.Context, threadID string, sel S
 	}
 	order := mount.selection
 	if order == nil {
-		order = &mountSelection{next: 1, waiting: make(map[uint64]struct{}), changed: make(chan struct{})}
+		order = &mountSelection{
+			next:    1,
+			waiting: make(map[uint64]struct{}),
+			skipped: make(map[uint64]struct{}),
+			changed: make(chan struct{}),
+		}
 		mount.selection = order
 		m.panes[sel.Mount] = mount
 	}
-	_, repeat := order.waiting[sel.Seq]
-	if sel.Seq < order.next || (sel.Seq == order.next && order.taken) || repeat {
+	if sel.Seq < order.next {
+		if _, skipped := order.skipped[sel.Seq]; skipped {
+			delete(order.skipped, sel.Seq)
+			m.mu.Unlock()
+			return m.admitted(sel, &selectionTurn{order: order, seq: sel.Seq}), nil
+		}
+		lost := sel.Seq <= order.lostThrough
+		m.mu.Unlock()
+		if lost {
+			return nil, errSelectionLost
+		}
+		return passed, nil
+	}
+	if _, repeat := order.waiting[sel.Seq]; repeat || (sel.Seq == order.next && order.taken) {
 		m.mu.Unlock()
 		return passed, nil
 	}
@@ -190,25 +275,34 @@ func (m *Manager) awaitSelectionTurn(ctx context.Context, threadID string, sel S
 		select {
 		case <-changed:
 		default:
-			// No turn was taken for the whole wait: the predecessors
-			// missing below the lowest number waiting are given up.
+			// No turn was taken for the whole wait: the numbers missing
+			// below the lowest one waiting lose their place.
 			if low := order.lowestWaitingLocked(); !order.taken && low > order.next {
-				order.next = low
-				order.wakeLocked()
+				order.skipToLocked(low)
 			}
 		}
 	}
 	delete(order.waiting, sel.Seq)
 	order.taken = true
 	m.mu.Unlock()
-	return &selectionTurn{order: order, seq: sel.Seq}, nil
+	return m.admitted(sel, &selectionTurn{order: order, seq: sel.Seq}), nil
 }
 
-// endSelectionLocked releases a detaching mount's waiters as passed. The
-// caller holds m.mu.
+// admitted answers turn, after the test seam that runs between a turn's
+// admission and its commit.
+func (m *Manager) admitted(sel Selection, turn *selectionTurn) *selectionTurn {
+	if m.selectionAdmitted != nil {
+		m.selectionAdmitted(sel)
+	}
+	return turn
+}
+
+// endSelectionLocked releases a detaching mount's waiters as passed; its
+// admitted turns then commit nothing. The caller holds m.mu.
 func (mount paneMount) endSelectionLocked() {
 	if o := mount.selection; o != nil && !o.gone {
 		o.gone = true
+		o.skipped = nil
 		o.wakeLocked()
 	}
 }
