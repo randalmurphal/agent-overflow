@@ -210,8 +210,8 @@ func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []T
 	return reminders, total, nil
 }
 
-// A capable destination reports accepted work as it changes. Its final
-// status at the late reply deadline remains due across a suspended process.
+// A capable destination reports work as it changes. The admission clock runs
+// until a spawn names its target. The final late-reply check survives suspension.
 const remotePollingSQL = `polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','accepted','running','finished')`
 const clockedOwnerRequestSQL = `polling=1 AND target_computer_id <> '' AND (state IN ('unconfirmed','finished') OR
  (kind='spawn' AND target_thread_id='' AND state IN ('accepted','running')))`

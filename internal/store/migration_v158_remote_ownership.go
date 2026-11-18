@@ -132,6 +132,7 @@ CREATE TABLE spawn_revisions (
   end TEXT NOT NULL CHECK(end IN ('','released','detached','gone')),
   UNIQUE(owner_device_id, token)
 );
+CREATE INDEX idx_spawn_revisions_owner_revision ON spawn_revisions(owner_device_id, revision);
 CREATE INDEX idx_spawn_revisions_target ON spawn_revisions(target);
 
 CREATE TRIGGER trg_spawn_revision_thread

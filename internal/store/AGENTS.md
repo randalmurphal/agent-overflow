@@ -281,6 +281,6 @@ parity and a plan assertion when index use is part of the contract. Use
 tests.
 
 
-Remote spawn changes and their revision-specific acknowledgments live in
+Remote spawn changes, their restore-preserved issuance counter and revision-specific acknowledgments live in
 `spawn_revisions.go`. Owner activity and recovery reads start in
 `activity_owners.go` and `owner_reads.go`.

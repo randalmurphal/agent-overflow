@@ -19,7 +19,9 @@ func TestOwnerChangeAndRecoveryReadTheSameWorkWithTenOrTenThousandSettledLinks(t
 		SELECT 'old-'||x,'caller','spawn','desk','worker-'||x,'finished',1,2,1,2,100,100 FROM n`, from, to)
 		mustExec(t, s.db, numbers+`INSERT INTO thread_request_receipts(token,owner_device_id,kind,target_thread_id,state,created_at,updated_at,settled_at,revision,collected_revision)
 		SELECT 'old-'||x,'owner','spawn','resting','finished',1,2,2,1,1 FROM n`, from, to)
+		mustExec(t, s.db, numbers+`INSERT INTO spawn_revisions(owner_device_id,token,target,end) SELECT 'owner','pending-'||x,'resting','' FROM n`, from, to)
 		return []int{
+			statementVMSteps(t, s, revisionsByNumberSQL, "owner", 1<<50, 32),
 			statementVMSteps(t, s, ownerComputersSQL),
 			statementVMSteps(t, s, earliestRemotePollSQL, `["desk"]`),
 			statementVMSteps(t, s, dueRemotePollSQL(32), `["desk"]`, 3),

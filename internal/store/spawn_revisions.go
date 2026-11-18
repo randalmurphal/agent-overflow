@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 )
 
 type SpawnRevisionAck struct {
@@ -23,14 +22,27 @@ type SpawnRevision struct {
 	Archived       bool   `json:"archived,omitempty"`
 }
 
+const spawnRevisionSelect = `SELECT c.token, c.revision, c.end, COALESCE(t.id,''), COALESCE(t.placement,''), COALESCE(t.title,''), COALESCE(t.archived,0)
+	  FROM spawn_revisions c LEFT JOIN thread_request_receipts r ON r.token = c.token AND r.owner_device_id = c.owner_device_id
+	  LEFT JOIN threads t ON t.id = r.target_thread_id AND t.deleting = 0
+	  WHERE c.owner_device_id = ?`
+const revisionsByTokenSQL = spawnRevisionSelect + ` AND c.token > ? ORDER BY c.token LIMIT ?`
+const revisionsByNumberSQL = spawnRevisionSelect + ` AND c.revision > ? ORDER BY c.revision LIMIT ?`
+
 func (s *Store) PendingSpawnRevisions(device, after string, limit int) (_ []SpawnRevision, err error) {
+	return s.pendingSpawnRevisions(device, revisionsByTokenSQL, after, limit)
+}
+
+// SpawnRevisionsAfter streams unacknowledged edits in issuance order on a live wait.
+func (s *Store) SpawnRevisionsAfter(device string, after int64, limit int) ([]SpawnRevision, error) {
+	return s.pendingSpawnRevisions(device, revisionsByNumberSQL, after, limit)
+}
+
+func (s *Store) pendingSpawnRevisions(device, query string, after any, limit int) (_ []SpawnRevision, err error) {
 	if device == "" || limit < 1 {
 		return nil, fmt.Errorf("store: listing spawn revisions requires a device and a positive limit")
 	}
-	rows, err := s.reader().Query(`SELECT c.token, c.revision, c.end, COALESCE(t.id,''), COALESCE(t.placement,''), COALESCE(t.title,''), COALESCE(t.archived,0)
-	  FROM spawn_revisions c LEFT JOIN thread_request_receipts r ON r.token = c.token AND r.owner_device_id = c.owner_device_id
-	  LEFT JOIN threads t ON t.id = r.target_thread_id AND t.deleting = 0
-	  WHERE c.owner_device_id = ? AND c.token > ? ORDER BY c.token LIMIT `+strconv.Itoa(limit), device, after)
+	rows, err := s.reader().Query(query, device, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: read pending spawn revisions: %w", err)
 	}

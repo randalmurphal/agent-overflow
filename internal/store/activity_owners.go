@@ -57,7 +57,7 @@ var activityOwnersSQL = `WITH RECURSIVE
 	    WHERE r.kind = 'spawn' AND r.owner_device_id <> 'local'
 	  UNION SELECT r.owner_device_id, r.token FROM direct d JOIN thread_request_receipts r ON r.target_thread_id = d.id
 	    WHERE r.kind IN ('send','ask') AND r.state IN ('accepted','running') AND r.owner_device_id <> 'local'
-	  UNION SELECT c.owner_device_id,c.token FROM direct d JOIN spawn_revisions c ON c.target=d.id`
+	  UNION SELECT c.owner_device_id,c.token FROM direct d CROSS JOIN spawn_revisions c ON c.target=d.id`
 
 // RecoveryOwnerTokens pages one group of active threads by receipt token,
 // including a busy target with more owners' requests than fit one reply.
