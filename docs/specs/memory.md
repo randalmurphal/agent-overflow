@@ -41,9 +41,13 @@ Rulings of 2026-10-21. Each is binding until the user changes it.
    user memory only when the user turns on shared memory, off by
    default. Standing agents, and the threads that work for them, always
    receive it.
-8. **Provider memory is the user's.** The app leaves Claude's and
-   Codex's own memory as the user configured it, and offers a setting
-   per provider to turn it off in the app's sessions.
+8. **One memory per session.** A session that receives Agent Overflow
+   memory runs with its provider's own memory off by default, so an
+   agent does not keep two memories that can disagree. Every other
+   session keeps Claude's and Codex's own memory as the user configured
+   it. A setting per provider changes where the app turns it off: in
+   every session, or never. An assistant that runs with both shows a
+   banner saying so ([standing agents](standing-agents.md#agent-home-contents)).
 9. **Changes reach a live thread at its next prompt.** Each prompt
    delivers only what changed since the session last received its
    memory, from that session's own records, one per part; nothing when
@@ -408,16 +412,25 @@ still indexed for the threads that read them.
 | Setting | Default | Effect |
 |---|---|---|
 | Shared memory | off | Ordinary threads receive project and user memory and may write it; the threads that work for an assistant do either way |
-| Claude memory off | off | The app's Claude and claude-tui sessions send `autoMemoryEnabled: false` and, in the same inline `--settings` block's `env`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, which outranks the inherited environment and the user's settings; the user's settings files are never touched |
-| Codex memory off | off | The app's Codex threads send `features.memories = false` and `memories.generate_memories = false` in their thread config, and a resumed thread's stored memory mode is set to `disabled` (`thread/memoryMode/set`), so the thread neither uses memories nor is mined for them |
+| Turn off Claude's own memory (`claudeOwnMemoryOff`) | where Agent Overflow memory is used | In which Claude and claude-tui sessions the app turns Claude's own memory off: those that receive Agent Overflow memory, every one, or never. Off, a session sends `autoMemoryEnabled: false` and, in the same inline `--settings` block's `env`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, which outranks the inherited environment and the user's settings; the user's settings files are never touched |
+| Turn off Codex's own memory (`codexOwnMemoryOff`) | where Agent Overflow memory is used | The same choice for Codex threads. Off, a thread sends `features.memories = false` and `memories.generate_memories = false` in its thread config, and a resumed thread's stored memory mode is set to `disabled` (`thread/memoryMode/set`), so the thread neither uses memories nor is mined for them |
+
+A session receives Agent Overflow memory when it is an assistant's, works
+for one, or runs while shared memory is on, read-only or not (the
+"Delivery" table). The app decides each session's provider memory from
+that same fact (`receivesMemory`): a start and a resume when the
+session is read, a Codex fork from the thread it works for (a local
+spawn's caller or ask's asker, whose link is written after the fork),
+and the throwaway resume of a rollback from the thread itself. Each
+choice has one line under it on the settings page.
 
 A computer whose settings answer lacks these keys runs a release before
 them: its page says `<computer> runs an older version: it has no memory
 settings.`, and nothing is read from or written there.
 
-Turning shared memory on while a provider's own memory is on shows a
-warning on the setting that names the provider and the setting that
-turns it off (`GetNativeMemoryStatus`). Claude's memory is decided as
+Shared memory beside a provider's own memory, which only "never"
+allows, shows a warning on the setting that names the provider and the
+choice that turns it off (`GetNativeMemoryStatus`). Claude's memory is decided as
 Claude Code decides it: `CLAUDE_CODE_DISABLE_AUTO_MEMORY` turns it off
 when true and on when false, taken from the `env` of
 `~/.claude/settings.json`, else of `~/.claude.json`, else the
@@ -436,8 +449,9 @@ Claude's memory is off.
 
 A changed setting reaches each thread's next session start. A loaded
 Codex thread keeps the memory config it was loaded with; ending its
-session applies the change. A Codex thread that ran while Codex memory
-was off stays excluded from mining after the setting is turned back on.
+session applies the change. A Codex thread that ran with Codex's own
+memory off stays excluded from mining after the setting turns it back
+on.
 
 ## Verification
 
@@ -460,11 +474,24 @@ list; warnings for
 assistants only; shared memory on and off, a helper's user-only
 delivery, and with shared memory off the delivery of an assistant's
 workers at depth one and two, one spawned with a sidebar row and one
-moved there, and none for a sidebar thread no assistant spawned; the writable folders, refused links and clashes, and the
-native-memory settings on Claude, claude-tui and Codex, including
-the resumed Codex thread's memory mode; the native-memory status, its
-`env` layers and its warning.
-The standing-agent e2e specs cover, on both mock providers, the whole
+moved there, and none for a sidebar thread no assistant spawned; the writable folders, refused links and clashes; the
+provider memory choices, each of the three deciding the provider's own
+memory for an assistant, a sub-thread, a read-only one and an ordinary
+thread with shared memory off and on, on Claude, claude-tui and Codex,
+the other provider's choice playing no part, each value reaching every
+real launch path, a Codex fork made by the person, by a thread tool
+for an assistant and for an ordinary thread, and a rollback's
+throwaway resume deciding as a start of that thread does, and the
+resumed Codex thread's memory mode; the plan file in place of the plan
+on the command line, its commands the same for one project and a large
+catalog, a missing or unreadable plan failing the run, and its delete
+with the thread; the provider memory status, its `env` layers, the
+three choices on the settings page and its warning only where a choice
+is never.
+The standing-agent e2e specs cover, on both mock providers, the banner
+on an assistant whose provider choice is never while its own memory is
+on, shown and cleared on the assistant, never on its worker or an
+ordinary thread, in both layouts; the whole
 delivery at a start and a compaction, a running session receiving only
 another writer's change at its next prompt, a resume's first prompt
 delivering what changed between sessions, maintenance warnings,

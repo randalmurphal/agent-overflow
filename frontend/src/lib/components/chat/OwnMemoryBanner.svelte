@@ -1,6 +1,6 @@
 <script lang="ts">
   // An assistant that runs with two memories (docs/specs/standing-agents.md,
-  // "Memory"): its computer's setting for its provider's own memory is
+  // "Two memories"): its computer's setting for its provider's own memory is
   // "never" and that provider's own memory is on, so the assistant may save
   // what it learns there instead of in Agent Overflow memory. Not a session
   // claim and not dismissible: it shows while both facts hold, and its one

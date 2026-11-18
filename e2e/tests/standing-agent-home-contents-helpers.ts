@@ -711,7 +711,7 @@ export type SidebarSection = 'assistants' | 'projects';
 
 /**
  * The banner on an assistant that runs with two memories
- * (docs/specs/standing-agents.md, "Memory"). By default the assistant runs
+ * (docs/specs/standing-agents.md, "Two memories"). By default the assistant runs
  * without its provider's own memory and shows none. With that provider's
  * choice at "never" while its own memory is on, the assistant's thread
  * shows it, with one action that opens the memory settings and nothing

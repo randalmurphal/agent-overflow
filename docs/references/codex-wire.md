@@ -2108,7 +2108,8 @@ app-server's runtime feature enablement (`protected_feature_keys`).
   present since `rust-v0.143.0`, changes a stored mode:
   `{"threadId": "...", "mode": "disabled"}` answers `{}`
   (`ThreadMemoryModeSetParams`, `v2/thread.rs`). Agent Overflow sends it
-  after a resume when its Codex memory setting is off.
+  after a resume when its setting turns Codex's own memory off for
+  the thread.
 - The pipeline reads only other threads whose stored mode is `enabled`
   (`state/src/runtime/memories.rs`), so a `disabled` thread is never
   mined, whichever session runs it.
