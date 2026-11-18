@@ -9170,10 +9170,11 @@ export class ThreadPeerPoll {
     "ack"?: ThreadPeerAck[];
 
     /**
-     * Held names the revision the source already holds of tokens it asks
-     * about. The answer about one at or below it leaves out the texts the
-     * source has (ThreadPeerRequest.Answer, Cause and LateReply). A source
-     * that does not send it is answered in full.
+     * Held names the revision the source already holds of settled tokens it
+     * asks about, which includes the settlement: the answer about one leaves
+     * out its Answer and Cause, and its LateReply too when the source holds
+     * the receipt's revision. A source that does not send it is answered in
+     * full.
      */
     "held"?: ThreadPeerAck[];
 
