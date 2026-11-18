@@ -770,10 +770,13 @@ started is never interrupted through a token. Refused for any other
 thread with the reason. A destination that predates the rest interrupts
 the turn, and the caller keeps its spawn wakes armed; a caller that
 predates it reads `thread_stopped` as an interruption.
-Cancelling a request the caller made disarms its `notify`, because the
-report already says what happened, but only once the cancel has been
-accepted: a cancel that never reached the destination leaves the wake
-armed, since the work is still running there and still owes an answer.
+Cancelling a request the caller made is told once, by the report. Here
+the cancel's settlement disarms `notify`. On a paired computer the report
+is claimed as the delivery before the cancel is sent, so a poll that
+collects the cancellation meanwhile queues no wake, and the claim marks
+it delivered once the report is written. A report that never reached the
+agent leaves the wake to tell it, and a cancel that never reached the
+destination leaves the work running there, still owing an answer.
 A request that already settled reports its settled state and
 `nothing_to_stop`, and is not settled a second time.
 A person's Stop in the caller's Agents segment cancels the same way but
@@ -1526,9 +1529,13 @@ and only that computer taking the revision clears it; one that did not
 arrive is sent again after the error delay, across a restart. A status
 call names the revision the source already holds of each settled request
 it asks about, and the answer about one it holds leaves out the texts the
-source has; a computer that does not name them is answered in full, and
-the source reads a full answer of a revision it holds as already
-collected.
+source has: the answer and its cause for any held revision, and the late
+reply too when the held revision is the latest, so a holder of the
+settlement still gets the late reply. A computer that does not name them
+is answered in full, and the source reads a full answer of a revision it
+holds as already collected. Upgrading from v0.0.19, which kept no such
+debt, owes one acknowledgement again for each answer the other computer
+could still hold, at the revision the source holds.
 
 An open request is polled every five seconds, or every two while a wait
 is parked on it. A poll for a due request also asks about the other
@@ -1553,11 +1560,14 @@ naming the answer's age. After a day the destination drops the answer
 text but keeps the request's identity, so the source settles the
 request `expired` ("answered at <time>, not collected in time") when it
 next asks, never `refused`, and a retry with that token never runs the
-work again. A late reply dropped that way, after the source collected the
-first answer, leaves that answer standing and is recorded on the request
-with when it arrived: `thread_status` reports `late_reply_expired_at`, and
-the Agents row reads "finished, late reply expired" with the time in its
-details. Nobody is woken for it. Nothing is held indefinitely, and nothing needs a lease: a
+work again. A late reply dropped that way is recorded on the request with
+when it arrived, whenever the source first learns of it, before it
+acknowledges that revision: after it collected the first answer, which
+stays standing, or with the collection that settles the request
+`expired` when both were dropped first. `thread_status` reports
+`late_reply_expired_at`, and the Agents row reads "finished, late reply
+expired" or "expired, late reply expired" with the time in its details.
+Nobody is woken for it. Nothing is held indefinitely, and nothing needs a lease: a
 scratch thread is deleted the moment its answer is stored, whether or
 not the caller is around; the answer lives in the request record, not
 in the thread.
@@ -1854,17 +1864,24 @@ the pairing is live. The destination's own switch is not consulted, and
 neither is the Agent remote tools opt-in that `ao-remote-tools` needs:
 that opt-in exists because a remote command runs a shell, and nothing
 here does.
-The end of a pairing is one transition over both ledgers, taken when a
-call there answers that the pairing ended (a poll, an acknowledgement, a
-command's status or an owed cancel) and when the person forgets the
-computer, under the same fence admission takes, so no request or command
-enters a pairing being ended: every open request settles `errored` with
-the reason; every settled one leaves the poll with its answer kept and
-owes no acknowledgement; every command there not known to have finished
-is recorded as finished with an unknown outcome and the reason, its owed
-cancel settled, and is told to its thread once, the Background row and
-the command's row saying why; and nothing about that pairing is asked
-again.
+The end of a pairing is one transition over both ledgers, taken wherever
+this computer learns that a pairing's credential or profile ended: any
+call there that the other computer refuses as revoked (a poll, an
+acknowledgement, a command's status, an owed cancel or an ordinary tool
+call), the pruning of own-device membership, and the person forgetting
+the computer. Each request and command records the pairing it was
+admitted under, and the transition reaches only what a pairing other
+than the one held now admitted, under the same fence admission takes, so
+no request or command enters a pairing being ended, an answer that a
+retired connection brings back changes nothing, and a new pairing starts
+owing nothing of the old one's. For those, every open request settles
+`errored` with the reason; every settled one leaves the poll with its
+answer kept and owes no acknowledgement; every command there not known to
+have finished is recorded as finished with an unknown outcome and the
+reason, its owed cancel settled, and is told to its thread once, the
+Background row and the command's row saying why; and nothing about that
+pairing is asked again. A row and a message about such work name the
+computer by the name it had when the work was admitted.
 
 The peer methods are `ThreadToolCall` (tool name, arguments, and the
 caller's thread identity) and `ThreadToolRequestStatus`, added to the

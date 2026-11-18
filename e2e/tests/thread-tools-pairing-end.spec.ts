@@ -3,7 +3,8 @@
 // dropped before it was collected reads so on the caller's Agents row, with
 // the first answer kept; and a command running there when that computer
 // revokes this one is told to its thread once, finished with its outcome
-// unknown, and its transcript row says why.
+// unknown, naming that computer as the person knew it, and its transcript
+// row says why.
 // Specs: docs/specs/agent-thread-tools.md ("Wakes from another computer",
 // "Reaching another computer"), docs/architecture/remote-commands.md.
 import { randomUUID } from 'node:crypto';
@@ -187,16 +188,20 @@ test('a command running on a computer that revokes this one is told once with it
   await remote.rpc('RevokeAccessDevice', (await solePairedDevice(remote)).id);
   const input = (await told).report.input ?? '';
   expect(input).toContain('Result: unknown');
+  // Named as the person knew it, though no pairing here names it now.
+  expect(input).toContain('Remote job finished on GPU computer');
   expect(input).toContain("The pairing with this computer ended, so this command's outcome is unknown.");
   await writeFile(finish, '');
 
   await home.open(page);
   await page.getByTestId('thread-row-title').getByText('Revoked builder', { exact: true }).click();
   const timeline = page.getByRole('log', { name: 'Message History' });
-  // The completion row reads the outcome, and the folded call row says why.
-  await expect(timeline.getByText(/nightly build on .* unknown/)).toBeVisible();
+  // The completion row reads the outcome on the computer as it was named,
+  // and the folded call row says why.
+  await expect(timeline.getByText(/nightly build on GPU computer.* unknown/)).toBeVisible();
   await timeline.getByRole('button', { name: /Expand 1 activity row/ }).click();
   const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
   await expect(card.getByTestId('row-error-msg')).toContainText("The pairing with this computer ended, so this command's outcome is unknown.");
+  await expect(card.locator('[data-machine]').first()).toHaveText('(GPU computer)');
   await card.screenshot({ path: test.info().outputPath('command-outcome-unknown.png'), animations: 'disabled' });
 });
