@@ -63,14 +63,16 @@ Rulings of 2026-10-21. Each is binding until the user changes it.
 | User | `<configDir>/memory/user/` | How the user decides, across projects. Small | Every assistant and every thread that works for one; every thread when shared memory is on | The same sessions |
 
 A thread works for an assistant when it is one of the assistant's
-helpers or its delegation chain on this computer reaches the
-assistant's thread or a helper: a worker the assistant spawned, directly
-or through its own workers at any depth, while each is owned
-(`store.WorksForAssistant`, the walk of
-[sub-thread levels](agent-thread-tools.md#sub-thread-depth)). A thread
-with a sidebar row starts its own chain. A worker a paired computer's
-assistant owns does not work for one here: it receives memory only while
-shared memory is on on its own computer.
+helpers or descends on this computer from the assistant's thread or a
+helper: a thread the assistant spawned, directly or through its own
+workers at any depth, and an agent's ask copy of one
+(`store.WorksForAssistant`). Lineage follows the spawn, not the row: a
+worker spawned with a sidebar row, or moved to the sidebar later, still
+works for the assistant, while
+[sub-thread levels](agent-thread-tools.md#sub-thread-depth) keep their
+own rule. A worker a paired computer's assistant spawned does not work
+for one here: it receives memory only while shared memory is on on its
+own computer.
 
 **Project key.** The project's path relative to the user's home
 directory with every `/` written as `--`; other characters stay as
@@ -445,8 +447,8 @@ naming only writable scopes and left out in read-only mode; the project
 list; warnings for
 assistants only; shared memory on and off, a helper's user-only
 delivery, and with shared memory off the delivery of an assistant's
-workers at depth one and two and none for a thread no assistant is
-above; the writable folders, refused links and clashes, and the
+workers at depth one and two, one spawned with a sidebar row and one
+moved there, and none for a sidebar thread no assistant spawned; the writable folders, refused links and clashes, and the
 native-memory settings on Claude, claude-tui and Codex, including
 the resumed Codex thread's memory mode; the native-memory status, its
 `env` layers and its warning.

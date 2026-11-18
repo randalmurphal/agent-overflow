@@ -153,6 +153,18 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 			step:     step,
 			prefixed: []string{"idx_thread_transfers_owner"},
 		}, ownedWorkersToArchiveSQL, "lead")
+		// Whether a thread works for an assistant walks every spawn link up,
+		// whatever the placement, by target, and an ask copy's ask by its
+		// token.
+		assertWalkProbesTheQueuedKey(t, s, "worksForAssistantSQL", walkPlan{
+			step: []string{
+				"SEARCH link USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
+				"SEARCH copy USING INDEX sqlite_autoindex_scratch_threads_1 (thread_id=?)",
+				"SEARCH ask USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
+			},
+			// A thread's scratch record is one row, its primary key.
+			prefixed: []string{"sqlite_autoindex_scratch_threads_1"},
+		}, worksForAssistantSQL, "grand")
 		// A decision's read of rest walks every spawn link down, whatever
 		// the placement, by caller through the index of links alone.
 		assertWalkProbesTheQueuedKey(t, s, "subtreeReachedSQL", walkPlan{

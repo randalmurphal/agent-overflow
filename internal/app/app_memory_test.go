@@ -113,7 +113,8 @@ func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 // memory as any thread does with it on: a helper the user index alone, a
 // worker the assistant spawned and that worker's own worker their
 // project's index and the user's, none of them the assistant's home or
-// warnings. A thread no assistant is above receives none.
+// warnings, whether the worker's row is owned or in the sidebar, from its
+// spawn or moved there later. A thread no assistant spawned receives none.
 func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -137,11 +138,18 @@ func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 		}
 		return created
 	}
-	worker, below, unowned := thread(), thread(), thread()
+	worker, below, unowned, shown, moved := thread(), thread(), thread(), thread(), thread()
 	ownSpawn(t, app, "spawn-worker", owner.ID, worker.ID)
 	ownSpawn(t, app, "spawn-below", worker.ID, below.ID)
+	sidebarSpawn(t, app, "spawn-shown", owner.ID, shown.ID)
+	ownSpawn(t, app, "spawn-moved", owner.ID, moved.ID)
+	if _, err := app.store.SetThreadPlacement([]string{moved.ID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
 	userDir := memory.UserDir(app.configDir)
-	for name, sub := range map[string]store.Thread{"helper": helper, "depth one": worker, "depth two": below} {
+	for name, sub := range map[string]store.Thread{
+		"helper": helper, "depth one": worker, "depth two": below, "sidebar from its spawn": shown, "moved to the sidebar": moved,
+	} {
 		sub, err := app.store.GetThread(sub.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -172,7 +180,20 @@ func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 		}
 	}
 	if _, ok, err := app.memoryPlan(unowned, nil); ok || err != nil {
-		t.Fatalf("a thread no assistant is above: ok %v, %v", ok, err)
+		t.Fatalf("a thread no assistant spawned: ok %v, %v", ok, err)
+	}
+}
+
+// sidebarSpawn records that caller spawned worker with a sidebar row.
+func sidebarSpawn(t *testing.T, app *App, token, caller, worker string) {
+	t.Helper()
+	if _, err := app.store.AcceptLocalThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: caller, Kind: store.ThreadRequestSpawn, State: store.ThreadRequestUnconfirmed,
+	}, store.ThreadRequestReceipt{Token: token, OwnerDeviceID: threadReceiptLocalOwner, Kind: store.ThreadRequestSpawn, SourceThreadID: caller}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.NameLocalThreadRequestTarget(token, worker, false); err != nil {
+		t.Fatal(err)
 	}
 }
 
