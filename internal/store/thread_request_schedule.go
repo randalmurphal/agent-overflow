@@ -213,7 +213,8 @@ func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []T
 // A capable destination reports accepted work as it changes. Its final
 // status at the late reply deadline remains due across a suspended process.
 const remotePollingSQL = `polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','accepted','running','finished')`
-const clockedOwnerRequestSQL = `polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','finished')`
+const clockedOwnerRequestSQL = `polling=1 AND target_computer_id <> '' AND (state IN ('unconfirmed','finished') OR
+ (kind='spawn' AND target_thread_id='' AND state IN ('accepted','running')))`
 const ownerDeadlineSQL = `CASE WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000)) ELSE next_check END`
 
 // Seek one index entry per computer. Each computer's clock then seeks its

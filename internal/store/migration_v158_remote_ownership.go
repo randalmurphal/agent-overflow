@@ -118,7 +118,8 @@ CREATE INDEX idx_thread_requests_poll_computer ON thread_requests(target_compute
  WHERE target_computer_id <> '' AND polling=1 AND state IN ('unconfirmed','accepted','running','finished');
 CREATE INDEX idx_thread_requests_owner_deadline ON thread_requests(target_computer_id,
  CASE WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000)) ELSE next_check END)
- WHERE polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','finished');
+ WHERE polling=1 AND target_computer_id <> '' AND (state IN ('unconfirmed','finished') OR
+ (kind='spawn' AND target_thread_id='' AND state IN ('accepted','running')));
 CREATE INDEX idx_thread_requests_owner_recovery ON thread_requests(target_computer_id, token)
  WHERE target_computer_id <> '' AND (nested_open = 1 OR (polling = 1 AND state IN ('accepted','running')));
 CREATE INDEX idx_thread_request_receipts_owner_uncollected ON thread_request_receipts(owner_device_id, token)

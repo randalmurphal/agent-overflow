@@ -95,6 +95,12 @@ func TestAV2DestinationSaysItIsStillAdmittingALostSpawn(t *testing.T) {
 				released()
 				faults.detached.Wait()
 			})
+			beforeNaming := make(chan struct{})
+			allowNaming := make(chan struct{})
+			name := sync.OnceFunc(func() { close(allowNaming) })
+			t.Cleanup(name)
+			pair.dest.spawnNamingForTest = func(string) { close(beforeNaming); <-allowNaming }
+
 			project := pair.project
 			if !admits {
 				// Refused before admission: no receipt is ever written.
@@ -118,6 +124,15 @@ func TestAV2DestinationSaysItIsStillAdmittingALostSpawn(t *testing.T) {
 			if err != nil || len(status.Requests) != 1 || status.Requests[0].Known || !status.Requests[0].Admitting {
 				t.Fatalf("status = %+v, %v; want the token unknown and still being admitted", status.Requests, err)
 			}
+			clockDue := func(now time.Time) {
+				t.Helper()
+				due, err := pair.source.store.DueThreadRequestPolls(now.UnixMilli(), 32, []string{pair.computer})
+				if err != nil || len(due) != 1 || due[0].Token != ack.Token {
+					t.Fatalf("admission clock skipped %s in state %s: %+v, %v", ack.Token, pair.request(t, ack.Token).State, due, err)
+				}
+			}
+			clockDue(returned.Add(pair.source.threadPollNormal()))
+
 			pair.pollAt(t, pair.source, returned.Add(pair.source.threadPollNormal()))
 			if row := pair.request(t, ack.Token); row.State != store.ThreadRequestUnconfirmed || row.Issue != "" {
 				t.Fatalf("a poll while the handler was before admission left %q %q issue %q, want it unconfirmed with nothing reported",
@@ -125,8 +140,25 @@ func TestAV2DestinationSaysItIsStillAdmittingALostSpawn(t *testing.T) {
 			}
 
 			released()
+			if admits {
+				select {
+				case <-beforeNaming:
+				case <-ctx.Done():
+					t.Fatal("spawn never reached naming")
+				}
+				now := time.Now().Add(2 * pair.source.threadPollNormal())
+				if err := pair.source.readOwnerChanges(ctx, pair.computer, pair.destWire.srv.LaunchID(), []string{ack.Token}, nil); err != nil {
+					t.Fatal(err)
+				}
+				if row := pair.request(t, ack.Token); row.State != store.ThreadRequestAccepted || row.TargetThreadID != "" {
+					t.Fatalf("held before naming: %+v", row)
+				}
+				clockDue(now.Add(pair.source.threadPollNormal()))
+				name()
+			}
+
 			faults.detached.Wait()
-			pair.pollAt(t, pair.source, time.Now().Add(pair.source.threadPollNormal()))
+			pair.pollAt(t, pair.source, time.Now().Add(4*pair.source.threadPollNormal()))
 			row := pair.request(t, ack.Token)
 			if admits {
 				receipt := pair.receipt(t, ack.Token)
