@@ -520,6 +520,10 @@ type peerFaults struct {
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
 	stall chan struct{}
+	// released answers a spawn or ask whose token holds a receipt naming no
+	// thread yet as v0.0.19 does: it settles the receipt interrupted and
+	// refuses, while the attempt making the thread runs on.
+	released atomic.Bool
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
@@ -528,6 +532,21 @@ func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (T
 	}
 	if p.attempts.Add(1) > 1 && p.refuseRetries.Load() {
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, "This attempt is refused.", nil)
+	}
+	if p.released.Load() && (call.Tool == "thread_spawn" || call.Tool == "thread_ask") {
+		receipt, found, err := p.store.GetThreadRequestReceipt(call.Token)
+		if err != nil {
+			return ThreadPeerReply{}, err
+		}
+		if found && receipt.TargetThreadID == "" {
+			if err := p.settleThreadReceipt(call.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+				State: store.ThreadReceiptInterrupted, Answer: []byte(threadtools.InterruptNeverStarted), AnswerKind: store.ThreadAnswerError,
+			}); err != nil {
+				return ThreadPeerReply{}, err
+			}
+			return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
+				threadtools.InterruptNeverStarted+" It is settled as interrupted; make the request again.", nil)
+		}
 	}
 	if p.detachFirst.CompareAndSwap(true, false) {
 		p.detached.Go(func() { _, _ = p.App.ThreadToolCall(context.WithoutCancel(ctx), call) })
@@ -559,11 +578,15 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 	return p.App.ThreadToolRequestStatus(ctx, poll)
 }
 
-// serveFaultyApp serves one destination through the fault wrapper.
-func serveFaultyApp(t *testing.T, app *App) (*pairedBackend, *peerFaults) {
+// serveFaultyApp serves one destination through the fault wrapper, its
+// listener configured further by configure.
+func serveFaultyApp(t *testing.T, app *App, configure ...func(*transport.Config)) (*pairedBackend, *peerFaults) {
 	t.Helper()
 	faults := &peerFaults{App: app}
 	wire := servePairedApp(t, app, func(cfg *transport.Config) {
+		for _, apply := range configure {
+			apply(cfg)
+		}
 		dispatcher := transport.NewDispatcher()
 		if _, err := dispatcher.Register(faults, transport.RegisterOptions{
 			Package:   "main",

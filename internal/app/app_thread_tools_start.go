@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -280,7 +281,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		Kind:           store.ThreadRequestSpawn,
 		OriginThreadID: call.FromThread,
 		Notify:         call.Notify,
-	}, func() (store.Thread, error) {
+	}, func() (store.Thread, threadapp.CutWorktree, error) {
 		return t.createSpawnedThread(ctx, call, create)
 	}, create.owned)
 	if err != nil {
@@ -464,8 +465,8 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 		Kind:           store.ThreadRequestAsk,
 		OriginThreadID: source.ID,
 		Notify:         call.Notify,
-	}, func() (store.Thread, error) {
-		return t.app.forkScratchThread(ctx, source, scratchForkOptions{
+	}, func() (store.Thread, threadapp.CutWorktree, error) {
+		thread, err := t.app.forkScratchThread(ctx, source, scratchForkOptions{
 			TitlePrefix: askScratchTitlePrefix,
 			// Read-only WHATEVER the source runs: an ask is a question, and
 			// a fork that could write would act on a workspace whose owner
@@ -476,6 +477,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 			// (store.SubThreadLevel); a paired computer's carries its level.
 			SpawnLevel: carriedLevel(origin, call.Level),
 		})
+		return thread, threadapp.CutWorktree{}, err
 	}, false)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -531,10 +533,12 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 // `fresh` is false for exactly that retry, so the dispatch does not run
 // twice either. A local token is fresh, so it is never a retry. own places the
 // thread owned by the naming write: a local spawn's through its request, a
-// paired computer's through its receipt, which is then its link.
+// paired computer's through its receipt, which is then its link. `create`
+// returns the worktree it cut with the thread; until the naming write names
+// the thread, the cut is this attempt's to undo.
 func (t threadToolsApp) acceptRequest(
 	origin threadRequestOrigin, request store.ThreadRequest,
-	create func() (store.Thread, error), own bool,
+	create func() (store.Thread, threadapp.CutWorktree, error), own bool,
 ) (target string, fresh bool, err error) {
 	token, kind := request.Token, request.Kind
 	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID, origin.foreign && own)
@@ -563,7 +567,7 @@ func (t threadToolsApp) acceptRequest(
 	made := false
 	listing := store.ListingUnchanged
 	if target == "" && create != nil {
-		thread, err := create()
+		thread, cut, err := create()
 		if err != nil {
 			return "", false, err
 		}
@@ -575,8 +579,7 @@ func (t threadToolsApp) acceptRequest(
 			var named bool
 			named, listing, err = t.app.store.SetThreadReceiptTarget(token, target, own)
 			if err == nil && !named {
-				// Settled while its thread was being made: cancelled, or
-				// its pairing ended.
+				// Settled while its thread was being made: cancelled.
 				err = errorsx.Public(threadtools.CodeInvalidRequest,
 					"That request was settled before its thread could be recorded, so the thread made for it was removed and nothing ran under it.", nil)
 			}
@@ -586,7 +589,7 @@ func (t threadToolsApp) acceptRequest(
 			listing, err = t.app.store.NameLocalThreadRequestTarget(token, target, own)
 		}
 		if err != nil {
-			return "", false, t.discardUnnamedThread(target, err)
+			return "", false, t.discardUnnamedThread(thread, cut, err)
 		}
 		made = true
 	}
@@ -614,15 +617,31 @@ func (t threadToolsApp) acceptRequest(
 }
 
 // discardUnnamedThread takes back a thread its request could not name, and
-// returns the refusal. Nothing names it: no receipt, no request and no
-// owner, and its message was never sent, so it would be work the caller
-// cannot reach and will make again.
-func (t threadToolsApp) discardUnnamedThread(threadID string, cause error) error {
-	if err := t.app.deleteThread(threadID); err != nil {
-		log.Printf("thread tools: delete thread %s after its request could not name it: %v", threadID, err)
+// the worktree and branch its creation cut, and returns the refusal.
+// Nothing names it: no receipt, no request and no owner, and its message
+// was never sent, so it would be work the caller cannot reach and will make
+// again. The cut is undone here rather than by the delete, which never
+// touches a worktree: it is this creation's own unfinished work.
+func (t threadToolsApp) discardUnnamedThread(thread store.Thread, cut threadapp.CutWorktree, cause error) error {
+	if err := t.app.deleteThread(thread.ID); err != nil {
+		log.Printf("thread tools: delete thread %s after its request could not name it: %v", thread.ID, err)
 		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
 			"Thread %s was created but its request could not record it (%v), and removing it failed too. It is on this computer.",
-			threadID, cause), errors.Join(cause, err))
+			thread.ID, cause), errors.Join(cause, err))
+	}
+	if cut.Path == "" {
+		return cause
+	}
+	// The delete stopped and joined the thread's setup run, so no recipe is
+	// writing into the checkout while it goes.
+	if err := (threadWorkspacePort{app: t.app}).RemoveCutWorktree(thread.ProjectPath, cut); err != nil {
+		log.Printf("thread tools: undo the worktree %s of thread %s its request could not name: %v", cut.Path, thread.ID, err)
+		_, said, public := errorsx.PublicDetails(cause)
+		if !public {
+			said = "Its request could not record the thread made for it, so the thread was removed."
+		}
+		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"%s Removing the worktree made for it at %s failed (%v); it is on this computer.", said, cut.Path, err), errors.Join(cause, err))
 	}
 	return cause
 }

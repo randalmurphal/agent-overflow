@@ -103,3 +103,46 @@ func TestThreadToolsARetryRefusedAfterALostAnswerGivesTheToken(t *testing.T) {
 		t.Fatalf("source row after the poll = %+v, want the thread the first attempt started", row)
 	}
 }
+
+// The destination accepted the request and its answer arrived, but this
+// computer could not record it. The caller still gets the token, the state
+// the destination reported and what failed here, never only an error, and
+// the poll records the answer once it can.
+func TestThreadToolsAnAnswerThatCannotBeRecordedStillGivesTheToken(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	execOnStore(t, pair.dbPath, `CREATE TRIGGER refuse_target BEFORE UPDATE OF target_thread_id ON thread_requests
+		BEGIN SELECT RAISE(ABORT, 'injected record failure'); END`)
+
+	ack := pair.spawnThere(t, "accepted where this computer cannot record it", nil)
+	if ack.Token == "" || ack.Outcome != threadtools.OutcomeUnconfirmed {
+		t.Fatalf("ack = %+v, want the token as unconfirmed", ack)
+	}
+	receipt := pair.receipt(t, ack.Token)
+	if ack.ThreadID != receipt.TargetThreadID || ack.State != receipt.State {
+		t.Fatalf("ack names %q %q, want what the destination reported: %q %q", ack.ThreadID, ack.State, receipt.TargetThreadID, receipt.State)
+	}
+	if !strings.Contains(ack.Notice, "could not record") {
+		t.Fatalf("ack notice = %q, want it to say what failed here", ack.Notice)
+	}
+
+	execOnStore(t, pair.dbPath, `DROP TRIGGER refuse_target`)
+	pair.poll(t)
+	if row := pair.request(t, ack.Token); row.TargetThreadID != receipt.TargetThreadID || threadRequestSettled(row) {
+		t.Fatalf("source row after the poll = %+v, want it naming %s and open", row, receipt.TargetThreadID)
+	}
+
+	// The request cannot be read back to render its acknowledgement: the
+	// caller is still given what the destination said under the token.
+	execOnStore(t, pair.dbPath, `CREATE TRIGGER lose_request AFTER UPDATE OF next_check ON thread_requests
+		WHEN NEW.token <> '`+ack.Token+`' BEGIN DELETE FROM thread_requests WHERE token = NEW.token; END`)
+	lost := pair.spawnThere(t, "accepted where this computer loses the request", nil)
+	if lost.Token == "" || lost.Outcome != threadtools.OutcomeUnconfirmed || !strings.Contains(lost.Notice, "could not record") {
+		t.Fatalf("ack = %+v, want the token as unconfirmed with what failed", lost)
+	}
+	if there := pair.receipt(t, lost.Token); lost.ThreadID != there.TargetThreadID || lost.State != there.State {
+		t.Fatalf("ack names %q %q, want what the destination reported: %q %q", lost.ThreadID, lost.State, there.TargetThreadID, there.State)
+	}
+}

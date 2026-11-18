@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/entityid"
@@ -281,8 +285,7 @@ func (t threadToolsApp) startRemoteRequest(
 		_, issue, _ = threadErrorDetails(tool, err)
 	}
 	t.app.rescheduleThreadRequest(row, t.app.threadPollNormal(), issue)
-	switch {
-	case err != nil && !mayHaveRun:
+	if err != nil && !mayHaveRun {
 		// Nothing runs under the token. The error this returns is the
 		// delivery, as it is for a request this computer refused itself
 		// (failRequest), and the record keeps the same text: it names the
@@ -290,23 +293,54 @@ func (t threadToolsApp) startRemoteRequest(
 		_, refusal, _ := errorsx.PublicDetails(err)
 		t.refuseRequest(row.Token, refusal, nil)
 		return threadtools.RequestAck{}, err
-	case err != nil:
-		// An attempt may have reached the destination, which may be running
-		// this request. The model is given the token and told to check it
-		// rather than an error it would answer by starting the same work
-		// again; the poller reads the destination's record of the token.
-		done()
-		return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 	}
-	if err := t.app.collectThreadPeerReply(row.Token, computerID, reply); err != nil {
-		return threadtools.RequestAck{}, err
+	return t.dispatchedAck(ctx, caller, row, peer.Computer(), call, reply, err, waitSeconds, done)
+}
+
+// dispatchedAck is every outcome of a remote request the destination may
+// have: the caller is given its token, never only an error, because an
+// error would be answered by starting the same work again under a new one.
+//
+// sendErr is the last attempt's failure, nil when the destination answered
+// with reply. A local failure to record that answer or to read the request
+// back is said in the acknowledgement's notice, beside the state known so
+// far; the request's row stays in the poll, which reconciles it.
+func (t threadToolsApp) dispatchedAck(
+	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, computer threadtools.Computer,
+	call any, reply ThreadPeerRequest, sendErr error, waitSeconds int, done func(),
+) (threadtools.RequestAck, error) {
+	var failed error
+	if sendErr == nil {
+		if err := t.app.collectThreadPeerReply(row.Token, computer.ID, reply); err != nil {
+			failed = fmt.Errorf("record the answer: %w", err)
+		}
 	}
 	done()
 	ack, err := t.ackRequest(ctx, caller, row.Token, waitSeconds)
-	if err == nil {
-		ack.Notice = t.unownedSpawnNotice(call, reply, computerID)
+	if err != nil {
+		failed = errors.Join(failed, fmt.Errorf("read the request back: %w", err))
 	}
-	return ack, err
+	if failed == nil {
+		if sendErr == nil {
+			ack.Notice = t.unownedSpawnNotice(call, reply, computer.ID)
+		}
+		return ack, nil
+	}
+	reference := uuid.NewString()
+	log.Printf("thread tools: request %s on %s (reference %s): %v", row.Token, computer.ID, reference, failed)
+	known := threadtools.RequestAck{
+		RequestState: threadtools.RequestState{
+			Token: row.Token, Kind: row.Kind, ComputerID: computer.ID, Computer: computer.Name,
+			Notify: row.Notify, State: store.ThreadRequestUnconfirmed,
+		},
+		Outcome: threadtools.OutcomeUnconfirmed,
+		Notice: fmt.Sprintf("This computer could not record what %s answered (reference %s).",
+			threadtools.NameOfComputer(computer), reference),
+	}
+	if sendErr == nil && reply.Known {
+		known.ThreadID, known.Title, known.State = reply.TargetThreadID, reply.Title, reply.State
+	}
+	return known, nil
 }
 
 // unownedSpawnNotice says when an owned spawn's thread was not owned on the
@@ -340,20 +374,24 @@ var threadRequestAdmissionFence = threadPeerCallWait("ThreadToolCall")*threadPee
 // receipt the destination reports, or the last failure and whether any
 // attempt may have started the request there.
 //
-// An attempt may have started it unless the carrier never sent it
-// (attachedbackends.NotSent) or the destination answered it with a
-// refusal, which it gives only for a request it did not start. An attempt
-// that may have started it is sent again with the same token, because what
-// was lost may be the reply and not the work, and the destination answers a
-// token it holds from its receipt. A refusal of a retry says nothing about
-// the work an earlier attempt may have started, so the request stays open
-// for the poller.
+// An attempt may have started it unless it was never sent
+// (rpcclient.NotSent) or the destination answered it with a refusal, which
+// it gives only for a request it did not start. Only an attempt that may
+// have started it is tried again, with the same token, because what was
+// lost may be the reply and not the work (replayThreadPeerRequest). A
+// refusal of a later attempt says nothing about the work an earlier one may
+// have started, so the request stays open for the poller.
 func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, bool, error) {
 	mayHaveRun := false
 	for attempt := 1; ; attempt++ {
 		rpc, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolCall"))
 		var reply ThreadPeerReply
-		err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
+		var err error
+		if mayHaveRun {
+			reply, err = a.replayThreadPeerRequest(rpc, computer.ID, call)
+		} else {
+			err = a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
+		}
 		cancel()
 		if err != nil {
 			_, _, uncertain := threadErrorDetails(call.Tool, err)
@@ -369,4 +407,41 @@ func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Co
 		}
 		return *reply.Request, true, nil
 	}
+}
+
+// replayThreadPeerRequest sends a request again after an attempt that may
+// have reached the destination.
+//
+// A destination on thread-tools.v2 answers a token it holds from its
+// receipt, so the call is replayed as it is. One that predates it settles
+// a receipt whose thread is still being made and lets that thread run
+// anyway, so a spawn or ask, which make a thread, is not replayed there:
+// its receipt is read and followed, and only an answer that the token is
+// unknown sends the call again. A send makes nothing and is replayed to
+// either.
+func (a *App) replayThreadPeerRequest(ctx context.Context, computerID string, call ThreadPeerCall) (ThreadPeerReply, error) {
+	var reply ThreadPeerReply
+	if call.Tool == "thread_send" {
+		err := a.backends.CallThreadPeer(ctx, computerID, "ThreadToolCall", &reply, call)
+		return reply, err
+	}
+	err := a.backends.CallThreadPeerOn(ctx, computerID, transport.CapabilityThreadToolsV2, "ThreadToolCall", &reply, call)
+	if !attachedbackends.Unsupported(err) {
+		return reply, err
+	}
+	status, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolRequestStatus"))
+	defer cancel()
+	var poll ThreadPeerPollReply
+	if err := a.backends.CallThreadPeer(status, computerID, "ThreadToolRequestStatus", &poll, ThreadPeerPoll{Tokens: []string{call.Token}}); err != nil {
+		return ThreadPeerReply{}, err
+	}
+	i := slices.IndexFunc(poll.Requests, func(answer ThreadPeerRequest) bool { return answer.Token == call.Token })
+	switch {
+	case i < 0:
+		return ThreadPeerReply{}, errors.New("the destination did not report the request")
+	case poll.Requests[i].Known:
+		return ThreadPeerReply{Request: &poll.Requests[i]}, nil
+	}
+	err = a.backends.CallThreadPeer(ctx, computerID, "ThreadToolCall", &reply, call)
+	return reply, err
 }

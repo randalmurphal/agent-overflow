@@ -431,7 +431,7 @@ func ackNote(result ackResult) string {
 	case OutcomeBlocked:
 		return "That thread is waiting on the user for an approval or a question, so it cannot answer right now. The request stays open: leave it to the user, check it later with thread_status token " + result.Token + ", or stop it with thread_cancel."
 	case OutcomeUnconfirmed:
-		return "The call failed before it was known whether the work started. Do NOT start it again: check thread_status with token " + result.Token + "."
+		return "This computer has not confirmed whether the work started. Do NOT start it again: check thread_status with token " + result.Token + "."
 	default:
 		// Only a request with notify armed wakes this thread when the other
 		// thread's turn ends. Without it the work runs unattended unless

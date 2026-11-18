@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -245,7 +246,7 @@ func TestALocalSpawnOrAskIsAcceptedInTwoTransactions(t *testing.T) {
 		before := storeCostOf(f.app.store)
 		target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{
 			Token: token, Kind: kind, OriginThreadID: f.caller.ID, Notify: true,
-		}, func() (store.Thread, error) { return made, nil }, kind == store.ThreadRequestSpawn)
+		}, func() (store.Thread, threadapp.CutWorktree, error) { return made, threadapp.CutWorktree{}, nil }, kind == store.ThreadRequestSpawn)
 		cost := storeCostOf(f.app.store).since(before)
 		if err != nil || target != made.ID || !fresh {
 			t.Fatalf("%s: accept = %q %v, %v", kind, target, fresh, err)
