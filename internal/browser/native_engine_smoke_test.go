@@ -69,7 +69,16 @@ func runInNativeWindow(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "native browser smoke: %v\n", err)
 		return 1
 	}
-	app := application.New(application.Options{Name: "ao-native-browser-smoke"})
+	// The gate is this process's alone: a test binary a test starts as its
+	// helper runs plain, with no window of its own.
+	if err := os.Unsetenv(nativeBrowserSmokeEnv); err != nil {
+		fmt.Fprintf(os.Stderr, "native browser smoke: %v\n", err)
+		return 1
+	}
+	// GTK makes two processes of one application name one application: the
+	// second only activates the first, which would run the tests again. The
+	// pid keeps another smoke run under way from being that process.
+	app := application.New(application.Options{Name: fmt.Sprintf("ao-native-browser-smoke-%d", os.Getpid())})
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 			Title: "AO native browser smoke", Width: 1280, Height: 800,
