@@ -439,7 +439,9 @@ environment a session gets; otherwise `autoMemoryEnabled` in
 ([Claude](../references/claude-wire.md#auto-memory-switch),
 [Codex](../references/codex-wire.md#memories-config)).
 Codex's is on when `[features] memories` is true in
-`~/.codex/config.toml`.
+`~/.codex/config.toml`. Each provider is read on its own: one whose
+file cannot be read or parsed says so on the page, naming the file, and
+the other's answer still warns.
 
 Shared memory gives sessions write access outside their workspace, so
 it is a host setting (`internal/settings/tier.go`), like the other

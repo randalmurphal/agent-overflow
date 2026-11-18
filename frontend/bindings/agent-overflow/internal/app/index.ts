@@ -137,6 +137,7 @@ export {
     ProjectDeletionPreview,
     ProjectDeletionResult,
     ProjectPRList,
+    ProviderMemory,
     ProviderSessionAccountEvent,
     ProviderTerminalHandle,
     PushSenderStatus,

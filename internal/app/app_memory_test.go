@@ -364,7 +364,8 @@ func builtMemory(t *testing.T, plan memory.Plan) string {
 
 // The status reads the provider home the sessions use, and the variable as
 // a Claude session gets it: the user's custom value over the app's own, and
-// ~/.claude.json's env over both.
+// ~/.claude.json's env over both. A provider whose configuration cannot be
+// read says so without taking the other's answer with it.
 func TestNativeMemoryStatusReadsTheSessionsConfiguration(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
@@ -372,18 +373,32 @@ func TestNativeMemoryStatusReadsTheSessionsConfiguration(t *testing.T) {
 	writeHomeFile(t, home, ".codex/config.toml", "[features]\nmemories = true\n")
 	writeHomeFile(t, home, ".claude/settings.json", `{"autoMemoryEnabled": false}`)
 	status, err := app.GetNativeMemoryStatus()
-	if err != nil || status.Claude || !status.Codex {
+	if err != nil || status.Claude != (ProviderMemory{}) || status.Codex != (ProviderMemory{On: true}) {
 		t.Fatalf("status = %+v, %v", status, err)
 	}
 	if _, err := app.settings.SetProviderEnvVar(string(provider.Claude), claude.AutoMemoryOffEnv, "0", false); err != nil {
 		t.Fatal(err)
 	}
-	if status, err := app.GetNativeMemoryStatus(); err != nil || !status.Claude {
+	if status, err := app.GetNativeMemoryStatus(); err != nil || status.Claude != (ProviderMemory{On: true}) {
 		t.Fatalf("with the variable forcing it on: %+v, %v", status, err)
 	}
 	writeHomeFile(t, home, ".claude.json", `{"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}}`)
-	if status, err := app.GetNativeMemoryStatus(); err != nil || status.Claude {
+	if status, err := app.GetNativeMemoryStatus(); err != nil || status.Claude != (ProviderMemory{}) {
 		t.Fatalf("with ~/.claude.json turning it off: %+v, %v", status, err)
+	}
+	if err := os.Remove(filepath.Join(home, ".claude.json")); err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, home, ".codex/config.toml", "[features\n")
+	status, err = app.GetNativeMemoryStatus()
+	if err != nil || status.Claude != (ProviderMemory{On: true}) || status.Codex.On || !strings.Contains(status.Codex.Error, "config.toml") {
+		t.Fatalf("with Codex's config unreadable: %+v, %v", status, err)
+	}
+	writeHomeFile(t, home, ".codex/config.toml", "[features]\nmemories = true\n")
+	writeHomeFile(t, home, ".claude/settings.json", `{`)
+	status, err = app.GetNativeMemoryStatus()
+	if err != nil || status.Codex != (ProviderMemory{On: true}) || status.Claude.On || !strings.Contains(status.Claude.Error, "settings.json") {
+		t.Fatalf("with Claude's settings unreadable: %+v, %v", status, err)
 	}
 }
 

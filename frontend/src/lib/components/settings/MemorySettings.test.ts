@@ -11,8 +11,18 @@ import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app
 import type { OwnMemoryOff, Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import { TransportError } from '../../transport/wsClient';
+import { applyProviderMemorySettingsChanged } from '../../stores/providerMemory.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import type { NativeMemoryStatus } from '../../types/models';
 
-async function seed(overrides: Partial<Settings>, native: { claude: boolean; codex: boolean } | Error): Promise<void> {
+// Each provider's own memory as this computer answers it.
+function native(claude: boolean | string, codex: boolean | string): NativeMemoryStatus {
+  const one = (answer: boolean | string) =>
+    typeof answer === 'string' ? { on: false, error: answer } : { on: answer, error: '' };
+  return { claude: one(claude), codex: one(codex) };
+}
+
+async function seed(overrides: Partial<Settings>, status: NativeMemoryStatus | Error): Promise<void> {
   let saved: Settings = makeSettings(overrides);
   setBindingMock('GetSettings', async () => saved);
   setBindingMock('UpdateSettings', async (patch: unknown) => {
@@ -20,8 +30,8 @@ async function seed(overrides: Partial<Settings>, native: { claude: boolean; cod
     return saved;
   });
   setBindingMock('GetNativeMemoryStatus', async () => {
-    if (native instanceof Error) throw native;
-    return native;
+    if (status instanceof Error) throw status;
+    return status;
   });
   await loadSettings();
 }
@@ -48,7 +58,7 @@ describe('<MemorySettings>', () => {
   // The sentences about assistants' memory, in the page and in the settings
   // search, are there only while assistants are on.
   it('says nothing of assistants while they are off', async () => {
-    await seed({ assistantsEnabled: false }, { claude: false, codex: false });
+    await seed({ assistantsEnabled: false }, native(false, false));
     const view = render(MemorySettings);
     await view.findByTestId('settings-memory');
     expect(view.container.textContent?.toLowerCase()).not.toContain('assistant');
@@ -61,7 +71,7 @@ describe('<MemorySettings>', () => {
   });
 
   it('chooses where Agent Overflow memory is used by default, with a line under each choice, and no warning', async () => {
-    await seed({ sharedMemoryEnabled: true }, { claude: true, codex: true });
+    await seed({ sharedMemoryEnabled: true }, native(true, true));
     const { container, findByTestId, queryAllByTestId } = render(MemorySettings);
     await findByTestId('settings-memory');
     await expect.poll(() => getBindingMock('GetNativeMemoryStatus')!.mock.calls.length).toBeGreaterThan(0);
@@ -78,7 +88,7 @@ describe('<MemorySettings>', () => {
   });
 
   it('sends each choice as its own key', async () => {
-    await seed({}, { claude: false, codex: false });
+    await seed({}, native(false, false));
     const { container, findByTestId } = render(MemorySettings);
     await findByTestId('settings-memory');
     const update = getBindingMock('UpdateSettings')!;
@@ -94,7 +104,7 @@ describe('<MemorySettings>', () => {
   });
 
   it('warns for each provider whose own memory runs beside shared memory, until its choice turns it off', async () => {
-    await seed({ sharedMemoryEnabled: true, claudeOwnMemoryOff: 'never', codexOwnMemoryOff: 'never' }, { claude: true, codex: true });
+    await seed({ sharedMemoryEnabled: true, claudeOwnMemoryOff: 'never', codexOwnMemoryOff: 'never' }, native(true, true));
     const { container, findAllByTestId, queryAllByTestId } = render(MemorySettings);
     const warnings = await findAllByTestId('memory-overlap-warning');
     expect(warnings.map((w) => w.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
@@ -115,7 +125,7 @@ describe('<MemorySettings>', () => {
   });
 
   it('does not warn for a provider whose own memory the user turned off', async () => {
-    await seed({ sharedMemoryEnabled: true, claudeOwnMemoryOff: 'never', codexOwnMemoryOff: 'never' }, { claude: false, codex: false });
+    await seed({ sharedMemoryEnabled: true, claudeOwnMemoryOff: 'never', codexOwnMemoryOff: 'never' }, native(false, false));
     const { findByTestId, queryAllByTestId } = render(MemorySettings);
     await findByTestId('settings-memory');
     await expect.poll(() => getBindingMock('GetNativeMemoryStatus')!.mock.calls.length).toBeGreaterThan(0);
@@ -123,19 +133,21 @@ describe('<MemorySettings>', () => {
   });
 
   it('keeps the newest read of the providers when an older one answers after it', async () => {
-    await seed({ claudeOwnMemoryOff: 'never' }, { claude: false, codex: false });
-    const answers: Array<(status: { claude: boolean; codex: boolean }) => void> = [];
+    await seed({ claudeOwnMemoryOff: 'never' }, native(false, false));
+    const answers: Array<(status: NativeMemoryStatus) => void> = [];
     setBindingMock('GetNativeMemoryStatus', () => new Promise((resolve) => { answers.push(resolve); }));
     const { container, findByTestId, queryAllByTestId } = render(MemorySettings);
     await findByTestId('settings-memory');
     await expect.poll(() => answers.length).toBe(1);
-    // Turning shared memory on reads again; that newer read answers first.
+    // Turning shared memory on changes the computer's settings, which reads
+    // again; that newer read answers first.
     await fireEvent.click(switchNamed(container, 'Toggle shared memory'));
+    applyProviderMemorySettingsChanged(HOME_BACKEND);
     await expect.poll(() => answers.length).toBe(2);
-    answers[1]({ claude: true, codex: false });
+    answers[1](native(true, false));
     await expect.poll(() => queryAllByTestId('memory-overlap-warning')).toHaveLength(1);
     // The read the page opened with answers last, from before the change.
-    answers[0]({ claude: false, codex: false });
+    answers[0](native(false, false));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(queryAllByTestId('memory-overlap-warning').map((w) => w.textContent ?? '')).toEqual([
       expect.stringContaining("Claude's own memory is on too"),
@@ -147,6 +159,16 @@ describe('<MemorySettings>', () => {
     const { findByTestId, queryAllByTestId } = render(MemorySettings);
     expect((await findByTestId('memory-native-error')).textContent).toContain('read Codex config: bad toml');
     expect(queryAllByTestId('memory-overlap-warning')).toHaveLength(0);
+  });
+
+  it('says which provider could not be read and still warns for the other', async () => {
+    await seed({ sharedMemoryEnabled: true, claudeOwnMemoryOff: 'never', codexOwnMemoryOff: 'never' }, native(true, 'parse config.toml: bad toml'));
+    const { findByTestId, queryAllByTestId } = render(MemorySettings);
+    expect((await findByTestId('memory-native-error')).textContent?.replace(/\s+/g, ' ').trim())
+      .toBe("Could not read whether Codex's own memory is on: parse config.toml: bad toml");
+    expect(queryAllByTestId('memory-overlap-warning').map((w) => w.textContent ?? '')).toEqual([
+      expect.stringContaining("Claude's own memory is on too"),
+    ]);
   });
 
   // v0.0.19's settings name none of the memory keys: the page says the

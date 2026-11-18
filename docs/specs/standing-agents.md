@@ -685,7 +685,9 @@ Overflow memory." (Codex's for a Codex assistant), with one action,
 Memory settings, which opens that computer's memory settings. It is not
 a session claim and cannot be dismissed. It goes when the choice
 changes, read live from the settings, and when the provider's own
-memory is turned off, read again each time the window comes back. Its
+memory is turned off, read again when that computer's settings change
+and each time the window comes back. A provider whose configuration
+cannot be read shows no warning; the memory settings say why. Its
 workers and ordinary threads never show it.
 
 **Agent-to-agent context.** What a receiver needs from the surfaces a

@@ -6,11 +6,9 @@
   // memory, which only "never" allows, gets a warning naming the choice
   // that turns the provider's off. A computer on a release before these
   // keys gets none of it.
-  import { onMount } from 'svelte';
-  import { GetNativeMemoryStatus } from '../../stores/bindings';
+  import { providerMemory, watchProviderMemory } from '../../stores/providerMemory.svelte';
   import type { NativeMemoryStatus } from '../../types/models';
   import type { OwnMemoryOff } from '../../types/settings';
-  import { errString } from '../../utils/errors';
   import { settingsComputer } from './settingsComputer';
   import { computerHasSetting } from '../../stores/settings.svelte';
   import { assistantsOn } from '../../stores/assistants.svelte';
@@ -20,7 +18,7 @@
   import SettingsField from './SettingsField.svelte';
   import { settingsFieldHint, type SettingsFieldId } from './fields';
 
-  const { backend, getSettings, updateSetting, call } = settingsComputer();
+  const { backend, getSettings, updateSetting } = settingsComputer();
   let settings = $derived(getSettings());
   const KEYS = ['sharedMemoryEnabled', 'claudeOwnMemoryOff', 'codexOwnMemoryOff'] as const;
   let older = $derived(!KEYS.every((key) => computerHasSetting(key, backend)));
@@ -64,53 +62,23 @@
     ];
   }
 
-  let native = $state<NativeMemoryStatus | null>(null);
-  let nativeError = $state('');
-  // Reads overlap (the page opening, then a change that can show the
-  // warning): only the newest read's answer lands, and none after the page
-  // closes.
-  let nativeRead = 0;
-
-  async function readNative(): Promise<void> {
-    if (older) return;
-    const read = ++nativeRead;
-    try {
-      const status = await call(() => GetNativeMemoryStatus());
-      if (read !== nativeRead) return;
-      native = status;
-      nativeError = '';
-    } catch (err) {
-      if (read !== nativeRead) return;
-      native = null;
-      nativeError = errString(err);
-    }
-  }
-
-  onMount(() => {
-    void readNative();
-    return () => { nativeRead++; };
+  // This computer's answer for each provider's own memory, read while the
+  // page shows and again on each change to its settings.
+  $effect(() => {
+    if (!older) return watchProviderMemory(backend);
   });
-
-  // The provider configs may have changed since the page opened, so a
-  // change that can show the warning reads them again.
-  function setShared(on: boolean): void {
-    void updateSetting('sharedMemoryEnabled', on);
-    if (on) void readNative();
-  }
-
-  function setOwnMemoryOff(key: 'claudeOwnMemoryOff' | 'codexOwnMemoryOff', value: OwnMemoryOff): void {
-    void updateSetting(key, value);
-    if (value === 'never') void readNative();
-  }
+  let answer = $derived(providerMemory(backend));
 
   // The providers whose own memory runs beside shared memory: only where
   // their choice is "never", since otherwise every conversation that shares
   // memory runs with the provider's own off.
   let overlapping = $derived(
-    !settings.sharedMemoryEnabled || native === null
+    !settings.sharedMemoryEnabled
       ? []
-      : PROVIDERS.filter((provider) => native?.[provider.native] && settings[provider.key] === 'never'),
+      : PROVIDERS.filter((provider) => answer?.status?.[provider.native].on && settings[provider.key] === 'never'),
   );
+  // The providers whose configuration this computer could not read.
+  let unreadable = $derived(PROVIDERS.filter((provider) => answer?.status?.[provider.native].error));
 </script>
 
 <div class="settings-sections" data-testid="settings-memory">
@@ -129,7 +97,7 @@
         <ToggleSwitch
           checked={settings.sharedMemoryEnabled}
           ariaLabel="Toggle shared memory"
-          onToggle={setShared}
+          onToggle={(on) => void updateSetting('sharedMemoryEnabled', on)}
         />
       </SettingsField>
       {#each overlapping as provider (provider.name)}
@@ -140,13 +108,20 @@
           </SettingsCallout>
         </div>
       {/each}
-      {#if nativeError}
+      {#if answer?.error}
         <div data-testid="memory-native-error">
           <SettingsCallout tone="error">
-            Could not read whether Claude's and Codex's own memory is on: {nativeError}
+            Could not read whether Claude's and Codex's own memory is on: {answer.error}
           </SettingsCallout>
         </div>
       {/if}
+      {#each unreadable as provider (provider.name)}
+        <div data-testid="memory-native-error">
+          <SettingsCallout tone="error">
+            Could not read whether {provider.name}'s own memory is on: {answer?.status?.[provider.native].error}
+          </SettingsCallout>
+        </div>
+      {/each}
     </div>
   </section>
   <section>
@@ -175,7 +150,7 @@
                   name={provider.key}
                   value={option.value}
                   {checked}
-                  onchange={() => setOwnMemoryOff(provider.key, option.value)}
+                  onchange={() => void updateSetting(provider.key, option.value)}
                   class="mt-1 h-3.5 w-3.5 accent-accent"
                 />
                 <span class="min-w-0">

@@ -1862,7 +1862,7 @@ export function GetModelsForProvider(providerName: string): $CancellablePromise<
  * memories are on as the user configured them: Claude's from the variable
  * its sessions get and the user's settings.json, on by default; Codex's
  * from config.toml's `[features] memories`, off by default. A file that
- * exists and cannot be read or parsed is an error naming it.
+ * exists and cannot be read or parsed is that provider's error, naming it.
  */
 export function GetNativeMemoryStatus(): $CancellablePromise<app$0.NativeMemoryStatus> {
     return $Call.ByID(709651497).then(($result: any) => {

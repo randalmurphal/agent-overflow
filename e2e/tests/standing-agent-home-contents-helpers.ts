@@ -764,6 +764,39 @@ export async function expectOwnMemoryBanner(
   await harness.rpc('UpdateSettings', { [key]: 'never' });
   await expect(banner).toBeVisible();
   await harness.rpc('HarnessSeed', { providerHome: [ownMemory(false)] });
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const focus = () => page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await focus();
+  await expect(banner).toHaveCount(0);
+
+  // A change to the computer's settings reads the provider's own memory
+  // again with no focus: on Claude, the variable that turns its memory off.
+  await harness.rpc('HarnessSeed', { providerHome: [ownMemory(true)] });
+  await focus();
+  await expect(banner).toBeVisible();
+  if (provider === 'claude') {
+    await harness.rpc('SetProviderCustomEnvVar', 'claude', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', '1', false);
+    await expect(banner).toHaveCount(0);
+    await harness.rpc('DeleteProviderCustomEnvVar', 'claude', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY');
+  } else {
+    await harness.rpc('HarnessSeed', { providerHome: [ownMemory(false)] });
+    await harness.rpc('SetProviderCustomEnvVar', 'codex', 'E2E_UNRELATED', '1', false);
+    await expect(banner).toHaveCount(0);
+    await harness.rpc('HarnessSeed', { providerHome: [ownMemory(true)] });
+    await harness.rpc('DeleteProviderCustomEnvVar', 'codex', 'E2E_UNRELATED');
+  }
+  await expect(banner).toBeVisible();
+
+  // The other provider's configuration that cannot be read leaves this
+  // one's answer; this one's own shows no banner.
+  const unreadable = (codex: boolean) =>
+    codex ? { path: '.codex/config.toml', content: '[features\n' } : { path: '.claude/settings.json', content: '{\n' };
+  await harness.rpc('HarnessSeed', { providerHome: [ownMemory(false)] });
+  await focus();
+  await expect(banner).toHaveCount(0);
+  await harness.rpc('HarnessSeed', { providerHome: [ownMemory(true), unreadable(provider !== 'codex')] });
+  await focus();
+  await expect(banner).toBeVisible();
+  await harness.rpc('HarnessSeed', { providerHome: [unreadable(provider === 'codex')] });
+  await focus();
   await expect(banner).toHaveCount(0);
 }

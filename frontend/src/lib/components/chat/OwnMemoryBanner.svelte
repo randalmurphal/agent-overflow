@@ -5,19 +5,17 @@
   // what it learns there instead of in Agent Overflow memory. Not a session
   // claim and not dismissible: it shows while both facts hold, and its one
   // action opens the memory settings. The setting is live in the settings
-  // store; the provider's own memory is configured outside the app, so it is
-  // read when the banner could show and again each time the window comes
-  // back. Shown on an assistant's current thread only, never on its workers
-  // or an ordinary thread.
+  // store; the provider's own memory is that computer's answer in
+  // providerMemory.svelte.ts, watched while the banner could show. A
+  // provider whose configuration cannot be read shows no banner; Settings >
+  // Memory says why. Shown on an assistant's current thread only, never on
+  // its workers or an ordinary thread.
   import { fade } from 'svelte/transition';
-  import { GetNativeMemoryStatus } from '../../stores/bindings';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { providerMemory, watchProviderMemory } from '../../stores/providerMemory.svelte';
   import { computerHasSetting, getSettings } from '../../stores/settings.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
-  import { withBackendTarget } from '../../transport/backends';
   import { hasScope } from '../../transport/scopes';
-  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
-  import { errString } from '../../utils/errors';
   import type { Thread } from '../../types/models';
 
   let { thread }: { thread: Thread | null } = $props();
@@ -31,46 +29,17 @@
     !!thread?.agentId && backend !== null && computerHasSetting(key, backend) && getSettings(backend)[key] === 'never',
   );
 
-  let ownMemoryOn = $state(false);
-  // Only the newest read's answer lands, and none once the banner cannot
-  // show or the component is gone.
-  let read = 0;
-
-  async function readOwnMemory(target: NonNullable<typeof backend>, codexThread: boolean): Promise<void> {
-    const mine = ++read;
-    try {
-      const status = await withBackendTarget(target, () => GetNativeMemoryStatus());
-      // A computer whose release has no such read answers none.
-      if (mine === read) ownMemoryOn = (codexThread ? status?.codex : status?.claude) ?? false;
-    } catch (err) {
-      if (mine !== read) return;
-      ownMemoryOn = false;
-      reportFrontendDiagnostic('Could not read whether a provider\'s own memory is on for an assistant banner', errString(err));
-    }
-  }
-
   $effect(() => {
-    const target = backend;
-    const codexThread = codex;
-    if (!never || target === null || !hasScope('settings:read', target)) {
-      read++;
-      ownMemoryOn = false;
-      return;
-    }
-    void readOwnMemory(target, codexThread);
-    const refresh = (): void => {
-      if (document.visibilityState === 'visible') void readOwnMemory(target, codexThread);
-    };
-    window.addEventListener('focus', refresh);
-    document.addEventListener('visibilitychange', refresh);
-    return () => {
-      read++;
-      window.removeEventListener('focus', refresh);
-      document.removeEventListener('visibilitychange', refresh);
-    };
+    if (!never || backend === null || !hasScope('settings:read', backend)) return;
+    return watchProviderMemory(backend);
   });
 
-  let shown = $derived(never && ownMemoryOn);
+  let shown = $derived.by(() => {
+    if (!never || backend === null) return false;
+    const status = providerMemory(backend)?.status;
+    const own = codex ? status?.codex : status?.claude;
+    return !!own?.on;
+  });
 </script>
 
 {#if shown && backend !== null}
