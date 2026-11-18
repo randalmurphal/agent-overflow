@@ -3,6 +3,9 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -161,15 +164,14 @@ func TestStatusWatchKeepsItsRefusals(t *testing.T) {
 }
 
 // TestStatusWatchReadsAComputersRefusalAsItsThreads: a computer that answered
-// the wait with a refusal (one on v0.0.19 refuses the whole wait over one
-// thread it no longer holds) answered: its threads carry the refusal, and it
-// is not reported as a computer that did not answer.
+// the wait with a refusal answered: its threads carry the refusal, and it is
+// not reported as a computer that did not answer.
 func TestStatusWatchReadsAComputersRefusalAsItsThreads(t *testing.T) {
 	p := newPair(t)
 	restingLocal(p)
 	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
 	studio := p.peer.computer
-	p.local.peers[studio.ID] = statusFailingPeer{serverPeer: p.peer, err: publicf(CodeNotFound, "No thread %s on Studio.", remoteThreadID)}
+	p.local.peers[studio.ID] = statusFailingPeer{serverPeer: p.peer, err: publicf(CodeUnsupported, "Assistants are turned off in Settings on Studio.")}
 
 	result := call(t, p.server, localCaller(), "thread_status",
 		`{"thread_ids":["`+localThreadID+`","`+remoteThreadID+`"],"wait_seconds":30}`)
@@ -177,8 +179,86 @@ func TestStatusWatchReadsAComputersRefusalAsItsThreads(t *testing.T) {
 		t.Fatalf("result = %v, want the local wake and no computer under errors", result)
 	}
 	remote := object(t, rows(t, result["threads"])[1])
-	if remote["state"] != StateUnavailable || remote["error_code"] != CodeNotFound || remote["computer_id"] != studio.ID {
+	if remote["state"] != StateUnavailable || remote["error_code"] != CodeUnsupported || remote["computer_id"] != studio.ID {
 		t.Fatalf("the remote row = %v, want Studio's refusal on its thread", remote)
+	}
+}
+
+// TestARefusedWaitIsNotAWaitThatRanOut: a wait whose only computer refused
+// it at once did not wait, so it does not report that its time ran out.
+func TestARefusedWaitIsNotAWaitThatRanOut(t *testing.T) {
+	p := newPair(t)
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
+	p.local.peers[p.peer.computer.ID] = statusFailingPeer{serverPeer: p.peer, err: publicf(CodeUnsupported, "Assistants are turned off in Settings on Studio.")}
+
+	result := call(t, p.server, localCaller(), "thread_status", `{"thread_ids":["`+remoteThreadID+`"],"wait_seconds":30}`)
+	if result["timed_out"] != nil || strings.Contains(fmt.Sprint(result["note"]), "within the wait") {
+		t.Fatalf("result = %v, want no timeout for a wait that was refused", result)
+	}
+	if row := object(t, rows(t, result["threads"])[0]); row["error_code"] != CodeUnsupported {
+		t.Fatalf("the row = %v, want Studio's refusal", row)
+	}
+}
+
+// olderStatusPeer answers a forwarded thread_status wait as a computer on
+// v0.0.19 does (v0.0.19:internal/threadtools/requests.go statusThreads): it
+// resolves every id before it waits and refuses the whole wait with the
+// first one it no longer holds. Its calls run one at a time, as the fake
+// computer behind it expects, each after before.
+type olderStatusPeer struct {
+	*serverPeer
+	holds  *fakeApp
+	mu     *sync.Mutex
+	before func()
+}
+
+func (p olderStatusPeer) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.before()
+	var call struct {
+		ThreadIDs []string `json:"thread_ids"`
+	}
+	if err := json.Unmarshal(args, &call); err != nil {
+		return nil, err
+	}
+	for _, id := range call.ThreadIDs {
+		if _, held := p.holds.threads[id]; !held {
+			return nil, publicf(CodeNotFound, "No thread or assistant matches %q on this computer.", id)
+		}
+	}
+	return p.serverPeer.Watch(ctx, args)
+}
+
+// TestAThreadGoneFromAnOlderComputerIsItsOwnRow: of two threads on a
+// computer on v0.0.19, the first is deleted after the call resolved them.
+// That computer refuses the whole wait over it; each thread is then read on
+// its own, so the deleted one reads gone and is the wake, its idle sibling
+// reads as that computer reports it, and nothing claims the wait ran out.
+func TestAThreadGoneFromAnOlderComputerIsItsOwnRow(t *testing.T) {
+	p := newPair(t)
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Deleted"})
+	p.remote.addThread(Thread{ID: thirdThreadID, Title: "Idle"})
+	p.remote.status = StatusReport{Threads: []ThreadState{{ThreadID: thirdThreadID, Title: "Idle", State: StateIdle}}, WokeOn: thirdThreadID}
+	studio := p.peer.computer
+	p.local.peers[studio.ID] = olderStatusPeer{serverPeer: p.peer, holds: p.remote, mu: &sync.Mutex{},
+		before: func() { delete(p.remote.threads, remoteThreadID) }}
+
+	result := call(t, p.server, localCaller(), "thread_status",
+		`{"thread_ids":["`+remoteThreadID+`","`+thirdThreadID+`"],"wait_seconds":30}`)
+	if result["woke_on"] != remoteThreadID || result["timed_out"] != nil || result["errors"] != nil {
+		t.Fatalf("result = %v, want the deleted thread as the wake, no timeout and no computer under errors", result)
+	}
+	threads := rows(t, result["threads"])
+	gone, idle := object(t, threads[0]), object(t, threads[1])
+	if gone["thread_id"] != remoteThreadID || gone["state"] != StateUnavailable || gone["error_code"] != CodeNotFound || gone["computer_id"] != studio.ID {
+		t.Fatalf("the deleted thread's row = %v, want it gone from Studio", gone)
+	}
+	if idle["thread_id"] != thirdThreadID || idle["state"] != StateIdle || idle["error"] != nil || idle["computer_id"] != studio.ID {
+		t.Fatalf("the sibling's row = %v, want it idle as Studio reports it", idle)
+	}
+	if len(p.remote.states) != 1 || p.remote.states[0].WaitSeconds != 0 || len(p.remote.states[0].ThreadIDs) != 1 {
+		t.Fatalf("Studio's reads = %+v, want one read of the sibling alone without a wait", p.remote.states)
 	}
 }
 

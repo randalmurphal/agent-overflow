@@ -100,8 +100,9 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	// A thread found gone was the wake before the others were read, so
 	// their read fills their rows and never replaces it.
 	wokeOn := cmp.Or(gone, watched.wokeOn)
-	// A wait of zero is a read, not a wait that ran out.
-	result := statusResult{WokeOn: wokeOn, TimedOut: wokeOn == "" && wait > 0, Errors: failures}
+	// A wait of zero is a read, not a wait that ran out, and so is a wait
+	// no computer ran to its end: one refused or not answered did not wait.
+	result := statusResult{WokeOn: wokeOn, TimedOut: wokeOn == "" && wait > 0 && watched.ranOut, Errors: failures}
 	for _, failure := range watched.failures {
 		result.Errors = addFailureRow(result.Errors, failure)
 	}
@@ -173,11 +174,15 @@ func threadIDs(targets []Target, group targetGroup) []string {
 	return ids
 }
 
-// threadWatchAnswer is one group's half of the call.
+// threadWatchAnswer is one group's half of the call. ranOut says its wait
+// ended on its own clock. unanswered is a computer failure that cost some
+// of its threads their reads, which then read unavailable among the rest.
 type threadWatchAnswer struct {
-	threads []ThreadState
-	wokeOn  string
-	err     error
+	threads    []ThreadState
+	wokeOn     string
+	ranOut     bool
+	unanswered error
+	err        error
 }
 
 // slottedAnswer is a group's answer and its position in the call's groups.
@@ -187,11 +192,12 @@ type slottedAnswer struct {
 }
 
 // watchedThreads is what a wait over several computers observed: the
-// wake, every thread that was read, and the computers that did not answer,
-// whose threads read StateUnavailable.
+// wake, whether a wait ran to its end, every thread that was read, and the
+// computers that did not answer, whose threads read StateUnavailable.
 type watchedThreads struct {
 	threads  []ThreadState
 	wokeOn   string
+	ranOut   bool
 	failures []errorRow
 }
 
@@ -272,7 +278,11 @@ func (c *session) watchedGroups(targets []Target, groups []targetGroup, answers 
 		switch {
 		case answer.err == nil:
 			answered = true
+			watched.ranOut = watched.ranOut || answer.ranOut
 			watched.threads = append(watched.threads, answer.threads...)
+			if answer.unanswered != nil {
+				watched.failures = append(watched.failures, newErrorRow(group.computer, answer.unanswered))
+			}
 		case answeredRefusal(answer.err):
 			answered = true
 			for _, id := range threadIDs(targets, group) {
@@ -302,7 +312,7 @@ func (c *session) watchThreadGroup(ctx context.Context, targets []Target, group 
 		if err != nil {
 			return threadWatchAnswer{err: err}
 		}
-		return threadWatchAnswer{threads: c.stampThreads(group.computer, report.Threads), wokeOn: report.WokeOn}
+		return threadWatchAnswer{threads: c.stampThreads(group.computer, report.Threads), wokeOn: report.WokeOn, ranOut: report.TimedOut}
 	}
 	peer, err := c.app.Peer(ctx, group.computer.ID)
 	if err != nil {
@@ -311,27 +321,74 @@ func (c *session) watchThreadGroup(ctx context.Context, targets []Target, group 
 	remaining := wait
 	for {
 		slice := min(remaining, MaxForwardedWaitSeconds)
-		args, err := json.Marshal(map[string]any{
-			"thread_ids":     ids,
-			"wait_seconds":   slice,
-			"after_revision": after,
-		})
-		if err != nil {
-			return threadWatchAnswer{err: err}
+		result, err := forwardStatus(ctx, peer, ids, slice, after)
+		if code, _, _ := errorsx.PublicDetails(err); code == CodeNotFound {
+			// Only a computer on v0.0.19 refuses a wait for a thread it no
+			// longer holds, and it refuses the whole group with it.
+			return c.readEach(ctx, peer, group.computer, ids, after)
 		}
-		raw, err := peer.Watch(ctx, args)
 		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		var result statusResult
-		if err := peerResult(raw, &result); err != nil {
 			return threadWatchAnswer{err: err}
 		}
 		remaining -= slice
 		if result.WokeOn != "" || remaining <= 0 {
-			return threadWatchAnswer{threads: c.stampThreads(group.computer, result.Threads), wokeOn: result.WokeOn}
+			return threadWatchAnswer{threads: c.stampThreads(group.computer, result.Threads), wokeOn: result.WokeOn, ranOut: result.TimedOut}
 		}
 	}
+}
+
+// forwardStatus asks peer for one thread_status call on ids.
+func forwardStatus(ctx context.Context, peer Peer, ids []string, wait int, after int64) (statusResult, error) {
+	var result statusResult
+	args, err := json.Marshal(map[string]any{
+		"thread_ids":     ids,
+		"wait_seconds":   wait,
+		"after_revision": after,
+	})
+	if err != nil {
+		return result, err
+	}
+	raw, err := peer.Watch(ctx, args)
+	if err != nil {
+		return result, err
+	}
+	return result, peerResult(raw, &result)
+}
+
+// readEach reads a group's threads one at a time, all at once under
+// WakeRefreshTimeout, so a refusal of the whole group over one thread
+// becomes each thread's own verdict. A thread the computer no longer holds
+// reads gone and is the wake, as it is from a current computer; the others'
+// reads fill their rows only. A read the computer did not answer leaves its
+// thread unavailable and names the computer under errors.
+func (c *session) readEach(ctx context.Context, peer Peer, computer Computer, ids []string, after int64) threadWatchAnswer {
+	type read struct {
+		result statusResult
+		err    error
+	}
+	reads := concurrently(ctx, WakeRefreshTimeout, ids, func(ctx context.Context, id string) read {
+		result, err := forwardStatus(ctx, peer, []string{id}, 0, after)
+		return read{result: result, err: err}
+	})
+	var answer threadWatchAnswer
+	for index, read := range reads {
+		id := ids[index]
+		code, _, _ := errorsx.PublicDetails(read.err)
+		switch {
+		case read.err == nil:
+			answer.threads = append(answer.threads, read.result.Threads...)
+		case code == CodeNotFound:
+			answer.threads = append(answer.threads, FailedRow(id, read.err))
+			answer.wokeOn = cmp.Or(answer.wokeOn, id)
+		case answeredRefusal(read.err):
+			answer.threads = append(answer.threads, FailedRow(id, read.err))
+		default:
+			answer.threads = append(answer.threads, ThreadState{ThreadID: id, State: StateUnavailable})
+			answer.unanswered = cmp.Or(answer.unanswered, read.err)
+		}
+	}
+	answer.threads = c.stampThreads(computer, answer.threads)
+	return answer
 }
 
 // stampThreads writes this computer's view of the answering computer onto

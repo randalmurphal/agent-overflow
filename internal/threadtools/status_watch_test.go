@@ -108,3 +108,62 @@ func TestStatusWatchReadsTheGroupsAWakeEndedAgain(t *testing.T) {
 		t.Fatalf("the remote row = %v, want Studio's thread read as it stands", remote)
 	}
 }
+
+// TestAWaitOnAnotherComputerThatRanOutSaysSo: the other computer's wait
+// ran to its end with its thread still running, so the call says the wait
+// ran out.
+func TestAWaitOnAnotherComputerThatRanOutSaysSo(t *testing.T) {
+	p := newPair(t)
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
+	p.remote.status = StatusReport{Threads: []ThreadState{{ThreadID: remoteThreadID, Title: "Remote", State: StateRunning}}, TimedOut: true}
+
+	result := call(t, p.server, localCaller(), "thread_status", `{"thread_ids":["`+remoteThreadID+`"],"wait_seconds":30}`)
+	if result["timed_out"] != true || result["woke_on"] != nil {
+		t.Fatalf("result = %v, want a wait that ran out", result)
+	}
+}
+
+// olderSilentReadPeer is a computer on v0.0.19 that refuses a wait over two
+// threads because it no longer holds the first, then answers the read of
+// the second with nothing.
+type olderSilentReadPeer struct {
+	*serverPeer
+}
+
+func (p olderSilentReadPeer) Watch(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var call struct {
+		ThreadIDs []string `json:"thread_ids"`
+	}
+	if err := json.Unmarshal(args, &call); err != nil {
+		return nil, err
+	}
+	if len(call.ThreadIDs) == 1 && call.ThreadIDs[0] == thirdThreadID {
+		return nil, publicf(CodeUnreachable, "Studio did not answer.")
+	}
+	return nil, publicf(CodeNotFound, "No thread or assistant matches %q on this computer.", remoteThreadID)
+}
+
+// TestAThreadAnOlderComputerDidNotReadIsUnavailable: of the two threads an
+// older computer's refusal covered, the one it no longer holds is still the
+// wake when the read of the other goes unanswered; that one reads
+// unavailable and the computer is named under errors.
+func TestAThreadAnOlderComputerDidNotReadIsUnavailable(t *testing.T) {
+	p := newPair(t)
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Deleted"})
+	p.remote.addThread(Thread{ID: thirdThreadID, Title: "Silent"})
+	studio := p.peer.computer
+	p.local.peers[studio.ID] = olderSilentReadPeer{serverPeer: p.peer}
+
+	result := call(t, p.server, localCaller(), "thread_status",
+		`{"thread_ids":["`+remoteThreadID+`","`+thirdThreadID+`"],"wait_seconds":30}`)
+	if result["woke_on"] != remoteThreadID {
+		t.Fatalf("woke_on = %v, want the thread the computer no longer holds", result["woke_on"])
+	}
+	threads := rows(t, result["threads"])
+	if silent := object(t, threads[1]); silent["thread_id"] != thirdThreadID || silent["state"] != StateUnavailable {
+		t.Fatalf("the unread thread's row = %v, want it unavailable", silent)
+	}
+	if failures := rows(t, result["errors"]); len(failures) != 1 || field(t, failures[0], "computer_id") != studio.ID {
+		t.Fatalf("errors = %v, want Studio, which did not answer the read", failures)
+	}
+}

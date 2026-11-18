@@ -705,12 +705,16 @@ another did not answer its lookup reads `unresolved`, named by the
 reference and under a computer only when a recorded move names it,
 with the computers that failed under `errors`. A thread deleted or
 moved away during the wait reads `unavailable` with its own `error`
-and ends the wait; a refusal a computer answered for the wait is the
-`error` of each of its threads. The other threads keep waiting and are reported as they
+and ends the wait, and the threads read after it never take that wake.
+A computer on v0.0.19 refuses the whole wait over one such thread, so
+its threads are then read one by one, together, within three seconds,
+each with its own verdict. Any other refusal a computer answered for
+the wait is the `error` of each of its threads. The other threads keep waiting and are reported as they
 stand; once one ends the wait, the others are read again at once,
 together, within three seconds, and a computer that has not answered
-by then reads as not answering. The call fails only when no computer
-answered. A thread rests when it is at rest
+by then reads as not answering. `timed_out` means a wait ran to its
+end; one that was refused or not answered did not. The call fails
+only when no computer answered. A thread rests when it is at rest
 ([at rest](standing-agents.md#at-rest)): its turn over and nothing it
 started still running; one whose turn is over and is not reports
 `resting: false` with what it waits on (`waiting_on`), and an async
