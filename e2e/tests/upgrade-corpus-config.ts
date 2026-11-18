@@ -770,11 +770,11 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   {
     table: 'thread_request_receipts', columns: ['track_spawn'], values: { track_spawn: [1] },
-    reason: 'tracking starts when a paired owner spawns a worker (TestOwnerCanCollectSpawnChangesAcrossAcknowledgments)',
+    reason: 'tracking starts when a paired owner spawns a worker (TestOwnerRecoversRenamedWorkerWithoutReadingPane)',
   },
   {
     table: 'thread_requests', columns: ['link_end', 'contact_due'], values: { link_end: ['released', 'detached', 'gone'] },
-    reason: 'a paired worker reports its link end and its owner schedules contact (TestEndedRemoteSpawnKeepsHistoryAndOwesNoOwnerOperation and TestDueOwnerContactUsesTheOriginalSpawnerAndStopsAfterRelease)',
+    reason: 'a paired worker reports its link end and its owner schedules contact (TestOwnerRecoversReleaseAndDetachmentOfASettledWorker, TestOwnerRetriesAFailedReadOfAnOtherwiseRestingLink, TestDueOwnerContactUsesTheOriginalSpawnerAndStopsAfterRelease)',
   },
   { table: 'spawn_revisions', reason: 'unacknowledged changes to a paired computer’s spawns require a second computer' },
   { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },

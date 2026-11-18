@@ -108,6 +108,29 @@ func TestOwnerRecoversRenamedWorkerWithoutReadingPane(t *testing.T) {
 	}
 }
 
+func TestOwnerRecoversReleaseAndDetachmentOfASettledWorker(t *testing.T) {
+	pair := newReachPair(t)
+	spawn, child := remoteRestedWorker(t, pair)
+	check := func(end string) {
+		t.Helper()
+		if err := pair.source.recoverOwnerPeer(t.Context(), pair.computer, pair.destWire.srv.LaunchID()); err != nil {
+			t.Fatal(err)
+		}
+		if got := pair.request(t, spawn.Token); got.LinkEnd != end || got.TargetThreadID != child {
+			t.Fatalf("after %s: end=%q, target=%q", end, got.LinkEnd, got.TargetThreadID)
+		}
+	}
+	receipt := pair.receipt(t, spawn.Token)
+	if _, err := pair.dest.store.ReleaseSpawnLink(spawn.Token, receipt.OwnerDeviceID, receipt.SourceThreadID); err != nil {
+		t.Fatal(err)
+	}
+	check("released")
+	if _, err := pair.dest.store.DetachThreadReceiptsFromThread(child); err != nil {
+		t.Fatal(err)
+	}
+	check("detached")
+}
+
 func TestOwnerRetriesPromptWhenTheLocalQueueWriteFails(t *testing.T) {
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.openThere(t, 1)
