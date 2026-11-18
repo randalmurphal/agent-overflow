@@ -20,12 +20,17 @@ import (
 func (f *requestFixture) seedRemoteRequest(t *testing.T, computerID string) string {
 	t.Helper()
 	token := uuid.NewString()
+	pairing, err := f.app.currentPairing(computerID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token:            token,
 		CallerThreadID:   f.caller.ID,
 		Kind:             store.ThreadRequestSend,
 		State:            store.ThreadRequestUnconfirmed,
 		TargetComputerID: computerID,
+		Pairing:          pairing,
 		TargetThreadID:   uuid.NewString(),
 	}); err != nil {
 		t.Fatalf("insert remote request: %v", err)

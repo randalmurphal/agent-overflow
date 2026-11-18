@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -12,22 +13,37 @@ import (
 // Presentation uses saved profiles only; naming a result never probes a peer.
 func (a *App) remoteComputerNames() map[string]string {
 	names := map[string]string{}
-	if a.backends != nil {
-		if profiles, err := a.backends.List(); err == nil {
-			for _, profile := range profiles {
-				names[profile.ID] = strings.Join(strings.Fields(profile.Name), " ")
-			}
-		}
+	for id, profile := range a.remoteComputers() {
+		names[id] = remoteProfileName(profile)
 	}
 	return names
 }
 
+// remoteComputers reads the pairings held now, by computer id.
+func (a *App) remoteComputers() map[string]attachedbackends.Attached {
+	held := map[string]attachedbackends.Attached{}
+	if a.backends != nil {
+		if profiles, err := a.backends.List(); err == nil {
+			for _, profile := range profiles {
+				held[profile.ID] = profile
+			}
+		}
+	}
+	return held
+}
+
+func remoteProfileName(profile attachedbackends.Attached) string {
+	return strings.Join(strings.Fields(profile.Name), " ")
+}
+
 // remoteWatchComputerName names a command's computer as the person knows it:
-// by its pairing here while one is held, else by the name the person knew
-// it by when the command was admitted.
-func remoteWatchComputerName(names map[string]string, w store.RemoteWatch) string {
-	if name := names[w.ComputerID]; name != "" {
-		return name
+// by its pairing here while the pairing that admitted the command is held,
+// else by the name the person knew it by when the command was admitted,
+// whatever a later pairing calls it. A command that kept no name falls back
+// to the pairing held now.
+func remoteWatchComputerName(computers map[string]attachedbackends.Attached, w store.RemoteWatch) string {
+	if held, paired := computers[w.ComputerID]; paired && (held.Generation == w.Pairing || w.ComputerName == "") {
+		return remoteProfileName(held)
 	}
 	return w.ComputerName
 }

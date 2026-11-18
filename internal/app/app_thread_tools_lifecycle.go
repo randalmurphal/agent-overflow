@@ -392,8 +392,11 @@ func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error
 	// computer it came from, and this one is forwarded like any other. The
 	// identity comes from the backend rather than the thread row because
 	// this runs while that thread is being deleted, archived or moved.
+	// Under the pairing that admitted the ask alone; one another pairing
+	// replaced is ended here instead, which settles the ask. Detached: the
+	// caller can hold the thread's locks, which the end's wakes take.
 	backendID, _ := a.backendIdentity()
-	if err := a.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
+	if err := a.backends.CallThreadPeerUnder(call, row.TargetComputerID, row.Pairing, "ThreadToolCall", &reply, ThreadPeerCall{
 		Tool:  "thread_cancel",
 		Token: row.Token,
 		Source: threadtools.Caller{
@@ -402,6 +405,10 @@ func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error
 			ComputerName: a.backendDisplayName(),
 		},
 	}); err != nil {
+		if a.pairingGone(row.TargetComputerID, row.Pairing) {
+			a.endPairingDetached(row.TargetComputerID, pairingEndedHere)
+			return nil
+		}
 		return a.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)
 	}
 	if reply.Request == nil {

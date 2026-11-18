@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"fmt"
 	"log"
 
 	"agent-overflow/internal/attachedbackends"
@@ -10,13 +12,18 @@ import (
 // The end of a pairing: the one transition, over the request ledger and the
 // command ledger, for a pairing with a paired computer that will answer
 // nothing again (docs/specs/agent-thread-tools.md, "Reaching another
-// computer"). Every record of either ledger names the pairing that
-// admitted it, the session id of this computer's profile for that computer
-// then (store.ThreadRequest.Pairing), and the transition ends what the
+// computer"). Every record of either ledger names the generation of the
+// pairing that admitted it (store.ThreadRequest.Pairing), which an
+// automatic upgrade of the session keeps and an explicit new pairing does
+// not (attachedbackends/generation.go), and the transition ends what the
 // pairings other than the one held now admitted, and nothing else. It runs
 // where the pairing's profile ends, whoever learned of it: the profile's
 // removal (backendSetChanged), the person forgetting the computer, and any
-// call or sweep that finds a record of a pairing no longer held.
+// call or sweep that finds a record of a pairing no longer held. A call
+// made for a record names the record's generation where its carrier is
+// chosen (CallThreadPeerUnder, CallAgentPeerUnder), so it never reaches a
+// pairing that replaced the record's; refused, it ends the record's pairing
+// here (pairingEndedSince).
 
 // lockComputerPairing takes one paired computer's fence. Admission to it (a
 // thread request's row, a command's watch) reads the pairing and writes its
@@ -28,8 +35,9 @@ func (a *App) lockComputerPairing(computerID string) func() {
 	return a.remoteStartLocks().Lock("computer:" + computerID)
 }
 
-// currentPairing names the pairing this computer holds with computerID now
-// (attachedbackends.Manager.Grant), empty when it holds none.
+// currentPairing names the generation of the pairing this computer holds
+// with computerID now (attachedbackends.Manager.Grant), empty when it holds
+// none.
 func (a *App) currentPairing(computerID string) (string, error) {
 	if a.backends == nil {
 		return "", nil
@@ -38,10 +46,54 @@ func (a *App) currentPairing(computerID string) (string, error) {
 }
 
 // pairingLive reports whether a record admitted under the pairing recorded
-// belongs to the pairing held now (current). A record from before pairings
-// were recorded belongs to whichever pairing is held.
+// belongs to the pairing held now (current).
 func pairingLive(recorded, current string) bool {
-	return current != "" && (recorded == "" || recorded == current)
+	return current != "" && recorded == current
+}
+
+// bindRecordPairingsAtBoot gives every request and command that names no
+// pairing generation, as one from before generations were recorded does,
+// the generation of the pairing held with its computer now. It runs at boot,
+// before any pairing can change. A record whose computer has no pairing
+// left is bound to none (store.PairingNoneHeld) and ended by the end of a
+// pairing; the wakes that owes are delivered once the activation gate opens
+// (finishThreadRequestSweepAtBoot). A computer whose profile cannot be read
+// keeps its records unbound, and the first call or sweep that reads the
+// pairing ends them rather than give them to it.
+func (a *App) bindRecordPairingsAtBoot() {
+	if a.backends == nil {
+		return
+	}
+	endPhase := a.bootPhase("app.bind_record_pairings", "Naming the pairings of work on other computers")
+	defer endPhase()
+	computers, err := a.store.UnboundPairingComputers()
+	errs := []error{err}
+	for _, computerID := range computers {
+		errs = append(errs, a.bindRecordPairing(computerID))
+	}
+	if err := errors.Join(errs...); err != nil {
+		a.bootPhaseFailed(fmt.Errorf("bind the pairings of work on other computers: %w", err))
+	}
+}
+
+func (a *App) bindRecordPairing(computerID string) error {
+	unlock := a.lockComputerPairing(computerID)
+	defer unlock()
+	live, err := a.currentPairing(computerID)
+	if err != nil {
+		return err
+	}
+	if live != "" {
+		return a.store.BindRecordPairing(computerID, live)
+	}
+	if err := a.store.BindRecordPairing(computerID, store.PairingNoneHeld); err != nil {
+		return err
+	}
+	_, err = a.endPairingFenced(computerID, "", store.PairingEnd{
+		RequestAnswer: []byte(pairingEndedHere),
+		CommandError:  pairingEndedCommand + pairingEndedHere,
+	})
+	return err
 }
 
 // Why the end of a pairing ended a request, and the error a command there is
@@ -111,11 +163,11 @@ func (a *App) endEndedPairings(computerID string, recorded []string) (string, er
 
 // pairingEndedSince ends the pairing a failed call to computerID was made
 // under (before) when this computer no longer holds it: the call's own
-// refusal retired the profile, or another pairing replaced it meanwhile. It
+// refusal retired the profile, or another pairing replaced it and the
+// carrier refused the call for that (attachedbackends.ErrPairingNotHeld). It
 // reports whether it did; a pairing still held failed for some other reason.
 func (a *App) pairingEndedSince(computerID, before string) bool {
-	current, err := a.currentPairing(computerID)
-	if err != nil || current == before {
+	if !a.pairingGone(computerID, before) {
 		return false
 	}
 	if err := a.endPairing(computerID, pairingEndedHere); err != nil {
@@ -123,6 +175,15 @@ func (a *App) pairingEndedSince(computerID, before string) bool {
 		return false
 	}
 	return true
+}
+
+// pairingGone reports whether this computer no longer holds the pairing
+// generation before with computerID. A caller that may hold a thread's
+// locks ends it detached (endPairingDetached) rather than through
+// pairingEndedSince, whose wakes take threads' locks.
+func (a *App) pairingGone(computerID, before string) bool {
+	current, err := a.currentPairing(computerID)
+	return err == nil && current != before
 }
 
 // endPairingFenced ends what the pairings with computerID other than live

@@ -855,13 +855,16 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 	if source.ThreadID == "" {
 		source.ThreadID = row.CallerThreadID
 	}
-	err := t.app.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
+	// Sent under the pairing that admitted the request alone: one that
+	// another pairing replaced is ended here, and the report reads the
+	// request as that end left it, its answer told by the wake.
+	err := t.app.backends.CallThreadPeerUnder(call, row.TargetComputerID, row.Pairing, "ThreadToolCall", &reply, ThreadPeerCall{
 		Tool:     "thread_cancel",
 		Token:    row.Token,
 		Source:   source,
 		UserStop: userStop,
 	})
-	if err != nil {
+	if err != nil && !t.app.pairingEndedSince(row.TargetComputerID, row.Pairing) {
 		// The wake stays armed: the destination was not reached, so the work
 		// is still running there and the caller is still owed its answer. A
 		// cancel that disarmed the notify first would leave a request that

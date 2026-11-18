@@ -49,6 +49,8 @@ type reachPair struct {
 	// destBus is what the destination's router emits to.
 	destBus *capturedEventBus
 	manager *attachedbackends.Manager
+	// profile is the device profile directory manager keeps its pairing in.
+	profile string
 	// computer is the destination's id as the source's pairings name it.
 	computer string
 	// project is a project registered on the DESTINATION. A spawn there
@@ -105,7 +107,8 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 		source: source, dest: dest, destWire: wire, destBus: destBus, sourceID: sourceID,
 		project: project.ID, dbPath: dbPath, settingsDir: settingsDir,
 	}
-	pair.manager = pair.pairWith(t, "source")
+	pair.profile = t.TempDir()
+	pair.manager = pair.pairWithIn(t, pair.profile, "source")
 	source.backends = pair.manager
 	pair.manager.SetChanged(source.backendSetChanged)
 	pair.computer = pair.attachedID(t, pair.manager)
@@ -144,7 +147,13 @@ func publishReachIdentity(t *testing.T, app *App, backendID string) {
 // ownership test needs.
 func (p *reachPair) pairWith(t *testing.T, label string) *attachedbackends.Manager {
 	t.Helper()
-	manager, err := attachedbackends.New(t.TempDir(), label, "test")
+	return p.pairWithIn(t, t.TempDir(), label)
+}
+
+// pairWithIn is pairWith over the device profile directory dir.
+func (p *reachPair) pairWithIn(t *testing.T, dir, label string) *attachedbackends.Manager {
+	t.Helper()
+	manager, err := attachedbackends.New(dir, label, "test")
 	if err != nil {
 		t.Fatalf("attachedbackends.New: %v", err)
 	}
@@ -227,6 +236,24 @@ func (p *reachPair) pollOn(t *testing.T, app *App) {
 	// more.
 	app.pollRemoteThreadRequests(time.Now().Add(time.Hour))
 	app.threadRequestsWG.Wait()
+}
+
+// held is the generation of the pairing the source holds with the
+// destination now.
+func (p *reachPair) held(t *testing.T) string {
+	t.Helper()
+	return heldPairingOf(t, p.source, p.computer)
+}
+
+// heldPairingOf is the generation of the pairing a holds with computerID,
+// which a record made now names.
+func heldPairingOf(t *testing.T, a *App, computerID string) string {
+	t.Helper()
+	pairing, err := a.currentPairing(computerID)
+	if err != nil || pairing == "" {
+		t.Fatalf("the pairing held with %s: %q, %v", computerID, pairing, err)
+	}
+	return pairing
 }
 
 func (p *reachPair) request(t *testing.T, token string) store.ThreadRequest {
@@ -409,7 +436,7 @@ func TestThreadToolsReceiptBelongsToTheDeviceThatMadeIt(t *testing.T) {
 		t.Fatalf("a second device reads another device's request: %+v", status.Requests)
 	}
 	// The owning device still reads its own.
-	if own, err := pair.source.callThreadRequestStatus(pair.computer, ThreadPeerPoll{Tokens: []string{ack.Token}}); err != nil {
+	if own, err := pair.source.callThreadRequestStatus(pair.computer, pair.held(t), ThreadPeerPoll{Tokens: []string{ack.Token}}); err != nil {
 		t.Fatalf("owning device's status poll: %v", err)
 	} else if len(own.Requests) != 1 || !own.Requests[0].Known {
 		t.Fatalf("the owning device lost its own request: %+v", own.Requests)
@@ -970,7 +997,7 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 	token := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: token, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSend,
-		TargetComputerID: pair.computer, State: store.ThreadRequestUnconfirmed,
+		TargetComputerID: pair.computer, Pairing: pair.held(t), State: store.ThreadRequestUnconfirmed,
 	}); err != nil {
 		t.Fatalf("insert the unconfirmed row: %v", err)
 	}
@@ -985,7 +1012,7 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 	lost := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: lost, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestAsk,
-		TargetComputerID: pair.computer, State: store.ThreadRequestAccepted,
+		TargetComputerID: pair.computer, Pairing: pair.held(t), State: store.ThreadRequestAccepted,
 	}); err != nil {
 		t.Fatalf("insert the accepted row: %v", err)
 	}
@@ -1033,7 +1060,7 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	inFlight := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: inFlight, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
-		TargetComputerID: pair.computer, State: store.ThreadRequestUnconfirmed,
+		TargetComputerID: pair.computer, Pairing: pair.held(t), State: store.ThreadRequestUnconfirmed,
 		NextCheck: time.Now().Add(threadRequestAdmissionFence).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert the row being admitted: %v", err)
@@ -1232,7 +1259,7 @@ func TestThreadToolsPollVisitsDestinationsConcurrently(t *testing.T) {
 	slow := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: slow, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSend,
-		TargetComputerID: stalled, State: store.ThreadRequestAccepted,
+		TargetComputerID: stalled, Pairing: heldPairingOf(t, pair.source, stalled), State: store.ThreadRequestAccepted,
 		NextCheck: now.Add(-time.Minute).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert the row on the asleep computer: %v", err)
@@ -1240,7 +1267,7 @@ func TestThreadToolsPollVisitsDestinationsConcurrently(t *testing.T) {
 	quick := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: quick, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSend,
-		TargetComputerID: pair.computer, State: store.ThreadRequestAccepted,
+		TargetComputerID: pair.computer, Pairing: pair.held(t), State: store.ThreadRequestAccepted,
 		NextCheck: now.Add(-time.Second).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert the row on the healthy computer: %v", err)
@@ -1668,7 +1695,7 @@ func TestThreadToolsRemoteAnswerOnACallsReplyIsAcknowledged(t *testing.T) {
 		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(spawn.Token)
 		return err == nil && found && receipt.SettledAt != 0
 	})
-	reply, err := pair.source.callThreadRequestStatus(pair.computer, ThreadPeerPoll{Tokens: []string{spawn.Token}})
+	reply, err := pair.source.callThreadRequestStatus(pair.computer, pair.held(t), ThreadPeerPoll{Tokens: []string{spawn.Token}})
 	if err != nil || len(reply.Requests) != 1 {
 		t.Fatalf("read the destination's answer: %+v, %v", reply, err)
 	}

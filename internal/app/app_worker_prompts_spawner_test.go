@@ -427,7 +427,7 @@ func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
 	holdPairing(t, here.app, computer)
 	if err := here.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token: token, CallerThreadID: here.caller.ID, Kind: store.ThreadRequestSend, State: store.ThreadRequestUnconfirmed,
-		TargetComputerID: computer, TargetThreadID: there.worker.ID, Notify: true,
+		TargetComputerID: computer, Pairing: heldPairingOf(t, here.app, computer), TargetThreadID: there.worker.ID, Notify: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

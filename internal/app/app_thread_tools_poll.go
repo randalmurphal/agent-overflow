@@ -369,7 +369,7 @@ const threadWakeDeliveryFanOut = 4
 func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, acks []store.ThreadRequestAck) {
 	order := make([]string, 0, 4)
 	byComputer := make(map[string][]store.ThreadRequest, 4)
-	pairings := make(map[string][]string, 4)
+	dueAcks := make(map[string][]store.ThreadRequestAck, 4)
 	for _, row := range rows {
 		if row.TargetComputerID == "" {
 			// A row with no destination is not a remote request and the due
@@ -384,14 +384,13 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, acks []store.Thre
 			order = append(order, row.TargetComputerID)
 		}
 		byComputer[row.TargetComputerID] = append(byComputer[row.TargetComputerID], row)
-		pairings[row.TargetComputerID] = append(pairings[row.TargetComputerID], row.Pairing)
 	}
 	for _, ack := range acks {
 		if _, seen := byComputer[ack.ComputerID]; !seen {
 			order = append(order, ack.ComputerID)
 			byComputer[ack.ComputerID] = nil
 		}
-		pairings[ack.ComputerID] = append(pairings[ack.ComputerID], ack.Pairing)
+		dueAcks[ack.ComputerID] = append(dueAcks[ack.ComputerID], ack)
 	}
 	// Four destinations at a time, the bound the remote-jobs watcher uses:
 	// one computer that is asleep holds its call open for the whole call
@@ -409,7 +408,7 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, acks []store.Thre
 		go func(computerID string) {
 			defer wg.Done()
 			defer func() { <-limit }()
-			a.pollThreadRequestsOn(computerID, byComputer[computerID], pairings[computerID])
+			a.pollThreadRequestsOn(computerID, byComputer[computerID], dueAcks[computerID])
 		}(computerID)
 	}
 	wg.Wait()

@@ -835,7 +835,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// queue has been restored. The sweep writes rows only; the wakes and
 	// deletions its settlements owe wait for the activation gate
 	// (startUnattendedWork), as do the boot's other deletions
-	// (startBeforeClients).
+	// (startBeforeClients). The records on other computers are bound to their
+	// pairings first, before anything can change one.
+	a.bindRecordPairingsAtBoot()
 	a.sweepThreadRequestsAtBoot()
 	a.installThreadRequestObserver()
 	a.startAccountSwitch()

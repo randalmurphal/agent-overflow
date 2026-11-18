@@ -49,7 +49,11 @@ func holdPairing(t *testing.T, a *App, computerID string) {
 // runs, as the watcher last saw it.
 func runningRemoteWatch(t *testing.T, a *App, computerID string, thread store.Thread) store.RemoteWatch {
 	t.Helper()
-	w := store.RemoteWatch{ComputerID: computerID, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "nightly build"}
+	pairing, err := a.currentPairing(computerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := store.RemoteWatch{ComputerID: computerID, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "nightly build", Pairing: pairing}
 	if _, err := a.store.RegisterRemoteWatch(w); err != nil {
 		t.Fatal(err)
 	}
@@ -240,17 +244,16 @@ func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
 			t.Fatalf("%s changed the request: %+v", why, row)
 		}
 	}
-	unchanged(seed(""), "an answer with no pairing held")
+	unchanged(seed("held"), "an answer with no pairing held")
 	holdPairing(t, f.app, computer)
 	unchanged(seed("an-ended-pairing"), "an answer about an earlier pairing's request")
-	for _, pairing := range []string{"held", ""} {
-		token := seed(pairing)
-		if _, err := f.app.applyThreadPeerRequest(token, computer, answer(token)); err != nil {
-			t.Fatal(err)
-		}
-		if row := f.request(t, token); row.State != store.ThreadRequestFinished || row.AckOwed != 1 {
-			t.Fatalf("an answer about the held pairing's request (recorded %q) left it %+v", pairing, row)
-		}
+	unchanged(seed(""), "an answer about a request that names no pairing")
+	token := seed("held")
+	if _, err := f.app.applyThreadPeerRequest(token, computer, answer(token)); err != nil {
+		t.Fatal(err)
+	}
+	if row := f.request(t, token); row.State != store.ThreadRequestFinished || row.AckOwed != 1 {
+		t.Fatalf("an answer about the held pairing's request left it %+v", row)
 	}
 }
 

@@ -28,17 +28,23 @@ import (
 // the revision each settled row already holds, which that computer answers
 // without the text this one has (ThreadPeerPoll.Held).
 //
-// It asks only about what the pairing held now admitted: what a pairing no
-// longer held admitted is ended first (endEndedPairings), whichever of the
-// rows, or of the due acknowledgements' pairings, names one. With no row
-// left to ask about, it sends the acknowledgements owed there alone.
-func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest, pairings []string) {
+// It asks only about what the pairing held now admitted, under that
+// pairing: what a pairing no longer held admitted is ended first
+// (endEndedPairings), whichever of the rows, or of the due
+// acknowledgements, names one. With no row left to ask about, it sends the
+// acknowledgements owed there alone. A pass that cannot read the pairing
+// puts off the rows and the due acknowledgements by the error delay.
+func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest, dueAcks []store.ThreadRequestAck) {
 	if len(rows) > threadPeerTokenLimit {
 		rows = rows[:threadPeerTokenLimit]
 	}
 	rows = a.withOpenThreadRequestsOn(computerID, rows)
+	pairings := make([]string, 0, len(rows)+len(dueAcks))
 	for _, row := range rows {
 		pairings = append(pairings, row.Pairing)
+	}
+	for _, ack := range dueAcks {
+		pairings = append(pairings, ack.Pairing)
 	}
 	pairing, err := a.endEndedPairings(computerID, pairings)
 	if err != nil {
@@ -46,6 +52,7 @@ func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest
 		for _, row := range rows {
 			a.rescheduleThreadRequest(row, threadPollErrorDelay, "This computer could not read its pairing with the other computer.")
 		}
+		a.deferThreadRequestAcks(dueAcks)
 		return
 	}
 	live := make([]store.ThreadRequest, 0, len(rows))
@@ -55,7 +62,7 @@ func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest
 		}
 	}
 	if rows = live; len(rows) == 0 {
-		a.sendOwedThreadRequestAcks(computerID)
+		a.sendOwedThreadRequestAcksUnder(computerID, pairing)
 		return
 	}
 	poll := ThreadPeerPoll{Tokens: make([]string, 0, len(rows))}
@@ -71,7 +78,7 @@ func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest
 		logThreadRequestSweep("read the acknowledgements owed to "+computerID, err)
 	}
 	poll.Ack = threadPeerAcks(acks)
-	reply, err := a.callThreadRequestStatus(computerID, poll)
+	reply, err := a.callThreadRequestStatus(computerID, pairing, poll)
 	if err != nil {
 		a.failThreadRequestPoll(computerID, pairing, rows, acks, err)
 		return
@@ -105,18 +112,29 @@ func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest
 	a.deliverThreadWakes(wakes)
 	// What this pass collected is acknowledged now rather than by the next
 	// poll: a row that just settled may never be polled again.
-	a.sendOwedThreadRequestAcks(computerID)
+	a.sendOwedThreadRequestAcksUnder(computerID, pairing)
 }
 
 // sendOwedThreadRequestAcks sends one computer the acknowledgements owed to
-// it under the pairing held now on a call of their own, which every build of
-// the destination reads (ThreadPeerPoll with no tokens). They are cleared
-// once it takes them, and retried by the sweep after the error delay when it
-// does not.
+// it under the pairing held now (sendOwedThreadRequestAcksUnder). A pairing
+// that cannot be read leaves them owed on their own schedule, which the
+// sweep's pass puts off when it cannot read it either.
 func (a *App) sendOwedThreadRequestAcks(computerID string) {
 	pairing, err := a.currentPairing(computerID)
 	if err != nil {
 		logThreadRequestSweep("read the pairing with "+computerID, err)
+		return
+	}
+	a.sendOwedThreadRequestAcksUnder(computerID, pairing)
+}
+
+// sendOwedThreadRequestAcksUnder sends one computer the acknowledgements
+// owed to it for what the pairing generation admitted, under that pairing,
+// on a call of their own, which every build of the destination reads
+// (ThreadPeerPoll with no tokens). They are cleared once it takes them, and
+// retried by the sweep after the error delay when it does not.
+func (a *App) sendOwedThreadRequestAcksUnder(computerID, pairing string) {
+	if pairing == "" {
 		return
 	}
 	acks, err := a.store.OwedThreadRequestAcks(computerID, pairing, threadPeerTokenLimit)
@@ -127,7 +145,7 @@ func (a *App) sendOwedThreadRequestAcks(computerID string) {
 	if len(acks) == 0 {
 		return
 	}
-	if _, err := a.callThreadRequestStatus(computerID, ThreadPeerPoll{Ack: threadPeerAcks(acks)}); err != nil {
+	if _, err := a.callThreadRequestStatus(computerID, pairing, ThreadPeerPoll{Ack: threadPeerAcks(acks)}); err != nil {
 		a.failThreadRequestAcks(computerID, pairing, acks)
 		return
 	}
@@ -208,11 +226,13 @@ func (a *App) withOpenThreadRequestsOn(computerID string, due []store.ThreadRequ
 	return due
 }
 
-func (a *App) callThreadRequestStatus(computerID string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
+// callThreadRequestStatus asks one computer about requests the pairing
+// generation admitted, under that pairing alone.
+func (a *App) callThreadRequestStatus(computerID, pairing string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadPollCallTimeout)
 	defer cancel()
 	var reply ThreadPeerPollReply
-	if err := a.backends.CallThreadPeer(ctx, computerID, "ThreadToolRequestStatus", &reply, poll); err != nil {
+	if err := a.backends.CallThreadPeerUnder(ctx, computerID, pairing, "ThreadToolRequestStatus", &reply, poll); err != nil {
 		return ThreadPeerPollReply{}, a.threadOperationError("status", computerID, "", err)
 	}
 	return reply, nil

@@ -75,12 +75,16 @@ func (t threadToolsApp) Peer(ctx context.Context, computerID string) (threadtool
 			"This computer could not read its pairings. Check Remote access on it and try again.", err)
 	}
 	if !paired {
-		return nil, errorsx.Public(threadtools.CodeUnreachable,
-			fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
+		return nil, threadComputerNotPaired(computerID)
 	}
 	source, _ := threadtools.CallerFrom(ctx)
 	computer := threadtools.Computer{ID: row.ID, Name: attachedComputerName(row)}
 	return threadPeerClient{app: t.app, computer: computer, source: source}, nil
+}
+
+func threadComputerNotPaired(computerID string) error {
+	return errorsx.Public(threadtools.CodeUnreachable,
+		fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
 }
 
 // pairing reads one pairing by the backend id that computer calls itself
@@ -344,6 +348,10 @@ func (t threadToolsApp) admitRemoteRequest(
 	}
 	if row.Pairing, err = t.app.currentPairing(computerID); err != nil {
 		return nil, nil, err
+	}
+	if row.Pairing == "" {
+		// The profile went after Peer read it: no pairing to admit under.
+		return nil, nil, threadComputerNotPaired(computerID)
 	}
 	row.TargetComputerName = peer.Computer().Name
 	done, err = t.app.admitWork(caller.ThreadID, caller.Session)
