@@ -216,12 +216,15 @@ type memoryWaits struct {
 func (a *App) memoryWaits(threadID string) memoryWaits {
 	var mem memoryWaits
 	if a.triage != nil {
-		for _, item := range append(a.triage.ListLiveCodexBackgroundTasks(threadID, 0, 0), a.triage.ListLiveCodexAgentTasks(threadID)...) {
+		live := a.triage.ListLiveCodexBackgroundTasks(threadID, 0, 0)
+		if len(live) == 0 {
+			live = a.triage.ListLiveCodexAgentTasks(threadID)
+		}
+		if len(live) > 0 {
 			mem.background = true
-			if mem.backgroundDetail = item.Summary; mem.backgroundDetail == "" {
-				mem.backgroundDetail = item.ToolName
+			if mem.backgroundDetail = live[0].Summary; mem.backgroundDetail == "" {
+				mem.backgroundDetail = live[0].ToolName
 			}
-			break
 		}
 	}
 	mem.workflowGoal, mem.workflow = a.workflowApplication().ReportOwedTo(threadID)
