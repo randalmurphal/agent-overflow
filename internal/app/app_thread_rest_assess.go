@@ -2,6 +2,7 @@ package app
 
 import (
 	"log"
+	"maps"
 	"sync"
 
 	"agent-overflow/internal/store"
@@ -261,10 +262,11 @@ func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []st
 	return a.store.DeleteThreadRequestsBefore(floor, rest)
 }
 
-// noteRestRead records how a held request's read of threadID's rest went:
-// one that failed is read again by the request sweep's next pass
-// (retryFailedRestReads), which recording it wakes, however long no change
-// comes; one that read ends that.
+// noteRestRead records how a held request's attempt to settle on
+// threadID's rest went: one whose read failed is read again by the request
+// sweep's next pass (retryFailedRestReads), which recording it wakes,
+// however long no change comes; one that completed, settled or found the
+// thread not at rest, ends that.
 func (a *App) noteRestRead(threadID string, err error) {
 	r := &a.threadRequests
 	r.mu.Lock()
@@ -282,8 +284,9 @@ func (a *App) noteRestRead(threadID string, err error) {
 }
 
 // retryFailedRestReads reads again, as one pass, the rest of the threads
-// whose held requests' last read failed. A thread none of whose requests
-// is still held is dropped. It runs on the request sweep, one at a time.
+// whose held requests' last attempt failed. Each stays owed until its
+// attempt completes (noteRestRead); a thread none of whose requests is
+// still held is dropped. It runs on the request sweep, one at a time.
 func (a *App) retryFailedRestReads() {
 	r := &a.threadRequests
 	r.mu.Lock()
@@ -291,10 +294,16 @@ func (a *App) retryFailedRestReads() {
 		r.mu.Unlock()
 		return
 	}
-	threads := r.rest.failed
-	r.rest.failed = nil
+	threads := maps.Clone(r.rest.failed)
 	r.mu.Unlock()
 	a.settleHeldReceiptsAtRest(threads)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for thread := range threads {
+		if !r.holdsReceiptLocked(thread) {
+			delete(r.rest.failed, thread)
+		}
+	}
 }
 
 // restReadsFailed reports whether a held request's read of rest failed and

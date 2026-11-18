@@ -799,9 +799,10 @@ func (a *App) settleReadReceiptLocked(
 	} else {
 		result, err = a.store.SettleLocalThreadRequestAtRest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State),
 			rest.guard(receipt.TargetThreadID))
-		// A rest that failed to read, or no longer holds, is read again by
-		// the next pass: the sweep's for a failure (noteRestRead), the one
-		// the change asks for otherwise.
+		// The attempt is complete once the write ran, settled or not at
+		// rest, which ends a retry owed (noteRestRead). A rest that failed
+		// to read, or no longer holds, is read again by the next pass: the
+		// sweep's for a failure, the one the change asks for otherwise.
 		a.noteRestRead(receipt.TargetThreadID, err)
 		if err == nil && result.Unrested {
 			a.noteRestWaitsMayChange()

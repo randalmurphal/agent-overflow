@@ -122,7 +122,9 @@ func (a *App) restSettlement(receipt store.ThreadRequestReceipt, settlement stor
 // settles itself. A `finished` settlement cannot be taken back, so the
 // caller writes one only with the decision's guard, which reads the rest
 // again inside the write. The decision is done by the caller. A read that
-// fails is read again by the sweep's next pass (noteRestRead).
+// fails is read again by the sweep's next pass (noteRestRead); one at rest
+// leaves that owed until the settlement it begins completes
+// (settleReadReceiptLocked).
 func (a *App) heldThreadAtRest(threadID string) (*restDecision, error) {
 	a.threadRequests.mu.Lock()
 	barred := a.threadRequests.rest.barred
@@ -131,7 +133,9 @@ func (a *App) heldThreadAtRest(threadID string) (*restDecision, error) {
 		return nil, nil
 	}
 	read, err := a.readRest([]string{threadID})
-	a.noteRestRead(threadID, err)
+	if err != nil || !read.rests(threadID) {
+		a.noteRestRead(threadID, err)
+	}
 	return read, err
 }
 
@@ -170,6 +174,17 @@ func (a *App) holdReceiptGate(threadID, token string, turn, through int) {
 		gate.held, gate.turn, gate.through = true, turn, through
 	}
 	tokens[token] = gate
+}
+
+// holdsReceiptLocked reports whether a request on threadID is held for its
+// rest. The caller holds a.threadRequests.mu.
+func (r *threadRequestState) holdsReceiptLocked(threadID string) bool {
+	for _, gate := range r.running[threadID] {
+		if gate.held {
+			return true
+		}
+	}
+	return false
 }
 
 // heldReceiptGate is token's gate while it is held.

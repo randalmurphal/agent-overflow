@@ -123,3 +123,88 @@ func TestALoopsFireDoesNotWaitForTheSchedule(t *testing.T) {
 		t.Fatalf("the sweep sleeps %v with a loop due in %v and no schedule; want at most that", delay, fire)
 	}
 }
+
+// A retry whose read of rest heals but whose settlement then cannot read the
+// held receipt keeps the retry owed: once the receipt reads again, the
+// sweep's next retry settles the request, with no new event.
+func TestARetryIsOwedUntilItsSettlementCompletes(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	worker, token, gate, _ := f.heldWorker(t, 1)
+	restoreSource := f.failRestSource(t)
+	f.endWorkerTurn(t, worker, gate)
+	f.app.threadRequestsWG.Wait()
+	f.expectHeld(t, worker, token, "while the source read failed")
+	if !f.app.restReadsFailed() {
+		t.Fatal("the failed read did not owe a retry")
+	}
+	restoreSource()
+	restoreReceipts := f.breakTable(t, "thread_request_receipts")
+	f.app.retryFailedRestReads()
+	f.expectHeld(t, worker, token, "while the held receipt could not be read")
+	if !f.app.restReadsFailed() {
+		t.Fatal("the retry stopped being owed though its settlement failed")
+	}
+	restoreReceipts()
+	f.app.retryFailedRestReads()
+	if row := f.request(t, token); row.State != store.ThreadRequestFinished {
+		t.Fatalf("request %+v after the receipt read again; want finished", row)
+	}
+	if f.app.restReadsFailed() {
+		t.Fatal("the retry is still owed once the request settled")
+	}
+}
+
+// A retry ends with the attempt it makes: one whose read finds the thread
+// not at rest is no longer owed, the request staying held for the change
+// that rests it; one for a thread none of whose requests is held any
+// longer is dropped.
+func TestARetryEndsWithItsAttempt(t *testing.T) {
+	t.Parallel()
+	t.Run("not at rest", func(t *testing.T) {
+		t.Parallel()
+		f := newRequestFixture(t)
+		worker, token, gate, _ := f.heldWorker(t, 1)
+		restoreSource := f.failRestSource(t)
+		f.endWorkerTurn(t, worker, gate)
+		f.app.threadRequestsWG.Wait()
+		if !f.app.restReadsFailed() {
+			t.Fatal("the failed read did not owe a retry")
+		}
+		f.armChildLoop(t, worker, "board")
+		restoreSource()
+		f.app.retryFailedRestReads()
+		f.expectHeld(t, worker, token, "with a loop armed")
+		if f.app.restReadsFailed() {
+			t.Fatal("the retry is still owed though its read found the thread not at rest")
+		}
+	})
+	t.Run("settled by a pass", func(t *testing.T) {
+		t.Parallel()
+		f := newRequestFixture(t)
+		worker, token, gate, _ := f.heldWorker(t, 1)
+		restoreSource := f.failRestSource(t)
+		f.endWorkerTurn(t, worker, gate)
+		f.app.threadRequestsWG.Wait()
+		if !f.app.restReadsFailed() {
+			t.Fatal("the failed read did not owe a retry")
+		}
+		restoreSource()
+		f.app.settleRestedReceipts()
+		if row := f.request(t, token); row.State != store.ThreadRequestFinished {
+			t.Fatalf("request %+v after a pass with its sources read again; want finished", row)
+		}
+		if f.app.restReadsFailed() {
+			t.Fatal("the retry is still owed once a pass settled the request")
+		}
+	})
+	t.Run("nothing held", func(t *testing.T) {
+		t.Parallel()
+		f := newRequestFixture(t)
+		f.app.noteRestRead("unread-thread", errUnreadable)
+		f.app.retryFailedRestReads()
+		if f.app.restReadsFailed() {
+			t.Fatal("the retry is still owed for a thread with no held request")
+		}
+	})
+}
