@@ -135,16 +135,27 @@ func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result 
 // or a later one). A destination that does not advertise it is refused
 // before anything is sent, which Unsupported reports.
 func (m *Manager) CallThreadPeerOn(ctx context.Context, id, protocol, method string, result any, params ...any) error {
+	_, err := m.CallThreadPeerProving(ctx, id, protocol, "", method, result, params...)
+	return err
+}
+
+// CallThreadPeerProving is CallThreadPeerOn that also reports whether the
+// connection the call went out on advertised generation, a later thread
+// peer protocol generation. That is the destination's hello on it, read
+// before the call was sent: a call that failed after it still reports it,
+// and an answer that came is that same build's. It is false when no
+// connection was proven.
+func (m *Manager) CallThreadPeerProving(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (bool, error) {
 	if !entityid.Valid(id) {
-		return rpcclient.NotSentError{Err: errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
+		return false, rpcclient.NotSentError{Err: errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
 	}
 	if _, ok := threadPeerMethods[method]; !ok {
-		return rpcclient.NotSentError{Err: errors.New("this method is not available to agent thread tools")}
+		return false, rpcclient.NotSentError{Err: errors.New("this method is not available to agent thread tools")}
 	}
 	if protocol != transport.CapabilityThreadTools && protocol != transport.CapabilityThreadToolsV2 {
-		return rpcclient.NotSentError{Err: fmt.Errorf("%s is not a thread peer protocol", protocol)}
+		return false, rpcclient.NotSentError{Err: fmt.Errorf("%s is not a thread peer protocol", protocol)}
 	}
-	return m.callPeer(ctx, id, protocol, method, result, params...)
+	return m.callPeerProving(ctx, id, protocol, generation, method, result, params)
 }
 
 // Unsupported reports whether a failed call was refused because the
@@ -160,30 +171,38 @@ func Unsupported(err error) bool { return errors.Is(err, errUnsupportedPeerOpera
 // a rpcclient.NotSentError; from then on the RPC client says whether its
 // frame was written.
 func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
+	_, err := m.callPeerProving(ctx, id, capability, "", method, result, params)
+	return err
+}
+
+// callPeerProving is callPeer that also reports whether the connection it
+// proved advertised generation ("" asks nothing).
+func (m *Manager) callPeerProving(ctx context.Context, id, capability, generation, method string, result any, params []any) (bool, error) {
 	held, err := m.carrier(id)
 	if err != nil {
 		if errors.Is(err, deviceclient.ErrNoSession) {
-			return rpcclient.NotSentError{Err: errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)}
+			return false, rpcclient.NotSentError{Err: errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)}
 		}
-		return rpcclient.NotSentError{Err: errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)}
+		return false, rpcclient.NotSentError{Err: errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)}
 	}
 	rpc := held.peers.take(ctx, capability)
 	if rpc == nil {
 		rpc, err = openPeerRPC(ctx, held, capability)
 		if err != nil {
-			return rpcclient.NotSentError{Err: err}
+			return false, rpcclient.NotSentError{Err: err}
 		}
 	}
+	proved := generation != "" && rpc.Advertises(generation)
 	err = rpc.Call(ctx, method, result, params...)
 	var answered *rpcclient.Error
 	if err != nil && !errors.As(err, &answered) {
 		// The connection may hold a reply this call no longer reads.
 		rpc.Close()
-		return err
+		return proved, err
 	}
 	held.reached()
 	held.peers.put(capability, rpc)
-	return err
+	return proved, err
 }
 
 // openPeerRPC dials a new connection for callPeer and maps the refusals

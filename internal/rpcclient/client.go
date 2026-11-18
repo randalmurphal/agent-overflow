@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"sync"
 
 	"agent-overflow/internal/computerroute"
@@ -36,6 +37,9 @@ type Client struct {
 	// waiting for does not outlive the connection.
 	closing   chan struct{}
 	closeOnce sync.Once
+	// capabilities are what the far side's hello advertised on this
+	// connection, set once by Hello.
+	capabilities []string
 }
 
 // New wraps an open connection. The read bound is the transport's own
@@ -114,7 +118,16 @@ func (c *Client) Hello(ctx context.Context) (Hello, error) {
 	if frame.Type != "hello" {
 		return frame, fmt.Errorf("computer did not identify itself")
 	}
+	c.capabilities = frame.Capabilities
 	return frame, nil
+}
+
+// Advertises reports whether the hello read on this connection advertised
+// capability. A connection whose hello was never read advertises nothing.
+func (c *Client) Advertises(capability string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Contains(c.capabilities, capability)
 }
 
 type Error struct{ Code, Message string }
