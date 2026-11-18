@@ -712,7 +712,7 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	}
 	title, computerID, computerName := spawn.TargetThreadTitle, "", ""
 	if spawn.TargetComputerID != "" {
-		computerName, computerID = a.threadTools().threadToolsBackendName(spawn.TargetComputerID)
+		computerName, computerID = a.threadTools().requestComputerName(spawn)
 	} else if thread, err := a.store.GetThread(spawn.TargetThreadID); err == nil {
 		title = thread.Title
 	}

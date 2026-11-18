@@ -512,10 +512,16 @@ type peerFaults struct {
 	// asked, when set, sees each ThreadToolRequestStatus as it arrives, as
 	// a computer of another build would read it.
 	asked atomic.Pointer[func(*ThreadPeerPoll)]
+	// answered, when set, sees each ThreadToolCall this computer answered
+	// before its reply leaves, and can hold the reply there.
+	answered atomic.Pointer[func(ThreadPeerCall)]
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	reply, err := p.App.ThreadToolCall(ctx, call)
+	if answered := p.answered.Load(); answered != nil {
+		(*answered)(call)
+	}
 	if err != nil {
 		return reply, err
 	}

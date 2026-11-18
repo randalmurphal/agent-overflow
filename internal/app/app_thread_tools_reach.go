@@ -327,7 +327,8 @@ func (t threadToolsApp) startRemoteRequest(
 }
 
 // admitRemoteRequest checks the pairing with computerID, admits the
-// caller's work and writes row, all inside the pairing's fence
+// caller's work and writes row under that pairing, with the name the person
+// knows the computer by, all inside the pairing's fence
 // (lockComputerPairing), so a pairing being ended takes the row with the
 // rest or refuses it. The work stays admitted from the row to the
 // destination's answer, so a rest of the caller stops a request the
@@ -341,6 +342,10 @@ func (t threadToolsApp) admitRemoteRequest(
 	if err != nil {
 		return nil, nil, err
 	}
+	if row.Pairing, err = t.app.currentPairing(computerID); err != nil {
+		return nil, nil, err
+	}
+	row.TargetComputerName = peer.Computer().Name
 	done, err = t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return nil, nil, err

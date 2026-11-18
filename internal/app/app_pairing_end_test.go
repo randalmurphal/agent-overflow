@@ -11,7 +11,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/provider"
@@ -20,6 +22,25 @@ import (
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
+
+// holdPairing gives an app that holds no pairings a pairing with computerID,
+// for a test that applies that computer's answers directly, as a poll does
+// after its call: an answer applies only to what the pairing held admitted.
+func holdPairing(t *testing.T, a *App, computerID string) {
+	t.Helper()
+	if a.backends != nil {
+		t.Fatal("holdPairing: the app already holds pairings")
+	}
+	dir := t.TempDir()
+	manager, err := attachedbackends.New(dir, "source", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deviceclient.SaveSession(dir, deviceclient.Session{BackendID: computerID, SessionID: "held", Credential: "test", Endpoint: "https://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	a.backends = manager
+}
 
 // The end of a pairing over both ledgers: a computer that revoked this one,
 // and one the person forgot here.
@@ -80,6 +101,223 @@ func TestAnEndedPairingRetiresItsFinishedRequestsAndItsCommands(t *testing.T) {
 	}
 }
 
+// restoreReachDevice re-admits the revoked device labelled label to pairing,
+// as the destination's owner does from its device list.
+func restoreReachDevice(t *testing.T, app *App, label string) {
+	t.Helper()
+	overview, err := app.GetAccessOverview()
+	if err != nil {
+		t.Fatalf("read the access overview: %v", err)
+	}
+	for _, device := range overview.Devices {
+		if device.Label == label && device.RevokedAtMs != 0 {
+			if err := app.RestoreAccessDevice(device.ID); err != nil {
+				t.Fatalf("restore %s: %v", label, err)
+			}
+			return
+		}
+	}
+	t.Fatalf("no revoked device labelled %q", label)
+}
+
+// learnPairingEnded makes one ordinary call to the destination, outside the
+// request and command sweeps, which is how this computer finds out the
+// other one ended the pairing; and joins the work that end starts here.
+func (p *reachPair) learnPairingEnded(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if err := p.manager.CallThreadPeer(ctx, p.computer, "ThreadToolResolve", nil); err == nil {
+		t.Fatal("a call on a pairing the other computer ended succeeded")
+	}
+	if _, paired, err := p.manager.Lookup(p.computer); err != nil || paired {
+		t.Fatalf("the pairing the other computer ended is still held here: paired=%v err=%v", paired, err)
+	}
+	p.source.threadRequestsWG.Wait()
+}
+
+// A pairing the other computer ended, learned by an ordinary call rather
+// than by the ledger's own sweeps, ends what this computer holds under it
+// at once. A pairing made with that computer afterwards starts with none of
+// it: nothing the old pairing ended is taken up again under the new one,
+// and the end of the old one settles nothing admitted under the new one.
+func TestAPairingEndedOutsideTheLedgerIsEndedAndAReplacementStartsClean(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	token := pair.settledThere(t, store.ThreadReceiptFinished, "the first answer")
+	pair.poll(t)
+	if row := pair.request(t, token); row.State != store.ThreadRequestFinished || !row.Polling {
+		t.Fatalf("collected %q polling=%v, want finished and listening for a late reply", row.State, row.Polling)
+	}
+
+	revokeReachDevice(t, pair.dest, "source")
+	pair.learnPairingEnded(t)
+	row := pair.request(t, token)
+	if row.Polling || row.AckOwed != 0 || row.State != store.ThreadRequestFinished || string(row.Answer) != "the first answer" {
+		t.Fatalf("after the pairing ended: %q %q polling=%v ack owed %d, want the answer kept and nothing more owed or asked",
+			row.State, row.Answer, row.Polling, row.AckOwed)
+	}
+
+	// The other computer's owner lets this one pair again, and it does; a
+	// late reply then lands there for the request the old pairing made.
+	restoreReachDevice(t, pair.dest, "source")
+	if id := attachDestination(t, pair, pair.destWire, pair.dest); id != pair.computer {
+		t.Fatalf("the replacement pairing names the computer %s, want %s", id, pair.computer)
+	}
+	if stored, err := pair.dest.store.StoreThreadReceiptLateReply(token, []byte("a correction"), 0, nil); err != nil || !stored {
+		t.Fatalf("store the late reply there: stored=%v err=%v", stored, err)
+	}
+	pair.poll(t)
+	pair.call(t, "thread_status", `{"tokens":["`+token+`"]}`)
+	if row := pair.request(t, token); len(row.LateReply) != 0 || row.Revision != 1 || row.Polling || row.AckOwed != 0 {
+		t.Fatalf("the replacement pairing took up the request the old one ended: %+v", row)
+	}
+	if receipt := pair.receipt(t, token); receipt.CollectedRevision != 1 {
+		t.Fatalf("the replacement pairing acknowledged revision %d of the old pairing's request", receipt.CollectedRevision)
+	}
+
+	// Work admitted under the new pairing is not the old one's to end.
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	fresh := pair.spawnThere(t, "work under the new pairing", nil).Token
+	if err := pair.source.endPairing(pair.computer, "the old pairing ended"); err != nil {
+		t.Fatal(err)
+	}
+	if row := pair.request(t, fresh); threadRequestSettled(row) || !row.Polling {
+		t.Fatalf("the end of the old pairing settled a request the new one admitted: %q polling=%v", row.State, row.Polling)
+	}
+}
+
+// agentRowOf finds a request's row in its caller's Agents segment, open or
+// past.
+func agentRowOf(t *testing.T, a *App, callerThreadID, token string) ThreadAgentRow {
+	t.Helper()
+	open, err := a.ListThreadAgentRows(t.Context(), callerThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	past, err := a.ListThreadPastAgentRows(t.Context(), callerThreadID, store.PastAgentRowsCursor{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range append(open.Rows, past.Rows...) {
+		if row.Token == token {
+			return row
+		}
+	}
+	t.Fatalf("no Agents row for %s", token)
+	return ThreadAgentRow{}
+}
+
+// An answer from a paired computer applies only to what the pairing held
+// now admitted: one about a request an earlier pairing admitted, as a call
+// made on that pairing's connection brings back after its end, neither
+// settles it nor leaves it owing that computer anything, and with no pairing
+// held nothing applies at all.
+func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	computer := uuid.NewString()
+	answer := func(token string) ThreadPeerRequest {
+		return ThreadPeerRequest{Token: token, Known: true, State: store.ThreadReceiptFinished, Answer: "done there",
+			AnswerKind: store.ThreadAnswerFinal, Revision: 1, SettledAt: time.Now().UnixMilli()}
+	}
+	seed := func(pairing string) string {
+		t.Helper()
+		token := uuid.NewString()
+		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+			State: store.ThreadRequestRunning, TargetComputerID: computer, TargetThreadID: uuid.NewString(), Pairing: pairing}); err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	unchanged := func(token, why string) {
+		t.Helper()
+		if wakes, err := f.app.applyThreadPeerRequest(token, computer, answer(token)); err != nil || len(wakes) != 0 {
+			t.Fatalf("%s: wakes %+v, %v", why, wakes, err)
+		}
+		if row := f.request(t, token); row.State != store.ThreadRequestRunning || row.Revision != 0 || row.AckOwed != 0 {
+			t.Fatalf("%s changed the request: %+v", why, row)
+		}
+	}
+	unchanged(seed(""), "an answer with no pairing held")
+	holdPairing(t, f.app, computer)
+	unchanged(seed("an-ended-pairing"), "an answer about an earlier pairing's request")
+	for _, pairing := range []string{"held", ""} {
+		token := seed(pairing)
+		if _, err := f.app.applyThreadPeerRequest(token, computer, answer(token)); err != nil {
+			t.Fatal(err)
+		}
+		if row := f.request(t, token); row.State != store.ThreadRequestFinished || row.AckOwed != 1 {
+			t.Fatalf("an answer about the held pairing's request (recorded %q) left it %+v", pairing, row)
+		}
+	}
+}
+
+// A request the end of a pairing settled names the computer as the person
+// knew it, on its wake and on its Agents row, though this computer no
+// longer holds a pairing that names it.
+func TestARequestThePairingsEndSettledNamesItsComputer(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	if err := pair.source.RenameBackend(pair.computer, "GPU computer"); err != nil {
+		t.Fatal(err)
+	}
+	token := pair.runningThere(t)
+	// The wake stays on the queue, where its words can be read.
+	pair.source.startSessionFn = func(string) error { return nil }
+
+	revokeReachDevice(t, pair.dest, "source")
+	pair.learnPairingEnded(t)
+	pair.source.waitAgentNoticeWork()
+	if row := pair.request(t, token); row.State != store.ThreadRequestErrored {
+		t.Fatalf("the request to a computer that ended the pairing is %q", row.State)
+	}
+	if computer := agentRowOf(t, pair.source, pair.caller.ID, token).Computer; computer != "GPU computer" {
+		t.Fatalf("the Agents row names the computer %q, want the name the person gave it", computer)
+	}
+	var wake string
+	for _, row := range durableQueueRows(t, pair.source, pair.caller.ID) {
+		if row.SendID == threadWakeSendID(token) {
+			wake = row.Message
+		}
+	}
+	if !strings.Contains(wake, "GPU computer") {
+		t.Fatalf("the wake does not name the computer as the person knew it: %q", wake)
+	}
+}
+
+// Forgetting a computer counts every obligation it would drop: a cancel a
+// stopped command is still owed there, whose notification the stop
+// dismissed, is named, and holds the forget as an unconfirmed cancellation
+// does, so the command is not left running there with nobody to stop it.
+func TestForgettingAComputerWaitsForACancelItStillOwes(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	command := runningRemoteWatch(t, pair.source, pair.computer, pair.caller)
+	if err := pair.source.store.StopRemoteWatch(command.ComputerID, command.RequestID, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if err := pair.source.store.OweRemoteCancel(command.ComputerID, command.RequestID, now, now+30_000); err != nil {
+		t.Fatal(err)
+	}
+	for _, abandon := range []bool{false, true} {
+		err := pair.source.RemoveBackend(pair.computer, abandon)
+		if err == nil || !strings.Contains(err.Error(), "1 stopped command whose cancellation") {
+			t.Fatalf("forget (abandon=%v) with a cancel still owed there answered %v", abandon, err)
+		}
+	}
+	if saved := savedRemoteWatch(t, pair.source, command); saved.CancelOwedAt == 0 {
+		t.Fatalf("the forget dropped the cancel the command is owed: %+v", saved)
+	}
+	if _, paired, err := pair.manager.Lookup(pair.computer); err != nil || !paired {
+		t.Fatalf("the computer was forgotten with a cancel still owed there: paired=%v err=%v", paired, err)
+	}
+}
+
 // A command whose destination revoked this computer is told to its thread
 // as finished with an outcome nobody can know, once; the requests to that
 // computer settle in the same transition.
@@ -91,6 +329,9 @@ func TestARevokedCommandWatchRecordsItsOutcomeAsUnknown(t *testing.T) {
 		return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
 	})
 	source.startSessionFn = func(string) error { return nil }
+	if err := source.RenameBackend(computer, "GPU computer"); err != nil {
+		t.Fatal(err)
+	}
 	thread := remoteWatchThread(t, source, string(provider.Claude))
 	caller := transport.WithCallerScope(context.Background(), transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID})
 	id := uuid.NewString()
@@ -137,6 +378,21 @@ func TestARevokedCommandWatchRecordsItsOutcomeAsUnknown(t *testing.T) {
 	items, err := source.remoteTrayItems(thread.ID, 0)
 	if err != nil || len(items) != 2 || items[1].Status != "errored" || !strings.Contains(items[1].Meta, "outcome is unknown") {
 		t.Fatalf("the Background rows of the command: %+v, %v", items, err)
+	}
+	// Each names the computer as the person knew it, though no pairing here
+	// names it any more: the completion, the call row's listing and the
+	// Background row.
+	for _, queued := range durableQueueRows(t, source, thread.ID) {
+		if queued.SendID == remoteCompletionSendID(w) && !strings.Contains(queued.Message, "Remote job finished on GPU computer") {
+			t.Fatalf("the completion does not name the computer as the person knew it: %q", queued.Message)
+		}
+	}
+	records, err := source.ListThreadRemoteCommands(thread.ID)
+	if err != nil || len(records) != 1 || records[0].ComputerName != "GPU computer" {
+		t.Fatalf("the command's listing names the computer %+v, %v", records, err)
+	}
+	if !strings.Contains(items[1].Meta, `"computer_name":"GPU computer"`) {
+		t.Fatalf("the Background row does not name the computer: %s", items[1].Meta)
 	}
 	row, found, err := source.store.GetThreadRequest(open)
 	if err != nil || !found {

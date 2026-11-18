@@ -285,6 +285,17 @@ func (m *Manager) Lookup(id string) (Attached, bool, error) {
 	return m.attached(session), true, nil
 }
 
+// Grant names the pairing held with one machine now: its session's id,
+// which every rotation keeps and a new pairing replaces. Empty when nothing
+// is paired under that id.
+func (m *Manager) Grant(id string) (string, error) {
+	session, err := deviceclient.LoadSession(m.dir, id)
+	if errors.Is(err, deviceclient.ErrNoSession) || errors.Is(err, deviceclient.ErrInvalidBackendID) {
+		return "", nil
+	}
+	return session.SessionID, err
+}
+
 // attached is one session as the app reads it, with the live hop's
 // reachability when one has been built.
 func (m *Manager) attached(session deviceclient.Session) Attached {

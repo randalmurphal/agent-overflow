@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // What each computer owes the other for one request, over the real wire:
@@ -193,5 +195,203 @@ func TestAStatusAnswerOmitsTheTextOfARevisionTheAskerHolds(t *testing.T) {
 	}
 	if after := pair.request(t, token); string(after.Answer) != "a long final answer" || after.Revision != before.Revision || after.LateReplyAt != 0 {
 		t.Fatalf("a full answer about a held revision changed the row: %+v", after)
+	}
+}
+
+// Both of a request's replies can expire there before this computer asks at
+// all: the first answer, and the late reply that extended its hold. The
+// first collection settles the request `expired` and records, in the same
+// write, that a later reply arrived and when, at the revision it then
+// acknowledges; thread_status and the Agents row both say so.
+func TestALateReplyThatExpiredWithTheFirstAnswerIsRecordedOnTheFirstCollection(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	token := pair.settledThere(t, store.ThreadReceiptFinished, "the first answer")
+	lateAt := time.Now().UnixMilli()
+	if stored, err := pair.dest.store.StoreThreadReceiptLateReply(token, []byte("a correction"), lateAt, nil); err != nil || !stored {
+		t.Fatalf("store the late reply there: stored=%v err=%v", stored, err)
+	}
+	held := pair.receipt(t, token)
+	pair.dest.expireThreadRequests(time.UnixMilli(held.ExpiresAt))
+	if expired := pair.receipt(t, token); expired.State != store.ThreadReceiptExpired || expired.Revision != 2 || expired.CollectedRevision != 0 {
+		t.Fatalf("the receipt there is %q at revision %d, %d collected", expired.State, expired.Revision, expired.CollectedRevision)
+	}
+
+	pair.poll(t)
+	row := pair.request(t, token)
+	if row.State != store.ThreadRequestExpired || row.Revision != 2 || !row.LateReplyExpired || row.LateReplyAt != lateAt {
+		t.Fatalf("collected %q at revision %d, late reply expired=%v at %d; want expired at 2 with the late reply at %d",
+			row.State, row.Revision, row.LateReplyExpired, row.LateReplyAt, lateAt)
+	}
+	if receipt := pair.receipt(t, token); receipt.CollectedRevision != 2 {
+		t.Fatalf("the destination holds revision %d acknowledged, want 2", receipt.CollectedRevision)
+	}
+	status := pair.call(t, "thread_status", `{"tokens":["`+token+`"]}`)
+	requests, _ := status["requests"].([]any)
+	if len(requests) != 1 {
+		t.Fatalf("thread_status listed %d requests: %+v", len(requests), status)
+	}
+	state, _ := requests[0].(map[string]any)
+	if at, _ := state["late_reply_expired_at"].(float64); state["state"] != "expired" || int64(at) != lateAt {
+		t.Fatalf("thread_status does not say the request expired with a later reply at %d: %+v", lateAt, state)
+	}
+	if agent := agentRowOf(t, pair.source, pair.caller.ID, token); agent.State != "expired" || agent.LateReplyExpiredAt != lateAt {
+		t.Fatalf("the Agents row is %q and says a later reply arrived at %d, want expired with it at %d", agent.State, agent.LateReplyExpiredAt, lateAt)
+	}
+}
+
+// heldCancel parks the destination's reply to a thread_cancel once it has
+// settled the request there, until release is closed.
+func heldCancel(faults *peerFaults) (settled <-chan struct{}, release chan struct{}) {
+	parked, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hold := func(call ThreadPeerCall) {
+		if call.Tool != "thread_cancel" {
+			return
+		}
+		once.Do(func() { close(parked) })
+		<-release
+	}
+	faults.answered.Store(&hold)
+	return parked, release
+}
+
+// runningThere starts a request on the destination whose turn stays open,
+// with its wake armed here.
+func (p *reachPair) runningThere(t *testing.T) string {
+	t.Helper()
+	installMockClaudeTurns(t, p.dest, [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"working"}]}}`,
+	}})
+	installMockClaudeReplies(t, p.source, "noted")
+	ack := p.spawnThere(t, "keep working", map[string]any{"notify": true})
+	waitUntilE2E(t, 30*time.Second, "the destination runs "+ack.Token, func() bool {
+		receipt, found, err := p.dest.store.GetThreadRequestReceipt(ack.Token)
+		return err == nil && found && receipt.State == store.ThreadReceiptRunning
+	})
+	if row := p.request(t, ack.Token); !row.Notify {
+		t.Fatalf("the spawn did not arm a wake: %+v", row)
+	}
+	return ack.Token
+}
+
+// An agent's own cancel is told to it once, by the call's own reply: a poll
+// that reads the cancelled receipt while that reply is on its way collects
+// the settlement and queues no message about it.
+func TestAnAgentsOwnCancelIsToldByItsReplyAlone(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair, faults := faultyReachPair(t)
+	token := pair.runningThere(t)
+	settled, release := heldCancel(faults)
+
+	cancelled := make(chan threadtools.CancelReport, 1)
+	go func() {
+		report, err := pair.adapter().Cancel(context.Background(), pair.callerIdentity(), threadtools.CancelCall{Token: token})
+		if err != nil {
+			t.Errorf("cancel: %v", err)
+		}
+		cancelled <- report
+	}()
+	<-settled
+	pair.poll(t)
+	if row := pair.request(t, token); row.State != store.ThreadRequestCancelled || row.DeliveredHow != "" {
+		close(release)
+		<-cancelled
+		t.Fatalf("while the cancel's reply was on its way the poll left the request %q delivered %q, want cancelled and its delivery the reply's",
+			row.State, row.DeliveredHow)
+	}
+	close(release)
+	if report := <-cancelled; report.State != threadtools.RequestCancelled {
+		t.Fatalf("the cancel reported %+v", report)
+	}
+	pair.source.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+	pair.source.threadRequestsWG.Wait()
+	if row := pair.request(t, token); row.DeliveredHow != store.ThreadWakeInline {
+		t.Fatalf("the cancellation reached the agent by %q, want its own call's reply alone", row.DeliveredHow)
+	}
+}
+
+// A cancel whose reply never reached the agent leaves the cancellation owed:
+// the wake tells it instead.
+func TestAnAgentsCancelWhoseReplyWasLostIsToldByAWake(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	token := pair.runningThere(t)
+
+	ctx, pending := withThreadToolsPending(context.Background())
+	if _, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{Token: token}); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	pending.run(false)
+	pair.source.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+	waitUntilE2E(t, 30*time.Second, "the cancellation is told by a wake", func() bool {
+		return pair.request(t, token).DeliveredHow == store.ThreadWakeQueued
+	})
+}
+
+// A status answer leaves out each text the asker holds at the revision it
+// names (the answer, an interruption's cause, the late reply), and sends
+// what it does not hold: a holder of the first answer asking about a late
+// reply gets the reply alone. An asker that names nothing gets everything.
+func TestAStatusAnswerSendsOnlyTheTextsTheAskerLacks(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	answered := pair.settledThere(t, store.ThreadReceiptFinished, "a long final answer")
+	late := pair.settledThere(t, store.ThreadReceiptFinished, "the first answer")
+	if stored, err := pair.dest.store.StoreThreadReceiptLateReply(late, []byte("a correction"), 0, nil); err != nil || !stored {
+		t.Fatalf("store the late reply there: stored=%v err=%v", stored, err)
+	}
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	stopped := pair.spawnThere(t, "stopped there", nil).Token
+	waitUntilE2E(t, 30*time.Second, "the destination starts "+stopped, func() bool {
+		return pair.receipt(t, stopped).State == store.ThreadReceiptRunning
+	})
+	if result, err := pair.dest.store.SettleLocalThreadRequest(stopped, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadReceiptInterrupted, Answer: []byte("half the work"), AnswerKind: store.ThreadAnswerFinal,
+		Cause: threadtools.CauseTrayStop,
+	}, store.ThreadRequestInterrupted); err != nil || !result.Settled {
+		t.Fatalf("interrupt the receipt there: %+v %v", result, err)
+	}
+	tokens := []string{answered, late, stopped}
+	ask := func(held map[string]int64) map[string]ThreadPeerRequest {
+		t.Helper()
+		poll := ThreadPeerPoll{Tokens: tokens}
+		for token, revision := range held {
+			poll.Held = append(poll.Held, ThreadPeerAck{Token: token, Revision: revision})
+		}
+		reply, err := pair.source.callThreadRequestStatus(pair.computer, poll)
+		if err != nil {
+			t.Fatalf("ask about %v holding %v: %v", tokens, held, err)
+		}
+		out := make(map[string]ThreadPeerRequest, len(reply.Requests))
+		for _, request := range reply.Requests {
+			out[request.Token] = request
+		}
+		return out
+	}
+
+	full := ask(nil)
+	if full[answered].Answer != "a long final answer" || full[late].Answer != "the first answer" || full[late].LateReply != "a correction" ||
+		full[stopped].Cause == nil || full[stopped].Cause.Written != "half the work" {
+		t.Fatalf("an asker that holds nothing was not answered in full: %+v", full)
+	}
+	current := ask(map[string]int64{answered: 1, late: 2, stopped: 1})
+	if got := current[answered]; got.Answer != "" || got.Revision != 1 {
+		t.Errorf("the answer the asker holds was sent again: %+v", got)
+	}
+	if got := current[late]; got.LateReply != "" || got.Answer != "" || got.Revision != 2 {
+		t.Errorf("the late reply the asker holds was sent again: %+v", got)
+	}
+	if got := current[stopped]; got.Cause != nil || got.Answer != "" || got.Revision != 1 {
+		t.Errorf("the interruption the asker holds was sent again: %+v", got)
+	}
+	behind := ask(map[string]int64{late: 1})
+	if got := behind[late]; got.LateReply != "a correction" || got.Answer != "" || got.Revision != 2 {
+		t.Errorf("a holder of the first answer asking about the late reply got %+v, want the reply alone", got)
 	}
 }

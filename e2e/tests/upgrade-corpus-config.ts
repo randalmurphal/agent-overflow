@@ -50,6 +50,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 154, table: 'automation_cursors', dropped: true, reason: "v154 drops the scheduler's per-source cursors with its automations" },
   { version: 154, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v154 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
   { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 158, table: 'thread_requests', columns: ['next_check'], reason: 'v158 makes the acknowledgement it owes again for an answer from a paired computer due at once' },
 ];
 
 /**
@@ -763,9 +764,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   {
     table: 'thread_requests',
-    columns: ['owner_op_seq', 'ack_owed', 'late_reply_expired'],
+    columns: ['owner_op_seq', 'ack_owed', 'late_reply_expired', 'pairing', 'target_computer_name'],
     values: { late_reply_expired: [1] },
-    reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, and a late reply one dropped before it was collected (v158), which need a second computer",
+    reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the pairing and computer name a request there was admitted under (v158), which need a second computer",
   },
   { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },

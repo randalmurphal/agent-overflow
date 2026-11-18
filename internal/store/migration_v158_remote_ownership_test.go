@@ -3,6 +3,7 @@ package store
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 // v158 adds the link a paired computer's owned spawn makes and what its
@@ -33,6 +34,15 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 	if link != 0 || seen != 0 || receiptSeq != 0 || requestSeq != 0 || ackOwed != 0 || lateExpired != 0 {
 		t.Fatalf("old rows read link %d seen %d seq %d/%d ack owed %d late reply expired %d, want all 0",
 			link, seen, receiptSeq, requestSeq, ackOwed, lateExpired)
+	}
+	// Admitted before pairings were recorded: no pairing, no name kept.
+	var pairing, name string
+	if err := db.QueryRow(`SELECT pairing, target_computer_name FROM thread_requests WHERE token = 'old-spawn'`).Scan(&pairing, &name); err != nil ||
+		pairing != "" || name != "" {
+		t.Fatalf("an old request's pairing %q and name %q, %v; want both empty", pairing, name, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('remote_watches') WHERE name IN ('pairing', 'computer_name')`).Scan(&seen); err != nil || seen != 2 {
+		t.Fatalf("remote_watches has %d of its pairing and name columns, %v", seen, err)
 	}
 	var placement string
 	if err := db.QueryRow(`SELECT placement FROM threads WHERE id = 'worker'`).Scan(&placement); err != nil || placement != PlacementStandalone {
@@ -85,5 +95,63 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO thread_request_receipts (token, owner_device_id, source_computer_id, source_thread_id, kind, target_thread_id, state, created_at, updated_at, spawn_link)
 		VALUES ('second', 'dev', 'pc', 'lead', 'spawn', 'worker', 'finished', 6, 6, 1)`); err == nil {
 		t.Fatal("a second link for one thread was accepted")
+	}
+}
+
+// An earlier build sent the acknowledgement of a collected answer once and
+// kept no record of whether it arrived. v158 owes it again, once, for each
+// answer from another computer that computer could still be holding, at the
+// revision this computer holds of it: an answer collected there (its hold
+// recorded), whose hold, or its late reply's, has not run out.
+func TestRemoteOwnershipMigrationOwesTheAcknowledgementsAnUpgradeMayHaveLost(t *testing.T) {
+	db := migrateThrough(t, remoteOwnershipMigrationVersion-1)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, mode)
+		VALUES ('lead', 'p', 'lead', 'claude', '/tmp/p', 'test-model', 1, 1, 0, 'chat')`)
+	now := time.Now().UnixMilli()
+	hour := time.Hour.Milliseconds()
+	for _, row := range []struct {
+		token, computer, state string
+		revision               int64
+		expires, lateAt        any
+	}{
+		{"replied", "pc", "replied", 1, now + 23*hour, nil},
+		{"late", "pc", "finished", 2, now - hour, now - 2*hour},
+		{"gone", "pc", "replied", 1, now - hour, nil},
+		{"late-gone", "pc", "finished", 2, now - 3*hour, now - 25*hour},
+		{"local", "", "replied", 1, now + 23*hour, nil},
+		{"refused", "pc", "refused", 1, nil, nil},
+		{"open", "pc", "running", 0, nil, nil},
+	} {
+		mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, answer, answer_kind,
+			revision, settled_at, expires_at, late_reply, late_reply_at, next_check, created_at, updated_at)
+			VALUES (?, 'lead', 'send', ?, 'w', ?, 'text', 'final', ?, CASE WHEN ? = 'running' THEN NULL ELSE ? END, ?,
+			        CASE WHEN ? IS NULL THEN NULL ELSE 'a correction' END, ?, ?, 1, 1)`,
+			row.token, row.computer, row.state, row.revision, row.state, now-24*hour, row.expires, row.lateAt, row.lateAt, now+hour)
+	}
+
+	migrateFrom(t, db, remoteOwnershipMigrationVersion-1)
+
+	want := map[string]int64{"replied": 1, "late": 2}
+	rows, err := db.Query(`SELECT token, ack_owed, next_check FROM thread_requests`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var token string
+		var owed, next int64
+		if err := rows.Scan(&token, &owed, &next); err != nil {
+			t.Fatal(err)
+		}
+		if owed != want[token] {
+			t.Errorf("%s owes the acknowledgement of revision %d, want %d", token, owed, want[token])
+		}
+		if owed > 0 && next > time.Now().UnixMilli() {
+			t.Errorf("%s owes its acknowledgement from %d, after the upgrade", token, next)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }

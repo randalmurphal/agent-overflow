@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -256,26 +255,20 @@ func (a *App) pollRemoteThreadRequests(now time.Time) {
 	if err != nil {
 		logThreadRequestSweep("read due request acknowledgements", err)
 	}
-	var owed []string
-	for _, ack := range acks {
-		if !slices.Contains(owed, ack.ComputerID) {
-			owed = append(owed, ack.ComputerID)
-		}
-	}
-	if len(rows) == 0 && len(owed) == 0 {
+	if len(rows) == 0 && len(acks) == 0 {
 		a.endThreadRequestPoll()
 		return
 	}
-	a.startThreadRequestPoll(rows, owed)
+	a.startThreadRequestPoll(rows, acks)
 }
 
 // startThreadRequestPoll runs one pass over rows, and over the computers
-// owed acknowledgements, off the sweep, releasing the poll slot when it ends
-// or when shutdown refuses it.
-func (a *App) startThreadRequestPoll(rows []store.ThreadRequest, owed []string) {
+// owed the due acknowledgements, off the sweep, releasing the poll slot when
+// it ends or when shutdown refuses it.
+func (a *App) startThreadRequestPoll(rows []store.ThreadRequest, acks []store.ThreadRequestAck) {
 	if a.lifeCtx().Err() != nil || !a.threadRequestsWG.Go(func() {
 		defer a.endThreadRequestPoll()
-		a.runThreadRequestPoll(rows, owed)
+		a.runThreadRequestPoll(rows, acks)
 	}) {
 		a.endThreadRequestPoll()
 	}
@@ -371,11 +364,12 @@ func (a *App) threadWakeDeliverySlots() chan struct{} {
 const threadWakeDeliveryFanOut = 4
 
 // runThreadRequestPoll groups the due rows by destination and asks each one
-// about its whole set; a computer in owed with no row due is sent the
-// acknowledgements owed to it.
-func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, owed []string) {
+// about its whole set; a computer owed a due acknowledgement with no row due
+// is sent the acknowledgements owed to it.
+func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, acks []store.ThreadRequestAck) {
 	order := make([]string, 0, 4)
 	byComputer := make(map[string][]store.ThreadRequest, 4)
+	pairings := make(map[string][]string, 4)
 	for _, row := range rows {
 		if row.TargetComputerID == "" {
 			// A row with no destination is not a remote request and the due
@@ -390,12 +384,14 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, owed []string) {
 			order = append(order, row.TargetComputerID)
 		}
 		byComputer[row.TargetComputerID] = append(byComputer[row.TargetComputerID], row)
+		pairings[row.TargetComputerID] = append(pairings[row.TargetComputerID], row.Pairing)
 	}
-	for _, computerID := range owed {
-		if _, seen := byComputer[computerID]; !seen {
-			order = append(order, computerID)
-			byComputer[computerID] = nil
+	for _, ack := range acks {
+		if _, seen := byComputer[ack.ComputerID]; !seen {
+			order = append(order, ack.ComputerID)
+			byComputer[ack.ComputerID] = nil
 		}
+		pairings[ack.ComputerID] = append(pairings[ack.ComputerID], ack.Pairing)
 	}
 	// Four destinations at a time, the bound the remote-jobs watcher uses:
 	// one computer that is asleep holds its call open for the whole call
@@ -413,11 +409,7 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, owed []string) {
 		go func(computerID string) {
 			defer wg.Done()
 			defer func() { <-limit }()
-			if due := byComputer[computerID]; len(due) > 0 {
-				a.pollThreadRequestsOn(computerID, due)
-			} else {
-				a.sendOwedThreadRequestAcks(computerID)
-			}
+			a.pollThreadRequestsOn(computerID, byComputer[computerID], pairings[computerID])
 		}(computerID)
 	}
 	wg.Wait()

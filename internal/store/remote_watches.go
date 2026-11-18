@@ -52,6 +52,13 @@ type RemoteWatch struct {
 	// when none did (StopRemoteWatch, DismissUndeliveredRemoteWatches). Such
 	// a dismissal is final: nothing brings the completion back.
 	StoppedAt int64 `json:"-"`
+	// Pairing is the pairing with ComputerID the command was admitted under,
+	// its session id; empty from before pairings were recorded
+	// (ThreadRequest.Pairing).
+	Pairing string `json:"-"`
+	// ComputerName is what the person called that computer when the command
+	// was admitted, which names it once no pairing here does.
+	ComputerName string `json:"-"`
 }
 
 // remoteWatchesV91SQL is the table as v91 made it. v154 rebuilt it with
@@ -69,12 +76,12 @@ CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DE
 
 const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at,stopped_at`
+const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at,stopped_at,pairing,computer_name`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt, &w.StoppedAt)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt, &w.StoppedAt, &w.Pairing, &w.ComputerName)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -90,7 +97,7 @@ func (s *Store) GetRemoteWatch(computerID, requestID string) (RemoteWatch, error
 // True permits cleanup on a definite refusal (new or previously refused).
 // False preserves an earlier accepted/uncertain attempt, even if a retry fails.
 func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
-	if !entityid.Valid(w.ComputerID) || !entityid.Valid(w.RequestID) || !entityid.Valid(w.ThreadID) || !validTransferDigest(w.Fingerprint) || len(w.Label) > 1024 || len(w.Command) > 1024 {
+	if !entityid.Valid(w.ComputerID) || !entityid.Valid(w.RequestID) || !entityid.Valid(w.ThreadID) || !validTransferDigest(w.Fingerprint) || len(w.Label) > 1024 || len(w.Command) > 1024 || len(w.ComputerName) > 1024 {
 		return false, errors.New("invalid remote job watch")
 	}
 	tx, release, err := s.beginDurableTx(context.Background())
@@ -123,13 +130,14 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		return false, errorsx.Public("remote_tracking_capacity", "256 remote jobs are awaiting completion or reconnection."+held+" Resolve those jobs before starting more.", nil)
 	}
 	if !fresh {
-		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',next_check=? WHERE computer_id=? AND request_id=?`, time.Now().Add(25*time.Second).UnixMilli(), w.ComputerID, w.RequestID)
+		// A start refused before is tried again under the pairing held now.
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',next_check=?,pairing=?,computer_name=? WHERE computer_id=? AND request_id=?`, time.Now().Add(25*time.Second).UnixMilli(), w.Pairing, w.ComputerName, w.ComputerID, w.RequestID)
 		if err != nil {
 			return false, err
 		}
 		return true, tx.Commit()
 	}
-	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,next_check,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli())
+	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,next_check,created_at,pairing,computer_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli(), w.Pairing, w.ComputerName)
 	if err != nil {
 		return false, err
 	}
@@ -399,13 +407,17 @@ func (s *Store) HasPendingRemoteWatches(threadID string) (bool, error) {
 const archivedRemoteCompletion = `notification='pending' AND coalesce(json_extract(receipt,'$.id'),'')<>'' AND json_extract(receipt,'$.state')<>'running'
  AND EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1)`
 
-// PendingRemoteWatchesForComputer counts a computer's pending
-// notifications: the completions held for archived conversations, and the
-// others, which still need the computer.
-func (s *Store) PendingRemoteWatchesForComputer(computerID string) (archived, other int, err error) {
-	err = s.reader().QueryRow(`SELECT coalesce(sum(CASE WHEN `+archivedRemoteCompletion+` THEN 1 ELSE 0 END),0), coalesce(sum(CASE WHEN `+archivedRemoteCompletion+` THEN 0 ELSE 1 END),0)
- FROM remote_watches WHERE computer_id=? AND notification='pending'`, computerID).Scan(&archived, &other)
-	return archived, other, err
+// PendingRemoteWatchesForComputer counts what forgetting a computer drops
+// of the commands there: the completions held for archived conversations;
+// the other pending notifications, which still need the computer; and the
+// cancels owed there for commands whose notification a stop dismissed,
+// which need it too.
+func (s *Store) PendingRemoteWatchesForComputer(computerID string) (archived, other, stopped int, err error) {
+	err = s.reader().QueryRow(`SELECT coalesce(sum(CASE WHEN `+archivedRemoteCompletion+` THEN 1 ELSE 0 END),0),
+ coalesce(sum(CASE WHEN notification='pending' AND NOT (`+archivedRemoteCompletion+`) THEN 1 ELSE 0 END),0),
+ coalesce(sum(CASE WHEN notification<>'pending' THEN 1 ELSE 0 END),0)
+ FROM remote_watches WHERE computer_id=? AND (notification='pending' OR cancel_owed_at<>0)`, computerID).Scan(&archived, &other, &stopped)
+	return archived, other, stopped, err
 }
 
 // DismissArchivedRemoteCompletions drops the completions held for a

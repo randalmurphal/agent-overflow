@@ -469,6 +469,17 @@ func (t threadToolsApp) threadToolsBackendName(backendID string) (name, id strin
 	return label, row.ID
 }
 
+// requestComputerName names the computer a request went to as the person
+// knows it: by its pairing here while one is held, else by the name the
+// person knew it by when the request was admitted.
+func (t threadToolsApp) requestComputerName(row store.ThreadRequest) (name, id string) {
+	name, id = t.threadToolsBackendName(row.TargetComputerID)
+	if name == "" {
+		name = row.TargetComputerName
+	}
+	return name, id
+}
+
 // threadToolsPairing finds the pairing for a computer id, the backend id
 // that computer calls itself by, which is also the id this computer files
 // it under. Its second result is the directional reach answer, so a caller

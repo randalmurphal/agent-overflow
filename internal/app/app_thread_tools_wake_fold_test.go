@@ -196,6 +196,7 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
 	computer := uuid.NewString()
+	holdPairing(t, f.app, computer)
 	token := f.seedRemoteRequest(t, computer)
 
 	wakes, err := f.app.applyThreadPeerRequest(token, computer, ThreadPeerRequest{
@@ -229,6 +230,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 	t.Parallel()
 	f := newRequestFixture(t)
 	computer := uuid.NewString()
+	holdPairing(t, f.app, computer)
 	token := f.seedRemoteRequest(t, computer)
 	now := time.Now().UnixMilli()
 	answer := ThreadPeerRequest{

@@ -22,6 +22,16 @@ func (a *App) remoteComputerNames() map[string]string {
 	return names
 }
 
+// remoteWatchComputerName names a command's computer as the person knows it:
+// by its pairing here while one is held, else by the name the person knew
+// it by when the command was admitted.
+func remoteWatchComputerName(names map[string]string, w store.RemoteWatch) string {
+	if name := names[w.ComputerID]; name != "" {
+		return name
+	}
+	return w.ComputerName
+}
+
 // RemoteJobRecord is one of a conversation's tracked remote jobs as the
 // transcript, the tray and remote_jobs read it: the durable watch plus the
 // computer's name as this computer knows it. A client naming a job or a

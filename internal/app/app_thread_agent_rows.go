@@ -967,7 +967,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		}
 	}
 	if row.TargetComputerID != "" {
-		out.Computer, _ = v.app.threadTools().threadToolsBackendName(row.TargetComputerID)
+		out.Computer, _ = v.app.threadTools().requestComputerName(row)
 		out.Provider = row.TargetProvider
 	}
 	if settled {

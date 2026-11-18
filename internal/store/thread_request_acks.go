@@ -7,19 +7,23 @@ import (
 )
 
 // The acknowledgements this computer owes the computers its requests went
-// to. A destination drops an answer only once the source has acknowledged
-// its revision, so a revision the source holds and has not acknowledged is
-// a debt: `ack_owed` records it in the transaction that took the revision
-// (CollectThreadRequest), it survives a restart, and it is cleared only by
-// the destination taking it. Its retry is paced by `next_check`, the
+// to. A destination drops an answer whose latest revision nobody has
+// acknowledged once its hold runs out, a day from the settlement or from
+// the late reply (ExpireThreadRequestAnswers), and keeps an acknowledged
+// one until the retention floor. So a revision the source holds and has not
+// acknowledged is a debt: unpaid, the destination drops it and reads it as
+// never collected. `ack_owed` records it in the transaction that took the
+// revision (CollectThreadRequest), it survives a restart, and it is cleared
+// only by the destination taking it. Its retry is paced by `next_check`, the
 // poller's own clock for the row (idx_thread_requests_ack_owed).
 
 // ThreadRequestAck is one acknowledgement owed: the destination's revision
-// a request holds.
+// a request holds, and the pairing that admitted the request.
 type ThreadRequestAck struct {
 	Token      string
 	ComputerID string
 	Revision   int64
+	Pairing    string
 }
 
 // oweThreadRequestAck records on ex that the request holds revision of its
@@ -64,20 +68,22 @@ func ackPage(limit int) int {
 	return limit
 }
 
-// OwedThreadRequestAcks returns the acknowledgements owed to one computer,
-// due or not, at most limit of them: every call to that computer carries
-// them.
-func (s *Store) OwedThreadRequestAcks(computerID string, limit int) ([]ThreadRequestAck, error) {
+// OwedThreadRequestAcks returns the acknowledgements owed to one computer
+// for what the pairing held now (live, its session) admitted, due or not, at
+// most limit of them: every call to that computer carries them. What an
+// ended pairing admitted is owed nothing (EndPairing).
+func (s *Store) OwedThreadRequestAcks(computerID, live string, limit int) ([]ThreadRequestAck, error) {
 	return s.queryThreadRequestAcks("store: list the acknowledgements owed to "+computerID,
-		`SELECT token, target_computer_id, ack_owed FROM thread_requests
-		  WHERE `+ackOwedSQL+` AND target_computer_id = `+boundText+` ORDER BY next_check LIMIT `+strconv.Itoa(ackPage(limit)), computerID)
+		`SELECT token, target_computer_id, ack_owed, pairing FROM thread_requests
+		  WHERE `+ackOwedSQL+` AND target_computer_id = `+textParam("?1")+` AND NOT `+pairingStaleSQL("?2")+`
+		  ORDER BY next_check LIMIT `+strconv.Itoa(ackPage(limit)), computerID, live)
 }
 
 // DueThreadRequestAcks returns the acknowledgements whose retry is due by
 // now, oldest first, at most limit of them.
 func (s *Store) DueThreadRequestAcks(now int64, limit int) ([]ThreadRequestAck, error) {
 	return s.queryThreadRequestAcks("store: list due thread request acknowledgements",
-		`SELECT token, target_computer_id, ack_owed FROM thread_requests
+		`SELECT token, target_computer_id, ack_owed, pairing FROM thread_requests
 		  WHERE `+ackOwedSQL+` AND next_check <= ? ORDER BY next_check LIMIT `+strconv.Itoa(ackPage(limit)), now)
 }
 
@@ -94,7 +100,7 @@ func (s *Store) queryThreadRequestAcks(action, query string, args ...any) (_ []T
 	var out []ThreadRequestAck
 	for rows.Next() {
 		var ack ThreadRequestAck
-		if err := rows.Scan(&ack.Token, &ack.ComputerID, &ack.Revision); err != nil {
+		if err := rows.Scan(&ack.Token, &ack.ComputerID, &ack.Revision, &ack.Pairing); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
 		out = append(out, ack)

@@ -24,10 +24,20 @@ package store
 // revision of D's receipt S holds and has not yet told D it holds, 0 when
 // none: it is written with the collection that took the revision and
 // cleared when D takes the acknowledgement, and `next_check` paces its
-// retry (idx_thread_requests_ack_owed). `late_reply_expired` marks a
-// finished request whose late reply D dropped, its hold run out, before S
+// retry (idx_thread_requests_ack_owed). An earlier build kept no such
+// debt, so an acknowledgement it sent may have been lost: the migration
+// owes one again for each answer S collected from D (its hold recorded)
+// that D could still be holding, the hold of the answer or of its late
+// reply not yet run out, at the revision S holds. `late_reply_expired`
+// marks a request whose late reply D dropped, its hold run out, before S
 // collected it: the first answer stays, and `late_reply_at` says when the
 // reply arrived there.
+//
+// S records the pairing each request and remote command was admitted
+// under (`pairing`, its session id; empty from before), so the end of one
+// pairing with D ends only what that pairing admitted, and the name the
+// person knew D by when it was admitted (`target_computer_name`,
+// `computer_name`), which names D once no pairing here does.
 const remoteOwnershipMigrationVersion = 158
 
 const remoteOwnershipV158SQL = `
@@ -43,8 +53,18 @@ CREATE INDEX idx_thread_request_receipts_owner_seen
 ALTER TABLE thread_requests ADD COLUMN owner_op_seq INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN ack_owed INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN late_reply_expired INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_expired IN (0,1));
+ALTER TABLE thread_requests ADD COLUMN pairing TEXT NOT NULL DEFAULT '';
+ALTER TABLE thread_requests ADD COLUMN target_computer_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE remote_watches ADD COLUMN pairing TEXT NOT NULL DEFAULT '';
+ALTER TABLE remote_watches ADD COLUMN computer_name TEXT NOT NULL DEFAULT '';
 CREATE INDEX idx_thread_requests_ack_owed
     ON thread_requests(next_check) WHERE ack_owed > 0;
+UPDATE thread_requests
+   SET ack_owed = revision,
+       next_check = MIN(next_check, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))
+ WHERE target_computer_id <> '' AND lineage_only = 0 AND settled_at IS NOT NULL AND revision > 0
+   AND expires_at IS NOT NULL
+   AND MAX(expires_at, COALESCE(late_reply_at, 0) + 86400000) > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER);
 CREATE INDEX idx_thread_requests_remote_spawn_target
     ON thread_requests(target_computer_id, target_thread_id)
  WHERE kind = 'spawn' AND target_computer_id <> '';

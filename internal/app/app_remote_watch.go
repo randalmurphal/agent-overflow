@@ -128,7 +128,18 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 		return false, err
 	}
 	digest := sha256.Sum256(raw)
-	return a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID, Fingerprint: hex.EncodeToString(digest[:]), Label: label, Command: command})
+	// Under the pairing held now, with the name the person knows the
+	// computer by, which names it once no pairing here does.
+	pairing, err := a.currentPairing(input.ComputerID)
+	if err != nil {
+		return false, err
+	}
+	profile, _, err := a.backends.Lookup(input.ComputerID)
+	if err != nil {
+		return false, err
+	}
+	return a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID,
+		Fingerprint: hex.EncodeToString(digest[:]), Label: label, Command: command, Pairing: pairing, ComputerName: truncateRunes(attachedComputerName(profile), remoteJobCommandMaxRunes)})
 }
 
 const remoteJobLabelMaxRunes = 120
@@ -280,12 +291,25 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, "Completion is waiting for this conversation’s execution ownership.", time.Now().Add(30*time.Second).UnixMilli())
 		return
 	}
+	receipt := w.Receipt
+	pairing := ""
+	if receipt.ID == "" || receipt.State == "running" {
+		// Asked only under the pairing that admitted it. One that ended is
+		// ended here instead: its end records the outcome as unknown, which
+		// the next check delivers with no call to that computer.
+		if pairing, err = a.endEndedPairings(w.ComputerID, []string{w.Pairing}); err != nil {
+			_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, remoteIssueText("status", err), time.Now().Add(30*time.Second).UnixMilli())
+			return
+		}
+		if !pairingLive(w.Pairing, pairing) {
+			return
+		}
+	}
 	// One bounded context covers every wait below: the attempt lock, the peer
 	// call and the thread action lock. A lock another action holds costs this
 	// watch one poll; it never stalls the other jobs' checks.
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
 	defer cancel()
-	receipt := w.Receipt
 	switch {
 	case receipt.ID != "" && receipt.State != "running":
 		// A direct reply settled the canonical receipt without retaining its
@@ -304,15 +328,10 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	issue := ""
 	if err != nil {
-		if code, message, _ := remoteErrorDetails("status", err); threadPairingEnded(code) {
-			// Nothing about this command can be learned again. The end of
-			// the pairing records its outcome as unknown, which the next
-			// check delivers with no call to that computer.
-			endErr := a.endPairing(w.ComputerID, message)
-			if endErr == nil {
-				return
-			}
-			log.Printf("remote job observation: %v", endErr)
+		if a.pairingEndedSince(w.ComputerID, pairing) {
+			// The refusal ended the pairing it was made under, which
+			// recorded the outcome as unknown.
+			return
 		}
 		issue = remoteIssueText("status", err)
 		receipt = w.Receipt
@@ -491,7 +510,7 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 			return usermessage.AgentMessage{}, false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 		}
 	}
-	message, err := remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output)
+	message, err := remoteCompletionMessage(w, remoteWatchComputerName(a.remoteComputerNames(), w), output)
 	return message, err == nil, err
 }
 
@@ -522,7 +541,7 @@ func (a *App) ListThreadRemoteCommands(threadID string) ([]RemoteJobRecord, erro
 	names := a.remoteComputerNames()
 	rows := make([]RemoteJobRecord, 0, len(watches))
 	for _, w := range watches {
-		rows = append(rows, remoteJobRecord(w, names[w.ComputerID]))
+		rows = append(rows, remoteJobRecord(w, remoteWatchComputerName(names, w)))
 	}
 	return rows, nil
 }
@@ -691,25 +710,28 @@ func (a *App) retryOwedRemoteCancels(now time.Time) {
 			a.settleOwedRemoteCancel(w)
 			continue
 		}
-		call, cancel := context.WithTimeout(a.lifeCtx(), 20*time.Second)
-		var receipt RemoteCommand
-		err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
-		cancel()
-		code, message := "", ""
-		if err != nil {
-			code, message, _ = remoteErrorDetails("cancel", err)
-		}
-		if err == nil || code == "remote_job_not_found" || code == "remote_wrong_owner" {
-			a.settleOwedRemoteCancel(w)
+		// Sent only under the pairing that admitted the command; the end of
+		// one that ended settles every cancel it owed.
+		pairing, err := a.endEndedPairings(w.ComputerID, []string{w.Pairing})
+		if err == nil && !pairingLive(w.Pairing, pairing) {
 			continue
 		}
-		if threadPairingEnded(code) {
-			// Its end settles every cancel owed there.
-			endErr := a.endPairing(w.ComputerID, message)
-			if endErr == nil {
+		if err == nil {
+			call, cancel := context.WithTimeout(a.lifeCtx(), 20*time.Second)
+			var receipt RemoteCommand
+			err = a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
+			cancel()
+			code := ""
+			if err != nil {
+				code, _, _ = remoteErrorDetails("cancel", err)
+			}
+			if err == nil || code == "remote_job_not_found" || code == "remote_wrong_owner" {
+				a.settleOwedRemoteCancel(w)
 				continue
 			}
-			log.Printf("remote command %s on %s: %v", w.RequestID, w.ComputerID, endErr)
+			if a.pairingEndedSince(w.ComputerID, pairing) {
+				continue
+			}
 		}
 		log.Printf("remote command %s on %s: owed cancel not delivered, sent again later: %v", w.RequestID, w.ComputerID, err)
 		if err := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, w.CancelOwedAt, now.Add(remoteCancelRetryDelay).UnixMilli()); err != nil {
@@ -754,15 +776,16 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		// command pre-rendered, so the tray reads through the same table
 		// as the transcript (frontend aoTools.ts). `remoteJob` is the
 		// tray's own handle for Stop and the log.
+		computerName := remoteWatchComputerName(names, w)
 		meta, _ := json.Marshal(map[string]any{
 			"mcp":       map[string]string{"server": remoteMCPName, "tool": "remote_run"},
-			"input":     map[string]any{"computer_id": w.ComputerID, "computer_name": names[w.ComputerID], "request_id": w.RequestID, "label": w.Label, "command": w.Command},
+			"input":     map[string]any{"computer_id": w.ComputerID, "computer_name": computerName, "request_id": w.RequestID, "label": w.Label, "command": w.Command},
 			"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": issue, "warning": r.Warning, "workspace": r.Workspace},
 		})
 		id := "remote-job:" + w.ComputerID + ":" + w.RequestID
 		label := w.Label
-		if name := names[w.ComputerID]; name != "" {
-			label = name + " · " + label
+		if computerName != "" {
+			label = computerName + " · " + label
 		}
 		start := w.CreatedAt
 		if r.StartedAt != 0 {

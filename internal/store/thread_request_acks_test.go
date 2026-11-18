@@ -1,6 +1,7 @@
 package store
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,11 +40,11 @@ func TestACollectedRevisionIsOwedUntilThatRevisionIsTaken(t *testing.T) {
 	if owed := requestRow(t, s, "r").AckOwed; owed != 1 {
 		t.Fatalf("owed after the collection = %d, want 1", owed)
 	}
-	acks, err := s.OwedThreadRequestAcks("pc", 10)
+	acks, err := s.OwedThreadRequestAcks("pc", "session", 10)
 	if err != nil || len(acks) != 1 || acks[0] != (ThreadRequestAck{Token: "r", ComputerID: "pc", Revision: 1}) {
 		t.Fatalf("owed to pc = %+v, %v", acks, err)
 	}
-	if other, err := s.OwedThreadRequestAcks("elsewhere", 10); err != nil || len(other) != 0 {
+	if other, err := s.OwedThreadRequestAcks("elsewhere", "session", 10); err != nil || len(other) != 0 {
 		t.Fatalf("owed to another computer = %+v, %v", other, err)
 	}
 	if _, err := s.CollectThreadRequest("r", ThreadReceiptAnswer{
@@ -176,11 +177,11 @@ func TestEndPairingEndsBothLedgersForThatComputerAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	open, err := s.OpenThreadRequestTokensOn(pc)
+	open, err := s.OpenThreadRequestTokensOn(pc, "")
 	if err != nil || len(open) != 1 || open[0] != "open" {
 		t.Fatalf("open on pc = %v, %v", open, err)
 	}
-	ended, err := s.EndPairing(pc, open, PairingEnd{RequestAnswer: []byte("gone"), CommandError: "unknown now", Disarm: true})
+	ended, err := s.EndPairing(pc, "", open, PairingEnd{RequestAnswer: []byte("gone"), CommandError: "unknown now", Disarm: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,9 +210,111 @@ func TestEndPairingEndsBothLedgersForThatComputerAlone(t *testing.T) {
 	if _, err := s.SetThreadRequestNotify("armed", true); err != nil {
 		t.Fatal(err)
 	}
-	if ended, err := s.EndPairing(pc, []string{"armed"}, PairingEnd{RequestAnswer: []byte("gone")}); err != nil ||
+	if ended, err := s.EndPairing(pc, "", []string{"armed"}, PairingEnd{RequestAnswer: []byte("gone")}); err != nil ||
 		len(ended.Settled) != 1 || !ended.Settled[0].Notify || len(ended.CommandThreads) != 0 {
 		t.Fatalf("an armed end = %+v, %v", ended, err)
+	}
+}
+
+// The end of a pairing reaches only what the pairings other than the live
+// one admitted: a request or command the live pairing admitted keeps its
+// poll, its acknowledgement and its owed cancel, and a row from before
+// pairings were recorded belongs to the live pairing until none is held,
+// when it is recorded as the ended pairing's.
+func TestEndPairingEndsOnlyWhatTheEndedPairingAdmitted(t *testing.T) {
+	s := newTestStore(t)
+	pc, lead := uuid.NewString(), uuid.NewString()
+	mustCreateThread(t, s, lead)
+	seed := func(token, pairing string, finished bool) {
+		t.Helper()
+		if err := s.InsertThreadRequest(ThreadRequest{Token: token, CallerThreadID: lead, Kind: ThreadRequestSpawn,
+			TargetThreadID: "t-" + token, TargetComputerID: pc, State: ThreadRequestRunning, Pairing: pairing,
+			CreatedAt: 100, UpdatedAt: 100}); err != nil {
+			t.Fatal(err)
+		}
+		if finished {
+			if _, err := s.CollectThreadRequest(token, ThreadReceiptAnswer{
+				Revision: 1, State: ThreadReceiptFinished, Answer: []byte("first"), AnswerKind: ThreadAnswerFinal, SettledAt: 200,
+			}, ThreadRequestWake{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("old", "s1", false)
+	seed("old-done", "s1", true)
+	seed("new", "s2", false)
+	seed("new-done", "s2", true)
+	seed("legacy", "", false)
+	seed("legacy-done", "", true)
+	command := func(pairing string) RemoteWatch {
+		t.Helper()
+		w := RemoteWatch{ComputerID: pc, RequestID: uuid.NewString(), ThreadID: lead, Fingerprint: strings.Repeat("a", 64),
+			Label: "build", Pairing: pairing, ComputerName: "GPU computer"}
+		if _, err := s.RegisterRemoteWatch(w); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ObserveRemoteWatch(pc, w.RequestID, RemoteJob{ID: w.RequestID, SourceThreadID: lead, State: "running", ExitCode: -1}, "", time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.OweRemoteCancel(pc, w.RequestID, 100, 200); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	oldCommand, newCommand := command("s1"), command("s2")
+
+	open, err := s.OpenThreadRequestTokensOn(pc, "s2")
+	if err != nil || !slices.Equal(open, []string{"old"}) {
+		t.Fatalf("open under an ended pairing = %v, %v; want the old pairing's alone", open, err)
+	}
+	acks, err := s.OwedThreadRequestAcks(pc, "s2", 10)
+	if err != nil || len(acks) != 2 || acks[0].Token == "old-done" || acks[1].Token == "old-done" {
+		t.Fatalf("owed under the live pairing = %+v, %v; want new-done and legacy-done", acks, err)
+	}
+	if _, err := s.EndPairing(pc, "s2", open, PairingEnd{RequestAnswer: []byte("gone"), CommandError: "unknown now"}); err != nil {
+		t.Fatal(err)
+	}
+	if row := requestRow(t, s, "old"); row.State != ThreadRequestErrored {
+		t.Fatalf("the old pairing's open request = %+v", row)
+	}
+	if row := requestRow(t, s, "old-done"); row.Polling || row.AckOwed != 0 {
+		t.Fatalf("the old pairing's settled request = %+v", row)
+	}
+	for _, token := range []string{"new", "legacy"} {
+		if row := requestRow(t, s, token); row.State != ThreadRequestRunning || !row.Polling || row.Pairing == pairingEndedUnknown {
+			t.Fatalf("the live pairing's open request %s = %+v", token, row)
+		}
+	}
+	for _, token := range []string{"new-done", "legacy-done"} {
+		if row := requestRow(t, s, token); !row.Polling || row.AckOwed != 1 {
+			t.Fatalf("the live pairing's settled request %s = %+v", token, row)
+		}
+	}
+	if got, err := s.GetRemoteWatch(pc, oldCommand.RequestID); err != nil || got.Receipt.State != RemoteOutcomeUnknown || got.CancelOwedAt != 0 {
+		t.Fatalf("the old pairing's command = %+v, %v", got, err)
+	}
+	if got, err := s.GetRemoteWatch(pc, newCommand.RequestID); err != nil || got.Receipt.State != "running" || got.CancelOwedAt == 0 ||
+		got.Pairing != "s2" || got.ComputerName != "GPU computer" {
+		t.Fatalf("the live pairing's command = %+v, %v", got, err)
+	}
+
+	// No pairing held: everything ends, and the legacy rows become the ended
+	// pairing's, so a later pairing does not take them as its own.
+	open, err = s.OpenThreadRequestTokensOn(pc, "")
+	if err != nil || !slices.Equal(open, []string{"legacy", "new"}) {
+		t.Fatalf("open with no pairing held = %v, %v", open, err)
+	}
+	if _, err := s.EndPairing(pc, "", open, PairingEnd{RequestAnswer: []byte("gone"), CommandError: "unknown now"}); err != nil {
+		t.Fatal(err)
+	}
+	if row := requestRow(t, s, "legacy-done"); row.Pairing != pairingEndedUnknown || row.AckOwed != 0 {
+		t.Fatalf("the legacy request after the end = %+v", row)
+	}
+	if acks, err := s.OwedThreadRequestAcks(pc, "s3", 10); err != nil || len(acks) != 0 {
+		t.Fatalf("owed under a later pairing = %+v, %v", acks, err)
+	}
+	if got, err := s.GetRemoteWatch(pc, newCommand.RequestID); err != nil || got.Receipt.State != RemoteOutcomeUnknown || got.CancelOwedAt != 0 {
+		t.Fatalf("the command once no pairing is held = %+v, %v", got, err)
 	}
 }
 

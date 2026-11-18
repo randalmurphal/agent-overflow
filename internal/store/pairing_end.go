@@ -38,22 +38,42 @@ type PairingEnded struct {
 	CommandThreads []string
 }
 
-// OpenThreadRequestTokensOn returns every open request this computer holds
-// on computerID: the set EndPairing settles, which its caller locks first.
-func (s *Store) OpenThreadRequestTokensOn(computerID string) ([]string, error) {
-	return s.queryThreadIDs("store: list the open requests on "+computerID,
-		`SELECT token FROM thread_requests WHERE target_computer_id = `+boundText+` AND settled_at IS NULL ORDER BY token`, computerID)
+// pairingStaleSQL matches a request or command row on one computer that a
+// pairing other than the live one admitted: with no live pairing (an empty
+// session in param), every row; otherwise every row another session
+// admitted. A row from before pairings were recorded (empty) belongs to the
+// live pairing until none is held.
+func pairingStaleSQL(param string) string {
+	live := textParam(param)
+	return `(` + live + ` = '' OR (pairing <> '' AND pairing <> ` + live + `))`
 }
 
-// EndPairing is the one transition for a pairing that will answer nothing
-// again, over both ledgers in one transaction. The requests named in open
-// (the caller holds their settle locks) settle `errored` with
-// end.RequestAnswer, their wakes disarmed when end.Disarm is set; every
-// request on computerID leaves the poll and owes it no acknowledgement, its
-// answer kept; every command there not known to have finished is recorded
-// as finished with an unknown outcome, so its thread is told once and its
-// watch can leave; and no cancel is owed there any more.
-func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ PairingEnded, err error) {
+// pairingEndedUnknown is what EndPairing records as the pairing of a row
+// from before pairings were recorded once the pairing that held it ended,
+// so no later pairing with that computer takes it as its own.
+const pairingEndedUnknown = "ended"
+
+// OpenThreadRequestTokensOn returns every open request this computer holds
+// on computerID under a pairing other than live (pairingStaleSQL): the set
+// EndPairing settles, which its caller locks first.
+func (s *Store) OpenThreadRequestTokensOn(computerID, live string) ([]string, error) {
+	return s.queryThreadIDs("store: list the open requests on "+computerID,
+		`SELECT token FROM thread_requests WHERE target_computer_id = `+textParam("?1")+` AND settled_at IS NULL AND `+pairingStaleSQL("?2")+`
+		  ORDER BY token`, computerID, live)
+}
+
+// EndPairing is the one transition for the pairings with computerID other
+// than live, the session the pairing held now has (empty when none is
+// held): those pairings will answer nothing again. Over both ledgers, in one
+// transaction, for what those pairings admitted alone: the requests named in
+// open (the caller holds their settle locks, and read them with
+// OpenThreadRequestTokensOn) settle `errored` with end.RequestAnswer, their
+// wakes disarmed when end.Disarm is set; every request leaves the poll and
+// owes no acknowledgement, its answer kept; every command not known to have
+// finished is recorded as finished with an unknown outcome, so its thread is
+// told once and its watch can leave; and no cancel is owed there any more.
+// A row the live pairing admitted is left as it is.
+func (s *Store) EndPairing(computerID, live string, open []string, end PairingEnd) (_ PairingEnded, err error) {
 	action := fmt.Sprintf("store: end the pairing with %s", computerID)
 	settlement := ThreadRequestSettlement{
 		State: ThreadRequestErrored, Answer: end.RequestAnswer, AnswerKind: ThreadAnswerError, DisarmWake: end.Disarm,
@@ -78,9 +98,10 @@ func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ 
 		}
 		ended.Settled = append(ended.Settled, EndedRequest{Token: token, Notify: notify})
 	}
-	if _, err := tx.Exec(`UPDATE thread_requests SET polling = 0, ack_owed = 0, issue = '', updated_at = ?
-		  WHERE target_computer_id = `+boundText+` AND settled_at IS NOT NULL AND (polling = 1 OR ack_owed > 0)`,
-		nowMillis(), computerID); err != nil {
+	if _, err := tx.Exec(`UPDATE thread_requests SET polling = 0, ack_owed = 0, issue = '', updated_at = ?3
+		  WHERE target_computer_id = `+textParam("?1")+` AND settled_at IS NOT NULL AND (polling = 1 OR ack_owed > 0)
+		    AND `+pairingStaleSQL("?2"),
+		computerID, live, nowMillis()); err != nil {
 		return PairingEnded{}, fmt.Errorf("%s: retire its requests: %w", action, err)
 	}
 	now := nowMillis()
@@ -88,9 +109,9 @@ func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ 
 		    SET receipt = json_set(receipt, '$.id', request_id, '$.sourceThreadId', launched_in_thread_id,
 		          '$.state', `+sqlTextLiteral(RemoteOutcomeUnknown)+`, '$.error', ?1, '$.finishedAt', ?2, '$.exitCode', -1),
 		        error = '', next_check = 0
-		  WHERE computer_id = ?3 AND notification = 'pending'
+		  WHERE computer_id = ?3 AND notification = 'pending' AND `+pairingStaleSQL("?4")+`
 		    AND (coalesce(json_extract(receipt, '$.id'), '') = '' OR json_extract(receipt, '$.state') = 'running')
-		  RETURNING thread_id`, end.CommandError, now, computerID)
+		  RETURNING thread_id`, end.CommandError, now, computerID, live)
 	if err != nil {
 		return PairingEnded{}, fmt.Errorf("%s: record its commands' outcome: %w", action, err)
 	}
@@ -108,8 +129,20 @@ func (s *Store) EndPairing(computerID string, open []string, end PairingEnd) (_ 
 		return PairingEnded{}, fmt.Errorf("%s: record its commands' outcome: %w", action, err)
 	}
 	if _, err := tx.Exec(`UPDATE remote_watches SET cancel_owed_at = 0, cancel_next_at = 0
-		  WHERE computer_id = ? AND cancel_owed_at <> 0`, computerID); err != nil {
+		  WHERE computer_id = ?1 AND cancel_owed_at <> 0 AND `+pairingStaleSQL("?2"), computerID, live); err != nil {
 		return PairingEnded{}, fmt.Errorf("%s: settle the cancels owed there: %w", action, err)
+	}
+	if live == "" {
+		// Ended with no pairing held: the rows from before pairings were
+		// recorded belonged to the one that ended.
+		if _, err := tx.Exec(`UPDATE thread_requests SET pairing = ?2
+			  WHERE target_computer_id = `+textParam("?1")+` AND pairing = ''`, computerID, pairingEndedUnknown); err != nil {
+			return PairingEnded{}, fmt.Errorf("%s: record the pairing its requests had: %w", action, err)
+		}
+		if _, err := tx.Exec(`UPDATE remote_watches SET pairing = ?2 WHERE computer_id = ?1 AND pairing = ''`,
+			computerID, pairingEndedUnknown); err != nil {
+			return PairingEnded{}, fmt.Errorf("%s: record the pairing its commands had: %w", action, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return PairingEnded{}, fmt.Errorf("%s: commit: %w", action, err)

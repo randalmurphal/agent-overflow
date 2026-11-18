@@ -173,12 +173,13 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	}
 	unlock := a.lockComputerPairing(id)
 	defer unlock()
-	held, other, err := a.store.PendingRemoteWatchesForComputer(id)
+	held, other, stopped, err := a.store.PendingRemoteWatchesForComputer(id)
 	if err != nil {
 		return err
 	}
-	if other > 0 {
-		return errors.New("This computer has remote commands awaiting completion or confirmation. Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
+	if other > 0 || stopped > 0 {
+		return errors.New("This computer has remote commands awaiting completion or confirmation" + stoppedRemoteCommands(stopped) +
+			". Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
 	}
 	if err := a.releaseForgottenComputerWork(id, held, abandon); err != nil {
 		return err
@@ -210,8 +211,9 @@ func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) er
 				". Forgetting it stops them from ever being collected."+discarded+" Confirm to forget it anyway; the other computer is not told and any work it started keeps running there.", nil)
 	}
 	// Disarmed: the person chose to stop hearing from that computer, so
-	// no answer that can no longer arrive is told as an error either.
-	if _, err := a.endPairingFenced(id, store.PairingEnd{
+	// no answer that can no longer arrive is told as an error either. The
+	// pairing held now ends with the rest: none is kept live.
+	if _, err := a.endPairingFenced(id, "", store.PairingEnd{
 		RequestAnswer: []byte("This computer was forgotten, so this request can no longer be collected. The other computer was not told, and any work it started keeps running there."),
 		CommandError:  "This computer was forgotten, so this command's outcome is unknown.",
 		Disarm:        true,
@@ -226,6 +228,18 @@ func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) er
 		a.emitBackgroundChanged(threadID)
 	}
 	return nil
+}
+
+// stoppedRemoteCommands names the stopped commands there whose cancel is
+// still owed, which a forget would leave running with nobody to stop them.
+func stoppedRemoteCommands(n int) string {
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return ", including 1 stopped command whose cancellation it has not confirmed"
+	}
+	return fmt.Sprintf(", including %d stopped commands whose cancellation it has not confirmed", n)
 }
 
 // heldRemoteCompletions names the completions forgetting a computer discards.
@@ -296,10 +310,12 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 }
 
 // backendSetChanged is the attached-machine set's one observer: a removed
-// machine's Agents rows are forgotten, then every client is told.
+// machine's pairing ends here (endPairing) and its Agents rows are
+// forgotten, then every client is told.
 func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 	switch change.Action {
 	case attachedbackends.SetRemoved:
+		a.endPairingDetached(change.ID, pairingEndReason(change.Reason))
 		a.forgetPeerAgentRows(change.ID)
 	case attachedbackends.SetMembership:
 		a.forgetUnpairedPeerAgentRows()
