@@ -160,9 +160,13 @@ type ThreadAgentRow struct {
 	Answer     string `json:"answer,omitempty"`
 	AnswerKind string `json:"answerKind,omitempty"`
 	// LateReply is a reply that arrived after the request settled.
-	LateReply bool  `json:"lateReply,omitempty"`
-	CreatedAt int64 `json:"createdAt"`
-	SettledAt int64 `json:"settledAt,omitempty"`
+	LateReply bool `json:"lateReply,omitempty"`
+	// LateReplyExpiredAt is when such a reply reached a paired computer that
+	// dropped it before this one collected it
+	// (threadtools.RequestState.LateReplyExpiredAt).
+	LateReplyExpiredAt int64 `json:"lateReplyExpiredAt,omitempty"`
+	CreatedAt          int64 `json:"createdAt"`
+	SettledAt          int64 `json:"settledAt,omitempty"`
 	// WakeItemID is the caller's timeline row that delivered the answer,
 	// once the provider confirmed it.
 	WakeItemID string `json:"wakeItemId,omitempty"`
@@ -951,7 +955,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		ComputerID: row.TargetComputerID, Title: state.Title, State: state.State, Worker: worker,
 		LateReply: request.HasLateReply, CreatedAt: row.CreatedAt, SettledAt: row.SettledAt,
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
-		RestUnreported: row.RestUnreported,
+		RestUnreported: row.RestUnreported, LateReplyExpiredAt: state.LateReplyExpiredAt,
 	}
 	if row.Kind == store.ThreadRequestAsk {
 		// The copy that answers an ask is the worker: the row opens it while

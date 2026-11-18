@@ -347,7 +347,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 		t.Helper()
 		token := caller.seedRemoteRequest(t, computer)
 		answer.Token = token
-		if _, _, err := caller.app.collectRemoteThreadRequest(caller.request(t, token), answer); err != nil {
+		if _, err := caller.app.collectRemoteThreadRequest(caller.request(t, token), answer); err != nil {
 			t.Fatalf("collectRemoteThreadRequest: %v", err)
 		}
 		return caller.request(t, token)
@@ -379,7 +379,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 	late.LateReplyAgent = &ThreadPeerAgent{Role: "Second role."}
 	row = collect(state)
 	late.Token = row.Token
-	if _, _, err := caller.app.collectRemoteThreadRequest(row, late); err != nil {
+	if _, err := caller.app.collectRemoteThreadRequest(row, late); err != nil {
 		t.Fatalf("collect late reply: %v", err)
 	}
 	both := func(row store.ThreadRequest, what string) {

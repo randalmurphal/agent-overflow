@@ -19,6 +19,15 @@ package store
 // `thread_owner_ops` keeps what S still owes D, one row per link, past the
 // spawn row's own delete (no foreign key). idx_thread_requests_remote_spawn_target
 // finds the remote spawn that names a thread there.
+//
+// S also keeps what it owes D for each request there. `ack_owed` is the
+// revision of D's receipt S holds and has not yet told D it holds, 0 when
+// none: it is written with the collection that took the revision and
+// cleared when D takes the acknowledgement, and `next_check` paces its
+// retry (idx_thread_requests_ack_owed). `late_reply_expired` marks a
+// finished request whose late reply D dropped, its hold run out, before S
+// collected it: the first answer stays, and `late_reply_at` says when the
+// reply arrived there.
 const remoteOwnershipMigrationVersion = 158
 
 const remoteOwnershipV158SQL = `
@@ -32,6 +41,10 @@ CREATE INDEX idx_thread_request_receipts_owner_seen
     ON thread_request_receipts(owner_seen_at) WHERE spawn_link = 1;
 
 ALTER TABLE thread_requests ADD COLUMN owner_op_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_requests ADD COLUMN ack_owed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_requests ADD COLUMN late_reply_expired INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_expired IN (0,1));
+CREATE INDEX idx_thread_requests_ack_owed
+    ON thread_requests(next_check) WHERE ack_owed > 0;
 CREATE INDEX idx_thread_requests_remote_spawn_target
     ON thread_requests(target_computer_id, target_thread_id)
  WHERE kind = 'spawn' AND target_computer_id <> '';

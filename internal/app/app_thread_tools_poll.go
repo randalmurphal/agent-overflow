@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -12,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
@@ -241,6 +239,9 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 // clock beside it ticks every second. One pass at a time: the due rows of
 // a pass still in flight have not been rescheduled yet, and a second pass
 // would ask about them again.
+//
+// A computer owed an acknowledgement whose retry is due and that has no
+// row due is sent its acknowledgements alone.
 func (a *App) pollRemoteThreadRequests(now time.Time) {
 	if a.backends == nil || !a.beginThreadRequestPoll() {
 		return
@@ -251,19 +252,30 @@ func (a *App) pollRemoteThreadRequests(now time.Time) {
 		logThreadRequestSweep("read due request polls", err)
 		return
 	}
-	if len(rows) == 0 {
+	acks, err := a.store.DueThreadRequestAcks(now.UnixMilli(), threadRequestPollBatch)
+	if err != nil {
+		logThreadRequestSweep("read due request acknowledgements", err)
+	}
+	var owed []string
+	for _, ack := range acks {
+		if !slices.Contains(owed, ack.ComputerID) {
+			owed = append(owed, ack.ComputerID)
+		}
+	}
+	if len(rows) == 0 && len(owed) == 0 {
 		a.endThreadRequestPoll()
 		return
 	}
-	a.startThreadRequestPoll(rows)
+	a.startThreadRequestPoll(rows, owed)
 }
 
-// startThreadRequestPoll runs one pass over rows off the sweep, releasing
-// the poll slot when it ends or when shutdown refuses it.
-func (a *App) startThreadRequestPoll(rows []store.ThreadRequest) {
+// startThreadRequestPoll runs one pass over rows, and over the computers
+// owed acknowledgements, off the sweep, releasing the poll slot when it ends
+// or when shutdown refuses it.
+func (a *App) startThreadRequestPoll(rows []store.ThreadRequest, owed []string) {
 	if a.lifeCtx().Err() != nil || !a.threadRequestsWG.Go(func() {
 		defer a.endThreadRequestPoll()
-		a.runThreadRequestPoll(rows)
+		a.runThreadRequestPoll(rows, owed)
 	}) {
 		a.endThreadRequestPoll()
 	}
@@ -359,8 +371,9 @@ func (a *App) threadWakeDeliverySlots() chan struct{} {
 const threadWakeDeliveryFanOut = 4
 
 // runThreadRequestPoll groups the due rows by destination and asks each one
-// about its whole set.
-func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
+// about its whole set; a computer in owed with no row due is sent the
+// acknowledgements owed to it.
+func (a *App) runThreadRequestPoll(rows []store.ThreadRequest, owed []string) {
 	order := make([]string, 0, 4)
 	byComputer := make(map[string][]store.ThreadRequest, 4)
 	for _, row := range rows {
@@ -378,6 +391,12 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 		}
 		byComputer[row.TargetComputerID] = append(byComputer[row.TargetComputerID], row)
 	}
+	for _, computerID := range owed {
+		if _, seen := byComputer[computerID]; !seen {
+			order = append(order, computerID)
+			byComputer[computerID] = nil
+		}
+	}
 	// Four destinations at a time, the bound the remote-jobs watcher uses:
 	// one computer that is asleep holds its call open for the whole call
 	// timeout, and the healthy destinations beside it must not wait it out.
@@ -394,7 +413,11 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 		go func(computerID string) {
 			defer wg.Done()
 			defer func() { <-limit }()
-			a.pollThreadRequestsOn(computerID, byComputer[computerID])
+			if due := byComputer[computerID]; len(due) > 0 {
+				a.pollThreadRequestsOn(computerID, due)
+			} else {
+				a.sendOwedThreadRequestAcks(computerID)
+			}
 		}(computerID)
 	}
 	wg.Wait()
@@ -423,525 +446,6 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 			a.refreshPeerAgentRows(spawn, 0)
 		}
 	}
-}
-
-// pollThreadRequestsOn asks one destination about every token due for it,
-// and about the other requests the same threads still have open there, and
-// applies the answers.
-//
-// Those ride along because each row keeps its own clock: two requests a
-// thread made seconds apart would otherwise be asked about in different
-// passes for as long as they ran, and answers one turn or one restart wrote
-// there would arrive here as separate messages. Asked together, they are
-// collected together and told to their caller once.
-func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest) {
-	if len(rows) > threadPeerTokenLimit {
-		rows = rows[:threadPeerTokenLimit]
-	}
-	rows = a.withOpenThreadRequestsOn(computerID, rows)
-	tokens := make([]string, 0, len(rows))
-	for _, row := range rows {
-		tokens = append(tokens, row.Token)
-	}
-	reply, err := a.callThreadRequestStatus(computerID, ThreadPeerPoll{Tokens: tokens})
-	if err != nil {
-		a.failThreadRequestPoll(computerID, rows, err)
-		return
-	}
-	answers := make(map[string]ThreadPeerRequest, len(reply.Requests))
-	for _, answer := range reply.Requests {
-		answers[answer.Token] = answer
-	}
-	acks := make([]ThreadPeerAck, 0, len(rows))
-	var wakes []threadWakeRef
-	for _, row := range rows {
-		answer, found := answers[row.Token]
-		if !found {
-			// The destination answered without this token. Nothing is known
-			// about it, so it waits for the next pass rather than being
-			// settled on an answer nobody gave.
-			a.rescheduleThreadRequest(row, threadPollErrorDelay, "The other computer did not report this request.")
-			continue
-		}
-		revision, owed, err := a.applyThreadPeerRequest(row.Token, computerID, answer)
-		wakes = append(wakes, owed...)
-		if err != nil {
-			logThreadRequestSweep("apply request "+row.Token, err)
-			a.rescheduleThreadRequest(row, threadPollErrorDelay, err.Error())
-			continue
-		}
-		if revision > 0 {
-			acks = append(acks, ThreadPeerAck{Token: row.Token, Revision: revision})
-		}
-		a.scheduleNextThreadPoll(row)
-	}
-	// Together, as a turn end on this computer delivers them: one turn there
-	// that answered several requests is one message here.
-	a.deliverThreadWakes(wakes)
-	if len(acks) == 0 {
-		return
-	}
-	// The acknowledgement rides its own call: a row that just settled leaves
-	// the due set, so there is no later poll of it to carry the ack, and the
-	// destination may not drop an answer it has not been told was stored.
-	if _, err := a.callThreadRequestStatus(computerID, ThreadPeerPoll{Ack: acks}); err != nil {
-		logThreadRequestSweep("acknowledge collected requests on "+computerID, err)
-	}
-}
-
-// withOpenThreadRequestsOn adds, to the requests due on a computer, the
-// other requests their callers still have open there, up to the limit one
-// status call carries. Another thread's requests keep their own clock: a
-// wake folds per caller, so asking about them early would buy nothing. A
-// read that fails costs only the batching: the due rows are polled as they
-// are.
-func (a *App) withOpenThreadRequestsOn(computerID string, due []store.ThreadRequest) []store.ThreadRequest {
-	room := threadPeerTokenLimit - len(due)
-	if room <= 0 {
-		return due
-	}
-	polled := make(map[string]struct{}, len(due))
-	var callers []string
-	for _, row := range due {
-		polled[row.Token] = struct{}{}
-		if !slices.Contains(callers, row.CallerThreadID) {
-			callers = append(callers, row.CallerThreadID)
-		}
-	}
-	// Every due row can also be open, so the read asks for enough to fill
-	// the room after they are skipped.
-	open, err := a.store.OpenThreadRequestPollsOn(computerID, callers, threadPeerTokenLimit)
-	if err != nil {
-		logThreadRequestSweep("read open requests on "+computerID, err)
-		return due
-	}
-	for _, row := range open {
-		if room == 0 {
-			break
-		}
-		if _, seen := polled[row.Token]; seen {
-			continue
-		}
-		due = append(due, row)
-		room--
-	}
-	return due
-}
-
-func (a *App) callThreadRequestStatus(computerID string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadPollCallTimeout)
-	defer cancel()
-	var reply ThreadPeerPollReply
-	if err := a.backends.CallThreadPeer(ctx, computerID, "ThreadToolRequestStatus", &reply, poll); err != nil {
-		return ThreadPeerPollReply{}, a.threadOperationError("status", computerID, "", err)
-	}
-	return reply, nil
-}
-
-// failThreadRequestPoll answers one unreachable or refusing destination.
-//
-// A pairing that has ended is terminal: the requests against it can never
-// be collected, so they settle rather than being retried forever. Anything
-// else is a computer that is asleep, offline or busy, which is what the
-// error backoff is for.
-func (a *App) failThreadRequestPoll(computerID string, rows []store.ThreadRequest, cause error) {
-	code, message, _ := threadErrorDetails("status", cause)
-	if !threadPairingEnded(code) {
-		for _, row := range rows {
-			a.rescheduleThreadRequest(row, threadPollErrorDelay, message)
-		}
-		return
-	}
-	log.Printf("thread tools: pairing with %s ended; settling %d open request(s)", computerID, len(rows))
-	var wakes []threadWakeRef
-	for _, row := range rows {
-		owed, err := a.settleRemoteThreadRequestOwing(row, store.ThreadRequestSettlement{
-			State:      store.ThreadRequestErrored,
-			Answer:     []byte(message),
-			AnswerKind: store.ThreadAnswerError,
-		})
-		wakes = append(wakes, owed...)
-		if err != nil {
-			logThreadRequestSweep("settle request "+row.Token+" after pairing ended", err)
-		}
-	}
-	a.deliverThreadWakes(wakes)
-}
-
-// threadPollDelay is the cadence for one token: faster while a call is
-// parked on it, because that call is paying for the latency.
-func (a *App) threadPollDelay(token string) time.Duration {
-	normal := a.threadPollNormal()
-	if a.requestWaitActive(token) {
-		return min(threadPollWaitingDelay, normal)
-	}
-	return normal
-}
-
-// threadPollNormal is threadPollNormalDelay, or the shorter cadence an
-// isolated test boot set (IsolationConfig.ThreadRequestPoll).
-func (a *App) threadPollNormal() time.Duration {
-	if a.threadPollOverride > 0 {
-		return a.threadPollOverride
-	}
-	return threadPollNormalDelay
-}
-
-func (a *App) rescheduleThreadRequest(row store.ThreadRequest, delay time.Duration, issue string) {
-	attempts := row.Attempts + 1
-	if issue == "" {
-		attempts = 0
-	}
-	a.rescheduleThreadRequestAt(row.Token, delay, attempts, issue)
-}
-
-func (a *App) rescheduleThreadRequestAt(token string, delay time.Duration, attempts int64, issue string) {
-	if err := a.store.RescheduleThreadRequest(token, time.Now().Add(delay).UnixMilli(), attempts, issue); err != nil {
-		logThreadRequestSweep("reschedule request "+token, err)
-		return
-	}
-	// The sweep sleeps on the ledger's schedule, and this row just changed
-	// it. A reschedule from a dispatching call is the one that matters: it
-	// is the first poll of a request made while nothing else was due.
-	a.nudgeThreadRequestSweep()
-}
-
-// scheduleNextThreadPoll decides when the poller returns to one row it has
-// just heard about, and retires it when there is nothing left to hear.
-//
-// An open request keeps the cadence its caller is paying for. A settled one
-// is visited for one thing only, a late `thread_reply`, so its delay doubles
-// towards the ten-minute ceiling and it leaves the poll for good once the
-// late reply lands or the destination's hold on the request runs out.
-func (a *App) scheduleNextThreadPoll(row store.ThreadRequest) {
-	// Re-read: the answer this poll applied may have settled the row, and
-	// the schedule a settled row gets is not the one it had.
-	current, found, err := a.store.GetThreadRequest(row.Token)
-	if err != nil {
-		logThreadRequestSweep("read request "+row.Token+" to reschedule", err)
-		return
-	}
-	if !found || !current.Polling {
-		return
-	}
-	if !threadRequestSettled(current) {
-		a.rescheduleThreadRequest(current, a.threadPollDelay(current.Token), "")
-		return
-	}
-	if !threadLateReplyAwaited(current, time.Now()) {
-		a.retireThreadRequestPoll(current.Token)
-		return
-	}
-	// `attempts` counts the consecutive polls that reported nothing new,
-	// which is what an error reschedule counts too, so a destination that
-	// is also unreachable backs off on one clock rather than two.
-	attempts := current.Attempts + 1
-	a.rescheduleThreadRequestAt(current.Token, threadLatePollDelay(a.threadPollNormal(), attempts), attempts, "")
-}
-
-// threadLateReplyAwaited reports whether a settled request could still be
-// given a late reply by its destination: it has none yet, and the
-// destination's hold on the answer has not run out.
-func threadLateReplyAwaited(row store.ThreadRequest, now time.Time) bool {
-	if len(row.LateReply) > 0 || row.State != store.ThreadRequestFinished {
-		// Only a finished request takes a late reply; every other
-		// settlement is the last word on it.
-		return false
-	}
-	deadline := row.ExpiresAt
-	if deadline == 0 {
-		// A destination that reported no deadline still holds the answer
-		// for its own hold, which is what this one assumes.
-		deadline = row.SettledAt + threadLateReplyWindow.Milliseconds()
-	}
-	return now.UnixMilli() < deadline
-}
-
-// threadLatePollDelay doubles the normal cadence for each poll that reported
-// nothing new, up to the ceiling.
-func threadLatePollDelay(normal time.Duration, attempts int64) time.Duration {
-	delay := normal
-	for range attempts {
-		delay *= 2
-		if delay >= threadPollLateCap {
-			return threadPollLateCap
-		}
-	}
-	return delay
-}
-
-func (a *App) retireThreadRequestPoll(token string) {
-	if _, err := a.store.RetireThreadRequestPoll(token); err != nil {
-		logThreadRequestSweep("retire request "+token+" from the poll", err)
-	}
-}
-
-// applyThreadPeerRequest writes what the destination reported onto the
-// source row and returns the revision to acknowledge, zero when nothing was
-// collected, and the wakes the write owes its caller thread. The caller
-// delivers those, with the wakes of whatever else it applied in the same pass.
-//
-// It is the one place a peer's answer becomes this computer's record, so
-// the confirmation a spawn, send or ask gets in its own reply and the one
-// the poller gets a tick later cannot disagree.
-func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeerRequest) (int64, []threadWakeRef, error) {
-	row, found, err := a.store.GetThreadRequest(token)
-	if err != nil || !found {
-		return 0, nil, err
-	}
-	if !answer.Known {
-		wakes, err := a.settleUnknownRemoteRequest(row)
-		return 0, wakes, err
-	}
-	a.noteRemoteRequestBlocked(token, remoteBlocked{
-		blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo, routedToCaller: answer.BlockedRoutedToCaller,
-		routedToThread: answer.BlockedRoutedToThread, waitingOn: answer.WaitingOn,
-	})
-	if target := threadPeerTarget(row, answer); target != "" {
-		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title, answer.Provider); err != nil {
-			return 0, nil, err
-		}
-	}
-	// Whichever answer first states them, the call's own reply or a poll
-	// that recovered a lost one: the destination's receipt recorded them
-	// once, when it named the thread.
-	if err := a.store.RecordThreadRequestInstructions(token, answer.Instructions); err != nil {
-		return 0, nil, err
-	}
-	if !store.ThreadReceiptSettled(answer.State) {
-		// Still accepted or running there. The source row follows so
-		// thread_status reads the same word on both computers.
-		if answer.State == store.ThreadReceiptRunning {
-			if _, err := a.store.AdvanceThreadRequestState(token, store.ThreadRequestUnconfirmed, store.ThreadRequestAccepted); err != nil {
-				return 0, nil, err
-			}
-			if _, err := a.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
-				return 0, nil, err
-			}
-			return 0, nil, nil
-		}
-		if _, err := a.store.AdvanceThreadRequestState(token, store.ThreadRequestUnconfirmed, store.ThreadRequestAccepted); err != nil {
-			return 0, nil, err
-		}
-		return 0, nil, nil
-	}
-	if threadRequestSettled(row) && answer.Revision <= row.Revision {
-		// Already collected. The row stays in the poll only because a
-		// `finished` request can still take a late reply, and a settled
-		// request blocks nobody. A destination still waiting for the
-		// acknowledgement lost the one sent after the collection, so it is
-		// sent again: the row holds every revision up to its own.
-		a.forgetRemoteRequestBlocked(token)
-		if answer.CollectedRevision < answer.Revision {
-			return answer.Revision, nil, nil
-		}
-		return 0, nil, nil
-	}
-	return a.collectRemoteThreadRequest(row, answer)
-}
-
-// collectThreadPeerReply applies an answer that came back on a call's own
-// reply rather than from the poller, and acknowledges what it collected.
-// The ack cannot wait for a poll: a row this answer settled is polled at
-// most once more, and that poll finds it already collected, so nothing
-// would tell the destination the answer was stored.
-func (a *App) collectThreadPeerReply(token, computerID string, answer ThreadPeerRequest) error {
-	revision, wakes, err := a.applyThreadPeerRequest(token, computerID, answer)
-	a.deliverThreadWakes(wakes)
-	if err != nil || revision == 0 {
-		return err
-	}
-	ack := ThreadPeerPoll{Ack: []ThreadPeerAck{{Token: token, Revision: revision}}}
-	if _, err := a.callThreadRequestStatus(computerID, ack); err != nil {
-		logThreadRequestSweep("acknowledge collected request "+token+" on "+computerID, err)
-	}
-	return nil
-}
-
-// threadPeerTarget reports the target thread to record for one answer, empty
-// when the row already names it under the name the destination gave it.
-//
-// The title is recorded beside the id because a thread on another computer
-// has no row here: it is what names the target in a wake, as the sender
-// on that wake, and in `thread_status`, including after a restart, which the
-// live reading beside it does not survive.
-func threadPeerTarget(row store.ThreadRequest, answer ThreadPeerRequest) string {
-	target := answer.TargetThreadID
-	if target == "" {
-		target = row.TargetThreadID
-	}
-	switch {
-	case target == "":
-		return ""
-	case target != row.TargetThreadID:
-		// The destination named its thread, or moved the request to
-		// another one.
-		return target
-	case answer.Title != "" && answer.Title != row.TargetThreadTitle:
-		// Renamed there. An answer that carries no title at all leaves the
-		// name this row already holds alone: a destination that has
-		// deleted the thread still owes the answer a name.
-		return target
-	}
-	return ""
-}
-
-// settleUnknownRemoteRequest answers a token the destination does not hold.
-//
-// Before acceptance that means the request never landed there, which is a
-// refusal. After it, the destination lost a receipt it had: swept past the
-// retention floor, or restored from a backup. Neither can be collected, and
-// the two read differently to the agent that is waiting.
-func (a *App) settleUnknownRemoteRequest(row store.ThreadRequest) ([]threadWakeRef, error) {
-	if threadRequestSettled(row) {
-		// Nothing left to settle, and nothing left to ask: a destination
-		// that no longer holds the receipt cannot take the late reply this
-		// row was still being polled for.
-		a.retireThreadRequestPoll(row.Token)
-		return nil, nil
-	}
-	settlement := store.ThreadRequestSettlement{
-		State:      store.ThreadRequestErrored,
-		Answer:     []byte("The other computer no longer knows this request."),
-		AnswerKind: store.ThreadAnswerError,
-	}
-	if row.State == store.ThreadRequestUnconfirmed {
-		settlement.State = store.ThreadRequestRefused
-		settlement.Answer = []byte("The other computer never accepted this request.")
-	}
-	return a.settleRemoteThreadRequestOwing(row, settlement)
-}
-
-// collectRemoteThreadRequest copies one destination answer onto the source
-// row, settlement and late reply together, and returns the revision to
-// acknowledge and the wakes it owes the caller thread.
-//
-// The settle lock covers the durable write and the delivery decision; the
-// wakes it decides are delivered by the caller after it is released, because
-// a wake takes the caller thread's own locks and can start its session.
-func (a *App) collectRemoteThreadRequest(row store.ThreadRequest, answer ThreadPeerRequest) (int64, []threadWakeRef, error) {
-	wake, late, err := a.collectRemoteThreadRequestLocked(row, answer)
-	if err != nil {
-		return 0, nil, err
-	}
-	a.forgetRemoteRequestBlocked(row.Token)
-	var wakes []threadWakeRef
-	if wake {
-		wakes = append(wakes, threadWakeRef{token: row.Token, late: late})
-	}
-	return answer.Revision, wakes, nil
-}
-
-// collectRemoteThreadRequestLocked is the locked half of the remote
-// collection. It reports the wake it decided is owed.
-func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer ThreadPeerRequest) (wake, late bool, err error) {
-	unlock := a.threadRequestSettleLock(row.Token)
-	defer unlock()
-	// Re-read under the lock: the wake decision reads `notify`, which a
-	// cancel or an archive on this computer can change after the poll's read.
-	current, found, err := a.store.GetThreadRequest(row.Token)
-	if err != nil || !found {
-		return false, false, err
-	}
-	replyArms := (answer.AnswerKind == store.ThreadAnswerReply || answer.LateReply != "") && a.replyArmsWake(current)
-	restUnreported, err := a.remoteRestUnreported(current, answer)
-	if err != nil {
-		return false, false, err
-	}
-	text, cause := remoteAnswerCause(answer)
-	collected, err := a.store.CollectThreadRequest(row.Token, store.ThreadReceiptAnswer{
-		RestUnreported: restUnreported,
-		Revision:       answer.Revision,
-		State:          answer.State,
-		Answer:         []byte(text),
-		AnswerKind:     answer.AnswerKind,
-		Cause:          cause.Code,
-		CauseArg:       cause.Arg,
-		SettledAt:      answer.SettledAt,
-		ExpiresAt:      answer.ExpiresAt,
-		Agent:          remoteAnswerAgent(answer.AnswerAgent),
-		LateReply:      []byte(answer.LateReply),
-		LateReplyAt:    answer.LateReplyAt,
-		LateReplyAgent: remoteAnswerAgent(answer.LateReplyAgent),
-	}, store.ThreadRequestWake{ReplyArms: replyArms})
-	if err != nil {
-		return false, false, err
-	}
-	wake, late = a.collectionWake(row.Token, collected)
-	return wake, late, nil
-}
-
-// remoteAnswerCause is the text and cause a paired computer's answer is
-// recorded with: an interruption's cause it reports in this computer's
-// vocabulary, with what the turn had written as the text; otherwise its
-// answer, whole and with no cause, which is what a computer that reports no
-// cause, or one this computer does not know, gives.
-func remoteAnswerCause(answer ThreadPeerRequest) (string, threadtools.Cause) {
-	if reported := answer.Cause; reported != nil {
-		if cause := (threadtools.Cause{Code: reported.Code, Arg: reported.Arg}); cause.Known() {
-			return reported.Written, cause
-		}
-	}
-	return answer.Answer, threadtools.Cause{}
-}
-
-// remoteRestUnreported reports whether answer settles row `finished` from
-// a computer that cannot report its thread's rest (ThreadPeerRequest.RestRule)
-// for a request that waits for that rest here: a spawn, or a send to a
-// thread its caller spawned there.
-func (a *App) remoteRestUnreported(row store.ThreadRequest, answer ThreadPeerRequest) (bool, error) {
-	if answer.RestRule || answer.State != store.ThreadReceiptFinished || answer.AnswerKind != store.ThreadAnswerFinal {
-		return false, nil
-	}
-	switch row.Kind {
-	case store.ThreadRequestSpawn:
-		return true, nil
-	case store.ThreadRequestSend:
-		return a.store.CallerSpawnedRemote(row.CallerThreadID, row.TargetComputerID, row.TargetThreadID)
-	default:
-		return false, nil
-	}
-}
-
-// remoteAnswerAgent is the standing agent another computer reported as
-// answering, its role bounded as a footer's carried role is.
-func remoteAnswerAgent(agent *ThreadPeerAgent) *store.ThreadAnswerAgent {
-	if agent == nil {
-		return nil
-	}
-	return &store.ThreadAnswerAgent{Role: agenthome.BoundRole(agent.Role)}
-}
-
-// settleRemoteThreadRequest settles a source row for a reason the
-// destination gave rather than an answer it produced, and delivers it. The
-// wake is delivered after the settle lock is released.
-func (a *App) settleRemoteThreadRequest(row store.ThreadRequest, settlement store.ThreadRequestSettlement) error {
-	wakes, err := a.settleRemoteThreadRequestOwing(row, settlement)
-	a.deliverThreadWakes(wakes)
-	return err
-}
-
-// settleRemoteThreadRequestOwing is settleRemoteThreadRequest for a caller
-// settling several rows in one pass: it returns the wake the settlement owes
-// instead of delivering it, so the pass delivers them together.
-func (a *App) settleRemoteThreadRequestOwing(row store.ThreadRequest, settlement store.ThreadRequestSettlement) ([]threadWakeRef, error) {
-	wake, err := func() (bool, error) {
-		unlock := a.threadRequestSettleLock(row.Token)
-		defer unlock()
-		settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), settlement)
-		if err != nil || !settled {
-			return false, err
-		}
-		return a.finishThreadRequestCollection(row.Token, false), nil
-	}()
-	if err != nil {
-		return nil, err
-	}
-	a.forgetRemoteRequestBlocked(row.Token)
-	if !wake {
-		return nil, nil
-	}
-	return []threadWakeRef{{token: row.Token}}, nil
 }
 
 // expireThreadRequests is the retention pass: answers nobody collected are

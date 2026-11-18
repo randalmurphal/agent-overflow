@@ -497,6 +497,9 @@ func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, ti
 	if lateReply {
 		state.AnswerKind = threadtools.AnswerReply
 	}
+	if row.LateReplyExpired {
+		state.LateReplyExpiredAt = row.LateReplyAt
+	}
 	if !threadRequestSettled(row) && blocked {
 		state.State = threadtools.RequestBlocked
 	}

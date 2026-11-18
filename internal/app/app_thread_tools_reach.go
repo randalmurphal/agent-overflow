@@ -256,10 +256,6 @@ func (t threadToolsApp) startRemoteRequest(
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	peer, err := t.Peer(ctx, computerID)
-	if err != nil {
-		return threadtools.RequestAck{}, err
-	}
 	args, err := json.Marshal(call)
 	if err != nil {
 		return threadtools.RequestAck{}, fmt.Errorf("thread tools: encode %s for %s: %w", tool, computerID, err)
@@ -280,16 +276,11 @@ func (t threadToolsApp) startRemoteRequest(
 	// sequence and is cut to the normal delay the moment the call returns,
 	// which is what makes "no retry is in flight" durable.
 	row.NextCheck = time.Now().Add(threadRequestAdmissionFence).UnixMilli()
-	// Admitted from the row to the destination's answer, so a rest of the
-	// caller stops a request the destination has settled or holds.
-	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
+	peer, done, err := t.admitRemoteRequest(ctx, caller, computerID, row)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
-	if err := t.app.store.InsertThreadRequest(row); err != nil {
-		return threadtools.RequestAck{}, err
-	}
 	reply, failure, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
 		Tool:        tool,
 		Args:        args,
@@ -333,6 +324,32 @@ func (t threadToolsApp) startRemoteRequest(
 		ack.Notice = t.unownedSpawnNotice(call, reply, computerID)
 	}
 	return ack, err
+}
+
+// admitRemoteRequest checks the pairing with computerID, admits the
+// caller's work and writes row, all inside the pairing's fence
+// (lockComputerPairing), so a pairing being ended takes the row with the
+// rest or refuses it. The work stays admitted from the row to the
+// destination's answer, so a rest of the caller stops a request the
+// destination has settled or holds; the caller ends it with done.
+func (t threadToolsApp) admitRemoteRequest(
+	ctx context.Context, caller threadtools.Caller, computerID string, row store.ThreadRequest,
+) (_ threadtools.Peer, done func(), _ error) {
+	unlock := t.app.lockComputerPairing(computerID)
+	defer unlock()
+	peer, err := t.Peer(ctx, computerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	done, err = t.app.admitWork(caller.ThreadID, caller.Session)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := t.app.store.InsertThreadRequest(row); err != nil {
+		done()
+		return nil, nil, err
+	}
+	return peer, done, nil
 }
 
 // unownedSpawnNotice says when an owned spawn's thread was not owned on the

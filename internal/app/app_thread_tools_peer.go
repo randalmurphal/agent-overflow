@@ -182,6 +182,11 @@ type ThreadPeerRequest struct {
 type ThreadPeerPoll struct {
 	Tokens []string        `json:"tokens,omitempty"`
 	Ack    []ThreadPeerAck `json:"ack,omitempty"`
+	// Held names the revision the source already holds of tokens it asks
+	// about. The answer about one at or below it leaves out the texts the
+	// source has (ThreadPeerRequest.Answer, Cause and LateReply). A source
+	// that does not send it is answered in full.
+	Held []ThreadPeerAck `json:"held,omitempty"`
 }
 
 // ThreadPeerAck is one collected settlement. The destination may drop an
@@ -309,7 +314,7 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread request"); err != nil {
 		return ThreadPeerPollReply{}, err
 	}
-	if len(poll.Tokens) > threadPeerTokenLimit || len(poll.Ack) > threadPeerTokenLimit {
+	if len(poll.Tokens) > threadPeerTokenLimit || len(poll.Ack) > threadPeerTokenLimit || len(poll.Held) > threadPeerTokenLimit {
 		return ThreadPeerPollReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("A request poll carries at most %d tokens.", threadPeerTokenLimit), nil)
 	}
@@ -328,11 +333,20 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 			return ThreadPeerPollReply{}, err
 		}
 	}
+	held := make(map[string]int64, len(poll.Held))
+	for _, h := range poll.Held {
+		held[h.Token] = max(held[h.Token], h.Revision)
+	}
 	reply := ThreadPeerPollReply{Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
 	for _, token := range poll.Tokens {
 		state, err := a.threadPeerRequestState(ctx, owner, token)
 		if err != nil {
 			return ThreadPeerPollReply{}, err
+		}
+		if revision, ok := held[token]; ok && state.Known && state.Revision > 0 && state.Revision <= revision {
+			// The source has these texts at this revision already; it reads
+			// the answer as already collected and takes nothing from them.
+			state.Answer, state.Cause, state.LateReply = "", nil, ""
 		}
 		reply.Requests = append(reply.Requests, state)
 	}

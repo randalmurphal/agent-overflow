@@ -505,6 +505,13 @@ type peerFaults struct {
 	// reword, when set, rewrites each request a ThreadToolRequestStatus
 	// reply reports, as a computer of another build would word it.
 	reword atomic.Pointer[func(*ThreadPeerRequest)]
+	// refuseAcks fails every ThreadToolRequestStatus that carries an
+	// acknowledgement before this computer reads it: the call is lost on
+	// the way there.
+	refuseAcks atomic.Bool
+	// asked, when set, sees each ThreadToolRequestStatus as it arrives, as
+	// a computer of another build would read it.
+	asked atomic.Pointer[func(*ThreadPeerPoll)]
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
@@ -525,6 +532,12 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 		case <-ctx.Done():
 			return ThreadPeerPollReply{}, ctx.Err()
 		}
+	}
+	if p.refuseAcks.Load() && len(poll.Ack) > 0 {
+		return ThreadPeerPollReply{}, errors.New("the acknowledgement was lost on the way")
+	}
+	if asked := p.asked.Load(); asked != nil {
+		(*asked)(&poll)
 	}
 	reply, err := p.App.ThreadToolRequestStatus(ctx, poll)
 	if reword := p.reword.Load(); err == nil && reword != nil {

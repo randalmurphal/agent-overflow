@@ -96,8 +96,9 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Forgetting a computer must not discard the only cancellation handle.
-	unlockComputer := a.remoteStartLocks().Lock("computer:" + input.ComputerID)
+	// Forgetting a computer must not discard the only cancellation handle,
+	// and no command enters a pairing being ended.
+	unlockComputer := a.lockComputerPairing(input.ComputerID)
 	defer unlockComputer()
 	enabled, err := a.backends.AgentAccess()
 	if err != nil {
@@ -303,6 +304,16 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	issue := ""
 	if err != nil {
+		if code, message, _ := remoteErrorDetails("status", err); threadPairingEnded(code) {
+			// Nothing about this command can be learned again. The end of
+			// the pairing records its outcome as unknown, which the next
+			// check delivers with no call to that computer.
+			endErr := a.endPairing(w.ComputerID, message)
+			if endErr == nil {
+				return
+			}
+			log.Printf("remote job observation: %v", endErr)
+		}
 		issue = remoteIssueText("status", err)
 		receipt = w.Receipt
 	} else if receipt.ID != w.RequestID || receipt.SourceThreadID != w.LaunchedIn {
@@ -366,8 +377,13 @@ func (a *App) probeUnacceptedRemoteWatch(ctx context.Context, w store.RemoteWatc
 
 // remoteCompletionExcerpt prefers the saved log, which has both ends of the
 // output; the inline receipt tail is the fallback for an unreachable or older
-// destination, and an empty one is reported as unavailable.
+// destination, and an empty one is reported as unavailable. A command whose
+// outcome is unknown (store.EndPairing) has no output to read: the computer
+// that ran it is no longer paired.
 func (a *App) remoteCompletionExcerpt(ctx context.Context, computerID, requestID string, receipt RemoteCommand) remoteCompletionOutput {
+	if receipt.State == store.RemoteOutcomeUnknown {
+		return remoteCompletionOutput{}
+	}
 	if excerpt, ok := a.remoteLogExcerpt(ctx, computerID, requestID, remoteCompletionHeadBytes, remoteCompletionOutputBytes); ok && !excerpt.Info.Expired {
 		omitted := excerpt.Info.RetainedBytes > int64(len(excerpt.Head)+len(excerpt.Tail))
 		return remoteCompletionOutput{Head: excerpt.Head, Tail: excerpt.Tail, Truncated: excerpt.Info.Truncated, Omitted: omitted}
@@ -679,13 +695,21 @@ func (a *App) retryOwedRemoteCancels(now time.Time) {
 		var receipt RemoteCommand
 		err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
 		cancel()
-		code := ""
+		code, message := "", ""
 		if err != nil {
-			code, _, _ = remoteErrorDetails("cancel", err)
+			code, message, _ = remoteErrorDetails("cancel", err)
 		}
 		if err == nil || code == "remote_job_not_found" || code == "remote_wrong_owner" {
 			a.settleOwedRemoteCancel(w)
 			continue
+		}
+		if threadPairingEnded(code) {
+			// Its end settles every cancel owed there.
+			endErr := a.endPairing(w.ComputerID, message)
+			if endErr == nil {
+				continue
+			}
+			log.Printf("remote command %s on %s: %v", w.RequestID, w.ComputerID, endErr)
 		}
 		log.Printf("remote command %s on %s: owed cancel not delivered, sent again later: %v", w.RequestID, w.ComputerID, err)
 		if err := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, w.CancelOwedAt, now.Add(remoteCancelRetryDelay).UnixMilli()); err != nil {
@@ -720,6 +744,11 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		if finished && r.FinishedAt < cutoff {
 			continue
 		}
+		issue := w.Error
+		if issue == "" && r.State == store.RemoteOutcomeUnknown {
+			// Why its outcome is unknown is all there is to say of it.
+			issue = r.Error
+		}
 		// The row is a remote_run tool call as far as presentation goes:
 		// `mcp` and `input` are what a live MCP row carries, with the
 		// command pre-rendered, so the tray reads through the same table
@@ -728,7 +757,7 @@ func (a *App) remoteTrayItems(threadID string, cutoff int64) ([]store.Item, erro
 		meta, _ := json.Marshal(map[string]any{
 			"mcp":       map[string]string{"server": remoteMCPName, "tool": "remote_run"},
 			"input":     map[string]any{"computer_id": w.ComputerID, "computer_name": names[w.ComputerID], "request_id": w.RequestID, "label": w.Label, "command": w.Command},
-			"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": w.Error, "warning": r.Warning, "workspace": r.Workspace},
+			"remoteJob": map[string]any{"computerId": w.ComputerID, "requestId": w.RequestID, "notification": w.Notification, "error": issue, "warning": r.Warning, "workspace": r.Workspace},
 		})
 		id := "remote-job:" + w.ComputerID + ":" + w.RequestID
 		label := w.Label

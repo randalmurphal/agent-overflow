@@ -116,9 +116,17 @@ type ThreadRequest struct {
 	CauseArg    string `json:"-"`
 	LateReply   []byte `json:"-"`
 	LateReplyAt int64  `json:"lateReplyAt,omitempty"`
-	Revision    int64  `json:"revision"`
-	SettledAt   int64  `json:"settledAt,omitempty"`
-	DeliveredAt int64  `json:"deliveredAt,omitempty"`
+	// LateReplyExpired marks a finished request whose late reply its
+	// destination dropped, the hold on it run out, before this computer
+	// collected it. LateReplyAt is then when it arrived there; Answer is
+	// still the first answer.
+	LateReplyExpired bool  `json:"-"`
+	Revision         int64 `json:"revision"`
+	// AckOwed is the destination's revision this request holds and has not
+	// yet told it it holds, 0 when none (CollectThreadRequest).
+	AckOwed     int64 `json:"-"`
+	SettledAt   int64 `json:"settledAt,omitempty"`
+	DeliveredAt int64 `json:"deliveredAt,omitempty"`
 	// DeliveredHow is the route the first answer reached the caller by, and
 	// LateDeliveredHow the late reply's: an answer delivered by a wake keeps
 	// its wake row after a late reply is read inline, and the other way round.
@@ -293,7 +301,8 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
-    late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg`
+    late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg,
+    late_reply_expired, ack_owed`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -305,7 +314,7 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 // to extra.
 func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly, nestedOpen, restUnreported int
+	var notify, polling, lineageOnly, nestedOpen, restUnreported, lateReplyExpired int
 	var answerAgentRole, lateReplyAgentRole string
 	var answerAgent, lateReplyAgent int64
 	if answer == nil {
@@ -325,7 +334,9 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg,
+		&lateReplyExpired, &r.AckOwed,
 	}, extra...)...)
+	r.LateReplyExpired = lateReplyExpired != 0
 	r.NestedOpen = nestedOpen != 0
 	r.RestUnreported = restUnreported != 0
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
@@ -560,14 +571,16 @@ type ThreadRequestWake struct {
 }
 
 // ThreadRequestCollected is what a collection wrote on the request: the
-// receipt's settlement, its late reply, or both.
+// receipt's settlement, its late reply, or both; or, from another computer,
+// that a late reply arrived there and expired before it was collected.
 type ThreadRequestCollected struct {
-	Settled   bool
-	LateReply bool
+	Settled          bool
+	LateReply        bool
+	LateReplyExpired bool
 }
 
 // Any reports whether the collection wrote anything.
-func (c ThreadRequestCollected) Any() bool { return c.Settled || c.LateReply }
+func (c ThreadRequestCollected) Any() bool { return c.Settled || c.LateReply || c.LateReplyExpired }
 
 // collectThreadRequest copies one receipt answer onto its request: the
 // settlement while the request is still open, and the late reply while the
@@ -605,10 +618,16 @@ func collectThreadRequest(db sqlExecutor, token string, answer ThreadReceiptAnsw
 }
 
 // CollectThreadRequest copies an answer another computer reported onto the
-// request this computer sent there, settlement and late reply in one
-// transaction. The caller acknowledges answer.Revision to that computer after
-// it commits; a lost acknowledgement is sent again by the next poll, which
-// finds the request already holding the revision.
+// request this computer sent there, and owes that computer the
+// acknowledgement of answer.Revision, in one transaction. What it copies is
+// the settlement and the late reply (collectThreadRequest), or, for a
+// request that already holds its first answer, that a newer reply arrived
+// there and expired before it was collected: the first answer stays, and the
+// revision is held all the same, since nothing of it is left to collect. A
+// revision the request can take nothing from (it settled here first) is
+// owed too: there is nothing left for that computer to hold it for. The
+// caller sends what is owed and clears it once that computer takes it
+// (ClearThreadRequestAcks).
 func (s *Store) CollectThreadRequest(token string, answer ThreadReceiptAnswer, wake ThreadRequestWake) (_ ThreadRequestCollected, err error) {
 	action := fmt.Sprintf("store: collect thread request %s", token)
 	tx, err := s.db.Begin()
@@ -620,10 +639,26 @@ func (s *Store) CollectThreadRequest(token string, answer ThreadReceiptAnswer, w
 	if err != nil {
 		return ThreadRequestCollected{}, err
 	}
+	if !collected.Any() && answer.State == ThreadReceiptExpired && answer.LateReplyAt != 0 {
+		// The receipt expired with a late reply the request never took.
+		result, err := tx.Exec(`UPDATE thread_requests
+			    SET late_reply_expired = 1, late_reply_at = ?, revision = MAX(revision, ?), updated_at = ?
+			  WHERE token = ? AND state = '`+ThreadRequestFinished+`' AND late_reply IS NULL AND late_reply_expired = 0
+			    AND lineage_only = 0`, answer.LateReplyAt, answer.Revision, nowMillis(), token)
+		if err != nil {
+			return ThreadRequestCollected{}, fmt.Errorf("%s: record the late reply that expired: %w", action, err)
+		}
+		if collected.LateReplyExpired, err = rowsChanged(result, action); err != nil {
+			return ThreadRequestCollected{}, err
+		}
+	}
 	if collected.Settled && answer.RestUnreported {
 		if _, err := tx.Exec(`UPDATE thread_requests SET rest_unreported = 1 WHERE token = ?`, token); err != nil {
 			return ThreadRequestCollected{}, fmt.Errorf("%s: mark its rest unreported: %w", action, err)
 		}
+	}
+	if _, err := oweThreadRequestAck(tx, token, answer.Revision); err != nil {
+		return ThreadRequestCollected{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
@@ -777,7 +812,7 @@ func storeThreadRequestLateReply(db sqlExecutor, token string, reply []byte, at 
 		`UPDATE thread_requests
 		    SET late_reply = ?, late_reply_at = ?, late_reply_agent = ?, late_reply_agent_role = ?, revision = revision + 1,
 		        notify = `+threadRequestArmSQL+`, updated_at = ?
-		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND lineage_only = 0`+where,
+		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND late_reply_expired = 0 AND lineage_only = 0`+where,
 		nilIfEmptyBytes(reply), at, isAgent, role, boolToInt(armWake), nowMillis(), token,
 	)
 	if err != nil {
@@ -1022,24 +1057,6 @@ func nestedRemoteSpawnSQL(alias string) string {
 	return alias + `.nested_open = 1 AND ` + alias + `.kind = 'spawn' AND ` + alias + `.target_computer_id <> ''`
 }
 
-// ListOpenThreadRequestsForComputer returns the unsettled requests one
-// paired computer owes this one, oldest first. Forgetting that computer
-// reads it twice: once to refuse with the list, once to settle them.
-func (s *Store) ListOpenThreadRequestsForComputer(computerID string, limit int) ([]ThreadRequest, error) {
-	if limit < 1 {
-		limit = 50
-	}
-	rows, err := s.reader().Query(
-		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE target_computer_id = ? AND settled_at IS NULL
-		  ORDER BY created_at ASC, token ASC LIMIT `+strconv.Itoa(limit),
-		computerID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list open thread requests for computer %s: %w", computerID, err)
-	}
-	return collectThreadRequests(rows, fmt.Sprintf("store: list open thread requests for computer %s", computerID))
-}
-
 // ListOpenLocalThreadRequests returns every open spawn, send and ask this
 // computer's threads made of its own threads, oldest first. Each is settled
 // by its receipt, so at boot, once the sweep has settled every open receipt,
@@ -1115,8 +1132,8 @@ const spawnLineageSQL = `kind = 'spawn' AND target_thread_id <> ''
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
 	SET lineage_only = 1, answer = NULL, answer_kind = '', answer_cause = '', answer_cause_arg = '', late_reply = NULL, late_reply_at = NULL,
-	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
-	    nested_open = 0, target_provider = '', polling = 0
+	    late_reply_expired = 0, answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0,
+	    issue = '', wake_issue = '', expires_at = NULL, nested_open = 0, target_provider = '', polling = 0, ack_owed = 0
 	WHERE lineage_only = 0`
 
 // The retention floor's four sets, each stated as the partial predicate of

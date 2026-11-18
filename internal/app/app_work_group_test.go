@@ -157,7 +157,7 @@ func TestRequestWorkAfterTheGroupClosesStartsNothing(t *testing.T) {
 			if !a.beginThreadRequestPoll() {
 				return "the poll slot was taken"
 			}
-			a.startThreadRequestPoll([]store.ThreadRequest{{Token: "t"}})
+			a.startThreadRequestPoll([]store.ThreadRequest{{Token: "t"}}, nil)
 			if !a.beginThreadRequestPoll() {
 				return "the refused poll kept the poll slot"
 			}

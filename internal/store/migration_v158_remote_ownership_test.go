@@ -22,14 +22,17 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 
 	migrateFrom(t, db, remoteOwnershipMigrationVersion-1)
 
-	var link, seen, receiptSeq, requestSeq int64
+	var link, seen, receiptSeq, requestSeq, ackOwed, lateExpired int64
 	if err := db.QueryRow(`SELECT spawn_link, owner_seen_at, owner_op_seq,
-		(SELECT owner_op_seq FROM thread_requests WHERE token = 'old-spawn')
-		FROM thread_request_receipts WHERE token = 'old'`).Scan(&link, &seen, &receiptSeq, &requestSeq); err != nil {
+		(SELECT owner_op_seq FROM thread_requests WHERE token = 'old-spawn'),
+		(SELECT ack_owed FROM thread_requests WHERE token = 'old-spawn'),
+		(SELECT late_reply_expired FROM thread_requests WHERE token = 'old-spawn')
+		FROM thread_request_receipts WHERE token = 'old'`).Scan(&link, &seen, &receiptSeq, &requestSeq, &ackOwed, &lateExpired); err != nil {
 		t.Fatal(err)
 	}
-	if link != 0 || seen != 0 || receiptSeq != 0 || requestSeq != 0 {
-		t.Fatalf("old rows read link %d seen %d seq %d/%d, want all 0", link, seen, receiptSeq, requestSeq)
+	if link != 0 || seen != 0 || receiptSeq != 0 || requestSeq != 0 || ackOwed != 0 || lateExpired != 0 {
+		t.Fatalf("old rows read link %d seen %d seq %d/%d ack owed %d late reply expired %d, want all 0",
+			link, seen, receiptSeq, requestSeq, ackOwed, lateExpired)
 	}
 	var placement string
 	if err := db.QueryRow(`SELECT placement FROM threads WHERE id = 'worker'`).Scan(&placement); err != nil || placement != PlacementStandalone {
@@ -39,7 +42,7 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 	objects := map[string][]string{}
 	rows, err := db.Query(`SELECT type, name FROM sqlite_master WHERE name IN (
 		'idx_thread_request_receipts_spawn_link', 'idx_thread_request_receipts_owner_seen',
-		'idx_thread_requests_remote_spawn_target', 'thread_owner_ops', 'idx_thread_owner_ops_due', 'idx_thread_owner_ops_computer',
+		'idx_thread_requests_remote_spawn_target', 'idx_thread_requests_ack_owed', 'thread_owner_ops', 'idx_thread_owner_ops_due', 'idx_thread_owner_ops_computer',
 		'trg_thread_placement_link_gone', 'trg_thread_placement_link_deleted')`)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +58,7 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for kind, want := range map[string][]string{
-		"index":   {"idx_thread_owner_ops_computer", "idx_thread_owner_ops_due", "idx_thread_request_receipts_owner_seen", "idx_thread_request_receipts_spawn_link", "idx_thread_requests_remote_spawn_target"},
+		"index":   {"idx_thread_owner_ops_computer", "idx_thread_owner_ops_due", "idx_thread_request_receipts_owner_seen", "idx_thread_request_receipts_spawn_link", "idx_thread_requests_ack_owed", "idx_thread_requests_remote_spawn_target"},
 		"table":   {"thread_owner_ops"},
 		"trigger": {"trg_thread_placement_link_deleted", "trg_thread_placement_link_gone"},
 	} {
@@ -67,9 +70,10 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 	}
 
 	for name, write := range map[string]string{
-		"a flag outside 0 and 1": `UPDATE thread_request_receipts SET spawn_link = 2 WHERE token = 'old'`,
-		"an unknown operation":   `INSERT INTO thread_owner_ops (token, computer_id, source_thread_id, op, seq, owed_at, next_at) VALUES ('t', 'pc', 'lead', 'pause', 1, 1, 1)`,
-		"a sent mark of 2":       `INSERT INTO thread_owner_ops (token, computer_id, source_thread_id, op, seq, sent, owed_at, next_at) VALUES ('t', 'pc', 'lead', 'archive', 1, 2, 1, 1)`,
+		"a flag outside 0 and 1":   `UPDATE thread_request_receipts SET spawn_link = 2 WHERE token = 'old'`,
+		"an unknown operation":     `INSERT INTO thread_owner_ops (token, computer_id, source_thread_id, op, seq, owed_at, next_at) VALUES ('t', 'pc', 'lead', 'pause', 1, 1, 1)`,
+		"a late reply expiry of 2": `UPDATE thread_requests SET late_reply_expired = 2 WHERE token = 'old-spawn'`,
+		"a sent mark of 2":         `INSERT INTO thread_owner_ops (token, computer_id, source_thread_id, op, seq, sent, owed_at, next_at) VALUES ('t', 'pc', 'lead', 'archive', 1, 2, 1, 1)`,
 	} {
 		if _, err := db.Exec(write); err == nil {
 			t.Errorf("%s was accepted", name)

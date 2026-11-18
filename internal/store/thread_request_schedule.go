@@ -303,9 +303,10 @@ type ScheduledMoment struct {
 }
 
 // ThreadRequestSchedule is the earliest moment each unattended pass has
-// anything to do: a reminder to fire, a remote request to poll, a wake to
-// retry. They are reported apart because the sweep can leave one out (a poll
-// already in flight) without going blind to the others.
+// anything to do: a reminder to fire, a remote request to poll or an
+// acknowledgement owed to its computer, a wake to retry. They are reported
+// apart because the sweep can leave one out (a poll already in flight)
+// without going blind to the others.
 type ThreadRequestSchedule struct {
 	Reminder ScheduledMoment
 	Poll     ScheduledMoment
@@ -325,7 +326,7 @@ type ThreadRequestSchedule struct {
 // On most computers nothing is scheduled, and the sweep sleeps on that answer
 // rather than asking three questions a second for the life of the process.
 //
-// One query, four indexed minima and two probes, so the answer describes
+// One query, five indexed minima and two probes, so the answer describes
 // one snapshot.
 func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	var reminder, poll, wake, ownerOp sql.NullInt64
@@ -335,9 +336,12 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 		   (SELECT MIN(due_at) FROM thread_requests
 		     WHERE kind = 'remind' AND state = 'accepted'
 		       AND `+s.assistantPauseSQL("thread_requests.caller_thread_id")+`),
-		   (SELECT MIN(next_check) FROM thread_requests
-		     WHERE polling = 1 AND target_computer_id <> ''
-		       AND state IN ('unconfirmed','accepted','running','finished')),
+		   (SELECT MIN(next_check) FROM (
+		     SELECT MIN(next_check) AS next_check FROM thread_requests
+		      WHERE polling = 1 AND target_computer_id <> ''
+		        AND state IN ('unconfirmed','accepted','running','finished')
+		     UNION ALL
+		     SELECT MIN(next_check) FROM thread_requests WHERE `+ackOwedSQL+`)),
 		   (SELECT MIN(wake_next_check) FROM thread_requests
 		     WHERE notify = 1 AND `+threadWakeOwedSQL+`),
 		   EXISTS (SELECT 1 FROM thread_requests

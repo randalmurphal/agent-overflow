@@ -159,9 +159,11 @@ func (a *App) awaitAttachment(id string) {
 // requests this computer still has open there, and the finished jobs whose
 // completions are held for archived conversations, which can no longer be
 // delivered. Without it they are named and the call refuses; with it the
-// requests are settled locally as errored, their wakes are dropped, the held
-// completions are discarded, and the pairing goes. The other computer is not
-// told, because forgetting it is exactly the decision to stop talking to it.
+// pairing ends with their wakes dropped, the held
+// completions are discarded, and the pairing goes, all inside the fence
+// admission takes, so no request enters it meanwhile. The other computer
+// is not told, because forgetting it is exactly the decision to stop
+// talking to it.
 //
 //ao:scope host
 //ao:route home
@@ -169,7 +171,7 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
-	unlock := a.remoteStartLocks().Lock("computer:" + id)
+	unlock := a.lockComputerPairing(id)
 	defer unlock()
 	held, other, err := a.store.PendingRemoteWatchesForComputer(id)
 	if err != nil {
@@ -185,20 +187,18 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 }
 
 // releaseForgottenComputerWork refuses once with what forgetting drops
-// named, then drops it when the caller confirms: the open thread requests
-// are settled, and the held completions are discarded.
+// named, then drops it when the caller confirms: the pairing ends, every
+// open thread request settling with its wake disarmed, and the held
+// completions are discarded. The caller holds the computer's fence.
 func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) error {
-	rows, err := a.store.ListOpenThreadRequestsForComputer(id, threadForgetRequestListing)
+	rows, open, err := a.store.ListOpenThreadRequestsForComputer(id, threadForgetRequestListing)
 	if err != nil {
 		return err
 	}
-	if len(rows) == 0 && held == 0 {
-		return nil
-	}
-	if !abandon {
+	if !abandon && (open > 0 || held > 0) {
 		// Public, so the listing reaches a connected browser too and so
 		// the confirm affordance keys on the code rather than the prose.
-		if len(rows) == 0 {
+		if open == 0 {
 			return errorsx.Public("remote_completions_held", heldRemoteCompletions(held)+" Confirm to forget the computer anyway.", nil)
 		}
 		discarded := ""
@@ -206,24 +206,17 @@ func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) er
 			discarded = " " + heldRemoteCompletions(held)
 		}
 		return errorsx.Public("thread_requests_open",
-			"This computer has agent thread requests still open there: "+
-				describeOpenThreadRequests(rows)+
+			describeOpenThreadRequests(rows, open)+
 				". Forgetting it stops them from ever being collected."+discarded+" Confirm to forget it anyway; the other computer is not told and any work it started keeps running there.", nil)
 	}
-	for _, row := range rows {
-		// The wake goes first: the caller asked for an answer that can no
-		// longer arrive, and the settlement below must not deliver one.
-		if _, err := a.store.SetThreadRequestNotify(row.Token, false); err != nil {
-			return err
-		}
-		row.Notify = false
-		if err := a.settleRemoteThreadRequest(row, store.ThreadRequestSettlement{
-			State:      store.ThreadRequestErrored,
-			Answer:     []byte("This computer was forgotten, so this request can no longer be collected. The other computer was not told, and any work it started keeps running there."),
-			AnswerKind: store.ThreadAnswerError,
-		}); err != nil {
-			return err
-		}
+	// Disarmed: the person chose to stop hearing from that computer, so
+	// no answer that can no longer arrive is told as an error either.
+	if _, err := a.endPairingFenced(id, store.PairingEnd{
+		RequestAnswer: []byte("This computer was forgotten, so this request can no longer be collected. The other computer was not told, and any work it started keeps running there."),
+		CommandError:  "This computer was forgotten, so this command's outcome is unknown.",
+		Disarm:        true,
+	}); err != nil {
+		return err
 	}
 	threads, err := a.store.DismissArchivedRemoteCompletions(id)
 	if err != nil {
@@ -247,7 +240,9 @@ func heldRemoteCompletions(n int) string {
 // than this against one computer is a number, not a list.
 const threadForgetRequestListing = 20
 
-func describeOpenThreadRequests(rows []store.ThreadRequest) string {
+// describeOpenThreadRequests names the open requests forgetting a computer
+// abandons: how many there are, and the first of them.
+func describeOpenThreadRequests(rows []store.ThreadRequest, total int) string {
 	parts := make([]string, 0, len(rows))
 	for _, row := range rows {
 		part := row.Kind + " " + row.Token
@@ -256,7 +251,15 @@ func describeOpenThreadRequests(rows []store.ThreadRequest) string {
 		}
 		parts = append(parts, part)
 	}
-	return strings.Join(parts, ", ")
+	count := "1 agent thread request"
+	if total != 1 {
+		count = fmt.Sprintf("%d agent thread requests", total)
+	}
+	listed := strings.Join(parts, ", ")
+	if more := total - len(rows); more > 0 {
+		listed += fmt.Sprintf(", and %d more", more)
+	}
+	return "This computer has " + count + " still open there: " + listed
 }
 
 // RenameBackend sets what this installation calls one machine, or clears
