@@ -84,7 +84,15 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // EXISTING rotating credential owner. It neither retries mutations nor copies
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
-	return m.HoldAgentPeer(ctx, id, func(call PeerCall) error { return call(ctx, method, result, params...) })
+	if !entityid.Valid(id) {
+		return rpcclient.NotSentError{Err: errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
+	}
+	// Refused before the pairing is looked at, so a method outside the
+	// surface is named as that whatever the computer's state.
+	if err := m.admitAgentCall(id, method); err != nil {
+		return rpcclient.NotSentError{Err: err}
+	}
+	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
 }
 
 // HoldAgentPeer runs use with calls that share one connection to the
