@@ -188,10 +188,11 @@ summaries and Stop All's selection.
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
 the run registry in `app_agent_wake_registry.go`, a watch's script and
-process in `app_agent_watch_process.go`, a watch's failure episode and its notice in `app_agent_watch_failure.go`,
-queueing in `app_agent_wake_delivery.go`, rendering in
-`app_agent_wake_render.go`, what a session end gives back in
-`app_agent_wake_teardown.go`, assistant records,
+process in `app_agent_watch_process.go`, a watch's failure episode and its
+notice in `app_agent_watch_failure.go`, queueing in
+`app_agent_wake_delivery.go`, rendering in `app_agent_wake_render.go`, what a session end gives back in
+`app_agent_wake_teardown.go` and `app_agent_wake_parts.go`, the give-back
+to owners in `app_agent_give_back.go`, assistant records,
 creation and handoff in `app_standing_agents.go`, and the background tray's reads, Wake now and
 Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or
 reminder row emits `thread:wakes_changed` with that row as it stands
