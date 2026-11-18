@@ -84,22 +84,48 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // EXISTING rotating credential owner. It neither retries mutations nor copies
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	return m.HoldAgentPeer(ctx, id, func(call PeerCall) error { return call(ctx, method, result, params...) })
+}
+
+// HoldAgentPeer runs use with calls that share one connection to the
+// computer, as the chunks of one artifact copy do (holdPeer). Every call is
+// checked as CallAgentPeer checks its one.
+func (m *Manager) HoldAgentPeer(ctx context.Context, id string, use func(PeerCall) error) error {
 	if !entityid.Valid(id) {
 		return rpcclient.NotSentError{Err: errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
 	}
+	_, err := m.holdPeer(ctx, id, transport.CapabilityRemoteCommands, "", func(call PeerCall) error {
+		return use(func(ctx context.Context, method string, result any, params ...any) error {
+			if err := m.admitAgentCall(id, method); err != nil {
+				return rpcclient.NotSentError{Err: err}
+			}
+			return call(ctx, method, result, params...)
+		})
+	})
+	return err
+}
+
+// admitAgentCall refuses a method outside the agent commands surface, and
+// one that starts or lists work on a computer the owner has not enabled.
+// What reads or ends a job already started stays reachable after the owner
+// turns the computer off.
+func (m *Manager) admitAgentCall(id, method string) error {
+	started := false
 	switch method {
-	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects", "RemoteCommandEnvironment", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact", "RemoteCommandLogArtifact":
+	case "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact", "RemoteCommandLogArtifact":
+		started = true
+	case "RemoteCommandStart", "RemoteCommandProjects", "RemoteCommandEnvironment":
 	default:
-		return rpcclient.NotSentError{Err: errors.New("this method is not available to agent commands")}
+		return errors.New("this method is not available to agent commands")
 	}
 	access, err := m.AgentAccess()
 	if err != nil {
-		return rpcclient.NotSentError{Err: err}
+		return err
 	}
-	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" && method != "RemoteCommandLogArtifact" {
-		return rpcclient.NotSentError{Err: errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)}
+	if !access[id] && !started {
+		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)
 	}
-	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
+	return nil
 }
 
 // CheckAgentPeer proves the pairing, protocol, and command scope before an

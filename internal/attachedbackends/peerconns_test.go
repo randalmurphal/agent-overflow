@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
@@ -22,7 +23,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// threadPeer is a paired computer serving the thread tools surface. Every
+// threadPeer is a paired computer serving the thread tools and agent
+// commands surfaces. Every
 // connection answers ThreadToolQuery with its own number, after an event
 // and a heartbeat frame the client must skip. ThreadToolCall is never answered.
 type threadPeer struct {
@@ -68,7 +70,7 @@ func (p *threadPeer) route(w http.ResponseWriter, r *http.Request) {
 	p.conns = append(p.conns, conn)
 	p.mu.Unlock()
 	ctx := context.Background()
-	if wsjson.Write(ctx, conn, map[string]any{"type": "hello", "backendId": p.id, "protocolVersion": transport.ProtocolVersion, "capabilities": []string{transport.CapabilityThreadTools}}) != nil {
+	if wsjson.Write(ctx, conn, map[string]any{"type": "hello", "backendId": p.id, "protocolVersion": transport.ProtocolVersion, "capabilities": []string{transport.CapabilityThreadTools, transport.CapabilityRemoteCommands}}) != nil {
 		return
 	}
 	for {
@@ -190,6 +192,42 @@ func TestAHeldConnectionCarriesEveryCallAfterOnePing(t *testing.T) {
 	}
 	if got := p.tickets.Load(); got != 1 {
 		t.Fatalf("minted %d tickets, want 1", got)
+	}
+}
+
+// TestAHeldCommandConnectionChecksEveryCall: the chunks of one artifact copy
+// share one connection after the one ping that proved it, and each call on
+// it is still held to the agent commands surface and the owner's opt-in.
+func TestAHeldCommandConnectionChecksEveryCall(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var first int32
+	if err := m.CallAgentPeer(ctx, p.id, "RemoteCommandStatus", &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.HoldAgentPeer(ctx, p.id, func(call PeerCall) error {
+		for chunk := range 4 {
+			var number int32
+			if err := call(ctx, "RemoteCommandArtifact", &number); err != nil {
+				return err
+			}
+			if number != first {
+				return fmt.Errorf("chunk %d ran on connection %d, want the held %d", chunk, number, first)
+			}
+		}
+		if err := call(ctx, "ThreadToolQuery", nil); err == nil {
+			return errors.New("a held connection reached a method outside the agent commands surface")
+		}
+		if code, _, _ := errorsx.PublicDetails(call(ctx, "RemoteCommandStart", nil)); code != "remote_access_disabled" {
+			return fmt.Errorf("a start on a computer the owner has not enabled was refused with %q", code)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.pings.Load(); got != 1 {
+		t.Fatalf("four chunks on a held connection sent %d pings, want the one that proved it", got)
 	}
 }
 

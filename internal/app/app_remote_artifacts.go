@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/remotejobs"
 )
@@ -162,7 +163,8 @@ func (r *remoteArtifactReader) Read(p []byte) (int, error) {
 //ao:route selected
 //ao:budget 20m
 func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path string) (RemoteArtifact, error) {
-	// One call per chunk, so the fetch as a whole runs within its budget.
+	// One call per chunk on one held connection, so the fetch as a whole runs
+	// within its budget.
 	ctx, cancel := withinMethodBudget(ctx, "AgentRemoteFetchArtifact", "Fetching the artifact")
 	defer cancel()
 	job, err := a.AgentRemoteStatus(ctx, computerID, id)
@@ -172,18 +174,43 @@ func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path
 	if a.configDir == "" {
 		return RemoteArtifact{}, errorsx.Public("remote_artifact_storage", "Local artifact storage is not ready. Wait for Agent Overflow startup to finish.", nil)
 	}
-	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), path, job.SourceThreadID, artifactAnnouncement{}, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
-		call, cancel := context.WithTimeout(ctx, time.Minute)
-		defer cancel()
-		var chunk RemoteArtifactChunk
-		err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandArtifact", &chunk, id, request)
-		return chunk, err
+	var result RemoteArtifact
+	err = a.backends.HoldAgentPeer(ctx, computerID, func(call attachedbackends.PeerCall) error {
+		var err error
+		result, err = receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), path, job.SourceThreadID, artifactAnnouncement{},
+			heldChunkRead(call, "RemoteCommandArtifact", id, nil))
+		return err
 	})
 	if err != nil {
 		return RemoteArtifact{}, a.remoteOperationError("fetch artifact", computerID, id, budgetError(ctx, err))
 	}
 	result.ComputerID, result.RequestID = computerID, id
 	return result, nil
+}
+
+// heldChunkRead reads a job's artifact chunk by chunk on one held
+// connection to its computer; got, when set, sees each chunk that arrived.
+// A chunk read is safe to send again, and a held connection skips the
+// liveness check a pooled one gets, so one that died between chunks costs a
+// second attempt rather than the copy.
+func heldChunkRead(call attachedbackends.PeerCall, method, id string, got func(RemoteArtifactChunk)) func(context.Context, RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+	readOnce := func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		var chunk RemoteArtifactChunk
+		err := call(ctx, method, &chunk, id, request)
+		return chunk, err
+	}
+	return func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+		chunk, err := readOnce(ctx, request)
+		if attachedbackends.Unanswered(err) {
+			chunk, err = readOnce(ctx, request)
+		}
+		if err == nil && got != nil {
+			got(chunk)
+		}
+		return chunk, err
+	}
 }
 
 // artifactAnnouncement is the size and digest a copy was promised before
@@ -346,7 +373,8 @@ type RemoteLogArtifact struct {
 //ao:route selected
 //ao:budget 20m
 func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (RemoteLogArtifact, error) {
-	// One call per chunk, so the fetch as a whole runs within its budget.
+	// One call per chunk on one held connection, so the fetch as a whole runs
+	// within its budget.
 	ctx, cancel := withinMethodBudget(ctx, "AgentRemoteFetchLog", "Fetching the log")
 	defer cancel()
 	job, err := a.AgentRemoteStatus(ctx, computerID, id)
@@ -357,15 +385,16 @@ func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (R
 		return RemoteLogArtifact{}, errorsx.Public("remote_artifact_storage", "Local artifact storage is not ready. Wait for Agent Overflow startup to finish.", nil)
 	}
 	var info remotejobs.LogInfo
-	result, err := receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), "", job.SourceThreadID, artifactAnnouncement{}, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
-		call, cancel := context.WithTimeout(ctx, time.Minute)
-		defer cancel()
-		var chunk RemoteArtifactChunk
-		err := a.backends.CallAgentPeer(call, computerID, "RemoteCommandLogArtifact", &chunk, id, request)
-		if err == nil && chunk.Log != nil {
-			info = *chunk.Log
-		}
-		return chunk, err
+	var result RemoteArtifact
+	err = a.backends.HoldAgentPeer(ctx, computerID, func(call attachedbackends.PeerCall) error {
+		var err error
+		result, err = receiveRemoteArtifact(ctx, filepath.Join(a.configDir, "remote-artifacts"), "", job.SourceThreadID, artifactAnnouncement{},
+			heldChunkRead(call, "RemoteCommandLogArtifact", id, func(chunk RemoteArtifactChunk) {
+				if chunk.Log != nil {
+					info = *chunk.Log
+				}
+			}))
+		return err
 	})
 	if err != nil {
 		return RemoteLogArtifact{}, a.remoteOperationError("fetch log", computerID, id, budgetError(ctx, err))

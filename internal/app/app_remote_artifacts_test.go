@@ -190,8 +190,11 @@ func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.app.remoteJobs, err = remotejobs.New(context.Background(), backend.app.store, func(context.Context, string, []string, io.Writer) (remotejobs.Outcome, error) {
-		return remotejobs.Outcome{ExitCode: 0}, nil
+	// More than one chunk of output, so the log copy below spans calls.
+	output := bytes.Repeat([]byte("paired output\n"), remoteArtifactChunkBytes/8)
+	backend.app.remoteJobs, err = remotejobs.New(context.Background(), backend.app.store, func(_ context.Context, _ string, _ []string, log io.Writer) (remotejobs.Outcome, error) {
+		_, err := log.Write(output)
+		return remotejobs.Outcome{ExitCode: 0}, err
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +216,17 @@ func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *tes
 	actual, err := os.ReadFile(result.Path)
 	if err != nil || !bytes.Equal(actual, expected) {
 		t.Fatalf("paired copy: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		job, err := source.AgentRemoteStatus(caller, peer.ID, receipt.ID)
+		return err == nil && job.State == "succeeded"
+	})
+	saved, err := source.AgentRemoteFetchLog(caller, peer.ID, receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied, err := os.ReadFile(saved.Path); err != nil || !bytes.Equal(copied, output) || saved.Log.TotalBytes != int64(len(output)) {
+		t.Fatalf("paired log copy: %d of %d bytes, log %+v, %v", len(copied), len(output), saved.Log, err)
 	}
 	other := transport.WithCallerScope(ctx, transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: uuid.NewString()})
 	if _, err = source.AgentRemoteFetchArtifact(other, peer.ID, receipt.ID, "report.txt"); err == nil {
