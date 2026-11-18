@@ -1284,12 +1284,20 @@ when a later attempt was refused, because the lost reply may have been
 an acceptance. When the row came back but this computer could not record
 it or read the request back, the call returns the token with the state
 the destination reported and says what failed. Either way the watcher
-(below) reconciles the request against the destination. It first asks
-one call's wait after the last attempt that may have reached it (the
-dispatch fence), when that attempt's handler can no longer admit the
-token, so a destination holding no row for it then never started it and
-the request is settled `refused`: the caller is never left waiting for
-something that never started.
+(below) reconciles the request against the destination, asking at its
+normal pace once the call has returned, so a receipt the destination
+holds is collected within one poll. A destination that holds no row for
+the token never started it only when that answer is conclusive: it
+advertises `thread-tools.v2` and its status answer does not mark the
+token as still being admitted (it marks a token a spawn, send or ask
+handler there is running for, from the handler's entry to its exit), or
+the request's admission deadline has passed. The deadline is one call's
+wait after the last attempt was sent, when that attempt's handler can no
+longer admit the token; it is kept on the request's row, so it holds
+across a restart of the calling computer. A conclusive answer settles
+the request `refused`; until then the row waits for the next poll and
+nothing is reported. The caller is never left waiting for something that
+never started.
 
 A request that cannot be started is answered by its own call. A spawn
 whose worktree git refuses, a send whose message the target's queue

@@ -94,8 +94,13 @@ type ThreadPeerReply struct {
 // seen or has swept past the retention floor, which the source settles
 // differently.
 type ThreadPeerRequest struct {
-	Token          string `json:"token"`
-	Known          bool   `json:"known"`
+	Token string `json:"token"`
+	Known bool   `json:"known"`
+	// Admitting marks, in a status answer, a token with no receipt here that
+	// a spawn, send or ask handler is still running for, and so may still
+	// admit (peerAdmissions). A computer on thread-tools.v2 sends it; from
+	// one, an unknown token without it was never started there.
+	Admitting      bool   `json:"admitting,omitempty"`
 	Kind           string `json:"kind,omitempty"`
 	TargetThreadID string `json:"targetThreadId,omitempty"`
 	Title          string `json:"title,omitempty"`
@@ -317,10 +322,17 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 	}
 	reply := ThreadPeerPollReply{Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
 	for _, token := range poll.Tokens {
+		// Read before the receipt: a handler that is gone by now wrote any
+		// receipt it admitted before it went, so the read below finds it.
+		admitting := a.peerAdmissions.holds(token)
+		if hook := a.peerStatusReadForTest; hook != nil {
+			hook(token)
+		}
 		state, err := a.threadPeerRequestState(ctx, owner, token)
 		if err != nil {
 			return ThreadPeerPollReply{}, err
 		}
+		state.Admitting = admitting && !state.Known
 		reply.Requests = append(reply.Requests, state)
 	}
 	return reply, nil
@@ -460,6 +472,14 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 	if !entityid.Valid(token) {
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A forwarded request must carry the token its source minted.", nil)
+	}
+	if call.Tool != "thread_cancel" {
+		// From here until it returns, this handler may admit the token, and
+		// a status answer says so (peerAdmissions).
+		defer a.peerAdmissions.enter(token)()
+		if hook := a.peerAdmissionForTest; hook != nil {
+			hook(token)
+		}
 	}
 	source := call.Source
 	source.ThreadID = strings.TrimSpace(source.ThreadID)

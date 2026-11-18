@@ -104,10 +104,11 @@ func newReleasedReceiverPair(t *testing.T) (*reachPair, *peerFaults) {
 // A spawn whose answer is lost on its way back from v0.0.19 is never sent
 // there again, which would settle a receipt its first attempt may still be
 // writing: the caller is given the token unconfirmed, and the poll follows
-// it once the dispatch fence has passed. Here the first attempt's handler
-// has not admitted the token yet, so the destination's status would answer
-// that it is unknown; no second send follows, and the receipt the handler
-// writes later is collected.
+// it. Here the first attempt's handler has not admitted the token yet, so
+// the destination's status answers that it is unknown, which from v0.0.19
+// says nothing before the request's admission deadline: the row stays
+// unconfirmed, no second send follows, and the receipt the handler writes
+// later is collected.
 func TestALostSpawnIsNeverSentAgainToAReleasedReceiver(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -123,7 +124,6 @@ func TestALostSpawnIsNeverSentAgainToAReleasedReceiver(t *testing.T) {
 		faults.detached.Wait()
 	})
 
-	sent := time.Now()
 	ack := pair.spawnThere(t, "admitted after its answer was lost", nil)
 	returned := time.Now()
 	if ack.Token == "" || ack.State != store.ThreadRequestUnconfirmed || ack.Outcome != threadtools.OutcomeUnconfirmed {
@@ -135,18 +135,9 @@ func TestALostSpawnIsNeverSentAgainToAReleasedReceiver(t *testing.T) {
 	if _, found, err := pair.dest.store.GetThreadRequestReceipt(ack.Token); err != nil || found {
 		t.Fatalf("the destination holds the token before its handler admitted it: found=%v err=%v", found, err)
 	}
-	// The poll first visits the request once the one attempt's handler has
-	// run out of time to admit it.
-	fence := threadPeerCallWait("ThreadToolCall")
-	row := pair.request(t, ack.Token)
-	if row.NextCheck < sent.Add(fence).UnixMilli() || row.NextCheck > returned.Add(fence+threadPollNormalDelay).UnixMilli() {
-		t.Fatalf("the request is first polled at %s, want one call's wait (%s) after its attempt at %s",
-			time.UnixMilli(row.NextCheck), fence, sent)
-	}
-	pair.source.pollRemoteThreadRequests(time.Now())
-	pair.source.threadRequestsWG.Wait()
-	if state := pair.request(t, ack.Token).State; state != store.ThreadRequestUnconfirmed {
-		t.Fatalf("a poll inside the dispatch fence settled the request %q", state)
+	pair.pollAt(t, pair.source, returned.Add(pair.source.threadPollNormal()))
+	if row := pair.request(t, ack.Token); row.State != store.ThreadRequestUnconfirmed {
+		t.Fatalf("a poll before the admission deadline settled the request %q %q", row.State, row.Answer)
 	}
 
 	admitted()
@@ -164,11 +155,11 @@ func TestALostSpawnIsNeverSentAgainToAReleasedReceiver(t *testing.T) {
 	}
 }
 
-// Each retry is a dispatch of its own and moves the dispatch fence to it: a
-// poll while the retry is still out leaves the request alone, even once the
-// first attempt's fence has passed, instead of reading the destination's
-// "unknown" as a refusal of a call it is about to admit.
-func TestARetryMovesTheDispatchFenceToItself(t *testing.T) {
+// Each retry is a dispatch of its own and records it on the row before it
+// is sent: a poll while the retry is still out leaves the request alone,
+// even once the first attempt's deadline has passed, instead of reading the
+// destination's "unknown" as a refusal of a call it is about to admit.
+func TestARetryRecordsItsOwnDispatch(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	var faults *peerFaults
@@ -178,9 +169,9 @@ func TestARetryMovesTheDispatchFenceToItself(t *testing.T) {
 		return wire
 	})
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
-	// As if the first attempt had used its whole wait: its fence is past.
-	execOnStore(t, pair.dbPath, `CREATE TRIGGER fence_passed AFTER INSERT ON thread_requests
-		BEGIN UPDATE thread_requests SET next_check = 0 WHERE token = NEW.token; END`)
+	// As if the first attempt had used its whole wait: its deadline is past.
+	execOnStore(t, pair.dbPath, `CREATE TRIGGER deadline_passed AFTER INSERT ON thread_requests
+		BEGIN UPDATE thread_requests SET next_check = 0, admit_until = 0 WHERE token = NEW.token; END`)
 	faults.unread.Store(1)
 	faults.held, faults.hold = make(chan struct{}), make(chan struct{})
 	released := sync.OnceFunc(func() { close(faults.hold) })
@@ -275,8 +266,8 @@ func TestALostSpawnFollowsAReleasedReceiversUnnamedReceipt(t *testing.T) {
 
 // Against v0.0.19 only a call that makes no thread is sent again after an
 // attempt that may have reached it. A spawn that failed there unread is
-// left to the poll, which settles it as never started once the dispatch
-// fence has passed; a send whose answer was lost is sent again and
+// left to the poll, which settles it as never started once its admission
+// deadline has passed; a send whose answer was lost is sent again and
 // answered from the receipt it holds.
 func TestAReleasedReceiverIsSentAgainOnlyWhatMakesNoThread(t *testing.T) {
 	t.Parallel()
@@ -294,7 +285,7 @@ func TestAReleasedReceiverIsSentAgainOnlyWhatMakesNoThread(t *testing.T) {
 	}
 	pair.poll(t)
 	if row := pair.request(t, lost.Token); row.State != store.ThreadRequestRefused || !strings.Contains(string(row.Answer), "never accepted") {
-		t.Fatalf("the poll past the fence settled the spawn %q %q, want it never started", row.State, row.Answer)
+		t.Fatalf("the poll past the deadline settled the spawn %q %q, want it never started", row.State, row.Answer)
 	}
 
 	spawn := pair.spawnThere(t, "answered", nil)

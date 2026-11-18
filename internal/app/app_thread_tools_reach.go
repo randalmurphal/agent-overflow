@@ -253,11 +253,12 @@ func (t threadToolsApp) startRemoteRequest(
 	row.CallerThreadID = caller.ThreadID
 	row.TargetComputerID = computerID
 	row.State = store.ThreadRequestUnconfirmed
-	// The poll is the recovery path for a reply that never arrives, and it
-	// must not ask while an attempt could still be admitted there: a
-	// destination that does not hold the token yet answers `unknown`, which
-	// for an unconfirmed row means refused (threadRequestDispatchFence).
-	row.NextCheck = time.Now().Add(threadRequestDispatchFence).UnixMilli()
+	// The poll is the recovery path for a reply that never arrives. It stays
+	// away while the call is out, whose frame the destination may not have
+	// read yet, and an unknown answer settles the row as never started only
+	// once no attempt can still be admitted (threadRequestNeverStarted).
+	row.AdmitUntil = time.Now().Add(threadRequestAdmissionWindow).UnixMilli()
+	row.NextCheck = row.AdmitUntil
 	// Admitted from the row to the destination's answer, so a rest of the
 	// caller stops a request the destination has settled or holds.
 	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
@@ -277,17 +278,13 @@ func (t threadToolsApp) startRemoteRequest(
 		SourceAgent: threadPeerAgent(origin.agent),
 		Inherit:     origin.inherit,
 	})
-	issue, delay := "", t.app.threadPollNormal()
+	issue := ""
 	if err != nil {
 		_, issue, _ = threadErrorDetails(tool, err)
-		if !sent.IsZero() {
-			// No answer came back from an attempt that may have reached the
-			// destination: the poll first asks once that attempt's handler
-			// can no longer admit the token.
-			delay = time.Until(sent.Add(threadRequestDispatchFence))
-		}
 	}
-	t.app.rescheduleThreadRequest(row, delay, issue)
+	// Whatever came back, the poll asks next at its own pace: a receipt the
+	// destination holds is collected at once.
+	t.app.rescheduleThreadRequest(row, t.app.threadPollNormal(), issue)
 	if err != nil && sent.IsZero() {
 		// Nothing runs under the token. The error this returns is the
 		// delivery, as it is for a request this computer refused itself
@@ -369,12 +366,13 @@ func (t threadToolsApp) unownedSpawnNotice(call any, reply ThreadPeerRequest, co
 // second piece of work.
 const threadPeerAdmissionAttempts = 3
 
-// threadRequestDispatchFence keeps a source row out of the poller from one
-// attempt's dispatch until that attempt's handler can no longer admit the
-// token there: the call's wait, which bounds the destination's handler,
-// plus the normal poll delay. Each attempt moves the fence to its own
-// dispatch, so it covers exactly the attempts the call makes.
-var threadRequestDispatchFence = threadPeerCallWait("ThreadToolCall") + threadPollNormalDelay
+// threadRequestAdmissionWindow is how long after one attempt's dispatch its
+// handler on the destination could still admit the token: the call's wait,
+// which bounds that handler. Each attempt records the end of its own
+// window on the row before it is sent (store.ThreadRequest.AdmitUntil), so
+// the deadline covers exactly the attempts the call makes and survives a
+// restart of this computer.
+var threadRequestAdmissionWindow = threadPeerCallWait("ThreadToolCall")
 
 // callThreadPeerRequest forwards one request-minting call and returns the
 // receipt the destination reports, or the last failure and when the last
@@ -386,33 +384,42 @@ var threadRequestDispatchFence = threadPeerCallWait("ThreadToolCall") + threadPo
 // it gives only for a request it did not start. Only an attempt that may
 // have started it is tried again, with the same token, because what was
 // lost may be the reply and not the work. A send makes nothing and is sent
-// again to any destination; a spawn or an ask only to one on
-// thread-tools.v2, which answers a token it holds from its receipt. One
-// that predates it settles a receipt whose thread is still being made and
-// lets that thread run anyway, so such a call is left to the poll. A
+// again to any destination; a spawn or an ask only to one whose first
+// attempt's connection proved thread-tools.v2, which answers a token it
+// holds from its receipt. One that predates it settles a receipt whose
+// thread is still being made and lets that thread run anyway, so such a
+// call is left to the poll, and no attempt is recorded that is not sent. A
 // refusal of a later attempt says nothing about the work an earlier one may
 // have started, so the request stays open for the poller.
 func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, time.Time, error) {
 	var sent time.Time
 	var failed error
+	v2 := false
 	for attempt := 1; ; attempt++ {
 		protocol := transport.CapabilityThreadTools
 		if attempt > 1 {
 			if call.Tool != "thread_send" {
+				if !v2 {
+					return ThreadPeerRequest{}, sent, failed
+				}
 				protocol = transport.CapabilityThreadToolsV2
 			}
-			if err := a.store.RescheduleThreadRequest(call.Token, time.Now().Add(threadRequestDispatchFence).UnixMilli(), 0, ""); err != nil {
-				// Unfenced, the poll could refuse a request this attempt
-				// is starting; the earlier attempt's fence stands instead.
-				logThreadRequestSweep("fence the retry of request "+call.Token, err)
+			if err := a.store.DispatchThreadRequest(call.Token, time.Now().Add(threadRequestAdmissionWindow).UnixMilli()); err != nil {
+				// Unrecorded, the poll could read this attempt's token as
+				// never started while it is being admitted: it is not sent,
+				// and the earlier attempt's deadline stands.
+				logThreadRequestSweep("record the retry of request "+call.Token, err)
 				return ThreadPeerRequest{}, sent, failed
 			}
 		}
 		dispatched := time.Now()
 		rpc, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolCall"))
 		var reply ThreadPeerReply
-		err := a.backends.CallThreadPeerOn(rpc, computer.ID, protocol, "ThreadToolCall", &reply, call)
+		proved, err := a.backends.CallThreadPeerProving(rpc, computer.ID, protocol, transport.CapabilityThreadToolsV2, "ThreadToolCall", &reply, call)
 		cancel()
+		if attempt == 1 {
+			v2 = proved
+		}
 		if err != nil {
 			if attempt > 1 && attachedbackends.Unsupported(err) {
 				return ThreadPeerRequest{}, sent, failed

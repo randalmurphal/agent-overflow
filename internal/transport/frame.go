@@ -189,7 +189,9 @@ const CapabilityThreadTools = "thread-tools.v1"
 // newer than v1 is keyed on it. A destination that advertises it answers a
 // ThreadToolCall whose token it already holds from that receipt, never
 // settling it, so a source may send a request that may have arrived again
-// with the same token.
+// with the same token, and its ThreadToolRequestStatus marks a token it
+// holds no receipt for while a handler for it is still running, so an
+// unmarked one was never started there.
 const CapabilityThreadToolsV2 = "thread-tools.v2"
 
 // threadToolsGenerations are the thread peer protocol generations, oldest
