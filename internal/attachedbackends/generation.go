@@ -65,9 +65,9 @@ func (m *Manager) peerCarrier(id string) (*carrier, error) {
 
 // peerCarrierUnder is peerCarrier for a call made on behalf of a record of
 // the pairing generation: a carrier of any other generation, or none,
-// refuses it with ErrPairingNotHeld. The carrier is the call's own, so the
-// pairing cannot change between this check and the call: a carrier its
-// replacement retired sends nothing.
+// refuses it with ErrPairingNotHeld. The call goes out on the carrier
+// checked here, so it carries that generation's credentials whatever
+// replaces the pairing meanwhile.
 func (m *Manager) peerCarrierUnder(id, generation string) (*carrier, error) {
 	held, err := m.carrier(id)
 	switch {
