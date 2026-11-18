@@ -620,10 +620,10 @@ func collectThreadRequest(db sqlExecutor, token string, answer ThreadReceiptAnsw
 // CollectThreadRequest copies an answer another computer reported onto the
 // request this computer sent there, and owes that computer the
 // acknowledgement of answer.Revision, in one transaction. What it copies is
-// the settlement and the late reply (collectThreadRequest), or, for a
-// request that already holds its first answer, that a newer reply arrived
-// there and expired before it was collected: the first answer stays, and the
-// revision is held all the same, since nothing of it is left to collect. A
+// the settlement and the late reply (collectThreadRequest), and that a newer
+// reply arrived there and expired before it was collected, with when, beside
+// the first answer this or an earlier collection took: the revision is held
+// all the same, since nothing of it is left to collect. A
 // revision the request can take nothing from (it settled here first) is
 // owed too: there is nothing left for that computer to hold it for. The
 // caller sends what is owed and clears it once that computer takes it
@@ -639,12 +639,14 @@ func (s *Store) CollectThreadRequest(token string, answer ThreadReceiptAnswer, w
 	if err != nil {
 		return ThreadRequestCollected{}, err
 	}
-	if !collected.Any() && answer.State == ThreadReceiptExpired && answer.LateReplyAt != 0 {
-		// The receipt expired with a late reply the request never took.
+	if answer.State == ThreadReceiptExpired && answer.LateReplyAt != 0 {
+		// The receipt expired with a late reply the request never took:
+		// recorded beside the first answer, whether an earlier collection
+		// took that answer or this one settled the request `expired`.
 		result, err := tx.Exec(`UPDATE thread_requests
 			    SET late_reply_expired = 1, late_reply_at = ?, revision = MAX(revision, ?), updated_at = ?
-			  WHERE token = ? AND state = '`+ThreadRequestFinished+`' AND late_reply IS NULL AND late_reply_expired = 0
-			    AND lineage_only = 0`, answer.LateReplyAt, answer.Revision, nowMillis(), token)
+			  WHERE token = ? AND state IN ('`+ThreadRequestFinished+`', '`+ThreadRequestExpired+`')
+			    AND late_reply IS NULL AND late_reply_expired = 0 AND lineage_only = 0`, answer.LateReplyAt, answer.Revision, nowMillis(), token)
 		if err != nil {
 			return ThreadRequestCollected{}, fmt.Errorf("%s: record the late reply that expired: %w", action, err)
 		}

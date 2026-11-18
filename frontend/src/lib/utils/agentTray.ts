@@ -179,6 +179,8 @@ export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'worker' 
       if (row.lateReply) return 'finished, replied late';
       // A paired computer dropped the late reply before it was collected.
       return row.lateReplyExpiredAt ? 'finished, late reply expired' : 'finished';
+    case 'expired':
+      return row.lateReplyExpiredAt ? 'expired, late reply expired' : 'expired';
     case 'errored':
       return 'failed';
     case 'cancelled':

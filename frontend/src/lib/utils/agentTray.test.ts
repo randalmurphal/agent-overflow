@@ -59,6 +59,11 @@ describe('an open row', () => {
     expect(agentRowStateLabel(waiting)).toBe('waiting');
     expect(agentWorkerCount([waiting], (r) => agentRowShownState(r) === 'running')).toBe(0);
     expect(agentRowStateLabel(live('replied', undefined, { lateReply: true }))).toBe('replied late');
+    // A paired computer dropped the late reply, as it did the first answer
+    // or after this computer collected it.
+    expect(agentRowStateLabel(live('expired', undefined, { lateReplyExpiredAt: 1 }))).toBe('expired, late reply expired');
+    expect(agentRowStateLabel(live('expired'))).toBe('expired');
+    expect(agentRowStateLabel(live('finished', undefined, { lateReplyExpiredAt: 1 }))).toBe('finished, late reply expired');
     // An open request reads as its own state, whatever its worker does,
     // but one held for its worker's rest: its turn ended and its worker
     // waits on what it started.
