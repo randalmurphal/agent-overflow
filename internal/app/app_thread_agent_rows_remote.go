@@ -246,8 +246,13 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 	}
 	c := &a.threadAgentPeers
 	c.recording.Lock()
-	defer c.recording.Unlock()
-	if !a.peerStillPaired(spawn.TargetComputerID) {
+	paired, lookupErr := a.peerPaired(spawn.TargetComputerID)
+	if lookupErr != nil {
+		c.recording.Unlock()
+		return threadAgentPeerAnswer{err: lookupErr}
+	}
+	if !paired {
+		c.recording.Unlock()
 		return threadAgentPeerAnswer{err: errThreadAgentPeerUnpaired}
 	}
 	changed := false
@@ -257,7 +262,7 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 			if _, writeErr := a.store.SetThreadRequestNestedOpen(spawn.Token, err == nil && peerListingOpen(listing)); writeErr != nil {
 				return writeErr
 			}
-			prompts = a.noteRemotePrompts(spawn, listing, err)
+			prompts = a.noteRemotePrompts(origin, spawn, listing, err)
 		}
 		c.mu.Lock()
 		changed = c.noteAnswerLocked(spawn, listing, err, depth <= 0 && listing.Open != nil)
@@ -272,9 +277,12 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 		}
 		return commit()
 	})
+	c.recording.Unlock()
 	if applyErr != nil {
-		if kept, ok := a.cachedPeerAgentRows(spawn); ok {
-			return kept
+		if errors.Is(applyErr, errReadSuperseded) {
+			if kept, ok := a.cachedPeerAgentRows(spawn); ok {
+				return kept
+			}
 		}
 		return threadAgentPeerAnswer{err: applyErr}
 	}
@@ -292,19 +300,6 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 		a.projectPeerRows(spawn.CallerThreadID)
 	}
 	return answer
-}
-
-// peerStillPaired reports whether an answer from computerID may be
-// recorded. The caller holds recording, and every forget runs once the
-// computer's profile is gone, so a computer found here is forgotten only
-// after this answer is recorded. An answer whose lookup fails is dropped;
-// the next read asks again.
-func (a *App) peerStillPaired(computerID string) bool {
-	paired, err := a.peerPaired(computerID)
-	if err != nil {
-		log.Printf("agent rows: look up computer %s: %v", computerID, err)
-	}
-	return paired
 }
 
 // peerPaired reports whether computerID is paired here, false with the

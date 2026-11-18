@@ -55,7 +55,7 @@ func (r *remoteWorkerPrompts) heldLinks(computer string) []string {
 	defer r.mu.Unlock()
 	var out []string
 	for key, p := range r.byKey {
-		if key.computerID == computer && p.isHeld() {
+		if key.computerID == computer && (p.state == remotePromptRouted || p.state == remotePromptAnswering || (p.state == remotePromptClosed && p.delivery != "")) {
 			out = append(out, p.spawn.Token)
 		}
 	}

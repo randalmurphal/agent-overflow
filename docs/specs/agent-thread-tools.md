@@ -1652,10 +1652,9 @@ work, and the accepting computer settles the request `interrupted`
 still wants the work. A target deleted while a request is open settles
 `errored` with that reason.
 
-An owned worker's prompt there is pulled the same way: the spawner's
-computer reads it from the spawn's `agent_rows` answer at the poll's
-pace and queues it to the spawner as a wake, and one the spawner cannot
-take goes back there ([reaching another computer](#reaching-another-computer)).
+An owned worker's prompt reaches its spawner through the paired owner's
+wait. The spawner's computer queues the prompt as a wake and renews its
+lease while it holds it. See [reaching another computer](#reaching-another-computer).
 
 ## Attribution (Q9, Q16)
 

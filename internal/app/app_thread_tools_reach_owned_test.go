@@ -216,6 +216,12 @@ func TestAnOwnedSpawnWithoutItsLevelIsAPlainRowThere(t *testing.T) {
 			if err != nil || thread.Placement != store.PlacementStandalone || receipt.SpawnLink {
 				t.Fatalf("the thread there is %s, linked %v, %v; want a plain row", thread.Placement, receipt.SpawnLink, err)
 			}
+			if err := pair.dest.RenameThread(thread.ID, "renamed standalone"); err != nil {
+				t.Fatal(err)
+			}
+			if changes, err := pair.dest.store.PendingSpawnRevisions(receipt.OwnerDeviceID, "", 1); err != nil || len(changes) != 0 {
+				t.Fatalf("legacy spawn owed structural revisions: %+v, %v", changes, err)
+			}
 			note, _ := result["note"].(string)
 			// The notice opens the note, naming the computer as this one does.
 			first, _, _ := strings.Cut(note, ". ")

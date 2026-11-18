@@ -373,7 +373,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 		t.Parallel()
 		p, peer := promptOwnerOpPair(t, 0)
 		p.openThere(t, 1)
-		listing, _, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+		listing, origin, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 		if err != nil || len(listing.Prompts) != 1 {
 			t.Fatalf("the listing there: %+v, %v", listing.Prompts, err)
 		}
@@ -385,9 +385,15 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 			<-release
 		})
 		<-busy
-		p.source.noteRemotePrompts(p.spawn, listing, nil)
-		p.source.forgetPeerAgentRows(p.computer)
+		done := p.source.noteRemotePrompts(origin, p.spawn, listing, nil)
+		if err := p.manager.Remove(p.computer); err != nil {
+			close(release)
+			t.Fatal(err)
+		}
 		close(release)
+		if err := <-done; err == nil {
+			t.Fatal("queued prompt applied after its carrier was forgotten")
+		}
 		p.drain(t)
 		if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
 			t.Fatalf("the spawner holds %+v after its computer was forgotten", wakes)

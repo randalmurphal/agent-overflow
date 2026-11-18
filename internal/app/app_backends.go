@@ -349,11 +349,12 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 	switch change.Action {
 	case attachedbackends.SetRemoved:
-		a.ownerUpdates.cancelPeer(change.ID)
 		if change.Reason == attachedbackends.RemovedByComputer {
 			a.endRevokedPairing(change)
+		} else {
+			a.ownerUpdates.cancelPeer(change.ID)
+			a.forgetPeerAgentRows(change.ID)
 		}
-		a.forgetPeerAgentRows(change.ID)
 	case attachedbackends.SetMembership:
 		a.forgetUnpairedPeerAgentRows()
 	}

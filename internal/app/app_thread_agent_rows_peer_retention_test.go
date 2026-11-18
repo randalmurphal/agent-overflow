@@ -209,8 +209,7 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 }
 
 // The source's lineage of a remote spawn lasts until that computer says
-// the thread is gone: once it is deleted there, the source's own rest pass
-// is refused and deletes the lineage, and stops asking.
+// the thread is gone. Its structural revision ends the source's reach.
 func TestAnEndedRemoteLineageIsExcludedFromDeleteConfirmation(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -224,8 +223,7 @@ func TestAnEndedRemoteLineageIsExcludedFromDeleteConfirmation(t *testing.T) {
 	if err := pair.dest.deleteThread(child); err != nil {
 		t.Fatalf("delete the thread there: %v", err)
 	}
-	// Nothing of the spawn's last answer is remembered, as after a restart:
-	// only the rest pass's question asks about it.
+	// The recorded end survives eviction of the cached listing.
 	pair.source.threadAgentPeers.mu.Lock()
 	clear(pair.source.threadAgentPeers.entries)
 	pair.source.threadAgentPeers.mu.Unlock()

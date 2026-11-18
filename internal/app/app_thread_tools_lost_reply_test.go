@@ -110,6 +110,10 @@ func TestAV2DestinationSaysItIsStillAdmittingALostSpawn(t *testing.T) {
 			if err != nil || ack.State != store.ThreadRequestUnconfirmed {
 				t.Fatalf("spawn = %+v, %v; want the token unconfirmed", ack, err)
 			}
+			startReconciledOwner(t, pair)
+			if row := pair.request(t, ack.Token); row.State != store.ThreadRequestUnconfirmed {
+				t.Fatalf("first owner reconciliation decided an in-flight admission: %+v", row)
+			}
 			status, err := pair.source.callThreadRequestStatus(pair.computer, ThreadPeerPoll{Tokens: []string{ack.Token}})
 			if err != nil || len(status.Requests) != 1 || status.Requests[0].Known || !status.Requests[0].Admitting {
 				t.Fatalf("status = %+v, %v; want the token unknown and still being admitted", status.Requests, err)

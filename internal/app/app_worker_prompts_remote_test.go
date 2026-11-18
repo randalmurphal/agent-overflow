@@ -330,12 +330,15 @@ func TestARemotePromptLeftOutOfALateAnswerIsDeliveredAgain(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.openThere(t, 1)
-	listing, _, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	listing, origin, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 	if err != nil || len(listing.Prompts) != 1 {
 		t.Fatalf("the listing there: %+v, %v; want one prompt", listing.Prompts, err)
 	}
 	reconcile := func(listed []ThreadAgentPrompt) {
-		p.source.workerPrompts.run(func() { p.source.reconcileRemotePrompts(p.spawn, listed) })
+		done := p.source.noteRemotePrompts(origin, p.spawn, ThreadAgentRows{Prompts: listed}, nil)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 		p.drain(t)
 	}
 	reconcile(listing.Prompts)

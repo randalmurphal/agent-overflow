@@ -49,14 +49,14 @@ func (a *App) refreshOwnerPeers() error {
 		}
 	}
 	o.mu.Unlock()
+	var failures []error
 	for _, id := range ids {
 		ended, err := a.endUnpaired(id)
 		if err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("computer %s: %w", id, err))
+			continue
 		}
 		if ended {
-			a.ownerUpdates.cancelPeer(id)
-			a.forgetPeerAgentRows(id)
 			continue
 		}
 		o := &a.ownerUpdates
@@ -93,7 +93,7 @@ func (a *App) refreshOwnerPeers() error {
 		}
 		o.mu.Unlock()
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
@@ -227,6 +227,7 @@ func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
 		if err = a.readOwnerChanges(ctx, id, launch, page.Tokens, page.Structural); err != nil {
 			return err
 		}
+		a.invalidateChangedOwnerTrees(id, page.Tokens)
 		key = page.Next
 	}
 	for after := ""; ; {
@@ -237,6 +238,7 @@ func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
 		if err = a.readOwnerChanges(ctx, id, launch, keys, nil); err != nil {
 			return err
 		}
+		a.invalidateChangedOwnerTrees(id, keys)
 		if len(keys) < ownerPageSize {
 			return nil
 		}
@@ -285,7 +287,7 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 	poll := ThreadPeerPoll{Launch: launch}
 	spawns := map[string]store.ThreadRequest{}
 	for _, row := range rows {
-		if row.RemoteListingReach() {
+		if row.RemoteListingReach() || (row.Kind == store.ThreadRequestSpawn && row.LinkEnd == "" && row.TargetThreadID == "" && !threadRequestSettled(row)) {
 			spawns[row.Token] = row
 			poll.Links = append(poll.Links, OwnerLinkRead{Token: row.Token, Source: row.MadeIn(), Held: a.heldRemotePrompts(row)})
 		}
@@ -298,6 +300,17 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 	}
 	call, cancel := context.WithTimeout(ctx, threadPollCallTimeout)
 	defer cancel()
+	if len(rows) == 0 {
+		for _, edit := range structural {
+			if slices.Contains(keys, edit.Token) {
+				poll.StructuralAck = append(poll.StructuralAck, edit.SpawnRevisionAck)
+			}
+		}
+		if len(poll.StructuralAck) == 0 {
+			return nil
+		}
+		return a.backends.CallThreadPeerOn(call, id, transport.CapabilityThreadToolsV2, "ThreadToolRequestStatus", &ThreadPeerPollReply{}, poll)
+	}
 	var reply ThreadPeerPollReply
 	started := time.Now()
 	origin, err := a.backends.ReadThreadPeer(call, id, transport.CapabilityThreadToolsV2, "", "ThreadToolRequestStatus", &reply, poll)
@@ -367,6 +380,16 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 					continue
 				}
 				spawn := spawns[state.Token]
+				if spawn.TargetThreadID == "" {
+					current, found, err := a.store.GetThreadRequest(state.Token)
+					if err != nil {
+						return err
+					}
+					if !found || current.TargetThreadID == "" {
+						continue
+					}
+					spawn = current
+				}
 				if state.State == nil && (ends[state.Token] == "gone" || ends[state.Token] == "detached") {
 					state.End = ends[state.Token]
 				}
@@ -384,7 +407,7 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 				if _, err := a.store.SetThreadRequestNestedOpen(state.Token, peerListingOpen(listing)); err != nil {
 					return err
 				}
-				if done := a.noteRemotePrompts(spawn, listing, nil); done != nil {
+				if done := a.noteRemotePrompts(origin, spawn, listing, nil); done != nil {
 					promptResults = append(promptResults, done)
 				}
 				c := &a.threadAgentPeers

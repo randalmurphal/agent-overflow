@@ -258,15 +258,14 @@ func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, ar
 	if a.requireScope(ctx, transport.ScopeApprovalsRespond, "") != nil {
 		return nil, nil
 	}
-	for _, token := range args.Held {
-		if _, err := a.remotePromptFor(owner, source, args.Spawn, token); err == nil {
-			a.workerPrompts.renew(token, time.Now())
-		}
-	}
+
 	var out []ThreadAgentPrompt
 	for _, prompt := range a.workerPrompts.heldFor(args.Spawn, args.ThreadID) {
 		if !a.workerPromptOpenTo(prompt) {
 			continue
+		}
+		if slices.Contains(args.Held, prompt.token) {
+			a.workerPrompts.renew(prompt.token, time.Now())
 		}
 		out = append(out, peerPromptWire(title, prompt))
 	}

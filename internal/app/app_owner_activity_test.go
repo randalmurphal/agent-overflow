@@ -1,11 +1,12 @@
 package app
 
 import (
-	"agent-overflow/internal/store"
 	"context"
 	"slices"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
 func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
@@ -91,5 +92,56 @@ func TestOwnerRetriesPromptWhenTheLocalQueueWriteFails(t *testing.T) {
 	}
 	if got := remoteWakes(t, p.source, p.caller.ID); len(got) != 1 {
 		t.Fatalf("retry queued %v", got)
+	}
+}
+
+func TestPromptClosureQueuedBehindItsFirstListingWithdrawsTheWake(t *testing.T) {
+	p := newRemotePromptPair(t, remoteApproveLine)
+	p.openThere(t, 1)
+	listing, origin, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	if err != nil || len(listing.Prompts) != 1 {
+		t.Fatalf("held prompt listing: %+v, %v", listing, err)
+	}
+	release := make(chan struct{})
+	p.source.workerPrompts.run(func() { <-release })
+	first := p.source.noteRemotePrompts(origin, p.spawn, listing, nil)
+	second := p.source.noteRemotePrompts(origin, p.spawn, ThreadAgentRows{}, nil)
+	close(release)
+	if second == nil {
+		t.Fatal("the closure behind the first listing was dropped")
+	}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
+		t.Fatalf("prompt closed but its wake remains: %v", wakes)
+	}
+}
+
+func TestPromptWithdrawalRetriesItsDurableQueueDelete(t *testing.T) {
+	p := newRemotePromptPair(t, remoteApproveLine)
+	p.openThere(t, 1)
+	p.readOwnerState(t, p.source)
+	if len(remoteWakes(t, p.source, p.caller.ID)) != 1 {
+		t.Fatal("first notice missing")
+	}
+	execOnStore(t, p.dbPath, `CREATE TRIGGER fail_owner_withdraw BEFORE DELETE ON flush_queue_items BEGIN SELECT raise(ABORT,'failed owner withdrawal'); END`)
+	_, origin, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove := func() error { return <-p.source.noteRemotePrompts(origin, p.spawn, ThreadAgentRows{}, nil) }
+	if err := remove(); err == nil {
+		t.Fatal("failed queue delete acknowledged")
+	}
+	execOnStore(t, p.dbPath, `DROP TRIGGER fail_owner_withdraw`)
+	if err := remove(); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteWakes(t, p.source, p.caller.ID); len(got) != 0 {
+		t.Fatalf("retry left prompt wakes: %v", got)
 	}
 }
