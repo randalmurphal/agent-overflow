@@ -37,10 +37,9 @@ func remoteProfileName(profile attachedbackends.Attached) string {
 }
 
 // remoteWatchComputerName names a command's computer as the person knows it:
-// by its pairing here while the pairing that admitted the command is held,
-// else by the name the person knew it by when the command was admitted,
-// whatever a later pairing calls it. A command that kept no name falls back
-// to the pairing held now.
+// by its current name while a pairing with it is held, else by the name the
+// command kept, its name at admission or, for a command from before names
+// were kept, its last name, which the end of the pairing wrote.
 func remoteWatchComputerName(computers map[string]attachedbackends.Attached, w store.RemoteWatch) string {
 	if held, paired := computers[w.ComputerID]; paired {
 		return remoteProfileName(held)

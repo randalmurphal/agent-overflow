@@ -480,10 +480,9 @@ func attachedLabel(row attachedbackends.Attached) string {
 }
 
 // requestComputerName names the computer a request went to as the person
-// knows it: by its pairing here while the pairing that admitted the request
-// is held, else by the name the person knew it by when the request was
-// admitted, whatever a later pairing calls it. A request that kept no name
-// falls back to the pairing held now.
+// knows it: by its current name while a pairing with it is held, else by the
+// name the request kept, its name at admission or, for a request from before
+// names were kept, its last name, which the end of the pairing wrote.
 func (t threadToolsApp) requestComputerName(row store.ThreadRequest) (name, id string) {
 	held, paired := t.threadToolsPairing(row.TargetComputerID)
 	if !paired {
