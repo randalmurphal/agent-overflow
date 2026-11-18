@@ -1518,6 +1518,18 @@ then follows the local delivery rule above. Restart on either side
 loses nothing: the source keeps polling, the destination keeps the
 settlement until the source has taken it.
 
+The source takes a revision by acknowledging it, and the acknowledgement
+is a debt it records in the transaction that collects the revision. Every
+status call to that computer carries what it owes, as does a call of its
+own after a collection (an acknowledgement alone, which v0.0.19 reads),
+and only that computer taking the revision clears it; one that did not
+arrive is sent again after the error delay, across a restart. A status
+call names the revision the source already holds of each settled request
+it asks about, and the answer about one it holds leaves out the texts the
+source has; a computer that does not name them is answered in full, and
+the source reads a full answer of a revision it holds as already
+collected.
+
 An open request is polled every five seconds, or every two while a wait
 is parked on it. A poll for a due request also asks about the other
 requests the same thread still has open on that computer, so answers
@@ -1541,7 +1553,11 @@ naming the answer's age. After a day the destination drops the answer
 text but keeps the request's identity, so the source settles the
 request `expired` ("answered at <time>, not collected in time") when it
 next asks, never `refused`, and a retry with that token never runs the
-work again. Nothing is held indefinitely, and nothing needs a lease: a
+work again. A late reply dropped that way, after the source collected the
+first answer, leaves that answer standing and is recorded on the request
+with when it arrived: `thread_status` reports `late_reply_expired_at`, and
+the Agents row reads "finished, late reply expired" with the time in its
+details. Nobody is woken for it. Nothing is held indefinitely, and nothing needs a lease: a
 scratch thread is deleted the moment its answer is stored, whether or
 not the caller is around; the answer lives in the request record, not
 in the thread.
@@ -1838,8 +1854,17 @@ the pairing is live. The destination's own switch is not consulted, and
 neither is the Agent remote tools opt-in that `ao-remote-tools` needs:
 that opt-in exists because a remote command runs a shell, and nothing
 here does.
-Revoking the pairing ends everything between the two computers;
-outstanding requests settle `errored` with that reason.
+The end of a pairing is one transition over both ledgers, taken when a
+call there answers that the pairing ended (a poll, an acknowledgement, a
+command's status or an owed cancel) and when the person forgets the
+computer, under the same fence admission takes, so no request or command
+enters a pairing being ended: every open request settles `errored` with
+the reason; every settled one leaves the poll with its answer kept and
+owes no acknowledgement; every command there not known to have finished
+is recorded as finished with an unknown outcome and the reason, its owed
+cancel settled, and is told to its thread once, the Background row and
+the command's row saying why; and nothing about that pairing is asked
+again.
 
 The peer methods are `ThreadToolCall` (tool name, arguments, and the
 caller's thread identity) and `ThreadToolRequestStatus`, added to the
@@ -1938,10 +1963,11 @@ happened; the token and `thread_status` do.
   and a move logs it. An unreachable scratch ask finishes on its own in
   read-only mode and its answer expires after a day.
 - Forgetting a computer with outstanding requests is refused once with
-  the list; confirming abandons them locally: the requests settle
-  `errored` ("computer forgotten"), their wakes are dropped, and no
-  claim is made that the other computer stopped anything. A lost
-  machine can always be forgotten.
+  how many there are and the oldest twenty; confirming ends the pairing
+  ([reaching another computer](#reaching-another-computer)) with every
+  one of them settled `errored` ("computer forgotten") and its wake
+  dropped, and no claim is made that the other computer stopped
+  anything. A lost machine can always be forgotten.
 - Flipping a computer's switch toggles the server in every live session
   on that computer except one holding an open request from another
   computer, which keeps it until that request settles. Its threads stay
