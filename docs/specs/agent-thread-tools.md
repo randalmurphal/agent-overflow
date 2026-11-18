@@ -1932,7 +1932,10 @@ happened; the token and `thread_status` do.
   the list; confirming abandons them locally: the requests settle
   `errored` ("computer forgotten"), their wakes are dropped, and no
   claim is made that the other computer stopped anything. A lost
-  machine can always be forgotten.
+  machine can always be forgotten. A pairing that ends, by a forget, a
+  new pairing with the same computer or that computer's verdict, closes
+  every connection open under it, so a call still on its way fails with
+  that reason and an export copy stops and removes what it staged.
 - Flipping a computer's switch toggles the server in every live session
   on that computer except one holding an open request from another
   computer, which keeps it until that request settles. Its threads stay

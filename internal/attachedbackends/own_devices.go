@@ -128,6 +128,11 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 		rpc.Close()
 		return nil, err
 	}
+	// From here the connection belongs to this pairing: it closes when the
+	// carrier leaves, whoever is using it.
+	if err := c.peers.admit(rpc); err != nil {
+		return nil, err
+	}
 	c.reached()
 	return rpc, nil
 }

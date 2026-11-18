@@ -181,10 +181,7 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability string, use func(
 		if ctx.Err() != nil {
 			return err
 		}
-		if errors.Is(err, deviceclient.ErrNoSession) {
-			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
-		}
-		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
+		return pairingRefusal(err)
 	}
 	var rpc *rpcclient.Client
 	defer func() {
@@ -197,7 +194,7 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability string, use func(
 			if rpc = held.peers.take(ctx, capability); rpc == nil {
 				opened, err := openPeerRPC(ctx, held, capability)
 				if err != nil {
-					return err
+					return held.lost(err)
 				}
 				rpc = opened
 			}
@@ -207,11 +204,36 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability string, use func(
 		if err != nil && !errors.As(err, &answered) {
 			rpc.Close()
 			rpc = nil
-			return err
+			return held.lost(err)
 		}
 		held.reached()
 		return err
 	})
+}
+
+// lost is what a call that got no answer reads: the pairing's verdict when
+// its carrier left meanwhile, which is what closed the connection, or else
+// its own failure.
+func (c *carrier) lost(err error) error {
+	if verdict := c.peers.verdict(); verdict != nil {
+		return pairingRefusal(errors.Join(verdict, err))
+	}
+	return err
+}
+
+// pairingRefusal maps why a pairing cannot carry a call, its carrier's
+// lookup failing or the verdict the carrier left with, onto the agent
+// surfaces' codes.
+func pairingRefusal(err error) error {
+	switch {
+	case errors.Is(err, errPairingEnded):
+		return errorsx.Public("remote_pairing_expired", "The destination no longer accepts this pairing. Reconnect it in Remote access.", err)
+	case errors.Is(err, errPairingReplaced):
+		return errorsx.Public("remote_pairing_replaced", "This computer was paired again while the call was on its way. Retry it.", err)
+	case errors.Is(err, deviceclient.ErrNoSession):
+		return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
+	}
+	return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 }
 
 // openPeerRPC dials a new connection for callPeer and maps the refusals

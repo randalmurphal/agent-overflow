@@ -38,12 +38,44 @@ type idlePeerConn struct {
 	since      time.Time
 }
 
-// peerConns is one carrier's idle connections. The zero value is ready.
+// peerConns is every connection one carrier opened that is still open: the
+// idle ones finished calls left here and the ones calls hold. They belong to
+// the pairing the carrier serves, so when the carrier leaves (carrier.leave)
+// all of them close, a held one in the middle of its call included, and the
+// verdict that ended the pairing is what that call reads. The zero value is
+// ready.
 type peerConns struct {
-	mu     sync.Mutex
-	closed bool
+	mu sync.Mutex
+	// ended is the verdict once the carrier has left; no connection is
+	// admitted after it.
+	ended error
+	// open is every connection admitted and not yet seen to end, idle or
+	// held; idle is the subset waiting for a call.
+	open   []*rpcclient.Client
 	idle   []idlePeerConn
 	expiry *time.Timer
+}
+
+// admit records a connection the carrier has just opened. Once the carrier
+// has left, the connection is closed instead and the verdict returned.
+func (p *peerConns) admit(rpc *rpcclient.Client) error {
+	p.mu.Lock()
+	if verdict := p.ended; verdict != nil {
+		p.mu.Unlock()
+		rpc.Close()
+		return verdict
+	}
+	p.open = slices.DeleteFunc(p.open, func(held *rpcclient.Client) bool { return !live(held) })
+	p.open = append(p.open, rpc)
+	p.mu.Unlock()
+	return nil
+}
+
+// verdict is why the carrier left, or nil while it serves.
+func (p *peerConns) verdict() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ended
 }
 
 // take hands out the most recently used live connection proven for
@@ -87,7 +119,7 @@ func (p *peerConns) takeIdle(capability string) *rpcclient.Client {
 // closed instead once the carrier has left or enough are already idle.
 func (p *peerConns) put(capability string, rpc *rpcclient.Client) {
 	p.mu.Lock()
-	if p.closed || len(p.idle) >= maxIdlePeerConns || !live(rpc) {
+	if p.ended != nil || len(p.idle) >= maxIdlePeerConns || !live(rpc) {
 		p.mu.Unlock()
 		rpc.Close()
 		return
@@ -105,7 +137,7 @@ func (p *peerConns) expire() {
 	p.mu.Lock()
 	ended := p.pruneLocked()
 	p.expiry = nil
-	if len(p.idle) > 0 && !p.closed {
+	if len(p.idle) > 0 && p.ended == nil {
 		p.expiry = time.AfterFunc(peerConnIdle-time.Since(p.idle[0].since), p.expire)
 	}
 	p.mu.Unlock()
@@ -127,15 +159,17 @@ func (p *peerConns) pruneLocked() []*rpcclient.Client {
 	return ended
 }
 
-// close ends every idle connection and refuses later ones. Idempotent.
-func (p *peerConns) close() {
+// close ends every connection, idle or held, records verdict as the
+// reason and admits no other. It does not wait for the calls on them: each
+// fails on its own once its connection closes. Idempotent; the first
+// verdict stands.
+func (p *peerConns) close(verdict error) {
 	p.mu.Lock()
-	p.closed = true
-	ended := make([]*rpcclient.Client, 0, len(p.idle))
-	for _, held := range p.idle {
-		ended = append(ended, held.rpc)
+	if p.ended == nil {
+		p.ended = verdict
 	}
-	p.idle = nil
+	ended := p.open
+	p.open, p.idle = nil, nil
 	if p.expiry != nil {
 		p.expiry.Stop()
 		p.expiry = nil

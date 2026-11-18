@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,5 +270,54 @@ func TestAPeerExportIsServedUnderWhatItsRenderRecorded(t *testing.T) {
 	}
 	if _, kept := pair.dest.peerExports.get(exportID); kept {
 		t.Fatal("the sweep kept the record of an export it removed")
+	}
+}
+
+// TestAPairingThatEndsMidCopyEndsTheCopy: forgetting the computer, or
+// pairing with it again, while a copy holds a connection to it closes that
+// connection too. No further chunk is asked for under the old pairing, the
+// copy fails with the pairing's verdict, and nothing it staged is left.
+func TestAPairingThatEndsMidCopyEndsTheCopy(t *testing.T) {
+	t.Parallel()
+	for _, ending := range []struct {
+		name  string
+		apply func(*testing.T, *reachPair) error
+		code  string
+	}{
+		{"forgotten", func(_ *testing.T, pair *reachPair) error { return pair.source.RemoveBackend(pair.computer, true) }, "remote_not_paired"},
+		{"paired again", func(t *testing.T, pair *reachPair) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			invite, _ := pair.destWire.mintLink(t, "full")
+			_, err := pair.manager.Add(ctx, invite.URL)
+			return err
+		}, "remote_pairing_replaced"},
+	} {
+		t.Run(ending.name, func(t *testing.T) {
+			t.Parallel()
+			pair, faults, threadID := newExportPair(t, 3*remoteArtifactChunkBytes)
+			var served atomic.Int32
+			faults.exportChunk = func(context.Context, int64, *RemoteArtifactChunk) {
+				if served.Add(1) == 1 {
+					if err := ending.apply(t, pair); err != nil {
+						t.Errorf("end the pairing mid-copy: %v", err)
+					}
+				}
+			}
+			_, err := exportToFile(pair, t, threadID)
+			if code, _, _ := errorsx.PublicDetails(err); code != ending.code {
+				t.Fatalf("a copy whose pairing was %s mid-copy = %v, want %s", ending.name, err, ending.code)
+			}
+			if got := served.Load(); got != 1 {
+				t.Fatalf("the destination served %d chunks, want only the one asked for before the pairing was %s", got, ending.name)
+			}
+			entries, err := os.ReadDir(filepath.Join(pair.source.configDir, threadExportDirName))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("the ended copy left %d entries in the export directory", len(entries))
+			}
+		})
 	}
 }
