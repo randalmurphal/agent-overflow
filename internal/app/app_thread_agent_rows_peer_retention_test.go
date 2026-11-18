@@ -167,7 +167,7 @@ func sweepPastTheFloor(t *testing.T, pair *reachPair, token string) {
 // A remote worker at rest through both retention sweeps keeps its link at
 // both ends: the source keeps the spawn as its lineage, payload cleared and
 // token unknown, as the destination keeps the receipt. Continued there with
-// its spawner's pane closed, the source's own sweep finds it: its row is
+// its spawner's pane closed, the owner update finds it: its row is
 // open, counted and out of Past, and its Stop reaches it.
 func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	t.Parallel()
@@ -183,8 +183,7 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 		t.Fatalf("the spawn here past the floor = %+v; want its lineage, answer cleared, naming the thread there", row)
 	}
 
-	// Its spawner's pane stays closed: only the source's own sweep asks.
-
+	// Its spawner's pane stays closed while the destination resumes.
 	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}

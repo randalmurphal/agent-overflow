@@ -2,8 +2,7 @@ package app
 
 // A worker on a paired computer that rested and is continued there later
 // reopens for its spawner, as a local one does (docs/specs/standing-agents.md,
-// "Owned workers"): nothing there tells this computer, so the sweep asks
-// about the remote spawns at rest at its own slower pace.
+// "Owned workers"). The destination tells the spawner about the new turn.
 
 import (
 	"context"
@@ -16,7 +15,7 @@ import (
 )
 
 // A remote worker that answered and rested is in its spawner's Past. Its
-// person continues it from its own pane there: the sweep, with no read of
+// person continues it from its own pane there. The update, with no read of
 // the spawner's pane, finds it running, and its row is open again, counted
 // and out of Past. Once it rests the row settles back.
 func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
@@ -48,8 +47,7 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("past = %+v, %v; want the rested worker's spawn", past, err)
 	}
-	// Nothing of that answer is kept: the sweep's asking holds no answer
-	// for a spawn at rest.
+	// Start with the pane closed and its cached tree evicted.
 	pair.source.threadAgentPeers.mu.Lock()
 	clear(pair.source.threadAgentPeers.entries)
 	pair.source.threadAgentPeers.mu.Unlock()

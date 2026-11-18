@@ -2,6 +2,7 @@ package app
 
 import (
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -29,6 +30,21 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 	other, _ := events.snapshot("other", "launch", OwnerCursor{Launch: "old"})
 	if !other.Reset {
 		t.Fatalf("restart without reset: %+v", other)
+	}
+}
+
+func TestOwnerOverflowResetsOnlyAnOwnerBehindItsDiscardedChange(t *testing.T) {
+	var feed ownerActivity
+	start, _ := feed.snapshot("desk", "launch", OwnerCursor{})
+	feed.note("desk", "first", true)
+	first, _ := feed.snapshot("desk", "launch", start.OwnerCursor)
+	for i := range ownerChangeLimit {
+		feed.note("desk", strconv.Itoa(i), false)
+	}
+	behind, _ := feed.snapshot("desk", "launch", start.OwnerCursor)
+	current, _ := feed.snapshot("desk", "launch", first.OwnerCursor)
+	if !behind.Reset || current.Reset || len(current.Tokens) != ownerChangeLimit || slices.Contains(current.Tokens, "first") {
+		t.Fatalf("overflow returned reset %v to old cursor and reset %v, %d tokens to covered cursor", behind.Reset, current.Reset, len(current.Tokens))
 	}
 }
 

@@ -272,7 +272,7 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   await setScenario(bench!, grand.path, threadToolsScenario({
     name: 'three-agents-grand', provider: 'claude',
     turns: [{ steps: [{ gate: 'two-hop-grand-hold' }, { approval: {
-      toolName: 'Bash', input: {command: 'make package'}, onAllow: [], onDeny: [],
+      toolName: 'Bash', input: { command: 'make package' }, onAllow: [], onDeny: [],
     } }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 

@@ -1592,7 +1592,7 @@ test("a question over there wakes the spawner here, whose reply answers it there
     await expect.poll(async () => {
       const listing = await home.rpc<{ rows: { token: string; nestedUnavailable?: string }[] }>('ListThreadAgentRows', caller.threadIds[0]);
       return listing.rows.find(row => row.token === spawn.value!.token)?.nestedUnavailable;
-    }, {timeout: 90_000}).toContain('did not answer');
+    }, { timeout: 90_000 }).toContain('did not answer');
   } finally {
     process.kill(remote.bootstrap.pid, 'SIGCONT');
   }
