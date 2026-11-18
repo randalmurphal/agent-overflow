@@ -50,13 +50,13 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 	previous := desk.socket
 	replacement := watchOwner(t, &events, "desk")
 	previous.RunCleanups()
-	if !events.watching() {
+	if events.devices["desk"] != replacement {
 		t.Fatal("closing the old socket discarded the replacement's activity")
 	}
 	replacement.socket.RunCleanups()
 	events.note("desk", "after-disconnect", true)
-	if events.watching() {
-		t.Fatal("activity survived the last watching socket")
+	if events.devices["desk"] != nil || events.devices["other"] == nil {
+		t.Fatal("disconnect must discard only that device’s activity")
 	}
 }
 
