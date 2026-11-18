@@ -1311,9 +1311,10 @@ type worktreeCutRequest struct {
 // cutWorktreeWithCarry runs the stash → cut → apply → drop bracket and returns
 // the path of the worktree it created and the commit it made its branch at.
 //
-// On stash-apply failure the worktree and its branch are removed and the stash
-// entry is kept so the user can recover via `git stash list`; the message
-// names the entry.
+// On stash-apply failure the worktree and its branch are taken back as far
+// as they are still the cut's alone (undoWorktreeCut), and the stash entry
+// is kept so the user can recover via `git stash list`; the message names
+// the entry, and a checkout or branch that was kept.
 func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (path, tip string, err error) {
 	core := a.gitCore()
 
@@ -1339,7 +1340,7 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (path, tip string, er
 	// applied was authored against the branch as it exists on this machine,
 	// so starting the worktree at origin's newer tip would turn "move my
 	// changes" into "rebase my changes" — and a conflict there fails the
-	// whole create (the worktree is torn down, the stash left for manual
+	// whole create (the worktree is taken back, the stash left for manual
 	// recovery). Every other cut takes the fetched base.
 	if req.carryLocalChanges {
 		tip, err = core.CreateWorktreeFromRef(req.projectPath, worktreePath, req.base, req.newBranch)
@@ -1355,13 +1356,11 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (path, tip string, er
 
 	if stashed {
 		if err := core.StashApplyByMessage(worktreePath, stashMessage); err != nil {
-			// Apply failed in the new worktree. Tear the worktree and its
-			// branch down and keep the stash so the user can recover the
+			// Apply failed in the new worktree. Take the worktree and its
+			// branch back and keep the stash so the user can recover the
 			// changes manually: the stash holds them, not the checkout.
 			applyErr := fmt.Errorf("create worktree: apply local changes in new worktree: %w (recover with: git stash list  →  git stash apply <ref> for entry %q)", err, stashMessage)
-			return "", "", errors.Join(applyErr,
-				core.RemoveWorktreeForce(req.projectPath, worktreePath, true),
-				core.DeleteBranch(req.projectPath, req.newBranch, true))
+			return "", "", errors.Join(applyErr, a.undoWorktreeCut(req.projectPath, worktreePath, req.newBranch, tip))
 		}
 		if err := core.StashDropByMessage(req.sourceWorkspace, stashMessage); err != nil {
 			// Apply succeeded but the source stash drop failed. The new

@@ -105,6 +105,26 @@ func TestUndoCutTakesBackOnlyWhatIsStillTheCuts(t *testing.T) {
 			t.Fatal("undoing an attach deleted a branch it did not make, or kept its clean checkout")
 		}
 	})
+	t.Run("a branch made with no checkout", func(t *testing.T) {
+		t.Parallel()
+		repo := initGitRepo(t)
+		tip := revParse(t, repo, "HEAD")
+		testutil.RunGit(t, repo, "branch", "ao-fetched")
+		if err := NewCore().UndoCut(repo, "", "ao-fetched", tip); err != nil || branchListed(t, repo, "ao-fetched") {
+			t.Fatalf("UndoCut = %v, branch left %v; want the branch it made at its tip gone", err, branchListed(t, repo, "ao-fetched"))
+		}
+		testutil.RunGit(t, repo, "branch", "ao-fetched-moved")
+		testutil.RunGit(t, repo, "commit", "--allow-empty", "-m", "on main")
+		testutil.RunGit(t, repo, "branch", "-f", "ao-fetched-moved", "HEAD")
+		var kept *CutKept
+		if err := NewCore().UndoCut(repo, "", "ao-fetched-moved", tip); !errors.As(err, &kept) ||
+			kept.Path != "" || kept.Branch != "ao-fetched-moved" || !strings.Contains(kept.BranchReason, "moved") {
+			t.Fatalf("UndoCut = %v, want the moved branch kept", err)
+		}
+		if !branchListed(t, repo, "ao-fetched-moved") {
+			t.Fatal("a branch that moved since it was made was deleted")
+		}
+	})
 }
 
 func branchListed(t *testing.T, repo, branch string) bool {

@@ -4174,10 +4174,10 @@ export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: g
  * branch, fetched from origin when only origin has it; a fork's head is
  * fetched from the forge's head ref into the local branch pr/N, which is
  * refused when pr/N exists at another commit. A failure at any step,
- * creating the thread included, removes the thread, its worktree and a
- * local branch this call created (pr/N, or the local branch of a head
- * only origin had), and returns the cause. The frontend seeds the
- * thread's draft.
+ * creating the thread included, removes the thread and takes back its
+ * worktree and a local branch this call created (pr/N, or the local
+ * branch of a head only origin had) as far as they are still the call's
+ * own, and returns the cause. The frontend seeds the thread's draft.
  */
 export function OpenPRThread(req: app$0.OpenPRThreadRequest): $CancellablePromise<app$0.OpenPRThreadResult> {
     return $Call.ByID(2660387675, req).then(($result: any) => {

@@ -154,10 +154,10 @@ type OpenPRThreadResult struct {
 // branch, fetched from origin when only origin has it; a fork's head is
 // fetched from the forge's head ref into the local branch pr/N, which is
 // refused when pr/N exists at another commit. A failure at any step,
-// creating the thread included, removes the thread, its worktree and a
-// local branch this call created (pr/N, or the local branch of a head
-// only origin had), and returns the cause. The frontend seeds the
-// thread's draft.
+// creating the thread included, removes the thread and takes back its
+// worktree and a local branch this call created (pr/N, or the local
+// branch of a head only origin had) as far as they are still the call's
+// own, and returns the cause. The frontend seeds the thread's draft.
 //
 //ao:scope git:operate
 //ao:route selected
@@ -185,11 +185,18 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	}
 
 	branch := strings.TrimSpace(req.HeadRefName)
-	createdBranch := false
+	// fetchedTip is the commit pr/N was made at when this call made it, ""
+	// when it did not.
+	fetchedTip := ""
 	if req.CrossRepository {
-		branch, _, createdBranch, err = a.gitCore().FetchPRBranch(ctx, project.Path, req.PR)
+		var head string
+		var created bool
+		branch, head, created, err = a.gitCore().FetchPRBranch(ctx, project.Path, req.PR)
+		if created {
+			fetchedTip = head
+		}
 		if err != nil {
-			return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, createdBranch))
+			return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, fetchedTip))
 		}
 	} else {
 		// The create path cuts a new branch when the named one does not
@@ -213,10 +220,14 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	head := threadapp.WorktreeCut{Target: gitops.WorktreeTarget{Ref: gitops.BranchRef(branch), Exists: true}}
 	thread, cut, err := a.createThreadCutting(ctx, CreateThreadOptions{ProjectID: project.ID}, &head, false)
 	if err != nil {
-		return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, createdBranch))
+		return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, fetchedTip))
 	}
-	// A head only origin had is checked out as a local branch the cut made.
-	createdBranch = createdBranch || cut.Tip != ""
+	// The pr/N this call fetched is a branch it made, as the local branch of
+	// a head only origin had is one the cut made: undoing the cut deletes
+	// either only while it is still at the commit it was made at.
+	if cut.Tip == "" {
+		cut.Tip = fetchedTip
+	}
 	_, err = a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{
 		ThreadID: thread.ID, Forge: req.PR.Forge, Host: req.PR.Host, Project: req.PR.Project(), Number: req.PR.Number,
 		URL: strings.TrimSpace(req.URL), NodeID: strings.TrimSpace(req.NodeID), Branch: thread.Branch,
@@ -224,12 +235,12 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	})
 	if err != nil {
 		cause := fmt.Errorf("open PR thread: record the pull request: %w", err)
-		return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, createdBranch))
+		return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, cut))
 	}
 	if seed := strings.TrimSpace(req.Seed); seed != "" {
 		if err := a.SaveDraft(ctx, thread.ID, seed, nil, nil, nil); err != nil {
 			cause := fmt.Errorf("open PR thread: seed the draft: %w", err)
-			return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, createdBranch))
+			return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, cut))
 		}
 	}
 	return OpenPRThreadResult{ThreadID: thread.ID, WorktreePath: thread.WorktreePath, Branch: thread.Branch}, nil
@@ -257,21 +268,20 @@ func validateOpenPRThread(req OpenPRThreadRequest) error {
 	return nil
 }
 
-// rollBackPRThread undoes a thread OpenPRThread created: the thread, then
-// its worktree (its setup cancelled and joined first), then the local
-// branch the call created. Every step runs; their failures are returned
-// together.
-func (a *App) rollBackPRThread(project store.Project, thread store.Thread, createdBranch bool) error {
+// rollBackPRThread undoes a thread OpenPRThread created: the thread (its
+// setup stopped and joined), then the worktree it cut and a local branch
+// the call made, as far as both are still the cut's alone
+// (gitops.Core.UndoCut). A checkout or branch kept because it holds work
+// that is not the cut's is named in the error with why. Every step runs;
+// their failures are returned together.
+func (a *App) rollBackPRThread(project store.Project, thread store.Thread, cut threadapp.CutWorktree) error {
 	var errs []error
 	if err := a.deleteThread(thread.ID); err != nil {
 		errs = append(errs, fmt.Errorf("delete thread %s: %w", thread.ID, err))
 	}
-	if thread.WorktreePath != "" {
-		if _, err := a.removeProjectWorktree(project.ID, project.Path, thread.WorktreePath, worktreeRemovalPolicy{force: true}); err != nil {
-			errs = append(errs, fmt.Errorf("remove worktree %s: %w", thread.WorktreePath, err))
-		}
+	if cut.Path != "" {
+		errs = append(errs, a.undoWorktreeCut(project.Path, cut.Path, cut.Branch, cut.Tip))
 	}
-	errs = append(errs, a.dropPRBranch(project.Path, thread.Branch, createdBranch))
 	err := errors.Join(errs...)
 	if err != nil {
 		log.Printf("open PR thread: roll back thread %s: %v", thread.ID, err)
@@ -279,12 +289,14 @@ func (a *App) rollBackPRThread(project store.Project, thread store.Thread, creat
 	return err
 }
 
-// dropPRBranch deletes a local branch this call created; nil otherwise.
-func (a *App) dropPRBranch(projectPath, branch string, created bool) error {
-	if !created {
+// dropPRBranch takes back the pr/N this call fetched before any worktree
+// was cut on it, made at tip ("" when the call made none): only while it
+// is still at tip and no checkout has it (gitops.Core.UndoCut).
+func (a *App) dropPRBranch(projectPath, branch, tip string) error {
+	if tip == "" {
 		return nil
 	}
-	if err := a.gitCore().DeleteBranch(projectPath, branch, true); err != nil {
+	if err := a.gitCore().UndoCut(projectPath, "", branch, tip); err != nil {
 		return fmt.Errorf("delete branch %s: %w", branch, err)
 	}
 	return nil

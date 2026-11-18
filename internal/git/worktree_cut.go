@@ -32,8 +32,9 @@ func (k *CutKept) Error() string {
 //
 // The checkout at path is removed without git's force flag: git keeps one
 // holding a change or an untracked file, and one with initialized
-// submodules or a lock someone else wrote stays too. branch goes only when
-// the cut made it, at tip ("" when it did not), its checkout went, it still
+// submodules or a lock someone else wrote stays too. path is "" for a
+// branch made with no checkout cut on it yet. branch goes only when the
+// call made it, at tip ("" when it did not), its checkout went, it still
 // points at tip and no worktree has it checked out. What stays is returned
 // as *CutKept, naming why; any other error is git failing.
 func (c *Core) UndoCut(cwd, path, branch, tip string) error {
@@ -42,16 +43,18 @@ func (c *Core) UndoCut(cwd, path, branch, tip string) error {
 		return err
 	}
 	defer unlock()
-	if err := c.removeWorktree(cwd, path, false, unattendedLift); err != nil {
-		reason, kept := c.keptCheckoutReason(path, err)
-		if !kept {
-			return err
+	if path != "" {
+		if err := c.removeWorktree(cwd, path, false, unattendedLift); err != nil {
+			reason, kept := c.keptCheckoutReason(path, err)
+			if !kept {
+				return err
+			}
+			stays := &CutKept{Path: path, PathReason: reason}
+			if tip != "" {
+				stays.Branch, stays.BranchReason = branch, "it is checked out in that worktree"
+			}
+			return stays
 		}
-		stays := &CutKept{Path: path, PathReason: reason}
-		if tip != "" {
-			stays.Branch, stays.BranchReason = branch, "it is checked out in that worktree"
-		}
-		return stays
 	}
 	if tip == "" {
 		return nil
