@@ -157,6 +157,29 @@ func TestWorkCommittedBeforeTheWriteHoldsTheRequest(t *testing.T) {
 	f.expectHeld(t, worker, token, "though a thread below took work before the write")
 }
 
+// A run bound to a thread below the worker comes to rest in the store, its
+// event not yet emitted, as the worker's turn ends: the worker's request
+// stays held.
+func TestARunBelowBetweenItsRestAndItsEventHoldsTheRequest(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	worker, token, gate, children := f.heldWorker(t, 1)
+	item := f.reportingRuns(t, children[0].ID).start(t, children[0].ID, "finish the check")
+	before, err := f.app.heldThreadAtRest(worker)
+	before.done()
+	if err != nil || before.rests(worker) {
+		t.Fatalf("a running run below reads at rest %v, %v; want not", before.rests(worker), err)
+	}
+	f.holdAgentRowsDrain(t)
+	// The engine's write of the rest; its event comes once the check's
+	// gate opens, at the test's end.
+	if err := f.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	f.endWorkerTurn(t, worker, gate)
+	f.expectHeld(t, worker, token, "between a run's rest below and its event")
+}
+
 // A run bound to the worker comes to rest in the store before its event
 // records the report it owes, with the report's delivery held: the
 // worker's request stays held through the rest's write, its event and the
