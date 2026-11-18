@@ -47,6 +47,17 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 	if !other.Reset {
 		t.Fatalf("restart without reset: %+v", other)
 	}
+	previous := desk.socket
+	replacement := watchOwner(t, &events, "desk")
+	previous.RunCleanups()
+	if !events.watching() {
+		t.Fatal("closing the old socket discarded the replacement's activity")
+	}
+	replacement.socket.RunCleanups()
+	events.note("desk", "after-disconnect", true)
+	if events.watching() {
+		t.Fatal("activity survived the last watching socket")
+	}
 }
 
 func TestOwnerOverflowResetsOnlyAnOwnerBehindItsDiscardedChange(t *testing.T) {
