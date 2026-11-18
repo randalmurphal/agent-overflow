@@ -297,7 +297,7 @@ type App struct {
 	// their threads spawned on (app_thread_owner_ops.go).
 	ownerOps ownerOpDelivery
 	// deleteDecisions are the running deletes' decision gates, which the
-	// app's own starts wait at (app_thread_delete.go).
+	// app's own starts wait at (app_thread_delete_decisions.go).
 	deleteDecisions deleteDecisions
 	// terminalThreads ends each terminal thread when its last shell exits
 	// (app_terminal_threads.go).

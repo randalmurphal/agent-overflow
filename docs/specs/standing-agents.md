@@ -765,7 +765,7 @@ Ruling 36, as built:
   removal, a delete the boot finishes, the retention sweep, an ended
   terminal thread, an assistant's delete and the cleanup of an ask's
   copy. No agent tool deletes a thread.
-- The delete runs in four phases (`app_thread_delete.go`), each phase's
+- The delete runs in four phases (`app_thread_delete_family.go`), each phase's
   write the store's (`store/thread_delete.go`). Claim: one transaction
   claims the whole family for the delete (`threads.delete_claim`,
   `ClaimDeleteFamily`), and refuses, claiming nothing, when another
