@@ -131,7 +131,7 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 					message = err.Error()
 					failures.Add(1)
 				}
-				if held, getErr := m.carrier(id); getErr == nil {
+				if held, getErr := m.carrier(ctx, id); getErr == nil {
 					if held.setOwnError(message) {
 						m.notifyMembershipChanged()
 					}
@@ -154,7 +154,7 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 }
 
 func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDeviceHooks) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return err
 	}

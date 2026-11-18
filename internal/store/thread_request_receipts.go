@@ -624,6 +624,9 @@ type LocalSettlement struct {
 	// Settled is whether the receipt was still in one of the states the
 	// settlement may replace; false is a lost race, and nothing was written.
 	Settled bool
+	// Unrested is whether the settlement's RestGuard found its thread not
+	// at rest inside the write's transaction; nothing was written.
+	Unrested bool
 	// Receipt is the receipt as the settlement left it.
 	Receipt ThreadRequestReceipt
 	// Collected is whether this computer's source row took the answer, and
@@ -672,7 +675,16 @@ func answeredByLinkedTx(tx *sql.Tx, receipt ThreadRequestReceipt) (bool, error) 
 // settlement.DisarmWake are the source row's half and are written only to
 // a source row on this computer: a sender's own cancel disarms its wake in
 // the statement that settles it, so a cancel that fails leaves it armed.
-func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement ThreadRequestSettlement, sourceState string) (_ LocalSettlement, err error) {
+func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement ThreadRequestSettlement, sourceState string) (LocalSettlement, error) {
+	return s.SettleLocalThreadRequestAtRest(token, from, settlement, sourceState, nil)
+}
+
+// SettleLocalThreadRequestAtRest is SettleLocalThreadRequest for a
+// settlement that holds only while its thread is at rest: rest, a non-nil
+// guard over the receipt's thread, is read inside the settlement's
+// transaction first, and a thread not at rest there settles nothing
+// (LocalSettlement.Unrested).
+func (s *Store) SettleLocalThreadRequestAtRest(token string, from []string, settlement ThreadRequestSettlement, sourceState string, rest *RestGuard) (_ LocalSettlement, err error) {
 	action := fmt.Sprintf("store: settle local thread request %s", token)
 	if _, ok := threadRequestStates[sourceState]; !ok {
 		return LocalSettlement{}, fmt.Errorf("%s: invalid source state %q", action, sourceState)
@@ -689,6 +701,15 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		return LocalSettlement{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
+	if rest != nil {
+		rested, err := rest.atRestTx(tx)
+		if err != nil {
+			return LocalSettlement{}, fmt.Errorf("%s: %w", action, err)
+		}
+		if len(rested) == 0 {
+			return LocalSettlement{Unrested: true}, nil
+		}
+	}
 	// The wake is the source row's; the receipt has none.
 	armWake, disarmWake := settlement.ArmWake, settlement.DisarmWake
 	settlement.ArmWake, settlement.DisarmWake = false, false

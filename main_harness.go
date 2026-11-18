@@ -409,7 +409,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead",
 		"SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
 		"StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
-		"StopThreadAgentRow", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
+		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
 	} {
 		absent[name] = true
 	}

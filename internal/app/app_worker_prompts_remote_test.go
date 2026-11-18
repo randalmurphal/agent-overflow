@@ -106,11 +106,16 @@ func (p *remotePromptPair) drain(t *testing.T) {
 }
 
 // openThere waits until the worker's n prompts are open there, routed to
-// the spawner here, and returns them by request id.
+// the spawner here and held for it, and returns them by request id. Triage
+// routes a prompt before the prompts' queue registers it held, which is
+// what an agent_rows call there lists.
 func (p *remotePromptPair) openThere(t *testing.T, n int) map[string]provider.PromptRoute {
 	t.Helper()
 	routes := map[string]provider.PromptRoute{}
 	waitUntil(t, 15*time.Second, func() bool {
+		if len(p.dest.workerPrompts.heldFor(p.spawn.Token, p.worker)) != n {
+			return false
+		}
 		pending := p.dest.triage.PendingInteractiveRequests(p.worker)
 		clear(routes)
 		for _, request := range pending.Approvals {

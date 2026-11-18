@@ -146,6 +146,7 @@ var serverCapabilities = []string{
 	CapabilityComputerRoutes,
 	CapabilityHeartbeat,
 	CapabilityThreadTools,
+	CapabilityThreadToolsV2,
 	CapabilityTimelineScopes,
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
@@ -180,8 +181,24 @@ const CapabilityRemoteCommands = "commands.remote.v1"
 // CapabilityThreadTools names the ao-thread-tools peer surface: thread
 // resolution, the read tools, the write tools that mint a request, the
 // request status poll and the export chunk reader. A destination without
-// it answers thread_unsupported rather than method_not_found.
+// it answers thread_unsupported rather than method_not_found. The
+// caller-bound thread wait (ThreadToolWatch) came later under the same
+// capability; a v0.0.19 destination answers it method_not_found.
 const CapabilityThreadTools = "thread-tools.v1"
+
+// CapabilityThreadToolsV2 names the second generation of the thread peer
+// protocol, advertised beside CapabilityThreadTools, and peer behavior
+// newer than v1 is keyed on it. A destination that advertises it answers a
+// ThreadToolCall whose token it already holds from that receipt, never
+// settling it, so a source may send a request that may have arrived again
+// with the same token, and its ThreadToolRequestStatus marks a token it
+// holds no receipt for while a handler for it is still running, so an
+// unmarked one was never started there.
+const CapabilityThreadToolsV2 = "thread-tools.v2"
+
+// threadToolsGenerations are the thread peer protocol generations, oldest
+// first.
+var threadToolsGenerations = []string{CapabilityThreadTools, CapabilityThreadToolsV2}
 
 // CapabilityPairingNetworks allows an invitation to name LAN or Tailscale
 // explicitly, without changing the host's enabled network listeners.
@@ -203,12 +220,12 @@ const CapabilityFilePreview = "preview.files.v1"
 //
 // A nil hook means the same thing false does: no browser tools here.
 //
-// omitThreadTools is the one subtraction, and it is test isolation only:
-// an isolated boot standing in for a build older than the agent thread
-// tools, so a caller takes the thread_unsupported path rather than a
-// method error. Config.OmitThreadToolsCapability says when, and only a
-// harness boot can set it.
-func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews, omitThreadTools bool) []string {
+// threadToolsOlderThan is the one subtraction, and it is test isolation
+// only: an isolated boot standing in for a build that predates that thread
+// peer protocol generation drops it and every later one, so a caller takes
+// the path an older destination gives it. Config.ThreadToolsOlderThan says
+// when, and only a test or a harness boot sets it.
+func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews bool, threadToolsOlderThan string) []string {
 	var capabilities []string
 	if browserAvailable != nil && browserAvailable() {
 		if transfers {
@@ -224,11 +241,13 @@ func advertisedCapabilities(browserAvailable func() bool, transfers, filePreview
 	if filePreviews {
 		capabilities = append(slices.Clone(capabilities), CapabilityFilePreview)
 	}
-	if !omitThreadTools {
+	first := slices.Index(threadToolsGenerations, threadToolsOlderThan)
+	if first < 0 {
 		return capabilities
 	}
+	omitted := threadToolsGenerations[first:]
 	return slices.DeleteFunc(slices.Clone(capabilities), func(name string) bool {
-		return name == CapabilityThreadTools
+		return slices.Contains(omitted, name)
 	})
 }
 

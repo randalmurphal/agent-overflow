@@ -18,9 +18,13 @@ import (
 var worktreeSeedFetchTimeout = 5 * time.Second
 
 // WorktreeSeed reports how CreateWorktreeFromFreshRef chose the start
-// point of the branch it cut. Callers use it for diagnostics only — every
-// combination is a successful worktree.
+// point of the branch it cut, and where that branch was made. Callers use
+// the start point for diagnostics only — every combination is a successful
+// worktree.
 type WorktreeSeed struct {
+	// Tip is the commit the new branch was made at, which undoing the cut
+	// compares against (UndoCut).
+	Tip string
 	// Ref is the revision the new branch was actually cut from: either
 	// the remote-tracking ref ("origin/main") or the caller's base in its
 	// wire form ("main", "refs/tags/v1"). Empty when the caller passed no base at all, i.e. the cut
@@ -90,7 +94,9 @@ func (c *Core) CreateWorktreeFromFreshRef(
 		return seed, err
 	}
 	if !base.IsBranch() {
-		return seed, c.CreateWorktreeFromRef(cwd, path, base, newBranch)
+		var err error
+		seed.Tip, err = c.CreateWorktreeFromRef(cwd, path, base, newBranch)
+		return seed, err
 	}
 	// Read before the fetch, which cannot create a local branch: it is
 	// what decides whether an unverified tracking ref is a downgrade or the
@@ -107,10 +113,8 @@ func (c *Core) CreateWorktreeFromFreshRef(
 		seed.FromRemote = true
 		startPoint = "refs/remotes/" + remoteRef
 	}
-	if err := c.createWorktreeAt(cwd, path, startPoint, newBranch, seed.FromRemote); err != nil {
-		return seed, err
-	}
-	return seed, nil
+	seed.Tip, err = c.createWorktreeAt(cwd, path, startPoint, newBranch, seed.FromRemote)
+	return seed, err
 }
 
 // fetchOriginForSeed refreshes origin's remote-tracking refs for cwd's

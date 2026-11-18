@@ -133,6 +133,37 @@ describe('thread tool results', () => {
     expect(view.lines[0].link?.id).toBe(tid);
   });
 
+  it('says why a watched thread could not be read and which computer did not answer', () => {
+    const view = threadResultView('thread_status', json({
+      threads: [
+        { thread_id: tid, title: 'Docs slice', state: 'idle', resting: true },
+        { thread_id: 'x2', state: 'unavailable', error: 'No thread x2 on Studio.', error_code: 'thread_not_found', computer_id: 'c2', computer: 'Studio' },
+        { thread_id: 'x3', state: 'unresolved', error: 'Desk did not answer in time.', error_code: 'thread_resolution_incomplete' },
+      ],
+      errors: [{ computer_id: 'c3', computer: 'Desk', error: 'Desk did not answer in time.', error_code: 'thread_computer_unreachable' }],
+      woke_on: tid,
+    }), {}, names)!;
+    expect(view.lines.map((l) => [l.detail, l.text])).toEqual([
+      ['idle · resting', ''],
+      ['unavailable', 'No thread x2 on Studio.'],
+      ['unresolved', 'Desk did not answer in time.'],
+    ]);
+    expect(view.facts).toEqual([{ label: 'Desk', value: 'Desk did not answer in time.' }]);
+  });
+
+  it('shows a reference that did not resolve as text with its error and any known computer', () => {
+    const view = threadResultView('thread_status', json({
+      threads: [
+        { thread_id: 'docs-agent', state: 'unresolved', error: 'Desk did not answer in time.', error_code: 'thread_resolution_incomplete' },
+        { thread_id: 'x4', state: 'unresolved', error: 'Studio did not answer.', error_code: 'thread_resolution_incomplete', computer_id: 'c2', computer: 'Studio' },
+      ],
+    }), {}, names)!;
+    expect(view.lines.map((l) => [l.detail, l.text, l.link])).toEqual([
+      ['unresolved', 'Desk did not answer in time.', null],
+      ['unresolved · on Studio', 'Studio did not answer.', null],
+    ]);
+  });
+
   it('lists search hits from both result shapes with their snippet and count', () => {
     const solo = threadResultView('thread_search', json({
       rows: [{ thread_id: tid, title: 'Docs slice', state: 'idle', snippet: 'the deploy failed', last_message: { role: 'assistant', text: 'Done' } }],

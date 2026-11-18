@@ -129,8 +129,14 @@ the transcript both show a running call. The tool server emits
 `provider:background_tasks_changed` when a wait ends with the job still
 running, so both surfaces flip together.
 The source backend tracks outstanding jobs across frontend disconnects
-and source restarts. It polls only outstanding jobs, four checks at a time,
-with a slower retry after connection errors. An unreachable host is not an
+and source restarts, resuming from the table at boot. A pass checks up to 32
+due jobs, four at a time; a job is due again 5 s after a check, 30 s after a
+failed one, and 5 s later while a tool call is parked on it. Between passes
+the watcher sleeps until the earliest due watch or owed cancel, on a timer
+never set shorter than 2 s, and each write that adds or brings one forward
+wakes it at once (`nudgeRemoteWatches`, `app_remote_watch_loop.go`); with no
+outstanding job it does no work. Successive checks of one host reuse its
+pooled connection (`internal/attachedbackends/peerconns.go`). An unreachable host is not an
 exited process. A start whose reply was lost is checked against the destination
 once no retry is in flight: a host holding no receipt for it never accepted the
 request, and that job is released rather than watched forever.
@@ -284,6 +290,16 @@ in host logs behind a reference; they are never marked as public failures.
 
 A failed network reply does not establish whether a command ran. Inspect its
 original receipt, then retry identical arguments with the same ID if needed.
+A call whose request frame was never written (its pairing could not be
+loaded, no connection to the destination opened, or the call ended before
+its write, `rpcclient.NotSent`) says that nothing was sent, and a start
+refused that way releases its fresh watch at once, as a refusal the
+destination answers before accepting does. A start retried under an ID
+whose watch the same conversation holds, for an attempt the destination did
+not refuse, keeps that watch. Any failure of the retry, including a refusal
+before it is sent such as agent commands turned off for that computer,
+names the request and says the earlier attempt may have run and to check
+its status first.
 A cancellation reply lost in transit likewise requires status verification.
 An older destination may still redact its errors; the source explains that
 limitation and preserves the destination's reference instead of guessing why

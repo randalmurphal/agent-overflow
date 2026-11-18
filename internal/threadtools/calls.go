@@ -345,6 +345,18 @@ type ThreadState struct {
 	// work, a loop, watch or reminder, threads it started, or messages
 	// queued for it.
 	WaitingOn string `json:"waiting_on,omitempty"`
+	// Error and ErrorCode say why the row's thread could not be read: it
+	// was deleted or moved away, its computer refused the read, or a
+	// computer did not answer its lookup (FailedRow).
+	Error     string `json:"error,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// FailedRow is a thread_status row for a thread that could not be read,
+// with the reason err gives. It reads StateUnavailable.
+func FailedRow(threadID string, err error) ThreadState {
+	code, message := publicMessage(err)
+	return ThreadState{ThreadID: threadID, State: StateUnavailable, Error: message, ErrorCode: code}
 }
 
 // RequestListing is what thread_status returns without tokens or ids.

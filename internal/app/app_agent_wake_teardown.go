@@ -666,6 +666,8 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 		}
 	}
 	if returned {
+		// A completion given back is its watch's to deliver again.
+		a.nudgeRemoteWatches()
 		a.emitBackgroundChanged(threadID)
 	}
 	if a.heldReturnedForTest != nil {

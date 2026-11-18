@@ -4174,10 +4174,10 @@ export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: g
  * branch, fetched from origin when only origin has it; a fork's head is
  * fetched from the forge's head ref into the local branch pr/N, which is
  * refused when pr/N exists at another commit. A failure at any step,
- * creating the thread included, removes the thread, its worktree and a
- * local branch this call created (pr/N, or the local branch of a head
- * only origin had), and returns the cause. The frontend seeds the
- * thread's draft.
+ * creating the thread included, removes the thread and takes back its
+ * worktree and a local branch this call created (pr/N, or the local
+ * branch of a head only origin had) as far as they are still the call's
+ * own, and returns the cause. The frontend seeds the thread's draft.
  */
 export function OpenPRThread(req: app$0.OpenPRThreadRequest): $CancellablePromise<app$0.OpenPRThreadResult> {
     return $Call.ByID(2660387675, req).then(($result: any) => {
@@ -6561,8 +6561,8 @@ export function ThreadToolCall(call: app$0.ThreadPeerCall): $CancellablePromise<
 
 /**
  * ThreadToolExportChunk serves one rendered transcript in transfer-sized
- * pieces, under the same stamp rule a command artifact uses: a file that
- * changed mid-transfer is refused rather than delivered half old.
+ * pieces (readThreadExportChunk): a file that changed since its render is
+ * refused rather than delivered half old.
  */
 export function ThreadToolExportChunk(exportID: string, offset: number): $CancellablePromise<app$0.RemoteArtifactChunk> {
     return $Call.ByID(1295284198, exportID, offset).then(($result: any) => {
@@ -6601,6 +6601,22 @@ export function ThreadToolRequestStatus(poll: app$0.ThreadPeerPoll): $Cancellabl
 export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $CancellablePromise<threadtools$0.Resolution> {
     return $Call.ByID(1018082581, resolve).then(($result: any) => {
         return $$createType255($result);
+    });
+}
+
+/**
+ * ThreadToolWatch runs one thread_status wait on thread ids forwarded from a
+ * paired computer, and ends with its caller: a wait the calling computer
+ * gave up on stops reading this computer's live state at once rather than
+ * at the end of its slice. It is ThreadToolQuery's thread_status narrowed to
+ * the branch that reads threads, which reaches only store reads, live state
+ * and an in-memory wait registration, so it can be caller-bound; every
+ * other read stays on ThreadToolQuery. A computer on v0.0.19 does not serve
+ * it, and the caller asks that one through ThreadToolQuery.
+ */
+export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
+    return $Call.ByID(515024442, call).then(($result: any) => {
+        return $$createType253($result);
     });
 }
 

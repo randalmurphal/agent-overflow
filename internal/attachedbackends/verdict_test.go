@@ -145,7 +145,7 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	held, err := manager.carrier("peer")
+	held, err := manager.carrier(context.Background(), "peer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 	if len(ended) != 1 || ended[0].ID != "peer" || ended[0].Reason != RemovedByComputer {
 		t.Errorf("observer told %v, want the one ended pairing with its reason", ended)
 	}
-	if manager.Carrier("peer") != nil {
+	if manager.Carrier(context.Background(), "peer") != nil {
 		t.Error("a revoked pairing still has a carrier")
 	}
 	if _, err := deviceclient.LoadSession(dir, "peer"); !errors.Is(err, deviceclient.ErrNoSession) {
@@ -194,7 +194,7 @@ func TestManifestReportsAStartingPeer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	held, err := manager.carrier("peer")
+	held, err := manager.carrier(context.Background(), "peer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestManifestReportsAStartingPeer(t *testing.T) {
 	if held.lastReachedMs.Load() == 0 {
 		t.Error("a starting peer answered but was not recorded as reached")
 	}
-	if manager.Carrier("peer") == nil {
+	if manager.Carrier(context.Background(), "peer") == nil {
 		t.Error("a starting peer lost its carrier")
 	}
 }
@@ -222,12 +222,12 @@ func TestCarrierReopensAProfileWhoseCachedOwnerRetired(t *testing.T) {
 	seed(t, dir, deviceclient.Session{
 		BackendID: "aaa", Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1",
 	})
-	first, err := manager.carrier("aaa")
+	first, err := manager.carrier(context.Background(), "aaa")
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.client.Retire()
-	second, err := manager.carrier("aaa")
+	second, err := manager.carrier(context.Background(), "aaa")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestCarrierReopensAProfileWhoseCachedOwnerRetired(t *testing.T) {
 	if err := deviceclient.ForgetSession(dir, "aaa"); err != nil {
 		t.Fatal(err)
 	}
-	if manager.Carrier("aaa") != nil {
+	if manager.Carrier(context.Background(), "aaa") != nil {
 		t.Error("a retired owner with no file behind it still answers as a carrier")
 	}
 }

@@ -89,6 +89,15 @@ type Manager struct {
 // ErrClosed answers a carrier asked for after Close.
 var ErrClosed = errors.New("attachedbackends: manager is closed")
 
+// Why a carrier left the manager: the verdict every connection it opened
+// is closed with (carrier.leave), and what a call on one reads instead of
+// a lost connection (pairingRefusal).
+var (
+	errPairingForgotten = fmt.Errorf("attachedbackends: the pairing was forgotten: %w", deviceclient.ErrNoSession)
+	errPairingEnded     = fmt.Errorf("attachedbackends: the paired computer ended the pairing: %w", deviceclient.ErrSessionEnded)
+	errPairingReplaced  = errors.New("attachedbackends: the pairing was replaced")
+)
+
 // New builds a manager over one device profile directory. The directory
 // need not exist yet — it is created by the first pairing.
 func New(dir, label, platform string) (*Manager, error) {
@@ -123,9 +132,10 @@ func (m *Manager) Attached() []transport.AttachedProfile {
 
 // Carrier implements transport.AttachedBackends. Nil is an ordinary
 // answer: a page whose manifest is a moment stale asks for a backend that
-// has just been removed.
-func (m *Manager) Carrier(id string) transport.BackendCarrier {
-	held, err := m.carrier(id)
+// has just been removed, or a request that ended while the profile was
+// being changed.
+func (m *Manager) Carrier(ctx context.Context, id string) transport.BackendCarrier {
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return nil
 	}
@@ -135,8 +145,13 @@ func (m *Manager) Carrier(id string) transport.BackendCarrier {
 }
 
 // carrier resolves the live hop for one profile, building it on first use.
-func (m *Manager) carrier(id string) (*carrier, error) {
-	unlock := m.profiles.Lock(id)
+// It waits for a change to the profile in progress (a pairing or an
+// introduction, which can hold it for minutes) only as long as ctx lasts.
+func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
+	unlock, err := m.profiles.LockCtx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,6 +167,7 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 		// way the file on disk is the current answer, so it is read again
 		// rather than cached as a client that answers 503 until restart.
 		delete(m.carriers, id)
+		held.leave(errPairingReplaced)
 	}
 	session, err := deviceclient.LoadSession(m.dir, id)
 	if err != nil {
@@ -196,7 +212,7 @@ func (m *Manager) Close() {
 	}
 	m.mu.Unlock()
 	for _, c := range held {
-		c.leave()
+		c.leave(ErrClosed)
 	}
 	m.renewals.Wait()
 	for _, c := range held {
@@ -221,7 +237,7 @@ func (m *Manager) endSession(id string, held *carrier) {
 	if !current {
 		return
 	}
-	held.leave()
+	held.leave(errPairingEnded)
 	_ = m.writeAgentAccess(id, false)
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 }
@@ -403,7 +419,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link, continues string) (Attachment, error) {
 	m.mu.Lock()
 	if old := m.carriers[link.BackendID]; old != nil {
-		old.leave()
+		old.leave(errPairingReplaced)
 		old.client.Retire()
 	}
 	delete(m.carriers, link.BackendID)
@@ -442,7 +458,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link, con
 // refuses it, or lets the window close. Its caller is a goroutine, not an
 // RPC.
 func (m *Manager) Await(ctx context.Context, id string) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -494,7 +510,7 @@ func (m *Manager) forgetLocked(id string) error {
 	if held == nil {
 		return deviceclient.ForgetSession(m.dir, id)
 	}
-	held.leave()
+	held.leave(errPairingForgotten)
 	if err := held.client.Forget(); err != nil {
 		held.client.Retire()
 		return err
@@ -510,7 +526,7 @@ func (m *Manager) forgetLocked(id string) error {
 // comes due — and a rename that raced one would either lose the nickname
 // or roll the credential back.
 func (m *Manager) Rename(id, nickname string) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(m.life, id)
 	if err != nil {
 		return err
 	}
@@ -524,7 +540,7 @@ func (m *Manager) Rename(id, nickname string) error {
 // RepairAddress adds a verified replacement address to an
 // existing pairing. The live client owns the profile write and route change.
 func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (string, error) {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -548,7 +564,8 @@ type carrier struct {
 	proxy         *backendproxy.Carrier
 	// stopRenewal ends keepRenewed when this carrier leaves the manager.
 	stopRenewal context.CancelFunc
-	// peers holds the connections agent calls left open (callPeer).
+	// peers is every connection this carrier opened that is still open
+	// (openRPC), so none outlives the pairing it was opened under.
 	peers peerConns
 	// generation is the pairing generation its session carries, fixed for
 	// the carrier's life (generation.go).
@@ -604,10 +621,11 @@ func (c *carrier) keepRenewed(id string, wg *sync.WaitGroup) {
 }
 
 // leave stops what a carrier runs on its own once the manager drops it:
-// its session renewal and its idle agent connections.
-func (c *carrier) leave() {
+// its session renewal and every connection it opened, idle or in use. A
+// call on one fails with verdict, the reason the carrier left.
+func (c *carrier) leave(verdict error) {
 	c.stopRenewal()
-	c.peers.close()
+	c.peers.close(verdict)
 }
 
 func (c *carrier) reached() { c.lastReachedMs.Store(time.Now().UnixMilli()) }

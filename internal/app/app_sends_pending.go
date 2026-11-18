@@ -65,11 +65,14 @@ type appSendsPendingState struct {
 // markSendsPendingDirty records that threadID's answer, and whether it has
 // a session (publishSessionLive), may have changed and starts the worker
 // when none is running. Never blocks on anything
-// but the leaf lock.
+// but leaf locks.
 func (a *App) markSendsPendingDirty(threadID string) {
 	if threadID == "" {
 		return
 	}
+	// A decision on rest under way learns of the queue's change here, at
+	// the change, not when the worker reads it (app_thread_rest_assess.go).
+	a.noteThreadRestChange(threadID)
 	s := &a.sendsPending
 	s.mu.Lock()
 	defer s.mu.Unlock()

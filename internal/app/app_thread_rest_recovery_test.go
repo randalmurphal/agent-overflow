@@ -6,6 +6,7 @@ package app
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,17 +20,27 @@ import (
 // func restores it.
 func (f *requestFixture) failRestSource(t *testing.T) (restore func()) {
 	t.Helper()
+	return f.breakTable(t, "remote_watches")
+}
+
+// errUnreadable is a read that failed.
+var errUnreadable = errors.New("unreadable")
+
+// breakTable makes every read of table fail, through a connection of its
+// own, until the returned func restores it.
+func (f *requestFixture) breakTable(t *testing.T, table string) (restore func()) {
+	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+f.dbPath+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`ALTER TABLE remote_watches RENAME TO remote_watches_unreadable`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_unreadable`); err != nil {
 		t.Fatal(err)
 	}
 	return func() {
 		t.Helper()
-		if _, err := db.Exec(`ALTER TABLE remote_watches_unreadable RENAME TO remote_watches`); err != nil {
+		if _, err := db.Exec(`ALTER TABLE ` + table + `_unreadable RENAME TO ` + table); err != nil {
 			t.Fatal(err)
 		}
 	}

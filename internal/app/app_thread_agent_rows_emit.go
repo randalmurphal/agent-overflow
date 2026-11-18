@@ -42,7 +42,8 @@ type threadAgentEmits struct {
 	lastCall map[string]string
 }
 
-// noteThreadRequestChanged is the store's change hook.
+// noteThreadRequestChanged is the store's change hook, called once the
+// write committed.
 func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 	if change.Token == "" {
 		a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.callers[change.CallerThreadID] = struct{}{} })
@@ -66,12 +67,15 @@ func (a *App) noteThreadAgentTarget(threadID string) {
 // timers, from the provider event handler (noteProviderWorkerLiveness) and
 // the process's end (unregisterSession); and its queue, from triage's
 // sends-pending observer (runSendsPendingWorker), which every queue write
-// reports to. The thread is reassessed off these paths, where the spawn
-// link's lookup runs; its durable sources keep what they last said.
+// reports to. Each is memory, so a decision on rest under way is told
+// (noteThreadRestChange). The thread is reassessed off these paths, where
+// the spawn link's lookup runs; its durable sources keep what they last
+// said.
 func (a *App) noteWorkerLiveness(threadID string) {
 	if threadID == "" {
 		return
 	}
+	a.noteThreadRestChange(threadID)
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) {
 		if _, queued := e.liveness[threadID]; !queued {
 			e.liveness[threadID] = false
@@ -80,7 +84,7 @@ func (a *App) noteWorkerLiveness(threadID string) {
 }
 
 // noteWorkerWaiting reports a change to a thread's durable sources, which
-// its reassessment reads again (workerDurableUnrest): its background work,
+// its reassessment reads again (workerWaits): its background work,
 // from the background tray's frames, which also report the work a
 // session's end settles; its loops,
 // watches and reminders, from their frames; and every source, at boot.
@@ -91,9 +95,15 @@ func (a *App) noteWorkerWaiting(threadID string) {
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.liveness[threadID] = true })
 }
 
-// noteWorkflowOriginChange reports a workflow run's binding moved: a
-// running run keeps the thread it reports to from rest, so the thread it
-// left and the one it reports to now are both read again.
+// noteWorkflowRunChanged reports a workflow run's state or owed report
+// changed: the thread it reports to may have moved into or out of rest.
+func (a *App) noteWorkflowRunChanged(itemID string) {
+	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.workflowRuns[itemID] = struct{}{} })
+}
+
+// noteWorkflowOriginChange reports a workflow run's binding moved: a run
+// that runs or owes a report keeps the thread it reports to from rest, so
+// the thread it left and the one it reports to now are both read again.
 func (a *App) noteWorkflowOriginChange(change store.WorkItemOriginChange) {
 	for _, threadID := range change.Threads() {
 		a.noteWorkerWaiting(threadID)
@@ -104,8 +114,12 @@ func (a *App) noteWorkflowOriginChange(change store.WorkItemOriginChange) {
 // to its reassessment, unless it can change nothing: a delta whose named
 // launches all still run, for a thread already waiting on its background
 // work. A delta of a running background agent's latest tool is such a
-// frame, so a working agent costs its worker no reads.
+// frame, so a working agent costs its worker no reads. A decision on rest
+// under way is told of every frame (noteThreadRestChange): Codex's
+// background work is memory, and a launch that starts as the recorded work
+// ends is new work.
 func (a *App) noteBackgroundTrayLiveness(event triage.BackgroundTrayEvent) {
+	a.noteThreadRestChange(event.ThreadID)
 	if !event.Refresh && len(event.Rows) == len(event.LaunchIDs) && a.waitsOnBackground(event.ThreadID) {
 		running := true
 		for _, row := range event.Rows {
@@ -151,6 +165,9 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 func (a *App) drainThreadAgentEmits() {
 	e := &a.threadAgentEmits
 	for {
+		if hook := a.threadAgentDrainForTest; hook != nil {
+			hook()
+		}
 		e.mu.Lock()
 		tokens, callers, targets, liveness, runs := e.tokens, e.callers, e.targets, e.liveness, e.workflowRuns
 		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs) == 0 || a.lifeCtx().Err() != nil {
@@ -290,7 +307,7 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 		}
 	case eventchan.WorkflowItemState:
 		if event, ok := data.(engine.StateEvent); ok && event.ItemID != "" {
-			a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.workflowRuns[event.ItemID] = struct{}{} })
+			a.noteWorkflowRunChanged(event.ItemID)
 		}
 	case eventchan.ProviderUsage:
 		if event, ok := data.(provider.UsageEvent); ok && (event.Action == "usage" || event.Action == "progress") {
@@ -396,9 +413,11 @@ func (a *App) forgetThreadAgentActivity(threadID string) {
 	delete(e.lastCall, threadID)
 }
 
-// noteThreadAgentWait reports a call parked on, or leaving, requests: a send
-// or ask is an agent while its caller waits on it.
-func (a *App) noteThreadAgentWait(keys []string) {
+// noteThreadAgentWait reports a call threadID parked on, or that left,
+// requests: a send or ask is an agent while its caller waits on it, and
+// open work of that caller, which a decision on rest under way is told of.
+func (a *App) noteThreadAgentWait(threadID string, keys []string) {
+	a.noteThreadRestChange(threadID)
 	for _, key := range keys {
 		if key == "" || strings.HasPrefix(key, threadWatchKey("")) {
 			continue

@@ -237,7 +237,7 @@ func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
 	}
 	unchanged := func(token, why string) {
 		t.Helper()
-		if wakes, err := f.app.applyThreadPeerRequest(token, computer, answer(token)); err != nil || len(wakes) != 0 {
+		if wakes, err := f.app.applyThreadPeerRequest(token, computer, answer(token), threadPeerHearing{at: time.Now()}); err != nil || len(wakes) != 0 {
 			t.Fatalf("%s: wakes %+v, %v", why, wakes, err)
 		}
 		if row := f.request(t, token); row.State != store.ThreadRequestRunning || row.Revision != 0 || row.AckOwed != 0 {
@@ -249,7 +249,7 @@ func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
 	unchanged(seed("an-ended-pairing"), "an answer about an earlier pairing's request")
 	unchanged(seed(""), "an answer about a request that names no pairing")
 	token := seed("held")
-	if _, err := f.app.applyThreadPeerRequest(token, computer, answer(token)); err != nil {
+	if _, err := f.app.applyThreadPeerRequest(token, computer, answer(token), threadPeerHearing{at: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if row := f.request(t, token); row.State != store.ThreadRequestFinished || row.AckOwed != 1 {

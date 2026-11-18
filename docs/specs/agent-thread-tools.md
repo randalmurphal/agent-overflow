@@ -247,8 +247,10 @@ window is rendered to a file under the source data directory (beside
 `remote-artifacts/`, retained until explicitly removed), and the call
 returns its path and size for the agent's own read and search tools. A
 remote thread renders on its own computer and the file crosses in
-chunks with a whole-file SHA-256, as remote artifacts do; the inline
-form moves at most `max_bytes` over the wire.
+chunks over one connection, verified against the size and whole-file
+SHA-256 the render announced; a chunk whose connection was lost is asked
+for once more, at the same offset, over a new one. The inline form moves
+at most `max_bytes` over the wire.
 
 Output is plain text, turn-delimited, each row prefixed with role and
 item id; a message another agent wrote is role `agent` and names its
@@ -693,7 +695,26 @@ running without having sent it anything. A wait returns as soon as any
 listed request settles or any listed thread rests, or as soon as any
 target becomes blocked on a person (a pending approval or a question
 to the user), with the request still open; duplicates and the caller's
-own thread are refused. A thread rests when it is at rest
+own thread are refused, as is an ambiguous reference. A wait reports
+what it observed, thread by thread. A computer that does not answer
+has its threads read `unavailable` and is named under `errors`. The
+references are looked up together, following a recorded move
+included, under one 10-second bound. A
+reference that matched nothing on the computers that answered while
+another did not answer its lookup reads `unresolved`, named by the
+reference and under a computer only when a recorded move names it,
+with the computers that failed under `errors`. A thread deleted or
+moved away during the wait reads `unavailable` with its own `error`
+and ends the wait, and the threads read after it never take that wake.
+A computer on v0.0.19 refuses the whole wait over one such thread, so
+its threads are then read one by one, together, within three seconds,
+each with its own verdict. Any other refusal a computer answered for
+the wait is the `error` of each of its threads. The other threads keep waiting and are reported as they
+stand; once one ends the wait, the others are read again at once,
+together, within three seconds, and a computer that has not answered
+by then reads as not answering. `timed_out` means a wait ran to its
+end; one that was refused or not answered did not. The call fails
+only when no computer answered. A thread rests when it is at rest
 ([at rest](standing-agents.md#at-rest)): its turn over and nothing it
 started still running; one whose turn is over and is not reports
 `resting: false` with what it waits on (`waiting_on`), and an async
@@ -754,7 +775,9 @@ no version and an older build would read an unknown effect as an
 interruption; its note for a request on another computer says nothing
 could be stopped from here and the message may still be read. A request
 that has already settled stops nothing, even when the turn that answered
-it is still running. By `label`: stops the
+it is still running. A spawn or ask whose thread is still being made
+settles cancelled with `nothing_to_stop`
+([durability](#request-identity-and-durability)). By `label`: stops the
 caller's loop or watch with that label, and the run it has in flight.
 By `thread_id`:
 a thread the caller spawned is brought to rest
@@ -1256,14 +1279,49 @@ from its receipt when that settled without it, otherwise as
 
 Across computers the destination stores its own row for the request
 (token, owning device, source computer, source thread, target thread,
-state, answer) and deduplicates on it: a retry with the same token
-returns the existing acceptance, and the source retries a lost reply
-itself, with the same token, a bounded number of times. A spawn or ask
-whose acceptance is still unknown after that returns
-`thread_request_unconfirmed` with the token; the watcher (below)
-reconciles it against the destination, and a destination holding no row
-for it settles the request `refused` so the caller is never left
-waiting for something that never started.
+state, answer) and deduplicates on it: a retry with the same token is
+answered from that row as it stands, and nothing is checked or started
+again. While the attempt that wrote the row is still making its thread
+(a worktree add, a fork), a retry is answered `accepted` with no thread
+yet and the source collects the thread from a later poll. A row that
+names no thread is settled only by the attempt making its thread, when
+creation fails; by a cancel, after which that attempt removes the
+thread it made instead of naming it; and by the destination's boot, as
+never started, since the attempt making it ended with the last run. A
+retry never settles it. An attempt that removes its thread takes back
+what it made with it only while that is still its own: the checkout it
+cut unless it holds a change or an untracked file, the branch it made
+unless the branch moved or another checkout has it, and a group it made
+while the group is empty. Its refusal names a checkout or branch it kept
+and why.
+
+An attempt whose failure may have reached the destination, a lost reply
+or a dropped connection, is tried again with the same token, up to three
+attempts. A send makes nothing and is sent again to any destination. A
+spawn or an ask is sent again only to a destination that advertises
+`thread-tools.v2`: an older one would settle a row whose thread is still
+being made and let that thread run, so such a call is never sent to it
+twice, whatever its status says. When no attempt brought back the
+destination's row and any may have reached it, the request stays
+`unconfirmed` and the call returns its token, never only an error, even
+when a later attempt was refused, because the lost reply may have been
+an acceptance. When the row came back but this computer could not record
+it or read the request back, the call returns the token with the state
+the destination reported and says what failed. Either way the watcher
+(below) reconciles the request against the destination, asking at its
+normal pace once the call has returned, so a receipt the destination
+holds is collected within one poll. A destination that holds no row for
+the token never started it only when that answer is conclusive: it
+advertises `thread-tools.v2` and its status answer does not mark the
+token as still being admitted (it marks a token a spawn, send or ask
+handler there is running for, from the handler's entry to its exit), or
+the request's admission deadline has passed. The deadline is one call's
+wait after the last attempt was sent, when that attempt's handler can no
+longer admit the token; it is kept on the request's row, so it holds
+across a restart of the calling computer. A conclusive answer settles
+the request `refused`; until then the row waits for the next poll and
+nothing is reported. The caller is never left waiting for something that
+never started.
 
 A request that cannot be started is answered by its own call. A spawn
 whose worktree git refuses, a send whose message the target's queue
@@ -1281,11 +1339,12 @@ was created before its prompt failed to reach it keeps the thread and
 names it in the refusal, which tells the caller to `thread_send` the
 prompt there instead of spawning again. The record keeps
 exactly what the call returned, which for another computer names that
-computer. Across computers this holds for a refusal that answers the
-first attempt, whether that computer's handler wrote it or its
-transport refused the pairing's credentials or scope. One that answers a retry after a lost reply settles nothing,
-because the lost reply may have been an acceptance: the request stays
-`unconfirmed` and the poller settles it from the destination's record.
+computer. Across computers this holds when no attempt could have started
+the request: each was refused by that computer's handler or its
+transport (the pairing's credentials or scope), or never left this
+computer because the pairing could not be loaded or no connection
+opened, which the refusal says ("nothing was sent"). A computer that is
+asleep is refused that way at once.
 
 `ParentThreadID` is not reused for lineage, since it means "Codex
 subagent child" and would mark the caller busy while its spawns run.
@@ -1382,8 +1441,9 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing. A spawn, and a send from the
    thread that spawned its target, settle `finished` only once that
-   thread is at rest ([at rest](standing-agents.md#at-rest), read by
-   `threadRest`): a turn that ends as it would settle `finished` while
+   thread and every thread below it are at rest, by the rule for
+   decisions that cannot be taken back
+   ([owned workers](standing-agents.md#owned-workers)): a turn that ends as it would settle `finished` while
    the thread is not at rest leaves the request `running`, its gate in
    the turn-end registry marked held (`receiptGate.held`,
    `app_thread_tools_rest_settle.go`), with no wake. Held is a phase of
@@ -1401,13 +1461,13 @@ What settles a request, in order:
    once. `thread_status` and a parked wait report it running with what
    it waits on (`waiting_on`); a request on another computer carries it
    in the poll's answer (`waitingOn`), and its row there reads
-   `waiting`. Every change that can bring a thread to rest reaches the
-   Agents rows' drain, which asks for a pass over the held requests;
-   a pass reads each held thread's rest itself, from facts complete when
-   it reads them, a thread's durable sources before its memory ones, so
-   an answer on its way to a thread keeps it from rest until the turn it
-   starts is open, and a workflow run's report from its rest until its
-   wake has been handed over. The
+   `waiting`. Every change that can bring a thread to rest asks for a
+   pass over the held requests, which decides each by the rule in
+   [owned workers](standing-agents.md#owned-workers): an answer on its
+   way to a thread keeps it from rest until the turn it starts is open,
+   a turn starting keeps it from rest from the moment it is marked, and
+   a workflow run bound to it keeps it while the run runs and, once it
+   rests, until its report is delivered or dropped. The
    Stop of the thread, the person's or the spawner's `thread_cancel` by
    thread id, and an explicit `thread_reply` settle it as before. A
    boot holds again a running receipt whose turn ended as it would
@@ -1416,8 +1476,11 @@ What settles a request, in order:
    with a later turn's error; no held request settles at rest until the
    boot has recorded every thread a recovered source keeps from rest
    (`recoverRestAtBoot`), a pass asked for meanwhile waiting for it. A
-   source or thread the recovery could not read is read again by each
-   pass of the request sweep until it succeeds. A paired computer that
+   source or thread the recovery could not read is read again within the
+   retry delay by each pass of the sweep until it reads; a held request
+   whose read of rest failed stays held and is retried as
+   [owned workers](standing-agents.md#owned-workers) states, with no new
+   event. A paired computer that
    settles at rest says so in the poll's answer (`restRule`); one that
    does not settles such a request when its turn ends, and its
    `finished` answer is recorded `rest_unreported`, which
@@ -1439,8 +1502,9 @@ What settles a request, in order:
    interrupt names who is stopping the turn, recorded before the
    interrupt is sent; the stopped thread's timeline row names the same
    stopper. The user's own Stop of the thread settles `interrupted`
-   with what the turn said by then as its `final` answer; its wake says
-   the user stopped the turn.
+   with its cause and what the turn said by then as its `final` answer,
+   which is all `thread_status` reports as its text; its wake says the
+   user stopped the turn.
 
 An interruption's cause is data, recorded where its settlement decides
 it: a code from one closed vocabulary (`threadtools.Cause`) and the one
@@ -1451,11 +1515,14 @@ text is then what the turn had written, if anything, and a paired
 computer reports it beside the answer (`cause`, with what the turn
 wrote). Every reader renders words from the cause: `thread_status`, a
 written answer file, the wake and the facts its row shows
-(`Stopped by: ...`); none reads a cause out of text, so a sentence
-reworded on one computer leaves the other's facts as they were. An
+(`Stopped by: ...`); none reads a cause out of text or out of the
+answer's kind, so a sentence reworded on one computer leaves the
+other's facts as they were. A wake, single or a digest, says the
+cause's reason whole and clips only the answer text to the preview. An
 interruption recorded with no cause, by a build before causes or a
 computer that reports none or one this computer does not know, is its
-text: shown whole as the answer, naming no stopper. The answer a
+text: shown whole as the answer, naming no stopper, whatever its
+answer's kind. The answer a
 paired computer reports beside the cause is the same in its own words,
 which is what an earlier build there reads.
 
@@ -1792,7 +1859,9 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   then the whole message, which the body does not repeat.
 - An ask names and links the thread asked, not the hidden read-only copy
   that answers it; an id prefix links the one thread it names, and a
-  prefix that names none or several stays text.
+  prefix that names none or several stays text. A `thread_status`
+  reference that reads `unresolved` likewise stays text, with its
+  `error` and the computer it may be on when the reply names one.
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
   the answer reaches the caller, then "answer arrived". It reaches it in
@@ -1894,12 +1963,17 @@ computer by the name it had when the work was admitted.
 
 The peer methods are `ThreadToolCall` (tool name, arguments, and the
 caller's thread identity) and `ThreadToolRequestStatus`, added to the
-`CallAgentPeer` allowlist and advertised as a `thread-tools` capability
-in the manifest so an older destination fails as `thread_unsupported`
-("Update Agent Overflow on that computer") rather than with a confusing
-method error. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
+`CallAgentPeer` allowlist and advertised as the `thread-tools.v1`
+capability in the hello so an older destination fails as
+`thread_unsupported` ("Update Agent Overflow on that computer") rather
+than with a confusing method error. Each later generation of the thread
+peer protocol is advertised beside it as `thread-tools.v2` and so on,
+and peer behavior newer than v1 is keyed on that capability. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
 leaves that capability out of its hello, which is how an end-to-end test
-stands up such a destination; no other boot honors it. The destination
+stands up such a destination; no other boot honors it. A `thread_ids`
+wait is forwarded over `ThreadToolWatch`, which ends there when the
+caller's call ends here; a computer on v0.0.19 does not serve it and is
+asked through its read call instead. The destination
 authorizes every call with the
 authenticated device of the originating computer (the same principal
 that owns remote jobs there) and runs the handler with a caller scope
@@ -1917,8 +1991,10 @@ transport session and is not gated by it.
 Two more forwarded tools serve the caller's Agents segment, both refused
 unless the thread they name is one the calling device's thread spawned
 there, directly or through that computer's own spawn lineage (the
-spawn's receipt there, which the retention floor keeps while that thread
-or one up to four spawns below it has open work):
+spawn's receipt there, which the retention floor keeps whole until that
+thread and every thread below it read at rest
+([owned workers](standing-agents.md#owned-workers)), and as its lineage
+while the thread exists):
 `agent_rows` over `ThreadToolQuery` lists that thread's own Agents rows
 to the nesting depth left, or none for a call that asks for its state
 alone (`state_only`, sent with a depth of one, which an older computer
@@ -1960,9 +2036,8 @@ Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the
 names so the model can retry with them, and raw causes kept in host
 logs. A request that could not be started is the exception and names
-its cause (see Request identity and durability). A failed network
-reply does not establish whether a spawn or ask
-happened; the token and `thread_status` do.
+its cause. What a spawn, send or ask returns when its reply is lost is
+in [Request identity and durability](#request-identity-and-durability).
 
 ## Lifecycle interactions
 
@@ -1993,7 +2068,12 @@ happened; the token and `thread_status` do.
   ([reaching another computer](#reaching-another-computer)) with every
   one of them settled `errored` ("computer forgotten") and its wake
   dropped, and no claim is made that the other computer stopped
-  anything. A lost machine can always be forgotten.
+  anything. A lost machine can always be forgotten. A pairing that ends,
+  by a forget, a new pairing with the same computer or that computer's
+  verdict, closes every connection open under it. A call still on its way
+  fails as unanswered, since that computer may have acted on it; a later
+  call is refused unsent with that reason, so an export copy stops and
+  removes what it staged.
 - Flipping a computer's switch toggles the server in every live session
   on that computer except one holding an open request from another
   computer, which keeps it until that request settles. Its threads stay

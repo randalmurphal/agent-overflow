@@ -749,7 +749,7 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	st.softClosedTurnSet = false
 	st.openTurn, st.openTurnSet = turnIndex, true
 	delete(st.settledTurns, turnIndex)
-	opening := r.markTurnOpeningLocked(st)
+	opening := r.markTurnOpeningLocked(evt.ThreadID, st)
 	defer opening()
 	r.mu.Unlock()
 
@@ -1275,21 +1275,34 @@ func (r *Router) beginTurnStart(threadID string) func() {
 	}
 }
 
+// SetTurnOpeningObserver wires the callback told that threadID marked a
+// turn opening (markTurnOpeningLocked), before the turn's row is written.
+// It runs under r.mu, so it must not block or call back into the router.
+func (r *Router) SetTurnOpeningObserver(fn func(threadID string)) {
+	r.mu.Lock()
+	r.turnOpening = fn
+	r.mu.Unlock()
+}
+
 // beginTurnOpening marks threadID as opening a turn and returns the
 // function that ends the mark.
 func (r *Router) beginTurnOpening(threadID string) func() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.markTurnOpeningLocked(r.state(threadID))
+	return r.markTurnOpeningLocked(threadID, r.state(threadID))
 }
 
-// markTurnOpeningLocked marks st as opening a turn, under r.mu, and returns
-// the function that ends the mark, which takes r.mu. Every turn open
-// marks itself until its round is published or it opened nothing: a
-// start (startTurn), a soft-closed turn's continuation and a queued
-// message's echo.
-func (r *Router) markTurnOpeningLocked(st *threadState) func() {
+// markTurnOpeningLocked marks st, threadID's state, as opening a turn,
+// under r.mu, and returns the function that ends the mark, which takes
+// r.mu. Every turn open marks itself before it writes its turn row, until
+// its round is published or it opened nothing: a start (startTurn), a
+// soft-closed turn's continuation and a queued message's echo. The mark
+// is told to the turn-opening observer under the same lock.
+func (r *Router) markTurnOpeningLocked(threadID string, st *threadState) func() {
 	st.turnOpenings++
+	if r.turnOpening != nil {
+		r.turnOpening(threadID)
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -1445,7 +1458,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	delete(st.settledTurns, turnIndex)
 	// Its predecessor's round is settled below before this turn's is
 	// published.
-	opening := r.markTurnOpeningLocked(st)
+	opening := r.markTurnOpeningLocked(threadID, st)
 	defer opening()
 	// The thread-level mark list covers the entry the per-entry stamp
 	// structurally cannot: one POPPED from the FIFO just before

@@ -33,6 +33,10 @@ func TestCauseAnswerKeepsItsWords(t *testing.T) {
 		{Cause{Code: CauseTakeover}, "", "The user took the thread over from its workflow before it answered."},
 		{Cause{Code: CauseWorkflow}, "", "Its workflow stopped the turn before it answered."},
 		{Cause{Code: CauseAssistantsOff}, "", "Assistants were turned off in Settings before it answered."},
+		// The user's Stop answers with what the turn said, its final
+		// message, as it did before it had a cause.
+		{Cause{Code: CauseUserStop}, "Half done.", "Half done."},
+		{Cause{Code: CauseUserStop}, "", ""},
 		// No cause: an earlier build's row or a computer that reports none
 		// answers with its text alone.
 		{Cause{}, "This computer restarted before the request finished.", "This computer restarted before the request finished."},
@@ -50,7 +54,7 @@ func TestCauseVocabularyIsClosed(t *testing.T) {
 		if !(Cause{Code: code}).Known() {
 			t.Errorf("%s is in the vocabulary and is not known", code)
 		}
-		if strings.TrimSpace(Cause{Code: code}.Answer("")) == "" {
+		if shown := (Cause{Code: code}).render(""); strings.TrimSpace(shown.reason+shown.sentence+shown.answer) == "" {
 			t.Errorf("%s has no words", code)
 		}
 	}
@@ -112,5 +116,86 @@ func TestWakeOfAWrittenTurnClipsOnlyWhatItWrote(t *testing.T) {
 	}
 	if got := facts.BodyOf(text); got != written[:WakePreviewBytes] {
 		t.Fatalf("body is %d bytes, want the first %d of what it wrote", len(got), WakePreviewBytes)
+	}
+}
+
+// TestADigestClipsTheAnswerAsTheSingleWakeDoes holds a digest of turns
+// whose sessions ended to the single wake's clip: the reason is said whole
+// outside the preview, and an answer that fits a single wake is not cut
+// short in a digest, while one past the preview is cut at the same byte.
+func TestADigestClipsTheAnswerAsTheSingleWakeDoes(t *testing.T) {
+	one := []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}}}
+	several := []WakeSource{
+		{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}},
+		{Title: "Other", ThreadID: "t-other", Tokens: []string{"tok-2"}},
+	}
+	for _, code := range []string{CauseSessionEndedMidTurn, CauseSessionEndedWorking} {
+		for _, size := range []int{WakePreviewBytes, WakePreviewBytes + 10} {
+			written := strings.Repeat("z", size)
+			want := written[:min(size, WakePreviewBytes)]
+			for name, sources := range map[string][]WakeSource{"single": one, "digest": several} {
+				text, facts := Wake{Kind: WakeInterrupted, Sources: sources, Cause: Cause{Code: code}, Text: written}.Message()
+				if got := facts.BodyOf(text); got != want {
+					t.Errorf("%s %s with %d bytes written: body is %d bytes, want %d", name, code, size, len(got), len(want))
+				}
+				if clipped := size > WakePreviewBytes; facts.Clipped != clipped || strings.HasSuffix(text, WakePreviewPointer("tok")) != clipped {
+					t.Errorf("%s %s with %d bytes written: clipped %v, want %v", name, code, size, facts.Clipped, clipped)
+				}
+				if reason := (Cause{Code: code}).Answer("")[:20]; !strings.Contains(text, reason) {
+					t.Errorf("%s %s: the reason %q is not said", name, code, reason)
+				}
+			}
+		}
+	}
+}
+
+// TestAnInterruptionWithNothingToSaySaysItWasInterrupted holds a request
+// interrupted with no cause this build knows and no text, a newer
+// computer's own code with nothing written, to a wake that still says it
+// was interrupted: a status line for one thread, a heading for several,
+// with no body and no stopper.
+func TestAnInterruptionWithNothingToSaySaysItWasInterrupted(t *testing.T) {
+	one := []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}}}
+	several := []WakeSource{
+		{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}},
+		{Title: "Other", ThreadID: "t-other", Tokens: []string{"tok-2"}},
+	}
+	for _, cause := range []Cause{{}, {Code: "evicted"}} {
+		text, facts := Wake{Kind: WakeInterrupted, Sources: one, Cause: cause}.Message()
+		if want := `"Worker" (t-work) [token tok] was interrupted.`; text != want {
+			t.Errorf("%+v: wake = %q, want %q", cause, text, want)
+		}
+		if facts.Outcome != WakeInterrupted || facts.StoppedBy != "" || len(facts.Body) != 0 {
+			t.Errorf("%+v: facts = %+v, want an interruption with no body and no stopper", cause, facts)
+		}
+		text, facts = Wake{Kind: WakeInterrupted, Sources: several, Cause: cause}.Message()
+		if want := "2 threads were interrupted.\n- \"Worker\" (t-work) [token tok]\n- \"Other\" (t-other) [token tok-2]"; text != want {
+			t.Errorf("%+v: digest = %q, want %q", cause, text, want)
+		}
+		if facts.StoppedBy != "" || len(facts.Body) != 0 {
+			t.Errorf("%+v: digest facts = %+v, want no body and no stopper", cause, facts)
+		}
+	}
+}
+
+// TestACausesOwnSentenceIsNeverClipped says a cause's sentence whole
+// however long the canceller's title, and still as the row's message: the
+// preview bounds what a turn wrote, not why it stopped.
+func TestACausesOwnSentenceIsNeverClipped(t *testing.T) {
+	one := []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}}}
+	several := []WakeSource{
+		{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}},
+		{Title: "Other", ThreadID: "t-other", Tokens: []string{"tok-2"}},
+	}
+	cause := Cause{Code: CauseThreadCancel, Arg: `"` + strings.Repeat("t", WakePreviewBytes+1) + `" (t-lead)`}
+	sentence := cause.Answer("")
+	for name, sources := range map[string][]WakeSource{"single": one, "digest": several} {
+		text, facts := Wake{Kind: WakeInterrupted, Sources: sources, Cause: cause}.Message()
+		if got := facts.BodyOf(text); got != sentence {
+			t.Errorf("%s: body is %d bytes ending %q, want the %d-byte sentence whole", name, len(got), got[max(0, len(got)-60):], len(sentence))
+		}
+		if facts.Clipped || strings.Contains(text, WakePreviewPointer("tok")) || !strings.HasSuffix(text, sentence) {
+			t.Errorf("%s: the sentence is clipped (facts %+v)", name, facts)
+		}
 	}
 }

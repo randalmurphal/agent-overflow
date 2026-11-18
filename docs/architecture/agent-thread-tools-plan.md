@@ -249,10 +249,9 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   opt-in; `openRPC(ctx, capability)` refuses a peer whose hello lacks
   the capability with `errUnsupportedPeerOperation`, translated to
   `remote_unsupported`.
-- The remote watch poller: 2 s ticker, 32 due rows, four concurrent,
-  +5 s normal, +30 s after an error, +5 s while a wait is parked,
-  resumed at boot from the table. `beginRemoteWait` ends after the reply
-  is written so the poller cannot double-deliver.
+- The remote watch poller runs on the schedule in
+  [remote commands](remote-commands.md#agent-use). `beginRemoteWait` ends
+  after the reply is written so the poller cannot double-deliver.
 - `ForkThread` locks the source, forks at the tail mid-turn, settles the
   fork as interrupted, copies `Mode` and `RuntimeMode`, has no override
   options. Title generation is skipped when the title is not
@@ -912,6 +911,8 @@ In `app_thread_tools_peer.go`, all `//ao:route selected`:
 - `ThreadToolResolve(ctx, prefix string)` `//ao:scope threads:read`
 - `ThreadToolQuery(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
   (`thread_search`, `thread_show`, `thread_item`, `thread_options`)
+- `ThreadToolWatch(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
+  `//ao:callerbound` (a `thread_status` wait on `thread_ids`)
 - `ThreadToolCall(ctx, call ThreadPeerCall)` `//ao:scope terminal:operate`
   (`spawn` including `from_thread`, `send`, `ask`, `cancel`,
   `thread_update`, `thread_group`)
@@ -925,9 +926,9 @@ method: `threadToolOwner(ctx)` (the `remoteCommandOwner` rule), a
 comes from the session. `make methodgen` regenerates the table and the
 TS mirror.
 
-`attachedbackends.CallThreadPeer` shares `callAgentPeer`'s body with a
+`attachedbackends.CallThreadPeer` shares `CallAgentPeer`'s body with a
 capability parameter (`CapabilityThreadTools`) and its own allowlist of
-the five names, without the agent-computer opt-in check, because reach
+the peer method names, without the agent-computer opt-in check, because reach
 is pairing alone. `CapabilityThreadTools = "thread-tools.v1"` is
 appended to every `serverCapabilities` variant. An older peer:
 `thread_unsupported` with the update hint.
@@ -940,10 +941,16 @@ and keeps raw causes in the host log with a reference id.
 ### `to_file` across computers
 
 The destination renders to `<configDir>/thread-exports/<id>.txt`,
-returns `{export_id, size, sha256}`, and serves `ThreadToolExportChunk`
-in 256 KiB pieces with the file stamp rule from `readRemoteArtifactChunk`.
-The source calls `receiveRemoteArtifact` with a reader that wraps the
-peer method and lands the file in its own `thread-exports/`. That
+returns `{export_id, size, sha256}`, records that digest and the file's
+stamp in memory, and serves `ThreadToolExportChunk` in 256 KiB pieces
+under the recorded stamp, with the recorded digest on the first piece
+instead of a second read of the file. An export with no record (after a
+restart or the sweep) is refused with "ask for the window again". The
+source holds one connection for the whole copy
+(`attachedbackends.HoldThreadPeer`), reads a chunk the connection lost
+once more on a fresh one (`attachedbackends.Unanswered`), and calls `receiveRemoteArtifact`
+with the announced size and digest, landing the file in its own
+`thread-exports/`. That
 receiver refuses files over `remoteArtifactMaxBytes` (1 GiB); an
 export larger than that is refused on the destination with its size
 and a suggestion to narrow `include` or the window, since no thread

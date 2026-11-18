@@ -246,6 +246,7 @@ func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held ma
 		return threadSettlementWork{}, nil
 	}
 	settlement := interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedUnanswered}, "")
+	var rest *restDecision
 	if receipt.TurnID == "" {
 		switch {
 		case a.receiptTakenIn(threadID, token):
@@ -262,11 +263,12 @@ func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held ma
 		// any turn end does, rest included.
 		index, _ := threadRequestTurnIndex(threadID, receipt.TurnID)
 		held := false
-		if settlement, held, err = a.restSettlement(receipt, settlement, index); err != nil || held {
+		if settlement, rest, held, err = a.restSettlement(receipt, settlement, index); err != nil || held {
 			return threadSettlementWork{}, err
 		}
+		defer rest.done()
 	}
-	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread, rest)
 	return work, err
 }
 
@@ -347,7 +349,7 @@ func (a *App) settleReceiptNotRead(threadID, token, state, why string) threadSet
 	if !found || receipt.TargetThreadID != threadID || receipt.State != state || receipt.TurnID != "" {
 		return threadSettlementWork{}
 	}
-	work, _, err := a.settleReadReceiptLocked(receipt, []string{state}, interruptedSettlement(threadtools.Cause{Code: why}, ""), dropScratchThread)
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{state}, interruptedSettlement(threadtools.Cause{Code: why}, ""), dropScratchThread, nil)
 	if err != nil {
 		log.Printf("thread tools: settle undelivered request %s on %s: %v", token, threadID, err)
 	}
@@ -357,12 +359,20 @@ func (a *App) settleReceiptNotRead(threadID, token, state, why string) threadSet
 // interruptedSettlement is the answer of a request cause interrupted: the
 // cause as data, and what the turn had written by then, if anything, as its
 // text. The words a caller reads are rendered from both (threadtools.Cause).
+// The user's Stop answers with exactly what the turn said, which is its
+// `final` message; every other cause's answer is an `error`, and text that
+// is only white space is no text.
 func interruptedSettlement(cause threadtools.Cause, written string) store.ThreadRequestSettlement {
 	settlement := store.ThreadRequestSettlement{
 		State:      store.ThreadReceiptInterrupted,
 		AnswerKind: store.ThreadAnswerError,
 		Cause:      cause.Code,
 		CauseArg:   cause.Arg,
+	}
+	if cause.Code == threadtools.CauseUserStop {
+		settlement.AnswerKind = store.ThreadAnswerFinal
+		settlement.Answer = []byte(written)
+		return settlement
 	}
 	if strings.TrimSpace(written) != "" {
 		settlement.Answer = []byte(written)
@@ -477,11 +487,12 @@ func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (threadSettlem
 	if err != nil {
 		return threadSettlementWork{}, "", noHold, err
 	}
-	settlement, held, err := a.restSettlement(receipt, settlement, index)
+	settlement, rest, held, err := a.restSettlement(receipt, settlement, index)
 	if err != nil || held {
 		return threadSettlementWork{}, "", noHold, err
 	}
-	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
+	defer rest.done()
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread, rest)
 	return work, "", noHold, err
 }
 
@@ -512,11 +523,10 @@ func (a *App) bindUndeliveredReceiptToTakingTurn(threadID, token, messageItemID 
 // A turn that answered without thread_reply still said something, and that
 // last message is the most useful thing this computer has; it is reported as
 // `final` so the caller is never told a fallback is the answer it asked for.
-// A turn the user's own Stop cut (recordTurnStop) is `interrupted` with what
-// it said by then as its `final` answer, which is how the wake tells it from
-// a restart: every other interruption's answer is an `error` with the cause
-// the stop recorded (threadtools.Cause). A
-// turn whose session ended with it is settled by settleReceiptOnSessionEnd.
+// An interrupted turn settles `interrupted` with the cause its stop recorded
+// (recordTurnStop, threadtools.Cause); the user's own Stop keeps what the
+// turn said by then. A turn whose session ended with it is settled by
+// settleReceiptOnSessionEnd.
 func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequestSettlement, error) {
 	settledAt := time.Now().UnixMilli()
 	if turn.CompletedAt != nil {
@@ -524,24 +534,19 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 	}
 	switch {
 	case turn.StopReason == "interrupted":
-		stop, stopped := a.turnStopOf(threadID, turn)
-		if stopped && stop.person {
+		cause := threadtools.Cause{Code: threadtools.CauseTurn}
+		if stop, stopped := a.turnStopOf(threadID, turn); stopped {
+			cause = stop.cause
+		}
+		said := ""
+		if cause.Code == threadtools.CauseUserStop {
 			text, err := a.lastAssistantText(threadID, turn.TurnIndex)
 			if err != nil {
 				return store.ThreadRequestSettlement{}, err
 			}
-			return store.ThreadRequestSettlement{
-				State:      store.ThreadReceiptInterrupted,
-				Answer:     []byte(text),
-				AnswerKind: store.ThreadAnswerFinal,
-				SettledAt:  settledAt,
-			}, nil
+			said = text
 		}
-		cause := threadtools.Cause{Code: threadtools.CauseTurn}
-		if stopped {
-			cause = stop.cause
-		}
-		settlement := interruptedSettlement(cause, "")
+		settlement := interruptedSettlement(cause, said)
 		settlement.SettledAt = settledAt
 		return settlement, nil
 	case turn.ErrorMessage != "" || turn.StopReason == "error":
@@ -756,16 +761,19 @@ func (a *App) settleThreadReceiptLocked(
 	if !found {
 		return threadSettlementWork{}, false, nil
 	}
-	return a.settleReadReceiptLocked(receipt, from, settlement, scratch)
+	return a.settleReadReceiptLocked(receipt, from, settlement, scratch, nil)
 }
 
 // settleReadReceiptLocked is settleThreadReceiptLocked for a receipt the
 // caller read under the token's settle lock. The receipt, the source row on
 // this computer and the acknowledgement are one store transaction
 // (SettleLocalThreadRequest); a request another computer made is collected
-// by its poller.
+// by its poller. A settlement at its thread's rest carries that decision
+// (rest): the transaction reads the rest again first and writes nothing
+// when its thread is no longer at rest, which leaves the request held for
+// the next pass.
 func (a *App) settleReadReceiptLocked(
-	receipt store.ThreadRequestReceipt, from []string, settlement store.ThreadRequestSettlement, scratch bool,
+	receipt store.ThreadRequestReceipt, from []string, settlement store.ThreadRequestSettlement, scratch bool, rest *restDecision,
 ) (threadSettlementWork, bool, error) {
 	token := receipt.Token
 	// The answer records whether its thread is a standing agent now, and
@@ -783,7 +791,22 @@ func (a *App) settleReadReceiptLocked(
 		// write; the store refuses both.
 		settlement.ArmWake = found && row.TargetComputerID == "" && !settlement.DisarmWake && a.replyArmsWake(row)
 	}
-	result, err := a.store.SettleLocalThreadRequest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State))
+	var result store.LocalSettlement
+	var err error
+	if rest == nil {
+		result, err = a.store.SettleLocalThreadRequest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State))
+	} else {
+		result, err = a.store.SettleLocalThreadRequestAtRest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State),
+			rest.guard(receipt.TargetThreadID))
+		// The attempt is complete once the write ran, settled or not at
+		// rest, which ends a retry owed (noteRestRead). A rest that failed
+		// to read, or no longer holds, is read again by the next pass: the
+		// sweep's for a failure, the one the change asks for otherwise.
+		a.noteRestRead(receipt.TargetThreadID, err)
+		if err == nil && result.Unrested {
+			a.noteRestWaitsMayChange()
+		}
+	}
 	if err != nil {
 		return threadSettlementWork{}, false, err
 	}

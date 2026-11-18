@@ -59,8 +59,8 @@ type Deps struct {
 	// OriginChanged hears a run's binding move, with the thread it
 	// reported to before and the one it reports to now.
 	OriginChanged func(store.WorkItemOriginChange)
-	// ReportSettled hears that a run's rest no longer owes the thread it
-	// reports to a report (ReportingRuns).
+	// ReportSettled hears that a rest's report of run itemID is no longer
+	// owed (settleOwedReport), once the store says so.
 	ReportSettled func(itemID string)
 	Logf          func(format string, args ...any)
 	Now           func() time.Time
@@ -77,7 +77,6 @@ type Service struct {
 	autoDisposition    serialqueue.Queue
 	wake               serialqueue.Queue
 	holds              wakeHolds
-	reports            owedReports
 	autoResume         autoResumeState
 	digestMu           sync.Mutex
 	digestSlots        chan struct{}

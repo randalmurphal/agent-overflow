@@ -22,7 +22,7 @@ type fakeAttached struct {
 
 func (f *fakeAttached) Attached() []AttachedProfile { return f.profiles }
 
-func (f *fakeAttached) Carrier(id string) BackendCarrier {
+func (f *fakeAttached) Carrier(_ context.Context, id string) BackendCarrier {
 	carrier, ok := f.carriers[id]
 	if !ok {
 		return nil

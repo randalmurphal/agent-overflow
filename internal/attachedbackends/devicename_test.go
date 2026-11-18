@@ -75,7 +75,7 @@ func TestDeviceNameSyncChecksPeerAndPersistsOnlySuccess(t *testing.T) {
 			defer server.Close()
 			manager, dir := newManager(t)
 			seed(t, dir, deviceclient.Session{BackendID: "peer", Endpoint: server.URL, SessionID: "session", Credential: "credential", Label: "old", Nickname: "my override", ExpiresAtMs: time.Now().Add(time.Hour).UnixMilli()})
-			c, err := manager.carrier("peer")
+			c, err := manager.carrier(context.Background(), "peer")
 			if err != nil {
 				t.Fatal(err)
 			}

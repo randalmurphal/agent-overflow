@@ -220,12 +220,20 @@ type App struct {
 	// threads own a receipt that a turn end could settle. Zero value
 	// ready. See app_thread_tools_wait.go.
 	threadRequests threadRequestState
+	// peerAdmissions is the tokens a paired computer's spawn, send or ask
+	// has a handler in flight for here (app_thread_tools_admissions.go).
+	// Zero value ready.
+	peerAdmissions peerAdmissions
 	// threadAgentEmits coalesces the Agents rows' change frames
 	// (app_thread_agent_rows_emit.go).
 	threadAgentEmits threadAgentEmits
 	// liveWorkers is the threads last found not at rest, which keep the
 	// local spawn that made each open (app_thread_agent_live.go).
 	liveWorkers liveWorkers
+	// restRevisions is the revision of what memory holds of a thread's
+	// rest, for the decisions on rest that cannot be taken back
+	// (app_thread_rest_assess.go).
+	restRevisions restRevisions
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache
@@ -293,8 +301,14 @@ type App struct {
 	terminalThreads terminalThreads
 	// firstReads holds heavy post-boot work until a client has read its
 	// catalogs. See app_first_reads.go.
-	firstReads       firstReadsGate
-	remoteWatchWG    sync.WaitGroup
+	firstReads    firstReadsGate
+	remoteWatchWG sync.WaitGroup
+	// remoteWatchNudges wakes the remote command watcher's loops
+	// (app_remote_watch_loop.go).
+	remoteWatchNudges remoteWatchNudges
+	// peerExports records the exports rendered for paired computers
+	// (app_thread_tools_export.go).
+	peerExports      peerExports
 	remoteStartsOnce sync.Once
 	remoteStarts     *keyedlock.Registry
 	// reviewSubmits, postedReviewDrafts and reviewAttempts are
@@ -812,6 +826,19 @@ type App struct {
 	// a held request's thread under a paused assistant (settleRestedReceipts),
 	// so a test can turn assistants off and on again at that moment.
 	restPausedReadForTest func(threadID string)
+	// threadAgentDrainForTest, when set, runs in the Agents rows' drain
+	// before it takes each batch (drainThreadAgentEmits), so a test can hold
+	// what liveWorkers records behind a change.
+	threadAgentDrainForTest func()
+	// restReadForTest, when set, runs in a read of rest a decision acts on
+	// once the threads reached from roots have been read, memory included,
+	// and before the decision is written (readRest), so a test can admit
+	// work there.
+	restReadForTest func(roots []string)
+	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
+	// sleeps until the channel it returns for the delay asked sends
+	// (sweepSleep).
+	sweepSleepForTest func(d time.Duration) <-chan time.Time
 	// admitWorkForTest, when set, runs as a call reaches admitWork, after
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.
@@ -826,6 +853,14 @@ type App struct {
 	// made and before the spawn names it (acceptRequest), so a test can hold
 	// an admitted spawn there.
 	spawnNamingForTest func(callerThreadID string)
+	// peerAdmissionForTest, when set, runs in a paired computer's spawn,
+	// send or ask once its handler holds the token and before anything can
+	// admit it (runThreadPeerRequest), so a test can hold it there.
+	peerAdmissionForTest func(token string)
+	// peerStatusReadForTest, when set, runs in a ThreadToolRequestStatus
+	// between its two reads of a token, whether a handler holds it and its
+	// receipt, so a test can let a handler admit and exit there.
+	peerStatusReadForTest func(token string)
 	// deleteClaimedForTest, when set, runs once a delete's claim committed
 	// and before it verifies anything (familyDelete.claim), with the
 	// threads it claimed.

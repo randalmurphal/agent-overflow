@@ -18,7 +18,10 @@ package store
 // `owner_op_seq` numbers the owner operations owed for it, and
 // `thread_owner_ops` keeps what S still owes D, one row per link, past the
 // spawn row's own delete (no foreign key). idx_thread_requests_remote_spawn_target
-// finds the remote spawn that names a thread there.
+// finds the remote spawn that names a thread there. A request's
+// `admit_until` is the last moment a handler there could still admit an
+// attempt S sent, 0 when none is out: past it, a destination that does not
+// hold the token never started it.
 //
 // S also keeps what it owes D for each request there. `ack_owed` is the
 // revision of D's receipt S holds and has not yet told D it holds, 0 when
@@ -53,6 +56,7 @@ CREATE INDEX idx_thread_request_receipts_owner_seen
     ON thread_request_receipts(owner_seen_at) WHERE spawn_link = 1;
 
 ALTER TABLE thread_requests ADD COLUMN owner_op_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_requests ADD COLUMN admit_until INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN ack_owed INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN late_reply_expired INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_expired IN (0,1));
 ALTER TABLE thread_requests ADD COLUMN pairing TEXT NOT NULL DEFAULT '';

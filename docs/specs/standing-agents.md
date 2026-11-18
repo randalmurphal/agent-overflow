@@ -912,16 +912,17 @@ Ruling 36, as built:
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
-  has no turn, no queued message, no open prompt (`threadWaitingOn`:
+  has no turn (its latest turn row open, or a turn triage is opening), no queued message, no open prompt (`threadWaitingOn`:
   the session's prompts, and a Codex async question not yet answered or
   dismissed, which reads `blocked` while nothing else runs or is queued,
   as `thread_status` reads it awaiting input), no running background work
-  (`runningBackgroundWorkForThread`: Claude tasks and background agents,
-  Codex subagents and terminals, remote commands), no armed loop or watch
-  (`agent_wakes`), no reminder that has not fired, no workflow run that
-  reports to it running or owing it its report (from the run's rest until
-  that rest's wake job ends, whatever it did with the report:
-  `workflowapp.Service.ReportingRuns`), no answer on its way to it (a request it made
+  (Claude tasks and background agents and remote commands, which the
+  store holds, and Codex subagents and terminals, which triage holds), no
+  armed loop or watch (`agent_wakes`), no reminder that has not fired, no
+  workflow run bound to it now that runs or that rested with its report
+  owed (`work_items.reports_owed`, counted in the statement that writes
+  the rest and taken when that rest's wake job ends, whatever it did with
+  the report; the engine's start clears what a previous process owed), no answer on its way to it (a request it made
   settled with its answer owed as a message, not yet echoed by the turn
   that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
@@ -932,11 +933,60 @@ Ruling 36, as built:
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
-  take. A fresh read of both, `threadRest`, is what a spawn's settlement,
-  `thread_status` with `thread_ids` and a paired computer's answers take
-  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25));
-  every rest pass reads it for each held request's thread, whatever the
-  memory record below says, which only draws rows.
+  take. A read of both, `threadRest`, serves status: `thread_status`
+  with `thread_ids`, a held request's `waiting_on`, and a paired
+  computer's answers (`agent_rows`, and `waitingOn` in the poll's
+  answer) take it: the thread's own sources read then, the work below it
+  over the memory record below.
+
+  A decision that cannot be taken back has one rule of its own: a held
+  request settling `finished`
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)), and
+  the retention sweep clearing a spawn past the floor or its receipt, are
+  taken only when the thread in question and every thread a local spawn
+  link reaches below it are at rest by their own sources, by the rule
+  `workerUnrest` applies, and none has open work outstanding: a request
+  it made that is open, a remote spawn its computer last listed open work
+  under (`nested_open`), or a send or ask of it a tool call is parked on.
+  `threadRest` serves status; these two decisions read neither it, the
+  memory record (`liveWorkers`) nor the counts below, and write neither.
+  The decision reads first (`readRest`): the subtree, walked from the
+  thread by spawn link, and its durable sources in one snapshot
+  (`ReadSubtreeRest`); then it notes each reached thread's revision; then
+  what memory holds of each reached thread (its turn, queued messages,
+  prompts, provider timers, parked calls and Codex background work). The
+  durable sources include each thread's latest turn row and its workflow
+  runs' state and owed reports, joined to each run's binding as it stands,
+  so a rebinding in any order moves the hold with nothing told. A turn
+  marked opening before its row commits (a provider start, a soft-close
+  continuation, a queued message's echo) bumps the thread's revision at
+  the mark, under the lock that marks it. The write carries that rest as its precondition
+  (`store.RestGuard`): inside its own transaction, on that transaction's
+  connection, the store reads the subtree and its durable sources again,
+  and the write happens only if every thread reached then was reached by
+  the first read, reads at rest by its durable sources with no open work,
+  has no open send or ask the first read did not check for a parked call,
+  and kept its revision. Each owner of a memory source bumps the thread's
+  revision after its change (`noteThreadRestChange`); the revision record
+  keeps a thread only while a decision watches it, and the check inside
+  the write takes no other lock and no store connection. A durable change
+  is so either read inside the write or ordered after it, and a memory
+  change either read by the first read or caught by its revision; only
+  memory admitted between the comparison and the commit is outside both.
+  A change to a thread the decision did not reach does not stop it, and
+  the rows the reads examine and the threads watched do not depend on the
+  computer's other threads, requests, parked calls, workflow runs or owed
+  reports. A decision the write stops waits for the pass the change asks
+  for. A read that fails holds the request, is logged, and wakes the
+  request sweep, which tries again within the retry delay, with no new
+  event, until an attempt completes: its guarded write ran, settling the
+  request or finding the thread no longer at rest, or its read found the
+  thread not at rest; a thread none of whose requests is still held is
+  dropped. The retention sweep
+  leaves whole each spawn it could not read at rest and reads it again on
+  its next pass. Otherwise the memory record and the counts below only
+  draw rows, frames, summaries and Stop All's selection, which the next
+  change corrects.
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
   a thread a paired computer's spawn made here included,
   each with its spawn link and what its durable sources last said, and
@@ -944,8 +994,8 @@ Ruling 36, as built:
   prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
   and its background tray, wake, question, request and workflow frames,
   a workflow run's binding, which names the thread it left and the one
-  it reports to now, both re-evaluated, a workflow run's owed report
-  ending, and its session's end (`noteWorkerWaiting`,
+  it reports to now, both re-evaluated, a workflow run's report settling,
+  and its session's end (`noteWorkerWaiting`,
   which reads its durable sources again: its unanswered questions, the
   answers on their way to it, the background inventory, its workflow
   runs, its loops and watches, and its reminders). A changed request
@@ -955,8 +1005,8 @@ Ruling 36, as built:
   settles the
   background work it owned and ends its timers. At boot one indexed read
   per durable source (armed loops and watches, unfired reminders, pending
-  remote commands, answers on their way, running workflow runs,
-  unanswered questions, queued messages) names the threads to record,
+  remote commands, answers on their way, workflow runs running or owing a
+  report, unanswered questions, queued messages) names the threads to record,
   each re-evaluated before any request held for a thread's rest may
   settle (`recoverRestAtBoot`); the memory sources report themselves
   once they change. A deleted thread is forgotten. A
@@ -1230,10 +1280,12 @@ Mechanics, as built:
   and while the thread it created exists the thread-request retention
   sweep keeps a spawn row past the floor as `lineage_only`, local or
   remote ("Owned workers"), its answer, late reply and wake cleared, once
-  no open work is under it:
-  a spawn the Agents segment lists for open work below it, local or
-  remote, waits for that work to settle, so the floor never takes rows
-  out of a tree. The ledger tools treat that
+  its thread rests: a local spawn waits until its thread and every thread
+  below it read at rest by the rule for decisions that cannot be taken
+  back ([owned workers](#owned-workers)), and a remote one while its
+  computer last listed open work under it (`nested_open`), so the floor
+  never takes rows out of a tree. The
+  ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
   (`SpawnOwnerOf`) and the Agents tree still find the row, so work a
   reused worker opens after the sweep lists, counts and stops under
@@ -2070,9 +2122,10 @@ closes up their spacing so the row holds at a phone width.
   (`idx_thread_requests_open_deep`, which holds only those) to the root. Open work is what a thread's own listing shows
   open: a spawn, and a send or ask with its wake armed or a call parked
   on it. A parked call lives in memory and arms its wake only when its
-  wait ends, so the counts hold the armed part and each read climbs the
-  spawns above the parked requests it is given, a spawn a step: a worker's
-  quiet wait lists, and counts, under its owner as under itself. The
+  wait ends, so the counts hold the armed part and each read counts each
+  parked request it is given for its caller, then climbs the spawns above
+  that caller, a spawn a step: a worker's quiet wait lists, and counts,
+  under its owner as under itself. The
   workers not at rest are memory too, and each read climbs from their
   spawn links the same way. Each climb goes to the root, and a link
   enters it once however many seeds lie below it: a read pays one search

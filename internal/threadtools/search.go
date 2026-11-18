@@ -279,7 +279,7 @@ type searchAnswer struct {
 // first failure as its own error, which a single-computer call returns
 // rather than answering "no threads" for a search that never ran.
 func (c *session) runSearch(ctx context.Context, targets []Computer, query SearchQuery, offsets map[string]int) ([]searchGroup, []errorRow, error) {
-	answers := eachComputer(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) searchAnswer {
+	answers := concurrently(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) searchAnswer {
 		_, local, _ := c.computerByID(computer.ID)
 		return c.searchOne(ctx, computer, local, query, offsets[offsetKey(computer, local)])
 	})

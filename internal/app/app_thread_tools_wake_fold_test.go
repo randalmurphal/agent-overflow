@@ -203,7 +203,7 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 		Token: token, Known: true, State: store.ThreadReceiptReplied, Title: "Release checklist",
 		Answer: "the tag is pushed", AnswerKind: store.ThreadAnswerReply,
 		Revision: 1, SettledAt: time.Now().UnixMilli(),
-	})
+	}, threadPeerHearing{at: time.Now()})
 	if err != nil {
 		t.Fatalf("applyThreadPeerRequest: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 		Revision: 2, SettledAt: now - 1000, ExpiresAt: now + time.Hour.Milliseconds(),
 	}
 
-	wakes, err := f.app.applyThreadPeerRequest(token, computer, answer)
+	wakes, err := f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
 	if err != nil {
 		t.Fatalf("applyThreadPeerRequest: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 	}
 
 	// Still owed: a poll that finds the destination behind writes nothing.
-	wakes, err = f.app.applyThreadPeerRequest(token, computer, answer)
+	wakes, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
 	if err != nil || len(wakes) != 0 {
 		t.Fatalf("poll before the ack = wakes %+v err %v; want no wake", wakes, err)
 	}
@@ -266,7 +266,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 	if err := f.app.store.ClearThreadRequestAcks([]store.ThreadRequestAck{ack}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.app.applyThreadPeerRequest(token, computer, answer); err != nil {
+	if _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if owed := f.request(t, token).AckOwed; owed != 2 {
@@ -276,7 +276,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 		t.Fatal(err)
 	}
 	answer.CollectedRevision = 2
-	if _, err = f.app.applyThreadPeerRequest(token, computer, answer); err != nil {
+	if _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if owed := f.request(t, token).AckOwed; owed != 0 {

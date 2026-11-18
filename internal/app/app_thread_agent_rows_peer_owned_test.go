@@ -178,7 +178,7 @@ func TestAPolledPromptRoutedBackToTheAskerIsRoutedHere(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := here.app.applyThreadPeerRequest(token, computer, answer); err != nil {
+	if _, err := here.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	listing, err := here.app.ListThreadAgentRows(t.Context(), here.caller.ID)

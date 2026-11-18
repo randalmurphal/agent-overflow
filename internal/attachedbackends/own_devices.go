@@ -40,7 +40,7 @@ func (m *Manager) CallOwnDevice(ctx context.Context, id, method string, result a
 	default:
 		return errors.New("this method is not part of own-device enrollment")
 	}
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -126,6 +126,11 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 	}
 	if err != nil {
 		rpc.Close()
+		return nil, err
+	}
+	// From here the connection belongs to this pairing: it closes when the
+	// carrier leaves, whoever is using it.
+	if err := c.peers.admit(rpc); err != nil {
 		return nil, err
 	}
 	c.reached()

@@ -374,27 +374,26 @@ func agentRowArms(alias, caller string) []agentArm {
 	}
 }
 
-// agentHeldSQL is the `held` table of the tree reads: each local spawn
-// with open work below its target that its marks do not count, at any
-// depth, with the spawn's caller. That is work the app holds in memory
-// (?2, agentHeldParam): a send or ask a call is parked on (only an armed
-// wake is stored, agentOpenWorkSQL, and a parked call arms its wake once
-// its wait ends), or a live thread, whose own spawn is its link, the first
-// spawn above it, as a parked request's is the first above its caller. And
-// it is stored work deeper than the marks reach: a spawn whose open_below_3
-// counts work agentOpenDepth-1 spawns below its target has it agentOpenDepth
-// below its caller's link, which no mark counts
-// (idx_thread_requests_open_deep, which holds only such spawns). `held`
-// climbs one spawn a step from each, keyed by the queued thread
-// (idx_thread_requests_spawn_link), up to the root. Each link has one
-// caller, so a link enters it once however many seeds lie below it, and a
-// cycle ends: its cost is one search per parked request, live thread and
-// deep spawn, and one per distinct link above them.
+// agentHeldSQL is the `held` table of the tree reads: open work the marks
+// do not count, each row a token and the thread it keeps from rest. That is
+// work the app holds in memory (?2, agentHeldParam): a send or ask a call is
+// parked on (only an armed wake is stored, agentOpenWorkSQL, and a parked
+// call arms its wake once its wait ends), held by its own caller, the work
+// that caller started; or a live thread, whose own spawn is its link, the
+// first spawn above it, held by that spawn's caller. And it is stored work
+// deeper than the marks reach: a spawn whose open_below_3 counts work
+// agentOpenDepth-1 spawns below its target has it agentOpenDepth below its
+// caller's link, which no mark counts (idx_thread_requests_open_deep, which
+// holds only such spawns). `held` climbs one spawn a step from each,
+// keyed by the queued thread (idx_thread_requests_spawn_link), up to the
+// root, each spawn held by its caller. Each link has one caller, so a link
+// enters it once however many seeds lie below it, and a cycle ends: its
+// cost is one search per parked request, live thread and deep spawn, and
+// one per distinct link above them.
 var agentHeldSQL = `held(token, thread) AS (
-    SELECT ps.token, ps.caller_thread_id
-      FROM json_each(?2, '$.waiting') CROSS JOIN thread_requests pr CROSS JOIN thread_requests ps
+    SELECT pr.token, pr.caller_thread_id
+      FROM json_each(?2, '$.waiting') CROSS JOIN thread_requests pr
      WHERE pr.token = json_each.value AND pr.kind IN ('send','ask') AND pr.lineage_only = 0 AND pr.settled_at IS NULL
-       AND ps.target_thread_id = pr.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM json_each(?2, '$.live') CROSS JOIN thread_requests ps
@@ -567,8 +566,17 @@ func (s *Store) ReadThreadAgentState(read ThreadAgentStateRead) (ThreadAgentStat
 // threadAgentStateSQL is ReadThreadAgentState's read: ?1 the thread, ?2 the
 // held work (agentHeldParam), ?3 the settled window.
 var threadAgentStateSQL = `WITH RECURSIVE ` + agentHeldSQL + `
-SELECT (` + agentOpenUnderSQL(agentRootSQL) + ` OR EXISTS (SELECT 1 FROM held WHERE held.thread = ` + agentRootSQL + `)),
+SELECT ` + agentOpenBelowThreadSQL(agentRootSQL) + `,
        (` + agentRowsUnderSQL(agentRootSQL) + `)`
+
+// agentOpenBelowThreadSQL is whether thread has open work at any depth
+// below it, as agentTargetOpenSQL reads it for a spawn of it: a request it
+// made that is open work, or a local spawn it made whose marks count open
+// work, within agentOpenDepth (agentOpenUnderSQL), or held work it keeps
+// (agentHeldSQL), deeper or only in memory. The statement defines `held`.
+func agentOpenBelowThreadSQL(thread string) string {
+	return `(` + agentOpenUnderSQL(thread) + ` OR EXISTS (SELECT 1 FROM held WHERE held.thread = ` + thread + `))`
+}
 
 // agentRowKindSQL matches a request kind the listing shows: every spawn,
 // and a send or ask whose wake is armed or that a call is parked on (?2).
@@ -770,7 +778,7 @@ const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE
     r.wake_attempts, r.wake_next_check, r.wake_issue, r.lineage_only, r.created_at, r.updated_at,
     COALESCE(r.confirmed_at, 0), COALESCE(r.late_confirmed_at, 0), r.answer_agent, r.answer_agent_role,
     r.target_provider, r.nested_open, r.late_delivered_how, r.made_in_thread_id,
-    r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, r.answer_cause, r.answer_cause_arg,
+    r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, r.answer_cause, r.answer_cause_arg, r.admit_until,
     r.late_reply_expired, r.ack_owed, r.pairing, r.target_computer_name, ` + wakeItemSQL
 
 // wakeItemSQL is the caller's row that carried request r's answer: the late

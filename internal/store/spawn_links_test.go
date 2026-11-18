@@ -347,7 +347,7 @@ func TestReleasingLinks(t *testing.T) {
 	if touched, err := s.touchSpawnLinkOwner("tok-fresh", other.ID, "lead-tok-fresh", 1000+2*spawnLinkTouchGap); err != nil || !touched {
 		t.Fatalf("touch the fresh link: %v, %v", touched, err)
 	}
-	_, released, err := s.DeleteThreadRequestsBefore(1000 + spawnLinkTouchGap)
+	_, released, err := s.DeleteThreadRequestsBefore(1000+spawnLinkTouchGap, everySpawnRests(t, s, 1000+spawnLinkTouchGap))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestReleasingLinks(t *testing.T) {
 			t.Errorf("%s after the sweep = %s, want %s", id, got, want)
 		}
 	}
-	if _, released, err := s.DeleteThreadRequestsBefore(1000 + spawnLinkTouchGap); err != nil || len(released) != 0 {
+	if _, released, err := s.DeleteThreadRequestsBefore(1000+spawnLinkTouchGap, everySpawnRests(t, s, 1000+spawnLinkTouchGap)); err != nil || len(released) != 0 {
 		t.Fatalf("a second sweep released %v, %v; want none", released, err)
 	}
 }
@@ -528,7 +528,7 @@ func TestTheSweepKeepsAYoungLink(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE thread_request_receipts SET owner_seen_at = 0 WHERE token = 'tok'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, released, err := s.DeleteThreadRequestsBefore(4000); err != nil || len(released) != 0 {
+	if _, released, err := s.DeleteThreadRequestsBefore(4000, everySpawnRests(t, s, 4000)); err != nil || len(released) != 0 {
 		t.Fatalf("the sweep released %v, %v; want a link younger than the floor kept", released, err)
 	}
 }
@@ -603,7 +603,7 @@ func TestLineageKeepsTheLink(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE thread_request_receipts SET state = 'finished', settled_at = 1000, owner_seen_at = 9000, owner_op_seq = 3 WHERE token = 'tok'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, released, err := s.DeleteThreadRequestsBefore(5000); err != nil || len(released) != 0 {
+	if _, released, err := s.DeleteThreadRequestsBefore(5000, everySpawnRests(t, s, 5000)); err != nil || len(released) != 0 {
 		t.Fatalf("sweep released %v, %v", released, err)
 	}
 	var lineage, link bool

@@ -204,6 +204,17 @@ const (
 	StateInterrupted     = "interrupted"
 )
 
+// StateUnavailable is a thread_status row for a thread whose state could
+// not be read: its computer did not answer, or the row's error says why.
+// StateUnresolved is one for a reference no computer that answered
+// matched while another did not answer its lookup. Neither is a thread
+// state: nothing is known of the thread, so it never reads as resting and
+// no filter accepts it.
+const (
+	StateUnavailable = "unavailable"
+	StateUnresolved  = "unresolved"
+)
+
 // Resolution is one computer's answer to a thread reference.
 type Resolution struct {
 	// Matches are the threads on this computer whose id the reference

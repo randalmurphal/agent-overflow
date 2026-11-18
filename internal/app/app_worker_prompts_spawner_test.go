@@ -447,7 +447,7 @@ func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
 		if err := json.Unmarshal(wire, &answer); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := here.app.applyThreadPeerRequest(token, computer, answer); err != nil {
+		if _, err := here.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}

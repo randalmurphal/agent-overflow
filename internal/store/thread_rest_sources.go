@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -62,42 +61,39 @@ func (s *Store) ThreadsWithAnswerDue() ([]string, error) {
 		WHERE `+threadAnswerDueSQL(""))
 }
 
-// WorkflowRunReportingTo names the oldest workflow run that reports to
-// threadID and is running, or is one of reporting (the runs whose report
-// the workflow owner says may still be owed, workflowapp.ReportingRuns), by
-// its goal, found false when none is. A run that waits on a person, or
-// ended, with its report in the thread's hands, starts no turn there by
-// itself.
-func (s *Store) WorkflowRunReportingTo(threadID string, reporting []string) (goal string, found bool, err error) {
-	ids, err := json.Marshal(append([]string{}, reporting...))
-	if err != nil {
-		return "", false, fmt.Errorf("store: read the workflow run reporting to %s: %w", threadID, err)
-	}
-	err = s.reader().QueryRow(`SELECT goal FROM work_items
-		WHERE origin_thread_id = ? AND origin_thread_id <> ''
-		  AND (state = 'running' OR id IN (SELECT value FROM json_each(?)))
-		ORDER BY created_at ASC, id ASC LIMIT 1`, threadID, string(ids)).Scan(&goal)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("store: read the workflow run reporting to %s: %w", threadID, err)
-	}
-	return goal, true, nil
+// workflowRunHoldsSQL matches a root run that keeps the thread it reports
+// to from rest: one that runs, or one that rested with a rest's report its
+// wake job has not yet delivered or dropped (reports_owed). It is
+// idx_work_items_holding's predicate.
+func workflowRunHoldsSQL(alias string) string {
+	return alias + `.origin_thread_id <> '' AND (` + alias + `.state = 'running' OR ` + alias + `.reports_owed > 0)`
 }
 
-// RunningRootWorkItemIDs lists the runs a thread can be bound to, a
-// root's, that are running.
-func (s *Store) RunningRootWorkItemIDs() ([]string, error) {
-	return s.queryThreadIDs("store: list the running root workflow runs",
-		`SELECT id FROM work_items WHERE state = 'running' AND parent_item_id = ''`)
+// ThreadsHeldByWorkflowRuns lists the threads a workflow run keeps from
+// rest (workflowRunHoldsSQL).
+func (s *Store) ThreadsHeldByWorkflowRuns() ([]string, error) {
+	return s.queryThreadIDs("store: list the threads workflow runs keep from rest",
+		`SELECT DISTINCT w.origin_thread_id FROM work_items w INDEXED BY idx_work_items_holding WHERE `+workflowRunHoldsSQL("w"))
 }
 
-// ThreadsWithRunningWorkflowRuns lists the threads a running workflow run
-// reports to.
-func (s *Store) ThreadsWithRunningWorkflowRuns() ([]string, error) {
-	return s.queryThreadIDs("store: list the threads a running workflow run reports to",
-		`SELECT DISTINCT origin_thread_id FROM work_items WHERE state = 'running' AND origin_thread_id <> ''`)
+// SettleWorkItemReport records that one rest's wake job of run itemID has
+// ended, whatever it did with the report: one fewer report is owed. A run
+// with none owed is left as it is.
+func (s *Store) SettleWorkItemReport(itemID string) error {
+	if _, err := s.db.Exec(`UPDATE work_items SET reports_owed = reports_owed - 1 WHERE id = ? AND reports_owed > 0`, itemID); err != nil {
+		return fmt.Errorf("store: settle a report of workflow run %s: %w", itemID, err)
+	}
+	return nil
+}
+
+// ClearWorkItemReportsOwed forgets every report owed: the wake jobs that
+// would deliver them were the process's that wrote them. The workflow
+// engine's start calls it before it emits anything.
+func (s *Store) ClearWorkItemReportsOwed() error {
+	if _, err := s.db.Exec(`UPDATE work_items SET reports_owed = 0 WHERE reports_owed > 0`); err != nil {
+		return fmt.Errorf("store: clear the workflow reports owed: %w", err)
+	}
+	return nil
 }
 
 // WorkItemOriginThread names the thread a workflow run reports to, empty
@@ -126,21 +122,6 @@ func (s *Store) CallerSpawnedRemote(callerThreadID, computerID, threadID string)
 		return false, fmt.Errorf("store: read whether %s spawned %s on %s: %w", callerThreadID, threadID, computerID, err)
 	}
 	return spawned, nil
-}
-
-// ThreadHasUnansweredAsyncQuestions reports whether threadID has a
-// question still waiting for an answer: the thread waits on whoever
-// answers it, and takes a turn for that answer. The same rows as
-// UnansweredAsyncQuestions, on idx_async_questions_pending.
-func (s *Store) ThreadHasUnansweredAsyncQuestions(threadID string) (bool, error) {
-	var open bool
-	err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM async_questions q
-		WHERE q.thread_id = ?1 AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered'
-		AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = ?1 AND t.archived = 0))`, threadID).Scan(&open)
-	if err != nil {
-		return false, fmt.Errorf("store: read whether %s has unanswered questions: %w", threadID, err)
-	}
-	return open, nil
 }
 
 // TurnsAfter lists threadID's turns past turnIndex, oldest first: the turns

@@ -93,7 +93,37 @@ func ambiguous(ref string, candidates []Candidate, paired bool) error {
 // resolutionIncomplete is what a fan-out returns instead of a confident
 // not found when a computer did not answer.
 func resolutionIncomplete(ref string, silent []Computer) error {
-	return errorsx.Public(CodeResolutionIncomplete, fmt.Sprintf("No thread or assistant matches %q on the computers that answered, and %s did not answer in time. It may be there. Try again, or name the computer with computer_id.", ref, computerList(silent)), nil)
+	return errorsx.Public(CodeResolutionIncomplete, fmt.Sprintf("No thread or assistant matches %q on the computers that answered, and %s did not answer in time. It may be there. Try again, or name the computer with computer_id.", ref, computerList(silent)), &unansweredLookup{computers: silent})
+}
+
+// unansweredLookup is the cause a resolution failure carries when a
+// computer did not answer the lookup, so a thread_status wait can report
+// the reference instead of failing whole. owner is the computer a recorded
+// move or the caller named as holding the thread, nil when that is not
+// known.
+type unansweredLookup struct {
+	computers []Computer
+	owner     *Computer
+	err       error
+}
+
+func (u *unansweredLookup) Error() string {
+	if u.err != nil {
+		return "thread tools: " + computerList(u.computers) + " did not answer a lookup: " + u.err.Error()
+	}
+	return "thread tools: " + computerList(u.computers) + " did not answer a lookup"
+}
+
+func (u *unansweredLookup) Unwrap() error { return u.err }
+
+// answeredRefusal reports whether a peer call failed with a thread tools
+// refusal the other computer wrote, which crosses with its code unchanged,
+// rather than because that computer did not answer: the pairing, the
+// connection, a timeout, or a result this computer could not read
+// (CodeUnreachable).
+func answeredRefusal(err error) bool {
+	code, _, public := errorsx.PublicDetails(err)
+	return public && strings.HasPrefix(code, "thread_") && code != CodeUnreachable
 }
 
 func computerList(computers []Computer) string {

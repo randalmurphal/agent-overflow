@@ -169,7 +169,21 @@ work. Nobody watches that start, so its failure notifies, once per run
 of failures, as well as writing the error row, and a later loop or watch
 fire tries it again. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
-worker's queue.
+worker's queue. A decision on rest that cannot be taken back, a held
+request settling `finished` (`heldThreadAtRest`) or the retention sweep
+clearing a spawn (`sweepThreadRequestsBefore`), reads its subtree's own
+sources (`readRest`, `app_thread_rest_assess.go`) and passes the store
+write its guard (`restDecision.guard`), which reads the durable sources
+again inside the write's transaction and compares each reached thread's
+revision. An owner of a source memory holds bumps the thread's revision
+after each change (`noteThreadRestChange`), and one whose durable row
+commits later, such as a turn triage marks opening, bumps at the mark
+under the lock that marks it; a new memory source needs its bump, and
+nothing the guard calls may take a store connection or an owner's lock.
+A durable source belongs in the store's read (`threadRestSourcesSQL`),
+joined there to whatever names its thread, not in a memory copy.
+`liveWorkers` and the `open_below_*` marks only draw rows, frames,
+summaries and Stop All's selection.
 
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,

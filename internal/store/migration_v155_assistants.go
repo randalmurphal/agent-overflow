@@ -115,6 +115,11 @@ import (
 // sweep nests its new work under its owner. A database that holds two such
 // rows for one thread keeps the newest as the link, by creation time then
 // token, and marks the older ones superseded lineage rows.
+// idx_thread_requests_spawn_caller holds the same links by caller: a read
+// of rest walks from a thread to the threads its spawns reached, at any
+// depth, settled or not (ReadSubtreeRest), and the owned walks of an
+// archive and a delete step the same way (ownedStepSQL), each probing a
+// thread's spawn links without reading its sends, asks and reminders.
 //
 // open_below_0 to open_below_3 count, on each such spawn, the requests that
 // count as open work (agentOpenWorkSQL) made by the threads d spawns below
@@ -163,6 +168,16 @@ import (
 // thread gains a sidebar row rather than being left owned by nothing; a
 // superseded row left behind owns nothing. An assistant's helper, outside every
 // project, stays owned: its assistant's delete deletes it.
+//
+// work_items gains `reports_owed`: the rests of a run whose reports
+// its wake jobs have not yet delivered or dropped. The write of a rest
+// counts one (UpdateWorkItemState) and the end of that rest's wake job
+// settles it (SettleWorkItemReport); the engine's start clears what a
+// previous process owed, as its wake jobs went with it.
+// idx_work_items_holding holds the runs that keep the thread they report
+// to from rest, running or with a report owed, by that thread and in
+// creation order, so a read of a thread's rest costs only those
+// (threadRestSourcesSQL).
 //
 // idx_agent_past_threads_agent orders an assistant's past threads newest
 // superseded first, ties by thread id, the page order of
@@ -271,6 +286,10 @@ ALTER TABLE thread_request_receipts ADD COLUMN spawn_instructions TEXT NOT NULL 
 ALTER TABLE thread_request_receipts ADD COLUMN answer_cause TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN answer_cause_arg TEXT NOT NULL DEFAULT '';
 
+ALTER TABLE work_items ADD COLUMN reports_owed INTEGER NOT NULL DEFAULT 0 CHECK(reports_owed >= 0);
+CREATE INDEX idx_work_items_holding ON work_items(origin_thread_id, created_at, id)
+ WHERE origin_thread_id <> '' AND (state = 'running' OR reports_owed > 0);
+
 CREATE TEMP TABLE v155_undelivered_wakes (
     thread_id TEXT NOT NULL,
     send_id   TEXT NOT NULL,
@@ -351,6 +370,9 @@ CREATE INDEX idx_thread_request_receipts_lineage
  WHERE lineage_only = 1;
 CREATE UNIQUE INDEX idx_thread_requests_spawn_link
     ON thread_requests(target_thread_id)
+ WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> '';
+CREATE INDEX idx_thread_requests_spawn_caller
+    ON thread_requests(caller_thread_id)
  WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> '';
 CREATE INDEX idx_thread_requests_open_below
     ON thread_requests(caller_thread_id)

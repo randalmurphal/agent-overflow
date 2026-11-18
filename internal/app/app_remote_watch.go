@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -52,6 +51,7 @@ func (a *App) observeRemoteCommand(computerID, requestID, threadID string, recei
 	if err = a.store.ObserveRemoteWatch(computerID, requestID, receipt, "", next); err != nil {
 		return err
 	}
+	a.nudgeRemoteWatches()
 	a.emitBackgroundChanged(threadID)
 	return nil
 }
@@ -138,8 +138,12 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 	if !paired {
 		return false, errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", nil)
 	}
-	return a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID,
+	registered, err := a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID,
 		Fingerprint: hex.EncodeToString(digest[:]), Label: label, Command: command, Pairing: profile.Generation, ComputerName: truncateRunes(attachedComputerName(profile), remoteJobCommandMaxRunes)})
+	if registered {
+		a.nudgeRemoteWatches()
+	}
+	return registered, err
 }
 
 const remoteJobLabelMaxRunes = 120
@@ -206,58 +210,6 @@ func truncateRunes(text string, max int) string {
 		n++
 	}
 	return text
-}
-
-func (a *App) startRemoteWatches() {
-	if a.backends == nil {
-		return
-	}
-	a.remoteWatchWG.Add(2)
-	// Owed cancels are sent on their own loop: one the destination does not
-	// answer waits out its timeout without holding up the checks below.
-	go func() {
-		defer a.remoteWatchWG.Done()
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-a.lifeCtx().Done():
-				return
-			case <-ticker.C:
-			}
-			a.retryOwedRemoteCancels(time.Now())
-		}
-	}()
-	go func() {
-		defer a.remoteWatchWG.Done()
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-a.lifeCtx().Done():
-				return
-			case <-ticker.C:
-			}
-			rows, err := a.store.ListRemoteWatches("", time.Now().UnixMilli(), 32)
-			if err != nil {
-				log.Printf("remote completion watches: %v", err)
-				continue
-			}
-			var wg sync.WaitGroup
-			limit := make(chan struct{}, 4)
-			for _, w := range rows {
-				select {
-				case limit <- struct{}{}:
-				case <-a.lifeCtx().Done():
-					wg.Wait()
-					return
-				}
-				wg.Add(1)
-				go func() { defer wg.Done(); defer func() { <-limit }(); a.checkRemoteWatch(w) }()
-			}
-			wg.Wait()
-		}
-	}()
 }
 
 func (a *App) checkRemoteWatch(w store.RemoteWatch) {
@@ -684,6 +636,8 @@ func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []
 				now := time.Now()
 				if oweErr := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, now.UnixMilli(), now.Add(remoteCancelRetryDelay).UnixMilli()); oweErr != nil {
 					failed = append(failed, fmt.Errorf("remote command %s on %s: owe its cancel: %w", w.RequestID, w.ComputerID, oweErr))
+				} else {
+					a.nudgeRemoteWatches()
 				}
 				cancels = append(cancels, fmt.Errorf("cancel remote command %q: %s; it is sent again until the computer takes it",
 					w.Label, remoteErrorText(a.remoteOperationError("cancel", w.ComputerID, w.RequestID, callErr))))
@@ -760,7 +714,10 @@ func (a *App) retryOwedRemoteCancels(now time.Time) {
 func (a *App) settleOwedRemoteCancel(w store.RemoteWatch) {
 	if err := a.store.SettleRemoteCancel(w.ComputerID, w.RequestID); err != nil {
 		log.Printf("remote command %s on %s: settle the owed cancel: %v", w.RequestID, w.ComputerID, err)
+		return
 	}
+	// Its watch is checked again.
+	a.nudgeRemoteWatches()
 }
 
 // remoteTrayToolName is the tray projection's tool name: the remote_run call

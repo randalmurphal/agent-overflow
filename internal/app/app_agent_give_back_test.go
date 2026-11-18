@@ -62,6 +62,9 @@ func requirePendingAgain(t *testing.T, a *App, w store.RemoteWatch) {
 	if saved.Notification != "pending" {
 		t.Fatalf("the watch reads %q, want pending", saved.Notification)
 	}
+	if !remoteWatchesNudged(a) {
+		t.Fatal("the watch was given back without waking the watcher")
+	}
 }
 
 // requireDraft fails unless the caller's composer holds exactly want.
@@ -304,6 +307,7 @@ func TestASessionDeathGivesBackAnUnconfirmedMessageWithNoRow(t *testing.T) {
 			}
 			f.app.waitAgentNoticeWork()
 			dispatchUnconfirmed(t, f)
+			remoteWatchesNudged(f.app)
 
 			f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
 
@@ -604,13 +608,12 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 // session end counted against it.
 func requireDueAtOnce(t *testing.T, a *App, w store.RemoteWatch) {
 	t.Helper()
-	requirePendingAgain(t, a, w)
 	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.NextCheck > time.Now().UnixMilli() || saved.WakeAttempts != 0 {
-		t.Fatalf("the watch is due at %d after %d session ends; want due now after none", saved.NextCheck, saved.WakeAttempts)
+	if saved.Notification != "pending" || saved.NextCheck > time.Now().UnixMilli() || saved.WakeAttempts != 0 {
+		t.Fatalf("the watch is %q, due at %d after %d session ends; want pending, due now after none", saved.Notification, saved.NextCheck, saved.WakeAttempts)
 	}
 }
 

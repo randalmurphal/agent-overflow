@@ -29,8 +29,11 @@ func TestRemoteCancelOwedMigrationOwesNothingForOldWatches(t *testing.T) {
 	if owed != 0 || next != 0 || stopped != 0 {
 		t.Fatalf("owed cancel = %d, %d, stopped at %d on a watch from before the columns, want none", owed, next, stopped)
 	}
-	plan := explainWakeCarrierPlan(t, db, `SELECT `+remoteWatchColumns+` FROM remote_watches `+owedRemoteCancelsWhere, int64(5))
+	plan := explainWakeCarrierPlan(t, db, owedRemoteCancelsDueSQL, int64(5))
 	if want := "idx_remote_watches_cancel_owed"; !strings.Contains(plan, want) {
 		t.Fatalf("due list plan = %q, want %s", plan, want)
+	}
+	if plan := explainWakeCarrierPlan(t, db, nextOwedRemoteCancelSQL); !strings.Contains(plan, "idx_remote_watches_cancel_owed") {
+		t.Fatalf("next owed cancel plan = %q, want idx_remote_watches_cancel_owed", plan)
 	}
 }

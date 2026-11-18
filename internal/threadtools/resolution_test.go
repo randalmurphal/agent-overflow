@@ -55,8 +55,8 @@ func TestFullIdResolvesLocallyWithoutFanningOut(t *testing.T) {
 	if !target.Local || target.ThreadID != localThreadID {
 		t.Fatalf("target = %+v, want the local thread", target)
 	}
-	if p.peer.resolves != 0 {
-		t.Fatalf("the peer was asked %d times about a full id that matched locally", p.peer.resolves)
+	if p.peer.resolves.Load() != 0 {
+		t.Fatalf("the peer was asked %d times about a full id that matched locally", p.peer.resolves.Load())
 	}
 }
 
@@ -73,8 +73,8 @@ func TestFullIdFansOutOnALocalMiss(t *testing.T) {
 	if target.Local || target.ComputerID != "studio" || target.Computer != "Studio" {
 		t.Fatalf("target = %+v, want the thread on Studio", target)
 	}
-	if p.peer.resolves != 1 {
-		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves)
+	if p.peer.resolves.Load() != 1 {
+		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves.Load())
 	}
 }
 
@@ -200,8 +200,8 @@ func TestHintNarrowsToOneComputer(t *testing.T) {
 	if target.ThreadID != twinThreadID {
 		t.Fatalf("target = %+v, want the Studio thread", target)
 	}
-	if p.peer.resolves != 1 {
-		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves)
+	if p.peer.resolves.Load() != 1 {
+		t.Fatalf("the peer was asked %d times, want once", p.peer.resolves.Load())
 	}
 }
 

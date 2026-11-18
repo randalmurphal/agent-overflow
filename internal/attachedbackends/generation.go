@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"agent-overflow/internal/deviceclient"
-	"agent-overflow/internal/errorsx"
 )
 
 // A pairing's generation names this installation's relationship with one
@@ -49,37 +48,3 @@ func (m *Manager) Grant(id string) (string, error) {
 // installation no longer holds with that computer. Nothing was sent; the
 // record's pairing has ended here.
 var ErrPairingNotHeld = errors.New("attachedbackends: the pairing this call was made for is no longer held")
-
-// peerCarrier resolves the carrier an agent call is made on, mapping a
-// pairing that cannot be loaded onto the agent surfaces' codes.
-func (m *Manager) peerCarrier(id string) (*carrier, error) {
-	held, err := m.carrier(id)
-	if errors.Is(err, deviceclient.ErrNoSession) {
-		return nil, errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
-	}
-	if err != nil {
-		return nil, pairingUnavailable(err)
-	}
-	return held, nil
-}
-
-// peerCarrierUnder is peerCarrier for a call made on behalf of a record of
-// the pairing generation: a carrier of any other generation, or none,
-// refuses it with ErrPairingNotHeld. The call goes out on the carrier
-// checked here, so it carries that generation's credentials whatever
-// replaces the pairing meanwhile.
-func (m *Manager) peerCarrierUnder(id, generation string) (*carrier, error) {
-	held, err := m.carrier(id)
-	switch {
-	case errors.Is(err, deviceclient.ErrNoSession), err == nil && held.generation != generation:
-		return nil, errorsx.Public("remote_not_paired",
-			"This computer no longer holds the pairing this was made under. Reconnect the computer in Remote access if it is no longer paired.", ErrPairingNotHeld)
-	case err != nil:
-		return nil, pairingUnavailable(err)
-	}
-	return held, nil
-}
-
-func pairingUnavailable(err error) error {
-	return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
-}

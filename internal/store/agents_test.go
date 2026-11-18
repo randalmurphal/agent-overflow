@@ -931,7 +931,7 @@ func TestSpawnOwnerOfNamesTheThreadThatSpawnedIt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(50); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(50, everySpawnRests(t, s, 50)); err != nil {
 		t.Fatal(err)
 	}
 	if !rawThreadRequest(t, s, "lead-kept").LineageOnly {

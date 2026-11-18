@@ -307,6 +307,7 @@ func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Cont
 var threadDrivingProvenElsewhere = map[string]string{
 	"ThreadToolCall":  "TestThreadToolsWritesNeedAutonomyForAnAutonomousThread",
 	"ThreadToolQuery": "TestThreadToolQueryRunsOnlyReadTools",
+	"ThreadToolWatch": "TestThreadToolWatchRunsOnlyAThreadWait",
 }
 
 // TestThreadToolQueryRunsOnlyReadTools. ThreadToolQuery shares the forwarded

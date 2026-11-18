@@ -538,10 +538,15 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 		removeThreadExportTemp(temp)
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: publish export file: %w", err)
 	}
+	sum := hex.EncodeToString(digest.Sum(nil))
 	if exportID != "" {
-		return threadtools.ExportFile{ExportID: exportID, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+		if err := t.app.recordPeerExport(exportID, path, sum); err != nil {
+			removeThreadExportTemp(path)
+			return threadtools.ExportFile{}, err
+		}
+		return threadtools.ExportFile{ExportID: exportID, Size: size, SHA256: sum}, nil
 	}
-	return threadtools.ExportFile{Path: path, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+	return threadtools.ExportFile{Path: path, Size: size, SHA256: sum}, nil
 }
 
 // removeThreadExportTemp drops the half-written render. Nothing else will:

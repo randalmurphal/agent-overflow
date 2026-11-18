@@ -166,7 +166,7 @@ func fixtureAge(age time.Duration) string {
 
 // mainWakeKinds are the wakes whose text main's templates wrote as these
 // do, for a thread that is no standing agent and a request made where it
-// is answered. main had no WakeStopped, and its interrupted and cancelled
+// is answered. main had no user's Stop wake, and its interrupted and cancelled
 // status lines differ from these ("was interrupted: ", "was cancelled."
 // with no text): usermessage's legacy reader test reads those in main's
 // words.
@@ -214,7 +214,7 @@ func wakePart(wake Wake) fixtureMessage {
 		restarted = restartedComputer(source.Computer)
 	}
 	switch wake.Kind {
-	case WakeReply, WakeFinished, WakeErrored, WakeReminder, WakeStopped:
+	case WakeReply, WakeFinished, WakeErrored, WakeReminder:
 		part.Body = wake.Text
 		if len(wake.Text) > WakePreviewBytes {
 			part.Body = clipBytes(wake.Text, WakePreviewBytes)
@@ -246,17 +246,13 @@ func wakePart(wake Wake) fixtureMessage {
 			part.Wake.StoppedBy = "a restart of " + restarted
 		case CauseSessionEndedUnread, CauseSessionEndedUnanswered, CauseSessionEndedMidTurn, CauseSessionEndedWorking:
 			part.Wake.StoppedBy = sessionEnded[code]
-			if wake.Text == "" {
-				break
-			}
-			// What it wrote is the body, clipped as an answer; a digest
-			// clips the shared words whole.
-			if len(wake.Sources) > 1 {
-				words := wake.Cause.Answer(wake.Text)
-				part.Body = strings.TrimPrefix(clip(words), strings.TrimSuffix(words, wake.Text))
-			} else {
-				part.Body = clip(wake.Text)
-			}
+			// What it wrote is the body, clipped as an answer, in a digest
+			// as in a single wake.
+			part.Body = clip(wake.Text)
+		case CauseUserStop:
+			// What the turn said by then is the body, clipped as an answer.
+			part.Wake.StoppedBy = "the user"
+			part.Body = clip(wake.Text)
 		case CauseTurn:
 			part.Wake.StoppedBy = "an interrupt"
 		case CauseNotTakenIn:
@@ -279,11 +275,6 @@ func wakePart(wake Wake) fixtureMessage {
 			// A sentence in the stopper's own words is the message.
 			part.Body = wake.Cause.Answer("")
 		}
-	case WakeStopped:
-		// The frontend reads both as an interrupted request, told apart by
-		// who stopped it.
-		part.Wake.Kind = WakeInterrupted
-		part.Wake.StoppedBy = "the user"
 	}
 	message.part = part
 	return message
@@ -379,9 +370,10 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("interrupted by another thread's thread_cancel", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseThreadCancel, Arg: `"Lead \"one\"" (t-lead, on desk)`}})),
 		one("interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseAssistantsOff}})),
 		one("interrupted, recorded with no cause by an earlier build", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "This computer restarted before the request finished."})),
+		one("interrupted, with no cause this build knows and no text", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
 		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseNeverStarted}})),
-		one("stopped by the person with its last message", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.\nSecond line."})),
-		one("stopped by the person before it said anything, standing agent", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}})),
+		one("stopped by the person with its last message", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.\nSecond line."})),
+		one("stopped by the person before it said anything, standing agent", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}})),
 		one("expired", wake(Wake{Kind: WakeExpired, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Age: 26 * time.Hour}}})),
 		one("reminder", wake(Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{token}}}, Text: "Check the build."})),
 		one("clipped reply", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: long})),
@@ -405,11 +397,12 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: interrupted by their sessions ending", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedUnread}, Sources: digestSources})),
 		one("digest: interrupted mid-turn, with what they wrote", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: "Half done.", Sources: digestSources})),
 		one("digest: interrupted, recorded with no cause by another computer's earlier build", wake(Wake{Kind: WakeInterrupted, Text: "The thread's session ended before it read the request.", Sources: digestSources})),
+		one("digest: interrupted, with no cause this build knows and no text", wake(Wake{Kind: WakeInterrupted, Sources: digestSources})),
 		one("digest: interrupted by a workflow", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseWorkflow}, Sources: digestSources})),
 		one("digest: interrupted by assistants being turned off", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseAssistantsOff}, Sources: digestSources})),
 		one("digest: interrupted while still working, with what they wrote, past the preview", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedWorking}, Text: strings.Repeat("Long answer. ", WakePreviewBytes/12+8), Sources: digestSources})),
-		one("digest: stopped by the person", wake(Wake{Kind: WakeStopped, Sources: digestSources})),
-		one("digest: stopped by the person, with the same last message", wake(Wake{Kind: WakeStopped, Text: "Half done.", Sources: digestSources})),
+		one("digest: stopped by the person", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: digestSources})),
+		one("digest: stopped by the person, with the same last message", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Text: "Half done.", Sources: digestSources})),
 		one("digest: expired", wake(Wake{Kind: WakeExpired, Sources: digestSources})),
 		one("digest: clipped shared error", wake(Wake{Kind: WakeErrored, Text: long, Sources: digestSources})),
 		// The list is as long as the count says; a shared answer that is a
@@ -419,13 +412,13 @@ func agentMessageFixtureCases() []fixtureCase {
 		// status line and, in a digest, after the list.
 		one("reply made in a past thread", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}, Text: "All green.", MadeIn: "t-old", Now: "t-new"})),
 		one("reminder made in a past thread", wake(Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{token}}}, Text: "Check the build.", MadeIn: "t-old", Now: "t-new"})),
-		one("stopped by the person with its last message, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.", MadeIn: "t-old", Now: "t-new"})),
-		one("stopped by the person before it said anything, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, MadeIn: "t-old", Now: "t-new"})),
+		one("stopped by the person with its last message, made in a past thread", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.", MadeIn: "t-old", Now: "t-new"})),
+		one("stopped by the person before it said anything, made in a past thread", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, MadeIn: "t-old", Now: "t-new"})),
 		one("session ended before it answered, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedUnanswered}, MadeIn: "t-old", Now: "t-new"})),
 		one("session ended during the turn with what it wrote, made in a past thread", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: "Half done.", MadeIn: "t-old", Now: "t-new"})),
 		one("digest: the same reply, made in a past thread", wake(Wake{Kind: WakeReply, Text: "Done.", Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		one("digest: interrupted by their sessions ending, made in a past thread", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseSessionEndedUnread}, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
-		one("digest: stopped by the person, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
+		one("digest: stopped by the person, made in a past thread", wake(Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		// The spawner's answer to a worker's async questions, in the words
 		// store.AsyncAnswerMessage writes it.
 		one("a spawner's answer to its worker's questions", plainPart("Question: Which parser?\nAnswer: The new one, naïve or not\n\nQuestion: Ship it?\nAnswer: Yes",

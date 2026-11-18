@@ -165,21 +165,17 @@ func (c *session) self() Computer {
 	return Computer{ID: c.caller.ComputerID, Name: c.caller.ComputerName}
 }
 
-// eachComputer asks every computer concurrently under one bound and
-// returns the answers in the computers' order. A computer that is slow or
-// fails costs its own slot, never the call: the bound is the whole
-// fan-out's, and each answer carries its own error.
-func eachComputer[T any](ctx context.Context, timeout time.Duration, computers []Computer, ask func(ctx context.Context, computer Computer) T) []T {
+// concurrently asks about every item at once under one bound and returns
+// the answers in the items' order. An item whose computer is slow or fails
+// costs its own slot, never the call: the bound is the whole fan-out's, and
+// each answer carries its own error.
+func concurrently[E, T any](ctx context.Context, timeout time.Duration, items []E, ask func(ctx context.Context, item E) T) []T {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	answers := make([]T, len(computers))
+	answers := make([]T, len(items))
 	var wg sync.WaitGroup
-	for index, computer := range computers {
-		wg.Add(1)
-		go func(slot int, computer Computer) {
-			defer wg.Done()
-			answers[slot] = ask(bounded, computer)
-		}(index, computer)
+	for index, item := range items {
+		wg.Go(func() { answers[index] = ask(bounded, item) })
 	}
 	wg.Wait()
 	return answers

@@ -169,12 +169,12 @@ func TestWakeTemplates(t *testing.T) {
 		},
 		{
 			name: "stopped by the person, with its last message",
-			wake: Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Half done."},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Half done."},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered. Its last message:\nHalf done.",
 		},
 		{
 			name: "stopped by the person before it said anything",
-			wake: Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered.",
 		},
 		{
@@ -395,12 +395,12 @@ func TestWakeDigestNamesEveryThread(t *testing.T) {
 		},
 		{
 			name: "stopped by the user",
-			wake: Wake{Kind: WakeStopped, Sources: sources},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: sources},
 			head: "2 threads: The user stopped their turns before they answered.",
 		},
 		{
 			name: "stopped by the user with the same last message",
-			wake: Wake{Kind: WakeStopped, Sources: sources, Text: "Half done."},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: sources, Text: "Half done."},
 			head: "2 threads: The user stopped their turns before they answered. Each one's last message:",
 			tail: "Half done.",
 		},

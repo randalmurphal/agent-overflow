@@ -91,6 +91,14 @@ func (s *Store) GetRemoteWatch(computerID, requestID string) (RemoteWatch, error
 	return scanRemoteWatch(s.reader().QueryRow(`SELECT `+remoteWatchColumns+` FROM remote_watches WHERE computer_id=? AND request_id=?`, computerID, requestID))
 }
 
+// Refused reports a watch released because the destination refused its
+// start before accepting it: dismissed with no receipt and by no rest or
+// archive. A retry under its ID registers fresh; any other watch stands for
+// a start that may have run.
+func (w RemoteWatch) Refused() bool {
+	return w.Notification == "dismissed" && w.Receipt.ID == "" && w.StoppedAt == 0
+}
+
 // Register before any network mutation. Retrying never replaces provenance or
 // revives delivery already handed to the message queue.
 // True permits cleanup on a definite refusal (new or previously refused).
@@ -110,7 +118,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		if old.LaunchedIn != w.ThreadID || old.Fingerprint != w.Fingerprint {
 			return false, errorsx.Public("remote_request_conflict", "This request_id already belongs to another command or conversation. Retry only the original project, workspace, argv/script and timeout.", nil)
 		}
-		if old.Notification != "dismissed" || old.Receipt.ID != "" || old.StoppedAt != 0 {
+		if !old.Refused() {
 			return false, nil
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -163,6 +171,41 @@ func (s *Store) ObserveRemoteWatch(computerID, requestID string, receipt RemoteJ
 	return err
 }
 
+// remoteWatchCheckable is a watch the watcher checks when it comes due. An
+// archived thread's completions wait for it to be unarchived, and must not
+// take the due list's places meanwhile. A job whose cancel is owed is not
+// polled: its watch waits for the cancel to settle. It states the predicate
+// of idx_remote_watches_pending.
+const remoteWatchCheckable = `notification='pending' AND cancel_owed_at=0
+ AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1)`
+
+// NextRemoteWatchCheck is when the earliest watch the watcher checks comes
+// due, unset when there is none.
+func (s *Store) NextRemoteWatchCheck() (ScheduledMoment, error) {
+	return s.nextRemoteWatchMoment(nextRemoteWatchCheckSQL)
+}
+
+const nextRemoteWatchCheckSQL = `SELECT next_check FROM remote_watches WHERE ` + remoteWatchCheckable + ` ORDER BY next_check LIMIT 1`
+
+// NextOwedRemoteCancel is when the earliest owed cancel is sent next, unset
+// when none is owed.
+func (s *Store) NextOwedRemoteCancel() (ScheduledMoment, error) {
+	return s.nextRemoteWatchMoment(nextOwedRemoteCancelSQL)
+}
+
+const nextOwedRemoteCancelSQL = `SELECT cancel_next_at FROM remote_watches WHERE ` + owedRemoteCancel + ` ORDER BY cancel_next_at LIMIT 1`
+
+func (s *Store) nextRemoteWatchMoment(query string) (ScheduledMoment, error) {
+	var at int64
+	switch err := s.reader().QueryRow(query).Scan(&at); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ScheduledMoment{}, nil
+	case err != nil:
+		return ScheduledMoment{}, fmt.Errorf("store: read the next remote command check: %w", err)
+	}
+	return ScheduledMoment{At: at, Set: true}, nil
+}
+
 func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]RemoteWatch, error) {
 	if limit < 1 || limit > 256 {
 		limit = 100
@@ -170,11 +213,7 @@ func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]Remo
 	query := `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE thread_id=? ORDER BY (notification='pending') DESC, created_at DESC`
 	args := []any{threadID}
 	if threadID == "" {
-		// An archived thread's completions wait for it to be unarchived, and
-		// must not take the due list's places meanwhile. A job whose cancel
-		// is owed is not polled: its watch waits for the cancel to settle.
-		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=? AND cancel_owed_at=0
- AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1) ORDER BY next_check`
+		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE ` + remoteWatchCheckable + ` AND next_check<=? ORDER BY next_check`
 		args = []any{due}
 	}
 	query += ` LIMIT ` + strconv.Itoa(limit)
@@ -479,16 +518,19 @@ func (s *Store) OweRemoteCancel(computerID, requestID string, now, next int64) e
 	return err
 }
 
-// owedRemoteCancelsWhere is the watcher's due list of owed cancels, the
-// predicate of idx_remote_watches_cancel_owed.
-const owedRemoteCancelsWhere = `WHERE cancel_owed_at <> 0 AND cancel_next_at <= ? ORDER BY cancel_next_at`
+// owedRemoteCancel is a watch owed a cancel, the predicate of
+// idx_remote_watches_cancel_owed.
+const owedRemoteCancel = `cancel_owed_at <> 0`
+
+// owedRemoteCancelsDueSQL is the watcher's due list of owed cancels.
+const owedRemoteCancelsDueSQL = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE ` + owedRemoteCancel + ` AND cancel_next_at <= ? ORDER BY cancel_next_at`
 
 // ListOwedRemoteCancels returns, soonest first, the owed cancels due by due.
 func (s *Store) ListOwedRemoteCancels(due int64, limit int) ([]RemoteWatch, error) {
 	if limit < 1 || limit > 256 {
 		limit = 100
 	}
-	rows, err := s.reader().Query(`SELECT `+remoteWatchColumns+` FROM remote_watches `+owedRemoteCancelsWhere+` LIMIT `+strconv.Itoa(limit), due)
+	rows, err := s.reader().Query(owedRemoteCancelsDueSQL+` LIMIT `+strconv.Itoa(limit), due)
 	if err != nil {
 		return nil, err
 	}

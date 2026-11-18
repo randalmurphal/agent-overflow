@@ -215,6 +215,9 @@ type Router struct {
 	// SetSendsPendingObserver before the router serves events; called
 	// under r.mu (see sends_pending.go).
 	sendsPendingChanged func(threadID string)
+	// turnOpening is the app-layer observer told that a thread marked a
+	// turn opening (SetTurnOpeningObserver); called under r.mu.
+	turnOpening func(threadID string)
 	// assistantTextDelta and assistantTextEnd are app-layer observers of
 	// a streaming assistant_text row. Delta receives every piece of text
 	// the row emits, in order, just before it is emitted (possibly on the

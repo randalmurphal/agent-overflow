@@ -57,7 +57,8 @@ export async function writeReviewDrafts(harness: HarnessApp, threadId: string, v
 /**
  * Agent requests between two threads of a project of its own: a send its
  * target answers with thread_reply, a send it answers by ending its turn,
- * two sends one target turn answers, and a reminder that fires. A third
+ * two sends one target turn answers, a reminder that fires, and a send
+ * whose turn the caller's thread_cancel by thread id interrupts. A third
  * thread there works in a worktree whose branch has an open pull request on
  * the forge, which the app tracks. Returns the project's threads.
  */
@@ -82,6 +83,7 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
   // the Claude target in one project each run their own script. The target
   // holds what arrives mid-turn, so its third turn can take two sends at once.
   const targetBusy = `topup-target-busy-${nonce}`;
+  const targetHeld = `topup-target-held-${nonce}`;
   await setScenario(harness, cwd, threadToolsScenario({
     name: `topup-target-${nonce}`,
     provider: 'claude',
@@ -96,6 +98,9 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
       },
       { text: 'Ended the turn without a reply.' },
       { steps: [{ gate: targetBusy }, { drainQueued: true }], text: 'Answered both at once.' },
+      // The caller's thread_cancel interrupts this turn, so its text is
+      // never reached.
+      { steps: [{ gate: targetHeld }], text: 'Finished the long job.' },
     ],
   }));
   const send = (message: string, wait: boolean) => ({
@@ -118,6 +123,11 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
       { text: 'Both answers arrived.' },
       { steps: [{ call: { tool: 'thread_remind', args: { after_seconds: 1, note: `the top-up v${version} reminder` } } }], text: 'Reminder set.' },
       { text: 'Reminded.' },
+      {
+        steps: [{ call: { tool: 'thread_send', args: { thread_id: target, message: 'Start the long job.', wait_seconds: 0 } } }],
+        text: 'Started it.',
+      },
+      { steps: [{ call: { tool: 'thread_cancel', args: { thread_id: target } } }], text: 'Stopped it.' },
     ],
   }));
 
@@ -157,6 +167,22 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
   // The reminder's wake is a turn of its own.
   await turnEnded(caller);
 
+  // An interruption with a cause and its argument: the caller's
+  // thread_cancel by thread id stops the turn its send started, which
+  // settles the request and its receipt `interrupted` by that thread.
+  const held = harness.waitForEvent<{ cwd: string; report: { kind: string; detail?: string } }>(
+    'harness:mock', (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === targetHeld && ev.cwd === cwd, TURN_TIMEOUT_MS);
+  await turn('Give the other thread the long job.', ['thread_send']);
+  await held;
+  await turn('Stop it.', ['thread_cancel']);
+  const stoppedBy = `"Top-up v${version}: asks another thread" (${caller})`;
+  for (const [table, side] of [['thread_requests', 'caller_thread_id'], ['thread_request_receipts', 'source_thread_id']]) {
+    await expect.poll(() => interruptions(harness, table, side, caller), {
+      message: `top-up: ${table} never recorded the thread_cancel's interruption`,
+      timeout: TURN_TIMEOUT_MS,
+    }).toEqual([{ state: 'interrupted', answer_kind: 'error', answer_cause: 'thread_cancel', answer_cause_arg: stoppedBy }]);
+  }
+
   const bound = await harness.rpc<{ worktreePath?: string }>('AttachThreadWorktree', onPR, branch);
   if (!bound.worktreePath) throw new Error(`top-up: AttachThreadWorktree bound no worktree for ${branch}`);
   const repo: ForgeRepo = {
@@ -171,6 +197,17 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
     return trackedRow(harness, onPR)?.number ?? 0;
   }, { message: 'top-up: the worktree thread never tracked its open pull request', timeout: TURN_TIMEOUT_MS }).toBe(12);
   return threadIds;
+}
+
+/** The interrupted rows of `caller`'s requests in `table`, whose `side` column names the caller. */
+function interruptions(harness: HarnessApp, table: string, side: string, caller: string): Array<Record<string, unknown>> {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return database.prepare(`SELECT state, answer_kind, answer_cause, answer_cause_arg FROM ${table}
+      WHERE ${side} = ? AND state = 'interrupted'`).all(caller).map((row) => ({ ...row }));
+  } finally {
+    database.close();
+  }
 }
 
 /** How many of `caller`'s requests match `where`, read from the store. */

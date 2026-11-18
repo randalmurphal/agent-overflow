@@ -406,6 +406,39 @@ func TestThreadRequestDueQueries(t *testing.T) {
 	}
 }
 
+// A remote request's admission deadline is written with the row and moved by
+// each attempt before it is sent, never earlier: an earlier attempt's
+// handler may still be running. The attempt keeps the poller away until its
+// own deadline.
+func TestThreadRequestDispatchKeepsTheLatestAdmissionDeadline(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-remote", CallerThreadID: "t-caller", Kind: ThreadRequestSpawn,
+		TargetComputerID: "backend-2", State: ThreadRequestUnconfirmed, NextCheck: 5000, AdmitUntil: 5000,
+	}); err != nil {
+		t.Fatalf("insert remote request: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 5000 {
+		t.Fatalf("inserted deadline = %d, want 5000", got.AdmitUntil)
+	}
+	if err := s.DispatchThreadRequest("tok-remote", 9000); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 9000 || got.NextCheck != 9000 {
+		t.Fatalf("after a later attempt: deadline %d next check %d, want both 9000", got.AdmitUntil, got.NextCheck)
+	}
+	if err := s.DispatchThreadRequest("tok-remote", 7000); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 9000 || got.NextCheck != 7000 {
+		t.Fatalf("after an attempt with an earlier window: deadline %d next check %d, want 9000 and 7000", got.AdmitUntil, got.NextCheck)
+	}
+	if err := s.DispatchThreadRequest("tok-missing", 9000); err == nil {
+		t.Fatal("dispatching a request that does not exist succeeded")
+	}
+}
+
 // The notify flag is what a settlement checks before waking a caller, so
 // arming and disarming it must report whether anything changed.
 func TestThreadRequestNotifyFlag(t *testing.T) {
@@ -932,7 +965,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		}
 	}
 
-	swept, _, err := s.DeleteThreadRequestsBefore(1000)
+	swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000))
 	if err != nil {
 		t.Fatalf("retention sweep: %v", err)
 	}
@@ -993,7 +1026,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		t.Errorf("threads spawned by t-caller after the sweep = %v, %v; want t-child", ids, err)
 	}
 	// A second sweep finds nothing left to take.
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 0 {
 		t.Errorf("second sweep: swept=%d err=%v", swept, err)
 	}
 	// Nothing writes an answer or a wake back onto the lineage row.
@@ -1011,7 +1044,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if err := s.DeleteThread("t-child"); err != nil {
 		t.Fatal(err)
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 1 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 1 {
 		t.Errorf("sweep after the child was deleted: swept=%d err=%v", swept, err)
 	}
 	for _, token := range []string{"tok-receipt-settled-recent", "tok-receipt-open-old"} {
@@ -1021,6 +1054,23 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	}
 	if _, found, err := s.GetThreadRequestReceipt("tok-receipt-settled-old"); err != nil || found {
 		t.Errorf("a receipt settled before the floor survived: found=%v err=%v", found, err)
+	}
+}
+
+// spawnWithReceipt makes a local spawn from caller to target with its
+// receipt, settled at at with an answer, as a spawn on this computer is.
+func spawnWithReceipt(t *testing.T, s *Store, token, caller, target string, at int64) {
+	t.Helper()
+	seedAgentRequest(t, s, token, caller, ThreadRequestSpawn, target, false, at-1)
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "local", Kind: ThreadRequestSpawn,
+		SourceThreadID: caller, TargetThreadID: target, CreatedAt: at - 1, UpdatedAt: at - 1}); err != nil {
+		t.Fatalf("accept %s: %v", token, err)
+	}
+	result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
+	}, ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle %s: %+v %v", token, result, err)
 	}
 }
 
@@ -1053,7 +1103,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 			t.Fatalf("settle %s: %+v %v", token, result, err)
 		}
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 3 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 3 {
 		t.Fatalf("sweep = %d, %v; want one lineage kept and two receipts deleted", swept, err)
 	}
 	var lineage, agent int
@@ -1091,7 +1141,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 			t.Fatalf("spawned for %s/%s = %v, %v; want %v", c.owner, c.source, got, err, c.want)
 		}
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 0 {
 		t.Fatalf("second sweep = %d, %v; want nothing", swept, err)
 	}
 	// The app detaches a thread's settled receipts before it deletes or
@@ -1102,7 +1152,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 	if err := s.DeleteThread("t-child"); err != nil {
 		t.Fatal(err)
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 1 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 1 {
 		t.Fatalf("sweep once the thread is gone = %d, %v; want the lineage deleted", swept, err)
 	}
 	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 0 {

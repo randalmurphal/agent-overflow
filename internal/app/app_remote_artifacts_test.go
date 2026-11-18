@@ -42,7 +42,7 @@ func TestRemoteArtifactCopyIntegrityAndPartialCleanup(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
-			result, err := receiveRemoteArtifact(ctx, destination, "report.html", "thread", func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+			result, err := receiveRemoteArtifact(ctx, destination, "report.html", "thread", artifactAnnouncement{}, func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
 				calls++
 				if calls == 2 {
 					switch mode {
@@ -60,7 +60,7 @@ func TestRemoteArtifactCopyIntegrityAndPartialCleanup(t *testing.T) {
 						}
 					}
 				}
-				chunk, err := readRemoteArtifactChunk(ctx, workspace, request)
+				chunk, err := readRemoteArtifactChunk(ctx, workspace, request, "")
 				chunk.SourceThreadID = "thread"
 				if mode == "wrong-conversation" {
 					chunk.SourceThreadID = "other"
@@ -111,11 +111,11 @@ func TestRemoteArtifactReadConfinesFilesAndBoundsRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, request := range []RemoteArtifactRequest{{Path: "../outside"}, {Path: filepath.Join(outside, "secret")}, {Path: "escape/secret"}, {Path: "."}, {Path: "ok", Offset: -1}, {Path: "ok", Offset: 1}, {Path: "ok", Stamp: "stale"}} {
-		if _, err := readRemoteArtifactChunk(context.Background(), workspace, request); err == nil {
+		if _, err := readRemoteArtifactChunk(context.Background(), workspace, request, ""); err == nil {
 			t.Fatalf("accepted %#v", request)
 		}
 	}
-	if chunk, err := readRemoteArtifactChunk(context.Background(), workspace, RemoteArtifactRequest{Path: "inside"}); err != nil || string(chunk.Data) != "ok" {
+	if chunk, err := readRemoteArtifactChunk(context.Background(), workspace, RemoteArtifactRequest{Path: "inside"}, ""); err != nil || string(chunk.Data) != "ok" {
 		t.Fatalf("confined symlink: %#v %v", chunk, err)
 	}
 	file, err := os.Create(filepath.Join(workspace, "huge"))
@@ -126,7 +126,7 @@ func TestRemoteArtifactReadConfinesFilesAndBoundsRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = file.Close()
-	_, err = readRemoteArtifactChunk(context.Background(), workspace, RemoteArtifactRequest{Path: "huge"})
+	_, err = readRemoteArtifactChunk(context.Background(), workspace, RemoteArtifactRequest{Path: "huge"}, "")
 	code, _, _ := errorsx.PublicDetails(err)
 	if code != "remote_artifact_too_large" {
 		t.Fatalf("large file: %v", err)
