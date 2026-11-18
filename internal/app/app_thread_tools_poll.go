@@ -41,7 +41,8 @@ const (
 	// longest the sweep ever sleeps.
 	threadRequestExpiryInterval = 10 * time.Minute
 	// restRecoveryRetry is how soon the sweep tries again what the boot's
-	// recovery of rest could not read (retryRestRecovery).
+	// recovery of rest, or a held request's read of rest, could not read
+	// (retryRestRecovery, retryFailedRestReads).
 	restRecoveryRetry = 5 * time.Second
 	// threadRequestPollBatch bounds one pass over the remote rows.
 	threadRequestPollBatch = 32
@@ -143,8 +144,10 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 			return
 		}
 		now := time.Now()
-		// What the boot's recovery of rest could not read, read again.
+		// What the boot's recovery of rest, or a held request's read of
+		// rest, could not read, read again.
 		a.retryRestRecovery()
+		a.retryFailedRestReads()
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
 		a.pollRemoteThreadRequests(now)
@@ -166,14 +169,23 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		case <-done:
 			return
 		case <-nudge:
-		case <-time.After(a.threadRequestSweepDelay(lastExpiry)):
+		case <-a.sweepSleep(a.threadRequestSweepDelay(lastExpiry)):
 		}
 	}
 }
 
+// sweepSleep is the request sweep's sleep of d.
+func (a *App) sweepSleep(d time.Duration) <-chan time.Time {
+	if sleep := a.sweepSleepForTest; sleep != nil {
+		return sleep(d)
+	}
+	return time.After(d)
+}
+
 // threadRequestSweepDelay is how long the sweep sleeps before its next pass:
 // until the ledger's next due moment, bounded below by the floor and above
-// by the retention clock.
+// by the retention clock. A read of rest owed again and the next loop or
+// watch fire bound it whether or not the ledger's schedule reads.
 //
 // A poll already in flight is left out of the answer. Its rows are still due
 // by their own column, because the pass that owns them has not rescheduled
@@ -183,11 +195,20 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 // the poll's timeout.
 func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 	delay := threadRequestExpiryInterval - time.Since(lastExpiry)
+	var due []store.ScheduledMoment
+	if a.restRecoveryPending() || a.restReadsFailed() {
+		due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
+	}
+	if loops, err := a.store.NextAgentWakeDue(); err != nil {
+		logThreadRequestSweep("read the next loop or watch fire", err)
+	} else {
+		due = append(due, loops)
+	}
 	schedule, err := a.store.NextThreadRequestWork()
 	if err != nil {
 		logThreadRequestSweep("read the next scheduled request work", err)
 	} else {
-		due := []store.ScheduledMoment{schedule.Reminder, schedule.Wake}
+		due = append(due, schedule.Reminder, schedule.Wake)
 		if schedule.NestedOpen {
 			// A settled spawn on another computer whose work there is still
 			// open: its rows are asked for again at the poll's pace.
@@ -206,21 +227,13 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 			// same terms as the poll's rows.
 			due = append(due, schedule.OwnerOp)
 		}
-		if a.restRecoveryPending() {
-			due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
+	}
+	for _, moment := range due {
+		if !moment.Set {
+			continue
 		}
-		if loops, err := a.store.NextAgentWakeDue(); err != nil {
-			logThreadRequestSweep("read the next loop or watch fire", err)
-		} else {
-			due = append(due, loops)
-		}
-		for _, moment := range due {
-			if !moment.Set {
-				continue
-			}
-			if until := time.Until(time.UnixMilli(moment.At)); until < delay {
-				delay = until
-			}
+		if until := time.Until(time.UnixMilli(moment.At)); until < delay {
+			delay = until
 		}
 	}
 	if delay < threadRequestSweepFloor {
@@ -983,9 +996,10 @@ func (a *App) settleRemoteThreadRequestOwing(row store.ThreadRequest, settlement
 
 // expireThreadRequests is the retention pass: answers nobody collected are
 // dropped a day after they were written, rows are deleted at the floor (a
-// spawn's lineage is kept with its payload cleared), remote job watches with
-// nothing left to deliver go at the same floor, and answer files nobody
-// read go with them.
+// spawn's lineage is kept with its payload cleared, and a spawn whose
+// thread here is not at rest is left whole: sweepThreadRequestsBefore),
+// remote job watches with nothing left to deliver go at the same floor, and
+// answer files nobody read go with them.
 func (a *App) expireThreadRequests(now time.Time) {
 	if dropped, err := a.store.ExpireThreadRequestAnswers(now.UnixMilli()); err != nil {
 		logThreadRequestSweep("expire answers", err)
@@ -993,7 +1007,7 @@ func (a *App) expireThreadRequests(now time.Time) {
 		log.Printf("thread tools: dropped %d uncollected answer(s) past their hold", dropped)
 	}
 	floor := now.AddDate(0, 0, -store.ThreadRequestRetentionDays).UnixMilli()
-	if swept, released, err := a.store.DeleteThreadRequestsBefore(floor); err != nil {
+	if swept, released, err := a.sweepThreadRequestsBefore(floor); err != nil {
 		logThreadRequestSweep("delete requests past retention", err)
 	} else {
 		if swept > 0 {

@@ -550,13 +550,13 @@ func TestWorkItemOriginThreadBinding(t *testing.T) {
 	}
 	if change, err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
 		t.Fatal(err)
-	} else if change != (WorkItemOriginChange{Current: "thread-1"}) {
+	} else if change != (WorkItemOriginChange{ItemID: root.ID, Current: "thread-1"}) {
 		t.Fatalf("bind reported %+v; want from none to thread-1", change)
 	}
 	// A rebind reports the thread it left with the one it binds.
 	if change, err := s.UpdateWorkItemOriginThread(root.ID, "thread-9"); err != nil {
 		t.Fatal(err)
-	} else if change != (WorkItemOriginChange{Previous: "thread-1", Current: "thread-9"}) {
+	} else if change != (WorkItemOriginChange{ItemID: root.ID, Previous: "thread-1", Current: "thread-9"}) {
 		t.Fatalf("rebind reported %+v; want from thread-1 to thread-9", change)
 	}
 	if _, err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
@@ -603,7 +603,7 @@ func TestWorkItemOriginThreadBinding(t *testing.T) {
 	// Unbinding is the same call with an empty id.
 	if change, err := s.UpdateWorkItemOriginThread(root.ID, ""); err != nil {
 		t.Fatal(err)
-	} else if change != (WorkItemOriginChange{Previous: "thread-1"}) || len(change.Threads()) != 1 {
+	} else if change != (WorkItemOriginChange{ItemID: root.ID, Previous: "thread-1"}) || len(change.Threads()) != 1 {
 		t.Fatalf("unbind reported %+v; want from thread-1 to none", change)
 	}
 	if stored, err := s.GetWorkItem(root.ID); err != nil {

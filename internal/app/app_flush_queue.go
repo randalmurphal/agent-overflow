@@ -104,6 +104,9 @@ func (a *App) configureTriageQueueCallbacks() {
 	a.triage.SetFlushSendConsumedHook(a.confirmOwnedDeliveries)
 	a.triage.SetSendDeliveredHook(a.onSendDelivered)
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
+	// A turn opening is memory until its row commits: a decision on rest
+	// under way learns of it at the mark.
+	a.triage.SetTurnOpeningObserver(a.noteThreadRestChange)
 	a.triage.SetSendUndeliveredHook(func(threadID string) {
 		// Off the provider event worker: the restore takes the thread
 		// action lock, which an interrupt holds while it waits on this

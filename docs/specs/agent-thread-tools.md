@@ -1438,8 +1438,9 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing. A spawn, and a send from the
    thread that spawned its target, settle `finished` only once that
-   thread is at rest ([at rest](standing-agents.md#at-rest), read by
-   `threadRest`): a turn that ends as it would settle `finished` while
+   thread and every thread below it are at rest, by the rule for
+   decisions that cannot be taken back
+   ([owned workers](standing-agents.md#owned-workers)): a turn that ends as it would settle `finished` while
    the thread is not at rest leaves the request `running`, its gate in
    the turn-end registry marked held (`receiptGate.held`,
    `app_thread_tools_rest_settle.go`), with no wake. Held is a phase of
@@ -1457,13 +1458,13 @@ What settles a request, in order:
    once. `thread_status` and a parked wait report it running with what
    it waits on (`waiting_on`); a request on another computer carries it
    in the poll's answer (`waitingOn`), and its row there reads
-   `waiting`. Every change that can bring a thread to rest reaches the
-   Agents rows' drain, which asks for a pass over the held requests;
-   a pass reads each held thread's rest itself, from facts complete when
-   it reads them, a thread's durable sources before its memory ones, so
-   an answer on its way to a thread keeps it from rest until the turn it
-   starts is open, and a workflow run's report from its rest until its
-   wake has been handed over. The
+   `waiting`. Every change that can bring a thread to rest asks for a
+   pass over the held requests, which decides each by the rule in
+   [owned workers](standing-agents.md#owned-workers): an answer on its
+   way to a thread keeps it from rest until the turn it starts is open,
+   a turn starting keeps it from rest from the moment it is marked, and
+   a workflow run bound to it keeps it while the run runs and, once it
+   rests, until its report is delivered or dropped. The
    Stop of the thread, the person's or the spawner's `thread_cancel` by
    thread id, and an explicit `thread_reply` settle it as before. A
    boot holds again a running receipt whose turn ended as it would
@@ -1472,8 +1473,11 @@ What settles a request, in order:
    with a later turn's error; no held request settles at rest until the
    boot has recorded every thread a recovered source keeps from rest
    (`recoverRestAtBoot`), a pass asked for meanwhile waiting for it. A
-   source or thread the recovery could not read is read again by each
-   pass of the request sweep until it succeeds. A paired computer that
+   source or thread the recovery could not read is read again within the
+   retry delay by each pass of the sweep until it reads; a held request
+   whose read of rest failed stays held and is retried as
+   [owned workers](standing-agents.md#owned-workers) states, with no new
+   event. A paired computer that
    settles at rest says so in the poll's answer (`restRule`); one that
    does not settles such a request when its turn ends, and its
    `finished` answer is recorded `rest_unreported`, which
@@ -1936,8 +1940,10 @@ transport session and is not gated by it.
 Two more forwarded tools serve the caller's Agents segment, both refused
 unless the thread they name is one the calling device's thread spawned
 there, directly or through that computer's own spawn lineage (the
-spawn's receipt there, which the retention floor keeps while that thread
-or one up to four spawns below it has open work):
+spawn's receipt there, which the retention floor keeps whole until that
+thread and every thread below it read at rest
+([owned workers](standing-agents.md#owned-workers)), and as its lineage
+while the thread exists):
 `agent_rows` over `ThreadToolQuery` lists that thread's own Agents rows
 to the nesting depth left, or none for a call that asks for its state
 alone (`state_only`, sent with a depth of one, which an older computer

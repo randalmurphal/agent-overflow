@@ -27,7 +27,6 @@ func (s *Service) prepareEngineEvent(name eventchan.Channel, payload any) {
 	if !ok {
 		return
 	}
-	s.noteReportTransition(event)
 	if s.deps.Digest == nil || event.From == event.To || event.To != engine.StateNeedsHuman && event.To != engine.StateFailed {
 		return
 	}

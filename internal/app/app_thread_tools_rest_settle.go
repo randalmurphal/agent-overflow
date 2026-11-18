@@ -26,10 +26,12 @@ import (
 //
 // A turn that ends `finished` short of rest leaves it held. Whatever can
 // bring the thread to rest reaches the Agents rows' drain, which asks for a
-// pass over the held requests (noteRestWaitsMayChange). A pass reads rest
-// from facts complete when it reads them: the thread's own sources, durable
-// ones first (workerUnrest), and the recorded state of the workers below
-// it. At boot no held request settles at rest until every source is
+// pass over the held requests (noteRestWaitsMayChange). A pass reads the
+// rest of the thread and of every thread below it from their own sources
+// (heldThreadAtRest), and the settlement carries that rest as its
+// precondition, read again inside its own transaction (restDecision.guard).
+// At boot no held request settles at rest until
+// every source is
 // recovered into that record (recoverRestAtBoot): a pass asked for before
 // then, by a turn end, a recovery event or the boot itself, waits for it.
 
@@ -41,6 +43,9 @@ type restPasses struct {
 	again    bool
 	barred   bool
 	recovery restRecovery
+	// failed are the threads whose held requests' last read of rest failed,
+	// read again by the sweep's next pass (retryFailedRestReads).
+	failed map[string]bool
 }
 
 // restRecovery is what the boot's recovery of rest has still to do: the
@@ -73,51 +78,65 @@ func (a *App) receiptAwaitsRest(receipt store.ThreadRequestReceipt) (bool, error
 
 // restSettlement is how settlement, what the end of receipt's own turn
 // (turn) answers, applies: as it is, for any settlement but `finished` and
-// for a receipt that does not wait for rest; with the thread's last message,
-// for one whose thread is at rest; or not yet (held), for one whose thread
-// is not, whose gate is then held. A failed read of the rest leaves it held
-// for the next pass. The caller holds the token's settle lock and writes the
-// settlement it returns.
-func (a *App) restSettlement(receipt store.ThreadRequestReceipt, settlement store.ThreadRequestSettlement, turn int) (store.ThreadRequestSettlement, bool, error) {
+// for a receipt that does not wait for rest; with the thread's last message
+// and the decision on rest its write carries (rest), for one whose thread
+// is at rest; or not yet (held), for one whose thread is not, whose gate is
+// then held. A failed read of the rest leaves it held for the next pass.
+// The caller holds the token's settle lock, writes the settlement it
+// returns with rest, and then ends rest.
+func (a *App) restSettlement(receipt store.ThreadRequestReceipt, settlement store.ThreadRequestSettlement, turn int) (_ store.ThreadRequestSettlement, rest *restDecision, held bool, err error) {
 	if settlement.State != store.ThreadReceiptFinished {
-		return settlement, false, nil
+		return settlement, nil, false, nil
 	}
 	awaits, err := a.receiptAwaitsRest(receipt)
 	if err != nil || !awaits {
-		return settlement, false, err
+		return settlement, nil, false, err
 	}
 	thread := receipt.TargetThreadID
 	// Held before its rest is read, so a pass that runs once the thread
 	// rests after this read finds it.
 	a.holdReceiptGate(thread, receipt.Token, turn, turn)
-	atRest, err := a.heldThreadAtRest(thread)
-	if err != nil || !atRest {
+	rest, err = a.heldThreadAtRest(thread)
+	if err != nil || !rest.rests(thread) {
+		rest.done()
 		// The rest this read missed may already have been reported, before
 		// the hold was there to see it.
 		a.noteRestWaitsMayChange()
-		return store.ThreadRequestSettlement{}, true, err
+		return store.ThreadRequestSettlement{}, nil, true, err
 	}
 	at := settlement.SettledAt
-	settlement, err = a.restAnswer(thread, turn)
+	if settlement, err = a.restAnswer(thread, turn); err != nil {
+		rest.done()
+		return store.ThreadRequestSettlement{}, nil, false, err
+	}
 	if at != 0 {
 		settlement.SettledAt = at
 	}
-	return settlement, false, err
+	return settlement, rest, false, nil
 }
 
-// heldThreadAtRest reads threadID's rest for a held request, false while
-// the boot has not recovered every source of it, and while a stop brings the
-// thread to rest (holdRest): the stop cancels what held it before it settles
-// the requests on it, which it settles itself.
-func (a *App) heldThreadAtRest(threadID string) (bool, error) {
+// heldThreadAtRest reads threadID's rest for a held request (readRest): no
+// read, which is not at rest, while the boot has not recovered every source
+// of it, and while a stop brings the thread to rest (holdRest): the stop
+// cancels what held it before it settles the requests on it, which it
+// settles itself. A `finished` settlement cannot be taken back, so the
+// caller writes one only with the decision's guard, which reads the rest
+// again inside the write. The decision is done by the caller. A read that
+// fails is read again by the sweep's next pass (noteRestRead); one at rest
+// leaves that owed until the settlement it begins completes
+// (settleReadReceiptLocked).
+func (a *App) heldThreadAtRest(threadID string) (*restDecision, error) {
 	a.threadRequests.mu.Lock()
 	barred := a.threadRequests.rest.barred
 	a.threadRequests.mu.Unlock()
 	if barred || a.resting.holds(threadID) {
-		return false, nil
+		return nil, nil
 	}
-	rest, err := a.threadRest(threadID)
-	return err == nil && rest.unrest == "", err
+	read, err := a.readRest([]string{threadID})
+	if err != nil || !read.rests(threadID) {
+		a.noteRestRead(threadID, err)
+	}
+	return read, err
 }
 
 // restAnswer is a held request's answer at its thread's rest: `finished`
@@ -155,6 +174,17 @@ func (a *App) holdReceiptGate(threadID, token string, turn, through int) {
 		gate.held, gate.turn, gate.through = true, turn, through
 	}
 	tokens[token] = gate
+}
+
+// holdsReceiptLocked reports whether a request on threadID is held for its
+// rest. The caller holds a.threadRequests.mu.
+func (r *threadRequestState) holdsReceiptLocked(threadID string) bool {
+	for _, gate := range r.running[threadID] {
+		if gate.held {
+			return true
+		}
+	}
+	return false
 }
 
 // heldReceiptGate is token's gate while it is held.
@@ -202,20 +232,23 @@ func (a *App) settleHeldReceiptLocked(receipt store.ThreadRequestReceipt, gate r
 	if err != nil {
 		return threadSettlementWork{}, err
 	}
+	var rest *restDecision
 	if !decided {
 		a.readHeldReceiptTurns(thread, receipt.Token, through)
 		if pending {
 			return threadSettlementWork{}, nil
 		}
-		atRest, err := a.heldThreadAtRest(thread)
-		if err != nil || !atRest {
+		var err error
+		if rest, err = a.heldThreadAtRest(thread); err != nil || !rest.rests(thread) {
+			rest.done()
 			return threadSettlementWork{}, err
 		}
+		defer rest.done()
 		if settlement, err = a.restAnswer(thread, gate.turn); err != nil {
 			return threadSettlementWork{}, err
 		}
 	}
-	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread, rest)
 	return work, err
 }
 
@@ -374,21 +407,31 @@ func (a *App) heldReceipts() []heldReceipt {
 
 // settleRestedReceipts settles every held request whose thread is at rest
 // now, together, so a caller several of them answer is told once. Each held
-// thread's rest is read fresh (threadRest), once a pass: what liveWorkers
-// records only draws rows, so a change it missed cannot hold a request. A
-// read that fails leaves the request held for the next pass.
+// thread's rest is read once a pass, and again under the token's settle
+// lock, where the settlement's write carries it (heldThreadAtRest). A read
+// that fails leaves the request held, and the sweep's next pass reads it
+// again.
 //
 // A held request on a thread under a paused assistant does not settle at
 // rest: its loops do not fire while assistants are off, and the pause
 // settles it. The pass asks the convergence to (askPausedAssistantRequests),
 // which reads the setting again under its own lock; it stops nothing itself.
 func (a *App) settleRestedReceipts() {
+	a.settleHeldReceiptsAtRest(nil)
+}
+
+// settleHeldReceiptsAtRest is settleRestedReceipts for the requests held on
+// the threads of only, or on every thread when only is nil.
+func (a *App) settleHeldReceiptsAtRest(only map[string]bool) {
 	holds := a.heldReceipts()
 	rested := map[string]bool{}
 	paused := map[string]bool{}
 	askPause := false
 	works := make([]threadSettlementWork, 0, len(holds))
 	for _, hold := range holds {
+		if only != nil && !only[hold.thread] {
+			continue
+		}
 		pausedHere, known := paused[hold.thread]
 		if !known {
 			var err error
@@ -405,12 +448,14 @@ func (a *App) settleRestedReceipts() {
 			askPause = true
 			continue
 		}
-		atRest, read := rested[hold.thread]
-		if !read {
-			var err error
-			if atRest, err = a.heldThreadAtRest(hold.thread); err != nil {
-				log.Printf("thread tools: read whether %s is at rest for request %s: %v", hold.thread, hold.token, err)
+		atRest, known := rested[hold.thread]
+		if !known {
+			read, err := a.heldThreadAtRest(hold.thread)
+			if err != nil {
+				logRestRead(hold.thread, hold.token, err)
 			}
+			atRest = read.rests(hold.thread)
+			read.done()
 			rested[hold.thread] = atRest
 		}
 		if !atRest {
@@ -523,7 +568,7 @@ func (a *App) restRecoverySources() []restRecoverySource {
 		{"reminders", a.store.ThreadsWithOpenReminders},
 		{"remote commands", a.store.RemoteWatchThreadIDs},
 		{"answers on their way", a.store.ThreadsWithAnswerDue},
-		{"workflow runs", a.store.ThreadsWithRunningWorkflowRuns},
+		{"workflow runs", a.store.ThreadsHeldByWorkflowRuns},
 		{"unanswered questions", a.store.ThreadsWithUnansweredAsyncQuestions},
 		{"queued messages", a.store.ListThreadsWithFlushQueueItems},
 	}

@@ -195,7 +195,7 @@ func (a *App) cancelOpenReceipt(token, answer string, stop turnStop, receipt *st
 			Answer:     []byte(answer),
 			AnswerKind: store.ThreadAnswerError,
 			DisarmWake: answer == threadRequestSenderCancel,
-		}, dropScratchThread)
+		}, dropScratchThread, nil)
 		if err != nil || !settled {
 			return false, err
 		}

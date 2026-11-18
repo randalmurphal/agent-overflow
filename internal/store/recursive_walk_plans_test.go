@@ -130,10 +130,11 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		spawnLocal(t, s, "l-c", "lead", "child", true)
 		spawnLocal(t, s, "c-g", "child", "grand", true)
 		// Both walks down the owned lineage take the same step
-		// (ownedStepSQL); owned_threads and the delete's walk read a
-		// thread's transfer by the thread's own key.
+		// (ownedStepSQL), through the index of spawn links by caller, so
+		// neither reads an owner's sends and asks; owned_threads and the
+		// delete's walk read a thread's transfer by the thread's own key.
 		step := []string{
-			"SEARCH link USING INDEX idx_thread_requests_caller_settled (caller_thread_id=?)",
+			"SEARCH link USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=?)",
 			"SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)",
 		}
 		assertWalkProbesTheQueuedKey(t, s, "deleteFamilySQL", walkPlan{
@@ -152,6 +153,12 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 			step:     step,
 			prefixed: []string{"idx_thread_transfers_owner"},
 		}, ownedWorkersToArchiveSQL, "lead")
+		// A decision's read of rest walks every spawn link down, whatever
+		// the placement, by caller through the index of links alone.
+		assertWalkProbesTheQueuedKey(t, s, "subtreeReachedSQL", walkPlan{
+			step: []string{"SEARCH link USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=?)"},
+			want: []string{"SEARCH threads USING COVERING INDEX sqlite_autoindex_threads_1 (id=?)"},
+		}, subtreeReachedSQL, `["lead"]`)
 	})
 
 	t.Run("agent requests", func(t *testing.T) {

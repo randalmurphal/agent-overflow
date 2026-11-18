@@ -205,8 +205,10 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	if err != nil || state.Resting {
 		t.Fatalf("thread_status inside the start %+v, %v; want it not resting", state, err)
 	}
-	if atRest, err := f.app.heldThreadAtRest(ack.ThreadID); err != nil || atRest {
-		t.Fatalf("a held request reads the worker at rest inside the start: %v, %v", atRest, err)
+	read, err := f.app.heldThreadAtRest(ack.ThreadID)
+	read.done()
+	if err != nil || read.rests(ack.ThreadID) {
+		t.Fatalf("a held request reads the worker at rest inside the start: %v, %v", read.rests(ack.ThreadID), err)
 	}
 	f.app.settleRestedReceipts()
 	f.app.threadRequestsWG.Wait()

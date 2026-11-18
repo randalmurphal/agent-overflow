@@ -45,7 +45,7 @@ func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
 	asked := noticeTestThread(t, a, "past-asked")
 	open := noticeTestThread(t, a, "past-open")
 	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "old", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: old.ID, CreatedAt: 1}, 2, "long ago")
-	if _, _, err := a.store.DeleteThreadRequestsBefore(10); err != nil {
+	if _, _, err := a.sweepThreadRequestsBefore(10); err != nil {
 		t.Fatal(err)
 	}
 	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "b-shelved", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: shelved.ID, CreatedAt: 20}, 300, "shelved it")

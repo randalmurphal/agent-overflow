@@ -230,6 +230,10 @@ type App struct {
 	// liveWorkers is the threads last found not at rest, which keep the
 	// local spawn that made each open (app_thread_agent_live.go).
 	liveWorkers liveWorkers
+	// restRevisions is the revision of what memory holds of a thread's
+	// rest, for the decisions on rest that cannot be taken back
+	// (app_thread_rest_assess.go).
+	restRevisions restRevisions
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache
@@ -822,6 +826,19 @@ type App struct {
 	// a held request's thread under a paused assistant (settleRestedReceipts),
 	// so a test can turn assistants off and on again at that moment.
 	restPausedReadForTest func(threadID string)
+	// threadAgentDrainForTest, when set, runs in the Agents rows' drain
+	// before it takes each batch (drainThreadAgentEmits), so a test can hold
+	// what liveWorkers records behind a change.
+	threadAgentDrainForTest func()
+	// restReadForTest, when set, runs in a read of rest a decision acts on
+	// once the threads reached from roots have been read, memory included,
+	// and before the decision is written (readRest), so a test can admit
+	// work there.
+	restReadForTest func(roots []string)
+	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
+	// sleeps until the channel it returns for the delay asked sends
+	// (sweepSleep).
+	sweepSleepForTest func(d time.Duration) <-chan time.Time
 	// admitWorkForTest, when set, runs as a call reaches admitWork, after
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.

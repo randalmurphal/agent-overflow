@@ -965,7 +965,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		}
 	}
 
-	swept, _, err := s.DeleteThreadRequestsBefore(1000)
+	swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000))
 	if err != nil {
 		t.Fatalf("retention sweep: %v", err)
 	}
@@ -1026,7 +1026,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		t.Errorf("threads spawned by t-caller after the sweep = %v, %v; want t-child", ids, err)
 	}
 	// A second sweep finds nothing left to take.
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 0 {
 		t.Errorf("second sweep: swept=%d err=%v", swept, err)
 	}
 	// Nothing writes an answer or a wake back onto the lineage row.
@@ -1044,7 +1044,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if err := s.DeleteThread("t-child"); err != nil {
 		t.Fatal(err)
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 1 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 1 {
 		t.Errorf("sweep after the child was deleted: swept=%d err=%v", swept, err)
 	}
 	for _, token := range []string{"tok-receipt-settled-recent", "tok-receipt-open-old"} {
@@ -1054,6 +1054,23 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	}
 	if _, found, err := s.GetThreadRequestReceipt("tok-receipt-settled-old"); err != nil || found {
 		t.Errorf("a receipt settled before the floor survived: found=%v err=%v", found, err)
+	}
+}
+
+// spawnWithReceipt makes a local spawn from caller to target with its
+// receipt, settled at at with an answer, as a spawn on this computer is.
+func spawnWithReceipt(t *testing.T, s *Store, token, caller, target string, at int64) {
+	t.Helper()
+	seedAgentRequest(t, s, token, caller, ThreadRequestSpawn, target, false, at-1)
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "local", Kind: ThreadRequestSpawn,
+		SourceThreadID: caller, TargetThreadID: target, CreatedAt: at - 1, UpdatedAt: at - 1}); err != nil {
+		t.Fatalf("accept %s: %v", token, err)
+	}
+	result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
+	}, ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle %s: %+v %v", token, result, err)
 	}
 }
 
@@ -1086,7 +1103,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 			t.Fatalf("settle %s: %+v %v", token, result, err)
 		}
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 3 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 3 {
 		t.Fatalf("sweep = %d, %v; want one lineage kept and two receipts deleted", swept, err)
 	}
 	var lineage, agent int
@@ -1124,7 +1141,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 			t.Fatalf("spawned for %s/%s = %v, %v; want %v", c.owner, c.source, got, err, c.want)
 		}
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 0 {
 		t.Fatalf("second sweep = %d, %v; want nothing", swept, err)
 	}
 	// The app detaches a thread's settled receipts before it deletes or
@@ -1135,7 +1152,7 @@ func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
 	if err := s.DeleteThread("t-child"); err != nil {
 		t.Fatal(err)
 	}
-	if swept, _, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 1 {
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 1 {
 		t.Fatalf("sweep once the thread is gone = %d, %v; want the lineage deleted", swept, err)
 	}
 	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 0 {
