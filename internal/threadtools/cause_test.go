@@ -54,7 +54,7 @@ func TestCauseVocabularyIsClosed(t *testing.T) {
 		if !(Cause{Code: code}).Known() {
 			t.Errorf("%s is in the vocabulary and is not known", code)
 		}
-		if shown := (Cause{Code: code}).render(""); strings.TrimSpace(shown.reason+shown.answer) == "" {
+		if shown := (Cause{Code: code}).render(""); strings.TrimSpace(shown.reason+shown.sentence+shown.answer) == "" {
 			t.Errorf("%s has no words", code)
 		}
 	}
@@ -145,6 +145,28 @@ func TestADigestClipsTheAnswerAsTheSingleWakeDoes(t *testing.T) {
 					t.Errorf("%s %s: the reason %q is not said", name, code, reason)
 				}
 			}
+		}
+	}
+}
+
+// TestACausesOwnSentenceIsNeverClipped says a cause's sentence whole
+// however long the canceller's title, and still as the row's message: the
+// preview bounds what a turn wrote, not why it stopped.
+func TestACausesOwnSentenceIsNeverClipped(t *testing.T) {
+	one := []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}}}
+	several := []WakeSource{
+		{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}},
+		{Title: "Other", ThreadID: "t-other", Tokens: []string{"tok-2"}},
+	}
+	cause := Cause{Code: CauseThreadCancel, Arg: `"` + strings.Repeat("t", WakePreviewBytes+1) + `" (t-lead)`}
+	sentence := cause.Answer("")
+	for name, sources := range map[string][]WakeSource{"single": one, "digest": several} {
+		text, facts := Wake{Kind: WakeInterrupted, Sources: sources, Cause: cause}.Message()
+		if got := facts.BodyOf(text); got != sentence {
+			t.Errorf("%s: body is %d bytes ending %q, want the %d-byte sentence whole", name, len(got), got[max(0, len(got)-60):], len(sentence))
+		}
+		if facts.Clipped || strings.Contains(text, WakePreviewPointer("tok")) || !strings.HasSuffix(text, sentence) {
+			t.Errorf("%s: the sentence is clipped (facts %+v)", name, facts)
 		}
 	}
 }

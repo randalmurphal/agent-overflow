@@ -87,14 +87,16 @@ var causeCodes = []string{
 // newer computer reports and this one does not know is no cause here.
 func (c Cause) Known() bool { return slices.Contains(causeCodes, c.Code) }
 
-// shownCause is a cause rendered for the answer text it carries.
+// shownCause is a cause rendered for the answer text it carries. A row's
+// message is its sentence or its answer; a cause carries at most one.
 type shownCause struct {
-	// reason is said before the answer, whole: never clipped, and not the
-	// message's body.
+	// reason is said before the message, whole, and is not its body.
 	reason string
-	// answer is the message's body, clipped to the preview as an answer:
-	// what the turn had written, the part of a sentence a row shows as the
-	// message, or with no known cause the whole text.
+	// sentence is the cause's own words a row shows as the message: the
+	// body, said whole.
+	sentence string
+	// answer is what the turn had written, or with no known cause the
+	// whole text: the body, clipped to the preview as an answer.
 	answer string
 	// stoppedBy is what stopped the request as a row names it
 	// (MessageFacts.StoppedBy); empty when the reason names no stopper.
@@ -115,7 +117,7 @@ func (c Cause) render(text string) shownCause {
 	}
 	// stoppedIn is a sentence that names who stopped the turn in the
 	// stopper's own words, which the row shows as the message.
-	stoppedIn := func(sentence string) shownCause { return shownCause{answer: sentence} }
+	stoppedIn := func(sentence string) shownCause { return shownCause{sentence: sentence} }
 	switch c.Code {
 	case CauseRestart:
 		return shownCause{reason: "This computer restarted before the request finished."}
@@ -142,7 +144,7 @@ func (c Cause) render(text string) shownCause {
 		// The rest names the previous thread, for the sender to read.
 		return shownCause{
 			reason: "The assistant moved to a new thread before it answered. ",
-			answer: "Its previous thread is " + c.Arg +
+			sentence: "Its previous thread is " + c.Arg +
 				"; read it with thread_show to see what was done, or ask the assistant again by name.",
 			stoppedBy: "the assistant moving to a new thread",
 		}
@@ -188,7 +190,7 @@ func (c Cause) Answer(text string) string {
 		return text
 	}
 	shown := c.render(text)
-	return shown.reason + shown.answer
+	return shown.reason + shown.sentence + shown.answer
 }
 
 // WakePersonStopped is the status of a request whose turn the user's Stop

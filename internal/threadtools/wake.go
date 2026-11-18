@@ -193,8 +193,8 @@ func (w Wake) status(b *spanBuilder, facts *MessageFacts) {
 		// answer, whole, and names no stopper.
 		shown := w.Cause.render(w.Text)
 		facts.StoppedBy = shown.stoppedBy
-		b.write(who + ": " + shown.reason)
-		w.writeAnswer(b, facts, shown.answer)
+		b.write(who + ": ")
+		w.writeShown(b, facts, shown)
 	case WakeExpired:
 		b.write(who + " did not answer within a day.")
 	case WakeReminder:
@@ -219,6 +219,14 @@ func (w Wake) writeAnswer(b *spanBuilder, facts *MessageFacts, text string) {
 	}
 }
 
+// writeShown writes a rendered cause: its reason and its own sentence
+// whole, and only the answer clipped to the preview.
+func (w Wake) writeShown(b *spanBuilder, facts *MessageFacts, shown shownCause) {
+	b.write(shown.reason)
+	b.writeBody(shown.sentence)
+	w.writeAnswer(b, facts, shown.answer)
+}
+
 // digest renders a wake that speaks for several threads: what happened to
 // each of them, one line naming each with its tokens (and, under it, that it
 // is a standing agent when it is one), then the text they share. The text is
@@ -228,11 +236,10 @@ func (w Wake) writeAnswer(b *spanBuilder, facts *MessageFacts, text string) {
 func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 	count := len(w.Sources)
 	var head string
-	text := w.Text
-	shared := text != ""
-	// reason is a shared cause's words said before the shared text, outside
-	// the preview the text is clipped to.
-	reason := ""
+	// shown is what follows the list when they share it: the text, or a
+	// shared cause in its words.
+	shown := shownCause{answer: w.Text}
+	shared := w.Text != ""
 	switch w.Kind {
 	case WakeReply:
 		head, shared = fmt.Sprintf("%d threads sent the same reply:", count), true
@@ -256,18 +263,19 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 		}
 		// Their shared cause in its words, or with no known cause their
 		// shared text, whole.
-		shown := w.Cause.render(w.Text)
-		facts.StoppedBy, text = shown.stoppedBy, shown.answer
-		if w.Cause.Code == CauseUserStop {
+		cause := w.Cause.render(w.Text)
+		facts.StoppedBy = cause.stoppedBy
+		switch {
+		case w.Cause.Code == CauseUserStop:
 			// The head says it for every thread.
-			head, shared = fmt.Sprintf("%d threads: %s", count, WakeDigestPersonStopped), text != ""
+			head, shown, shared = fmt.Sprintf("%d threads: %s", count, WakeDigestPersonStopped), shownCause{answer: cause.answer}, cause.answer != ""
 			if shared {
 				head += " Each one's last message:"
 			}
-			break
+		default:
+			head, shown = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count), cause
+			shared = cause.reason+cause.sentence+cause.answer != ""
 		}
-		head, reason = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count), shown.reason
-		shared = reason+text != ""
 	case WakeExpired:
 		head, shared = fmt.Sprintf("%d threads did not answer within a day.", count), false
 	default:
@@ -289,8 +297,8 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 		b.write("\n" + WakeMadeIn(w.MadeIn, w.Now))
 	}
 	if shared {
-		b.write("\n" + reason)
-		w.writeAnswer(b, facts, text)
+		b.write("\n")
+		w.writeShown(b, facts, shown)
 	}
 }
 
