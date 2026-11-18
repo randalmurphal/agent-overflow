@@ -15,14 +15,8 @@ func TestResetDiscardsEarlierPanePlacement(t *testing.T) {
 	if got := pair.source.readPeerAgentRows(t.Context(), spawn, 2); got.err != nil {
 		t.Fatal(got.err)
 	}
-	warns := func() bool {
-		deps, err := pair.source.GetDeleteDependents([]string{pair.caller.ID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return deps.RemoteWorkers
-	}
-	if warns() {
+
+	if remoteDeleteWarning(t, pair) {
 		t.Fatal("fixture did not cache standalone placement")
 	}
 	held, release := holdOwnerReply(t, &server.holdPane)
@@ -34,12 +28,21 @@ func TestResetDiscardsEarlierPanePlacement(t *testing.T) {
 	}
 	// Same-carrier reset, before recovery has read the changed link.
 	pair.source.invalidateOwnerTrees(pair.computer, nil)
-	if !warns() {
+	if !remoteDeleteWarning(t, pair) {
 		t.Fatal("reset did not start with a conservative delete warning")
 	}
 	release()
 	_ = within(t, "pane commit", done)
-	if !warns() {
+	if !remoteDeleteWarning(t, pair) {
 		t.Fatal("a pane reply that started before reset restored stale standalone placement and suppressed the delete warning")
 	}
+}
+
+func remoteDeleteWarning(t *testing.T, pair *reachPair) bool {
+	t.Helper()
+	deps, err := pair.source.GetDeleteDependents([]string{pair.caller.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return deps.RemoteWorkers
 }

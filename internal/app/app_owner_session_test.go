@@ -141,14 +141,8 @@ func TestOwnerResetRestoresConservativePlacementDuringRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	startReconciledOwner(t, pair)
-	offered := func() bool {
-		deps, err := pair.source.GetDeleteDependents([]string{pair.caller.ID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return deps.RemoteWorkers
-	}
-	if offered() {
+
+	if remoteDeleteWarning(t, pair) {
 		t.Fatal("standalone worker offered for deletion")
 	}
 	held, _ := holdOwnerReply(t, &server.holdPage)
@@ -158,7 +152,7 @@ func TestOwnerResetRestoresConservativePlacementDuringRecovery(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("reset did not reconcile")
 	}
-	if !offered() {
+	if !remoteDeleteWarning(t, pair) {
 		t.Fatal("old standalone placement suppressed the delete warning during recovery")
 	}
 }
@@ -209,7 +203,10 @@ func TestOwnerWaitNeverReachesAPeerWithoutV2(t *testing.T) {
 func TestReplacementCarrierOnSameLaunchReceivesAFreshCursor(t *testing.T) {
 	var server observedOwnerPeer
 	p := newReachPairServedBy(t, func(t *testing.T, a *App) *pairedBackend { return observeOwnerPeer(t, a, &server) })
-	remoteRestedWorker(t, p)
+	_, worker := remoteRestedWorker(t, p)
+	if _, err := p.dest.SetThreadPlacement([]string{worker}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
 	p.source.threadPollOverride = 50 * time.Millisecond
 	arrived, release := make(chan struct{}), make(chan struct{})
 	resume := sync.OnceFunc(func() { close(release) })
@@ -239,7 +236,13 @@ func TestReplacementCarrierOnSameLaunchReceivesAFreshCursor(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no incremental wait")
 	}
+	if remoteDeleteWarning(t, p) {
+		t.Fatal("standalone placement missing before replacement")
+	}
 	p.rePair(t)
+	if !remoteDeleteWarning(t, p) {
+		t.Fatal("replacement retained old standalone placement while the wait was paused")
+	}
 	first := make(chan OwnerCursor, 1)
 	observe := func(c OwnerCursor) {
 		select {
