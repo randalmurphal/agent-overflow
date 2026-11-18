@@ -72,9 +72,11 @@ func newReachPair(t *testing.T) *reachPair {
 
 // newReachPairServedBy is newReachPair with the destination's listener
 // built by the caller, which is how a test gives that computer a fault:
-// a reply that never comes back, or a call that never returns.
+// a reply that never comes back, or a call that never returns. A build
+// without remote access skips the test: the pair is two paired computers.
 func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *reachPair {
 	t.Helper()
+	remotetest.Require(t)
 
 	dest, destBus := setupE2EApp(t)
 	dest.configDir = t.TempDir()
