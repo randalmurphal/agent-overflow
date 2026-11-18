@@ -110,10 +110,12 @@ func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 	}
 }
 
-// An assistant's helper, with shared memory on, receives the user index
-// alone: the assistant's home and projects are the assistant's. Off, it
-// receives nothing.
-func TestAnAssistantsHelperReceivesTheUserMemory(t *testing.T) {
+// With shared memory off, the threads that work for an assistant receive
+// memory as any thread does with it on: a helper the user index alone, a
+// worker the assistant spawned and that worker's own worker their
+// project's index and the user's, none of them the assistant's home or
+// warnings. A thread no assistant is above receives none.
+func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
 	owner, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -128,28 +130,58 @@ func TestAnAssistantsHelperReceivesTheUserMemory(t *testing.T) {
 	if err := app.store.CreateThread(helper); err != nil {
 		t.Fatal(err)
 	}
-	helper, err = app.store.GetThread(helper.ID)
-	if err != nil || helper.HelperOfAgentID != row.ID {
-		t.Fatalf("helper = %+v, %v", helper, err)
+	thread := func() store.Thread {
+		t.Helper()
+		created, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
 	}
-	if _, ok, err := app.memoryPlan(helper, nil); ok || err != nil {
-		t.Fatalf("with shared memory off: ok %v, %v", ok, err)
+	worker, below, unowned := thread(), thread(), thread()
+	ownSpawn(t, app, "spawn-worker", owner.ID, worker.ID)
+	ownSpawn(t, app, "spawn-below", worker.ID, below.ID)
+	userDir := memory.UserDir(app.configDir)
+	for name, sub := range map[string]store.Thread{"helper": helper, "depth one": worker, "depth two": below} {
+		sub, err := app.store.GetThread(sub.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, ok, err := app.memoryPlan(sub, nil)
+		if err != nil || !ok || plan.Home != "" || plan.User != userDir {
+			t.Fatalf("%s: plan = %+v, %v, %v", name, plan, ok, err)
+		}
+		var projects []string
+		for _, project := range plan.Projects {
+			projects = append(projects, project.Path)
+		}
+		var want []string
+		if sub.ProjectPath != "" {
+			want = []string{sub.ProjectPath}
+		}
+		if !slices.Equal(projects, want) {
+			t.Fatalf("%s: projects %q, want %q", name, projects, want)
+		}
+		mem, err := app.readSessionMemory(sub, nil, false, false)
+		if err != nil || mem.Hook == nil || !slices.Contains(mem.Dirs, userDir) {
+			t.Fatalf("%s: session memory = %+v, %v", name, mem, err)
+		}
+		delivered := builtMemory(t, plan)
+		if !strings.Contains(delivered, "### User memory") || strings.Contains(delivered, "### Your memory") || strings.Contains(delivered, "### Memory maintenance") ||
+			strings.Contains(delivered, "### Project memory") != (len(want) == 1) {
+			t.Fatalf("%s: delivered:\n%s", name, delivered)
+		}
 	}
-	if _, err := app.settings.Update(map[string]any{"sharedMemoryEnabled": true}); err != nil {
-		t.Fatal(err)
+	if _, ok, err := app.memoryPlan(unowned, nil); ok || err != nil {
+		t.Fatalf("a thread no assistant is above: ok %v, %v", ok, err)
 	}
-	plan, ok, err := app.memoryPlan(helper, nil)
-	if err != nil || !ok || plan.Home != "" || len(plan.Projects) != 0 || plan.User != memory.UserDir(app.configDir) {
-		t.Fatalf("plan = %+v, %v, %v", plan, ok, err)
-	}
-	mem, err := app.readSessionMemory(helper, nil, false, false)
-	if err != nil || mem.Hook == nil || !slices.Equal(mem.Dirs, []string{plan.User}) {
-		t.Fatalf("session memory = %+v, %v", mem, err)
-	}
+}
+
+// builtMemory is plan's whole delivery as one text.
+func builtMemory(t *testing.T, plan memory.Plan) string {
+	t.Helper()
 	delivered, _ := memory.Build(plan, time.Now())
-	if !strings.Contains(delivered, "### User memory") || strings.Contains(delivered, "### Project memory") || strings.Contains(delivered, "### Your memory") {
-		t.Fatalf("delivered:\n%s", delivered)
-	}
+	return delivered
 }
 
 // The status reads the provider home the sessions use, and the variable as

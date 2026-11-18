@@ -79,8 +79,10 @@ func sizeProblems(text string) []memoryProblem {
 
 // memoryPlan is the delivery threadID's sessions receive; ok is false for
 // none. An assistant's current thread always receives one, with its home
-// and the projects it serves; any other thread only while shared memory is
-// on, with its project's memory when it has a project.
+// and the projects it serves. Any other thread receives its project's
+// memory when it has a project, and the user's: always when it works for
+// an assistant (a helper, or a worker below one, store.WorksForAssistant),
+// otherwise only while shared memory is on.
 func (a *App) memoryPlan(thread store.Thread, agent *store.StandingAgent) (_ memory.Plan, ok bool, _ error) {
 	if a.configDir == "" {
 		return memory.Plan{}, false, nil
@@ -90,6 +92,12 @@ func (a *App) memoryPlan(thread store.Thread, agent *store.StandingAgent) (_ mem
 		return memory.Plan{}, false, err
 	}
 	plan := memory.Plan{User: memory.UserDir(a.configDir), Records: records}
+	if agent == nil && !a.currentSettings().SharedMemoryEnabled {
+		works, err := a.store.WorksForAssistant(thread.ID)
+		if err != nil || !works {
+			return memory.Plan{}, false, err
+		}
+	}
 	var projects []store.Project
 	switch {
 	case agent != nil:
@@ -99,8 +107,6 @@ func (a *App) memoryPlan(thread store.Thread, agent *store.StandingAgent) (_ mem
 			return memory.Plan{}, false, err
 		}
 		projects = served
-	case !a.currentSettings().SharedMemoryEnabled:
-		return memory.Plan{}, false, nil
 	case thread.ProjectID != "":
 		project, err := a.store.GetProject(thread.ProjectID)
 		if err != nil {

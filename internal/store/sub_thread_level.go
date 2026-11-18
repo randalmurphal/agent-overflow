@@ -89,3 +89,21 @@ func (s *Store) DelegationChain(threadID string) ([]string, error) {
 	}
 	return chain, nil
 }
+
+// WorksForAssistant reports whether threadID works for an assistant on this
+// computer: it is an assistant's current thread or helper, or its delegation
+// chain (SubThreadLevel's walk) reaches one. A worker an assistant spawned,
+// directly or through its own workers at any depth, works for it; a thread
+// with a sidebar row starts its own chain and does not.
+func (s *Store) WorksForAssistant(threadID string) (bool, error) {
+	var works bool
+	err := s.reader().QueryRow(delegationWalkSQL+`
+		SELECT EXISTS (SELECT 1 FROM up
+		                WHERE up.id IN (SELECT thread_id FROM agents)
+		                   OR up.id IN (SELECT thread_id FROM agent_helpers))`,
+		threadID, subThreadLevelWalk).Scan(&works)
+	if err != nil {
+		return false, fmt.Errorf("store: read whether %s works for an assistant: %w", threadID, err)
+	}
+	return works, nil
+}

@@ -1736,7 +1736,8 @@ hidden thread's, raised only where `notifyHiddenThreads` is on.
 folder, wake registration, draft and unread state is untouched. An
 assistant's home memory is neither read nor written while it is
 paused. Project and user memory ([memory](memory.md)) are not affected:
-threads that read them with shared memory on still do, and nobody
+threads that read them, with shared memory on or working for an
+assistant, still do, and nobody
 receives the maintenance warnings, which only assistants get.
 
 ### Attention

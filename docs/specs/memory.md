@@ -39,7 +39,8 @@ Rulings of 2026-10-21. Each is binding until the user changes it.
    them with their own file tools; nothing commits.
 7. **Shared memory is a setting.** Ordinary threads receive project and
    user memory only when the user turns on shared memory, off by
-   default. Standing agents always receive it.
+   default. Standing agents, and the threads that work for them, always
+   receive it.
 8. **Provider memory is the user's.** The app leaves Claude's and
    Codex's own memory as the user configured it, and offers a setting
    per provider to turn it off in the app's sessions.
@@ -56,8 +57,18 @@ Rulings of 2026-10-21. Each is binding until the user changes it.
 | Scope | Folder | Holds | Read by | Written by |
 |---|---|---|---|---|
 | Home | `<configDir>/agents/<agent-id>/memory/` | Facts about the assistant's role and work | That assistant | That assistant |
-| Project | `<configDir>/memory/projects/<key>/` | Facts true of the project whoever learned them | Assistants assigned to the project; every thread in it when shared memory is on | The same sessions |
-| User | `<configDir>/memory/user/` | How the user decides, across projects. Small | Every assistant; every thread when shared memory is on | The same sessions |
+| Project | `<configDir>/memory/projects/<key>/` | Facts true of the project whoever learned them | Assistants assigned to the project; every thread in it that works for an assistant, and every one when shared memory is on | The same sessions |
+| User | `<configDir>/memory/user/` | How the user decides, across projects. Small | Every assistant and every thread that works for one; every thread when shared memory is on | The same sessions |
+
+A thread works for an assistant when it is one of the assistant's
+helpers or its delegation chain on this computer reaches the
+assistant's thread or a helper: a worker the assistant spawned, directly
+or through its own workers at any depth, while each is owned
+(`store.WorksForAssistant`, the walk of
+[sub-thread levels](agent-thread-tools.md#sub-thread-depth)). A thread
+with a sidebar row starts its own chain. A worker a paired computer's
+assistant owns does not work for one here: it receives memory only while
+shared memory is on on its own computer.
 
 **Project key.** The project's path relative to the user's home
 directory with every `/` written as `--`; other characters stay as
@@ -269,9 +280,9 @@ What a session receives, in order, the most important first:
 | Session | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|
 | Assistant | yes | yes | its projects | yes | yes | its home, its projects, user |
-| Thread in a project, shared memory on | no | no | its project | yes | yes | no |
-| Assistant's helper, shared memory on | no | no | no | yes | yes | no |
-| Any thread, shared memory off | no hook | | | | | |
+| Thread in a project that works for an assistant, or with shared memory on | no | no | its project | yes | yes | no |
+| Thread outside every project (an assistant's helper) that works for an assistant, or with shared memory on | no | no | no | yes | yes | no |
+| Any other thread, shared memory off | no hook | | | | | |
 
 **Size.** Nothing is cut. Both providers save a hook's output past
 10,000 units (Claude counts UTF-16 units, Codex bytes) to a file and
@@ -348,7 +359,7 @@ still indexed for the threads that read them.
 
 | Setting | Default | Effect |
 |---|---|---|
-| Shared memory | off | Ordinary threads receive project and user memory and may write it |
+| Shared memory | off | Ordinary threads receive project and user memory and may write it; the threads that work for an assistant do either way |
 | Claude memory off | off | The app's Claude and claude-tui sessions send `autoMemoryEnabled: false` and, in the same inline `--settings` block's `env`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, which outranks the inherited environment and the user's settings; the user's settings files are never touched |
 | Codex memory off | off | The app's Codex threads send `features.memories = false` and `memories.generate_memories = false` in their thread config, and a resumed thread's stored memory mode is set to `disabled` (`thread/memoryMode/set`), so the thread neither uses memories nor is mined for them |
 
@@ -392,8 +403,10 @@ delivers, nothing when nothing changed, and the whole memory without a
 record; the records and every path that deletes them; the write rules
 naming only writable scopes and left out in read-only mode; the project
 list; warnings for
-assistants only; shared memory on and off, and a helper's user-only
-delivery; the writable folders, refused links and clashes, and the
+assistants only; shared memory on and off, a helper's user-only
+delivery, and with shared memory off the delivery of an assistant's
+workers at depth one and two and none for a thread no assistant is
+above; the writable folders, refused links and clashes, and the
 native-memory settings on Claude, claude-tui and Codex, including
 the resumed Codex thread's memory mode; the native-memory status, its
 `env` layers and its warning.
