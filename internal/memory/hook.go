@@ -187,18 +187,25 @@ func runHookAt(args []string, stdin io.Reader, stdout, stderr io.Writer, now tim
 		if err != nil {
 			report.printf("%v; the whole memory is delivered\n", err)
 		}
-		if prior != nil {
-			before := prior.Sections
-			for _, gone := range absent {
-				record, err := readRecord(plan.Records, session.SessionID, gone)
-				if err != nil {
-					report.printf("%v\n", err)
-				}
-				if record != nil {
-					before = append(before, record.Sections...)
-				}
+		// The sections of a part the plan no longer has are named as gone
+		// whether or not this part has a record: with none, its own
+		// sections are shown whole beside them.
+		var gone []section
+		for _, absentPart := range absent {
+			record, err := readRecord(plan.Records, session.SessionID, absentPart)
+			if err != nil {
+				report.printf("%v\n", err)
 			}
-			if context = changes(before, sections); context == "" {
+			if record != nil {
+				gone = append(gone, record.Sections...)
+			}
+		}
+		if prior != nil || len(gone) > 0 {
+			var before []section
+			if prior != nil {
+				before = prior.Sections
+			}
+			if context = changes(append(before, gone...), sections); context == "" {
 				return 0
 			}
 		}

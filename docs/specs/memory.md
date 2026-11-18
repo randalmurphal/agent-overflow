@@ -209,8 +209,9 @@ in the order below, for two events:
   and escaped as the lines are; a section that is gone
   says so. The user part also names as gone the sections of a part the
   session received and the plan no longer has, such as an assistant's
-  project index once it serves no project. With no record of what the
-  session received of a part, the prompt delivers that part whole.
+  project index once it serves no project, whether or not the user part
+  has a record of its own. With no record of what the session received
+  of a part, the prompt delivers that part whole.
 
 The parts, in delivery order, follow from the plan alone, so a change in
 the folders never adds or removes one:
@@ -233,13 +234,16 @@ A resume runs no SessionStart hook: the resumed history carries what
 earlier runs delivered, and its first prompt delivers what changed
 since. Each run records what it delivered, one file per provider
 session and part in `<configDir>/memory-records/<thread id>/`, named by
-a hash of the session id and the part, so a provider that runs the
+a hash of the session id followed by the part, so a provider that runs the
 parts at once never writes one file twice; the run prints before it
 writes, so a record it could not write sends the change again rather
 than losing it. A thread's records share no state with another
-thread's, and no run reads another session's record. A record, or a temporary file a failed write left,
-that nothing wrote for 30 days is deleted at the next write; any other
-file in the folder is left alone.
+thread's, and no run reads another session's record. A session's
+records live and die together: once no run has written any of them for
+30 days, the next write deletes them all, so a long-lived session keeps
+the record of a part that has not changed. A temporary file a failed
+write left is deleted once it is 30 days old; any other file in the
+folder is left alone.
 
 The app deletes a thread's records whenever its model may have lost what
 they say it holds and the hook would not deliver it again first, so the

@@ -43,8 +43,8 @@ const (
 	// maxRecordBytes bounds a record a run reads; a larger one is no
 	// record, and the run delivers the whole memory.
 	maxRecordBytes = 4 << 20
-	// recordAge is how long a record no run wrote stays: a session a
-	// rollback or a fork left behind, or a subagent's.
+	// recordAge is how long a session's records stay after the last run
+	// that wrote any of them: a session a rollback or a fork left behind.
 	recordAge = 30 * 24 * time.Hour
 )
 
@@ -218,15 +218,17 @@ type record struct {
 }
 
 // recordName is the file of the record of session's part in a records
-// folder: the session id is the provider's, so the name is a hash.
+// folder: a hash of the session id, which is the provider's, then the part,
+// so a session's records are told apart from another's by name.
 func recordName(session string, part Part) string {
-	sum := sha256.Sum256([]byte(session + "\x00" + string(part)))
-	return hex.EncodeToString(sum[:16]) + ".json"
+	sum := sha256.Sum256([]byte(session))
+	return hex.EncodeToString(sum[:16]) + "-" + string(part) + ".json"
 }
 
-// recordFile matches the name of a record, and of the temporary file a
-// write of one leaves when it fails between writing and renaming.
-var recordFile = regexp.MustCompile(`^[0-9a-f]{32}\.json(\.[0-9A-Za-z]+\.tmp)?$`)
+// recordFile matches the name of a record, its session's hash the first
+// group, and of the temporary file a write of one leaves when it fails
+// between writing and renaming, the second group.
+var recordFile = regexp.MustCompile(`^([0-9a-f]{32})-[a-z]+\.json(\.[0-9A-Za-z]+\.tmp)?$`)
 
 // readRecord is the record of session's part in dir, nil when there is
 // none.
@@ -265,9 +267,9 @@ func readRecord(dir, session string, part Part) (_ *record, err error) {
 }
 
 // writeRecord replaces the record of session's part in dir with sections,
-// and deletes the records no run wrote for recordAge as of now. A record
-// another part's run writes meanwhile is a file of its own; pruning one
-// only makes its next prompt deliver the part whole.
+// and deletes the records of the sessions no run wrote for recordAge as of
+// now (pruneRecords). A record another part's run writes meanwhile is a
+// file of its own.
 func writeRecord(dir, session string, part Part, sections []section, now time.Time) (err error) {
 	data, err := json.Marshal(record{Session: session, Part: part, Sections: sections})
 	if err != nil {
@@ -289,13 +291,16 @@ func writeRecord(dir, session string, part Part, sections []section, now time.Ti
 	if err := root.Rename(temp, name); err != nil {
 		return errors.Join(fmt.Errorf("replace the memory record of session %s: %w", session, err), removeIfThere(root, temp))
 	}
-	return pruneRecords(root, name, now)
+	return pruneRecords(root, now)
 }
 
-// pruneRecords deletes the records and left temporary files in root other
-// than keep that nothing wrote for recordAge as of now. Any other file is
-// not the app's, and stays.
-func pruneRecords(root *os.Root, keep string, now time.Time) (err error) {
+// pruneRecords deletes from root the records of each session none of whose
+// records a run wrote for recordAge as of now, all of them together: a
+// session's records live and die together, so a long-lived session keeps
+// the record of a part that has not changed. A temporary file a failed
+// write left goes once it is recordAge old. Any other file is not the
+// app's, and stays.
+func pruneRecords(root *os.Root, now time.Time) (err error) {
 	folder, err := root.Open(".")
 	if err != nil {
 		return fmt.Errorf("list the memory records: %w", err)
@@ -306,8 +311,11 @@ func pruneRecords(root *os.Root, keep string, now time.Time) (err error) {
 		return fmt.Errorf("list the memory records: %w", err)
 	}
 	var errs []error
+	newest := map[string]time.Time{}
+	sessions := map[string][]string{}
 	for _, e := range entries {
-		if e.Name() == keep || !e.Type().IsRegular() || !recordFile.MatchString(e.Name()) {
+		match := recordFile.FindStringSubmatch(e.Name())
+		if match == nil || !e.Type().IsRegular() {
 			continue
 		}
 		info, err := e.Info()
@@ -318,8 +326,23 @@ func pruneRecords(root *os.Root, keep string, now time.Time) (err error) {
 			errs = append(errs, err)
 			continue
 		}
-		if now.Sub(info.ModTime()) > recordAge {
-			errs = append(errs, removeIfThere(root, e.Name()))
+		if match[2] != "" {
+			if now.Sub(info.ModTime()) > recordAge {
+				errs = append(errs, removeIfThere(root, e.Name()))
+			}
+			continue
+		}
+		sessions[match[1]] = append(sessions[match[1]], e.Name())
+		if info.ModTime().After(newest[match[1]]) {
+			newest[match[1]] = info.ModTime()
+		}
+	}
+	for session, names := range sessions {
+		if now.Sub(newest[session]) <= recordAge {
+			continue
+		}
+		for _, name := range names {
+			errs = append(errs, removeIfThere(root, name))
 		}
 	}
 	return errors.Join(errs...)

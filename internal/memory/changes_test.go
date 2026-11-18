@@ -160,6 +160,21 @@ func TestWholeSectionsAndGoneOnes(t *testing.T) {
 	if got := run.run(AtPrompt); got != "" {
 		t.Fatalf("the gone sections were named again:\n%s", got)
 	}
+
+	// A part the plan no longer has is named as gone even when the user
+	// part, which speaks for it, has no record to compare with: its own
+	// sections are then shown whole beside the notice.
+	run.plan.Projects = s.plan.Projects
+	run.run(AtSessionStart)
+	if err := os.Remove(filepath.Join(run.plan.Records, recordName(run.id, PartUser))); err != nil {
+		t.Fatal(err)
+	}
+	run.plan.Projects = nil
+	body = changesBody(t, run.run(AtPrompt))
+	if !strings.Contains(body, "### Project memory: app ("+folderShown(s.project)+")\n[This is no longer part of your memory.]") ||
+		!strings.Contains(body, "### User memory (") {
+		t.Fatalf("without the user part's record:\n%s", body)
+	}
 }
 
 // A section whose heading or notices change is sent whole, as is a section
@@ -263,8 +278,9 @@ func TestARunWithoutASessionRecordsNothing(t *testing.T) {
 	}
 }
 
-// Writing a record deletes the records no run wrote for recordAge, and
-// keeps the rest.
+// Writing a record deletes the records of each session no run wrote any
+// of for recordAge, all of them, and keeps every record of a session one of
+// whose records is younger, however old the others.
 func TestOldRecordsArePruned(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
@@ -277,8 +293,13 @@ func TestOldRecordsArePruned(t *testing.T) {
 	other.run(AtSessionStart)
 	old := day.Add(-recordAge - time.Hour)
 	for _, part := range s.plan.Parts() {
-		if err := os.Chtimes(filepath.Join(run.plan.Records, recordName("s3", part)), old, old); err != nil {
-			t.Fatal(err)
+		for _, id := range []string{"s3", "s2"} {
+			if id == "s2" && part == PartProject {
+				continue
+			}
+			if err := os.Chtimes(filepath.Join(run.plan.Records, recordName(id, part)), old, old); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	// A temporary file a failed write left is pruned as a record is; a file
