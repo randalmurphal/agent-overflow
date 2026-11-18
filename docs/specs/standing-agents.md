@@ -916,12 +916,15 @@ Ruling 36, as built:
   the session's prompts, and a Codex async question not yet answered or
   dismissed, which reads `blocked` while nothing else runs or is queued,
   as `thread_status` reads it awaiting input), no running background work
-  (`runningBackgroundWorkForThread`: Claude tasks and background agents,
-  Codex subagents and terminals, remote commands), no armed loop or watch
-  (`agent_wakes`), no reminder that has not fired, no workflow run that
-  reports to it running or owing it its report (from the run's rest until
-  that rest's wake job ends, whatever it did with the report:
-  `workflowapp.Service.OwedReports`), no answer on its way to it (a request it made
+  (Claude tasks and background agents and remote commands, which the
+  store holds, and Codex subagents and terminals, which triage holds), no
+  armed loop or watch (`agent_wakes`), no reminder that has not fired, no
+  workflow run that reports to it running or owing it its report (the
+  workflow service holds that obligation by thread, from the run's running
+  event, the engine's start for a run already running, or the binding of a
+  running run, until its last rest's wake job ends, whatever it did with
+  the report: `workflowapp.Service.ReportOwedTo`; a running run is also
+  read from the store), no answer on its way to it (a request it made
   settled with its answer owed as a message, not yet echoed by the turn
   that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
@@ -946,20 +949,33 @@ Ruling 36, as built:
   `workerUnrest` applies, and none has open work outstanding: a request
   it made that is open, a remote spawn its computer last listed open work
   under (`nested_open`), or a send or ask of it a tool call is parked on.
-  The durable sources of those threads are read in one snapshot, walked
-  from the thread by spawn link (`ReadSubtreeRest`), and their background
-  work and memory sources per thread, so the read costs the subtree and
-  nothing of the computer's other threads, requests, parked calls or
-  workflow runs. It reads neither the memory record (`liveWorkers`) nor
-  the counts below, and writes neither. Every owner of a source signals
-  each change after its write, and the decision is written only when no
-  change to a thread it read was signalled since the read began
-  (`restRead.stillAtRest`), compared under the request's settle lock for
-  a settlement and inside the sweep's write transaction for retention; a
-  change elsewhere does not stop it. A settlement the compare stops waits
-  for the pass the change asks for. A read that fails holds the request,
-  is logged, and is read again by each pass of the request sweep, with no
-  new event, until it reads or the request settles another way; the sweep
+  `threadRest` serves status; these two decisions read neither it, the
+  memory record (`liveWorkers`) nor the counts below, and write neither.
+  The decision reads first (`readRest`): the subtree, walked from the
+  thread by spawn link, and its durable sources in one snapshot
+  (`ReadSubtreeRest`); then it notes each reached thread's revision; then
+  what memory holds of each reached thread (its turn, queued messages,
+  prompts, provider timers, parked calls, Codex background work and
+  workflow obligations). The write carries that rest as its precondition
+  (`store.RestGuard`): inside its own transaction, on that transaction's
+  connection, the store reads the subtree and its durable sources again,
+  and the write happens only if every thread reached then was reached by
+  the first read, reads at rest by its durable sources with no open work,
+  has no open send or ask the first read did not check for a parked call,
+  and kept its revision. Each owner of a memory source bumps the thread's
+  revision after its change (`noteThreadRestChange`); the revision record
+  keeps a thread only while a decision watches it, and the check inside
+  the write takes no other lock and no store connection. A durable change
+  is so either read inside the write or ordered after it, and a memory
+  change either read by the first read or caught by its revision; only
+  memory admitted between the comparison and the commit is outside both.
+  A change to a thread the decision did not reach does not stop it, and
+  the rows the reads examine and the threads watched do not depend on the
+  computer's other threads, requests, parked calls, workflow runs or owed
+  reports. A decision the write stops waits for the pass the change asks
+  for. A read that fails holds the request, is logged, and wakes the
+  request sweep, which reads it again within the retry delay, with no new
+  event, until it reads or the request settles another way; the sweep
   leaves whole each spawn it could not read at rest and reads it again on
   its next pass. Otherwise the memory record and the counts below only
   draw rows, frames, summaries and Stop All's selection, which the next
@@ -971,8 +987,8 @@ Ruling 36, as built:
   prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
   and its background tray, wake, question, request and workflow frames,
   a workflow run's binding, which names the thread it left and the one
-  it reports to now, both re-evaluated, a workflow run's owed report
-  ending, and its session's end (`noteWorkerWaiting`,
+  it reports to now, both re-evaluated, a workflow run's obligation
+  changing, and its session's end (`noteWorkerWaiting`,
   which reads its durable sources again: its unanswered questions, the
   answers on their way to it, the background inventory, its workflow
   runs, its loops and watches, and its reminders). A changed request

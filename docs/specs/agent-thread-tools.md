@@ -1404,8 +1404,8 @@ What settles a request, in order:
    a pass reads each held thread's rest itself, from facts complete when
    it reads them, a thread's durable sources before its memory ones, so
    an answer on its way to a thread keeps it from rest until the turn it
-   starts is open, and a workflow run's report from its rest until its
-   wake has been handed over. The
+   starts is open, and a workflow run's report from its rest until that
+   rest's wake job ends. The
    Stop of the thread, the person's or the spawner's `thread_cancel` by
    thread id, and an explicit `thread_reply` settle it as before. A
    boot holds again a running receipt whose turn ended as it would
@@ -1415,8 +1415,9 @@ What settles a request, in order:
    boot has recorded every thread a recovered source keeps from rest
    (`recoverRestAtBoot`), a pass asked for meanwhile waiting for it. A
    source or thread the recovery could not read, and a held request's
-   read of rest that failed, are read again by each pass of the request
-   sweep until they succeed. A paired computer that
+   read of rest that failed, which wakes the request sweep, are read
+   again within the retry delay by each pass of the sweep until they
+   succeed. A paired computer that
    settles at rest says so in the poll's answer (`restRule`); one that
    does not settles such a request when its turn ends, and its
    `finished` answer is recorded `rest_unreported`, which

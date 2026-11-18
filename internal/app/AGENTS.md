@@ -171,11 +171,14 @@ fire tries it again. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
 worker's queue. A decision on rest that cannot be taken back, a held
 request settling `finished` (`heldThreadAtRest`) or the retention sweep
-clearing a spawn (`restedSpawnsPastFloor`), reads its subtree's own
-sources (`readRest`, `app_thread_rest_assess.go`) and writes only if no
-change to a thread it read was signalled since. An owner of a rest source
-signals each change after its write through the rest change notes, which
-the Agents rows' notes raise; a new source needs its note.
+clearing a spawn (`sweepThreadRequestsBefore`), reads its subtree's own
+sources (`readRest`, `app_thread_rest_assess.go`) and passes the store
+write its guard (`restDecision.guard`), which reads the durable sources
+again inside the write's transaction and compares each reached thread's
+revision. An owner of a source memory holds bumps the thread's revision
+after each change (`noteThreadRestChange`); a new memory source needs its
+bump, and nothing the guard calls may take a store connection or an
+owner's lock.
 `liveWorkers` and the `open_below_*` marks only draw rows, frames,
 summaries and Stop All's selection.
 

@@ -13,7 +13,7 @@ import (
 // (docs/specs/standing-agents.md, "Owned workers"): what a thread's own
 // sources hold that starts a turn there without a person, and the open
 // work it has outstanding below it. The app applies the rule to them
-// (durableUnrest); a decision that cannot be taken back reads them for a
+// (restWaits); a decision that cannot be taken back reads them for a
 // whole subtree, once before its write and again inside the write's own
 // transaction (RestGuard).
 

@@ -322,7 +322,8 @@ func (a *App) workerTimerUnrest(threadID string) workerRest {
 //   - triage's sources and the timers are memory;
 //   - the spawn link is recorded, or up to two searches for a thread not
 //     recorded, or recorded with none and read with durable (workerLinkOf);
-//   - with durable, for a spawned thread only, workerWaits's reads.
+//   - with durable, for a spawned thread only, one read of its sources
+//     (workerWaits).
 //
 // It reports whether the thread is a worker, one a spawn made, now
 // or as last recorded, so a change on either side is framed. A failed read
