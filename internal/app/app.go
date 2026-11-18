@@ -832,7 +832,8 @@ type App struct {
 	// threadAgentDrainForTest, when set, runs in the Agents rows' drain
 	// before it takes each batch (drainThreadAgentEmits), so a test can hold
 	// what liveWorkers records behind a change.
-	threadAgentDrainForTest func()
+	threadAgentDrainForTest     func()
+	beforeWorkerReassessForTest func(string)
 	// beforeOwnerWaitForTest holds the boundary between applying a cursor and checking out its next connection.
 	beforeOwnerWaitForTest func(context.Context, OwnerCursor)
 	// restReadForTest, when set, runs in a read of rest a decision acts on

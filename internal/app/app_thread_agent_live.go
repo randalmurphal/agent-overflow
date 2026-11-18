@@ -336,6 +336,9 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 		return false, nil
 	}
 	w := &a.liveWorkers
+	if hook := a.beforeWorkerReassessForTest; hook != nil {
+		hook(threadID)
+	}
 	w.reassess.Lock()
 	defer w.reassess.Unlock()
 	w.mu.Lock()

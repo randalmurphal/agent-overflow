@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"maps"
 	"slices"
@@ -193,97 +195,86 @@ func (a *App) drainThreadAgentEmits() {
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
 		e.mu.Unlock()
-		for _, threadID := range a.durableRestChanges(callers, runs) {
-			liveness[threadID] = true
-		}
-		if a.ownerActivity.watching() {
-			changedThreads := slices.Collect(maps.Keys(liveness))
-			changedThreads = append(changedThreads, slices.Collect(maps.Keys(targets))...)
-			changedThreads = append(changedThreads, slices.Collect(maps.Keys(callers))...)
-			owners, err := a.store.ActivityOwners(slices.Collect(maps.Keys(tokens)), changedThreads)
-			if err != nil {
-				a.ownerActivity.reset()
-				log.Printf("agent rows: reset peer cursors after owner lookup failed: %v", err)
-			}
-			for _, owner := range owners {
-				a.ownerActivity.note(owner.Device, owner.Token, false)
-			}
-		}
-		for threadID := range targets {
-			if !a.threadAgentFollows(threadID) {
-				delete(targets, threadID)
-			}
-		}
-		for threadID, durable := range liveness {
-			worker, err := a.reassessWorker(threadID, durable)
-			if err != nil {
-				// Framed anyway: a frame that names nothing costs a read.
-				log.Printf("agent rows: reassess thread %s: %v", threadID, err)
-			}
-			if worker || a.threadAgentFollows(threadID) {
-				targets[threadID] = struct{}{}
-			}
-		}
-		if len(liveness)+len(tokens)+len(callers) > 0 {
-			// A thread's rest, or the work below one, may have changed.
-			a.noteRestWaitsMayChange()
-		}
-		projectionOnly := len(tokens)+len(targets)+len(callers)+len(liveness)+len(runs) == 0
-		for thread := range projections {
-			callers[thread] = struct{}{}
-		}
-		if len(tokens)+len(callers)+len(targets) == 0 {
-			continue
-		}
-		// One statement names every frame: each changed request's caller,
-		// and each thread up to the listing's depth above it, whose listing
-		// and worker summary change with it.
-		frames, rest, err := a.store.ThreadAgentRowFrames(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)),
-			slices.Collect(maps.Keys(callers)), threadReceiptLocalOwner, threadAgentRowDepth)
-		if err != nil {
-			// The workers among the changed requests' callers keep what
-			// they last said until their next change.
-			log.Printf("agent rows: name the frames of %d changed requests, %d targets and %d callers: %v", len(tokens), len(targets), len(callers), err)
-			// The callers are known without the read; their readers read
-			// their lists again.
-			for caller := range callers {
-				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: caller})
-			}
-			continue
-		}
-		for _, frame := range frames {
-			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
-		}
-		// A worker whose request changed may have an answer on its way, or
-		// no longer: the next pass reassesses it, framing it if it moved.
-		if projectionOnly {
-			continue
-		}
-		for _, threadID := range rest {
-			a.noteWorkerWaiting(threadID)
-		}
+		a.publishThreadAgentChanges(tokens, callers, targets, liveness, runs, projections)
 	}
 }
 
-// durableRestChanges names the threads whose durable sources of rest the
-// drained changes may have changed without a request's caller frame naming
-// them (ThreadAgentRowFrames names those): each caller named, whose wakes
-// were disarmed or moved, and the thread each changed workflow run reports
-// to. A read that fails is logged: its thread keeps what it last said
-// until its next change.
-func (a *App) durableRestChanges(callers, runs map[string]struct{}) []string {
-	out := slices.Collect(maps.Keys(callers))
-	for itemID := range runs {
-		origin, err := a.store.WorkItemOriginThread(itemID)
+// Publish owner activity after every liveness projection used by a peer read is current.
+// Peer receipts can follow a thread even when it has no local Agents row.
+func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]struct{}, liveness map[string]bool, runs, projections map[string]struct{}) {
+	var failed error
+	for item := range runs {
+		origin, err := a.store.WorkItemOriginThread(item)
 		if err != nil {
-			log.Printf("agent rows: read the thread workflow run %s reports to: %v", itemID, err)
-			continue
-		}
-		if origin != "" {
-			out = append(out, origin)
+			failed = errors.Join(failed, err)
+		} else if origin != "" {
+			liveness[origin] = true
 		}
 	}
-	return out
+	for caller := range callers {
+		liveness[caller] = true
+	}
+	frameTargets := make(map[string]struct{}, len(targets))
+	for thread := range targets {
+		if a.threadAgentFollows(thread) {
+			frameTargets[thread] = struct{}{}
+		}
+	}
+	reassess := func(thread string, durable bool) bool {
+		worker, err := a.reassessWorker(thread, durable)
+		if err != nil {
+			failed = errors.Join(failed, fmt.Errorf("reassess %s: %w", thread, err))
+		}
+		return worker || a.threadAgentFollows(thread)
+	}
+	for thread, durable := range liveness {
+		if reassess(thread, durable) {
+			frameTargets[thread] = struct{}{}
+		}
+	}
+	changedTokens := slices.Collect(maps.Keys(tokens))
+	frameCallers := slices.Collect(maps.Keys(callers))
+	frameCallers = append(frameCallers, slices.Collect(maps.Keys(projections))...)
+	if len(tokens)+len(frameCallers)+len(frameTargets) > 0 {
+		frames, rest, err := a.store.ThreadAgentRowFrames(changedTokens, slices.Collect(maps.Keys(frameTargets)), frameCallers, threadReceiptLocalOwner, threadAgentRowDepth)
+		if err != nil {
+			failed = errors.Join(failed, err)
+			for _, caller := range frameCallers {
+				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: caller})
+			}
+		} else {
+			for _, thread := range rest {
+				if !liveness[thread] {
+					reassess(thread, true)
+				}
+				liveness[thread] = true
+			}
+			for _, frame := range frames {
+				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
+			}
+		}
+	}
+	if len(liveness)+len(tokens)+len(callers) > 0 {
+		a.noteRestWaitsMayChange()
+	}
+	if failed != nil {
+		a.ownerActivity.reset()
+		log.Printf("agent rows: reset peer cursors after projection failed: %v", failed)
+		return
+	}
+	if a.ownerActivity.watching() {
+		changedThreads := slices.Collect(maps.Keys(targets))
+		changedThreads = append(changedThreads, slices.Collect(maps.Keys(liveness))...)
+		owners, err := a.store.ActivityOwners(changedTokens, changedThreads)
+		if err != nil {
+			a.ownerActivity.reset()
+			log.Printf("agent rows: reset peer cursors after owner lookup failed: %v", err)
+			return
+		}
+		for _, owner := range owners {
+			a.ownerActivity.note(owner.Device, owner.Token, false)
+		}
+	}
 }
 
 // tapThreadAgentRows is the emit tap: any thread's turn, prompt or session
