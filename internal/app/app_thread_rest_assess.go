@@ -5,6 +5,7 @@ import (
 	"maps"
 	"sync"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/store"
 )
 
@@ -262,6 +263,9 @@ func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []st
 	}
 	if rest == nil {
 		rest = &store.RestGuard{}
+	}
+	if !buildvariant.RemoteAccess || a.backends == nil {
+		return a.store.DeleteThreadRequestsBefore(floor, rest)
 	}
 	// There is no peer to reconcile after an explicit unpair. Its historical
 	// rows still identify the surviving worker until ordinary retention.

@@ -4,6 +4,9 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
+
+	"agent-overflow/internal/store"
 )
 
 func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
@@ -147,5 +150,22 @@ func TestPromptWithdrawalRetriesItsDurableQueueDelete(t *testing.T) {
 	}
 	if got := remoteWakes(t, p.source, p.caller.ID); len(got) != 0 {
 		t.Fatalf("retry left prompt wakes: %v", got)
+	}
+}
+
+func TestRetentionWithoutPairingProfilesKeepsTheRemoteWorkerAnswer(t *testing.T) {
+	f := newRequestFixture(t)
+	request := store.ThreadRequest{Token: "resting", CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetComputerID: "desk", TargetThreadID: "worker", State: store.ThreadRequestRunning}
+	if err := f.app.store.InsertThreadRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	f.settleRemote(t, request.Token, time.UnixMilli(1), time.UnixMilli(2))
+	if _, _, err := f.app.sweepThreadRequestsBefore(3); err != nil {
+		t.Fatal(err)
+	}
+	row, found, err := f.app.store.GetThreadRequest(request.Token)
+	if err != nil || !found || string(row.Answer) != "the build is green" {
+		t.Fatalf("without pairing profiles a settled worker lost its answer: found %v, answer %q, %v", found, row.Answer, err)
 	}
 }
