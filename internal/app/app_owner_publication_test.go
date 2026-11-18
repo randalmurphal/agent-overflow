@@ -51,11 +51,25 @@ func TestOwnerSeesNestedLoopOnlyAfterStateCanServeIt(t *testing.T) {
 	armLoop(t, pair.dest, child.ID)
 	within(t, "loop reassessment", entered)
 	pending, _ := feed.snapshot(device, launch, first.OwnerCursor)
+	execOnStore(t, pair.destDBPath, "ALTER TABLE remote_watches RENAME TO unreadable_watches")
+	restore := sync.OnceFunc(func() { execOnStore(t, pair.destDBPath, "ALTER TABLE unreadable_watches RENAME TO remote_watches") })
+	defer restore()
 	unblock()
 	pair.dest.threadRequestsWG.Wait()
 	if slices.Contains(pending.Tokens, spawn.Token) {
 		t.Fatal("owner could acknowledge the loop before its subtree was reassessed")
 	}
+	failed, _ := feed.snapshot(device, launch, first.OwnerCursor)
+	if slices.Contains(failed.Tokens, spawn.Token) {
+		t.Fatal("failed reassessment published the loop")
+	}
+	restore()
+	due := pair.dest.threadAgentEmits.nextRetry()
+	if due.IsZero() {
+		t.Fatal("failed reassessment scheduled no retry")
+	}
+	pair.dest.retryThreadAgentEmits(due)
+	pair.dest.threadRequestsWG.Wait()
 	ready, _ := feed.snapshot(device, launch, first.OwnerCursor)
 	if !slices.Contains(ready.Tokens, spawn.Token) {
 		t.Fatal("no owner change after reassessment")

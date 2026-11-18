@@ -144,6 +144,7 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		// rest, could not read, read again.
 		a.retryRestRecovery()
 		a.retryFailedRestReads()
+		a.retryThreadAgentEmits(now)
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
 		logThreadRequestSweep("start owner waits", a.refreshOwnerPeers())
@@ -192,6 +193,9 @@ func (a *App) sweepSleep(d time.Duration) <-chan time.Time {
 func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 	delay := threadRequestExpiryInterval - time.Since(lastExpiry)
 	var due []store.ScheduledMoment
+	if retry := a.threadAgentEmits.nextRetry(); !retry.IsZero() {
+		due = append(due, store.ScheduledMoment{At: retry.UnixMilli(), Set: true})
+	}
 	if a.restRecoveryPending() || a.restReadsFailed() {
 		due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
 	}

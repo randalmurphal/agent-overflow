@@ -1,11 +1,7 @@
 package app
 
 import (
-	"errors"
-	"fmt"
 	"log"
-	"maps"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,20 +16,10 @@ import (
 // threadAgentEmits coalesces what changed into frames, off the goroutines
 // that reported it: a store write, an emit, a wait.
 type threadAgentEmits struct {
-	mu      sync.Mutex
-	tokens  map[string]struct{}
-	callers map[string]struct{}
-	targets map[string]struct{}
-	// liveness holds the threads whose rest may have changed, true where
-	// their durable sources changed too: each is reassessed
-	// (reassessWorker) and framed as a target when it is or was a worker,
-	// or a request runs on it. A changed request's caller is one, since
-	// whether an answer is on its way to it may have changed, and so is the
-	// thread a changed workflow run (workflowRuns) reports to.
-	liveness     map[string]bool
-	workflowRuns map[string]struct{}
-	projections  map[string]struct{}
-	draining     bool
+	mu sync.Mutex
+	threadAgentChanges
+	retryAt  time.Time
+	draining bool
 	// activity is each running target's latest activity line, while it has
 	// a request running or is a worker not at rest; lastActivity and
 	// activityDue throttle the frames activity alone emits.
@@ -153,6 +139,22 @@ func (a *App) threadAgentFollows(threadID string) bool {
 	return a.liveWorker(threadID)
 }
 
+func (e *threadAgentEmits) nextRetry() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.retryAt
+}
+
+func (a *App) retryThreadAgentEmits(now time.Time) {
+	e := &a.threadAgentEmits
+	e.mu.Lock()
+	if e.retryAt.IsZero() || now.Before(e.retryAt) {
+		e.mu.Unlock()
+		return
+	}
+	a.startThreadAgentEmitsLocked()
+}
+
 func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 	if a.store == nil {
 		return
@@ -160,10 +162,15 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 	e := &a.threadAgentEmits
 	e.mu.Lock()
 	if e.tokens == nil {
-		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
+		e.threadAgentChanges = newThreadAgentChanges()
 	}
 	add(e)
+	a.startThreadAgentEmitsLocked()
+}
+
+// startThreadAgentEmitsLocked releases the queue lock before starting its worker.
+func (a *App) startThreadAgentEmitsLocked() {
+	e := &a.threadAgentEmits
 	if e.draining || a.lifeCtx().Err() != nil {
 		e.mu.Unlock()
 		return
@@ -184,112 +191,26 @@ func (a *App) drainThreadAgentEmits() {
 			hook()
 		}
 		e.mu.Lock()
-		tokens, callers, targets, liveness, runs := e.tokens, e.callers, e.targets, e.liveness, e.workflowRuns
-		projections := e.projections
-		e.projections = nil
-		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs)+len(projections) == 0 || a.lifeCtx().Err() != nil {
+		batch := e.threadAgentChanges
+		if len(batch.tokens)+len(batch.callers)+len(batch.targets)+len(batch.liveness)+len(batch.workflowRuns)+len(batch.projections) == 0 || a.lifeCtx().Err() != nil {
 			e.draining = false
 			e.mu.Unlock()
 			return
 		}
-		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
+		e.threadAgentChanges = newThreadAgentChanges()
+		e.retryAt = time.Time{}
 		e.mu.Unlock()
-		for delay := time.Second; ; delay = min(2*delay, threadAgentPeerBackoffMax) {
-			if err := a.publishThreadAgentChanges(tokens, callers, targets, liveness, runs, projections); err == nil {
-				break
-			} else {
-				log.Printf("agent rows: retry projection after %s: %v", delay, err)
-			}
-			timer := time.NewTimer(delay)
-			select {
-			case <-timer.C:
-			case <-a.lifeCtx().Done():
-				timer.Stop()
-				e.mu.Lock()
-				e.draining = false
-				e.mu.Unlock()
-				return
-			}
+		if err := a.publishThreadAgentChanges(batch); err != nil {
+			log.Printf("agent rows: projection queued for retry: %v", err)
+			e.mu.Lock()
+			e.retain(batch)
+			e.retryAt = time.Now().Add(restRecoveryRetry)
+			e.draining = false
+			e.mu.Unlock()
+			a.nudgeThreadRequestSweep()
+			return
 		}
 	}
-}
-
-// Publish owner activity after every liveness projection used by a peer read is current.
-// Peer receipts can follow a thread even when it has no local Agents row.
-func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]struct{}, liveness map[string]bool, runs, projections map[string]struct{}) error {
-	var failed error
-	for item := range runs {
-		origin, err := a.store.WorkItemOriginThread(item)
-		if err != nil {
-			failed = errors.Join(failed, err)
-		} else if origin != "" {
-			liveness[origin] = true
-		}
-	}
-	for caller := range callers {
-		liveness[caller] = true
-	}
-	frameTargets := make(map[string]struct{}, len(targets))
-	for thread := range targets {
-		if a.threadAgentFollows(thread) {
-			frameTargets[thread] = struct{}{}
-		}
-	}
-	reassess := func(thread string, durable bool) bool {
-		worker, err := a.reassessWorker(thread, durable)
-		if err != nil {
-			failed = errors.Join(failed, fmt.Errorf("reassess %s: %w", thread, err))
-		}
-		return worker || a.threadAgentFollows(thread)
-	}
-	for thread, durable := range liveness {
-		if reassess(thread, durable) {
-			frameTargets[thread] = struct{}{}
-		}
-	}
-	changedTokens := slices.Collect(maps.Keys(tokens))
-	frameCallers := slices.Collect(maps.Keys(callers))
-	frameCallers = append(frameCallers, slices.Collect(maps.Keys(projections))...)
-	if len(tokens)+len(frameCallers)+len(frameTargets) > 0 {
-		frames, rest, err := a.store.ThreadAgentRowFrames(changedTokens, slices.Collect(maps.Keys(frameTargets)), frameCallers, threadReceiptLocalOwner, threadAgentRowDepth)
-		if err != nil {
-			failed = errors.Join(failed, err)
-			for _, caller := range frameCallers {
-				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: caller})
-			}
-		} else {
-			for _, thread := range rest {
-				if !liveness[thread] && reassess(thread, true) {
-					// A send from another caller can also be running on this worker.
-					a.noteThreadAgentTarget(thread)
-				}
-				liveness[thread] = true
-			}
-			for _, frame := range frames {
-				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
-			}
-		}
-	}
-	if len(liveness)+len(tokens)+len(callers) > 0 {
-		a.noteRestWaitsMayChange()
-	}
-	if failed != nil {
-		return failed
-	}
-	if a.ownerActivity.watching() {
-		changedThreads := slices.Collect(maps.Keys(targets))
-		changedThreads = append(changedThreads, slices.Collect(maps.Keys(liveness))...)
-		owners, err := a.store.ActivityOwners(changedTokens, changedThreads)
-		if err != nil {
-			a.ownerActivity.reset()
-			return fmt.Errorf("reset peer cursors after owner lookup failed: %w", err)
-		}
-		for _, owner := range owners {
-			a.ownerActivity.note(owner.Device, owner.Token, false)
-		}
-	}
-	return nil
 }
 
 // tapThreadAgentRows is the emit tap: any thread's turn, prompt or session

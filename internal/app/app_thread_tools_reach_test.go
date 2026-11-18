@@ -62,6 +62,7 @@ type reachPair struct {
 	sourceID string
 	// dbPath and settingsDir are the source's durable state, so a test can
 	// boot a second App over what the first one wrote.
+	destDBPath  string
 	dbPath      string
 	settingsDir string
 }
@@ -81,7 +82,8 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	t.Helper()
 	remotetest.Require(t)
 
-	dest, destBus := setupE2EApp(t)
+	destDBPath := storetest.ClonePath(t)
+	dest, destBus := setupE2EAppOn(t, destDBPath, t.TempDir())
 	dest.configDir = t.TempDir()
 	if err := dest.initIdentity("thread-tools-destination"); err != nil {
 		t.Fatal(err)
@@ -107,7 +109,7 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	publishReachIdentity(t, source, sourceID)
 
 	pair := &reachPair{
-		source: source, dest: dest, destWire: wire, destBus: destBus, sourceID: sourceID,
+		source: source, dest: dest, destDBPath: destDBPath, destWire: wire, destBus: destBus, sourceID: sourceID,
 		project: project.ID, dbPath: dbPath, settingsDir: settingsDir,
 	}
 	pair.profile = t.TempDir()
