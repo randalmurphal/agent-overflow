@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,35 +30,60 @@ func TestNewPromptReachesItsOwnerWhileAnOrdinaryReadIsHeld(t *testing.T) {
 	waitUntil(t, 3*time.Second, func() bool { return len(remoteWakes(t, p.source, p.caller.ID)) == 1 })
 }
 
-func TestOwnerDropsAnEditWhoseLocalRequestIsGone(t *testing.T) {
-	pair := newReachPair(t)
-	spawn, child := remoteRestedWorker(t, pair)
-	owner := pair.receipt(t, spawn.Token).OwnerDeviceID
-	first, origin, err := pair.source.waitOwnerChanges(t.Context(), pair.computer, OwnerCursor{})
+// staleEditPeer holds its reply to the acknowledgment of one token's edit.
+type staleEditPeer struct {
+	observedOwnerPeer
+	holdAck atomic.Pointer[heldOwnerReply]
+	token   string
+}
+
+func (p *staleEditPeer) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
+	reply, err := p.observedOwnerPeer.ThreadToolRequestStatus(ctx, poll)
 	if err != nil {
+		return reply, err
+	}
+	for _, ack := range poll.StructuralAck {
+		if ack.Token == p.token {
+			if err := p.holdAck.Swap(nil).wait(ctx); err != nil {
+				return ThreadPeerPollReply{}, err
+			}
+			break
+		}
+	}
+	return reply, nil
+}
+
+// TestAnEditForARequestGoneHereIsAcknowledgedOffTheWait: a worker can
+// outlive its request on the owner's computer. Its rename is acknowledged,
+// so the other computer stops owing it, and a slow reply to that
+// acknowledgment does not keep another worker's prompt from its owner.
+func TestAnEditForARequestGoneHereIsAcknowledgedOffTheWait(t *testing.T) {
+	var peer staleEditPeer
+	pair := newReachPairServedBy(t, func(t *testing.T, a *App) *pairedBackend {
+		peer.App = a
+		return serveAppAs(t, a, &peer)
+	})
+	old, worker := remoteRestedWorker(t, pair)
+	owner := pair.receipt(t, old.Token).OwnerDeviceID
+	prompt := newRemotePromptPairOn(t, pair, 0)
+	startReconciledOwner(t, pair)
+	execOnStore(t, pair.dbPath, "DELETE FROM thread_requests WHERE token=?", old.Token)
+
+	peer.token = old.Token
+	hold, release := holdOwnerReply(t, &peer.holdAck)
+	defer release()
+	if err := pair.dest.RenameThread(worker, "renamed after its request was pruned"); err != nil {
 		t.Fatal(err)
 	}
-	execOnStore(t, pair.dbPath, "DELETE FROM thread_requests WHERE token=?", spawn.Token)
-	if err := pair.dest.RenameThread(child, "after local pruning"); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(origin.Bind(t.Context()), 5*time.Second)
-	defer cancel()
-	change, from, err := pair.source.waitOwnerChanges(ctx, pair.computer, first.OwnerCursor)
-	if err != nil || change.Reset || len(change.Structural) != 1 || change.Structural[0].Token != spawn.Token {
-		t.Fatalf("expected edit for pruned request, got %+v, %v", change, err)
-	}
-	s := ownerSession{app: pair.source, peer: &ownerPeer{owed: map[string]ownerObligation{}}, id: pair.computer, launch: first.Launch, scope: pair.source.ownerReads.start(ctx, pair.computer, nil)}
-	if err := s.observe(ctx, change, from); err != nil {
-		t.Fatal(err)
-	}
-	if len(s.peer.owed) != 0 {
-		t.Fatalf("queued work for a pruned request: %v", s.peer.owed)
-	}
-	pending, err := pair.dest.store.PendingSpawnRevisions(owner, "", 1)
-	if err != nil || len(pending) != 0 {
-		t.Fatalf("obsolete revision still pending: %v, %v", pending, err)
-	}
+	within(t, "the acknowledgment of the stale edit", hold.arrived)
+	approvalOn(t, peer.App, prompt.worker, "independent prompt")
+	prompt.openThere(t, 1)
+	waitUntil(t, 3*time.Second, func() bool { return len(remoteWakes(t, pair.source, pair.caller.ID)) == 1 })
+	release()
+	waitUntil(t, 5*time.Second, func() bool {
+		pending, err := pair.dest.store.PendingSpawnRevisions(owner, "", 1)
+		return err == nil && len(pending) == 0
+	})
 }
 
 func TestIdleUnfollowedTargetCostsNoRowReads(t *testing.T) {

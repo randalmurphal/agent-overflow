@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"maps"
 	"slices"
 	"sync"
 
@@ -126,8 +125,8 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 }
 
 func (s *ownerSession) observe(ctx context.Context, answer OwnerChanges, from attachedbackends.PeerRead) error {
-	var obsolete []store.SpawnRevisionAck
-	err := s.scope.commit(from, s.launch, nil, func() error {
+	keys := append(slices.Clone(answer.Tokens), ownerRevisionTokens(answer.Structural)...)
+	return s.scope.commit(from, s.launch, nil, func() error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -135,14 +134,10 @@ func (s *ownerSession) observe(ctx context.Context, answer OwnerChanges, from at
 			s.app.invalidateOwnerTreesLocked(s.id, nil)
 			return errOwnerCursorReset
 		}
-		var err error
-		obsolete, err = s.record(answer, from)
-		return err
+		s.app.ownerReads.changedLocked(keys)
+		s.record(answer, from, keys)
+		return nil
 	})
-	if err != nil {
-		return err
-	}
-	return s.app.ackOwnerEdits(ctx, s.id, s.launch, obsolete)
 }
 
 var errOwnerCursorReset = errors.New("peer activity cursor reset")
@@ -154,51 +149,31 @@ func signalOwner(ch chan struct{}) {
 	}
 }
 
-// record admits only this computer's local requests, including lineage-only spawns.
-// A receipt or edit on the destination can outlive its row here.
-func (s *ownerSession) record(answer OwnerChanges, origin attachedbackends.PeerRead) ([]store.SpawnRevisionAck, error) {
-	changes := make(map[string]ownerObligation, len(answer.Tokens)+len(answer.Structural))
-	for _, key := range answer.Tokens {
-		changes[key] = ownerObligation{}
-	}
-	for _, key := range answer.PromptTokens {
-		changes[key] = ownerObligation{prompt: true}
-	}
-	for _, edit := range answer.Structural {
-		entry := changes[edit.Token]
-		entry.edit = edit
-		changes[edit.Token] = entry
-	}
-	keys, err := s.app.store.OwnerRequestTokens(s.id, slices.Collect(maps.Keys(changes)))
-	if err != nil {
-		return nil, err
-	}
-	s.app.ownerReads.changedLocked(keys)
+// record owes a read for every token the peer reported. The wait makes no
+// call of its own: a reader's batch finds a token whose request is gone
+// here, acknowledges its edit and drops it (readOwnerBatch).
+func (s *ownerSession) record(answer OwnerChanges, origin attachedbackends.PeerRead, keys []string) {
 	s.app.ownerUpdates.mu.Lock()
 	defer s.app.ownerUpdates.mu.Unlock()
 	s.peer.disconnected = origin.Disconnected()
 	s.generation++
-	for _, key := range keys {
-		entry := s.peer.owed[key]
-		change := changes[key]
+	for _, token := range keys {
+		entry := s.peer.owed[token]
 		entry.generation = s.generation
-		entry.prompt = entry.prompt || change.prompt
-		if change.edit.Revision != 0 {
-			entry.edit = change.edit
-		}
-		s.peer.owed[key] = entry
-		delete(changes, key)
+		s.peer.owed[token] = entry
 	}
-	var obsolete []store.SpawnRevisionAck
-	for key, change := range changes {
-		delete(s.peer.owed, key)
-		if change.edit.Revision != 0 {
-			obsolete = append(obsolete, change.edit.SpawnRevisionAck)
-		}
+	for _, token := range answer.PromptTokens {
+		entry := s.peer.owed[token]
+		entry.prompt = true
+		s.peer.owed[token] = entry
+	}
+	for _, edit := range answer.Structural {
+		entry := s.peer.owed[edit.Token]
+		entry.edit = edit
+		s.peer.owed[edit.Token] = entry
 	}
 	signalOwner(s.prompts)
 	signalOwner(s.ordinary)
-	return obsolete, nil
 }
 
 func (s *ownerSession) read(ctx context.Context, prompt bool) error {

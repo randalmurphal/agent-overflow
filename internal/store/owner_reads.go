@@ -20,21 +20,6 @@ func (s *Store) OwnerComputers() ([]string, error) {
 	return s.queryThreadIDs("list computers with owner work", ownerComputersSQL)
 }
 
-var ownerRequestsFromSQL = ` FROM json_each(?2) keys CROSS JOIN thread_requests
-    WHERE token = keys.value AND target_computer_id = ` + textParam("?1")
-
-// OwnerRequestTokens filters a peer's changes by indexed local request identity without loading answers.
-func (s *Store) OwnerRequestTokens(computer string, tokens []string) ([]string, error) {
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	keys, err := json.Marshal(tokens)
-	if err != nil {
-		return nil, err
-	}
-	return s.queryThreadIDs("read owned tokens on "+computer, "SELECT token"+ownerRequestsFromSQL, computer, string(keys))
-}
-
 func (s *Store) OwnerRequests(computer string, tokens []string) ([]ThreadRequest, error) {
 	if len(tokens) == 0 {
 		return nil, nil
@@ -43,7 +28,8 @@ func (s *Store) OwnerRequests(computer string, tokens []string) ([]ThreadRequest
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.reader().Query(`SELECT `+threadRequestColumns+ownerRequestsFromSQL, computer, string(keys))
+	rows, err := s.reader().Query(`SELECT `+threadRequestColumns+` FROM json_each(?2) keys CROSS JOIN thread_requests
+	  WHERE token = keys.value AND target_computer_id = `+textParam("?1"), computer, string(keys))
 	if err != nil {
 		return nil, err
 	}

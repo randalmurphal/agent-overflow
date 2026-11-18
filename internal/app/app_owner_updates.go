@@ -30,7 +30,8 @@ type ownerPeer struct {
 	reprobe chan struct{}
 	legacy  bool
 	ready   bool
-	// Only tokens with a local request targeting this peer enter owed, one entry per link or request.
+	// owed holds one entry per token the peer reported, until a reader's batch
+	// has applied it.
 	owed         map[string]ownerObligation
 	launch       string
 	disconnected <-chan struct{}
