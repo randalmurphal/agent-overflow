@@ -52,9 +52,10 @@ func partsHook() *provider.SessionStartHook {
 	return &hook
 }
 
-// olderCodex predates additionalContextLimit; newerCodex reads it.
+// olderCodex predates additionalContextLimit, the last release before the
+// first that reads it (rust-v0.145.0); newerCodex reads it.
 const (
-	olderCodex = "0.150.0"
+	olderCodex = "0.144.0"
 	newerCodex = "0.157.1"
 )
 
@@ -119,7 +120,7 @@ func TestTheSpillIsOffWhereCodexReadsTheKey(t *testing.T) {
 		{newerCodex, `{"additionalContextLimit":0,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
 			`{"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`,
 			`{"event_name":"user_prompt_submit","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`},
-		{additionalContextLimitMinimumCodexVersion, `{"additionalContextLimit":0,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
+		{"0.145.0", `{"additionalContextLimit":0,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,
 			`{"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}`,
 			`{"event_name":"user_prompt_submit","hooks":[{"additionalContextLimit":0,"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`},
 		{olderCodex, `{"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}`,

@@ -1877,9 +1877,12 @@ which Codex reads as the thread's session-flags config layer:
   and tail with `Full hook output saved to: <path>`
   (`hooks/src/output_spill.rs`). When the file cannot be written, the
   context is cut to the same head and tail with no path. From
-  `rust-v0.153.4` a command handler's `additionalContextLimit` (tokens)
-  sets the threshold, `0` turning the spill off; `rust-v0.143.0` has the
-  fixed limit and no key. The limit applies to each handler's output on
+  `rust-v0.145.0` a SessionStart or UserPromptSubmit command handler's
+  `additionalContextLimit` (tokens) sets the threshold, `0` turning the
+  spill off, and is part of the handler's trust identity
+  (`hooks/src/engine/discovery.rs`, `hooks/src/output_spill.rs` at that
+  tag); `rust-v0.144.0` and `rust-v0.143.0` have the fixed limit and no
+  key. The limit applies to each handler's output on
   its own. On 0.169.0, two handlers in one group, one printing 39,087
   bytes with a marker in its middle and one at its end: with
   `additionalContextLimit` 0 on each, the model quoted both markers and
@@ -2031,7 +2034,7 @@ the text as it was at the last start or compaction.
   or `startup|compact|clear|resume|fork` for a rehydrate below, holding
   one handler per part of the delivery, and a UserPromptSubmit group with
   each part's prompt command, each handler under its trust hash
-  (`sessionStartHookConfig`). On a Codex whose app-server reports 0.153.4
+  (`sessionStartHookConfig`). On a Codex whose app-server reports 0.145.0
   or later each handler carries `additionalContextLimit` 0, and its hash
   covers it; an older or unknown version gets handlers without the key. The
   command quotes its words in POSIX single quotes, which sh, bash and zsh

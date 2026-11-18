@@ -318,7 +318,7 @@ characters, Codex the start and the end
 [Codex](../references/codex-wire.md#sessionstart-hooks-verified-01690)).
 Each provider applies the limit to each output on its own, so memory
 over 10,000 bytes in total reaches the model whole while each part is
-under it. On a Codex that reads `additionalContextLimit` (0.153.4 and
+under it. On a Codex that reads `additionalContextLimit` (0.145.0 and
 later, from the app-server's version) each handler sets it to 0, which
 turns the spill off, so every part reaches the model whole; an older
 Codex, or one whose version is unknown, gets the handlers as before. A

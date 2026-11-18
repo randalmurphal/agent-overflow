@@ -35,10 +35,10 @@ import (
 const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
 
 // additionalContextLimitMinimumCodexVersion is the first Codex whose
-// command handlers take additionalContextLimit (rust-v0.153.4). An older
+// command handlers take additionalContextLimit (rust-v0.145.0). An older
 // one has the fixed limit, and a handler carrying the key there would
 // hash, and so be trusted, differently from the one it reads.
-const additionalContextLimitMinimumCodexVersion = "0.153.4"
+const additionalContextLimitMinimumCodexVersion = "0.145.0"
 
 // sessionStartHandler is a command handler of the hook: what the thread
 // config registers and what its trust hash covers.
