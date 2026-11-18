@@ -478,6 +478,12 @@ func TestAPersonsStopKeepsWhatTheRequestsTurnWrote(t *testing.T) {
 			q.startPickupTurn(t)
 			r.consumed(t)
 		}, nil},
+		// What the turn streamed is kept exactly, white space included.
+		{"echoed before the Stop, having streamed only white space", " \n\t", func(t *testing.T, q *queuedRequests, r *queuedRequest, said string) {
+			q.startPickupTurn(t)
+			r.consumed(t)
+			q.handle(t, "text delta", provider.ProviderEvent{Kind: provider.EventTextDelta, ItemID: "blank", Content: said})
+		}, nil},
 		{"taken in without an echo", "halfway there", func(t *testing.T, q *queuedRequests, r *queuedRequest, said string) {
 			q.startPickupTurn(t)
 			q.say(t, 1, said)

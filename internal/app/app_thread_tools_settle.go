@@ -357,8 +357,9 @@ func (a *App) settleReceiptNotRead(threadID, token, state, why string) threadSet
 // interruptedSettlement is the answer of a request cause interrupted: the
 // cause as data, and what the turn had written by then, if anything, as its
 // text. The words a caller reads are rendered from both (threadtools.Cause).
-// The user's Stop answers with what the turn said, which is its `final`
-// message; every other cause's answer is an `error`.
+// The user's Stop answers with exactly what the turn said, which is its
+// `final` message; every other cause's answer is an `error`, and text that
+// is only white space is no text.
 func interruptedSettlement(cause threadtools.Cause, written string) store.ThreadRequestSettlement {
 	settlement := store.ThreadRequestSettlement{
 		State:      store.ThreadReceiptInterrupted,
@@ -368,6 +369,8 @@ func interruptedSettlement(cause threadtools.Cause, written string) store.Thread
 	}
 	if cause.Code == threadtools.CauseUserStop {
 		settlement.AnswerKind = store.ThreadAnswerFinal
+		settlement.Answer = []byte(written)
+		return settlement
 	}
 	if strings.TrimSpace(written) != "" {
 		settlement.Answer = []byte(written)
