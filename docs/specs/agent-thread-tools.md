@@ -1933,33 +1933,31 @@ the pairing is live. The destination's own switch is not consulted, and
 neither is the Agent remote tools opt-in that `ao-remote-tools` needs:
 that opt-in exists because a remote command runs a shell, and nothing
 here does.
-The end of a pairing is one transition over both ledgers, taken wherever
-this computer learns that a pairing's credential or profile ended: any
-call there that the other computer refuses as revoked (a poll, an
-acknowledgement, a command's status, an owed cancel or an ordinary tool
-call), the pruning of own-device membership, and the person forgetting
-the computer. Each request and command records the generation of the
-pairing it was admitted under. An automatic own-device upgrade or
-re-enrollment of a live pairing keeps its generation; an explicit new
-pairing, or any pairing after a retirement, revocation or forget, begins
-a new one. A record from before generations were recorded is bound at
-boot, before any pairing can change, to the generation held then, or to
-none when its computer has no pairing left, which ends it. A call made
-for a record (a poll, an acknowledgement, a cancel, a command's status or
-cancel) names the record's generation where its connection is chosen; a
-connection of another generation refuses it before anything is sent, and
-the caller runs the transition here. The transition reaches only what a
-pairing other than the one held now admitted, under the same fence
-admission takes, so no request or command enters a pairing being ended,
-an answer that a retired connection brings back changes nothing, and a
-new pairing starts owing nothing of the old one's. For those, every open request settles
-`errored` with the reason; every settled one leaves the poll with its
-answer kept and owes no acknowledgement; every command there not known to
-have finished is recorded as finished with an unknown outcome and the
-reason, its owed cancel settled, and is told to its thread once, the
-Background row and the command's row saying why; and nothing about that
-pairing is asked again. A row and a message about such work name the
-computer by the name it had when the work was admitted.
+Work belongs to the computer, not to one pairing with it: a request or
+command records the computer and the name it had at admission, and calls
+for it use whatever pairing with that computer is held. Pairing the
+computer again continues its work, which is collected, acknowledged,
+cancelled, archived and deleted as before. The work ends only when the
+pairing ends and nothing replaces it, in one transition over both ledgers
+keyed by the computer and taken under the fence admission takes, so
+nothing admitted after it is touched and nothing admitted before it is
+missed. It runs in three places: the person forgetting the computer, once
+its profile is gone; the other computer's verdict that this one is
+revoked, only while no pairing with it has been saved since; and the
+sweeps, for a computer with no saved pairing, which also end the work of
+a forget whose ledger write failed. A profile that cannot be read is not
+"no pairing": the sweep puts that computer's work off by its error delay.
+An answer that arrives once no pairing is saved changes nothing. The
+transition settles every open request `errored` with the reason; every
+settled one leaves the poll with its answer kept and owes no
+acknowledgement; every command there not known to have finished is
+recorded as finished with an unknown outcome and the reason, its owed
+cancel settled, and is told to its thread once, the Background row and
+the command's row saying why; and the computer is asked nothing more
+about it. While a pairing is held, rows and messages name the computer by
+its current name; once none is, by the name the record kept, which the
+transition writes from the computer's last name onto records that kept
+none.
 
 The peer methods are `ThreadToolCall` (tool name, arguments, and the
 caller's thread identity) and `ThreadToolRequestStatus`, added to the
@@ -2068,9 +2066,11 @@ in [Request identity and durability](#request-identity-and-durability).
   ([reaching another computer](#reaching-another-computer)) with every
   one of them settled `errored` ("computer forgotten") and its wake
   dropped, and no claim is made that the other computer stopped
-  anything. A lost machine can always be forgotten. A pairing that ends,
-  by a forget, a new pairing with the same computer or that computer's
-  verdict, closes every connection open under it. A call still on its way
+  anything. A lost machine can be forgotten whenever the
+  [Forget eligibility rule](../architecture/remote-commands.md#agent-use)
+  for its remote commands allows; its thread requests never hold it. A
+  pairing that ends, by a forget, a new pairing with the same computer or
+  that computer's verdict, closes every connection open under it. A call still on its way
   fails as unanswered, since that computer may have acted on it; a later
   call is refused unsent with that reason, so an export copy stops and
   removes what it staged.

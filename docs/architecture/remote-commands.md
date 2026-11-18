@@ -209,7 +209,8 @@ toggles survive provider-session restarts within the app process; machine
 opt-ins persist across app restarts.
 Disabling destination agent access blocks new work while preserving owned job
 status, cancellation, log reads and artifact retrieval. Revoking the pairing
-ends all peer access, and the source ends the jobs that pairing admitted
+ends all peer access, and unless a new pairing replaces it the source ends
+that computer's jobs
 ([the end of a pairing](../specs/agent-thread-tools.md#reaching-another-computer));
 the destination stops a job left running after the owner grace. A disabled
 conversation MCP server blocks its tools.
