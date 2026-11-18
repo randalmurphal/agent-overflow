@@ -340,9 +340,14 @@ function threadStatusView(reply: Input, names: AoToolNames): AoResultView {
       key: id,
       title,
       detail: join(words(str(row, 'state')), row.resting === true ? 'resting' : ''),
-      text: '',
+      // Why a thread could not be read: it left its computer, or a
+      // computer did not answer for it.
+      text: clipText(str(row, 'error'), LINE_TEXT_MAX),
       link: threadLink(id, title, str(row, 'computer_id'), str(row, 'computer')),
     });
+  }
+  for (const failure of list(reply.errors)) {
+    fact(view.facts, str(failure, 'computer') || 'computer', str(failure, 'error'));
   }
   for (const row of wakes) {
     const next = str(row, 'next_fire');

@@ -133,6 +133,24 @@ describe('thread tool results', () => {
     expect(view.lines[0].link?.id).toBe(tid);
   });
 
+  it('says why a watched thread could not be read and which computer did not answer', () => {
+    const view = threadResultView('thread_status', json({
+      threads: [
+        { thread_id: tid, title: 'Docs slice', state: 'idle', resting: true },
+        { thread_id: 'x2', state: 'unavailable', error: 'No thread x2 on Studio.', error_code: 'thread_not_found', computer_id: 'c2', computer: 'Studio' },
+        { thread_id: 'x3', state: 'unresolved', error: 'Desk did not answer in time.', error_code: 'thread_resolution_incomplete' },
+      ],
+      errors: [{ computer_id: 'c3', computer: 'Desk', error: 'Desk did not answer in time.', error_code: 'thread_computer_unreachable' }],
+      woke_on: tid,
+    }), {}, names)!;
+    expect(view.lines.map((l) => [l.detail, l.text])).toEqual([
+      ['idle · resting', ''],
+      ['unavailable', 'No thread x2 on Studio.'],
+      ['unresolved', 'Desk did not answer in time.'],
+    ]);
+    expect(view.facts).toEqual([{ label: 'Desk', value: 'Desk did not answer in time.' }]);
+  });
+
   it('lists search hits from both result shapes with their snippet and count', () => {
     const solo = threadResultView('thread_search', json({
       rows: [{ thread_id: tid, title: 'Docs slice', state: 'idle', snippet: 'the deploy failed', last_message: { role: 'assistant', text: 'Done' } }],
