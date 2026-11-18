@@ -652,7 +652,8 @@ the thread-level text in place, which a Codex test pins.
 
 ### Spawn, send, ask
 
-`app_thread_tools_start.go`. Shared prologue: mint token, insert the
+`app_thread_tools_start.go`, with the acceptance in
+`app_thread_tools_accept.go`. Shared prologue: mint token, insert the
 `thread_requests` row as `unconfirmed`, then dispatch locally or to the
 peer. The local dispatch and the peer's `ThreadToolCall` land in the
 same function, `acceptRequest(ctx, owner, call)`, which:

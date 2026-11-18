@@ -187,10 +187,12 @@ summaries and Stop All's selection.
 
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
-a watch's failure episode and its notice in `app_agent_watch_failure.go`,
-queueing in `app_agent_wake_delivery.go`, rendering in
-`app_agent_wake_render.go`, what a session end gives back in
-`app_agent_wake_teardown.go`, assistant records,
+the run registry in `app_agent_wake_registry.go`, a watch's script and
+process in `app_agent_watch_process.go`, a watch's failure episode and its
+notice in `app_agent_watch_failure.go`, queueing in
+`app_agent_wake_delivery.go`, rendering in `app_agent_wake_render.go`, what a session end gives back in
+`app_agent_wake_teardown.go` and `app_agent_wake_parts.go`, the give-back
+to owners in `app_agent_give_back.go`, assistant records,
 creation and handoff in `app_standing_agents.go`, and the background tray's reads, Wake now and
 Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or
 reminder row emits `thread:wakes_changed` with that row as it stands
@@ -239,9 +241,10 @@ the thread's activity and read state; the marks it reads are kept by
 tap.
 
 A spawned thread's prompts are stamped with their route to its spawner
-by triage (`SetPromptRouter`) and delivered, answered and settled in
-`app_worker_prompts.go`, off the emit path on one serial queue so a
-resolution never overtakes its delivery. Triage's `RoutedTo` is the one
+by triage (`SetPromptRouter`), delivered and settled in
+`app_worker_prompts.go` and answered in `app_worker_prompts_answering.go`,
+off the emit path on one serial queue so a resolution never overtakes its
+delivery. Triage's `RoutedTo` is the one
 record of a prompt's route, and the registry follows its announcements. A
 prompt whose wake cannot reach the spawner (a failed delivery, a session
 that ended with it unconfirmed, a cleared queue) is rejected

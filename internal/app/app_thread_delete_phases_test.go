@@ -26,7 +26,7 @@ import (
 	workflowwake "agent-overflow/internal/workflow/wake"
 )
 
-// The phases of a family delete (app_thread_delete.go): a claimed thread is
+// The phases of a family delete (app_thread_delete_family.go): a claimed thread is
 // fenced at every door, deletes over one family do not overlap, a crash at
 // any phase is settled by the boot, and a failure after the commit keeps
 // what it must for the next attempt.

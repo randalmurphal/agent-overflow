@@ -115,7 +115,7 @@ type App struct {
 	// (app_worker_prompts.go).
 	workerPrompts workerPrompts
 	// resting holds the threads being brought to rest, which take no
-	// app-written message and start no work meanwhile (app_thread_rest.go).
+	// app-written message and start no work meanwhile (app_thread_rest_fence.go).
 	resting threadRestFence
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
@@ -297,7 +297,7 @@ type App struct {
 	// their threads spawned on (app_thread_owner_ops.go).
 	ownerOps ownerOpDelivery
 	// deleteDecisions are the running deletes' decision gates, which the
-	// app's own starts wait at (app_thread_delete.go).
+	// app's own starts wait at (app_thread_delete_decisions.go).
 	deleteDecisions deleteDecisions
 	// terminalThreads ends each terminal thread when its last shell exits
 	// (app_terminal_threads.go).
