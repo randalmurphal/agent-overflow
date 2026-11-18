@@ -1604,7 +1604,13 @@ holds as already collected. Upgrading from v0.0.19, which kept no such
 debt, owes one acknowledgement again for each answer the other computer
 could still hold, at the revision the source holds.
 
-An open request is polled every five seconds, or every two while a wait
+A `thread-tools.v2` destination reports changes to accepted and running
+requests. An unconfirmed dispatch still needs a status check on its own
+clock. A settled request awaiting a late reply needs a final successful
+read begun at or after the reply deadline. The durable acknowledgement
+collector serves both generations.
+
+On an older destination an open request is polled every five seconds, or every two while a wait
 is parked on it. A poll for a due request also asks about the other
 requests the same thread still has open on that computer, so answers
 one turn or one restart wrote there are normally collected in one pass

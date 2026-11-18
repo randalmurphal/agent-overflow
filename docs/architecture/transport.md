@@ -610,3 +610,16 @@ The highest-value transport tests cover:
 - the in-flight RPC cap refusal and read-loop liveness while handlers are
   parked; and
 - mixed-version hello, refusal, refresh, and additive-field compatibility.
+
+
+### Paired worker updates
+
+`ThreadOwnerChanges` serves one bounded wait for the authenticated device
+on its existing carrier. The connection hello and each wait answer name
+the backend launch. A replaced carrier or launch invalidates outstanding
+reads. Disconnecting the waiter cancels the server call.
+
+`ThreadOwnerRecovery` pages by stable keys through held prompts, active
+work and structural revisions. `ThreadToolRequestStatus` carries batched
+status and link-state reads, original-source link contact and exact
+structural acknowledgments. These operations use `thread-tools.v2`.
