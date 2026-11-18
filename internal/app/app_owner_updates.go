@@ -60,6 +60,18 @@ func (a *App) refreshOwnerPeers() error {
 		}
 		if !paired {
 			unlock()
+			// A missing profile may be a removal whose notification was lost.
+			// Historical links alone need no repeated pairing-end transaction.
+			o.mu.Lock()
+			running := o.peers[id] != nil
+			o.mu.Unlock()
+			keys, err := a.store.RecoverOwnerRequests(id, "", 1)
+			if err == nil && (running || len(keys) != 0) {
+				_, err = a.endUnpaired(id)
+			}
+			if err != nil {
+				failures = append(failures, fmt.Errorf("end owner work on %s: %w", id, err))
+			}
 			continue
 		}
 		o := &a.ownerUpdates

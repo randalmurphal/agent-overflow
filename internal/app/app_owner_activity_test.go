@@ -59,11 +59,20 @@ func TestOwnerRecoversRenamedWorkerWithoutReadingPane(t *testing.T) {
 		}
 	}
 	recover()
+	owner := pair.receipt(t, spawn.Token).OwnerDeviceID
+	pending, err := pair.dest.store.PendingSpawnRevisions(owner, "", 1)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("initial recovery left structural changes on the worker computer: %+v, %v", pending, err)
+	}
 	if _, err := pair.source.store.RetireThreadRequestPoll(spawn.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := pair.dest.RenameThread(child, "renamed while away"); err != nil {
 		t.Fatal(err)
+	}
+	pending, err = pair.dest.store.PendingSpawnRevisions(owner, "", 1)
+	if err != nil || len(pending) != 1 || pending[0].Token != spawn.Token || pending[0].Title != "renamed while away" {
+		t.Fatalf("resting rename available to the disconnected owner: %+v, %v", pending, err)
 	}
 	recover()
 	if got := pair.request(t, spawn.Token).TargetThreadTitle; got != "renamed while away" {

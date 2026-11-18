@@ -326,3 +326,27 @@ func TestDueOwnerContactUsesTheOriginalSpawnerAndStopsAfterRelease(t *testing.T)
 		t.Fatalf("%d contacts including a released link", got)
 	}
 }
+
+// Ordinary cache aging cannot refresh this tree. A change under a worker
+// that remains open has to make the pane ask for its detail again.
+func TestOwnerPaneReadsChangedDescendantsBeforeTheCachedTreeAges(t *testing.T) {
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	startReconciledOwner(t, pair.reachPair)
+	first := pair.source.readPeerAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
+	if _, ok := agentRowByToken(first.listing.Rows, pair.grand); first.err != nil || !ok {
+		t.Fatalf("initial tree: %+v, %v", first.listing.Rows, first.err)
+	}
+	cache := &pair.source.threadAgentPeers
+	cache.mu.Lock()
+	cache.entries[pair.spawn.Token].at = time.Now().Add(time.Hour)
+	cache.mu.Unlock()
+
+	child := pair.receipt(t, pair.grand).TargetThreadID
+	if err := pair.dest.RenameThread(child, "Updated grandchild"); err != nil {
+		t.Fatal(err)
+	}
+	pair.listRowsUntil(t, func(view ThreadAgentRows) bool {
+		row, ok := agentRowByToken(view.Rows, pair.grand)
+		return ok && row.Title == "Updated grandchild"
+	})
+}
