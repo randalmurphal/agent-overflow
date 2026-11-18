@@ -129,7 +129,6 @@ func TestOwnIntroductionFinishesWhenTheCallerCancelsDuringRedemption(t *testing.
 	t.Parallel()
 	held := startHeldIntroduction(t, "backend-far")
 	held.cancel()
-	time.Sleep(50 * time.Millisecond)
 	got := held.finish(t)
 	if got.err != nil || !got.added {
 		t.Fatalf("introduction after the caller cancelled = added %t, %v; want it enrolled", got.added, got.err)
