@@ -89,9 +89,11 @@ type remoteWorkerPrompt struct {
 	// an answer that does not land moves the prompt on then
 	// (endRemoteAnswer).
 	rejected bool
-	state    remotePromptState
-	answer   string
-	closedAt time.Time
+	// refusedClosed records the destination's definitive refusal of this token.
+	refusedClosed bool
+	state         remotePromptState
+	answer        string
+	closedAt      time.Time
 }
 
 func (p *remoteWorkerPrompt) sendID() string {
@@ -212,7 +214,7 @@ func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadA
 			deliver = append(deliver, key)
 		case prompt.state == remotePromptRouted:
 			deliver = append(deliver, key)
-		case prompt.state == remotePromptClosed:
+		case prompt.state == remotePromptClosed && !prompt.refusedClosed:
 			// An earlier answer left it out, read before this one.
 			prompt.state, prompt.closedAt, prompt.prompt, prompt.spawn = remotePromptRouted, time.Time{}, listing, spawn
 			deliver = append(deliver, key)

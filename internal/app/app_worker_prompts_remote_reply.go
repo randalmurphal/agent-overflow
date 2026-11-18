@@ -293,8 +293,18 @@ func (a *App) answerRemoteWorkerPrompt(ctx context.Context, caller threadtools.C
 		ack.Accepted = out.Accepted
 		return ack, true, nil
 	}
-	a.endRemoteAnswer(key, remotePromptRouted)
 	code, message, uncertain := threadErrorDetails("reply", err)
+	if code == peerPromptClosed {
+		r.mu.Lock()
+		prompt.state, prompt.closedAt, prompt.held, prompt.refusedClosed = remotePromptClosed, time.Now(), false, true
+		closed := *prompt
+		r.mu.Unlock()
+		if closed.delivery != "" {
+			return ack, true, errors.Join(errWorkerPromptClosed, a.withdrawRemotePromptWake(closed))
+		}
+		return ack, true, errWorkerPromptClosed
+	}
+	a.endRemoteAnswer(key, remotePromptRouted)
 	if !uncertain {
 		return ack, true, errorsx.Public(code, message, err)
 	}

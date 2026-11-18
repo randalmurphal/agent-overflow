@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -53,6 +54,8 @@ const (
 // workerPromptLease is how long a prompt stays routed to a paired
 // computer's thread after it was registered or that computer last said it
 // holds it (owner choice).
+const peerPromptClosed = "thread_prompt_closed"
+
 const workerPromptLease = 2 * time.Minute
 
 // remotePromptHold is a prompt routed to a thread on a paired computer:
@@ -335,6 +338,9 @@ func (a *App) servePeerPrompt(ctx context.Context, owner string, call ThreadPeer
 		ack, err := a.answerRoutedPrompt(ctx, prompt, threadtools.ReplyCall{
 			Token: args.Token, Text: args.Text, Decision: args.Decision, Answers: args.Answers,
 		})
+		if errors.Is(err, errWorkerPromptClosed) {
+			return ThreadPeerReply{}, errorsx.Public(peerPromptClosed, errWorkerPromptClosed.Error(), nil)
+		}
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}

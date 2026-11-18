@@ -381,7 +381,7 @@ func TestAPersonsAnswerThereWithdrawsTheWakeAndRefusesALateReply(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.openThere(t, 1)
-	p.sweep()
+	p.readOwnerState(t, p.source)
 	wake := p.wakesFor(t, p.caller.ID, 1)[0]
 	prompt, _ := p.dest.workerPrompts.get(wake.token)
 	if err := p.dest.RespondToApproval(t.Context(), p.worker, provider.ApprovalResponse{
@@ -390,7 +390,7 @@ func TestAPersonsAnswerThereWithdrawsTheWakeAndRefusesALateReply(t *testing.T) {
 		t.Fatalf("the person's answer there: %v", err)
 	}
 	call := threadtools.ReplyCall{Token: wake.token, Decision: threadtools.DecisionDeny, Text: "no"}
-	if _, err := p.reply(t, p.callerIdentity(), call); err == nil || !strings.Contains(err.Error(), "no longer open") {
+	if _, err := p.reply(t, p.callerIdentity(), call); !errors.Is(err, errWorkerPromptClosed) {
 		t.Fatalf("a reply after the person answered: %v, want it refused as closed", err)
 	}
 	p.wakesFor(t, p.caller.ID, 0)
