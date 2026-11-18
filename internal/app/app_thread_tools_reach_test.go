@@ -516,6 +516,14 @@ type peerFaults struct {
 	detachFirst atomic.Bool
 	creating    chan struct{}
 	detached    sync.WaitGroup
+	// admit, when set, holds the detached handler before it runs at all
+	// until it is closed: a handler still before admission, whose token
+	// the destination does not hold yet.
+	admit chan struct{}
+	// held, when set, is closed by the first ThreadToolCall past unread,
+	// which then waits for hold to close before it runs.
+	held, hold chan struct{}
+	holdOnce   sync.Once
 	// stall holds every ThreadToolRequestStatus until it is closed, which
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
@@ -529,6 +537,12 @@ type peerFaults struct {
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	if left := p.unread.Load(); left > 0 && p.unread.CompareAndSwap(left, left-1) {
 		return ThreadPeerReply{}, errors.New("the destination failed before it read the call")
+	}
+	if p.held != nil {
+		p.holdOnce.Do(func() {
+			close(p.held)
+			<-p.hold
+		})
 	}
 	if p.attempts.Add(1) > 1 && p.refuseRetries.Load() {
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, "This attempt is refused.", nil)
@@ -549,7 +563,12 @@ func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (T
 		}
 	}
 	if p.detachFirst.CompareAndSwap(true, false) {
-		p.detached.Go(func() { _, _ = p.App.ThreadToolCall(context.WithoutCancel(ctx), call) })
+		p.detached.Go(func() {
+			if p.admit != nil {
+				<-p.admit
+			}
+			_, _ = p.App.ThreadToolCall(context.WithoutCancel(ctx), call)
+		})
 		select {
 		case <-p.creating:
 		case <-ctx.Done():
@@ -1045,6 +1064,7 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	faults.unread.Store(threadPeerAdmissionAttempts)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	called := time.Now()
 	ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
 		Prompt: "work whose answer never came back", ComputerID: pair.computer, ProjectID: pair.project,
 	})
@@ -1059,17 +1079,20 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 		t.Fatalf("the source row settled %q on a call whose answer was lost", row.State)
 	}
 
-	// A row still being admitted is fenced out of the poll, and the fence
-	// covers every attempt the admission can make.
-	if wait := threadPeerCallWait("ThreadToolCall"); threadRequestAdmissionFence < wait*threadPeerAdmissionAttempts {
-		t.Fatalf("the admission fence %s does not cover %d attempts of %s",
-			threadRequestAdmissionFence, threadPeerAdmissionAttempts, wait)
+	// A row still being admitted is fenced out of the poll for as long as
+	// an attempt's handler could admit it, counted from the last attempt.
+	if wait := threadPeerCallWait("ThreadToolCall"); threadRequestDispatchFence < wait {
+		t.Fatalf("the dispatch fence %s does not cover an attempt of %s", threadRequestDispatchFence, wait)
+	}
+	if row.NextCheck < called.Add(threadRequestDispatchFence).UnixMilli() {
+		t.Fatalf("the lost request is first polled at %s, before the fence of its attempts from %s",
+			time.UnixMilli(row.NextCheck), called)
 	}
 	inFlight := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: inFlight, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
 		TargetComputerID: pair.computer, State: store.ThreadRequestUnconfirmed,
-		NextCheck: time.Now().Add(threadRequestAdmissionFence).UnixMilli(),
+		NextCheck: time.Now().Add(threadRequestDispatchFence).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert the row being admitted: %v", err)
 	}
@@ -1182,7 +1205,7 @@ func TestARecoveredRemoteForkRecordsItsInstructions(t *testing.T) {
 			collected = true
 		case <-time.After(100 * time.Millisecond):
 			// pair.poll skips the fence that keeps the poller off a row
-			// while its attempts are out (threadRequestAdmissionFence), so
+			// while its attempts are out (threadRequestDispatchFence), so
 			// it waits for the last of them to be answered.
 			if faults.calls.Load() >= int32(threadPeerAdmissionAttempts) {
 				pair.poll(t)

@@ -1273,22 +1273,23 @@ and why.
 
 An attempt whose failure may have reached the destination, a lost reply
 or a dropped connection, is tried again with the same token, up to three
-attempts. A destination that advertises `thread-tools.v2` is sent the
-call again. An older one would settle a row whose thread is still being
-made and let that thread run, so a spawn or ask, which makes a thread,
-is not sent to it again: its row is read with `ThreadToolRequestStatus`
-and followed, and only an answer that the token is unknown sends the
-call again. A send makes nothing and is sent again to either. When no
-attempt brought back the destination's row and any may have reached it,
-the request stays `unconfirmed` and the call returns its token, never
-only an error, even when a later attempt was refused, because the lost
-reply may have been an acceptance. When the row came back but this
-computer could not record it or read the request back, the call returns
-the token with the state the destination reported and says what failed.
-Either way the watcher (below) reconciles the request against the
-destination, and a destination holding no row for it settles the request
-`refused` so the caller is never left waiting for something that never
-started.
+attempts. A send makes nothing and is sent again to any destination. A
+spawn or an ask is sent again only to a destination that advertises
+`thread-tools.v2`: an older one would settle a row whose thread is still
+being made and let that thread run, so such a call is never sent to it
+twice, whatever its status says. When no attempt brought back the
+destination's row and any may have reached it, the request stays
+`unconfirmed` and the call returns its token, never only an error, even
+when a later attempt was refused, because the lost reply may have been
+an acceptance. When the row came back but this computer could not record
+it or read the request back, the call returns the token with the state
+the destination reported and says what failed. Either way the watcher
+(below) reconciles the request against the destination. It first asks
+one call's wait after the last attempt that may have reached it (the
+dispatch fence), when that attempt's handler can no longer admit the
+token, so a destination holding no row for it then never started it and
+the request is settled `refused`: the caller is never left waiting for
+something that never started.
 
 A request that cannot be started is answered by its own call. A spawn
 whose worktree git refuses, a send whose message the target's queue
