@@ -1635,8 +1635,9 @@ func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
 	if receipt.State != store.ThreadReceiptCancelled {
 		t.Fatalf("the destination's receipt is %q, want cancelled", receipt.State)
 	}
-	if row := pair.request(t, spawn.Token); row.Notify {
-		t.Fatalf("a cancelled request kept its wake: %+v", row)
+	// The report told the agent, so no wake tells it again.
+	if row := pair.request(t, spawn.Token); row.DeliveredHow != store.ThreadWakeInline {
+		t.Fatalf("a cancelled request was not delivered by its report: %+v", row)
 	}
 	// The settlement came back on the cancel's reply, so no poll will
 	// acknowledge it.
