@@ -137,7 +137,11 @@ func TestRemoteOwnershipMigrationOwesTheAcknowledgementsAnUpgradeMayHaveLost(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for rows.Next() {
 		var token string
 		var owed, next int64
