@@ -144,7 +144,8 @@ func (a *App) noteRemotePrompts(origin attachedbackends.PeerRead, spawn store.Th
 			done <- nil
 			return
 		}
-		done <- origin.Commit(func() error { return a.reconcileRemotePrompts(spawn, prompts) })
+		name := a.remoteComputerNames()[spawn.TargetComputerID]
+		done <- origin.Commit(func() error { return a.reconcileRemotePrompts(spawn, prompts, name) })
 	}) {
 		done <- context.Canceled
 	}
@@ -167,7 +168,7 @@ func (r *remoteWorkerPrompts) knows(spawnToken string) bool {
 // that are new, or that an earlier answer left out, and closes those no
 // longer listed, withdrawing their wakes. It runs on the prompts' serial
 // queue.
-func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadAgentPrompt) error {
+func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadAgentPrompt, name string) error {
 	r := &a.workerPrompts.remote
 	now := time.Now()
 	byToken := make(map[string]ThreadAgentPrompt, len(listed))
@@ -204,7 +205,6 @@ func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadA
 			withdraw = append(withdraw, *prompt)
 		}
 	}
-	name := a.remoteComputerNames()[spawn.TargetComputerID]
 	for token, listing := range byToken {
 		key := remotePromptKey{computerID: spawn.TargetComputerID, token: token}
 		prompt := r.byKey[key]

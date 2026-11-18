@@ -74,6 +74,8 @@ type Manager struct {
 	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
 	activationProbe time.Duration
 
+	// The profile lock serializes replacement. Release mu before waiting on a
+	// carrier fence. A fenced observation consumes already-resolved manager data.
 	mu       sync.Mutex
 	carriers map[string]*carrier
 	// verdicts holds, per computer whose last pairing it ended with its
@@ -159,19 +161,18 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	}
 	defer unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return nil, ErrClosed
 	}
-	if held, ok := m.carriers[id]; ok {
-		if !held.client.Retired() {
-			return held, nil
-		}
-		// A retired owner never authorizes again: the far side ended its
-		// session, or another process re-paired over its profile. Either
-		// way the file on disk is the current answer, so it is read again
-		// rather than cached as a client that answers 503 until restart.
-		delete(m.carriers, id)
+	held := m.carriers[id]
+	if held != nil && !held.client.Retired() {
+		m.mu.Unlock()
+		return held, nil
+	}
+	delete(m.carriers, id)
+	m.mu.Unlock()
+	if held != nil {
 		held.leave(errPairingReplaced)
 	}
 	session, err := deviceclient.LoadSession(m.dir, id)
@@ -185,6 +186,11 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	built, err := newCarrier(client, id)
 	if err != nil {
 		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, ErrClosed
 	}
 	m.wire(built, id)
 	m.carriers[id] = built
@@ -438,12 +444,13 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 // grant this primitive never touches, so own-device re-enrollment preserves it.
 func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
 	m.mu.Lock()
-	if old := m.carriers[link.BackendID]; old != nil {
+	old := m.carriers[link.BackendID]
+	delete(m.carriers, link.BackendID)
+	m.mu.Unlock()
+	if old != nil {
 		old.leave(errPairingReplaced)
 		old.client.Retire()
 	}
-	delete(m.carriers, link.BackendID)
-	m.mu.Unlock()
 	label, err := m.localLabel()
 	if err != nil {
 		return Attachment{}, err
