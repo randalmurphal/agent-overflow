@@ -18,8 +18,6 @@ var ownerWaitBound = transport.MethodBudget("ThreadOwnerChanges") - transport.Me
 
 // OwnerCursor records the activity and structural changes already received.
 type OwnerCursor struct {
-	// PromptsOnly reads priority changes without acknowledging ordinary activity.
-	PromptsOnly bool `json:"promptsOnly,omitempty"`
 	// AfterRevision is the largest structural revision recorded as owed.
 	AfterRevision int64 `json:"afterRevision,omitempty"`
 	// Launch identifies the process that published Version.
@@ -165,13 +163,8 @@ func (o *ownerActivity) snapshot(d *deviceActivity, launch string, cursor OwnerC
 	if !answer.Reset {
 		for token, entry := range d.entries {
 			if entry.version <= cursor.Version {
-				if !cursor.PromptsOnly {
-					delete(d.entries, token)
-					d.discarded = max(d.discarded, entry.version)
-				}
-				continue
-			}
-			if cursor.PromptsOnly && !entry.prompt {
+				delete(d.entries, token)
+				d.discarded = max(d.discarded, entry.version)
 				continue
 			}
 			answer.Tokens = append(answer.Tokens, token)
@@ -232,14 +225,12 @@ func (a *App) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (Owner
 		if answer.Reset {
 			answer.AfterRevision = 0
 		}
-		if !cursor.PromptsOnly {
-			answer.Structural, err = a.store.SpawnRevisionsAfter(device, answer.AfterRevision, threadPeerTokenLimit)
-			if err != nil {
-				return OwnerChanges{}, err
-			}
-			if len(answer.Structural) > 0 {
-				answer.AfterRevision = answer.Structural[len(answer.Structural)-1].Revision
-			}
+		answer.Structural, err = a.store.SpawnRevisionsAfter(device, answer.AfterRevision, threadPeerTokenLimit)
+		if err != nil {
+			return OwnerChanges{}, err
+		}
+		if len(answer.Structural) > 0 {
+			answer.AfterRevision = answer.Structural[len(answer.Structural)-1].Revision
 		}
 		if answer.Reset || len(answer.Tokens)+len(answer.Structural) > 0 {
 			return answer, nil

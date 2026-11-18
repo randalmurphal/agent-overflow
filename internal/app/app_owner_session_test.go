@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -25,19 +24,40 @@ func TestNewPromptReachesItsOwnerWhileAnOrdinaryReadIsHeld(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("ordinary read never arrived")
 	}
-	// Fill B's bounded change log while the sole ordinary reader still holds its reply.
-	for i := range ownerChangeLimit {
-		p.dest.ownerActivity.note(owner, strconv.Itoa(i), false)
-	}
-	waitUntil(t, 5*time.Second, func() bool {
-		o := &p.source.ownerUpdates
-		o.mu.Lock()
-		defer o.mu.Unlock()
-		return len(o.peers[p.computer].owed) >= ownerChangeLimit
-	})
 	approvalOn(t, p.dest, p.worker, "priority")
 	p.openThere(t, 1)
 	waitUntil(t, 3*time.Second, func() bool { return len(remoteWakes(t, p.source, p.caller.ID)) == 1 })
+}
+
+func TestOwnerDropsAnEditWhoseLocalRequestIsGone(t *testing.T) {
+	pair := newReachPair(t)
+	spawn, child := remoteRestedWorker(t, pair)
+	owner := pair.receipt(t, spawn.Token).OwnerDeviceID
+	first, origin, err := pair.source.waitOwnerChanges(t.Context(), pair.computer, OwnerCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execOnStore(t, pair.dbPath, "DELETE FROM thread_requests WHERE token=?", spawn.Token)
+	if err := pair.dest.RenameThread(child, "after local pruning"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(origin.Bind(t.Context()), 5*time.Second)
+	defer cancel()
+	change, from, err := pair.source.waitOwnerChanges(ctx, pair.computer, first.OwnerCursor)
+	if err != nil || change.Reset || len(change.Structural) != 1 || change.Structural[0].Token != spawn.Token {
+		t.Fatalf("expected edit for pruned request, got %+v, %v", change, err)
+	}
+	s := ownerSession{app: pair.source, peer: &ownerPeer{owed: map[string]ownerObligation{}}, id: pair.computer, launch: first.Launch, scope: pair.source.ownerReads.start(ctx, pair.computer, nil)}
+	if err := s.observe(ctx, change, from); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.peer.owed) != 0 {
+		t.Fatalf("queued work for a pruned request: %v", s.peer.owed)
+	}
+	pending, err := pair.dest.store.PendingSpawnRevisions(owner, "", 1)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("obsolete revision still pending: %v, %v", pending, err)
+	}
 }
 
 func TestIdleUnfollowedTargetCostsNoRowReads(t *testing.T) {

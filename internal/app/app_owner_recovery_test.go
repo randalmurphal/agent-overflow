@@ -115,7 +115,7 @@ func TestRecoveryPagesEveryActiveTokenUnderAnArchivedParent(t *testing.T) {
 	}
 	owner := pair.receipt(t, pair.spawn.Token).OwnerDeviceID
 	var tokens []string
-	for range ownerChangeLimit + 1 {
+	for range ownerPageSize + 1 {
 		key := newThreadRequestToken()
 		_, _, err := pair.dest.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{Token: key, OwnerDeviceID: owner, SourceThreadID: pair.caller.ID, Kind: store.ThreadRequestSend, TargetThreadID: child})
 		if err != nil {

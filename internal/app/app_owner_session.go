@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"sync"
 
@@ -27,9 +28,6 @@ type ownerSession struct {
 	launch            string
 	ordinary, prompts chan struct{}
 	generation        uint64
-	// progress and resume are guarded with the peer's debt under ownerUpdates.mu.
-	progress chan struct{}
-	resume   context.CancelFunc
 }
 
 func (a *App) waitOwnerChanges(ctx context.Context, id string, cursor OwnerCursor) (OwnerChanges, attachedbackends.PeerRead, error) {
@@ -65,7 +63,6 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 		s.scope = ownerRead{owner: &a.ownerReads, generation: a.ownerReads.generationLocked(id)}
 		a.ownerUpdates.mu.Lock()
 		defer a.ownerUpdates.mu.Unlock()
-		s.progress = make(chan struct{})
 		p.origin = origin
 		p.ready, p.legacy, p.launch, p.disconnected = false, false, first.Launch, origin.Disconnected()
 		if p.owed == nil {
@@ -124,70 +121,13 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 			break
 		}
 		cursor = answer.OwnerCursor
-		if s.full() {
-			if err := s.waitForRoom(ctx, cursor); err != nil {
-				cancel(err)
-				break
-			}
-		}
 	}
 	return context.Cause(ctx)
 }
 
-// While normal reads have filled the queue, B retains their cursor. The priority
-// cursor can advance independently until the ordinary reader makes room.
-func (s *ownerSession) waitForRoom(ctx context.Context, cursor OwnerCursor) error {
-	hints, stop := context.WithCancel(ctx)
-	defer stop()
-	s.app.ownerUpdates.mu.Lock()
-	if len(s.peer.owed) < ownerChangeLimit {
-		s.app.ownerUpdates.mu.Unlock()
-		return nil
-	}
-	s.resume = stop
-	s.app.ownerUpdates.mu.Unlock()
-	defer func() { s.app.ownerUpdates.mu.Lock(); s.resume = nil; s.app.ownerUpdates.mu.Unlock() }()
-	for hints.Err() == nil {
-		cursor.PromptsOnly = true
-		answer, from, err := s.app.waitOwnerChanges(hints, s.id, cursor)
-		if hints.Err() != nil {
-			return ctx.Err()
-		}
-		if err != nil {
-			return err
-		}
-		if err = s.observe(ctx, answer, from); err != nil {
-			return err
-		}
-		cursor = answer.OwnerCursor
-		// Only one extra priority page is admitted under backpressure.
-		if err = s.waitPriorityPage(hints, answer.PromptTokens); err != nil {
-			return ctx.Err()
-		}
-	}
-	return ctx.Err()
-}
-
-func (s *ownerSession) waitPriorityPage(ctx context.Context, keys []string) error {
-	for len(keys) > 0 {
-		s.app.ownerUpdates.mu.Lock()
-		keys = slices.DeleteFunc(keys, func(key string) bool { return !s.peer.owed[key].prompt })
-		room := s.progress
-		s.app.ownerUpdates.mu.Unlock()
-		if len(keys) > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-room:
-			}
-		}
-	}
-	return nil
-}
-
 func (s *ownerSession) observe(ctx context.Context, answer OwnerChanges, from attachedbackends.PeerRead) error {
-	keys := append(slices.Clone(answer.Tokens), ownerRevisionTokens(answer.Structural)...)
-	return s.scope.commit(from, s.launch, nil, func() error {
+	var obsolete []store.SpawnRevisionAck
+	err := s.scope.commit(from, s.launch, nil, func() error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -195,10 +135,14 @@ func (s *ownerSession) observe(ctx context.Context, answer OwnerChanges, from at
 			s.app.invalidateOwnerTreesLocked(s.id, nil)
 			return errOwnerCursorReset
 		}
-		s.app.ownerReads.changedLocked(keys)
-		s.record(answer, from, keys)
-		return nil
+		var err error
+		obsolete, err = s.record(answer, from)
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	return s.app.ackOwnerEdits(ctx, s.id, s.launch, obsolete)
 }
 
 var errOwnerCursorReset = errors.New("peer activity cursor reset")
@@ -210,34 +154,51 @@ func signalOwner(ch chan struct{}) {
 	}
 }
 
-func (s *ownerSession) full() bool {
-	s.app.ownerUpdates.mu.Lock()
-	defer s.app.ownerUpdates.mu.Unlock()
-	return len(s.peer.owed) >= ownerChangeLimit
-}
-
-func (s *ownerSession) record(answer OwnerChanges, origin attachedbackends.PeerRead, keys []string) {
+// record admits only this computer's local requests, including lineage-only spawns.
+// A receipt or edit on the destination can outlive its row here.
+func (s *ownerSession) record(answer OwnerChanges, origin attachedbackends.PeerRead) ([]store.SpawnRevisionAck, error) {
+	changes := make(map[string]ownerObligation, len(answer.Tokens)+len(answer.Structural))
+	for _, key := range answer.Tokens {
+		changes[key] = ownerObligation{}
+	}
+	for _, key := range answer.PromptTokens {
+		changes[key] = ownerObligation{prompt: true}
+	}
+	for _, edit := range answer.Structural {
+		entry := changes[edit.Token]
+		entry.edit = edit
+		changes[edit.Token] = entry
+	}
+	keys, err := s.app.store.OwnerRequestTokens(s.id, slices.Collect(maps.Keys(changes)))
+	if err != nil {
+		return nil, err
+	}
+	s.app.ownerReads.changedLocked(keys)
 	s.app.ownerUpdates.mu.Lock()
 	defer s.app.ownerUpdates.mu.Unlock()
 	s.peer.disconnected = origin.Disconnected()
 	s.generation++
-	for _, token := range keys {
-		entry := s.peer.owed[token]
+	for _, key := range keys {
+		entry := s.peer.owed[key]
+		change := changes[key]
 		entry.generation = s.generation
-		s.peer.owed[token] = entry
+		entry.prompt = entry.prompt || change.prompt
+		if change.edit.Revision != 0 {
+			entry.edit = change.edit
+		}
+		s.peer.owed[key] = entry
+		delete(changes, key)
 	}
-	for _, token := range answer.PromptTokens {
-		entry := s.peer.owed[token]
-		entry.prompt = true
-		s.peer.owed[token] = entry
-	}
-	for _, edit := range answer.Structural {
-		entry := s.peer.owed[edit.Token]
-		entry.edit = edit
-		s.peer.owed[edit.Token] = entry
+	var obsolete []store.SpawnRevisionAck
+	for key, change := range changes {
+		delete(s.peer.owed, key)
+		if change.edit.Revision != 0 {
+			obsolete = append(obsolete, change.edit.SpawnRevisionAck)
+		}
 	}
 	signalOwner(s.prompts)
 	signalOwner(s.ordinary)
+	return obsolete, nil
 }
 
 func (s *ownerSession) read(ctx context.Context, prompt bool) error {
@@ -284,11 +245,6 @@ func (s *ownerSession) read(ctx context.Context, prompt bool) error {
 				if s.peer.owed[key] == entry {
 					delete(s.peer.owed, key)
 				}
-			}
-			close(s.progress)
-			s.progress = make(chan struct{})
-			if s.resume != nil && len(s.peer.owed) < ownerChangeLimit {
-				s.resume()
 			}
 			s.app.ownerUpdates.mu.Unlock()
 			return nil
