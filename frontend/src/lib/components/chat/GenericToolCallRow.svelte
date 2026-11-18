@@ -112,6 +112,10 @@
       return entry ? backendDisplayName(entry) : remoteJobComputerName(item.threadId, id);
     },
     job: (requestId) => remoteJobRecord(item.threadId, requestId)?.label ?? '',
+    jobComputer: (computerId, requestId) => {
+      const record = remoteJobRecord(item.threadId, requestId);
+      return record?.computerId === computerId ? (record.computerName ?? '') : '';
+    },
     page: (pageId) => {
       const page = browserCompanionState(item.threadId)?.pages?.find((p) => p.id === pageId);
       return page?.label || page?.title || '';

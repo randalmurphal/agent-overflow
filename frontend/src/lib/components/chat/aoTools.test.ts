@@ -24,9 +24,13 @@ const id = '98312d67-1111-2222-3333-444444444444';
 // What a row can name: an attached computer, the thread's jobs, its live pages.
 const named = 'feedbeef-1111-2222-3333-444444444444';
 const namedRun = 'c0ffee00-1111-2222-3333-444444444444';
+// A command a replaced pairing started, whose record names the computer as
+// it was named then.
+const replacedJob = 'decade00-1111-2222-3333-444444444444';
 const names: AoToolNames = {
   computer: (computer) => (computer === 'mac' ? 'Macaroni-air' : ''),
   job: (request) => (request === id ? 'Go tests' : ''),
+  jobComputer: (computer, request) => (computer === 'mac' && request === replacedJob ? 'GPU computer' : ''),
   page: (page) => (page === 'p1' ? 'Checkout' : ''),
   thread: (thread) => (named.startsWith(thread) ? 'Release notes' : ''),
   threadId: (thread) => (named.startsWith(thread) ? named : ''),
@@ -68,6 +72,16 @@ describe('AO tool presentation', () => {
     it('names the computer through the names a row can see', () => {
       const p = aoToolPresentation(meta(REMOTE_TOOLS_SERVER, 'remote_run', { computer_id: 'mac', argv: ['make'] }), names)!;
       expect(p.computerName).toBe('Macaroni-air');
+    });
+
+    it("names a command's computer as its record does, over the name a newer pairing gives it", () => {
+      for (const tool of ['remote_run', 'remote_status']) {
+        const call = meta(REMOTE_TOOLS_SERVER, tool, { computer_id: 'mac', request_id: replacedJob, argv: ['make'] });
+        expect(aoToolPresentation(call, names)!.computerName).toBe('GPU computer');
+        expect(aoToolFacts(call, names)).toContainEqual({ label: 'computer', value: 'GPU computer' });
+      }
+      const other = meta(REMOTE_TOOLS_SERVER, 'remote_status', { computer_id: 'other', request_id: replacedJob });
+      expect(aoToolPresentation(other, names)!.computerName).toBe('');
     });
 
     it('describes a script by its interpreter', () => {

@@ -1,10 +1,12 @@
 // What a person sees when a paired computer's answer or the pairing itself
 // ends before this computer hears of it: a late reply the other computer
 // dropped before it was collected reads so on the caller's Agents row, with
-// the first answer kept; and a command running there when that computer
-// revokes this one is told to its thread once, finished with its outcome
-// unknown, naming that computer as the person knew it, and its transcript
-// row says why.
+// the first answer kept; a command running there when the person pairs
+// with that computer again names it as it was named when the command
+// started, though the new pairing is live under another name; and a
+// command running there when that computer revokes this one is told to its
+// thread once, finished with its outcome unknown, naming that computer as
+// the person knew it, and its transcript row says why.
 // Specs: docs/specs/agent-thread-tools.md ("Wakes from another computer",
 // "Reaching another computer"), docs/architecture/remote-commands.md.
 import { randomUUID } from 'node:crypto';
@@ -36,7 +38,11 @@ test.beforeAll(async () => {
     pairing.close();
   }
   await home.rpc('RenameBackend', remoteID, 'GPU computer');
-  // Remote commands there, which the second case starts.
+  await enableRemoteCommands();
+});
+
+/** Remote commands on the paired computer, which a pairing starts with off. */
+async function enableRemoteCommands(): Promise<void> {
   await expect
     .poll(async () => {
       try {
@@ -47,7 +53,7 @@ test.beforeAll(async () => {
       }
     }, { timeout: 30_000 })
     .toBe('enabled');
-});
+}
 
 test.beforeEach(() => {
   home.clearEvents();
@@ -148,6 +154,72 @@ test('a late reply the other computer dropped before it was collected reads as e
   await expect(row.getByTestId('agent-tray-row-digest-answer')).toHaveText('The notes are written.');
   await expect(row.getByTestId('agent-tray-row-digest-late-expired')).toContainText('expired there before it was collected');
   await row.screenshot({ path: test.info().outputPath('late-reply-expired.png'), animations: 'disabled' });
+});
+
+test('a command a replaced pairing started names the computer as it was named then', async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(30_000);
+  const builder = await seed(home, 'replaced-builder', ['Replaced builder']);
+  const there = await seed(remote, 'replaced-build', []);
+  const finish = join(there.path, 'build.release');
+  await setScenario(home, builder.path, threadToolsScenario({
+    name: 'replaced-builder-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        server: 'ao-remote-tools',
+        tool: 'remote_run',
+        args: {
+          computer_id: remoteID, project_id: there.projectId, request_id: randomUUID(), label: 'release build',
+          argv: ['sh', '-c', `while [ ! -f '${finish}' ]; do sleep 0.1; done`], wait_seconds: 0,
+        },
+      } }], text: 'The build runs over there.' },
+      { text: 'Its outcome is unknown.' },
+    ],
+    afterTurns: 'silent',
+  }));
+  await home.rpc('StartSession', builder.threadIds[0]);
+  await home.rpc('SendMessage', builder.threadIds[0], 'run the release build over there', null);
+  const started = await home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: builder.path, timeoutMs: 60_000 });
+  expect(started.report.isError, started.report.result).toBeFalsy();
+  expect(started.report.result).toContain('"backgrounded":true');
+  await awaitTurnCompleted(home, builder.threadIds[0]);
+
+  // The person pairs with that computer again. The new pairing carries no
+  // nickname, so it is live under that computer's own name.
+  const told = home.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === builder.path && (ev.report.input ?? '').includes('Result: unknown'),
+    90_000,
+  );
+  const pairing = await headlessPairing(remote);
+  try {
+    const attachment = await home.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
+    expect(attachment.id).toBe(remoteID);
+    await pairing.confirm(attachment.verificationNumber);
+  } finally {
+    pairing.close();
+  }
+  const live = (await home.rpc<{ id: string; name: string; nickname?: string }[]>('ListBackends')).find((b) => b.id === remoteID)!;
+  expect(live.nickname ?? '').toBe('');
+  expect(live.name).not.toBe('GPU computer');
+  const input = (await told).report.input ?? '';
+  expect(input).toContain('Remote job finished on GPU computer');
+  expect(input).not.toContain(live.name);
+  expect(input).toContain("The pairing with this computer ended, so this command's outcome is unknown.");
+  await writeFile(finish, '');
+
+  await home.open(page);
+  await page.getByTestId('thread-row-title').getByText('Replaced builder', { exact: true }).click();
+  const timeline = page.getByRole('log', { name: 'Message History' });
+  await expect(timeline.getByText(/release build on GPU computer.* unknown/)).toBeVisible();
+  await timeline.getByRole('button', { name: /Expand 1 activity row/ }).click();
+  const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
+  await expect(card.locator('[data-machine]').first()).toHaveText('(GPU computer)');
+  await card.screenshot({ path: test.info().outputPath('replaced-command-name.png'), animations: 'disabled' });
+
+  // The next case starts under the new pairing, named as before.
+  await home.rpc('RenameBackend', remoteID, 'GPU computer');
+  await enableRemoteCommands();
 });
 
 // Last: the pairing does not survive it.
