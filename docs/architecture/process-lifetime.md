@@ -73,7 +73,7 @@ lifetime starts nothing.
 | Worktree setup commands (`worktreesetup`, from chat and workflows) | Ends with the backend; kept leftovers outlive it | Reaper |
 | Workflow tool commands (`workflowhost`) | Ends with the backend; kept leftovers outlive it | Reaper |
 | Remote jobs (`remotejobs`) | Ends with the backend | Reaper |
-| Standing agent watch scripts, interval and long-running (`app_agent_wake_runs.go`) | Ends with the backend | Reaper |
+| Standing agent watch scripts, interval and long-running (`app_agent_watch_process.go`) | Ends with the backend | Reaper |
 | Provider update and doctor runs (`app_provider_update.go`) | Ends with the backend | Reaper |
 | ACME DNS hooks (`acmecert`) | Ends with the backend | Reaper |
 | Claude and Codex sessions, and a fork's temporary Codex app-server (`provider.Watched`) | Ends with the backend | Reaper |

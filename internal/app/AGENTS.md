@@ -187,7 +187,8 @@ summaries and Stop All's selection.
 
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
-a watch's failure episode and its notice in `app_agent_watch_failure.go`,
+the run registry in `app_agent_wake_registry.go`, a watch's script and
+process in `app_agent_watch_process.go`, a watch's failure episode and its notice in `app_agent_watch_failure.go`,
 queueing in `app_agent_wake_delivery.go`, rendering in
 `app_agent_wake_render.go`, what a session end gives back in
 `app_agent_wake_teardown.go`, assistant records,
