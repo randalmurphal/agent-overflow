@@ -40,6 +40,11 @@ const (
 	// recordsFolder holds the records folders of the threads, under the
 	// app's config directory, outside every folder a session may write.
 	recordsFolder = "memory-records"
+	// plansFolder holds the plan file of each thread whose sessions receive
+	// memory (PlanFile), beside the records folders.
+	plansFolder = "memory-plans"
+	// maxPlanBytes bounds a plan file a run reads.
+	maxPlanBytes = 4 << 20
 	// maxRecordBytes bounds a record a run reads; a larger one is no
 	// record, and the run delivers the whole memory.
 	maxRecordBytes = 4 << 20
@@ -51,10 +56,18 @@ const (
 // RecordsDir is the records folder of threadID's sessions under the app's
 // config directory.
 func RecordsDir(configDir, threadID string) (string, error) {
-	if threadID == "" || threadID != filepath.Base(threadID) || threadID == "." || threadID == ".." {
-		return "", fmt.Errorf("%q is not a thread id a records folder can be named by", threadID)
+	if err := checkThreadID(threadID); err != nil {
+		return "", err
 	}
 	return filepath.Join(configDir, recordsFolder, threadID), nil
+}
+
+// checkThreadID refuses a thread id a file or folder cannot be named by.
+func checkThreadID(threadID string) error {
+	if threadID == "" || threadID != filepath.Base(threadID) || threadID == "." || threadID == ".." {
+		return fmt.Errorf("%q is not a thread id a memory file can be named by", threadID)
+	}
+	return nil
 }
 
 // PrepareRecords creates a thread's records folder, so a failure to write

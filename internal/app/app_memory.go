@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -168,7 +169,7 @@ func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent,
 	if err := memory.PrepareRecords(plan.Records); err != nil {
 		out.Problems = append(out.Problems, memoryProblem{memoryUnrecorded, err})
 	}
-	hook, err := memoryHook(plan, os.Executable)
+	hook, err := a.memoryHook(thread.ID, plan, os.Executable)
 	if err != nil {
 		out.Problems = append(out.Problems, memoryProblem{memoryUndelivered, err})
 		return out, nil
@@ -179,13 +180,22 @@ func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent,
 	return out, nil
 }
 
-// memoryHook is the hook that delivers plan by running this executable,
-// which locate finds, once per part of the delivery: whole at a start, a
-// compaction and a clear, and what changed at each prompt.
-func memoryHook(plan memory.Plan, locate func() (string, error)) (*provider.SessionStartHook, error) {
+// memoryHook is the hook that delivers plan to threadID's session by
+// running this executable, which locate finds, once per part of the
+// delivery: whole at a start, a compaction and a clear, and what changed at
+// each prompt. It writes the plan to the thread's plan file, which every
+// command names.
+func (a *App) memoryHook(threadID string, plan memory.Plan, locate func() (string, error)) (*provider.SessionStartHook, error) {
 	executable, err := locate()
 	if err != nil {
 		return nil, fmt.Errorf("locate this executable for the hook that delivers memory: %w", err)
+	}
+	planFile, err := memory.PlanFile(a.configDir, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if err := memory.WritePlan(planFile, plan); err != nil {
+		return nil, err
 	}
 	hook := &provider.SessionStartHook{
 		Label:   memory.Label,
@@ -194,11 +204,11 @@ func memoryHook(plan memory.Plan, locate func() (string, error)) (*provider.Sess
 		Failure: memory.HookSubcommand + ":",
 	}
 	for _, part := range plan.Parts() {
-		command, err := memory.HookCommand(executable, memory.AtSessionStart, part, plan)
+		command, err := memory.HookCommand(executable, memory.AtSessionStart, part, planFile)
 		if err != nil {
 			return nil, fmt.Errorf("build the SessionStart hook that delivers memory: %w", err)
 		}
-		prompt, err := memory.HookCommand(executable, memory.AtPrompt, part, plan)
+		prompt, err := memory.HookCommand(executable, memory.AtPrompt, part, planFile)
 		if err != nil {
 			return nil, fmt.Errorf("build the UserPromptSubmit hook that delivers changes to memory: %w", err)
 		}
@@ -218,6 +228,20 @@ func (a *App) forgetMemoryRecords(threadID string) error {
 		return err
 	}
 	return memory.ForgetRecords(dir)
+}
+
+// deleteMemoryFiles deletes the memory files of threadID, which is being
+// deleted: the records of what its sessions were shown, and the plan file
+// its sessions' hooks read.
+func (a *App) deleteMemoryFiles(threadID string) error {
+	if a.configDir == "" {
+		return nil
+	}
+	planFile, err := memory.PlanFile(a.configDir, threadID)
+	if err != nil {
+		return err
+	}
+	return errors.Join(a.forgetMemoryRecords(threadID), memory.RemovePlan(planFile))
 }
 
 // forgetMemoryRecordsAfterCut forgets what threadID's sessions were shown as

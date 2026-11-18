@@ -35,9 +35,9 @@ type DeletePorts struct {
 	ClearAutoReconnect func(threadID string)
 	CleanupAttachments func(threadID string) error
 	CleanupReplayLog   func(threadID string) error
-	// CleanupMemoryRecords deletes the records of what the thread's
-	// sessions were shown as memory.
-	CleanupMemoryRecords func(threadID string) error
+	// CleanupMemoryFiles deletes the records of what the thread's
+	// sessions were shown as memory, and the plan file their hooks read.
+	CleanupMemoryFiles func(threadID string) error
 	// Forget drops the conversation's in-memory settings after its row is
 	// gone, so a delete that fails earlier keeps them.
 	Forget func(threadID string)
@@ -166,9 +166,9 @@ func (s *Service) tearDown(threadID string, ports DeletePorts) error {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
 		}
 	}
-	if ports.CleanupMemoryRecords != nil {
-		if err := ports.CleanupMemoryRecords(threadID); err != nil {
-			errs = append(errs, fmt.Errorf("cleanup memory records: %w", err))
+	if ports.CleanupMemoryFiles != nil {
+		if err := ports.CleanupMemoryFiles(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup memory files: %w", err))
 		}
 	}
 	// Before the row drops, so a failure keeps the record and the next

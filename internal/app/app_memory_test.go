@@ -260,7 +260,22 @@ func requireMemoryRecordsForgotten(t *testing.T, app *App, threadID, label strin
 	}
 }
 
-// Deleting a thread deletes the records of what its sessions were shown.
+// seedMemoryPlan writes threadID's plan file, as a start of its session
+// does, and returns its path.
+func seedMemoryPlan(t *testing.T, app *App, threadID string) string {
+	t.Helper()
+	path, err := memory.PlanFile(app.configDir, threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.WritePlan(path, memory.Plan{User: memory.UserDir(app.configDir)}); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Deleting a thread deletes the records of what its sessions were shown,
+// and the plan file their hooks read.
 func TestDeletingAThreadForgetsItsMemoryRecords(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -269,14 +284,18 @@ func TestDeletingAThreadForgetsItsMemoryRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedMemoryRecords(t, app, thread.ID)
+	plan := seedMemoryPlan(t, app, thread.ID)
 	if err := app.deleteThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	requireMemoryRecordsForgotten(t, app, thread.ID, "the delete")
+	if _, err := os.Stat(plan); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the delete kept the memory plan: %v", err)
+	}
 }
 
-// Deleting an empty draft thread deletes the records a session started for
-// it left.
+// Deleting an empty draft thread deletes the records and the plan file a
+// session started for it left.
 func TestDeletingAnEmptyDraftForgetsItsMemoryRecords(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -285,8 +304,12 @@ func TestDeletingAnEmptyDraftForgetsItsMemoryRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedMemoryRecords(t, app, thread.ID)
+	plan := seedMemoryPlan(t, app, thread.ID)
 	if removed, err := app.DeleteEmptyDraftThread(thread.ID); err != nil || !removed {
 		t.Fatalf("DeleteEmptyDraftThread = %v, %v; want the draft removed", removed, err)
 	}
 	requireMemoryRecordsForgotten(t, app, thread.ID, "the draft's delete")
+	if _, err := os.Stat(plan); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the draft's delete kept the memory plan: %v", err)
+	}
 }

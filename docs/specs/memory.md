@@ -186,8 +186,16 @@ followed, and only a regular file is read: the open does not wait
 
 One hook delivers a session's memory in parts, each a command handler
 of its own: this app's binary (`memory.HookSubcommand`) run with the
-part and the session's delivery plan, the folders and projects below,
-as its arguments. Claude and claude-tui register the handlers in the
+part and the path of the thread's plan file as its arguments. The app
+writes the session's delivery plan, the folders and projects below, to
+that file before the session starts, at one path per thread
+(`<config>/memory-plans/<thread id>.json`), so a command's length does
+not grow with the plan and Codex's trust hash of it does not change
+from one session to the next. The file is outside the records folder,
+which a rollback deletes under a live session, and goes with the
+thread's delete. A run that cannot read it exits 1 with the reason on
+stderr, which the provider reports as a part that did not arrive.
+Claude and claude-tui register the handlers in the
 session's inline `--settings`, Codex in the thread's `config` with the
 trust hash of each command
 ([Codex hooks](../references/codex-wire.md#sessionstart-hooks-verified-01690)),

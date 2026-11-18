@@ -51,7 +51,7 @@ func (s session) runAt(event HookEvent, now time.Time) (context, stderr string) 
 	var errs strings.Builder
 	for _, part := range s.plan.Parts() {
 		var out strings.Builder
-		if code := runHookAt([]string{string(event), string(part), encodedPlan(s.t, s.plan)}, strings.NewReader(string(input)), &out, &errs, now); code != 0 {
+		if code := runHookAt([]string{string(event), string(part), planFile(s.t, s.plan)}, strings.NewReader(string(input)), &out, &errs, now); code != 0 {
 			s.t.Fatalf("%s %s: exit %d, stderr %q", event, part, code, errs.String())
 		}
 		if out.Len() > 0 {
@@ -395,7 +395,7 @@ func TestAPanickingRunDoesNotRefuseThePrompt(t *testing.T) {
 	plan := s.plan
 	plan.Records = filepath.Join(t.TempDir(), "records")
 	var stderr strings.Builder
-	if code := runHookAt([]string{string(AtPrompt), string(PartUser), encodedPlan(t, plan)}, strings.NewReader(`{"session_id":"s1"}`), nil, &stderr, day); code != 1 || !strings.Contains(stderr.String(), HookSubcommand+": ") {
+	if code := runHookAt([]string{string(AtPrompt), string(PartUser), planFile(t, plan)}, strings.NewReader(`{"session_id":"s1"}`), nil, &stderr, day); code != 1 || !strings.Contains(stderr.String(), HookSubcommand+": ") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -410,7 +410,7 @@ func TestASubagentsRunDeliversNothing(t *testing.T) {
 	plan.Records = filepath.Join(t.TempDir(), "records")
 	for _, event := range []HookEvent{AtSessionStart, AtPrompt} {
 		var stdout, stderr strings.Builder
-		if code := runHookAt([]string{string(event), string(PartUser), encodedPlan(t, plan)}, strings.NewReader(`{"session_id":"s1","agent_id":"child-1"}`), &stdout, &stderr, day); code != 0 || stdout.Len() > 0 || stderr.Len() > 0 {
+		if code := runHookAt([]string{string(event), string(PartUser), planFile(t, plan)}, strings.NewReader(`{"session_id":"s1","agent_id":"child-1"}`), &stdout, &stderr, day); code != 0 || stdout.Len() > 0 || stderr.Len() > 0 {
 			t.Fatalf("%s: exit %d, stdout %q, stderr %q", event, code, stdout.String(), stderr.String())
 		}
 	}

@@ -41,7 +41,8 @@ const (
 )
 
 // Plan is what one session's delivery holds. The app makes it from the
-// thread and its assistant; the hook receives it as JSON.
+// thread and its assistant and writes it to the thread's plan file
+// (PlanFile), which the hook reads.
 type Plan struct {
 	// User is the user scope's folder (UserDir).
 	User string `json:"user"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -651,30 +652,62 @@ func TestMemoryHookRefusesWhatItCannotRun(t *testing.T) {
 	t.Parallel()
 	plan := memory.Plan{User: t.TempDir(), Home: t.TempDir(), Records: t.TempDir()}
 	exe := filepath.Join(t.TempDir(), "agent-overflow")
-	if hook, err := memoryHook(memory.Plan{User: plan.User, Home: plan.Home}, func() (string, error) { return exe, nil }); hook != nil ||
-		err == nil || err.Error() != "build the UserPromptSubmit hook that delivers changes to memory: a prompt's memory hook needs the records folder" {
-		t.Fatalf("a plan without records: %v, %v", hook, err)
+	blocked := &App{configDir: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(blocked.configDir, "memory-plans"), nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if hook, err := memoryHook(plan, func() (string, error) { return "", errors.New("no /proc") }); hook != nil ||
+	if hook, err := blocked.memoryHook("thread-1", plan, func() (string, error) { return exe, nil }); hook != nil ||
+		err == nil || !strings.HasPrefix(err.Error(), "write the memory plan: ") {
+		t.Fatalf("a plan file that cannot be written: %v, %v", hook, err)
+	}
+	app := &App{configDir: t.TempDir()}
+	if hook, err := app.memoryHook("thread-1", plan, func() (string, error) { return "", errors.New("no /proc") }); hook != nil ||
 		err == nil || err.Error() != "locate this executable for the hook that delivers memory: no /proc" {
 		t.Fatalf("a failed lookup: %v, %v", hook, err)
 	}
-	if hook, err := memoryHook(plan, func() (string, error) { return "agent-overflow", nil }); hook != nil ||
+	if hook, err := app.memoryHook("thread-1", plan, func() (string, error) { return "agent-overflow", nil }); hook != nil ||
 		err == nil || !strings.HasPrefix(err.Error(), "build the SessionStart hook that delivers memory: ") {
 		t.Fatalf("a relative executable: %v, %v", hook, err)
 	}
-	hook, err := memoryHook(plan, func() (string, error) { return exe, nil })
+	hook, err := app.memoryHook("thread-1", plan, func() (string, error) { return exe, nil })
 	if err != nil || hook == nil {
 		t.Fatalf("hook = %+v, %v", hook, err)
 	}
+	planFile, _ := memory.PlanFile(app.configDir, "thread-1")
 	want := provider.SessionStartHook{Label: memory.Label, Ending: memory.Ending, Stamp: memory.StampPrefix, Failure: memory.HookSubcommand + ":"}
 	for _, part := range plan.Parts() {
-		start, _ := memory.HookCommand(exe, memory.AtSessionStart, part, plan)
-		prompt, _ := memory.HookCommand(exe, memory.AtPrompt, part, plan)
+		start, _ := memory.HookCommand(exe, memory.AtSessionStart, part, planFile)
+		prompt, _ := memory.HookCommand(exe, memory.AtPrompt, part, planFile)
 		want.Parts = append(want.Parts, provider.SessionStartPart{Command: start, PromptCommand: prompt, Heading: plan.HeadingOf(part)})
 	}
 	if !reflect.DeepEqual(*hook, want) {
 		t.Errorf("hook = %+v\nwant %+v", *hook, want)
+	}
+}
+
+// The hook commands carry the plan's file, not the plan, so an assistant
+// serving a large catalog launches with the same commands as one serving a
+// project, and its hooks still deliver every project.
+func TestMemoryHookCommandsDoNotGrowWithTheCatalog(t *testing.T) {
+	t.Parallel()
+	app, thread, _, argvPath := unreadableHomeFixture(t)
+	if _, found, err := app.store.SetAgentProjects(thread.ID, true, nil); err != nil || !found {
+		t.Fatalf("serve every project: %v %v", found, err)
+	}
+	small := claudeStarted(app, thread.ID, argvPath)(t)
+	var last string
+	for i := range 200 {
+		last = fmt.Sprintf("/home/user/src/github.com/example-org-%03d/service-%03d-backend", i, i)
+		if _, err := app.store.CreateProject(store.Project{ID: fmt.Sprintf("catalog-%03d", i), Path: last, Name: fmt.Sprintf("service-%03d-backend", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	large := claudeStarted(app, thread.ID, argvPath)(t)
+	if !slices.Equal(large.hooks, small.hooks) || !slices.Equal(large.prompts, small.prompts) {
+		t.Fatalf("the commands changed with the catalog:\n%q\n%q", small.hooks, large.hooks)
+	}
+	if got := runMemoryHook(t, large.hooks); !strings.Contains(got, last) {
+		t.Fatalf("the delivery leaves out %s:\n%s", last, got)
 	}
 }
 
