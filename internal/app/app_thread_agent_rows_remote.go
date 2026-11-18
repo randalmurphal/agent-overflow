@@ -111,18 +111,7 @@ func (a *App) cachedPeerSpawnFor(token string) (store.ThreadRequest, bool) {
 	return store.ThreadRequest{}, false
 }
 
-// refreshPeerAgentRows queues the spawn to be asked about in the
-// background, unless its computer is no longer paired.
-func (a *App) refreshPeerAgentRows(spawn store.ThreadRequest, minAge time.Duration) {
-	if paired, err := a.peerPaired(spawn.TargetComputerID); err != nil {
-		log.Printf("agent rows: look up computer %s: %v", spawn.TargetComputerID, err)
-	} else if paired {
-		a.refreshPairedPeerAgentRows(spawn, minAge)
-	}
-}
-
-// refreshPairedPeerAgentRows is refreshPeerAgentRows for a spawn whose
-// computer the caller found paired. It queues the spawn unless it is
+// refreshPairedPeerAgentRows queues a paired spawn unless it is already
 // queued, its answer is newer than minAge, or its computer is backing off.
 // A spawn being asked now is marked to be asked once more when its call
 // returns. A full queue drops its oldest spawn, whose caller is told to
