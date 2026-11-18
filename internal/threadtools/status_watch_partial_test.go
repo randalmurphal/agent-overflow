@@ -65,6 +65,60 @@ func TestStatusWatchWaitsOnWhatResolvedWhenAComputerMissesTheLookup(t *testing.T
 	}
 }
 
+// silentLookupPeer is a computer that answers no lookup until the call gives
+// up on it.
+type silentLookupPeer struct {
+	*serverPeer
+}
+
+func (p silentLookupPeer) Resolve(ctx context.Context, _ string) (Resolution, error) {
+	<-ctx.Done()
+	return Resolution{}, ctx.Err()
+}
+
+// TestUnansweredLookupsCostTheCallOneDeadline: two references a silent
+// computer may hold, listed around a local thread that rests: one this
+// computer has never seen, and one it moved to that computer, whose lookup
+// there runs after the fan-out. Their lookups run together under one
+// deadline, so the wake comes back within one ResolutionTimeout, not one
+// per reference, and the rows keep the order the call listed them in.
+func TestUnansweredLookupsCostTheCallOneDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPair(t)
+		restingLocal(p)
+		studio := p.peer.computer
+		p.local.peers[studio.ID] = silentLookupPeer{serverPeer: p.peer}
+		p.local.movedRefs = []string{thirdThreadID}
+		p.local.movedTo, p.local.movedToName = studio.ID, studio.Name
+
+		started := time.Now()
+		result := call(t, p.server, localCaller(), "thread_status",
+			`{"thread_ids":["`+remoteThreadID+`","`+localThreadID+`","`+thirdThreadID+`"],"wait_seconds":1}`)
+		if took := time.Since(started); took > ResolutionTimeout {
+			t.Fatalf("the wake came back after %v, want within one lookup deadline (%v)", took, ResolutionTimeout)
+		}
+		if result["woke_on"] != localThreadID {
+			t.Fatalf("woke_on = %v, want the local thread", result["woke_on"])
+		}
+		threads := rows(t, result["threads"])
+		if len(threads) != 3 {
+			t.Fatalf("threads = %v, want all three references", threads)
+		}
+		for index, want := range []struct{ id, state, computer string }{
+			{remoteThreadID, StateUnresolved, ""}, {localThreadID, StateIdle, ""}, {thirdThreadID, StateUnresolved, studio.ID},
+		} {
+			row := object(t, threads[index])
+			if computer, _ := row["computer_id"].(string); row["thread_id"] != want.id || row["state"] != want.state ||
+				(want.computer != "" && computer != want.computer) {
+				t.Fatalf("row %d = %v, want %s %s", index, row, want.id, want.state)
+			}
+		}
+		if failures := rows(t, result["errors"]); len(failures) != 1 || field(t, failures[0], "computer_id") != studio.ID {
+			t.Fatalf("errors = %v, want Studio once", failures)
+		}
+	})
+}
+
 // TestStatusWatchNamesTheOwnerOfAMovedThreadThatDidNotAnswer: a thread this
 // computer moved to Studio is Studio's, so when Studio does not answer its
 // lookup the unresolved row names Studio.

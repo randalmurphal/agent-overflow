@@ -262,7 +262,7 @@ func (c *session) askComputer(ctx context.Context, computer Computer, ref string
 // only; the others still answer.
 func (c *session) askEveryone(ctx context.Context, ref string) []resolveAnswer {
 	everyone := append([]Computer{c.self()}, c.computers...)
-	return eachComputer(ctx, ResolutionTimeout, everyone, func(ctx context.Context, computer Computer) resolveAnswer {
+	return concurrently(ctx, ResolutionTimeout, everyone, func(ctx context.Context, computer Computer) resolveAnswer {
 		return c.askComputer(ctx, computer, ref)
 	})
 }

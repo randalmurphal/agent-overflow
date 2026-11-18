@@ -697,7 +697,9 @@ target becomes blocked on a person (a pending approval or a question
 to the user), with the request still open; duplicates and the caller's
 own thread are refused, as is an ambiguous reference. A wait reports
 what it observed, thread by thread. A computer that does not answer
-has its threads read `unavailable` and is named under `errors`. A
+has its threads read `unavailable` and is named under `errors`. The
+references are looked up together, following a recorded move
+included, under one 10-second bound. A
 reference that matched nothing on the computers that answered while
 another did not answer its lookup reads `unresolved`, named by the
 reference and under a computer only when a recorded move names it,

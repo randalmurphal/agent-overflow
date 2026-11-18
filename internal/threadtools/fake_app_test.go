@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -457,13 +458,14 @@ type serverPeer struct {
 	queries  []string
 	invokes  []string
 	fetched  []string
-	resolves int
+	// resolves counts lookups, which one call may run concurrently.
+	resolves atomic.Int32
 }
 
 func (p *serverPeer) Computer() Computer { return p.computer }
 
 func (p *serverPeer) Resolve(ctx context.Context, ref string) (Resolution, error) {
-	p.resolves++
+	p.resolves.Add(1)
 	return p.server.app.ResolveThreadRef(ctx, ref)
 }
 

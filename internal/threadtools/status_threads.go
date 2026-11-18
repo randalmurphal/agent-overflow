@@ -14,7 +14,10 @@ import (
 // addressed by its id wherever it lives, so the ids are resolved first and
 // then grouped by the computer that holds them: this computer's run here,
 // and each other computer's are forwarded to it as one thread_status call
-// of its own.
+// of its own. The references are resolved together under one
+// ResolutionTimeout, so computers that do not answer cost the call one
+// lookup deadline however many references they leave open, and are then
+// judged in the order the call listed them.
 //
 // The call returns what it observed. A reference whose lookup a computer
 // did not answer reads unresolved while the threads that resolved are
@@ -31,8 +34,16 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	var failures []errorRow
 	var refusal error
 	gone, unresolved := "", false
-	for index, ref := range args.ThreadIDs {
+	type lookup struct {
+		target Target
+		err    error
+	}
+	lookups := concurrently(ctx, ResolutionTimeout, args.ThreadIDs, func(ctx context.Context, ref string) lookup {
 		target, err := c.resolve(ctx, ref, "")
+		return lookup{target: target, err: err}
+	})
+	for index, ref := range args.ThreadIDs {
+		target, err := lookups[index].target, lookups[index].err
 		if err == nil {
 			if target.ThreadID == c.caller.ThreadID {
 				return nil, publicf(CodeSelfSend, "A thread cannot watch itself. Watch the threads you started, or use thread_remind to wake yourself later.")
