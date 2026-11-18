@@ -368,3 +368,30 @@ func TestRecordsDirRefusesAPath(t *testing.T) {
 		t.Fatalf("%q, %v", dir, err)
 	}
 }
+
+// A fact confirmed more than 90 days before the delivery's date shows that
+// date on its line; a fresher one does not. The date reaching the mark
+// changes the line, so the next prompt delivers it as a changed line.
+func TestAnOldConfirmedDateIsShownAndDelivered(t *testing.T) {
+	t.Parallel()
+	s := newScopes(t)
+	confirmed := func(date string) string {
+		return "---\ndescription: Deploys go through CI.\ntype: ruling\nsource: user\nconfirmed: " + date + "\n---\n"
+	}
+	write(t, s.project, "fresh.md", confirmed(day.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout)))
+	write(t, s.project, "old.md", confirmed("2026-07-22"))
+	index := block(t, build(t, s.plan), "### Project memory")
+	if !strings.Contains(index, "\n- Deploys go through CI. (fresh.md)\n") || !strings.HasSuffix(index, "\n- Deploys go through CI. (old.md; confirmed 2026-07-22)") {
+		t.Fatalf("index:\n%s", index)
+	}
+	run := newSession(t, s.plan, "s1")
+	run.run(AtSessionStart)
+	next, stderr := run.runAt(AtPrompt, day.AddDate(0, 0, 1))
+	if stderr != "" {
+		t.Fatal(stderr)
+	}
+	want := "### Project memory: app (" + folderShown(s.project) + ")\nNew or changed:\n- ruling: Deploys go through CI. (fresh.md; confirmed " + day.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout) + ")"
+	if body := changesBody(t, next); body != want {
+		t.Fatalf("changes:\n%s\nwant:\n%s", body, want)
+	}
+}

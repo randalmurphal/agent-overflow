@@ -148,7 +148,12 @@ Verification:
 - A sidebar change is proven by its Playwright spec, desktop and compact. (sidebar-proof.md)
 ```
 
-A context line carries its `expires` or `until`. Descriptions are
+A context line carries its `expires` or `until`. A fact whose
+`confirmed` is more than 90 days before the backend's local date at
+delivery carries that date last, as in
+`(release-notes.md; confirmed 2026-06-01)`, so an agent checks it before
+it relies on it; the day a fact crosses the mark its line changes, and
+the next prompt delivers it as a changed line. Descriptions are
 cleaned as attached files are (`agenthome.CleanText`), kept to one line
 and cut to 300 characters; an `until` to 200. An empty scope shows
 `No facts yet.` under its heading.
@@ -312,7 +317,7 @@ session that writes, naming only the scopes that session may write:
 - One fact per file, with the frontmatter above.
 - Update the existing fact instead of adding a near-duplicate. Delete a
   fact the moment it is shown wrong. Bump `confirmed` when you rely on a
-  fact and it holds.
+  fact and it holds; check one whose line shows `confirmed` first.
 - Scope: the home for the assistant's role, the project for the
   project, the user only for how the user decides. A user's correction
   is a project `ruling` or a user `preference`. A check that caught a
@@ -381,7 +386,7 @@ Unit tests (`internal/memory`, `internal/app/app_memory_test.go`,
 `app_standing_agent_home*_test.go`, the provider packages and
 `MemorySettings.test.ts`) cover: the project key and its clash;
 frontmatter parsing, each malformed case and expiry; index order and
-line format; nothing cut past the size limit, the size notice and its
+line format, an old `confirmed` shown and a fresh one not; nothing cut past the size limit, the size notice and its
 warnings; delivery order per session kind; the changes a prompt
 delivers, nothing when nothing changed, and the whole memory without a
 record; the records and every path that deletes them; the write rules

@@ -30,7 +30,24 @@ const (
 	quoteRunes       = 80
 	// dateLayout is the form of `confirmed` and `expires`.
 	dateLayout = "2006-01-02"
+	// confirmedShownAfter is how many days after its `confirmed` date a
+	// fact's index line shows that date, so an agent checks the fact before
+	// it relies on it.
+	confirmedShownAfter = 90
 )
+
+// readDay is the backend's local date a delivery reads facts at.
+type readDay struct {
+	// today leaves out a fact that expired before it.
+	today string
+	// shownBefore is the date before which a fact's `confirmed` is shown
+	// on its index line.
+	shownBefore string
+}
+
+func readDayOf(now time.Time) readDay {
+	return readDay{today: now.Format(dateLayout), shownBefore: now.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout)}
+}
 
 // factType is a kind of fact, in index order.
 type factType struct {
@@ -63,6 +80,9 @@ type fact struct {
 	description string
 	expires     string
 	until       string
+	// confirmed is the fact's `confirmed` date when its index line shows
+	// it, "" otherwise.
+	confirmed string
 }
 
 // folderRead is what a delivery read of a scope's folder.
@@ -75,9 +95,9 @@ type folderRead struct {
 }
 
 // readFolder reads the facts directly in root, sorted by type and then by
-// name, leaving out the malformed and the expired ones as of today. Hidden
+// name, leaving out the malformed and the expired ones as of on. Hidden
 // files, other files and anything that is not a regular file are not facts.
-func readFolder(root *os.Root, dir, today string) (_ folderRead, err error) {
+func readFolder(root *os.Root, dir string, on readDay) (_ folderRead, err error) {
 	opened, err := root.Open(".")
 	if err != nil {
 		return folderRead{}, err
@@ -102,7 +122,7 @@ func readFolder(root *os.Root, dir, today string) (_ folderRead, err error) {
 			read.problems = append(read.problems, "The file "+quote(name)+" in "+folderShown(dir)+" has a name with characters an index cannot show. Rename it.")
 			continue
 		}
-		got, problem := readFact(root, name, today)
+		got, problem := readFact(root, name, on)
 		switch {
 		case errors.Is(problem, fs.ErrNotExist):
 			// Removed since the listing.
@@ -127,9 +147,9 @@ type readFactResult struct {
 	expired bool
 }
 
-// readFact reads the fact name in root. Its error says why the fact is
-// malformed or unreadable, in words a maintenance warning carries.
-func readFact(root *os.Root, name, today string) (_ readFactResult, err error) {
+// readFact reads the fact name in root as of on. Its error says why the
+// fact is malformed or unreadable, in words a maintenance warning carries.
+func readFact(root *os.Root, name string, on readDay) (_ readFactResult, err error) {
 	file, err := agenthome.OpenRegular(root, name)
 	if errors.Is(err, fs.ErrNotExist) {
 		return readFactResult{}, err
@@ -147,7 +167,10 @@ func readFact(root *os.Root, name, today string) (_ readFactResult, err error) {
 		return readFactResult{}, fmt.Errorf("%w. Fix its frontmatter or delete it", err)
 	}
 	got.name = name
-	return readFactResult{fact: got, expired: got.expires != "" && got.expires < today}, nil
+	if got.confirmed >= on.shownBefore {
+		got.confirmed = ""
+	}
+	return readFactResult{fact: got, expired: got.expires != "" && got.expires < on.today}, nil
 }
 
 // readHead reads a fact's file as cleaned text (agenthome.CleanText) through
@@ -217,6 +240,7 @@ func parseFact(text string, bounded bool) (fact, error) {
 		description: oneLine(fields["description"], descriptionRunes),
 		expires:     fields["expires"],
 		until:       oneLine(fields["until"], untilRunes),
+		confirmed:   fields["confirmed"],
 	}, nil
 }
 

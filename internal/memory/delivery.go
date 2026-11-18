@@ -91,7 +91,7 @@ const (
 
 // readDelivery reads every block of plan's delivery.
 func readDelivery(plan Plan, now time.Time) *delivery {
-	d := &delivery{assistant: plan.Home != "", today: now.Format(dateLayout)}
+	d := &delivery{assistant: plan.Home != "", day: readDayOf(now)}
 	d.user = d.readIndex("### User memory ("+folderShown(plan.User)+")", plan.User, func() (*os.Root, error) { return openFolder(plan.User) })
 	writesProject := false
 	switch len(plan.Projects) {
@@ -139,7 +139,7 @@ func readDelivery(plan Plan, now time.Time) *delivery {
 // delivery is one Build: its blocks, read.
 type delivery struct {
 	assistant bool
-	today     string
+	day       readDay
 	// rules are the write rules, "" for a session that may not write.
 	rules string
 	user  *index
@@ -171,7 +171,7 @@ type index struct {
 // readIndex reads the scope at dir, which open opens, as an index.
 func (d *delivery) readIndex(heading, dir string, open func() (*os.Root, error)) *index {
 	x := &index{heading: heading, dir: dir}
-	read, err := readScope(dir, d.today, open)
+	read, err := readScope(dir, d.day, open)
 	x.facts = read.facts
 	d.problems = append(d.problems, read.problems...)
 	if read.more {
@@ -186,7 +186,7 @@ func (d *delivery) readIndex(heading, dir string, open func() (*os.Root, error))
 
 // readScope reads the facts of the scope at dir, which open opens; an
 // absent folder holds none. A folder past the entry bound is a problem.
-func readScope(dir, today string, open func() (*os.Root, error)) (folderRead, error) {
+func readScope(dir string, on readDay, open func() (*os.Root, error)) (folderRead, error) {
 	root, err := open()
 	if errors.Is(err, fs.ErrNotExist) {
 		return folderRead{}, nil
@@ -194,7 +194,7 @@ func readScope(dir, today string, open func() (*os.Root, error)) (folderRead, er
 	if err != nil {
 		return folderRead{}, err
 	}
-	read, err := readFolder(root, dir, today)
+	read, err := readFolder(root, dir, on)
 	err = errors.Join(err, root.Close())
 	if read.more {
 		read.problems = append(read.problems, fmt.Sprintf("%s holds more than %d entries, and only the first %d were read. Merge or delete facts.", folderShown(dir), maxEntries, maxEntries))
@@ -242,6 +242,9 @@ func factLine(f fact) string {
 	}
 	if f.until != "" {
 		line += "; until " + f.until
+	}
+	if f.confirmed != "" {
+		line += "; confirmed " + f.confirmed
 	}
 	return line + ")"
 }
@@ -376,7 +379,7 @@ func (d *delivery) listProjects(projects []Project) *projectList {
 			list.lines = append(list.lines, projectLine{project.Path, line + off})
 			continue
 		}
-		read, err := readScope(project.Dir, d.today, func() (*os.Root, error) { return openFolder(project.Dir) })
+		read, err := readScope(project.Dir, d.day, func() (*os.Root, error) { return openFolder(project.Dir) })
 		d.problems = append(d.problems, read.problems...)
 		if err != nil {
 			d.errs = append(d.errs, fmt.Errorf("read the memory folder %s: %w", project.Dir, err))
@@ -601,7 +604,7 @@ func writeRules(home, project bool) string {
 	scopes = strings.ToUpper(scopes[:1]) + scopes[1:]
 	rules := []string{
 		"Save a fact only when a future session would act differently knowing it, it is confirmed (verified, or the user said it), no file, doc or code already holds it, and it outlives the current task. Never save progress, plans, task notes or anything temporary.",
-		"Update the fact on the subject instead of adding a near-duplicate. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today.",
+		"Update the fact on the subject instead of adding a near-duplicate. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today; first check one whose line shows its confirmed date.",
 		scopes,
 		"A user's correction is a ruling in the scope it is about, or a user preference when it holds across projects.",
 	}
