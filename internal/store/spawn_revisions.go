@@ -4,30 +4,39 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
+// SpawnRevisionAck confirms that one owner has applied this exact version.
 type SpawnRevisionAck struct {
-	Token    string `json:"token"`
-	Revision int64  `json:"revision"`
+	// Token identifies the original spawn.
+	Token string `json:"token"`
+	// Revision increases for each change, including restores.
+	Revision int64 `json:"revision"`
 }
 
 // SpawnRevision names the latest change to a spawn, together with the
 // current facts read in the same database snapshot.
 type SpawnRevision struct {
 	SpawnRevisionAck
-	End            string `json:"end,omitempty"`
+	// End records why a link ended, or is empty for an active link.
+	End string `json:"end,omitempty"`
+	// TargetThreadID identifies the surviving worker.
 	TargetThreadID string `json:"targetThreadId,omitempty"`
-	Placement      string `json:"placement,omitempty"`
-	Title          string `json:"title,omitempty"`
-	Archived       bool   `json:"archived,omitempty"`
+	// Placement is the worker’s current placement.
+	Placement string `json:"placement,omitempty"`
+	// Title is the current worker title.
+	Title string `json:"title,omitempty"`
+	// Archived reports whether the worker is archived.
+	Archived bool `json:"archived,omitempty"`
 }
 
 const spawnRevisionSelect = `SELECT c.token, c.revision, c.end, COALESCE(t.id,''), COALESCE(t.placement,''), COALESCE(t.title,''), COALESCE(t.archived,0)
 	  FROM spawn_revisions c LEFT JOIN thread_request_receipts r ON r.token = c.token AND r.owner_device_id = c.owner_device_id
 	  LEFT JOIN threads t ON t.id = r.target_thread_id AND t.deleting = 0
 	  WHERE c.owner_device_id = ?`
-const revisionsByTokenSQL = spawnRevisionSelect + ` AND c.token > ? ORDER BY c.token LIMIT ?`
-const revisionsByNumberSQL = spawnRevisionSelect + ` AND c.revision > ? ORDER BY c.revision LIMIT ?`
+const revisionsByTokenSQL = spawnRevisionSelect + ` AND c.token > ? ORDER BY c.token LIMIT `
+const revisionsByNumberSQL = spawnRevisionSelect + ` AND c.revision > ? ORDER BY c.revision LIMIT `
 
 func (s *Store) PendingSpawnRevisions(device, after string, limit int) (_ []SpawnRevision, err error) {
 	return s.pendingSpawnRevisions(device, revisionsByTokenSQL, after, limit)
@@ -42,7 +51,7 @@ func (s *Store) pendingSpawnRevisions(device, query string, after any, limit int
 	if device == "" || limit < 1 {
 		return nil, fmt.Errorf("store: listing spawn revisions requires a device and a positive limit")
 	}
-	rows, err := s.reader().Query(query, device, after, limit)
+	rows, err := s.reader().Query(query+strconv.Itoa(limit), device, after)
 	if err != nil {
 		return nil, fmt.Errorf("store: read pending spawn revisions: %w", err)
 	}

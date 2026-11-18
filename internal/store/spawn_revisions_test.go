@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -99,6 +100,9 @@ func TestRestoreKeepsOwedSpawnRevisionsAndTheirSequence(t *testing.T) {
 	accept := func(id string) SpawnRevision {
 		t.Helper()
 		acceptLink(t, s, id, id, id, 1)
+		if _, err := s.SetThreadPlacement([]string{id}, PlacementStandalone); err != nil {
+			t.Fatal(err)
+		}
 		rows, err := s.PendingSpawnRevisions(id, "", 1)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("accepted %s: %+v, %v", id, rows, err)
@@ -119,5 +123,43 @@ func TestRestoreKeepsOwedSpawnRevisionsAndTheirSequence(t *testing.T) {
 	}
 	if next := accept("next"); next.Revision <= collected.Revision {
 		t.Errorf("after restore issued %d, previously collected %d", next.Revision, collected.Revision)
+	}
+}
+
+func TestRestoreIssuesFreshRevisionsForChangedWorkerFacts(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "worker")
+	acceptLink(t, s, "link", "desk", "worker", 1)
+	path := filepath.Join(t.TempDir(), "history.db")
+	if err := s.SnapshotTo(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTitle("worker", "latest"); err != nil {
+		t.Fatal(err)
+	}
+	mustCreateThread(t, s, "newer")
+	acceptLink(t, s, "removed", "desk", "newer", 2)
+	before, err := s.PendingSpawnRevisions("desk", "", 8)
+	if err != nil || len(before) != 2 {
+		t.Fatalf("before restore: %+v, %v", before, err)
+	}
+	var changed []string
+	s.OnThreadRequestChanged(func(c ThreadRequestChange) { changed = append(changed, c.Token) })
+	if _, err := s.RestoreFrom(path); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(changed)
+	if !slices.Equal(changed, []string{"link", "removed"}) {
+		t.Errorf("owners notified after restore = %v", changed)
+	}
+	if err := s.AcknowledgeSpawnRevisions("desk", []SpawnRevisionAck{before[0].SpawnRevisionAck, before[1].SpawnRevisionAck}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.PendingSpawnRevisions("desk", "", 8)
+	if err != nil || len(after) != 2 || after[0].Title != "Thread worker" || after[1].End != "gone" || after[1].TargetThreadID != "" {
+		t.Errorf("stale acknowledgments after restore left %+v, %v", after, err)
+	}
+	if reach, found, err := s.ReachSpawnLink("removed", "desk", "lead-removed", 3); err != nil || found {
+		t.Errorf("status still reaches a target absent from history: %+v, %v, %v", reach, found, err)
 	}
 }

@@ -208,6 +208,20 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if _, err := tx.Exec(dropThreadTallyTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: suspend thread tally triggers: %w", err)
 	}
+	// Replacing history can change the facts an owner already read under an older revision.
+	changedSpawns, err := queryStringsTx(tx, `INSERT OR REPLACE INTO main.spawn_revisions(owner_device_id, token, target, end)
+		SELECT r.owner_device_id, r.token, r.target_thread_id,
+		       CASE WHEN saved.id IS NULL OR saved.deleting THEN 'gone' WHEN r.spawn_link THEN '' ELSE 'released' END
+		  FROM main.thread_request_receipts r
+		  LEFT JOIN main.threads live ON live.id = r.target_thread_id
+		  LEFT JOIN restore_src.threads saved ON saved.id = r.target_thread_id
+		 WHERE r.track_spawn = 1 AND r.target_thread_id IS NOT NULL
+		   AND (live.id IS NOT saved.id OR live.title IS NOT saved.title OR live.placement IS NOT saved.placement
+		        OR live.archived IS NOT saved.archived OR live.deleting IS NOT saved.deleting)
+		 RETURNING token`)
+	if err != nil {
+		return Identity{}, fmt.Errorf("store: revise restored spawn links: %w", err)
+	}
 	var copied []string
 	for _, table := range tables {
 		if restoreSkipsTable(table) {
@@ -315,6 +329,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 
 	if err := tx.Commit(); err != nil {
 		return Identity{}, fmt.Errorf("store: commit restore: %w", err)
+	}
+	for _, token := range changedSpawns {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
 	return identity, nil
 }

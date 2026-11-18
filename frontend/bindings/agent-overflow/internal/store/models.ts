@@ -1645,12 +1645,39 @@ export class RemoteJob {
  * current facts read in the same database snapshot.
  */
 export class SpawnRevision {
+    /**
+     * Token identifies the original spawn.
+     */
     "token": string;
+
+    /**
+     * Revision increases for each change, including restores.
+     */
     "revision": number;
+
+    /**
+     * End records why a link ended, or is empty for an active link.
+     */
     "end"?: string;
+
+    /**
+     * TargetThreadID identifies the surviving worker.
+     */
     "targetThreadId"?: string;
+
+    /**
+     * Placement is the worker’s current placement.
+     */
     "placement"?: string;
+
+    /**
+     * Title is the current worker title.
+     */
     "title"?: string;
+
+    /**
+     * Archived reports whether the worker is archived.
+     */
     "archived"?: boolean;
 
     /** Creates a new SpawnRevision instance. */
@@ -1674,8 +1701,18 @@ export class SpawnRevision {
     }
 }
 
+/**
+ * SpawnRevisionAck confirms that one owner has applied this exact version.
+ */
 export class SpawnRevisionAck {
+    /**
+     * Token identifies the original spawn.
+     */
     "token": string;
+
+    /**
+     * Revision increases for each change, including restores.
+     */
     "revision": number;
 
     /** Creates a new SpawnRevisionAck instance. */
