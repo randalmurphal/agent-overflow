@@ -54,6 +54,7 @@ import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import { backgroundShellSteps, openPast } from './agents-tray-helpers.js';
 import {
+  CODEX_STEER_NOT_STEERABLE,
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
   SHOW_CURSOR_PATTERN,
@@ -1715,10 +1716,12 @@ test("with the spawner's computer stopped, a question over there reaches the per
 test('an accepted send shows the approval blocking a busy ordinary thread on the other computer', async ({ page }) => {
   test.setTimeout(120_000);
   const caller = await seed(home, 'send-to-busy-caller', ['Sending caller']);
-  const target = await seed(remote, 'busy-ordinary-target', ['Busy target']);
+  const { projects: [target] } = await remote.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [{ name: 'busy-ordinary-target', repo: {}, threads: [{ title: 'Busy target', provider: 'codex' }] }],
+  });
   const worker = target.threadIds[0];
   await setScenario(remote, target.path, threadToolsScenario({
-    name: 'ordinary-target', provider: 'claude',
+    name: 'ordinary-target', provider: 'codex', codexResponses: CODEX_STEER_NOT_STEERABLE,
     turns: [
       { steps: [
         { gate: 'before-busy-approval' },
@@ -1746,6 +1749,13 @@ test('an accepted send shows the approval blocking a busy ordinary thread on the
   const body = await openAgentsTray(page, caller.threadIds[0], 'desktop');
   const row = body.locator(`[data-testid="agent-tray-row"][data-token="${sent.value!.token}"]`);
   await expect(row).toBeVisible();
+  const db = new DatabaseSync(join(remote.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    expect(db.prepare('SELECT state FROM thread_request_receipts WHERE token = ?').get(sent.value!.token))
+      .toMatchObject({ state: 'accepted' });
+  } finally {
+    db.close();
+  }
   await advanceGate(remote, first.mockId, 'before-busy-approval');
   await expect(row.getByTestId('agent-tray-row-state')).toHaveText('blocked', { timeout: 30_000 });
   await expect(row.getByTestId('agent-tray-row-blocked')).toHaveText('Waiting on a person on GPU computer');
