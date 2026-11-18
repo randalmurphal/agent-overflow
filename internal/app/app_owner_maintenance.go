@@ -76,12 +76,12 @@ func (a *App) maintainOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 		case <-timer.C:
 		}
 		a.ownerUpdates.mu.Lock()
-		launch, legacy, origin, session := p.launch, p.legacy, p.origin, p.read
+		launch, legacy, origin := p.launch, p.legacy, p.origin
 		a.ownerUpdates.mu.Unlock()
 		if launch == "" || legacy {
 			continue
 		}
-		readCtx := session.bind(origin.Bind(ctx))
+		readCtx := a.ownerReads.start(ctx, id, nil).bind(origin.Bind(ctx))
 		keys := a.workerPrompts.remote.heldLinks(id)
 		if err := a.readOwnerChanges(readCtx, id, launch, keys, nil); err != nil && ctx.Err() == nil {
 			log.Printf("owner prompt renewal on %s will retry: %v", id, err)

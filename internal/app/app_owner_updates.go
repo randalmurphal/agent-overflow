@@ -24,7 +24,6 @@ type ownerUpdates struct {
 }
 
 type ownerPeer struct {
-	read         ownerRead
 	origin       attachedbackends.PeerRead
 	cancel       context.CancelFunc
 	done         chan struct{}
@@ -127,13 +126,9 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 		p.ready = false
 		p.legacy = attachedbackends.Unsupported(err)
 		legacy := p.legacy
-		hadLaunch := p.launch != ""
 		a.ownerUpdates.mu.Unlock()
 		if errors.Is(err, errOwnerCursorReset) {
 			continue
-		}
-		if !hadLaunch && !legacy {
-			a.invalidateOwnerTrees(id, err)
 		}
 		if legacy {
 			delay = threadRequestExpiryInterval
@@ -153,19 +148,32 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 	}
 }
 
+func (a *App) invalidateOwnerRead(read ownerRead, failure error) {
+	a.ownerReads.mu.Lock()
+	defer a.ownerReads.mu.Unlock()
+	id := read.generation.computer
+	if a.ownerReads.peers[id] == read.generation {
+		a.invalidateOwnerTreesLocked(id, failure)
+	}
+}
+
 func (a *App) invalidateOwnerTrees(computer string, failure error) {
 	a.ownerReads.mu.Lock()
 	defer a.ownerReads.mu.Unlock()
 	a.invalidateOwnerTreesLocked(computer, failure)
 }
 
-func (a *App) invalidateOwnerTreesLocked(computer string, failure error) {
+func (a *App) endOwnerGenerationLocked(computer string) {
 	delete(a.ownerReads.peers, computer)
 	a.ownerUpdates.mu.Lock()
 	if p := a.ownerUpdates.peers[computer]; p != nil {
 		p.ready = false
 	}
 	a.ownerUpdates.mu.Unlock()
+}
+
+func (a *App) invalidateOwnerTreesLocked(computer string, failure error) {
+	a.endOwnerGenerationLocked(computer)
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	var callers []string
@@ -187,13 +195,14 @@ func (a *App) invalidateOwnerTreesLocked(computer string, failure error) {
 }
 
 func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
+	read := a.ownerReads.start(ctx, id, nil)
+	ctx = read.bind(ctx)
 	if held := a.workerPrompts.remote.heldLinks(id); len(held) > 0 {
 		if err := a.readOwnerChanges(ctx, id, launch, held, nil); err != nil {
 			return err
 		}
 	}
 	for key := (&OwnerPageKey{}); key != nil; {
-		read := a.ownerReads.start(ctx, id, nil)
 		var page OwnerRecoveryPage
 		call, cancel := context.WithTimeout(ctx, threadPollCallTimeout)
 		origin, err := a.backends.ReadThreadPeer(call, id, transport.CapabilityThreadToolsV2, "", "ThreadOwnerRecovery", &page, launch, *key)
@@ -242,6 +251,7 @@ func ownerRevisionTokens(changes []store.SpawnRevision) []string {
 }
 
 func (a *App) readOwnerChanges(ctx context.Context, id, launch string, keys []string, structural []store.SpawnRevision) error {
+	ctx = a.ownerReads.start(ctx, id, nil).bind(ctx)
 	seen := make(map[string]bool, len(keys))
 	var tokens []string
 	for _, token := range keys {

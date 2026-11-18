@@ -47,6 +47,9 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 	read := a.ownerReads.start(ctx, id, nil)
 	first, origin, err := a.waitOwnerChanges(ctx, id, OwnerCursor{})
 	if err != nil {
+		if !attachedbackends.Unsupported(err) || p.launch != "" {
+			a.invalidateOwnerRead(read, err)
+		}
 		return err
 	}
 	if !first.Reset || first.Launch == "" {
@@ -61,7 +64,6 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 		a.invalidateOwnerTreesLocked(id, nil)
 		s.scope = ownerRead{owner: &a.ownerReads, generation: a.ownerReads.generationLocked(id)}
 		a.ownerUpdates.mu.Lock()
-		p.read = s.scope
 		defer a.ownerUpdates.mu.Unlock()
 		s.progress = make(chan struct{})
 		p.origin = origin
@@ -107,11 +109,7 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 	}
 	defer func() {
 		cancel(context.Canceled)
-		a.ownerReads.mu.Lock()
-		if a.ownerReads.peers[id] == s.scope.generation {
-			a.invalidateOwnerTreesLocked(id, context.Cause(ctx))
-		}
-		a.ownerReads.mu.Unlock()
+		a.invalidateOwnerRead(s.scope, context.Cause(ctx))
 		workers.Wait()
 	}()
 	cursor := first.OwnerCursor
@@ -276,19 +274,27 @@ func (s *ownerSession) read(ctx context.Context, prompt bool) error {
 		if err := s.app.readOwnerChanges(ctx, s.id, s.launch, keys, edits); err != nil {
 			return err
 		}
-		s.app.invalidateChangedOwnerTrees(s.id, keys)
-		s.app.ownerUpdates.mu.Lock()
-		for key, entry := range batch {
-			if s.peer.owed[key] == entry {
-				delete(s.peer.owed, key)
+		if err := s.scope.commit(s.peer.origin, s.launch, nil, func() error {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
+			s.app.invalidateChangedOwnerTrees(s.id, keys)
+			s.app.ownerUpdates.mu.Lock()
+			for key, entry := range batch {
+				if s.peer.owed[key] == entry {
+					delete(s.peer.owed, key)
+				}
+			}
+			close(s.progress)
+			s.progress = make(chan struct{})
+			if s.resume != nil && len(s.peer.owed) < ownerChangeLimit {
+				s.resume()
+			}
+			s.app.ownerUpdates.mu.Unlock()
+			return nil
+		}); err != nil {
+			return err
 		}
-		close(s.progress)
-		s.progress = make(chan struct{})
-		if s.resume != nil && len(s.peer.owed) < ownerChangeLimit {
-			s.resume()
-		}
-		s.app.ownerUpdates.mu.Unlock()
 	}
 	return ctx.Err()
 }

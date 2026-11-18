@@ -390,7 +390,7 @@ func errorText(err error) string {
 func (a *App) forgetPeerAgentRows(computerID string) {
 	c := &a.threadAgentPeers
 	a.ownerReads.mu.Lock()
-	delete(a.ownerReads.peers, computerID)
+	a.endOwnerGenerationLocked(computerID)
 	c.mu.Lock()
 	for token, entry := range c.entries {
 		if entry.spawn.TargetComputerID == computerID {

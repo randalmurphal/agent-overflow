@@ -195,13 +195,29 @@ func (a *App) drainThreadAgentEmits() {
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
 		e.mu.Unlock()
-		a.publishThreadAgentChanges(tokens, callers, targets, liveness, runs, projections)
+		for delay := time.Second; ; delay = min(2*delay, threadAgentPeerBackoffMax) {
+			if err := a.publishThreadAgentChanges(tokens, callers, targets, liveness, runs, projections); err == nil {
+				break
+			} else {
+				log.Printf("agent rows: retry projection after %s: %v", delay, err)
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-a.lifeCtx().Done():
+				timer.Stop()
+				e.mu.Lock()
+				e.draining = false
+				e.mu.Unlock()
+				return
+			}
+		}
 	}
 }
 
 // Publish owner activity after every liveness projection used by a peer read is current.
 // Peer receipts can follow a thread even when it has no local Agents row.
-func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]struct{}, liveness map[string]bool, runs, projections map[string]struct{}) {
+func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]struct{}, liveness map[string]bool, runs, projections map[string]struct{}) error {
 	var failed error
 	for item := range runs {
 		origin, err := a.store.WorkItemOriginThread(item)
@@ -244,8 +260,9 @@ func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]stru
 			}
 		} else {
 			for _, thread := range rest {
-				if !liveness[thread] {
-					reassess(thread, true)
+				if !liveness[thread] && reassess(thread, true) {
+					// A send from another caller can also be running on this worker.
+					a.noteThreadAgentTarget(thread)
 				}
 				liveness[thread] = true
 			}
@@ -258,9 +275,7 @@ func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]stru
 		a.noteRestWaitsMayChange()
 	}
 	if failed != nil {
-		a.ownerActivity.reset()
-		log.Printf("agent rows: reset peer cursors after projection failed: %v", failed)
-		return
+		return failed
 	}
 	if a.ownerActivity.watching() {
 		changedThreads := slices.Collect(maps.Keys(targets))
@@ -268,13 +283,13 @@ func (a *App) publishThreadAgentChanges(tokens, callers, targets map[string]stru
 		owners, err := a.store.ActivityOwners(changedTokens, changedThreads)
 		if err != nil {
 			a.ownerActivity.reset()
-			log.Printf("agent rows: reset peer cursors after owner lookup failed: %v", err)
-			return
+			return fmt.Errorf("reset peer cursors after owner lookup failed: %w", err)
 		}
 		for _, owner := range owners {
 			a.ownerActivity.note(owner.Device, owner.Token, false)
 		}
 	}
+	return nil
 }
 
 // tapThreadAgentRows is the emit tap: any thread's turn, prompt or session
