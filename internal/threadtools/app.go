@@ -182,6 +182,10 @@ type Peer interface {
 	// unchanged: thread_update and thread_group.
 	Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
 
+	// Watch runs one thread_status wait on thread ids there and returns its
+	// JSON result unchanged. The wait there ends when ctx does.
+	Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
+
 	// FetchExport copies a file that peer rendered onto the calling
 	// computer and returns it with a path the caller's model can open. A
 	// path on the destination is of no use to a model that cannot read

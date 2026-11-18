@@ -247,8 +247,10 @@ window is rendered to a file under the source data directory (beside
 `remote-artifacts/`, retained until explicitly removed), and the call
 returns its path and size for the agent's own read and search tools. A
 remote thread renders on its own computer and the file crosses in
-chunks with a whole-file SHA-256, as remote artifacts do; the inline
-form moves at most `max_bytes` over the wire.
+chunks over one connection, verified against the size and whole-file
+SHA-256 the render announced; a chunk whose connection was lost is asked
+for once more, at the same offset, over a new one. The inline form moves
+at most `max_bytes` over the wire.
 
 Output is plain text, turn-delimited, each row prefixed with role and
 item id; a message another agent wrote is role `agent` and names its
@@ -693,7 +695,26 @@ running without having sent it anything. A wait returns as soon as any
 listed request settles or any listed thread rests, or as soon as any
 target becomes blocked on a person (a pending approval or a question
 to the user), with the request still open; duplicates and the caller's
-own thread are refused. A thread rests when it is at rest
+own thread are refused, as is an ambiguous reference. A wait reports
+what it observed, thread by thread. A computer that does not answer
+has its threads read `unavailable` and is named under `errors`. The
+references are looked up together, following a recorded move
+included, under one 10-second bound. A
+reference that matched nothing on the computers that answered while
+another did not answer its lookup reads `unresolved`, named by the
+reference and under a computer only when a recorded move names it,
+with the computers that failed under `errors`. A thread deleted or
+moved away during the wait reads `unavailable` with its own `error`
+and ends the wait, and the threads read after it never take that wake.
+A computer on v0.0.19 refuses the whole wait over one such thread, so
+its threads are then read one by one, together, within three seconds,
+each with its own verdict. Any other refusal a computer answered for
+the wait is the `error` of each of its threads. The other threads keep waiting and are reported as they
+stand; once one ends the wait, the others are read again at once,
+together, within three seconds, and a computer that has not answered
+by then reads as not answering. `timed_out` means a wait ran to its
+end; one that was refused or not answered did not. The call fails
+only when no computer answered. A thread rests when it is at rest
 ([at rest](standing-agents.md#at-rest)): its turn over and nothing it
 started still running; one whose turn is over and is not reports
 `resting: false` with what it waits on (`waiting_on`), and an async
@@ -1770,7 +1791,9 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   then the whole message, which the body does not repeat.
 - An ask names and links the thread asked, not the hidden read-only copy
   that answers it; an id prefix links the one thread it names, and a
-  prefix that names none or several stays text.
+  prefix that names none or several stays text. A `thread_status`
+  reference that reads `unresolved` likewise stays text, with its
+  `error` and the computer it may be on when the reply names one.
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
   the answer reaches the caller, then "answer arrived". It reaches it in
@@ -1852,7 +1875,10 @@ in the manifest so an older destination fails as `thread_unsupported`
 ("Update Agent Overflow on that computer") rather than with a confusing
 method error. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
 leaves that capability out of its hello, which is how an end-to-end test
-stands up such a destination; no other boot honors it. The destination
+stands up such a destination; no other boot honors it. A `thread_ids`
+wait is forwarded over `ThreadToolWatch`, which ends there when the
+caller's call ends here; a computer on v0.0.19 does not serve it and is
+asked through its read call instead. The destination
 authorizes every call with the
 authenticated device of the originating computer (the same principal
 that owns remote jobs there) and runs the handler with a caller scope
@@ -1945,7 +1971,12 @@ happened; the token and `thread_status` do.
   the list; confirming abandons them locally: the requests settle
   `errored` ("computer forgotten"), their wakes are dropped, and no
   claim is made that the other computer stopped anything. A lost
-  machine can always be forgotten.
+  machine can always be forgotten. A pairing that ends, by a forget, a
+  new pairing with the same computer or that computer's verdict, closes
+  every connection open under it. A call still on its way fails as
+  unanswered, since that computer may have acted on it; a later call is
+  refused unsent with that reason, so an export copy stops and removes
+  what it staged.
 - Flipping a computer's switch toggles the server in every live session
   on that computer except one holding an open request from another
   computer, which keeps it until that request settles. Its threads stay

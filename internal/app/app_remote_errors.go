@@ -105,7 +105,7 @@ func remoteOperationErrorFor(action string, ref remoteRef, err error) error {
 // accepted, is unaffected and keeps its ids.
 func remotePairingCode(code string) bool {
 	switch code {
-	case "remote_not_paired", "remote_pairing_expired", "remote_pairing_pending", "remote_pairing_unavailable", "remote_connection_failed", "remote_request_timeout":
+	case "remote_not_paired", "remote_pairing_expired", "remote_pairing_pending", "remote_pairing_unavailable", "remote_pairing_replaced", "remote_connection_failed", "remote_request_timeout":
 		return true
 	}
 	return false

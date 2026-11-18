@@ -28,7 +28,7 @@ import (
 // threadPeerCallWait bounds one forwarded call: the destination method's
 // declared budget and the answer margin (transport.ClientWait), so the
 // destination's answer, a timeout of its own included, arrives first. A
-// forwarded wait sits inside ThreadToolQuery's budget
+// forwarded wait sits inside ThreadToolWatch's budget
 // (threadtools.MaxForwardedWaitSeconds), and a spawn may fork and cut a
 // worktree inside ThreadToolCall's.
 func threadPeerCallWait(method string) time.Duration { return transport.ClientWait(method) }
@@ -129,6 +129,17 @@ func (p threadPeerClient) Invoke(ctx context.Context, name string, args json.Raw
 	return p.forward(ctx, "ThreadToolCall", name, args)
 }
 
+// Watch forwards a thread_status wait through the caller-bound
+// ThreadToolWatch, so the wait there ends when this call does. A computer
+// on v0.0.19 does not serve it and runs the wait through ThreadToolQuery.
+func (p threadPeerClient) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	raw, err := p.forward(ctx, "ThreadToolWatch", "thread_status", args)
+	if older := (*rpcclient.Error)(nil); errors.As(err, &older) && older.Code == transport.ErrCodeMethodNotFound {
+		return p.Query(ctx, "thread_status", args)
+	}
+	return raw, err
+}
+
 func (p threadPeerClient) forward(ctx context.Context, method, name string, args json.RawMessage) (json.RawMessage, error) {
 	call, cancel := context.WithTimeout(ctx, threadPeerCallWait(method))
 	defer cancel()
@@ -215,7 +226,7 @@ func threadRequestNeverSent(code string) bool {
 	switch code {
 	case attachedbackends.CodeThreadUnsupported, attachedbackends.CodeThreadUnreachable,
 		"remote_not_paired", "remote_pairing_pending", "remote_pairing_unavailable",
-		"remote_pairing_expired":
+		"remote_pairing_expired", "remote_pairing_replaced":
 		return true
 	}
 	return false

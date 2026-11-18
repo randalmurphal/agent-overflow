@@ -132,7 +132,7 @@ func (c *session) runOptions(ctx context.Context, targets []Computer, args optio
 		row      computerOptions
 		err      error
 	}
-	answers := eachComputer(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) answer {
+	answers := concurrently(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) answer {
 		_, local, _ := c.computerByID(computer.ID)
 		row, err := c.optionsOne(ctx, computer, local, args)
 		if err == nil && roster != nil && row.Providers != nil {

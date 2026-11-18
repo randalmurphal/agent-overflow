@@ -180,7 +180,9 @@ const CapabilityRemoteCommands = "commands.remote.v1"
 // CapabilityThreadTools names the ao-thread-tools peer surface: thread
 // resolution, the read tools, the write tools that mint a request, the
 // request status poll and the export chunk reader. A destination without
-// it answers thread_unsupported rather than method_not_found.
+// it answers thread_unsupported rather than method_not_found. The
+// caller-bound thread wait (ThreadToolWatch) came later under the same
+// capability; a v0.0.19 destination answers it method_not_found.
 const CapabilityThreadTools = "thread-tools.v1"
 
 // CapabilityPairingNetworks allows an invitation to name LAN or Tailscale

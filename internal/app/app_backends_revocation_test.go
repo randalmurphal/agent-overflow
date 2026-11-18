@@ -81,7 +81,7 @@ func TestAFarSideRevocationRemovesTheProfileAndSaysWho(t *testing.T) {
 	if rows := source.Attached(); len(rows) != 0 {
 		t.Fatalf("the ended pairing is still listed: %+v", rows)
 	}
-	if source.Carrier(target.id) != nil {
+	if source.Carrier(t.Context(), target.id) != nil {
 		t.Fatal("the retired carrier is still served")
 	}
 	want := []attachedbackends.SetChange{{Action: attachedbackends.SetRemoved, ID: target.id, Reason: attachedbackends.RemovedByComputer}}

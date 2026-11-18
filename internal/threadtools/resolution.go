@@ -128,7 +128,13 @@ func (c *session) resolveOn(ctx context.Context, ref, id string, followMoves boo
 	}
 	answer := c.askComputer(ctx, computer, ref)
 	if answer.err != nil {
-		return Target{}, answer.err
+		if answer.local || answeredRefusal(answer.err) {
+			return Target{}, answer.err
+		}
+		// The thread is there if anywhere: the caller or a recorded move
+		// named this computer.
+		code, message := publicMessage(answer.err)
+		return Target{}, errorsx.Public(code, message, &unansweredLookup{computers: []Computer{computer}, owner: &computer, err: answer.err})
 	}
 	switch {
 	case len(answer.res.Matches) == 1:
@@ -155,6 +161,11 @@ func (c *session) follow(ctx context.Context, ref string, res Resolution) (Targe
 		name := res.MovedToName
 		if name == "" {
 			name = res.MovedTo
+		}
+		if Forwarded(ctx) {
+			// A forwarded call reaches no computer of its own, so the move is
+			// all there is to say to the computer that asked.
+			return Target{}, publicf(CodeNotFound, "Thread %s moved to %s.", ref, name), true
 		}
 		return Target{}, publicf(CodeNotFound, "Thread %s moved to %s, which is not paired with this computer.", ref, name), true
 	}
@@ -251,7 +262,7 @@ func (c *session) askComputer(ctx context.Context, computer Computer, ref string
 // only; the others still answer.
 func (c *session) askEveryone(ctx context.Context, ref string) []resolveAnswer {
 	everyone := append([]Computer{c.self()}, c.computers...)
-	return eachComputer(ctx, ResolutionTimeout, everyone, func(ctx context.Context, computer Computer) resolveAnswer {
+	return concurrently(ctx, ResolutionTimeout, everyone, func(ctx context.Context, computer Computer) resolveAnswer {
 		return c.askComputer(ctx, computer, ref)
 	})
 }

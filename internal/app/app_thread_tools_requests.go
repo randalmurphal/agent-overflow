@@ -308,25 +308,18 @@ func (t threadToolsApp) ownRequests(caller threadtools.Caller, tokens []string) 
 }
 
 // watchThreads answers the thread_ids half of thread_status: the live state
-// of threads the caller is interested in, waiting until one of them rests or
-// stops to ask a person something.
+// of threads the caller is interested in, waiting until one of them rests,
+// stops to ask a person something, or can no longer be read here.
 func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Caller, call threadtools.StatusCall) (threadtools.StatusReport, error) {
-	for _, threadID := range call.ThreadIDs {
-		if _, err := t.localThread(threadID); err != nil {
-			return threadtools.StatusReport{}, err
-		}
-	}
 	keys := make([]string, 0, len(call.ThreadIDs))
 	for _, threadID := range call.ThreadIDs {
 		keys = append(keys, threadWatchKey(threadID))
 	}
 	outcome, release, err := t.app.waitRequest(ctx, caller.ThreadID, keys, call.WaitSeconds, func() (string, bool, error) {
 		for _, threadID := range call.ThreadIDs {
-			state, err := t.threadStateNow(ctx, threadID)
-			if err != nil {
-				return "", false, err
-			}
-			if state.Resting || state.State == threadtools.StatePendingApproval || state.State == threadtools.StateAwaitingInput {
+			state := t.watchedThread(ctx, threadID)
+			// A thread deleted or moved away will not rest here.
+			if state.Error != "" || state.Resting || state.State == threadtools.StatePendingApproval || state.State == threadtools.StateAwaitingInput {
 				return threadID, true, nil
 			}
 		}
@@ -338,13 +331,20 @@ func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Cal
 	}
 	report := threadtools.StatusReport{WokeOn: outcome.WokeOn, TimedOut: outcome.TimedOut}
 	for _, threadID := range call.ThreadIDs {
-		state, err := t.threadStateNow(ctx, threadID)
-		if err != nil {
-			return threadtools.StatusReport{}, err
-		}
-		report.Threads = append(report.Threads, state)
+		report.Threads = append(report.Threads, t.watchedThread(ctx, threadID))
 	}
 	return report, nil
+}
+
+// watchedThread is one watched thread's row: its state as it stands, or why
+// it cannot be read here, so a thread deleted or moved away during a wait
+// costs its siblings nothing.
+func (t threadToolsApp) watchedThread(ctx context.Context, threadID string) threadtools.ThreadState {
+	state, err := t.threadStateNow(ctx, threadID)
+	if err != nil {
+		return threadtools.FailedRow(threadID, err)
+	}
+	return state
 }
 
 func (t threadToolsApp) threadStateNow(ctx context.Context, threadID string) (threadtools.ThreadState, error) {

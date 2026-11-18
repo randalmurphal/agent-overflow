@@ -340,8 +340,8 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 }
 
 // ThreadToolExportChunk serves one rendered transcript in transfer-sized
-// pieces, under the same stamp rule a command artifact uses: a file that
-// changed mid-transfer is refused rather than delivered half old.
+// pieces (readThreadExportChunk): a file that changed since its render is
+// refused rather than delivered half old.
 //
 //ao:scope threads:read
 //ao:route selected

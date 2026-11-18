@@ -336,13 +336,23 @@ function threadStatusView(reply: Input, names: AoToolNames): AoResultView {
   for (const row of threads) {
     const id = str(row, 'thread_id');
     const title = threadName(id, names, str(row, 'title'));
+    const state = str(row, 'state');
+    // An unresolved row names the reference the call passed, not a thread
+    // any computer confirmed, so it is text that says where it may be.
+    const unresolved = state === 'unresolved';
+    const computer = str(row, 'computer');
     view.lines.push({
       key: id,
       title,
-      detail: join(words(str(row, 'state')), row.resting === true ? 'resting' : ''),
-      text: '',
-      link: threadLink(id, title, str(row, 'computer_id'), str(row, 'computer')),
+      detail: join(words(state), row.resting === true ? 'resting' : '', unresolved && computer ? `on ${computer}` : ''),
+      // Why a thread could not be read: it left its computer, or a
+      // computer did not answer for it.
+      text: clipText(str(row, 'error'), LINE_TEXT_MAX),
+      link: unresolved ? null : threadLink(id, title, str(row, 'computer_id'), computer),
     });
+  }
+  for (const failure of list(reply.errors)) {
+    fact(view.facts, str(failure, 'computer') || 'computer', str(failure, 'error'));
   }
   for (const row of wakes) {
     const next = str(row, 'next_fire');

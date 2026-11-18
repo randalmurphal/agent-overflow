@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -29,8 +30,10 @@ type threadPeer struct {
 	id      string
 	tickets atomic.Int32
 	opened  atomic.Int32
-	mu      sync.Mutex
-	conns   []*websocket.Conn
+	// pings counts the pings the client sent, over every connection.
+	pings atomic.Int32
+	mu    sync.Mutex
+	conns []*websocket.Conn
 	// closed receives each connection's number once the client ends it.
 	closed chan int32
 }
@@ -49,7 +52,10 @@ func (p *threadPeer) route(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"ticket": "ticket"})
 		return
 	}
-	conn, err := websocket.Accept(w, r, nil)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OnPingReceived: func(context.Context, []byte) bool {
+		p.pings.Add(1)
+		return true
+	}})
 	if err != nil {
 		return
 	}
@@ -146,10 +152,143 @@ func TestAgentCallsInABurstShareOneConnectionAndTicket(t *testing.T) {
 	}
 }
 
+// TestAHeldConnectionCarriesEveryCallAfterOnePing: the chunks of one copy
+// share one connection, and only the first call on a pooled one pays the
+// ping that proves its path; the connection then goes back to the pool.
+func TestAHeldConnectionCarriesEveryCallAfterOnePing(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	first := query(t, m, p.id)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.HoldThreadPeer(ctx, p.id, func(call PeerCall) error {
+		for chunk := range 4 {
+			var number int32
+			if err := call(ctx, "ThreadToolQuery", &number); err != nil {
+				return err
+			}
+			if number != first {
+				return fmt.Errorf("chunk %d ran on connection %d, want the held %d", chunk, number, first)
+			}
+		}
+		// The hold keeps the thread tools surface's own allowlist.
+		if err := call(ctx, "RemoteCommandStart", nil); err == nil {
+			return errors.New("a held connection reached a method outside the thread tools surface")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.pings.Load(); got != 1 {
+		t.Fatalf("four calls on a held connection sent %d pings, want the one that proved it", got)
+	}
+	if got := query(t, m, p.id); got != first {
+		t.Fatalf("the call after the hold ran on connection %d, want the pooled %d", got, first)
+	}
+	if got := p.tickets.Load(); got != 1 {
+		t.Fatalf("minted %d tickets, want 1", got)
+	}
+}
+
+// TestAHeldConnectionThatLosesACallIsReplaced: a call that ends without an
+// answer closes the held connection, and the next call dials another.
+func TestAHeldConnectionThatLosesACallIsReplaced(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.HoldThreadPeer(ctx, p.id, func(call PeerCall) error {
+		var first int32
+		if err := call(ctx, "ThreadToolQuery", &first); err != nil {
+			return err
+		}
+		lost, stop := context.WithCancel(ctx)
+		stop()
+		if err := call(lost, "ThreadToolQuery", nil); !errors.Is(err, context.Canceled) {
+			return fmt.Errorf("a call on an ended context = %v", err)
+		}
+		if closed := p.nextClosed(t); closed != first {
+			return fmt.Errorf("closed connection %d, want the held %d", closed, first)
+		}
+		var next int32
+		if err := call(ctx, "ThreadToolQuery", &next); err != nil {
+			return err
+		}
+		if next == first {
+			return errors.New("the call after a lost one ran on the closed connection")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestACallWhoseHeldConnectionClosedIsUnanswered: the far side closes a held
+// connection between two calls, as a network change does. The next call is
+// unanswered, so a read may be sent again, and the one after it goes over a
+// new connection. An answered refusal and the pairing's verdict are not
+// unanswered.
+func TestACallWhoseHeldConnectionClosedIsUnanswered(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.HoldThreadPeer(ctx, p.id, func(call PeerCall) error {
+		var first int32
+		if err := call(ctx, "ThreadToolQuery", &first); err != nil {
+			return err
+		}
+		if err := call(ctx, "ThreadToolResolve", nil); err == nil || Unanswered(err) {
+			return fmt.Errorf("an answered refusal = %v, unanswered %t", err, Unanswered(err))
+		}
+		p.closeAll()
+		if closed := p.nextClosed(t); closed != first {
+			return fmt.Errorf("the far side closed connection %d, want the held %d", closed, first)
+		}
+		if err := call(ctx, "ThreadToolQuery", nil); !Unanswered(err) {
+			return fmt.Errorf("a call on a connection the far side closed = %v, want it unanswered", err)
+		}
+		var again int32
+		if err := call(ctx, "ThreadToolQuery", &again); err != nil || again == first {
+			return fmt.Errorf("the call sent again = connection %d, %v; want a new one", again, err)
+		}
+		if err := m.Remove(p.id); err != nil {
+			return err
+		}
+		if err := call(ctx, "ThreadToolQuery", nil); err == nil || Unanswered(err) {
+			return fmt.Errorf("a call after the pairing was forgotten = %v, unanswered %t", err, Unanswered(err))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAConnectionOutlastsTheIntervalOfAPeriodicCheck: a status poll or a
+// running command's watch asks again five seconds after its last answer,
+// and that check reuses the connection the last one left, pinged first,
+// instead of paying a ticket, an upgrade and a hello.
+func TestAConnectionOutlastsTheIntervalOfAPeriodicCheck(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	first := query(t, m, p.id)
+	held, err := m.carrier(context.Background(), p.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Five seconds of cadence and a wake that came late.
+	held.peers.mu.Lock()
+	held.peers.idle[0].since = time.Now().Add(-10 * time.Second)
+	held.peers.mu.Unlock()
+	held.peers.expire()
+	if got := query(t, m, p.id); got != first {
+		t.Fatalf("the next check ran on connection %d, want the reused %d", got, first)
+	}
+	if got := p.tickets.Load(); got != 1 {
+		t.Fatalf("minted %d tickets for two checks, want 1", got)
+	}
+}
+
 func TestAConnectionTheFarSideClosedIsNotReused(t *testing.T) {
 	m, p := newThreadPeerManager(t)
 	first := query(t, m, p.id)
-	held, err := m.carrier(p.id)
+	held, err := m.carrier(context.Background(), p.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +314,7 @@ func TestACancelledCallEndsOnlyItsOwnConnection(t *testing.T) {
 	hung := make(chan error, 1)
 	go func() { hung <- m.CallThreadPeer(ctx, p.id, "ThreadToolCall", nil) }()
 	waitFor(t, "the hung call to take the idle connection", func() bool {
-		held, err := m.carrier(p.id)
+		held, err := m.carrier(context.Background(), p.id)
 		if err != nil {
 			return false
 		}
@@ -202,7 +341,7 @@ func TestACancelledCallEndsOnlyItsOwnConnection(t *testing.T) {
 func TestIdleConnectionsEndAfterTheirWindowAndWithTheCarrier(t *testing.T) {
 	m, p := newThreadPeerManager(t)
 	expired := query(t, m, p.id)
-	held, err := m.carrier(p.id)
+	held, err := m.carrier(context.Background(), p.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,8 +361,8 @@ func TestIdleConnectionsEndAfterTheirWindowAndWithTheCarrier(t *testing.T) {
 	}
 	held.peers.mu.Lock()
 	defer held.peers.mu.Unlock()
-	if !held.peers.closed || len(held.peers.idle) != 0 || held.peers.expiry != nil {
-		t.Fatalf("a removed carrier still pools: closed %v, %d idle, timer %v", held.peers.closed, len(held.peers.idle), held.peers.expiry)
+	if held.peers.ended == nil || len(held.peers.open) != 0 || len(held.peers.idle) != 0 || held.peers.expiry != nil {
+		t.Fatalf("a removed carrier still pools: ended %v, %d open, %d idle, timer %v", held.peers.ended, len(held.peers.open), len(held.peers.idle), held.peers.expiry)
 	}
 }
 
@@ -302,7 +441,7 @@ func TestAConnectionWhosePathDiedSilentlyIsReplaced(t *testing.T) {
 	// The ticket mint's idle HTTP connections died with the path too, inside
 	// deviceclient's idle window (pinnedIdleConnTimeout). They are dropped
 	// here to leave only the pooled socket under test.
-	held, err := m.carrier(p.id)
+	held, err := m.carrier(context.Background(), p.id)
 	if err != nil {
 		t.Fatal(err)
 	}

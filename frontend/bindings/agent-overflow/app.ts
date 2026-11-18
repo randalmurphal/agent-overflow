@@ -6559,8 +6559,8 @@ export function ThreadToolCall(call: app$0.ThreadPeerCall): $CancellablePromise<
 
 /**
  * ThreadToolExportChunk serves one rendered transcript in transfer-sized
- * pieces, under the same stamp rule a command artifact uses: a file that
- * changed mid-transfer is refused rather than delivered half old.
+ * pieces (readThreadExportChunk): a file that changed since its render is
+ * refused rather than delivered half old.
  */
 export function ThreadToolExportChunk(exportID: string, offset: number): $CancellablePromise<app$0.RemoteArtifactChunk> {
     return $Call.ByID(1295284198, exportID, offset).then(($result: any) => {
@@ -6599,6 +6599,22 @@ export function ThreadToolRequestStatus(poll: app$0.ThreadPeerPoll): $Cancellabl
 export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $CancellablePromise<threadtools$0.Resolution> {
     return $Call.ByID(1018082581, resolve).then(($result: any) => {
         return $$createType255($result);
+    });
+}
+
+/**
+ * ThreadToolWatch runs one thread_status wait on thread ids forwarded from a
+ * paired computer, and ends with its caller: a wait the calling computer
+ * gave up on stops reading this computer's live state at once rather than
+ * at the end of its slice. It is ThreadToolQuery's thread_status narrowed to
+ * the branch that reads threads, which reaches only store reads, live state
+ * and an in-memory wait registration, so it can be caller-bound; every
+ * other read stays on ThreadToolQuery. A computer on v0.0.19 does not serve
+ * it, and the caller asks that one through ThreadToolQuery.
+ */
+export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
+    return $Call.ByID(515024442, call).then(($result: any) => {
+        return $$createType253($result);
     });
 }
 

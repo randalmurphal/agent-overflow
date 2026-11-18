@@ -100,14 +100,16 @@ type statusResult struct {
 	Requests []RequestState `json:"requests,omitempty"`
 	// Wakes is the caller's loops and watches, on the first page of a
 	// listing only.
-	Wakes    []WakeState   `json:"wakes,omitempty"`
-	Threads  []ThreadState `json:"threads,omitempty"`
-	WokeOn   string        `json:"woke_on,omitempty"`
-	TimedOut bool          `json:"timed_out,omitempty"`
-	More     bool          `json:"more,omitempty"`
-	Cursor   string        `json:"cursor,omitempty"`
-	File     *ExportFile   `json:"file,omitempty"`
-	Note     string        `json:"note,omitempty"`
+	Wakes   []WakeState   `json:"wakes,omitempty"`
+	Threads []ThreadState `json:"threads,omitempty"`
+	// Errors names each computer a thread_ids wait could not read.
+	Errors   []errorRow  `json:"errors,omitempty"`
+	WokeOn   string      `json:"woke_on,omitempty"`
+	TimedOut bool        `json:"timed_out,omitempty"`
+	More     bool        `json:"more,omitempty"`
+	Cursor   string      `json:"cursor,omitempty"`
+	File     *ExportFile `json:"file,omitempty"`
+	Note     string      `json:"note,omitempty"`
 }
 
 func (c *session) status(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -256,185 +258,6 @@ func clipWakeOutputs(wakes []WakeState, budget int) (kept, clipped bool) {
 		}
 	}
 	return true, clipped
-}
-
-// statusThreads answers the thread_ids half of thread_status. A thread is
-// addressed by its id wherever it lives, so the ids are resolved first and
-// then grouped by the computer that holds them: this computer's run here,
-// and each other computer's are forwarded to it as one thread_status call
-// of its own.
-func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) (any, error) {
-	targets := make([]Target, 0, len(args.ThreadIDs))
-	ids := make([]string, 0, len(args.ThreadIDs))
-	for _, ref := range args.ThreadIDs {
-		target, err := c.resolve(ctx, ref, "")
-		if err != nil {
-			return nil, err
-		}
-		if target.ThreadID == c.caller.ThreadID {
-			return nil, publicf(CodeSelfSend, "A thread cannot watch itself. Watch the threads you started, or use thread_remind to wake yourself later.")
-		}
-		targets = append(targets, target)
-		ids = append(ids, target.ThreadID)
-	}
-	if duplicate, found := dedupe(ids); found {
-		return nil, invalidf("thread %s is listed twice. Each thread may appear once per call.", duplicate)
-	}
-	states, woke, err := c.watchThreadGroups(ctx, targets, groupTargetsByComputer(targets), wait, args.AfterRevision)
-	if err != nil {
-		return nil, err
-	}
-	// A wait of zero is a read, not a wait that ran out.
-	result := statusResult{WokeOn: woke, TimedOut: woke == "" && wait > 0}
-	byID := make(map[string]ThreadState, len(states))
-	for _, state := range states {
-		byID[state.ThreadID] = state
-	}
-	// The rows come back in the order the call listed them, whichever
-	// computer answered for each.
-	for _, id := range ids {
-		state, found := byID[id]
-		if !found {
-			continue
-		}
-		// Resting is derived here from the state and what the thread still
-		// waits on, so a row cannot report a restedness that disagrees with
-		// them.
-		state.Resting = Rests(state)
-		result.Threads = append(result.Threads, state)
-	}
-	if result.TimedOut {
-		result.Note = "None of those threads rested or became blocked within the wait. They are still as reported."
-	}
-	return result, nil
-}
-
-// threadIDs reads one group's thread ids out of the targets it indexes.
-func threadIDs(targets []Target, group targetGroup) []string {
-	ids := make([]string, 0, len(group.indexes))
-	for _, index := range group.indexes {
-		ids = append(ids, targets[index].ThreadID)
-	}
-	return ids
-}
-
-// threadWatchAnswer is one group's half of the call.
-type threadWatchAnswer struct {
-	threads []ThreadState
-	wokeOn  string
-	err     error
-}
-
-// watchThreadGroups runs every group's wait at once and ends the call on
-// the first group that reports something: the agent watching three threads
-// wants the one that rested, not the one it happened to list first. The
-// groups that were still waiting are cancelled and read once more without
-// a wait, so every thread the call named is still reported.
-func (c *session) watchThreadGroups(ctx context.Context, targets []Target, groups []targetGroup, wait int, after int64) ([]ThreadState, string, error) {
-	if len(groups) == 1 {
-		answer := c.watchThreadGroup(ctx, targets, groups[0], wait, after)
-		return answer.threads, answer.wokeOn, answer.err
-	}
-	racing, cancel := context.WithCancel(ctx)
-	defer cancel()
-	answers := make([]threadWatchAnswer, len(groups))
-	finished := make(chan int, len(groups))
-	for index, group := range groups {
-		go func(slot int, group targetGroup) {
-			answers[slot] = c.watchThreadGroup(racing, targets, group, wait, after)
-			finished <- slot
-		}(index, group)
-	}
-	var failure error
-	woke := ""
-	for range groups {
-		slot := <-finished
-		answer := answers[slot]
-		switch {
-		case answer.err != nil:
-			// A failure this call caused by cancelling the group is not a
-			// failure of the call: that group is read again below.
-			if failure == nil && racing.Err() == nil {
-				failure = answer.err
-				cancel()
-			}
-		case answer.wokeOn != "" && woke == "":
-			woke = answer.wokeOn
-			cancel()
-		}
-	}
-	if failure != nil {
-		return nil, "", failure
-	}
-	states := make([]ThreadState, 0, len(groups))
-	for index := range answers {
-		if answers[index].err != nil {
-			// Cancelled mid-wait. Its threads are read as they stand now,
-			// on the call's own context rather than the cancelled one.
-			answers[index] = c.watchThreadGroup(ctx, targets, groups[index], 0, after)
-			if answers[index].err != nil {
-				return nil, "", answers[index].err
-			}
-		}
-		states = append(states, answers[index].threads...)
-	}
-	return states, woke, nil
-}
-
-// watchThreadGroup answers one group: this computer's threads through the
-// app, another computer's through one forwarded thread_status call.
-func (c *session) watchThreadGroup(ctx context.Context, targets []Target, group targetGroup, wait int, after int64) threadWatchAnswer {
-	ids := threadIDs(targets, group)
-	if group.local {
-		report, err := c.app.RequestStates(ctx, c.caller, StatusCall{ThreadIDs: ids, WaitSeconds: wait, AfterRevision: after})
-		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		return threadWatchAnswer{threads: c.stampThreads(group.computer, report.Threads), wokeOn: report.WokeOn}
-	}
-	peer, err := c.app.Peer(ctx, group.computer.ID)
-	if err != nil {
-		return threadWatchAnswer{err: err}
-	}
-	remaining := wait
-	for {
-		slice := remaining
-		if slice > MaxForwardedWaitSeconds {
-			slice = MaxForwardedWaitSeconds
-		}
-		args, err := json.Marshal(map[string]any{
-			"thread_ids":     ids,
-			"wait_seconds":   slice,
-			"after_revision": after,
-		})
-		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		raw, err := peer.Query(ctx, "thread_status", args)
-		if err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		var result statusResult
-		if err := peerResult(raw, &result); err != nil {
-			return threadWatchAnswer{err: err}
-		}
-		remaining -= slice
-		if result.WokeOn != "" || remaining <= 0 {
-			return threadWatchAnswer{threads: c.stampThreads(group.computer, result.Threads), wokeOn: result.WokeOn}
-		}
-	}
-}
-
-// stampThreads writes this computer's view of the answering computer onto
-// every row. The destination answers in its own shape and does not know
-// what this computer calls it.
-func (c *session) stampThreads(computer Computer, threads []ThreadState) []ThreadState {
-	out := slices.Clone(threads)
-	for index := range out {
-		id, name := c.stamp(Computer{ID: computer.ID, Name: computer.Name})
-		out[index].ComputerID, out[index].Computer = id, name
-	}
-	return out
 }
 
 func (c *session) listRequests(ctx context.Context, rawCursor string, budget int) (any, error) {

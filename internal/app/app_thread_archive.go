@@ -284,6 +284,10 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
+	if changed {
+		// The completions the archive held are the watcher's again.
+		a.nudgeRemoteWatches()
+	}
 	// Broadcast as `listed` so every other attached client puts the row
 	// back in its sidebar, unless it is a never-sent thread the list does
 	// not count yet.

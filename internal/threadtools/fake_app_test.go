@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -457,13 +458,14 @@ type serverPeer struct {
 	queries  []string
 	invokes  []string
 	fetched  []string
-	resolves int
+	// resolves counts lookups, which one call may run concurrently.
+	resolves atomic.Int32
 }
 
 func (p *serverPeer) Computer() Computer { return p.computer }
 
 func (p *serverPeer) Resolve(ctx context.Context, ref string) (Resolution, error) {
-	p.resolves++
+	p.resolves.Add(1)
 	return p.server.app.ResolveThreadRef(ctx, ref)
 }
 
@@ -475,6 +477,11 @@ func (p *serverPeer) Query(ctx context.Context, name string, args json.RawMessag
 func (p *serverPeer) Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	p.invokes = append(p.invokes, name)
 	return p.run(ctx, name, args)
+}
+
+func (p *serverPeer) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	p.queries = append(p.queries, "thread_status")
+	return p.run(ctx, "thread_status", args)
 }
 
 // FetchExport stands in for the copy a real peer client makes: the
@@ -506,6 +513,9 @@ func (p brokenPeer) Query(context.Context, string, json.RawMessage) (json.RawMes
 	return nil, p.err
 }
 func (p brokenPeer) Invoke(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	return nil, p.err
+}
+func (p brokenPeer) Watch(context.Context, json.RawMessage) (json.RawMessage, error) {
 	return nil, p.err
 }
 func (p brokenPeer) FetchExport(context.Context, ExportFile) (ExportFile, error) {

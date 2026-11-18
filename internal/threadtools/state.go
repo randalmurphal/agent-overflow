@@ -58,7 +58,7 @@ func Rests(state ThreadState) bool {
 // waiting on a person; Rests adds what the thread still waits on.
 func Resting(state string) bool {
 	switch state {
-	case StateRunning, StatePendingApproval, StateAwaitingInput:
+	case StateRunning, StatePendingApproval, StateAwaitingInput, StateUnavailable, StateUnresolved:
 		return false
 	default:
 		return true

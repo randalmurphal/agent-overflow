@@ -249,6 +249,7 @@ func TestAPeerRefusalSettlesTheRequestOnlyOnTheFirstAttempt(t *testing.T) {
 	scope := &rpcclient.Error{Code: transport.ErrCodeScopeRequired, Message: "scope missing"}
 	unreadable := &rpcclient.Error{Code: transport.ErrCodeMethodError, Message: "method failed (id: trace)"}
 	neverSent := errorsx.Public("remote_not_paired", "This computer is not paired.", nil)
+	replaced := errorsx.Public("remote_pairing_replaced", "This computer was paired again while the call was on its way. Retry it.", nil)
 	lost := errors.New("the answer was lost on the way back")
 	local := errorsx.Public(threadtools.CodeUnreachable, "Studio answered without a usable result.", nil)
 	last := threadPeerAdmissionAttempts
@@ -265,6 +266,7 @@ func TestAPeerRefusalSettlesTheRequestOnlyOnTheFirstAttempt(t *testing.T) {
 		{"the destination fails in a way this computer cannot read", 1, unreadable, threadPeerUncertain, true},
 		{"the first attempt never reaches it", 1, neverSent, threadPeerRefused, false},
 		{"a retry never reaches it", 2, neverSent, threadPeerUnsettled, false},
+		{"the first attempt finds its pairing replaced", 1, replaced, threadPeerRefused, false},
 		{"a reply is lost", 1, lost, threadPeerUncertain, true},
 		{"the last reply is lost", last, lost, threadPeerUncertain, false},
 		{"this computer cannot use the answer", 1, local, threadPeerUnsettled, false},

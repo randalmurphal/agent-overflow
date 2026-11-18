@@ -14,6 +14,11 @@ const (
 	// ResolutionTimeout bounds the concurrent fan-out. A computer that
 	// misses it makes the result incomplete, never a confident miss.
 	ResolutionTimeout = 10 * time.Second
+	// WakeRefreshTimeout bounds the read of a thread_status wait's other
+	// computers once one of them reported a wake. They are read at once,
+	// and one that misses it reads as not answering, so the wake is never
+	// held longer than this.
+	WakeRefreshTimeout = 3 * time.Second
 	// SearchTimeout bounds one computer's search.
 	SearchTimeout = 10 * time.Second
 

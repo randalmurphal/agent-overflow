@@ -19,7 +19,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead',
   'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
   'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
-  'StopThreadAgentRow', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
+  'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
 ] as const;
 
 /** The App methods that answer a value in this build and `null` on v0.0.19. */

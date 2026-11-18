@@ -18,7 +18,7 @@ func TestRemoteArtifactRefusesFIFOWithoutBlocking(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := readRemoteArtifactChunk(context.Background(), workspace, RemoteArtifactRequest{Path: "pipe"})
+		_, err := readRemoteArtifactChunk(context.Background(), workspace, RemoteArtifactRequest{Path: "pipe"}, "")
 		done <- err
 	}()
 	select {
