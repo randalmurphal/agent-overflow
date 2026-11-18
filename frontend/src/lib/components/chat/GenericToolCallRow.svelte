@@ -283,9 +283,10 @@
   // `[code]` prefix on the thread and workflow servers. The payload's
   // preview carries its opening, so the row says what went wrong without a
   // read; once the body has read the reply, the header shows it whole and
-  // the body does not repeat it.
+  // the body does not repeat it. A remote job's outcome is the job's, not
+  // the call's, whose reply was the job's start.
   let aoRowError = $derived.by(() => {
-    if (!aoTool || !rowError || rowError.code) return rowError;
+    if (!aoTool || !rowError || rowError.code || jobProjection) return rowError;
     const read = expansion.expanded && expansion.isComplete ? expansion.displayData : null;
     const preview = read?.trim() ? read : statusMeta?.preview;
     if (typeof preview !== 'string' || !preview.trim()) return rowError;
