@@ -318,12 +318,15 @@ The previous release's assets are downloaded once to `bin/releases/<tag>/`
 and verified against the release's `SHASUMS256`, so the check runs on
 Linux (a developer's WSL or a CI runner). The migration and store code is
 platform-neutral; the macOS and Windows release legs are covered by their
-own smokes. The sandbox is replaced on every run and needs roughly three
-times the corpus size while the launcher's snapshot exists, and a fourth
-while the fingerprint holds the snapshot migrated alone, which it makes
-only when a row changed (on a real root, always).
-`AO_RELEASE_UPGRADE_KEEP=1` keeps it; the Playwright annotation names the
-path. The candidate is `bin/agent-overflow` from `make harness-build`, or
+own smokes. The sandbox is replaced on every run, removed when the run
+ends (an interrupted check stops the run first), and needs roughly three times the corpus size while the launcher's
+snapshot exists, and a fourth while the fingerprint holds the snapshot
+migrated alone, which it makes only when a row changed (on a real root,
+always). Its root is fixed, so the script holds a lock beside it
+(`ao-upgrade-corpus.lock`) until the run ends: a check started from
+another checkout while one runs waits for it to end.
+`AO_RELEASE_UPGRADE_KEEP=1` (`--keep`) keeps it; the Playwright annotation
+names the path. The candidate is `bin/agent-overflow` from `make harness-build`, or
 `AO_HARNESS_BIN`: the release workflow points it at the release's own
 headless binary.
 
