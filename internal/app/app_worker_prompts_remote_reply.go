@@ -296,6 +296,10 @@ func (a *App) answerRemoteWorkerPrompt(ctx context.Context, caller threadtools.C
 	code, message, uncertain := threadErrorDetails("reply", err)
 	if code == peerPromptClosed {
 		r.mu.Lock()
+		if r.byKey[key] != prompt || prompt.state != remotePromptAnswering {
+			r.mu.Unlock()
+			return ack, true, errWorkerPromptClosed
+		}
 		prompt.state, prompt.closedAt, prompt.held, prompt.refusedClosed = remotePromptClosed, time.Now(), false, true
 		closed := *prompt
 		r.mu.Unlock()
