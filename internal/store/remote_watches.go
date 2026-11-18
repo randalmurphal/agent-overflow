@@ -52,9 +52,8 @@ type RemoteWatch struct {
 	// when none did (StopRemoteWatch, DismissUndeliveredRemoteWatches). Such
 	// a dismissal is final: nothing brings the completion back.
 	StoppedAt int64 `json:"-"`
-	// Pairing is the pairing with ComputerID the command was admitted under,
-	// its session id; empty from before pairings were recorded
-	// (ThreadRequest.Pairing).
+	// Pairing is the generation of the pairing with ComputerID the command
+	// was admitted under (ThreadRequest.Pairing).
 	Pairing string `json:"-"`
 	// ComputerName is what the person called that computer when the command
 	// was admitted, which names it once no pairing here does.

@@ -69,7 +69,7 @@ func ackPage(limit int) int {
 }
 
 // OwedThreadRequestAcks returns the acknowledgements owed to one computer
-// for what the pairing held now (live, its session) admitted, due or not, at
+// for what the pairing held now (live, its generation) admitted, due or not, at
 // most limit of them: every call to that computer carries them. What an
 // ended pairing admitted is owed nothing (EndPairing).
 func (s *Store) OwedThreadRequestAcks(computerID, live string, limit int) ([]ThreadRequestAck, error) {

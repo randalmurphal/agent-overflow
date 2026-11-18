@@ -35,7 +35,8 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 		t.Fatalf("old rows read link %d seen %d seq %d/%d ack owed %d late reply expired %d, want all 0",
 			link, seen, receiptSeq, requestSeq, ackOwed, lateExpired)
 	}
-	// Admitted before pairings were recorded: no pairing, no name kept.
+	// Admitted before pairings were recorded: no pairing, no name kept. The
+	// boot binds its pairing (BindRecordPairing).
 	var pairing, name string
 	if err := db.QueryRow(`SELECT pairing, target_computer_name FROM thread_requests WHERE token = 'old-spawn'`).Scan(&pairing, &name); err != nil ||
 		pairing != "" || name != "" {
@@ -53,6 +54,7 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 	rows, err := db.Query(`SELECT type, name FROM sqlite_master WHERE name IN (
 		'idx_thread_request_receipts_spawn_link', 'idx_thread_request_receipts_owner_seen',
 		'idx_thread_requests_remote_spawn_target', 'idx_thread_requests_ack_owed', 'thread_owner_ops', 'idx_thread_owner_ops_due', 'idx_thread_owner_ops_computer',
+		'idx_thread_requests_unbound_pairing', 'idx_remote_watches_unbound_pairing',
 		'trg_thread_placement_link_gone', 'trg_thread_placement_link_deleted')`)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +70,8 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for kind, want := range map[string][]string{
-		"index":   {"idx_thread_owner_ops_computer", "idx_thread_owner_ops_due", "idx_thread_request_receipts_owner_seen", "idx_thread_request_receipts_spawn_link", "idx_thread_requests_ack_owed", "idx_thread_requests_remote_spawn_target"},
+		"index": {"idx_remote_watches_unbound_pairing", "idx_thread_owner_ops_computer", "idx_thread_owner_ops_due", "idx_thread_request_receipts_owner_seen",
+			"idx_thread_request_receipts_spawn_link", "idx_thread_requests_ack_owed", "idx_thread_requests_remote_spawn_target", "idx_thread_requests_unbound_pairing"},
 		"table":   {"thread_owner_ops"},
 		"trigger": {"trg_thread_placement_link_deleted", "trg_thread_placement_link_gone"},
 	} {

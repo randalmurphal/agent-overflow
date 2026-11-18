@@ -37,11 +37,14 @@ func TestACollectedRevisionIsOwedUntilThatRevisionIsTaken(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "lead")
 	remoteFinished(t, s, "r", "lead", "pc")
+	if err := s.BindRecordPairing("pc", "session"); err != nil {
+		t.Fatal(err)
+	}
 	if owed := requestRow(t, s, "r").AckOwed; owed != 1 {
 		t.Fatalf("owed after the collection = %d, want 1", owed)
 	}
 	acks, err := s.OwedThreadRequestAcks("pc", "session", 10)
-	if err != nil || len(acks) != 1 || acks[0] != (ThreadRequestAck{Token: "r", ComputerID: "pc", Revision: 1}) {
+	if err != nil || len(acks) != 1 || acks[0] != (ThreadRequestAck{Token: "r", ComputerID: "pc", Revision: 1, Pairing: "session"}) {
 		t.Fatalf("owed to pc = %+v, %v", acks, err)
 	}
 	if other, err := s.OwedThreadRequestAcks("elsewhere", "session", 10); err != nil || len(other) != 0 {
@@ -218,9 +221,8 @@ func TestEndPairingEndsBothLedgersForThatComputerAlone(t *testing.T) {
 
 // The end of a pairing reaches only what the pairings other than the live
 // one admitted: a request or command the live pairing admitted keeps its
-// poll, its acknowledgement and its owed cancel, and a row from before
-// pairings were recorded belongs to the live pairing until none is held,
-// when it is recorded as the ended pairing's.
+// poll, its acknowledgement and its owed cancel. A row that names no
+// pairing belongs to none, so it is ended with the rest.
 func TestEndPairingEndsOnlyWhatTheEndedPairingAdmitted(t *testing.T) {
 	s := newTestStore(t)
 	pc, lead := uuid.NewString(), uuid.NewString()
@@ -264,31 +266,31 @@ func TestEndPairingEndsOnlyWhatTheEndedPairingAdmitted(t *testing.T) {
 	oldCommand, newCommand := command("s1"), command("s2")
 
 	open, err := s.OpenThreadRequestTokensOn(pc, "s2")
-	if err != nil || !slices.Equal(open, []string{"old"}) {
-		t.Fatalf("open under an ended pairing = %v, %v; want the old pairing's alone", open, err)
+	if err != nil || !slices.Equal(open, []string{"legacy", "old"}) {
+		t.Fatalf("open under an ended pairing = %v, %v; want the old pairing's and the one naming none", open, err)
 	}
 	acks, err := s.OwedThreadRequestAcks(pc, "s2", 10)
-	if err != nil || len(acks) != 2 || acks[0].Token == "old-done" || acks[1].Token == "old-done" {
-		t.Fatalf("owed under the live pairing = %+v, %v; want new-done and legacy-done", acks, err)
+	if err != nil || len(acks) != 1 || acks[0].Token != "new-done" {
+		t.Fatalf("owed under the live pairing = %+v, %v; want new-done alone", acks, err)
 	}
 	if _, err := s.EndPairing(pc, "s2", open, PairingEnd{RequestAnswer: []byte("gone"), CommandError: "unknown now"}); err != nil {
 		t.Fatal(err)
 	}
-	if row := requestRow(t, s, "old"); row.State != ThreadRequestErrored {
-		t.Fatalf("the old pairing's open request = %+v", row)
-	}
-	if row := requestRow(t, s, "old-done"); row.Polling || row.AckOwed != 0 {
-		t.Fatalf("the old pairing's settled request = %+v", row)
-	}
-	for _, token := range []string{"new", "legacy"} {
-		if row := requestRow(t, s, token); row.State != ThreadRequestRunning || !row.Polling || row.Pairing == pairingEndedUnknown {
-			t.Fatalf("the live pairing's open request %s = %+v", token, row)
+	for _, token := range []string{"old", "legacy"} {
+		if row := requestRow(t, s, token); row.State != ThreadRequestErrored {
+			t.Fatalf("the ended open request %s = %+v", token, row)
 		}
 	}
-	for _, token := range []string{"new-done", "legacy-done"} {
-		if row := requestRow(t, s, token); !row.Polling || row.AckOwed != 1 {
-			t.Fatalf("the live pairing's settled request %s = %+v", token, row)
+	for _, token := range []string{"old-done", "legacy-done"} {
+		if row := requestRow(t, s, token); row.Polling || row.AckOwed != 0 {
+			t.Fatalf("the ended settled request %s = %+v", token, row)
 		}
+	}
+	if row := requestRow(t, s, "new"); row.State != ThreadRequestRunning || !row.Polling {
+		t.Fatalf("the live pairing's open request = %+v", row)
+	}
+	if row := requestRow(t, s, "new-done"); !row.Polling || row.AckOwed != 1 {
+		t.Fatalf("the live pairing's settled request = %+v", row)
 	}
 	if got, err := s.GetRemoteWatch(pc, oldCommand.RequestID); err != nil || got.Receipt.State != RemoteOutcomeUnknown || got.CancelOwedAt != 0 {
 		t.Fatalf("the old pairing's command = %+v, %v", got, err)
@@ -298,17 +300,16 @@ func TestEndPairingEndsOnlyWhatTheEndedPairingAdmitted(t *testing.T) {
 		t.Fatalf("the live pairing's command = %+v, %v", got, err)
 	}
 
-	// No pairing held: everything ends, and the legacy rows become the ended
-	// pairing's, so a later pairing does not take them as its own.
+	// No pairing held: everything ends, and a later pairing owes nothing.
 	open, err = s.OpenThreadRequestTokensOn(pc, "")
-	if err != nil || !slices.Equal(open, []string{"legacy", "new"}) {
+	if err != nil || !slices.Equal(open, []string{"new"}) {
 		t.Fatalf("open with no pairing held = %v, %v", open, err)
 	}
 	if _, err := s.EndPairing(pc, "", open, PairingEnd{RequestAnswer: []byte("gone"), CommandError: "unknown now"}); err != nil {
 		t.Fatal(err)
 	}
-	if row := requestRow(t, s, "legacy-done"); row.Pairing != pairingEndedUnknown || row.AckOwed != 0 {
-		t.Fatalf("the legacy request after the end = %+v", row)
+	if row := requestRow(t, s, "new-done"); row.Polling || row.AckOwed != 0 {
+		t.Fatalf("the settled request once no pairing is held = %+v", row)
 	}
 	if acks, err := s.OwedThreadRequestAcks(pc, "s3", 10); err != nil || len(acks) != 0 {
 		t.Fatalf("owed under a later pairing = %+v, %v", acks, err)

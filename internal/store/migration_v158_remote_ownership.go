@@ -34,10 +34,12 @@ package store
 // reply arrived there.
 //
 // S records the pairing each request and remote command was admitted
-// under (`pairing`, its session id; empty from before), so the end of one
-// pairing with D ends only what that pairing admitted, and the name the
-// person knew D by when it was admitted (`target_computer_name`,
-// `computer_name`), which names D once no pairing here does.
+// under (`pairing`, its generation), so the end of one pairing with D ends
+// only what that pairing admitted, and the name the person knew D by when
+// it was admitted (`target_computer_name`, `computer_name`), which names
+// ended work. A row from before names none; the boot binds it to the
+// pairing held then, found by idx_thread_requests_unbound_pairing and
+// idx_remote_watches_unbound_pairing, which hold nothing afterwards.
 const remoteOwnershipMigrationVersion = 158
 
 const remoteOwnershipV158SQL = `
@@ -57,6 +59,10 @@ ALTER TABLE thread_requests ADD COLUMN pairing TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_requests ADD COLUMN target_computer_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE remote_watches ADD COLUMN pairing TEXT NOT NULL DEFAULT '';
 ALTER TABLE remote_watches ADD COLUMN computer_name TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_thread_requests_unbound_pairing
+    ON thread_requests(target_computer_id) WHERE target_computer_id <> '' AND pairing = '';
+CREATE INDEX idx_remote_watches_unbound_pairing
+    ON remote_watches(computer_id) WHERE pairing = '';
 CREATE INDEX idx_thread_requests_ack_owed
     ON thread_requests(next_check) WHERE ack_owed > 0;
 UPDATE thread_requests

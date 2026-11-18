@@ -179,10 +179,10 @@ type ThreadRequest struct {
 	// caller spawned there, whose answer means its turn ended
 	// (ThreadReceiptAnswer.RestUnreported).
 	RestUnreported bool `json:"-"`
-	// Pairing is the pairing with TargetComputerID the request was admitted
-	// under, its session id; empty for a local request and one from before
-	// pairings were recorded, which belongs to whichever pairing is held
-	// (EndPairing).
+	// Pairing is the generation of the pairing with TargetComputerID the
+	// request was admitted under (attachedbackends.Manager.Grant); empty for
+	// a local request. A remote record from before generations were recorded
+	// is given one at boot (BindRecordPairing).
 	Pairing string `json:"-"`
 	// TargetComputerName is what the person called that computer when the
 	// request was admitted, which names it once no pairing here does.
