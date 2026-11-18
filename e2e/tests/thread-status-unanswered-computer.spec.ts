@@ -2,7 +2,8 @@
 // down, both of them real harness backends with their own stores and mock
 // providers. The wait answers for the thread that resolved, reads the one
 // the down computer may hold as unresolved with the reason on its line, and
-// names that computer under errors; the timeline row shows all three.
+// names that computer under errors; the timeline row shows all three, the
+// unresolved reference as text rather than a control that opens it.
 // Specs: docs/specs/agent-thread-tools.md (`thread_status`).
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
@@ -96,6 +97,12 @@ test('a wait reads a thread a down computer may hold as unresolved beside the th
   await expect(lines.nth(0)).not.toContainText('did not answer');
   await expect(lines.nth(1)).toContainText('unresolved');
   await expect(lines.nth(1)).toContainText('Bench computer did not answer');
+  // The reference matched no thread, so the line is text, never a control
+  // that would try to open it.
+  await expect(lines.nth(1).getByRole('button')).toHaveCount(0);
+  await expect(lines.nth(1).getByTestId('tool-call-card-ao-line-link')).toHaveCount(0);
+  await expect(lines.nth(1).getByTestId('tool-call-card-ao-line-title')).toBeVisible();
+  await expect(lines.nth(0).getByTestId('tool-call-card-ao-line-link')).toHaveCount(1);
   await expect(row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="Bench computer"]')).toBeVisible();
   await row.screenshot({ path: test.info().outputPath('thread-status-unresolved.png') });
 });

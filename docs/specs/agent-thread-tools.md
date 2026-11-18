@@ -1770,7 +1770,9 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   then the whole message, which the body does not repeat.
 - An ask names and links the thread asked, not the hidden read-only copy
   that answers it; an id prefix links the one thread it names, and a
-  prefix that names none or several stays text.
+  prefix that names none or several stays text. A `thread_status`
+  reference that reads `unresolved` likewise stays text, with its
+  `error` and the computer it may be on when the reply names one.
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
   the answer reaches the caller, then "answer arrived". It reaches it in
