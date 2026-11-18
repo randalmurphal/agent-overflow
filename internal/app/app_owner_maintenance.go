@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/transport"
 )
 
+// Peer maintenance renews held prompts independently of recovery and proves overdue links.
 func (o *ownerUpdates) contact(id string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -75,16 +76,17 @@ func (a *App) maintainOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 		case <-timer.C:
 		}
 		a.ownerUpdates.mu.Lock()
-		launch, legacy := p.launch, p.legacy
+		launch, legacy, origin := p.launch, p.legacy, p.origin
 		a.ownerUpdates.mu.Unlock()
 		if launch == "" || legacy {
 			continue
 		}
+		readCtx := origin.Bind(ctx)
 		keys := a.workerPrompts.remote.heldLinks(id)
-		if err := a.readOwnerChanges(ctx, id, launch, keys, nil); err != nil && ctx.Err() == nil {
+		if err := a.readOwnerChanges(readCtx, id, launch, keys, nil); err != nil && ctx.Err() == nil {
 			log.Printf("owner prompt renewal on %s will retry: %v", id, err)
 		}
-		if err := a.proveDueLinks(ctx, id, launch, time.Now()); err != nil && ctx.Err() == nil {
+		if err := a.proveDueLinks(readCtx, id, launch, time.Now()); err != nil && ctx.Err() == nil {
 			log.Printf("owner link contact on %s will retry: %v", id, err)
 		}
 	}

@@ -14,7 +14,11 @@ import (
 )
 
 type observedOwnerPeer struct {
+	observeWait atomic.Pointer[func(OwnerCursor)]
 	*App
+	holdPage  atomic.Pointer[heldOwnerReply]
+	failRead  atomic.Pointer[func(ThreadPeerPoll) error]
+	linkCalls atomic.Int64
 	pages     atomic.Int64
 	batches   atomic.Int64
 	contacts  atomic.Pointer[[]OwnerLinkRead]
@@ -22,13 +26,31 @@ type observedOwnerPeer struct {
 	holdPane  atomic.Pointer[heldOwnerReply]
 }
 
+func (p *observedOwnerPeer) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
+	if observe := p.observeWait.Load(); observe != nil {
+		(*observe)(cursor)
+	}
+	return p.App.ThreadOwnerChanges(ctx, cursor)
+}
+
 func (p *observedOwnerPeer) ThreadOwnerRecovery(ctx context.Context, launch string, key OwnerPageKey) (OwnerRecoveryPage, error) {
 	p.pages.Add(1)
+	if err := p.holdPage.Swap(nil).wait(ctx); err != nil {
+		return OwnerRecoveryPage{}, err
+	}
 	return p.App.ThreadOwnerRecovery(ctx, launch, key)
 }
 
 func (p *observedOwnerPeer) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
 	p.batches.Add(1)
+	if len(poll.Links) > 0 {
+		p.linkCalls.Add(1)
+		if fail := p.failRead.Load(); fail != nil {
+			if err := (*fail)(poll); err != nil {
+				return ThreadPeerPollReply{}, err
+			}
+		}
+	}
 	if len(poll.Contacts) > 0 {
 		p.contacts.Store(&poll.Contacts)
 	}
@@ -189,7 +211,8 @@ func TestReadingAContinuingGrandchildDoesNotAdvanceTheOwnersClock(t *testing.T) 
 		})
 	}
 	pair.dest.threadRequestsWG.Wait()
-	first, _ := pair.dest.ownerActivity.snapshot(owner, launch, OwnerCursor{})
+	d := watchOwner(t, &pair.dest.ownerActivity, owner)
+	first, _ := pair.dest.ownerActivity.snapshot(d, launch, OwnerCursor{})
 	for range 3 {
 		list, _, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
 		if _, ok := agentRowByToken(list.Rows, pair.grand); err != nil || !ok {
@@ -197,7 +220,7 @@ func TestReadingAContinuingGrandchildDoesNotAdvanceTheOwnersClock(t *testing.T) 
 		}
 	}
 	pair.dest.threadRequestsWG.Wait()
-	next, _ := pair.dest.ownerActivity.snapshot(owner, launch, first.OwnerCursor)
+	next, _ := pair.dest.ownerActivity.snapshot(d, launch, first.OwnerCursor)
 	if next.Reset || next.Version != first.Version {
 		t.Fatalf("reading a running grandchild advanced its owner's clock from %d to %+v", first.Version, next)
 	}
@@ -330,23 +353,30 @@ func TestDueOwnerContactUsesTheOriginalSpawnerAndStopsAfterRelease(t *testing.T)
 // Ordinary cache aging cannot refresh this tree. A change under a worker
 // that remains open has to make the pane ask for its detail again.
 func TestOwnerPaneReadsChangedDescendantsBeforeTheCachedTreeAges(t *testing.T) {
-	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
-	startReconciledOwner(t, pair.reachPair)
-	first := pair.source.readPeerAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
-	if _, ok := agentRowByToken(first.listing.Rows, pair.grand); first.err != nil || !ok {
-		t.Fatalf("initial tree: %+v, %v", first.listing.Rows, first.err)
+	c := newAgentChain(t, 3)
+	for _, i := range []int{1, 2} {
+		routeWorkerPromptsOn(c.apps[i], c.buses[i])
 	}
-	cache := &pair.source.threadAgentPeers
+	installChainLink(t, c.apps[1])
+	installChainLink(t, c.apps[2])
+	c.spawnAlong(t, 0, "watch the release")
+	c.spawnAlong(t, 1, "stage the release")
+	for i := 1; i >= 0; i-- {
+		startReconciledComputer(t, c.apps[i], c.computers[i])
+	}
+	grandchild := func() (ThreadAgentRow, bool) {
+		rows, err := c.apps[0].ListThreadAgentRows(t.Context(), c.caller.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentRowByToken(rows.Rows, c.spawns[1])
+	}
+	waitUntil(t, 10*time.Second, func() bool { row, ok := grandchild(); return ok && row.Worker == workerRunning })
+	cache := &c.apps[0].threadAgentPeers
 	cache.mu.Lock()
-	cache.entries[pair.spawn.Token].at = time.Now().Add(time.Hour)
+	cache.entries[c.spawns[0]].at = time.Now().Add(time.Hour)
 	cache.mu.Unlock()
+	approvalOn(t, c.apps[2], c.threads[1], "release-approval")
+	waitUntil(t, 10*time.Second, func() bool { row, ok := grandchild(); return ok && row.Worker == workerBlocked })
 
-	child := pair.receipt(t, pair.grand).TargetThreadID
-	if err := pair.dest.RenameThread(child, "Updated grandchild"); err != nil {
-		t.Fatal(err)
-	}
-	pair.listRowsUntil(t, func(view ThreadAgentRows) bool {
-		row, ok := agentRowByToken(view.Rows, pair.grand)
-		return ok && row.Title == "Updated grandchild"
-	})
 }

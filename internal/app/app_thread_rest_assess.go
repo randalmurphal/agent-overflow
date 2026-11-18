@@ -300,7 +300,9 @@ func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []st
 				}
 			}
 			rest.ReconciledComputers = append(rest.ReconciledComputers, id)
-			rest.OwedRemoteTokens = append(rest.OwedRemoteTokens, p.owed...)
+			for token := range p.owed {
+				rest.OwedRemoteTokens = append(rest.OwedRemoteTokens, token)
+			}
 		}
 	}
 	return a.store.DeleteThreadRequestsBefore(floor, rest)

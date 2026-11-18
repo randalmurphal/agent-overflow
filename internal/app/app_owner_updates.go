@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/transport"
 )
 
+// Owner updates supervise one reconciled peer session per paired computer with work.
+// A failed session retains every token it has yet to apply.
 type ownerUpdates struct {
 	workers workGroup
 	mu      sync.Mutex
@@ -22,12 +24,13 @@ type ownerUpdates struct {
 }
 
 type ownerPeer struct {
+	origin       attachedbackends.PeerRead
 	cancel       context.CancelFunc
 	done         chan struct{}
 	reprobe      chan struct{}
 	legacy       bool
 	ready        bool
-	owed         []string
+	owed         map[string]ownerObligation
 	launch       string
 	disconnected <-chan struct{}
 }
@@ -113,63 +116,9 @@ func (a *App) refreshOwnerPeers() error {
 }
 
 func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
-	var cursor OwnerCursor
 	delay := a.threadPollNormal()
 	for ctx.Err() == nil {
-		call, cancel := context.WithTimeout(ctx, ownerWaitBound+10*time.Second)
-		var answer OwnerChanges
-		origin, err := a.backends.ReadThreadPeer(call, id, transport.CapabilityThreadToolsV2, "", "ThreadOwnerChanges", &answer, cursor)
-		cancel()
-		if err == nil {
-			err = origin.Apply(answer.Launch, func() error {
-				o := &a.ownerUpdates
-				o.mu.Lock()
-				defer o.mu.Unlock()
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				p.launch, p.legacy = answer.Launch, false
-				p.disconnected = origin.Disconnected()
-				if answer.Reset {
-					p.ready = false
-				} else {
-					p.owed = append(slices.Clone(answer.Tokens), ownerRevisionTokens(answer.Structural)...)
-					slices.Sort(p.owed)
-					p.owed = slices.Compact(p.owed)
-				}
-				return nil
-			})
-		}
-		if err == nil {
-			tokens := append(slices.Clone(answer.PromptTokens), p.owed...)
-			a.ownerReads.changed(tokens)
-			if answer.Reset {
-				a.invalidateOwnerTrees(id, nil)
-				err = a.recoverOwnerPeer(ctx, id, answer.Launch)
-				// Recovery consumed the current structural revisions. The wait may have observed an older edit.
-				answer.Structural = nil
-			}
-			if err == nil {
-				err = a.readOwnerChanges(ctx, id, answer.Launch, tokens, answer.Structural)
-				if err == nil {
-					a.invalidateChangedOwnerTrees(id, tokens)
-				}
-			}
-			if err == nil {
-				err = origin.Apply(answer.Launch, func() error {
-					a.ownerUpdates.mu.Lock()
-					p.ready = true
-					p.owed = nil
-					a.ownerUpdates.mu.Unlock()
-					cursor = answer.OwnerCursor
-					return nil
-				})
-			}
-		}
-		if err == nil {
-			delay = a.threadPollNormal()
-			continue
-		}
+		err := a.runOwnerSession(ctx, id, p)
 		if ctx.Err() != nil {
 			return
 		}
@@ -177,11 +126,15 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 		p.ready = false
 		p.legacy = attachedbackends.Unsupported(err)
 		legacy := p.legacy
+		hadLaunch := p.launch != ""
 		a.ownerUpdates.mu.Unlock()
-		if !legacy {
+		if errors.Is(err, errOwnerCursorReset) {
+			a.invalidateOwnerTrees(id, nil)
+			continue
+		}
+		if !legacy || hadLaunch {
 			a.invalidateOwnerTrees(id, err)
 		}
-		cursor = OwnerCursor{}
 		if legacy {
 			delay = threadRequestExpiryInterval
 		} else {
@@ -297,174 +250,6 @@ func (a *App) readOwnerChanges(ctx context.Context, id, launch string, keys []st
 			}
 			break
 		}
-	}
-	return nil
-}
-
-func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []string, structural []store.SpawnRevision) error {
-	read := a.ownerReads.start(keys)
-	defer read.close()
-	rows, err := a.store.OwnerRequests(id, keys)
-	if err != nil {
-		return err
-	}
-	poll := ThreadPeerPoll{Launch: launch}
-	spawns := map[string]store.ThreadRequest{}
-	for _, row := range rows {
-		if row.RemoteListingReach() || (row.Kind == store.ThreadRequestSpawn && row.LinkEnd == "" && row.TargetThreadID == "" && !threadRequestSettled(row)) {
-			spawns[row.Token] = row
-			poll.Links = append(poll.Links, OwnerLinkRead{Token: row.Token, Source: row.MadeIn(), Held: a.heldRemotePrompts(row)})
-		}
-		if row.Polling && !row.LineageOnly {
-			poll.Tokens = append(poll.Tokens, row.Token)
-			if row.Revision > 0 {
-				poll.Held = append(poll.Held, ThreadPeerAck{Token: row.Token, Revision: row.Revision})
-			}
-		}
-	}
-	call, cancel := context.WithTimeout(ctx, threadPollCallTimeout)
-	defer cancel()
-	if len(rows) == 0 {
-		for _, edit := range structural {
-			if slices.Contains(keys, edit.Token) {
-				poll.StructuralAck = append(poll.StructuralAck, edit.SpawnRevisionAck)
-			}
-		}
-		if len(poll.StructuralAck) == 0 {
-			return nil
-		}
-		return a.backends.CallThreadPeerOn(call, id, transport.CapabilityThreadToolsV2, "ThreadToolRequestStatus", &ThreadPeerPollReply{}, poll)
-	}
-	var reply ThreadPeerPollReply
-	started := time.Now()
-	origin, err := a.backends.ReadThreadPeer(call, id, transport.CapabilityThreadToolsV2, "", "ThreadToolRequestStatus", &reply, poll)
-	if err != nil {
-		return err
-	}
-	ends := map[string]string{}
-	var acks []store.SpawnRevisionAck
-	var wakes []threadWakeRef
-	var promptResults []<-chan error
-	unlock := a.lockComputerPairing(id)
-	err = read.apply(func() error {
-		return origin.Apply(launch, func() error {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			for _, edit := range structural {
-				if !slices.Contains(keys, edit.Token) {
-					continue
-				}
-				if _, err := a.store.ApplySpawnRevision(id, edit); err != nil {
-					return err
-				}
-				acks = append(acks, edit.SpawnRevisionAck)
-				ends[edit.Token] = edit.End
-			}
-			if len(reply.Requests) != len(poll.Tokens) || len(reply.Links) != len(poll.Links) {
-				return errors.New("incomplete owner read")
-			}
-			for i, answer := range reply.Requests {
-				if answer.Token != poll.Tokens[i] {
-					return fmt.Errorf("unexpected status token %q", answer.Token)
-				}
-				row, found, err := a.store.GetThreadRequest(answer.Token)
-				if err != nil {
-					return err
-				}
-				if !found || row.TargetComputerID != id {
-					continue
-				}
-				if !answer.Known && row.State == store.ThreadRequestUnconfirmed {
-					// Only the dispatch clock can rule out a request still on its way.
-					continue
-				}
-				w, err := a.applyKnownPeerRow(row, answer, threadPeerHearing{at: started, v2: true})
-				wakes = append(wakes, w...)
-				if err != nil {
-					return err
-				}
-				if answer.Known && store.ThreadReceiptSettled(answer.State) {
-					current, found, err := a.store.GetThreadRequest(answer.Token)
-					if err != nil {
-						return err
-					}
-					if found && !threadLateReplyAwaited(current, started) {
-						if _, err := a.store.RetireThreadRequestPoll(answer.Token); err != nil {
-							return err
-						}
-					}
-				}
-			}
-			for i, state := range reply.Links {
-				if state.Token != poll.Links[i].Token {
-					return fmt.Errorf("unexpected link token %q", state.Token)
-				}
-				if state.End == "pending" {
-					continue
-				}
-				spawn := spawns[state.Token]
-				if spawn.TargetThreadID == "" {
-					current, found, err := a.store.GetThreadRequest(state.Token)
-					if err != nil {
-						return err
-					}
-					if !found || current.TargetThreadID == "" {
-						continue
-					}
-					spawn = current
-				}
-				if state.State == nil && (ends[state.Token] == "gone" || ends[state.Token] == "detached") {
-					state.End = ends[state.Token]
-				}
-				revision := store.SpawnRevision{SpawnRevisionAck: store.SpawnRevisionAck{Token: state.Token}, End: state.End}
-				if state.State != nil {
-					revision.Title = state.State.Title
-				}
-				if _, err := a.store.ApplySpawnRevision(id, revision); err != nil {
-					return err
-				}
-				listing := ThreadAgentRows{}
-				if state.State != nil {
-					listing = *state.State
-				}
-				if _, err := a.store.SetThreadRequestNestedOpen(state.Token, peerListingOpen(listing)); err != nil {
-					return err
-				}
-				if done := a.noteRemotePrompts(origin, spawn, listing, nil); done != nil {
-					promptResults = append(promptResults, done)
-				}
-				c := &a.threadAgentPeers
-				c.mu.Lock()
-				changed := c.noteAnswerLocked(spawn, listing, nil, true)
-				c.mu.Unlock()
-				if changed {
-					a.projectPeerRows(spawn.CallerThreadID)
-				}
-			}
-			return nil
-		})
-	})
-	unlock()
-	a.deliverThreadWakes(wakes)
-	if err != nil {
-		return err
-	}
-	for _, done := range promptResults {
-		select {
-		case err := <-done:
-			if err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	if len(reply.Requests) > 0 {
-		a.sendOwedThreadRequestAcks(id)
-	}
-	if len(acks) > 0 {
-		return a.backends.CallThreadPeerOn(call, id, transport.CapabilityThreadToolsV2, "ThreadToolRequestStatus", &ThreadPeerPollReply{}, ThreadPeerPoll{Launch: launch, StructuralAck: acks})
 	}
 	return nil
 }

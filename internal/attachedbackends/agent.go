@@ -256,6 +256,9 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability, generation strin
 			}
 		}
 		read = PeerRead{pool: &held.peers, disconnected: rpc.Done(), launch: rpc.LaunchID(), proved: generation != "" && rpc.Advertises(generation)}
+		if expected, ok := ctx.Value(peerReadContextKey{}).(PeerRead); ok && (read.pool != expected.pool || read.launch != expected.launch) {
+			return rpcclient.NotSentError{Err: errors.New("the peer connection changed before the call")}
+		}
 		err := rpc.Call(ctx, method, result, params...)
 		var answered *rpcclient.Error
 		if err != nil && !errors.As(err, &answered) {
@@ -323,6 +326,13 @@ type PeerRead struct {
 
 func (m *Manager) ReadThreadPeer(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (PeerRead, error) {
 	return m.holdThreadPeer(ctx, id, protocol, generation, func(call PeerCall) error { return call(ctx, method, result, params...) })
+}
+
+type peerReadContextKey struct{}
+
+// Bind restricts follow-up calls to the carrier and launch that answered this read.
+func (r PeerRead) Bind(ctx context.Context) context.Context {
+	return context.WithValue(ctx, peerReadContextKey{}, r)
 }
 
 // Apply serializes a local commit with replacement of its peer connection's

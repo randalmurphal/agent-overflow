@@ -116,6 +116,10 @@ func TestAV2DestinationSaysItIsStillAdmittingALostSpawn(t *testing.T) {
 			if err != nil || ack.State != store.ThreadRequestUnconfirmed {
 				t.Fatalf("spawn = %+v, %v; want the token unconfirmed", ack, err)
 			}
+			// Delay incremental notifications so the final collection can only
+			// come from this test's clock, even if the peer has already named its worker.
+			faults.holdOwnerChanges = make(chan struct{})
+			defer close(faults.holdOwnerChanges)
 			startReconciledOwner(t, pair)
 			if row := pair.request(t, ack.Token); row.State != store.ThreadRequestUnconfirmed {
 				t.Fatalf("first owner reconciliation decided an in-flight admission: %+v", row)

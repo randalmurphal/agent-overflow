@@ -271,12 +271,17 @@ func TestDisconnectedOwnerKeepsRestingAnswerUntilReconciled(t *testing.T) {
 
 func startReconciledOwner(t *testing.T, pair *reachPair) {
 	t.Helper()
-	if err := pair.source.refreshOwnerPeers(); err != nil {
+	startReconciledComputer(t, pair.source, pair.computer)
+}
+
+func startReconciledComputer(t *testing.T, a *App, computer string) {
+	t.Helper()
+	if err := a.refreshOwnerPeers(); err != nil {
 		t.Fatal(err)
 	}
-	o := &pair.source.ownerUpdates
+	o := &a.ownerUpdates
 	o.mu.Lock()
-	p := o.peers[pair.computer]
+	p := o.peers[computer]
 	o.mu.Unlock()
 	if p == nil {
 		t.Fatal("worker's pairing did not start its wait")

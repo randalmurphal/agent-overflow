@@ -510,6 +510,8 @@ func reachThread(t *testing.T, app *App, id, title string) store.Thread {
 // that is asleep. It embeds the App and is registered under the same
 // labels, so the source reaches it through the ordinary method ids.
 type peerFaults struct {
+	ownerWaitCalls   atomic.Int64
+	holdOwnerChanges chan struct{}
 	*App
 	// dropReplies is how many answered ThreadToolCall replies are thrown
 	// away before one is allowed back to the source. The destination has
@@ -686,6 +688,18 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 		}
 	}
 	return reply, err
+}
+
+func (p *peerFaults) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
+	p.ownerWaitCalls.Add(1)
+	if c := p.holdOwnerChanges; c != nil && cursor.Launch != "" {
+		select {
+		case <-ctx.Done():
+			return OwnerChanges{}, ctx.Err()
+		case <-c:
+		}
+	}
+	return p.App.ThreadOwnerChanges(ctx, cursor)
 }
 
 // serveFaultyApp serves one destination through the fault wrapper, its

@@ -1055,7 +1055,7 @@ Ruling 36, as built:
   A computer with `thread-tools.v2` tells the spawner which tokens
   changed, including work below an already open worker. The spawner
   reads the affected state in batches. A pane reads the full tree when
-  it displays a changed link. Held prompts take priority and renew
+  it displays a changed link. A newly held prompt reaches its spawner during an ordinary read. Held prompts renew
   their two-minute lease on the worker's computer.
   After reconnecting, the spawner discards cached placement, collects
   held prompts, active workers, uncollected answers and pending structural revisions, and

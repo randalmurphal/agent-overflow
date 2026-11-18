@@ -65,7 +65,7 @@ func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 // noteThreadAgentTarget reports a change to a thread some request runs on,
 // or a worker not at rest, that leaves its rest as it was: its title.
 func (a *App) noteThreadAgentTarget(threadID string) {
-	if threadID == "" {
+	if threadID == "" || (!a.threadAgentFollows(threadID) && !a.ownerActivity.watching()) {
 		return
 	}
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.targets[threadID] = struct{}{} })
@@ -196,7 +196,7 @@ func (a *App) drainThreadAgentEmits() {
 		for _, threadID := range a.durableRestChanges(callers, runs) {
 			liveness[threadID] = true
 		}
-		if a.transportServer.Load() != nil {
+		if a.ownerActivity.watching() {
 			changedThreads := slices.Collect(maps.Keys(liveness))
 			changedThreads = append(changedThreads, slices.Collect(maps.Keys(targets))...)
 			changedThreads = append(changedThreads, slices.Collect(maps.Keys(callers))...)
@@ -207,6 +207,11 @@ func (a *App) drainThreadAgentEmits() {
 			}
 			for _, owner := range owners {
 				a.ownerActivity.note(owner.Device, owner.Token, false)
+			}
+		}
+		for threadID := range targets {
+			if !a.threadAgentFollows(threadID) {
+				delete(targets, threadID)
 			}
 		}
 		for threadID, durable := range liveness {

@@ -9,18 +9,34 @@ import (
 	"agent-overflow/internal/store"
 )
 
+// Recovery streams the peer's current work in bounded pages under one launch.
+// The preceding wait covers activity that changes while those pages are consumed.
+
 // OwnerPageKey is the last stable key consumed in one recovery phase.
 type OwnerPageKey struct {
-	Phase   string `json:"phase,omitempty"`
-	After   string `json:"after,omitempty"`
+	// Phase selects prompts, active work, uncollected answers or structural changes.
+	Phase string `json:"phase,omitempty"`
+
+	// After is the exclusive lower bound of the page.
+	After string `json:"after,omitempty"`
+
+	// Through bounds the current group of active threads while receipts are paged.
 	Through string `json:"through,omitempty"`
-	Token   string `json:"token,omitempty"`
+
+	// Token is the last receipt in that active group.
+	Token string `json:"token,omitempty"`
 }
 
+// OwnerRecoveryPage is one bounded part of the authenticated device's recovery listing.
 type OwnerRecoveryPage struct {
-	Tokens     []string              `json:"tokens,omitempty"`
+	// Tokens need current request or link state.
+	Tokens []string `json:"tokens,omitempty"`
+
+	// Structural contains the current facts for pending edits.
 	Structural []store.SpawnRevision `json:"structural,omitempty"`
-	Next       *OwnerPageKey         `json:"next,omitempty"`
+
+	// Next continues the listing, or is absent after the final page.
+	Next *OwnerPageKey `json:"next,omitempty"`
 }
 
 const ownerPageSize = 32
@@ -139,15 +155,27 @@ func (w *workerPrompts) promptSpawns(owner, after string) []string {
 	return slices.Compact(out)
 }
 
+// OwnerLinkRead authenticates a state read or contact through a spawn receipt.
 type OwnerLinkRead struct {
-	Token  string   `json:"token"`
-	Source string   `json:"source"`
-	Held   []string `json:"held,omitempty"`
+	// Token names the spawn receipt.
+	Token string `json:"token"`
+
+	// Source identifies the original spawner on the calling computer.
+	Source string `json:"source"`
+
+	// Held lists the prompt tokens whose leases the caller renews.
+	Held []string `json:"held,omitempty"`
 }
 
+// OwnerLinkState reports the target or the reason its listing is unavailable.
 type OwnerLinkState struct {
-	Token string           `json:"token"`
-	End   string           `json:"end,omitempty"`
+	// Token identifies the requested spawn.
+	Token string `json:"token"`
+
+	// End describes pending creation, release, detachment or deletion.
+	End string `json:"end,omitempty"`
+
+	// State holds the current shallow listing when the target survives.
 	State *ThreadAgentRows `json:"state,omitempty"`
 }
 

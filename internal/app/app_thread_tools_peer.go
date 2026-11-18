@@ -185,12 +185,23 @@ type ThreadPeerRequest struct {
 // the tokens it wants the state of, and the settlements it has durably
 // stored since it last asked.
 type ThreadPeerPoll struct {
-	Launch        string                   `json:"launch,omitempty"`
-	Links         []OwnerLinkRead          `json:"links,omitempty"`
-	Contacts      []OwnerLinkRead          `json:"contacts,omitempty"`
+	// Launch fences owner reads and acknowledgments to the serving process.
+	Launch string `json:"launch,omitempty"`
+
+	// Links requests current state for the named spawns.
+	Links []OwnerLinkRead `json:"links,omitempty"`
+
+	// Contacts proves continuing reach without retrieving a listing.
+	Contacts []OwnerLinkRead `json:"contacts,omitempty"`
+
+	// StructuralAck names the exact spawn edits the source has applied.
 	StructuralAck []store.SpawnRevisionAck `json:"structuralAck,omitempty"`
-	Tokens        []string                 `json:"tokens,omitempty"`
-	Ack           []ThreadPeerAck          `json:"ack,omitempty"`
+
+	// Tokens requests the current status of each receipt.
+	Tokens []string `json:"tokens,omitempty"`
+
+	// Ack confirms receipt settlement revisions.
+	Ack []ThreadPeerAck `json:"ack,omitempty"`
 	// Held names the revision the source already holds of settled tokens it
 	// asks about, which includes the settlement: the answer about one leaves
 	// out its Answer and Cause, and its LateReply too when the source holds
@@ -210,7 +221,10 @@ type ThreadPeerAck struct {
 
 // ThreadPeerPollReply answers one poll, one entry per requested token.
 type ThreadPeerPollReply struct {
-	Links    []OwnerLinkState    `json:"links,omitempty"`
+	// Links follows the order of the requested links.
+	Links []OwnerLinkState `json:"links,omitempty"`
+
+	// Requests follows the order of the requested tokens.
 	Requests []ThreadPeerRequest `json:"requests"`
 }
 

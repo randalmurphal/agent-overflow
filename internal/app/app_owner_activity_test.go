@@ -7,11 +7,22 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
+
+func watchOwner(t *testing.T, feed *ownerActivity, id string) *deviceActivity {
+	t.Helper()
+	d, _, err := feed.watch(id, &transport.ConnState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
 
 func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 	var events ownerActivity
-	first, wait := events.snapshot("desk", "launch", OwnerCursor{Launch: "launch"})
+	desk := watchOwner(t, &events, "desk")
+	first, wait := events.snapshot(desk, "launch", OwnerCursor{Launch: "launch"})
 	events.note("other", "hidden", true)
 	select {
 	case <-wait:
@@ -21,16 +32,16 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 	events.note("desk", "spawn", true)
 	<-wait
 	events.note("desk", "spawn", false)
-	seen, _ := events.snapshot("desk", "launch", first.OwnerCursor)
+	seen, _ := events.snapshot(desk, "launch", first.OwnerCursor)
 	if seen.Reset || !slices.Equal(seen.Tokens, []string{"spawn"}) || !slices.Equal(seen.PromptTokens, []string{"spawn"}) {
 		t.Fatalf("prompt followed by ordinary activity = %+v", seen)
 	}
 	events.note("desk", "spawn", false)
-	newer, _ := events.snapshot("desk", "launch", seen.OwnerCursor)
+	newer, _ := events.snapshot(desk, "launch", seen.OwnerCursor)
 	if newer.Version <= seen.Version || !slices.Equal(newer.Tokens, seen.Tokens) {
 		t.Fatalf("change while owner read version %d = %+v", seen.Version, newer)
 	}
-	other, _ := events.snapshot("other", "launch", OwnerCursor{Launch: "old"})
+	other, _ := events.snapshot(watchOwner(t, &events, "other"), "launch", OwnerCursor{Launch: "old"})
 	if !other.Reset {
 		t.Fatalf("restart without reset: %+v", other)
 	}
@@ -38,14 +49,15 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 
 func TestOwnerOverflowResetsOnlyAnOwnerBehindItsDiscardedChange(t *testing.T) {
 	var feed ownerActivity
-	start, _ := feed.snapshot("desk", "launch", OwnerCursor{})
+	desk := watchOwner(t, &feed, "desk")
+	start, _ := feed.snapshot(desk, "launch", OwnerCursor{})
 	feed.note("desk", "first", true)
-	first, _ := feed.snapshot("desk", "launch", start.OwnerCursor)
+	first, _ := feed.snapshot(desk, "launch", start.OwnerCursor)
 	for i := range ownerChangeLimit {
 		feed.note("desk", strconv.Itoa(i), false)
 	}
-	behind, _ := feed.snapshot("desk", "launch", start.OwnerCursor)
-	current, _ := feed.snapshot("desk", "launch", first.OwnerCursor)
+	behind, _ := feed.snapshot(desk, "launch", start.OwnerCursor)
+	current, _ := feed.snapshot(desk, "launch", first.OwnerCursor)
 	if !behind.Reset || current.Reset || len(current.Tokens) != ownerChangeLimit || slices.Contains(current.Tokens, "first") {
 		t.Fatalf("overflow returned reset %v to old cursor and reset %v, %d tokens to covered cursor", behind.Reset, current.Reset, len(current.Tokens))
 	}

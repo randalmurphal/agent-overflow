@@ -5,27 +5,45 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
-	"github.com/google/uuid"
 )
 
+// Each device with a listening connection owns a bounded, volatile log.
+// Its first observation reconciles changes made without a listener.
 const ownerChangeLimit = 256
-const ownerWaitBound = 40 * time.Second
 
+var ownerWaitBound = transport.MethodBudget("ThreadOwnerChanges") - transport.MethodAnswerMargin
+
+// OwnerCursor records the activity and structural changes already received.
 type OwnerCursor struct {
-	Launch  string `json:"launch"`
+	// PromptsOnly reads priority changes without acknowledging ordinary activity.
+	PromptsOnly bool `json:"promptsOnly,omitempty"`
+	// AfterRevision is the largest structural revision recorded as owed.
+	AfterRevision int64 `json:"afterRevision,omitempty"`
+	// Launch identifies the process that published Version.
+	Launch string `json:"launch"`
+	// Version is this device's activity watermark.
 	Version uint64 `json:"version"`
 }
 
+// OwnerChanges describes new obligations since the calling device's cursor.
 type OwnerChanges struct {
+	// OwnerCursor covers every change included in this answer.
 	OwnerCursor
-	Tokens       []string              `json:"tokens,omitempty"`
-	PromptTokens []string              `json:"promptTokens,omitempty"`
-	Structural   []store.SpawnRevision `json:"structural,omitempty"`
-	Reset        bool                  `json:"reset,omitempty"`
+
+	// Tokens lists receipts that need a fresh state read.
+	Tokens []string `json:"tokens,omitempty"`
+
+	// PromptTokens is the subset whose prompt routing changed.
+	PromptTokens []string `json:"promptTokens,omitempty"`
+
+	// Structural carries unacknowledged edits in issuance order.
+	Structural []store.SpawnRevision `json:"structural,omitempty"`
+
+	// Reset requires recovery before this computer can attest to rest.
+	Reset bool `json:"reset,omitempty"`
 }
 
 type ownerActivity struct {
@@ -34,6 +52,7 @@ type ownerActivity struct {
 }
 
 type deviceActivity struct {
+	socket             *transport.ConnState
 	version, discarded uint64
 	entries            map[string]ownerEntry
 	changed            chan struct{}
@@ -44,16 +63,47 @@ type ownerEntry struct {
 	prompt  bool
 }
 
-func (o *ownerActivity) deviceLocked(id string) *deviceActivity {
+func (o *ownerActivity) watching() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.devices) > 0
+}
+
+// watch ties the log to the latest connection that asked for it. When that
+// connection ends, the next listener starts with a full reconciliation.
+func (o *ownerActivity) watch(id string, socket *transport.ConnState) (*deviceActivity, bool, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.devices == nil {
 		o.devices = make(map[string]*deviceActivity)
 	}
 	d := o.devices[id]
-	if d == nil {
+	first := d == nil
+	if first {
 		d = &deviceActivity{entries: make(map[string]ownerEntry), changed: make(chan struct{})}
 		o.devices[id] = d
 	}
-	return d
+	if d.socket != socket {
+		const subscription = "thread-owner-activity"
+		if !socket.BindCleanup(subscription, func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			if o.devices[id] == d && d.socket == socket {
+				delete(o.devices, id)
+				d.wake()
+			}
+		}) {
+			if first {
+				delete(o.devices, id)
+			}
+			return nil, false, context.Canceled
+		}
+		if d.socket != nil {
+			d.socket.UnbindCleanup(subscription)
+		}
+		d.socket = socket
+	}
+	return d, first, nil
 }
 
 func (d *deviceActivity) wake() {
@@ -64,7 +114,10 @@ func (d *deviceActivity) wake() {
 func (o *ownerActivity) note(device, token string, prompt bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	d := o.deviceLocked(device)
+	d := o.devices[device]
+	if d == nil {
+		return
+	}
 	d.version++
 	d.entries[token] = ownerEntry{version: d.version, prompt: prompt || d.entries[token].prompt}
 	if len(d.entries) > ownerChangeLimit {
@@ -93,17 +146,21 @@ func (o *ownerActivity) reset() {
 	}
 }
 
-func (o *ownerActivity) snapshot(device, launch string, cursor OwnerCursor) (OwnerChanges, <-chan struct{}) {
+func (o *ownerActivity) snapshot(d *deviceActivity, launch string, cursor OwnerCursor) (OwnerChanges, <-chan struct{}) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	d := o.deviceLocked(device)
 	answer := OwnerChanges{OwnerCursor: OwnerCursor{Launch: launch, Version: d.version}}
 	answer.Reset = cursor.Launch != launch || cursor.Version < d.discarded || cursor.Version > d.version
 	if !answer.Reset {
 		for token, entry := range d.entries {
 			if entry.version <= cursor.Version {
-				delete(d.entries, token)
-				d.discarded = max(d.discarded, entry.version)
+				if !cursor.PromptsOnly {
+					delete(d.entries, token)
+					d.discarded = max(d.discarded, entry.version)
+				}
+				continue
+			}
+			if cursor.PromptsOnly && !entry.prompt {
 				continue
 			}
 			answer.Tokens = append(answer.Tokens, token)
@@ -135,16 +192,30 @@ func (a *App) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (Owner
 	}
 	ctx, cancel := context.WithTimeout(ctx, ownerWaitBound)
 	defer cancel()
-	key := uuid.NewString()
-	if !conn.BindCleanup(key, cancel) {
-		return OwnerChanges{}, context.Canceled
+	d, first, err := a.ownerActivity.watch(device, conn)
+	if err != nil {
+		return OwnerChanges{}, err
 	}
-	defer conn.UnbindCleanup(key)
+	if first {
+		cursor = OwnerCursor{}
+	}
 	for {
-		answer, changed := a.ownerActivity.snapshot(device, server.LaunchID(), cursor)
-		answer.Structural, err = a.store.PendingSpawnRevisions(device, "", threadPeerTokenLimit)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return OwnerChanges{}, err
+		}
+		answer, changed := a.ownerActivity.snapshot(d, server.LaunchID(), cursor)
+		answer.AfterRevision = cursor.AfterRevision
+		if answer.Reset {
+			answer.AfterRevision = 0
+		}
+		if !cursor.PromptsOnly {
+			answer.Structural, err = a.store.SpawnRevisionsAfter(device, answer.AfterRevision, threadPeerTokenLimit)
+			if err != nil {
+				return OwnerChanges{}, err
+			}
+			if len(answer.Structural) > 0 {
+				answer.AfterRevision = answer.Structural[len(answer.Structural)-1].Revision
+			}
 		}
 		if answer.Reset || len(answer.Tokens)+len(answer.Structural) > 0 {
 			return answer, nil

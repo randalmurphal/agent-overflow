@@ -5,6 +5,7 @@ import (
 	"sync"
 )
 
+// Owner reads order overlapping observations. Completing an older read cannot undo a newer one.
 var errReadSuperseded = errors.New("a newer peer observation superseded this read")
 
 // Only in-flight reads need ordering. An observation after a read began or

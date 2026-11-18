@@ -4055,12 +4055,48 @@ export type OwnDeviceList = owndevices$0.List;
 export const OwnDeviceMember = owndevices$0.Member;
 export type OwnDeviceMember = owndevices$0.Member;
 
+/**
+ * OwnerChanges describes new obligations since the calling device's cursor.
+ */
 export class OwnerChanges {
+    /**
+     * PromptsOnly reads priority changes without acknowledging ordinary activity.
+     */
+    "promptsOnly"?: boolean;
+
+    /**
+     * AfterRevision is the largest structural revision recorded as owed.
+     */
+    "afterRevision"?: number;
+
+    /**
+     * Launch identifies the process that published Version.
+     */
     "launch": string;
+
+    /**
+     * Version is this device's activity watermark.
+     */
     "version": number;
+
+    /**
+     * Tokens lists receipts that need a fresh state read.
+     */
     "tokens"?: string[];
+
+    /**
+     * PromptTokens is the subset whose prompt routing changed.
+     */
     "promptTokens"?: string[];
+
+    /**
+     * Structural carries unacknowledged edits in issuance order.
+     */
     "structural"?: store$0.SpawnRevision[];
+
+    /**
+     * Reset requires recovery before this computer can attest to rest.
+     */
     "reset"?: boolean;
 
     /** Creates a new OwnerChanges instance. */
@@ -4079,25 +4115,45 @@ export class OwnerChanges {
      * Creates a new OwnerChanges instance from a string or object.
      */
     static createFrom($$source: any = {}): OwnerChanges {
-        const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType59;
+        const $$createField4_0 = $$createType8;
+        const $$createField5_0 = $$createType8;
+        const $$createField6_0 = $$createType59;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tokens" in $$parsedSource) {
-            $$parsedSource["tokens"] = $$createField2_0($$parsedSource["tokens"]);
+            $$parsedSource["tokens"] = $$createField4_0($$parsedSource["tokens"]);
         }
         if ("promptTokens" in $$parsedSource) {
-            $$parsedSource["promptTokens"] = $$createField3_0($$parsedSource["promptTokens"]);
+            $$parsedSource["promptTokens"] = $$createField5_0($$parsedSource["promptTokens"]);
         }
         if ("structural" in $$parsedSource) {
-            $$parsedSource["structural"] = $$createField4_0($$parsedSource["structural"]);
+            $$parsedSource["structural"] = $$createField6_0($$parsedSource["structural"]);
         }
         return new OwnerChanges($$parsedSource as Partial<OwnerChanges>);
     }
 }
 
+/**
+ * OwnerCursor records the activity and structural changes already received.
+ */
 export class OwnerCursor {
+    /**
+     * PromptsOnly reads priority changes without acknowledging ordinary activity.
+     */
+    "promptsOnly"?: boolean;
+
+    /**
+     * AfterRevision is the largest structural revision recorded as owed.
+     */
+    "afterRevision"?: number;
+
+    /**
+     * Launch identifies the process that published Version.
+     */
     "launch": string;
+
+    /**
+     * Version is this device's activity watermark.
+     */
     "version": number;
 
     /** Creates a new OwnerCursor instance. */
@@ -4121,9 +4177,23 @@ export class OwnerCursor {
     }
 }
 
+/**
+ * OwnerLinkRead authenticates a state read or contact through a spawn receipt.
+ */
 export class OwnerLinkRead {
+    /**
+     * Token names the spawn receipt.
+     */
     "token": string;
+
+    /**
+     * Source identifies the original spawner on the calling computer.
+     */
     "source": string;
+
+    /**
+     * Held lists the prompt tokens whose leases the caller renews.
+     */
     "held"?: string[];
 
     /** Creates a new OwnerLinkRead instance. */
@@ -4151,9 +4221,23 @@ export class OwnerLinkRead {
     }
 }
 
+/**
+ * OwnerLinkState reports the target or the reason its listing is unavailable.
+ */
 export class OwnerLinkState {
+    /**
+     * Token identifies the requested spawn.
+     */
     "token": string;
+
+    /**
+     * End describes pending creation, release, detachment or deletion.
+     */
     "end"?: string;
+
+    /**
+     * State holds the current shallow listing when the target survives.
+     */
     "state"?: ThreadAgentRows | null;
 
     /** Creates a new OwnerLinkState instance. */
@@ -4182,9 +4266,24 @@ export class OwnerLinkState {
  * OwnerPageKey is the last stable key consumed in one recovery phase.
  */
 export class OwnerPageKey {
+    /**
+     * Phase selects prompts, active work, uncollected answers or structural changes.
+     */
     "phase"?: string;
+
+    /**
+     * After is the exclusive lower bound of the page.
+     */
     "after"?: string;
+
+    /**
+     * Through bounds the current group of active threads while receipts are paged.
+     */
     "through"?: string;
+
+    /**
+     * Token is the last receipt in that active group.
+     */
     "token"?: string;
 
     /** Creates a new OwnerPageKey instance. */
@@ -4202,9 +4301,23 @@ export class OwnerPageKey {
     }
 }
 
+/**
+ * OwnerRecoveryPage is one bounded part of the authenticated device's recovery listing.
+ */
 export class OwnerRecoveryPage {
+    /**
+     * Tokens need current request or link state.
+     */
     "tokens"?: string[];
+
+    /**
+     * Structural contains the current facts for pending edits.
+     */
     "structural"?: store$0.SpawnRevision[];
+
+    /**
+     * Next continues the listing, or is absent after the final page.
+     */
     "next"?: OwnerPageKey | null;
 
     /** Creates a new OwnerRecoveryPage instance. */
@@ -9348,11 +9461,34 @@ export class ThreadPeerCause {
  * stored since it last asked.
  */
 export class ThreadPeerPoll {
+    /**
+     * Launch fences owner reads and acknowledgments to the serving process.
+     */
     "launch"?: string;
+
+    /**
+     * Links requests current state for the named spawns.
+     */
     "links"?: OwnerLinkRead[];
+
+    /**
+     * Contacts proves continuing reach without retrieving a listing.
+     */
     "contacts"?: OwnerLinkRead[];
+
+    /**
+     * StructuralAck names the exact spawn edits the source has applied.
+     */
     "structuralAck"?: store$0.SpawnRevisionAck[];
+
+    /**
+     * Tokens requests the current status of each receipt.
+     */
     "tokens"?: string[];
+
+    /**
+     * Ack confirms receipt settlement revisions.
+     */
     "ack"?: ThreadPeerAck[];
 
     /**
@@ -9407,7 +9543,14 @@ export class ThreadPeerPoll {
  * ThreadPeerPollReply answers one poll, one entry per requested token.
  */
 export class ThreadPeerPollReply {
+    /**
+     * Links follows the order of the requested links.
+     */
     "links"?: OwnerLinkState[];
+
+    /**
+     * Requests follows the order of the requested tokens.
+     */
     "requests": ThreadPeerRequest[];
 
     /** Creates a new ThreadPeerPollReply instance. */
