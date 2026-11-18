@@ -47,6 +47,11 @@ func (t threadToolsApp) localThread(threadID string) (store.Thread, error) {
 	}
 	if err := t.app.store.CheckThreadTransferAccess(threadID); err != nil {
 		var moved *store.ThreadTransferError
+		if errors.As(err, &moved) && moved.Moved {
+			name, id := t.threadToolsBackendName(moved.BackendID)
+			return store.Thread{}, errorsx.Public(threadtools.CodeNotFound,
+				fmt.Sprintf("Thread %s moved to %s.", threadID, threadtools.NameOfComputer(threadtools.Computer{ID: id, Name: name})), nil)
+		}
 		if errors.As(err, &moved) {
 			return store.Thread{}, threadToolsNotFound(threadID)
 		}

@@ -1360,10 +1360,11 @@ func TestAWaitingAckHoldsItsTokenUntilTheReplyIsWritten(t *testing.T) {
 	}
 }
 
-// A tool call that fails after it registered its wait releases it too: the
-// error carries no answer, and a registration left behind would hold off
-// the wakes of everything it named for the life of the process.
-func TestAThreadToolCallThatFailsReleasesItsWait(t *testing.T) {
+// A wait its thread's deletion ends releases its registration once its
+// reply is written, as one that rested does: a registration left behind
+// would hold off the wakes of everything it named for the life of the
+// process.
+func TestAWaitEndedByItsThreadGoingReleasesIt(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	target := f.busyThread(t, "watched")
@@ -1407,7 +1408,7 @@ func TestAThreadToolCallThatFailsReleasesItsWait(t *testing.T) {
 	}
 
 	// The thread the call watches goes away under it, so the next check
-	// fails the call.
+	// ends the call with that thread's row.
 	if err := f.app.store.DeleteThread(target.ID); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
@@ -1416,8 +1417,8 @@ func TestAThreadToolCallThatFailsReleasesItsWait(t *testing.T) {
 		if got.err != nil {
 			t.Fatalf("thread_status: %v", got.err)
 		}
-		if !strings.Contains(string(got.raw), `"isError":true`) {
-			t.Fatalf("the call did not fail: %s", got.raw)
+		if strings.Contains(string(got.raw), `"isError":true`) || !strings.Contains(string(got.raw), `\"error_code\":\"thread_not_found\"`) {
+			t.Fatalf("the call did not report its thread gone: %s", got.raw)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("thread_status did not return")

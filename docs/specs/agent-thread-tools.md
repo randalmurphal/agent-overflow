@@ -695,11 +695,20 @@ running without having sent it anything. A wait returns as soon as any
 listed request settles or any listed thread rests, or as soon as any
 target becomes blocked on a person (a pending approval or a question
 to the user), with the request still open; duplicates and the caller's
-own thread are refused. A wait over threads on several computers
-reports what it observed: a computer that does not answer has its
-threads read `unavailable` and is named under `errors`, while the
-others keep waiting and are reported as they stand. The call fails
-only when no computer answered. A thread rests when it is at rest
+own thread are refused, as is an ambiguous reference. A wait reports
+what it observed, thread by thread. A computer that does not answer
+has its threads read `unavailable` and is named under `errors`. A
+reference that matched nothing on the computers that answered while
+another did not answer its lookup reads `unresolved`, named by the
+reference and under a computer only when a recorded move names it,
+with the computers that failed under `errors`. A thread deleted or
+moved away during the wait reads `unavailable` with its own `error`
+and ends the wait; a refusal a computer answered for the wait is the
+`error` of each of its threads. The other threads keep waiting and are reported as they
+stand; once one ends the wait, the others are read again at once,
+together, within three seconds, and a computer that has not answered
+by then reads as not answering. The call fails only when no computer
+answered. A thread rests when it is at rest
 ([at rest](standing-agents.md#at-rest)): its turn over and nothing it
 started still running; one whose turn is over and is not reports
 `resting: false` with what it waits on (`waiting_on`), and an async

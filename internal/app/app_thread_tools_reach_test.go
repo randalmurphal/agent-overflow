@@ -506,6 +506,9 @@ type peerFaults struct {
 	// watchEnded, when set, is told each time a forwarded thread_status
 	// wait returns here, whichever peer method carried it.
 	watchEnded chan struct{}
+	// beforeWatch, when set, runs as each forwarded thread_status wait
+	// arrives over ThreadToolWatch, before it is served.
+	beforeWatch func()
 	// exportChunk, when set, sees each export chunk this destination serves
 	// and may change it before it goes back (app_thread_tools_export_test.go).
 	exportChunk func(ctx context.Context, offset int64, chunk *RemoteArtifactChunk)
@@ -525,6 +528,9 @@ func (p *peerFaults) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (
 }
 
 func (p *peerFaults) ThreadToolWatch(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.beforeWatch != nil {
+		p.beforeWatch()
+	}
 	defer p.endWatch(call)
 	return p.App.ThreadToolWatch(ctx, call)
 }
