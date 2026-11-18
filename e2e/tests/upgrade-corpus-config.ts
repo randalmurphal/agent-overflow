@@ -768,6 +768,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
     values: { late_reply_expired: [1] },
     reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the computer name a request there was admitted under (v158), which need a second computer",
   },
+  { table: 'spawn_revisions', reason: 'unacknowledged changes to a paired computer’s spawns require a second computer' },
   { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },

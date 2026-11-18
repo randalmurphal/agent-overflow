@@ -106,4 +106,43 @@ BEGIN
                       WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0
                         AND target_thread_id = OLD.target_thread_id);
 END;
+
+ALTER TABLE thread_request_receipts ADD COLUMN track_spawn INTEGER NOT NULL DEFAULT 0 CHECK(track_spawn IN (0,1));
+CREATE TABLE spawn_revisions (
+  revision INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_device_id TEXT NOT NULL,
+  token TEXT NOT NULL,
+  end TEXT NOT NULL CHECK(end IN ('','released','detached','gone')),
+  UNIQUE(owner_device_id, token)
+);
+
+CREATE TRIGGER trg_spawn_revision_thread
+AFTER UPDATE OF title, placement, archived, deleting ON threads
+WHEN OLD.title IS NOT NEW.title OR OLD.placement IS NOT NEW.placement
+  OR OLD.archived IS NOT NEW.archived OR OLD.deleting IS NOT NEW.deleting
+BEGIN
+  INSERT OR REPLACE INTO spawn_revisions(owner_device_id, token, end)
+  SELECT owner_device_id, token, CASE WHEN NEW.deleting THEN 'gone' WHEN spawn_link THEN '' ELSE 'released' END
+    FROM thread_request_receipts WHERE target_thread_id = NEW.id AND track_spawn = 1;
+END;
+
+CREATE TRIGGER trg_spawn_revision_target
+AFTER UPDATE OF target_thread_id, spawn_link ON thread_request_receipts
+WHEN NEW.track_spawn = 1 AND (OLD.target_thread_id IS NOT NEW.target_thread_id OR OLD.spawn_link <> NEW.spawn_link)
+BEGIN
+  INSERT OR REPLACE INTO spawn_revisions(owner_device_id, token, end)
+  VALUES (NEW.owner_device_id, NEW.token, CASE
+    WHEN NEW.target_thread_id IS NULL AND OLD.target_thread_id IS NOT NULL THEN
+      CASE WHEN EXISTS (SELECT 1 FROM threads WHERE id = OLD.target_thread_id AND deleting = 0)
+           THEN 'detached' ELSE 'gone' END
+    WHEN NEW.spawn_link = 0 THEN 'released' ELSE '' END);
+END;
+
+CREATE TRIGGER trg_spawn_revision_removed
+AFTER DELETE ON thread_request_receipts
+WHEN OLD.track_spawn = 1 AND OLD.target_thread_id IS NOT NULL
+BEGIN
+  INSERT OR REPLACE INTO spawn_revisions(owner_device_id, token, end)
+  VALUES (OLD.owner_device_id, OLD.token, 'gone');
+END;
 `

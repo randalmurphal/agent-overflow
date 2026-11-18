@@ -81,7 +81,8 @@ func threadRequestTurnIndex(threadID, key string) (int, bool) {
 // message for the footer, and the authenticated device that owns the
 // receipt.
 type threadRequestOrigin struct {
-	caller threadtools.Caller
+	tracksSpawn bool
+	caller      threadtools.Caller
 	// foreign is true when the caller thread lives on another computer.
 	foreign bool
 	// ownerDevice authorizes the receipt: the authenticated device of the
@@ -208,12 +209,7 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 		return threadtools.RequestAck{}, err
 	}
 	if t.remoteDestination(call.ComputerID) {
-		// The other computer has no spawn link to count, so the level of
-		// an owned spawn travels with it; one given a sidebar row is level
-		// 0 there, as it would be here.
-		if placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group); err == nil && placement == threadtools.PlacementOwned {
-			call.Level = level
-		}
+		call.Level = level
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSpawn,
 			OriginThreadID: call.FromThread,
@@ -263,6 +259,10 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	call.Level = carriedLevel(origin, call.Level)
 	if err := t.refuseCarriedLevelPastLimit(call.Level); err != nil {
 		return "", threadRequestRefusal(err, "")
+	}
+	origin.tracksSpawn = origin.foreign && call.Level > 0
+	if placement != threadtools.PlacementOwned {
+		call.Level = 0
 	}
 	create, err := t.spawnThreadOptions(ctx, origin, call)
 	if err != nil {
@@ -666,6 +666,7 @@ func threadReceiptFor(origin threadRequestOrigin, token, kind, targetThreadID st
 	caller := origin.caller
 	return store.ThreadRequestReceipt{
 		SpawnLink:          link,
+		TrackSpawn:         origin.tracksSpawn,
 		Token:              token,
 		OwnerDeviceID:      origin.ownerDevice,
 		SourceComputerID:   caller.ComputerID,

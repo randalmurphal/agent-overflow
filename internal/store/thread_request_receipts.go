@@ -96,7 +96,8 @@ type ThreadRequestReceipt struct {
 	// SpawnLink marks a paired computer's owned spawn: its thread is owned
 	// by the source thread there while the link stands (migration v158,
 	// spawn_links.go). Written at acceptance, ended by a release.
-	SpawnLink bool `json:"-"`
+	SpawnLink  bool `json:"-"`
+	TrackSpawn bool `json:"-"`
 	// OwnerSeenAt is when the source computer last reached a link; the
 	// acceptance writes the creation time (touchSpawnLinkOwner).
 	OwnerSeenAt int64 `json:"-"`
@@ -121,7 +122,7 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
     created_at, updated_at, answer_agent, answer_agent_role, own_turn,
     late_reply_agent, late_reply_agent_role, spawn_instructions,
-    spawn_link, owner_seen_at, owner_op_seq, answer_cause, answer_cause_arg`
+    spawn_link, owner_seen_at, owner_op_seq, answer_cause, answer_cause_arg, track_spawn`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
@@ -135,7 +136,7 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
 		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
 		&lateReplyAgent, &lateReplyAgentRole, &r.SpawnInstructions,
-		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq, &r.Cause, &r.CauseArg,
+		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq, &r.Cause, &r.CauseArg, &r.TrackSpawn,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
@@ -321,15 +322,16 @@ const openReceiptSQL = `state IN ('` + ThreadReceiptAccepted + `', '` + ThreadRe
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
     token, owner_device_id, source_computer_id, source_computer_name,
     source_thread_id, source_thread_title, kind, target_thread_id,
-    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at
+    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at, track_spawn
  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-    ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15)`
+    ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15,
+    ?16 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL))`
 
 // insertArgs writes a link as seen by its owner when it was made.
 func (r ThreadRequestReceipt) insertArgs() []any {
 	return []any{r.Token, r.OwnerDeviceID, r.SourceComputerID, r.SourceComputerName,
 		r.SourceThreadID, r.SourceThreadTitle, r.Kind, nilIfEmpty(r.TargetThreadID),
-		r.MessageItemID, r.TurnID, r.State, r.CreatedAt, r.UpdatedAt, boolToInt(r.SpawnLink), r.CreatedAt}
+		r.MessageItemID, r.TurnID, r.State, r.CreatedAt, r.UpdatedAt, boolToInt(r.SpawnLink), r.CreatedAt, r.TrackSpawn || r.SpawnLink}
 }
 
 // validated checks a receipt about to be accepted and fills its defaults.
@@ -348,7 +350,7 @@ func (r ThreadRequestReceipt) validated(action string) (ThreadRequestReceipt, er
 	}
 	// A link names the computer and thread that own its thread, and only a
 	// paired computer's spawn makes one.
-	if r.SpawnLink && (r.Kind != ThreadRequestSpawn || r.OwnerDeviceID == localReceiptOwner ||
+	if (r.SpawnLink || r.TrackSpawn) && (r.Kind != ThreadRequestSpawn || r.OwnerDeviceID == localReceiptOwner ||
 		r.SourceComputerID == "" || r.SourceThreadID == "") {
 		return r, fmt.Errorf("%s: a spawn link is a paired computer's spawn naming its computer and thread", action)
 	}
