@@ -86,7 +86,11 @@ func (s *Store) queryThreadRequestAcks(action, query string, args ...any) (_ []T
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("%s: close: %w", action, closeErr)
+		}
+	}()
 	var out []ThreadRequestAck
 	for rows.Next() {
 		var ack ThreadRequestAck

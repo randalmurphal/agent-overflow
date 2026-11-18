@@ -548,18 +548,10 @@ func remoteAnswerAgent(agent *ThreadPeerAgent) *store.ThreadAnswerAgent {
 	return &store.ThreadAnswerAgent{Role: agenthome.BoundRole(agent.Role)}
 }
 
-// settleRemoteThreadRequest settles a source row for a reason the
-// destination gave rather than an answer it produced, and delivers it. The
-// wake is delivered after the settle lock is released.
-func (a *App) settleRemoteThreadRequest(row store.ThreadRequest, settlement store.ThreadRequestSettlement) error {
-	wakes, err := a.settleRemoteThreadRequestOwing(row, settlement)
-	a.deliverThreadWakes(wakes)
-	return err
-}
-
-// settleRemoteThreadRequestOwing is settleRemoteThreadRequest for a caller
-// settling several rows in one pass: it returns the wake the settlement owes
-// instead of delivering it, so the pass delivers them together.
+// settleRemoteThreadRequestOwing settles a source row for a reason the
+// destination gave rather than an answer it produced, and returns the wake
+// the settlement owes, which the caller delivers once the settle lock is
+// released, with the wakes of whatever else it settled in the same pass.
 func (a *App) settleRemoteThreadRequestOwing(row store.ThreadRequest, settlement store.ThreadRequestSettlement) ([]threadWakeRef, error) {
 	wake, err := func() (bool, error) {
 		unlock := a.threadRequestSettleLock(row.Token)
