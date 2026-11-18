@@ -14,8 +14,8 @@ import (
 // continues the work, and a record names its computer and nothing else
 // about the pairing. The transition runs where the pairing ends and nothing
 // replaces it: the person forgetting the computer (RemoveBackend), the
-// other computer's verdict that this one is revoked while that pairing is
-// still the one held (endRevokedPairing), and a sweep that finds no pairing
+// other computer's verdict that this one is revoked while no pairing has
+// been saved since (endRevokedPairing), and a sweep that finds no pairing
 // saved for the computer at all (endUnpaired).
 
 // lockComputerPairing takes one paired computer's fence. Admission to it (a
@@ -56,9 +56,11 @@ func pairingEnd(reason, computerName string) store.PairingEnd {
 // endUnpaired ends computerID's work when this computer holds no saved
 // pairing with it, and tells the callers their requests ended. It reports
 // whether it ended it. A profile that cannot be read ends nothing and is
-// the error; the caller puts its work off by the error delay. A pairing the
-// other computer's verdict ended, and nothing replaced, ends as that
-// verdict does, whichever of the two takes the fence first.
+// the error; the caller puts its work off by the error delay. The saved
+// profile is what admission checks under the same fence, so a pairing
+// saved since another ended, though not yet in use, keeps every record. A
+// pairing the other computer's verdict ended (Manager.TakeVerdict) ends
+// with that reason and the name it gave the computer.
 func (a *App) endUnpaired(computerID string) (bool, error) {
 	unlock := a.lockComputerPairing(computerID)
 	paired, err := a.pairingSaved(computerID)
@@ -67,10 +69,12 @@ func (a *App) endUnpaired(computerID string) (bool, error) {
 		return false, err
 	}
 	end := pairingEnd(pairingEndedHere, "")
+	name, revoked := "", false
 	if a.backends != nil {
-		if name, revoked := a.backends.TakeVerdict(computerID); revoked {
-			end = pairingEnd(pairingEndedByComputer, name)
-		}
+		name, revoked = a.backends.TakeVerdict(computerID)
+	}
+	if revoked {
+		end = pairingEnd(pairingEndedByComputer, name)
 	}
 	wakes, err := a.endPairingFenced(computerID, end)
 	unlock()
@@ -92,23 +96,14 @@ func (a *App) unpairedAfterFailure(computerID string) bool {
 
 // endRevokedPairing acts on the other computer's verdict that it revoked
 // this one (attachedbackends.RemovedByComputer). The verdict ends the
-// computer's work only when, under the fence, nothing has replaced the
-// pairing that received it (Manager.TakeVerdict): a pairing made since
-// continues the work. It runs off the caller, which announces the
-// verdict from inside a call to that computer; one that fails, or that
-// shutdown refuses, is ended by the first sweep that finds the computer
-// unpaired.
+// computer's work only when, under the fence, no pairing has been saved
+// since (endUnpaired): a pairing made since continues the work. It runs off
+// the caller, which announces the verdict from inside a call to that
+// computer; one that fails, or that shutdown refuses, is ended by the first
+// sweep that finds the computer unpaired.
 func (a *App) endRevokedPairing(change attachedbackends.SetChange) {
 	if a.lifeCtx().Err() != nil || !a.threadRequestsWG.Go(func() {
-		unlock := a.lockComputerPairing(change.ID)
-		name, ended := a.backends.TakeVerdict(change.ID)
-		if !ended {
-			unlock()
-			return
-		}
-		wakes, err := a.endPairingFenced(change.ID, pairingEnd(pairingEndedByComputer, name))
-		unlock()
-		a.deliverThreadWakes(wakes)
+		_, err := a.endUnpaired(change.ID)
 		logThreadRequestSweep("end the pairing "+change.ID+" revoked", err)
 	}) {
 		log.Printf("thread tools: the end of the pairing with %s is left to the sweeps: the app is stopping", change.ID)

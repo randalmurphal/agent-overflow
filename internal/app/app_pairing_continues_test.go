@@ -179,6 +179,30 @@ func TestARevocationEndsWorkOnlyWhileItsPairingIsHeld(t *testing.T) {
 		if row := pair.request(t, token); threadRequestSettled(row) || !row.Polling {
 			t.Fatalf("a revocation from before the new pairing ended %q polling=%v, want it still open", row.State, row.Polling)
 		}
+		if _, ended := pair.manager.TakeVerdict(pair.computer); ended {
+			t.Fatal("the new pairing left the old one's verdict standing")
+		}
+	})
+	t.Run("with a new pairing saved but not yet in use", func(t *testing.T) {
+		t.Parallel()
+		pair := newReachPair(t)
+		token := pair.runningThere(t)
+		session, err := deviceclient.LoadSession(pair.profile, pair.computer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verdict := pair.revocationOf(t)
+		// A pairing saved as one being made is saved, before this process
+		// installs it; admission reads the saved profile.
+		if err := deviceclient.SaveSession(pair.profile, session); err != nil {
+			t.Fatal(err)
+		}
+
+		pair.source.backendSetChanged(verdict)
+		pair.source.threadRequestsWG.Wait()
+		if row := pair.request(t, token); threadRequestSettled(row) || !row.Polling {
+			t.Fatalf("a revocation acted on with a new pairing saved ended %q polling=%v, want it still open", row.State, row.Polling)
+		}
 	})
 	t.Run("with the pairing unchanged", func(t *testing.T) {
 		t.Parallel()
