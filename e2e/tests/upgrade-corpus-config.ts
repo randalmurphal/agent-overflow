@@ -768,6 +768,14 @@ export const coverageAllowlist: CoverageAllowance[] = [
     values: { late_reply_expired: [1] },
     reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the computer name a request there was admitted under (v158), which need a second computer",
   },
+  {
+    table: 'thread_request_receipts', columns: ['track_spawn'], values: { track_spawn: [1] },
+    reason: 'tracking starts when a paired owner spawns a worker (TestOwnerCanCollectSpawnChangesAcrossAcknowledgments)',
+  },
+  {
+    table: 'thread_requests', columns: ['link_end', 'contact_due'], values: { link_end: ['released', 'detached', 'gone'] },
+    reason: 'a paired worker reports its link end and its owner schedules contact (TestEndedRemoteSpawnKeepsHistoryAndOwesNoOwnerOperation and TestDueOwnerContactUsesTheOriginalSpawnerAndStopsAfterRelease)',
+  },
   { table: 'spawn_revisions', reason: 'unacknowledged changes to a paired computer’s spawns require a second computer' },
   { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
