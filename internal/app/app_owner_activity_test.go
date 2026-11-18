@@ -12,7 +12,9 @@ import (
 
 func watchOwner(t *testing.T, feed *ownerActivity, id string) *deviceActivity {
 	t.Helper()
-	d, _, err := feed.watch(id, &transport.ConnState{})
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	d, _, err := feed.watchLocked(id, &transport.ConnState{})
 	if err != nil {
 		t.Fatal(err)
 	}

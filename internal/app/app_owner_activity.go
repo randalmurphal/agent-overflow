@@ -69,11 +69,23 @@ func (o *ownerActivity) watching() bool {
 	return len(o.devices) > 0
 }
 
-// watch ties the log to the latest connection that asked for it. When that
-// connection ends, the next listener starts with a full reconciliation.
-func (o *ownerActivity) watch(id string, socket *transport.ConnState) (*deviceActivity, bool, error) {
+const ownerActivitySubscription = "thread-owner-activity"
+
+// dropDevice discards activity as soon as revocation commits, even while the
+// transport is still closing its sockets.
+func (o *ownerActivity) dropDevice(id string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if d := o.devices[id]; d != nil {
+		delete(o.devices, id)
+		d.socket.UnbindCleanup(ownerActivitySubscription)
+		d.wake()
+	}
+}
+
+// watchLocked ties the log to the latest connection that asked for it. When that
+// connection ends, the next listener starts with a full reconciliation.
+func (o *ownerActivity) watchLocked(id string, socket *transport.ConnState) (*deviceActivity, bool, error) {
 	if o.devices == nil {
 		o.devices = make(map[string]*deviceActivity)
 	}
@@ -84,8 +96,7 @@ func (o *ownerActivity) watch(id string, socket *transport.ConnState) (*deviceAc
 		o.devices[id] = d
 	}
 	if d.socket != socket {
-		const subscription = "thread-owner-activity"
-		if !socket.BindCleanup(subscription, func() {
+		if !socket.BindCleanup(ownerActivitySubscription, func() {
 			o.mu.Lock()
 			defer o.mu.Unlock()
 			if o.devices[id] == d && d.socket == socket {
@@ -99,7 +110,7 @@ func (o *ownerActivity) watch(id string, socket *transport.ConnState) (*deviceAc
 			return nil, false, context.Canceled
 		}
 		if d.socket != nil {
-			d.socket.UnbindCleanup(subscription)
+			d.socket.UnbindCleanup(ownerActivitySubscription)
 		}
 		d.socket = socket
 	}
@@ -174,6 +185,23 @@ func (o *ownerActivity) snapshot(d *deviceActivity, launch string, cursor OwnerC
 	return answer, d.changed
 }
 
+// Authentication and installation share the revocation lock so a call admitted
+// before revocation cannot reinstall the device after its log is discarded.
+func (a *App) watchOwnerConnection(ctx context.Context, conn *transport.ConnState) (string, *deviceActivity, bool, error) {
+	o := &a.ownerActivity
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	device, err := a.remoteCommandOwner(ctx)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if device == threadReceiptLocalOwner {
+		return "", nil, false, fmt.Errorf("owner changes require a paired connection")
+	}
+	d, first, err := o.watchLocked(device, conn)
+	return device, d, first, err
+}
+
 // ThreadOwnerChanges waits for changes to the calling device's work.
 //
 //ao:scope threads:read
@@ -181,18 +209,14 @@ func (o *ownerActivity) snapshot(d *deviceActivity, launch string, cursor OwnerC
 //ao:budget 1m
 //ao:callerbound
 func (a *App) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
-	device, err := a.remoteCommandOwner(ctx)
-	if err != nil {
-		return OwnerChanges{}, err
-	}
 	conn := transport.ConnStateFromContext(ctx)
 	server := a.transportServer.Load()
-	if device == threadReceiptLocalOwner || conn == nil || server == nil {
+	if conn == nil || server == nil {
 		return OwnerChanges{}, fmt.Errorf("owner changes require a paired connection")
 	}
 	ctx, cancel := context.WithTimeout(ctx, ownerWaitBound)
 	defer cancel()
-	d, first, err := a.ownerActivity.watch(device, conn)
+	device, d, first, err := a.watchOwnerConnection(ctx, conn)
 	if err != nil {
 		return OwnerChanges{}, err
 	}

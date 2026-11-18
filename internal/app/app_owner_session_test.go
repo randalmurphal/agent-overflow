@@ -72,11 +72,20 @@ func TestRevokingAWatchingDeviceDiscardsItsActivity(t *testing.T) {
 	if err := p.manager.CallThreadPeerOn(t.Context(), p.computer, transport.CapabilityThreadToolsV2, "ThreadOwnerChanges", &answer, OwnerCursor{}); err != nil {
 		t.Fatal(err)
 	}
+	feed := &p.dest.ownerActivity
+	feed.mu.Lock()
+	socket := feed.devices[owner].socket
+	feed.mu.Unlock()
+	// Session revocation can return while the WebSocket handler is unwinding.
+	allowCleanup := make(chan struct{})
+	defer close(allowCleanup)
+	if !socket.BindCleanup("hold-test-unwind", func() { <-allowCleanup }) {
+		t.Fatal("watching socket already closed")
+	}
 	if _, err := p.dest.RevokeAccessDevice(owner); err != nil {
 		t.Fatal(err)
 	}
 	p.dest.ownerActivity.note(owner, spawn.Token, true)
-	feed := &p.dest.ownerActivity
 	feed.mu.Lock()
 	defer feed.mu.Unlock()
 	if feed.devices[owner] != nil {
