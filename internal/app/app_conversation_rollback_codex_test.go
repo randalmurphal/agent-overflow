@@ -273,11 +273,13 @@ func TestConversationRollbackCodexColdCutStatesTheMemorySetting(t *testing.T) {
 			seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
 			dir := t.TempDir()
 			forkLog, resumeLog := filepath.Join(dir, "fork.jsonl"), filepath.Join(dir, "resume.jsonl")
+			modeLog := filepath.Join(dir, "memory-mode.jsonl")
 			binary := writeCodexForkAtBinary(t, codexForkMock{
-				resumedThreadID: "provider-cold-memory",
-				forkedThreadID:  "forked-cold-memory",
-				requestLogPath:  forkLog,
-				resumeLogPath:   resumeLog,
+				resumedThreadID:   "provider-cold-memory",
+				forkedThreadID:    "forked-cold-memory",
+				requestLogPath:    forkLog,
+				resumeLogPath:     resumeLog,
+				memoryModeLogPath: modeLog,
 			})
 			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary, "codexOwnMemoryOff": tc.when}); err != nil {
 				t.Fatalf("update settings: %v", err)
@@ -293,6 +295,15 @@ func TestConversationRollbackCodexColdCutStatesTheMemorySetting(t *testing.T) {
 				if off := strings.Contains(request, `"features.memories":false`) && strings.Contains(request, `"memories.generate_memories":false`); off != tc.off {
 					t.Errorf("%s turns Codex's memory off = %v, want %v: %s", what, off, tc.off, request)
 				}
+			}
+			// The resumed thread keeps the mode it was stored with, so only
+			// the stored-mode update excludes it.
+			mode, err := os.ReadFile(modeLog)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if stored := strings.Contains(string(mode), `"threadId":"provider-cold-memory"`) && strings.Contains(string(mode), `"mode":"disabled"`); stored != tc.off {
+				t.Errorf("stores the resumed thread's memory mode as disabled = %v, want %v: %q", stored, tc.off, mode)
 			}
 		})
 	}
@@ -577,6 +588,8 @@ type codexForkMock struct {
 	// turnsTail is the turn `thread/turns/list` reports as the thread's
 	// newest before any fork sets one.
 	turnsTail string
+	// memoryModeLogPath captures every `thread/memoryMode/set` request.
+	memoryModeLogPath string
 }
 
 func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
@@ -645,6 +658,16 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 			`printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32600,"message":"%s"}}\n' "$id"`,
 			mock.revertErrorMessage)
 	}
+	memoryModeReply := `printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"`
+	if mock.memoryModeLogPath != "" {
+		memoryModeReply = fmt.Sprintf(`/bin/echo "$line" >> '%s'
+        `, mock.memoryModeLogPath) + memoryModeReply
+	}
+	memoryModeClause := fmt.Sprintf(`    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/memoryMode/set"'; then
+        %s
+        continue
+    fi
+`, memoryModeReply)
 	turnStartClause := ""
 	if mock.nextTurnID != "" {
 		turnStartClause = fmt.Sprintf(`    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
@@ -719,7 +742,7 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, mock.turnsTail, turnStartClause+injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, turnStartClause+injectClauses+memoryModeClause, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 
