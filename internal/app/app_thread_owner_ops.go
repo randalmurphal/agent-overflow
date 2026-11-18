@@ -426,6 +426,10 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 	if !marked {
 		return ownerOpAttempt{settled: true}
 	}
+	if err := a.relinquishEndingWorkerPrompts(op); err != nil {
+		a.rescheduleOwnerOp(op)
+		return ownerOpAttempt{reason: err.Error()}
+	}
 	answer, err := a.callOwnerOp(ctx, op)
 	var code string
 	if err != nil {

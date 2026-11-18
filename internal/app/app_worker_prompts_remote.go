@@ -187,6 +187,9 @@ func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadA
 			continue
 		}
 		if _, still := byToken[key.token]; still {
+			if prompt.state == remotePromptReturned && prompt.delivery != "" {
+				withdraw = append(withdraw, *prompt)
+			}
 			continue
 		}
 		switch prompt.state {
@@ -249,8 +252,7 @@ func (a *App) deliverRemotePrompt(key remotePromptKey) error {
 		return err
 	}
 	if !found {
-		a.returnRemotePrompt(key, "")
-		return nil
+		return a.returnRemotePrompt(key, "")
 	}
 	r.mu.Lock()
 	prompt = r.byKey[key]

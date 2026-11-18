@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -115,9 +116,16 @@ func TestAnOwnerOpEndsAPromptRoutedToTheSpawner(t *testing.T) {
 			p.openThere(t, 1)
 			p.readOwnerState(t, p.source)
 			p.wakesFor(t, p.caller.ID, 1)
+			// A queued hand-back can run after the destination has completed the operation.
+			resume := make(chan struct{})
+			release := sync.OnceFunc(func() { close(resume) })
+			defer release()
+			p.source.workerPrompts.run(func() { <-resume })
 			end(t, p)
+			release()
 			waitUntil(t, 15*time.Second, p.promptEnded)
 			p.drain(t)
+			p.source.threadRequestsWG.Wait()
 			if p.announcedToPerson("req-allow") {
 				t.Fatalf("the person there was handed the prompt of a worker its spawner ended (%d returns)", peer.returns.Load())
 			}

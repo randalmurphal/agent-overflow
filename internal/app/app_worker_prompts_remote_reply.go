@@ -75,7 +75,9 @@ func (a *App) rerouteRemotePrompt(key remotePromptKey, delivery string, reject b
 		}
 	case found && !reject:
 	default:
-		a.returnRemotePrompt(key, delivery)
+		if err := a.returnRemotePrompt(key, delivery); err != nil {
+			a.emitErrorToThread(from, err.Error())
+		}
 	}
 }
 
@@ -107,29 +109,28 @@ func (a *App) rerouteRemotePromptsFrom(threadID string) {
 // operation ends the prompt with the worker, so the person there is not
 // asked about a worker on its way out, and the lease covers one that
 // cannot arrive.
-func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) {
+func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) error {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
 	prompt := r.byKey[key]
 	if prompt == nil || prompt.state != remotePromptRouted || (delivery != "" && prompt.delivery != delivery) {
 		r.mu.Unlock()
-		return
+		return nil
+	}
+	ending, err := a.owesWorkerEnd(prompt.spawn.Token)
+	if err != nil {
+		r.mu.Unlock()
+		return err
 	}
 	prompt.state, prompt.held = remotePromptReturned, false
 	returned := *prompt
 	r.mu.Unlock()
+	var withdrawal error
 	if returned.delivery != "" {
-		if err := a.withdrawRemotePromptWake(returned); err != nil {
-			log.Printf("worker prompts: pending withdrawal: %v", err)
-		}
-	}
-	ending, err := a.owesWorkerEnd(returned.spawn.Token)
-	if err != nil {
-		a.emitErrorToThread(returned.spawn.CallerThreadID, err.Error())
-		return
+		withdrawal = a.withdrawRemotePromptWake(returned)
 	}
 	if ending {
-		return
+		return withdrawal
 	}
 	a.threadRequestsWG.Go(func() {
 		ctx, cancel := context.WithTimeout(a.lifeCtx(), remotePromptCallTimeout)
@@ -139,6 +140,41 @@ func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) {
 			log.Printf("worker prompts: give %s back to %s: %v", key.token, key.computerID, err)
 		}
 	})
+	return withdrawal
+}
+
+// An archive or delete can finish before the prompt queue processes the
+// spawner's hand-back. Relinquish its existing holds while the end is owed.
+func (a *App) relinquishEndingWorkerPrompts(op store.OwnerOp) error {
+	r := &a.workerPrompts.remote
+	if (op.Op != store.OwnerOpArchive && op.Op != store.OwnerOpDelete) || !r.knows(op.Token) {
+		return nil
+	}
+	_, _, canAnswer, err := a.store.RemotePromptHolder(op.Token)
+	if err != nil || canAnswer {
+		return err
+	}
+	r.mu.Lock()
+	var withdrawals []remoteWorkerPrompt
+	for _, prompt := range r.byKey {
+		if prompt.spawn.Token != op.Token {
+			continue
+		}
+		if prompt.state == remotePromptRouted {
+			prompt.state, prompt.held = remotePromptReturned, false
+		}
+		if prompt.state == remotePromptReturned && prompt.delivery != "" {
+			withdrawals = append(withdrawals, *prompt)
+		}
+	}
+	r.mu.Unlock()
+	var failures []error
+	for _, prompt := range withdrawals {
+		if err := a.withdrawRemotePromptWake(prompt); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // forgetRemotePrompts closes the prompts a computer no longer paired put to
