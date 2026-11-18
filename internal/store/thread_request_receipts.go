@@ -191,6 +191,9 @@ func (s *Store) AcceptThreadRequestReceipt(r ThreadRequestReceipt) (ThreadReques
 	if err := tx.Commit(); err != nil {
 		return ThreadRequestReceipt{}, false, fmt.Errorf("%s: commit: %w", action, err)
 	}
+	if created && stored.OwnerDeviceID != localReceiptOwner {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: stored.Token})
+	}
 	return stored, created, nil
 }
 
@@ -420,6 +423,7 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string, own bool) (bool, 
 	if err := tx.Commit(); err != nil {
 		return false, ListingUnchanged, fmt.Errorf("%s: commit: %w", action, err)
 	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	return true, listingChange(listedBefore, listedAfter), nil
 }
 
@@ -531,7 +535,7 @@ func (s *Store) writeReceiptAndRunSource(action, token, query string, args ...an
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	if advanced {
+	if advanced || applied {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
 	return applied, nil
@@ -775,7 +779,7 @@ func (s *Store) SettleLocalThreadRequestAtRest(token string, from []string, sett
 	if err := tx.Commit(); err != nil {
 		return LocalSettlement{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	if out.Collected {
+	if out.Collected || receipt.OwnerDeviceID != localReceiptOwner {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
 	return out, nil
@@ -796,7 +800,11 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // whose request was made on this computer stores it with that request
 // instead (StoreLocalThreadRequestLateReply).
 func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
-	return storeThreadReceiptLateReply(s.db, token, reply, at, agent)
+	changed, err := storeThreadReceiptLateReply(s.db, token, reply, at, agent)
+	if changed {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return changed, err
 }
 
 func storeThreadReceiptLateReply(db sqlExecutor, token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {

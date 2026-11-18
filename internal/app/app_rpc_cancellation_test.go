@@ -32,6 +32,8 @@ var callerBoundMethods = map[string]string{
 	"SearchTimelineItems":       "store read",
 	"ListThreadsOnPR":           "store read and in-memory live state",
 	"ThreadToolResolve":         "store read",
+	"ThreadOwnerRecovery":       "store reads and in-memory prompt and thread listings",
+	"ThreadOwnerChanges":        "store reads and an owner wait released by connection cleanup",
 	"ThreadToolWatch":           "store reads, live state and an in-memory wait registration",
 	"WorkflowGetRunMap":         "store read",
 	"RemoteCommandArtifact":     "in-memory snapshot and local file read",

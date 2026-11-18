@@ -48,7 +48,8 @@ type peerConns struct {
 	mu sync.Mutex
 	// ended is the verdict once the carrier has left; no connection is
 	// admitted after it.
-	ended error
+	ended  error
+	launch string
 	// open is every connection admitted and not yet seen to end, idle or
 	// held; idle is the subset waiting for a call.
 	open   []*rpcclient.Client
@@ -65,6 +66,7 @@ func (p *peerConns) admit(rpc *rpcclient.Client) error {
 		rpc.Close()
 		return verdict
 	}
+	p.launch = rpc.LaunchID()
 	p.open = slices.DeleteFunc(p.open, func(held *rpcclient.Client) bool { return !live(held) })
 	p.open = append(p.open, rpc)
 	p.mu.Unlock()

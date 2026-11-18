@@ -113,7 +113,7 @@ func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
 // two carry different authority: a thread call never runs a shell.
 var threadPeerMethods = map[string]struct{}{
 	"ThreadToolResolve": {}, "ThreadToolQuery": {}, "ThreadToolCall": {},
-	"ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {}, "ThreadToolWatch": {},
+	"ThreadOwnerRecovery": {}, "ThreadOwnerChanges": {}, "ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {}, "ThreadToolWatch": {},
 }
 
 // CallThreadPeer makes one authenticated RPC call for the agent thread
@@ -146,7 +146,8 @@ func (m *Manager) CallThreadPeerOn(ctx context.Context, id, protocol, method str
 // and an answer that came is that same build's. It is false when no
 // connection was proven.
 func (m *Manager) CallThreadPeerProving(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (bool, error) {
-	return m.holdThreadPeer(ctx, id, protocol, generation, func(call PeerCall) error { return call(ctx, method, result, params...) })
+	answer, err := m.ReadThreadPeer(ctx, id, protocol, generation, method, result, params...)
+	return answer.proved, err
 }
 
 // HoldThreadPeer runs use with calls that share one connection to the
@@ -158,12 +159,12 @@ func (m *Manager) HoldThreadPeer(ctx context.Context, id string, use func(PeerCa
 
 // holdThreadPeer is holdPeer for the thread tools' surface: a computer id,
 // a thread peer protocol generation, and only the methods the tools reach.
-func (m *Manager) holdThreadPeer(ctx context.Context, id, protocol, generation string, use func(PeerCall) error) (bool, error) {
+func (m *Manager) holdThreadPeer(ctx context.Context, id, protocol, generation string, use func(PeerCall) error) (PeerRead, error) {
 	if !entityid.Valid(id) {
-		return false, rpcclient.NotSentError{Err: errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
+		return PeerRead{}, rpcclient.NotSentError{Err: errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
 	}
 	if protocol != transport.CapabilityThreadTools && protocol != transport.CapabilityThreadToolsV2 {
-		return false, rpcclient.NotSentError{Err: fmt.Errorf("%s is not a thread peer protocol", protocol)}
+		return PeerRead{}, rpcclient.NotSentError{Err: fmt.Errorf("%s is not a thread peer protocol", protocol)}
 	}
 	return m.holdPeer(ctx, id, protocol, generation, func(call PeerCall) error {
 		return use(func(ctx context.Context, method string, result any, params ...any) error {
@@ -216,13 +217,13 @@ func (m *Manager) callPeer(ctx context.Context, id, capability, method string, r
 // a rpcclient.NotSentError; from then on the RPC client says whether its
 // frame was written. It reports whether the connection the last call went
 // out on advertised generation ("" asks nothing).
-func (m *Manager) holdPeer(ctx context.Context, id, capability, generation string, use func(PeerCall) error) (proved bool, err error) {
+func (m *Manager) holdPeer(ctx context.Context, id, capability, generation string, use func(PeerCall) error) (read PeerRead, err error) {
 	held, err := m.carrier(ctx, id)
 	if err != nil {
 		if ctx.Err() != nil {
-			return false, rpcclient.NotSentError{Err: err}
+			return PeerRead{}, rpcclient.NotSentError{Err: err}
 		}
-		return false, rpcclient.NotSentError{Err: pairingRefusal(err)}
+		return PeerRead{}, rpcclient.NotSentError{Err: pairingRefusal(err)}
 	}
 	var rpc *rpcclient.Client
 	defer func() {
@@ -254,7 +255,7 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability, generation strin
 				rpc = opened
 			}
 		}
-		proved = generation != "" && rpc.Advertises(generation)
+		read = PeerRead{pool: &held.peers, launch: rpc.LaunchID(), proved: generation != "" && rpc.Advertises(generation)}
 		err := rpc.Call(ctx, method, result, params...)
 		var answered *rpcclient.Error
 		if err != nil && !errors.As(err, &answered) {
@@ -265,7 +266,7 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability, generation strin
 		held.reached()
 		return err
 	})
-	return proved, err
+	return read, err
 }
 
 // pairingRefusal maps why a pairing cannot carry a call, its carrier's
@@ -311,3 +312,34 @@ func unsupportedPeerError(capability string, cause error) error {
 	}
 	return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", cause)
 }
+
+// PeerRead identifies the carrier and peer launch that answered a call.
+type PeerRead struct {
+	pool   *peerConns
+	launch string
+	proved bool
+}
+
+func (m *Manager) ReadThreadPeer(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (PeerRead, error) {
+	return m.holdThreadPeer(ctx, id, protocol, generation, func(call PeerCall) error { return call(ctx, method, result, params...) })
+}
+
+// Apply serializes a local commit with replacement of its peer connection's
+// carrier and launch. The commit must not make a network call.
+func (r PeerRead) Apply(launch string, commit func() error) error {
+	if r.pool == nil || r.launch != launch {
+		return errors.New("the answer came from a different peer launch")
+	}
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+	if r.pool.ended != nil {
+		return r.pool.ended
+	}
+	if r.pool.launch != launch {
+		return errors.New("the peer restarted before its answer was recorded")
+	}
+	return commit()
+}
+
+func (r PeerRead) Answered() bool                   { return r.pool != nil }
+func (r PeerRead) Commit(commit func() error) error { return r.Apply(r.launch, commit) }

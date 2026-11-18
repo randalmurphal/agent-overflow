@@ -39,6 +39,7 @@ type Client struct {
 	closeOnce sync.Once
 	// capabilities are what the far side's hello advertised on this
 	// connection, set once by Hello.
+	launch       string
 	capabilities []string
 }
 
@@ -85,6 +86,7 @@ func (c *Client) read() {
 // Hello is read before any remote mutation, so identity and feature support
 // can be verified on the authenticated connection actually used for the call.
 type Hello struct {
+	LaunchID        string                `json:"launchId"`
 	Routes          []computerroute.Route `json:"routes"`
 	Type            string                `json:"type"`
 	BackendID       string                `json:"backendId"`
@@ -118,6 +120,7 @@ func (c *Client) Hello(ctx context.Context) (Hello, error) {
 	if frame.Type != "hello" {
 		return frame, fmt.Errorf("computer did not identify itself")
 	}
+	c.launch = frame.LaunchID
 	c.capabilities = frame.Capabilities
 	return frame, nil
 }
@@ -241,4 +244,11 @@ func (c *Client) await(ctx context.Context, id string, result any) error {
 		destination.Elem().Set(fresh.Elem())
 		return nil
 	}
+}
+
+// LaunchID identifies the peer process that authenticated this connection.
+func (c *Client) LaunchID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.launch
 }
