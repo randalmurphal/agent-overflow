@@ -935,10 +935,11 @@ Ruling 36, as built:
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
-  take. A read of both, `threadRest`, is what `thread_status` with
-  `thread_ids`, a paired computer's answers and every rest pass take: the
-  thread's own sources read then, the work below it over the memory record
-  below.
+  take. A read of both, `threadRest`, serves status: `thread_status`
+  with `thread_ids`, a held request's `waiting_on`, and a paired
+  computer's answers (`agent_rows`, and `waitingOn` in the poll's
+  answer) take it: the thread's own sources read then, the work below it
+  over the memory record below.
 
   A decision that cannot be taken back has one rule of its own: a held
   request settling `finished`
