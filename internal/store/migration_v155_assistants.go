@@ -109,6 +109,11 @@ import (
 // sweep nests its new work under its owner. A database that holds two such
 // rows for one thread keeps the newest as the link, by creation time then
 // token, and marks the older ones superseded lineage rows.
+// idx_thread_requests_spawn_caller holds the same links by caller: a read
+// of rest walks from a thread to the threads its spawns reached, at any
+// depth, settled or not (ReadSubtreeRest), and the owned walks of an
+// archive and a delete step the same way (ownedStepSQL), each probing a
+// thread's spawn links without reading its sends, asks and reminders.
 //
 // open_below_0 to open_below_3 count, on each such spawn, the requests that
 // count as open work (agentOpenWorkSQL) made by the threads d spawns below
@@ -341,6 +346,9 @@ CREATE INDEX idx_thread_request_receipts_lineage
  WHERE lineage_only = 1;
 CREATE UNIQUE INDEX idx_thread_requests_spawn_link
     ON thread_requests(target_thread_id)
+ WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> '';
+CREATE INDEX idx_thread_requests_spawn_caller
+    ON thread_requests(caller_thread_id)
  WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> '';
 CREATE INDEX idx_thread_requests_open_below
     ON thread_requests(caller_thread_id)

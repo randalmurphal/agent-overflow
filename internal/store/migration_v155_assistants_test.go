@@ -90,7 +90,7 @@ func TestMigrationV155Schema(t *testing.T) {
 		"idx_agent_helpers_agent", "idx_agent_past_threads_agent", "idx_agent_projects_project", "idx_agent_wakes_due", "idx_agent_wakes_thread",
 		"idx_thread_request_receipts_age", "idx_thread_request_receipts_lineage", "idx_thread_requests_age", "idx_thread_requests_answer_due", "idx_thread_requests_caller_settled", "idx_thread_requests_lineage",
 		"idx_thread_requests_nested_caller", "idx_thread_requests_nested_open", "idx_thread_requests_open_below", "idx_thread_requests_open_created", "idx_thread_requests_open_deep", "idx_thread_requests_remote_rest",
-		"idx_thread_requests_spawn_link", "idx_thread_requests_spawn_target", "idx_threads_delete_claim",
+		"idx_thread_requests_spawn_caller", "idx_thread_requests_spawn_link", "idx_thread_requests_spawn_target", "idx_threads_delete_claim",
 		"session_start_failures",
 		"sqlite_autoindex_agent_helpers_1", "sqlite_autoindex_agent_past_threads_1",
 		"sqlite_autoindex_agent_wakes_1", "sqlite_autoindex_agents_1", "sqlite_autoindex_agents_2", "sqlite_autoindex_session_start_failures_1",
@@ -767,4 +767,53 @@ func TestUpgradeFromAnOlderReleaseKeepsMainData(t *testing.T) {
 		t.Fatal(fkErr)
 	}
 	assertAgentTreeMarks(t, s.db, "after the upgrade")
+}
+
+// v155 indexes the local spawn links by caller: the links a database
+// already holds are in it, the newest of two spawns to one thread among
+// them, and nothing else of the caller's is.
+func TestMigrationV155IndexesSpawnLinksByCaller(t *testing.T) {
+	db := migrateThrough(t, assistantsMigrationVersion-1)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
+	for _, id := range []string{"lead", "worker", "old"} {
+		mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, mode)
+			VALUES (?, 'p', ?, 'claude', '/tmp/p', 'test-model', 1, 1, 0, 'chat')`, id, id)
+	}
+	for _, row := range []struct {
+		token, kind, computer, target string
+		at                            int
+	}{
+		{"link", "spawn", "", "worker", 5},
+		{"replaced", "spawn", "", "old", 4},
+		{"newer", "spawn", "", "old", 6},
+		{"remote", "spawn", "pc", "there", 5},
+		{"send", "send", "", "worker", 5},
+		{"unnamed", "spawn", "", "", 5},
+	} {
+		mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, created_at, updated_at)
+			VALUES (?, 'lead', ?, ?, ?, 'finished', ?, ?)`, row.token, row.kind, row.computer, row.target, row.at, row.at)
+	}
+
+	migrateFrom(t, db, assistantsMigrationVersion-1)
+
+	rows, err := db.Query(`SELECT token FROM thread_requests INDEXED BY idx_thread_requests_spawn_caller
+		WHERE caller_thread_id = 'lead' AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, token)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"link", "newer"}) {
+		t.Fatalf("the caller's spawn links = %v; want the link and the newer spawn to one thread", got)
+	}
 }
