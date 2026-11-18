@@ -56,7 +56,7 @@ const (
 	memoryUndelivered = "This conversation's session started without its memory, because the hook that delivers it could not be set up"
 	memoryUnrecorded  = "Agent Overflow could not prepare the folder where it records what this conversation's sessions were shown as memory, so a prompt may deliver the whole memory again"
 	memoryUnforgotten = "Agent Overflow could not forget what earlier sessions of this conversation were shown as memory, so a later prompt may deliver only what changed although the model no longer holds the rest"
-	memoryOversize    = "This conversation's memory is longer than a provider shows the model whole, so its sessions see its start and the path of a file holding all of it"
+	memoryOversize    = "Part of this conversation's memory is longer than a provider may show the model of one hook output, so its sessions may see only that part's start and the path of a file holding all of it"
 )
 
 // readProblems are failed reads of a delivery as memoryProblems.
@@ -68,13 +68,16 @@ func readProblems(errs []error) []memoryProblem {
 	return problems
 }
 
-// sizeProblems is the problem of a delivery over memory.Limit, none for one
-// under it.
-func sizeProblems(text string) []memoryProblem {
-	if size, over := memory.Oversize(text); over {
-		return []memoryProblem{{memoryOversize, fmt.Errorf("%d bytes, over the %d a hook's output reaches the model whole", size, memory.Limit)}}
+// sizeProblems are the problems of the parts of a delivery over
+// memory.Limit, each naming its part.
+func sizeProblems(outputs []memory.Output) []memoryProblem {
+	var problems []memoryProblem
+	for _, output := range outputs {
+		if output.Over() {
+			problems = append(problems, memoryProblem{memoryOversize, fmt.Errorf("%s is %d bytes, over the %d a hook's output reaches every provider's model whole", output.Name, output.Size, memory.Limit)})
+		}
 	}
-	return nil
+	return problems
 }
 
 // memoryPlan is the delivery threadID's sessions receive; ok is false for
@@ -177,30 +180,31 @@ func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent,
 }
 
 // memoryHook is the hook that delivers plan by running this executable,
-// which locate finds: whole at a start, a compaction and a clear, and what
-// changed at each prompt.
+// which locate finds, once per part of the delivery: whole at a start, a
+// compaction and a clear, and what changed at each prompt.
 func memoryHook(plan memory.Plan, locate func() (string, error)) (*provider.SessionStartHook, error) {
 	executable, err := locate()
 	if err != nil {
 		return nil, fmt.Errorf("locate this executable for the hook that delivers memory: %w", err)
 	}
-	command, err := memory.HookCommand(executable, memory.AtSessionStart, plan)
-	if err != nil {
-		return nil, fmt.Errorf("build the SessionStart hook that delivers memory: %w", err)
+	hook := &provider.SessionStartHook{
+		Label:   memory.Label,
+		Ending:  memory.Ending,
+		Stamp:   memory.StampPrefix,
+		Failure: memory.HookSubcommand + ":",
 	}
-	prompt, err := memory.HookCommand(executable, memory.AtPrompt, plan)
-	if err != nil {
-		return nil, fmt.Errorf("build the UserPromptSubmit hook that delivers changes to memory: %w", err)
+	for _, part := range plan.Parts() {
+		command, err := memory.HookCommand(executable, memory.AtSessionStart, part, plan)
+		if err != nil {
+			return nil, fmt.Errorf("build the SessionStart hook that delivers memory: %w", err)
+		}
+		prompt, err := memory.HookCommand(executable, memory.AtPrompt, part, plan)
+		if err != nil {
+			return nil, fmt.Errorf("build the UserPromptSubmit hook that delivers changes to memory: %w", err)
+		}
+		hook.Parts = append(hook.Parts, provider.SessionStartPart{Command: command, PromptCommand: prompt, Heading: plan.HeadingOf(part)})
 	}
-	return &provider.SessionStartHook{
-		Label:         memory.Label,
-		Command:       command,
-		PromptCommand: prompt,
-		Heading:       memory.Heading,
-		Ending:        memory.Ending,
-		Stamp:         memory.StampPrefix,
-		Failure:       memory.HookSubcommand + ":",
-	}, nil
+	return hook, nil
 }
 
 // forgetMemoryRecords deletes the records of what threadID's sessions were
@@ -239,10 +243,10 @@ func (a *App) reportSessionMemory(threadID string, mem sessionMemory) {
 	}
 	plan := *mem.Plan
 	if !a.goMemoryReport(threadID, func() {
-		text, read := memory.Build(plan, time.Now())
+		outputs, read := memory.Build(plan, time.Now())
 		problems := append(mem.Problems, readProblems(read)...)
 		if !mem.resumed {
-			problems = append(problems, sizeProblems(text)...)
+			problems = append(problems, sizeProblems(outputs)...)
 		}
 		a.reportMemoryProblems(threadID, problems)
 	}) {
@@ -261,8 +265,8 @@ func (a *App) reportMemoryCompactionProblems(threadID string) {
 	}
 	plan := *live.MemoryPlan
 	a.goMemoryReport(threadID, func() {
-		text, read := memory.Build(plan, time.Now())
-		a.reportMemoryProblems(threadID, append(readProblems(read), sizeProblems(text)...))
+		outputs, read := memory.Build(plan, time.Now())
+		a.reportMemoryProblems(threadID, append(readProblems(read), sizeProblems(outputs)...))
 	})
 }
 

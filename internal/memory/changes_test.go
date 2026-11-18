@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,8 @@ func newSession(t *testing.T, plan Plan, id string) session {
 	return session{t: t, plan: plan, id: id}
 }
 
-// run runs the hook at event and returns the context it delivered, "" for
-// none, failing the test on any stderr.
+// run runs the hook of each of the plan's parts at event and returns the
+// contexts they delivered, "" for none, failing the test on any stderr.
 func (s session) run(event HookEvent) string {
 	s.t.Helper()
 	context, stderr := s.runAt(event, day)
@@ -37,30 +38,57 @@ func (s session) run(event HookEvent) string {
 	return context
 }
 
+// runAt runs the hook of each of the plan's parts at event at now, as a
+// provider runs a delivery's handlers, and returns the contexts they
+// delivered in order, a blank line apart, and their stderr.
 func (s session) runAt(event HookEvent, now time.Time) (context, stderr string) {
 	s.t.Helper()
 	input, err := json.Marshal(map[string]string{"session_id": s.id, "hook_event_name": hookEventName[event]})
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	var out, errs strings.Builder
-	if code := runHookAt([]string{string(event), encodedPlan(s.t, s.plan)}, strings.NewReader(string(input)), &out, &errs, now); code != 0 {
-		s.t.Fatalf("%s: exit %d, stderr %q", event, code, errs.String())
+	var contexts []string
+	var errs strings.Builder
+	for _, part := range s.plan.Parts() {
+		var out strings.Builder
+		if code := runHookAt([]string{string(event), string(part), encodedPlan(s.t, s.plan)}, strings.NewReader(string(input)), &out, &errs, now); code != 0 {
+			s.t.Fatalf("%s %s: exit %d, stderr %q", event, part, code, errs.String())
+		}
+		if out.Len() > 0 {
+			contexts = append(contexts, eventContext(s.t, out.String(), hookEventName[event]))
+		}
 	}
-	if out.Len() == 0 {
-		return "", errs.String()
-	}
-	return eventContext(s.t, out.String(), hookEventName[event]), errs.String()
+	return strings.Join(contexts, "\n\n"), errs.String()
 }
 
-// changesBody is a delivery of changes without its frame.
+// stamped is outputs as their hooks deliver them at at, joined as runAt
+// joins them.
+func stamped(outputs []Output, at time.Time) string {
+	texts := make([]string, len(outputs))
+	for i, output := range outputs {
+		texts[i] = Stamp(output.Text, at)
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+// changesBody is the deliveries of changes in context without their frames,
+// a blank line apart.
 func changesBody(t *testing.T, context string) string {
 	t.Helper()
 	opening := ChangesHeading + "\n" + changesNote + "\n\n"
-	if !strings.HasPrefix(context, opening) || !strings.HasSuffix(context, "\n\n"+ChangesEnding) {
-		t.Fatalf("not a delivery of changes:\n%s", context)
+	closing := "\n\n" + ChangesEnding
+	var bodies []string
+	for rest := context; ; {
+		end := strings.Index(rest, closing)
+		if !strings.HasPrefix(rest, opening) || end < 0 {
+			t.Fatalf("not a delivery of changes:\n%s", context)
+		}
+		bodies = append(bodies, rest[len(opening):end])
+		if rest = rest[end+len(closing):]; rest == "" {
+			return strings.Join(bodies, "\n\n")
+		}
+		rest = strings.TrimPrefix(rest, "\n\n")
 	}
-	return strings.TrimSuffix(strings.TrimPrefix(context, opening), "\n\n"+ChangesEnding)
 }
 
 // A start delivers the whole memory and records it; a prompt with nothing
@@ -76,7 +104,7 @@ func TestAPromptDeliversOnlyWhatChanged(t *testing.T) {
 	write(t, s.plan.Home, "instructions.md", "Release lead.\n")
 	run := newSession(t, s.plan, "s1")
 	built, _ := Build(s.plan, day)
-	if got := run.run(AtSessionStart); got != Stamp(built, day) {
+	if got := run.run(AtSessionStart); got != stamped(built, day) {
 		t.Fatalf("start delivered:\n%s", got)
 	}
 	if got := run.run(AtPrompt); got != "" {
@@ -101,8 +129,8 @@ func TestAPromptDeliversOnlyWhatChanged(t *testing.T) {
 }
 
 // A section that changes whole is sent whole: instructions.md, the write
-// rules, the warnings. A section that goes is named as gone, and warnings
-// that are fixed say so.
+// rules, the warnings. A section that goes is named as gone, once, a part
+// the plan no longer has included, and warnings that are fixed say so.
 func TestWholeSectionsAndGoneOnes(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
@@ -129,6 +157,9 @@ func TestWholeSectionsAndGoneOnes(t *testing.T) {
 		!strings.Contains(body, "### Keeping memory\n[This is no longer part of your memory.]") {
 		t.Fatalf("changes:\n%s", body)
 	}
+	if got := run.run(AtPrompt); got != "" {
+		t.Fatalf("the gone sections were named again:\n%s", got)
+	}
 }
 
 // A section whose heading or notices change is sent whole, as is a section
@@ -143,8 +174,10 @@ func TestASectionWhoseNoticesChangeIsSentWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Dir(s.plan.User), "user", "a file where the folder goes")
+	// The user part's run reports the failure; the warnings' run, which reads
+	// every part, does not repeat it.
 	context, stderr := run.runAt(AtPrompt, day)
-	if !strings.Contains(stderr, "read the memory folder "+s.plan.User) {
+	if strings.Count(stderr, "read the memory folder "+s.plan.User) != 1 {
 		t.Fatalf("stderr %q", stderr)
 	}
 	if body := changesBody(t, context); body != "### User memory ("+folderShown(s.plan.User)+")\n["+folderShown(s.plan.User)+" could not be read: open "+s.plan.User+": not a folder.]" {
@@ -163,17 +196,19 @@ func TestAPromptWithoutARecordDeliversTheWholeMemory(t *testing.T) {
 	second := first
 	second.id = "s2"
 	built, _ := Build(s.plan, day)
-	if got := second.run(AtPrompt); got != Stamp(built, day) {
+	if got := second.run(AtPrompt); got != stamped(built, day) {
 		t.Fatalf("another session's prompt delivered:\n%s", got)
 	}
 	if got := second.run(AtPrompt); got != "" {
 		t.Fatalf("its next prompt delivered:\n%s", got)
 	}
-	if err := os.WriteFile(filepath.Join(first.plan.Records, recordName("s1")), []byte("{not json"), 0o600); err != nil {
+	// A broken record delivers its own part whole; the others' records hold.
+	if err := os.WriteFile(filepath.Join(first.plan.Records, recordName("s1", PartUser)), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	user := built[slices.Index(s.plan.Parts(), PartUser)]
 	context, stderr := first.runAt(AtPrompt, day)
-	if context != Stamp(built, day) || !strings.Contains(stderr, "decode the memory record of session s1") || !strings.Contains(stderr, "the whole memory is delivered") {
+	if context != Stamp(user.Text, day) || !strings.Contains(stderr, "decode the memory record of session s1") || !strings.Contains(stderr, "the whole memory is delivered") {
 		t.Fatalf("a broken record: context %q, stderr %q", context, stderr)
 	}
 	if got := first.run(AtPrompt); got != "" {
@@ -182,7 +217,7 @@ func TestAPromptWithoutARecordDeliversTheWholeMemory(t *testing.T) {
 	if err := ForgetRecords(first.plan.Records); err != nil {
 		t.Fatal(err)
 	}
-	if got := first.run(AtPrompt); got != Stamp(built, day) {
+	if got := first.run(AtPrompt); got != stamped(built, day) {
 		t.Fatalf("after ForgetRecords:\n%s", got)
 	}
 }
@@ -219,7 +254,7 @@ func TestARunWithoutASessionRecordsNothing(t *testing.T) {
 	run := newSession(t, s.plan, "")
 	for _, event := range []HookEvent{AtSessionStart, AtPrompt} {
 		context, stderr := run.runAt(event, day)
-		if !strings.HasPrefix(context, Heading+"\n"+StampPrefix) || !strings.Contains(stderr, "names no session") {
+		if !strings.HasPrefix(context, s.plan.HeadingOf(PartInstructions)+"\n"+StampPrefix) || !strings.Contains(stderr, "names no session") {
 			t.Fatalf("%s: context %q, stderr %q", event, context, stderr)
 		}
 	}
@@ -241,12 +276,14 @@ func TestOldRecordsArePruned(t *testing.T) {
 	stale.run(AtSessionStart)
 	other.run(AtSessionStart)
 	old := day.Add(-recordAge - time.Hour)
-	if err := os.Chtimes(filepath.Join(run.plan.Records, recordName("s3")), old, old); err != nil {
-		t.Fatal(err)
+	for _, part := range s.plan.Parts() {
+		if err := os.Chtimes(filepath.Join(run.plan.Records, recordName("s3", part)), old, old); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// A temporary file a failed write left is pruned as a record is; a file
 	// or folder that is not the app's stays, however old.
-	leftover := recordName("s4") + ".ABC234.tmp"
+	leftover := recordName("s4", PartUser) + ".ABC234.tmp"
 	for _, name := range []string{leftover, "notes.txt", "sub"} {
 		path := filepath.Join(run.plan.Records, name)
 		if name == "sub" {
@@ -261,10 +298,11 @@ func TestOldRecordsArePruned(t *testing.T) {
 		}
 	}
 	run.run(AtSessionStart)
-	for name, want := range map[string]bool{
-		recordName("s1"): true, recordName("s2"): true, recordName("s3"): false,
-		leftover: false, "notes.txt": true, "sub": true,
-	} {
+	kept := map[string]bool{leftover: false, "notes.txt": true, "sub": true}
+	for _, part := range s.plan.Parts() {
+		kept[recordName("s1", part)], kept[recordName("s2", part)], kept[recordName("s3", part)] = true, true, false
+	}
+	for name, want := range kept {
 		if _, err := os.Stat(filepath.Join(run.plan.Records, name)); (err == nil) != want {
 			t.Errorf("%s kept = %v (%v)", name, err == nil, err)
 		}
@@ -307,8 +345,11 @@ func TestLargeChangesSayTheirSize(t *testing.T) {
 	run := newSession(t, s.plan, "s1")
 	run.run(AtSessionStart)
 	write(t, s.plan.Home, "instructions.md", strings.Repeat("Role line.\n", 1200))
+	// The instructions' part delivers the change; the warnings' part, which
+	// now names it as over Limit, follows.
 	context := run.run(AtPrompt)
-	if !strings.HasPrefix(context, ChangesHeading+"\n"+changesNote+"\n"+overNotice(len(context))+"\n\n") || !strings.Contains(context, strings.Repeat("Role line.\n", 1199)) {
+	context = context[:strings.Index(context, ChangesEnding)+len(ChangesEnding)]
+	if !strings.HasPrefix(context, ChangesHeading+"\n"+changesNote+"\n"+overNotice(len(context), changesNoun)+"\n\n") || !strings.Contains(context, strings.Repeat("Role line.\n", 1199)) {
 		t.Fatalf("changes of %d bytes:\n%s", len(context), context[:400])
 	}
 }
@@ -317,10 +358,10 @@ func TestLargeChangesSayTheirSize(t *testing.T) {
 // boundary where the notice adds a digit too.
 func TestANoticeCountsItsOwnDigits(t *testing.T) {
 	t.Parallel()
-	for _, size := range []int{Limit - 200, 9999 - len(overNotice(9999)) - 2, 99999 - len(overNotice(99999)) - 2, 123456} {
-		total := noticedSize(size, 2)
-		if total != size+2+len(overNotice(total)) {
-			t.Errorf("size %d: noticed %d, but the text with its notice is %d bytes", size, total, size+2+len(overNotice(total)))
+	for _, size := range []int{Limit - 200, 9999 - len(overNotice(9999, "part")) - 2, 99999 - len(overNotice(99999, "part")) - 2, 123456} {
+		total := noticedSize(size, 2, "part")
+		if total != size+2+len(overNotice(total, "part")) {
+			t.Errorf("size %d: noticed %d, but the text with its notice is %d bytes", size, total, size+2+len(overNotice(total, "part")))
 		}
 	}
 }
@@ -333,7 +374,7 @@ func TestAPanickingRunDoesNotRefuseThePrompt(t *testing.T) {
 	plan := s.plan
 	plan.Records = filepath.Join(t.TempDir(), "records")
 	var stderr strings.Builder
-	if code := runHookAt([]string{string(AtPrompt), encodedPlan(t, plan)}, strings.NewReader(`{"session_id":"s1"}`), nil, &stderr, day); code != 1 || !strings.Contains(stderr.String(), HookSubcommand+": ") {
+	if code := runHookAt([]string{string(AtPrompt), string(PartUser), encodedPlan(t, plan)}, strings.NewReader(`{"session_id":"s1"}`), nil, &stderr, day); code != 1 || !strings.Contains(stderr.String(), HookSubcommand+": ") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -348,7 +389,7 @@ func TestASubagentsRunDeliversNothing(t *testing.T) {
 	plan.Records = filepath.Join(t.TempDir(), "records")
 	for _, event := range []HookEvent{AtSessionStart, AtPrompt} {
 		var stdout, stderr strings.Builder
-		if code := runHookAt([]string{string(event), encodedPlan(t, plan)}, strings.NewReader(`{"session_id":"s1","agent_id":"child-1"}`), &stdout, &stderr, day); code != 0 || stdout.Len() > 0 || stderr.Len() > 0 {
+		if code := runHookAt([]string{string(event), string(PartUser), encodedPlan(t, plan)}, strings.NewReader(`{"session_id":"s1","agent_id":"child-1"}`), &stdout, &stderr, day); code != 0 || stdout.Len() > 0 || stderr.Len() > 0 {
 			t.Fatalf("%s: exit %d, stdout %q, stderr %q", event, code, stdout.String(), stderr.String())
 		}
 	}

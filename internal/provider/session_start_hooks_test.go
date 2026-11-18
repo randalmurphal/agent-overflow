@@ -3,12 +3,13 @@ package provider
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 )
 
-var testSessionStartHook = SessionStartHook{Label: "Agent Overflow memory", Command: "hook memory", Heading: "## Memory", Ending: "(End of memory)", Stamp: "(Delivered at "}
+var testSessionStartHook = SessionStartHook{Label: "Agent Overflow memory", Parts: []SessionStartPart{{Command: "hook memory", Heading: "## Memory"}}, Ending: "(End of memory)", Stamp: "(Delivered at "}
 
 const testMemoryContext = "## Memory\n\n- a\n\n(End of memory)"
 
@@ -31,6 +32,7 @@ func newTestDeliveryMissing(t *testing.T, hook *SessionStartHook, missed func() 
 // testHook is a copy of testSessionStartHook, so a test can change it.
 func testHook() *SessionStartHook {
 	hook := testSessionStartHook
+	hook.Parts = slices.Clone(hook.Parts)
 	return &hook
 }
 
@@ -54,12 +56,16 @@ func TestSessionStartDeliveryWithoutAHookIsNilAndInert(t *testing.T) {
 // not silently counted as delivered: an empty heading opens every context.
 func TestSessionStartDeliveryRefusesAnIncompleteHook(t *testing.T) {
 	t.Parallel()
+	part := []SessionStartPart{{Command: "a", Heading: "## A"}}
 	for name, hook := range map[string]SessionStartHook{
-		"no heading": {Label: "a", Command: "a", Ending: "[End]", Stamp: "[At "},
-		"no command": {Label: "a", Heading: "## A", Ending: "[End]", Stamp: "[At "},
-		"no label":   {Command: "a", Heading: "## A", Ending: "[End]", Stamp: "[At "},
-		"no ending":  {Label: "a", Command: "a", Heading: "## A", Stamp: "[At "},
-		"no stamp":   {Label: "a", Command: "a", Heading: "## A", Ending: "[End]"},
+		"no heading":   {Label: "a", Parts: []SessionStartPart{{Command: "a"}}, Ending: "[End]", Stamp: "[At "},
+		"no command":   {Label: "a", Parts: []SessionStartPart{{Heading: "## A"}}, Ending: "[End]", Stamp: "[At "},
+		"no part":      {Label: "a", Ending: "[End]", Stamp: "[At "},
+		"one heading":  {Label: "a", Parts: append(part, SessionStartPart{Command: "b", Heading: "## A"}), Ending: "[End]", Stamp: "[At "},
+		"no label":     {Parts: part, Ending: "[End]", Stamp: "[At "},
+		"no ending":    {Label: "a", Parts: part, Stamp: "[At "},
+		"no stamp":     {Label: "a", Parts: part, Ending: "[End]"},
+		"heading only": {Label: "a", Parts: []SessionStartPart{{Command: "a", Heading: "## A"}, {Command: "b"}}, Ending: "[End]", Stamp: "[At "},
 	} {
 		if d, err := NewSessionStartDelivery(&hook, nil); err == nil || d != nil {
 			t.Errorf("%s: delivery %+v, error %v", name, d, err)
@@ -70,10 +76,47 @@ func TestSessionStartDeliveryRefusesAnIncompleteHook(t *testing.T) {
 // Hook is a copy: changing it changes nothing the delivery follows.
 func TestSessionStartDeliveryHookIsACopy(t *testing.T) {
 	t.Parallel()
-	d := newTestDelivery(t, testHook())
-	d.Hook().Heading = "## Other"
+	hook := testHook()
+	d := newTestDelivery(t, hook)
+	hook.Parts[0].Heading = "## Changed"
+	d.Hook().Parts[0].Heading = "## Other"
 	if got := d.Hook(); !reflect.DeepEqual(*got, testSessionStartHook) {
 		t.Fatalf("hook = %+v", got)
+	}
+}
+
+// A hook of several parts has delivered only once every part's output
+// arrived, each told by its heading; the warning names the parts missing.
+func TestSessionStartDeliveryNeedsEveryPart(t *testing.T) {
+	t.Parallel()
+	hook := testHook()
+	hook.Parts = []SessionStartPart{{Command: "one", Heading: "## Memory, part 1 of 3"}, {Command: "two", Heading: "## Memory, part 2 of 3"}, {Command: "three", Heading: "## Memory, part 3 of 3"}}
+	d := newTestDelivery(t, hook)
+	d.Expect(SessionStartAfterStart)
+	d.Deliver("## Memory, part 1 of 3\n- a")
+	d.Deliver("## Memory, part 1 of 3\n- a")
+	if !d.Pending() {
+		t.Fatal("one part's output, twice, settled the delivery")
+	}
+	if got, want := d.Settle(), "Parts 2, 3 of 3 of Agent Overflow memory did not reach this session after its start: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings."; got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
+	}
+	d.Expect(SessionStartAfterCompaction)
+	d.Deliver("## Memory, part 3 of 3\n- c")
+	d.Deliver("## Memory, part 1 of 3\n- a")
+	if got, want := d.Settle(), "Part 2 of 3 of Agent Overflow memory did not reach this session after its compaction: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings."; got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
+	}
+	d.Expect(SessionStartAfterCompaction)
+	for _, context := range []string{"## Memory, part 2 of 3\n- b", "## Memory, part 1 of 3\n- a", "## Memory, part 3 of 3\n- c"} {
+		d.Deliver(context)
+	}
+	if d.Pending() || d.Settle() != "" {
+		t.Fatal("every part delivered and the delivery did not settle")
+	}
+	d.Expect(SessionStartAfterStart)
+	if got := d.Settle(); !strings.HasPrefix(got, "Agent Overflow memory did not reach") {
+		t.Fatalf("no part delivered: %q", got)
 	}
 }
 

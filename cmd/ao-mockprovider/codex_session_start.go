@@ -57,11 +57,15 @@ func codexSessionStartHooks(params json.RawMessage) (hooks, prompt []sessionStar
 					matcher = ""
 				}
 				key := fmt.Sprintf("%s:%s:%d:%d", codexSessionFlagsSource, event, g, h)
-				if config.Hooks.State[key].TrustedHash != codexHookHash(event, matcher, handler.Command, timeout) {
+				if config.Hooks.State[key].TrustedHash != codexHookHash(event, matcher, handler.Command, timeout, handler.AdditionalContextLimit) {
 					log.Printf("codex: %s hook %s is not trusted (it does not run)", label, key)
 					continue
 				}
-				out = append(out, sessionStartHook{matcher: matcher, command: handler.Command, timeout: time.Duration(timeout) * time.Second, order: order})
+				limit := hookOutputLimit
+				if handler.AdditionalContextLimit != nil {
+					limit = *handler.AdditionalContextLimit * 4
+				}
+				out = append(out, sessionStartHook{matcher: matcher, command: handler.Command, timeout: time.Duration(timeout) * time.Second, order: order, limit: limit})
 				order++
 			}
 		}
@@ -73,15 +77,20 @@ func codexSessionStartHooks(params json.RawMessage) (hooks, prompt []sessionStar
 // codexHookHash is the trust hash of a command handler of event, the event's
 // key label, in a group of matcher, "" for none: sha256 of the canonical
 // JSON of its normalized identity, which leaves out a matcher the event does
-// not read. encoding/json spells the identity as serde_json does except for
-// U+2028 and U+2029, which it escapes and no harness path holds.
-func codexHookHash(event, matcher, command string, timeout int) string {
+// not read, and a context limit (limit, tokens) that is the default 2,500.
+// encoding/json spells the identity as serde_json does except for U+2028
+// and U+2029, which it escapes and no harness path holds.
+func codexHookHash(event, matcher, command string, timeout int, limit *int) string {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
 	encoder.SetEscapeHTML(false)
+	handler := map[string]any{"type": "command", "command": command, "timeout": timeout, "async": false}
+	if limit != nil && *limit != hookOutputLimit/4 {
+		handler["additionalContextLimit"] = *limit
+	}
 	identity := map[string]any{
 		"event_name": event,
-		"hooks":      []any{map[string]any{"type": "command", "command": command, "timeout": timeout, "async": false}},
+		"hooks":      []any{handler},
 	}
 	if matcher != "" {
 		identity["matcher"] = matcher

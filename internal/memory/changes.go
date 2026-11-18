@@ -18,13 +18,14 @@ import (
 )
 
 // A thread's sessions keep a record of what each was shown as memory, one
-// file per provider session in the thread's records folder (Plan.Records).
-// The SessionStart run writes the whole delivery's sections; each prompt's
-// run compares the delivery as it reads now with the record and sends only
-// the sections and lines that changed, nothing when none did, and the whole
-// delivery when there is no record for the session (docs/specs/memory.md,
-// "Delivery"). A run prints before it writes, so a record that could not be
-// written sends the change again rather than losing it.
+// file per provider session and part of the delivery in the thread's
+// records folder (Plan.Records). A part's SessionStart run writes its
+// sections; each prompt's run of the part compares its sections as they
+// read now with the record and sends only the sections and lines that
+// changed, nothing when none did, and the whole part when there is no
+// record of it for the session (docs/specs/memory.md, "Delivery"). A run
+// prints before it writes, so a record that could not be written sends the
+// change again rather than losing it.
 
 const (
 	// ChangesHeading opens a delivery of changes and ChangesEnding closes
@@ -32,6 +33,8 @@ const (
 	// whole delivery does not count one.
 	ChangesHeading = "## Changes to Agent Overflow memory"
 	ChangesEnding  = "[End of changes to Agent Overflow memory]"
+	// changesNoun is what a delivery of changes over Limit calls itself.
+	changesNoun = "delivery of changes"
 	// changesNote is the line under ChangesHeading.
 	changesNote = "[Memory changed since the copy you last received, by another session, the user or you. A list shows only its new or changed lines and the files removed from it; a section shown whole replaces the earlier one.]"
 	// recordsFolder holds the records folders of the threads, under the
@@ -149,11 +152,7 @@ func changes(before, now []section) string {
 		if _, gone := prior[s.ID]; !gone {
 			continue
 		}
-		line := "[This is no longer part of your memory.]"
-		if s.ID == "warnings" {
-			line = "[Nothing here needs fixing now.]"
-		}
-		blocks = append(blocks, s.Heading+"\n"+line)
+		blocks = append(blocks, s.Heading+"\n[This is no longer part of your memory.]")
 	}
 	if len(blocks) == 0 {
 		return ""
@@ -161,7 +160,7 @@ func changes(before, now []section) string {
 	body := strings.Join(blocks, "\n\n") + "\n\n" + ChangesEnding
 	text := ChangesHeading + "\n" + changesNote + "\n\n" + body
 	if len(text) > Limit {
-		text = ChangesHeading + "\n" + changesNote + "\n" + overNotice(noticedSize(len(text), len("\n"))) + "\n\n" + body
+		text = ChangesHeading + "\n" + changesNote + "\n" + overNotice(noticedSize(len(text), len("\n"), changesNoun), changesNoun) + "\n\n" + body
 	}
 	return text
 }
@@ -211,16 +210,17 @@ func removedKey(key string) string {
 	return escape(strings.Join(strings.Fields(key), " "))
 }
 
-// record is what one provider session was shown.
+// record is what one provider session was shown of a part.
 type record struct {
 	Session  string    `json:"session"`
+	Part     Part      `json:"part"`
 	Sections []section `json:"sections"`
 }
 
-// recordName is the file of session's record in a records folder: the
-// session id is the provider's, so the name is its hash.
-func recordName(session string) string {
-	sum := sha256.Sum256([]byte(session))
+// recordName is the file of the record of session's part in a records
+// folder: the session id is the provider's, so the name is a hash.
+func recordName(session string, part Part) string {
+	sum := sha256.Sum256([]byte(session + "\x00" + string(part)))
 	return hex.EncodeToString(sum[:16]) + ".json"
 }
 
@@ -228,8 +228,9 @@ func recordName(session string) string {
 // write of one leaves when it fails between writing and renaming.
 var recordFile = regexp.MustCompile(`^[0-9a-f]{32}\.json(\.[0-9A-Za-z]+\.tmp)?$`)
 
-// readRecord is the record of session in dir, nil when there is none.
-func readRecord(dir, session string) (_ *record, err error) {
+// readRecord is the record of session's part in dir, nil when there is
+// none.
+func readRecord(dir, session string, part Part) (_ *record, err error) {
 	root, err := os.OpenRoot(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -238,7 +239,7 @@ func readRecord(dir, session string) (_ *record, err error) {
 		return nil, fmt.Errorf("open the memory records %s: %w", dir, err)
 	}
 	defer closeInto(root, &err)
-	file, err := root.Open(recordName(session))
+	file, err := root.Open(recordName(session, part))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -257,16 +258,18 @@ func readRecord(dir, session string) (_ *record, err error) {
 	if err := json.Unmarshal(data, &read); err != nil {
 		return nil, fmt.Errorf("decode the memory record of session %s: %w", session, err)
 	}
-	if read.Session != session {
-		return nil, fmt.Errorf("the memory record of session %s names session %q", session, read.Session)
+	if read.Session != session || read.Part != part {
+		return nil, fmt.Errorf("the memory record of session %s names session %q, part %q", session, read.Session, read.Part)
 	}
 	return &read, nil
 }
 
-// writeRecord replaces session's record in dir with sections, and deletes
-// the records no run wrote for recordAge as of now.
-func writeRecord(dir, session string, sections []section, now time.Time) (err error) {
-	data, err := json.Marshal(record{Session: session, Sections: sections})
+// writeRecord replaces the record of session's part in dir with sections,
+// and deletes the records no run wrote for recordAge as of now. A record
+// another part's run writes meanwhile is a file of its own; pruning one
+// only makes its next prompt deliver the part whole.
+func writeRecord(dir, session string, part Part, sections []section, now time.Time) (err error) {
+	data, err := json.Marshal(record{Session: session, Part: part, Sections: sections})
 	if err != nil {
 		return fmt.Errorf("encode the memory record of session %s: %w", session, err)
 	}
@@ -278,7 +281,7 @@ func writeRecord(dir, session string, sections []section, now time.Time) (err er
 		return fmt.Errorf("open the memory records %s: %w", dir, err)
 	}
 	defer closeInto(root, &err)
-	name := recordName(session)
+	name := recordName(session, part)
 	temp := name + "." + rand.Text() + ".tmp"
 	if err := root.WriteFile(temp, data, 0o600); err != nil {
 		return errors.Join(fmt.Errorf("write the memory record of session %s: %w", session, err), removeIfThere(root, temp))
@@ -320,6 +323,20 @@ func pruneRecords(root *os.Root, keep string, now time.Time) (err error) {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// removeRecord deletes the record of session's part in dir, nil when there
+// is none.
+func removeRecord(dir, session string, part Part) (err error) {
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open the memory records %s: %w", dir, err)
+	}
+	defer closeInto(root, &err)
+	return removeIfThere(root, recordName(session, part))
 }
 
 // removeIfThere removes name from root, nil when it is gone.

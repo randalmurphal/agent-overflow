@@ -3,45 +3,67 @@ package provider
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
 )
 
-// SessionStartHook is the command a session runs at its start, after a
-// compaction and after a clear, whose output reaches the model as context
-// (the memory delivery, docs/specs/memory.md "Delivery"), and PromptCommand,
-// which it runs at each prompt. Claude registers them in the session's
-// inline settings and Codex in the thread's config; each provider reports a
-// warning when a start or a compaction ends without Command's output
-// (SessionStartDelivery).
+// SessionStartHook is what a session runs at its start, after a compaction
+// and after a clear, whose outputs reach the model as context (the memory
+// delivery, docs/specs/memory.md "Delivery"), and at each prompt. Each of
+// its Parts is a command handler of its own, so each output has the whole
+// of what a provider shows the model of one hook output. Claude registers
+// the handlers in the session's inline settings and Codex in the thread's
+// config, in Parts order; each provider reports a warning when a start or
+// a compaction ends without every part's output (SessionStartDelivery).
 type SessionStartHook struct {
 	// Label names what the hook delivers in a warning, e.g. the memory
 	// package's Label.
 	Label string
+	// Parts are the hook's outputs, in the order the model reads them; at
+	// least one.
+	Parts []SessionStartPart
+	// Ending is the text each part's context ends with. claude-tui reads the
+	// contexts from one block that joins them with the user's hooks'
+	// contexts, and the ending is where each stops.
+	Ending string
+	// Stamp opens the line after a part's Heading in each run's context,
+	// followed by the run's time in RFC 3339. claude-tui reads the contexts
+	// out of a model request that carries earlier runs' as well, and counts
+	// one only when its time is not before the event it expects.
+	Stamp string
+	// Failure opens each line the hook's commands write to stderr, by which
+	// Claude tells a failed run of a PromptCommand from the user's own
+	// UserPromptSubmit hooks'.
+	Failure string
+}
+
+// SessionStartPart is one output of a SessionStartHook.
+type SessionStartPart struct {
 	// Command is the shell command line the provider runs at SessionStart.
 	Command string
 	// PromptCommand is the shell command line the provider runs at each
-	// UserPromptSubmit: what changed since the session's record of what it
-	// was shown, nothing when nothing did. "" for none.
+	// UserPromptSubmit: what changed in the part since the session's record
+	// of what it was shown, nothing when nothing did. "" for none.
 	PromptCommand string
-	// Heading is the text the hook's context opens with, by which the
-	// provider tells its output from the user's own SessionStart hooks'.
+	// Heading is the line the part's context opens with, followed by a line
+	// break: the provider tells by it which part an output is, and the
+	// hook's outputs from the user's own SessionStart hooks'. Each part's
+	// differs.
 	Heading string
-	// Ending is the text the hook's context ends with. claude-tui reads the
-	// context from one block that joins it with the user's hooks' contexts,
-	// and the ending is where it stops.
-	Ending string
-	// Stamp opens the line after Heading in each run's context, followed by
-	// the run's time in RFC 3339. claude-tui reads the context out of a
-	// model request that carries earlier runs' as well, and counts one only
-	// when its time is not before the event it expects.
-	Stamp string
-	// Failure opens each line the hook's command writes to stderr, by which
-	// Claude tells a failed run of PromptCommand from the user's own
-	// UserPromptSubmit hooks'.
-	Failure string
+}
+
+// partOf is the index of the part whose output context is, -1 for none.
+func (h SessionStartHook) partOf(context string) int {
+	for i, part := range h.Parts {
+		if strings.HasPrefix(context, part.Heading+"\n") {
+			return i
+		}
+	}
+	return -1
 }
 
 // SessionStartHookSources are the SessionStart sources the hook runs for:
@@ -79,13 +101,13 @@ const (
 const sessionStartFailureMaxBytes = 300
 
 // SessionStartDelivery follows whether a session's SessionStartHook
-// delivered its context after a start or a compaction. The provider calls
-// Expect when the session starts or compacts, Deliver for each SessionStart
-// output it sees, Fail for each failed run, and Settle at the point by which
-// the hook must have run; Settle warns when the output never came, and runs
-// forget, since the thread's record of what its model was shown no longer
-// holds. A nil *SessionStartDelivery, which a session without the hook
-// holds, does nothing. Safe for concurrent use.
+// delivered every part's context after a start or a compaction. The
+// provider calls Expect when the session starts or compacts, Deliver for
+// each SessionStart output it sees, Fail for each failed run, and Settle at
+// the point by which the hook must have run; Settle warns when a part's
+// output never came, and runs forget, since the thread's records of what
+// its model was shown no longer hold. A nil *SessionStartDelivery, which a
+// session without the hook holds, does nothing. Safe for concurrent use.
 type SessionStartDelivery struct {
 	hook   SessionStartHook
 	forget func() error
@@ -94,25 +116,35 @@ type SessionStartDelivery struct {
 	// after is the event the open expectation follows, "" when none is
 	// open.
 	after SessionStartEvent
-	// delivered is set once the hook's output was seen since the last
-	// Settle.
-	delivered bool
+	// delivered holds, per part, whether its output was seen since the
+	// last Settle.
+	delivered []bool
 	failure   string
 }
 
 // NewSessionStartDelivery follows hook; nil when hook is. forget, which may
 // be nil, forgets the thread's records of what its model was shown: Settle
 // runs it when an expected delivery did not arrive, and ForgetWhilePending
-// when the provider asks. It refuses a hook without a label, command,
-// heading, ending or stamp.
+// when the provider asks. It refuses a hook without a label, ending, stamp
+// or part, a part without a command or heading, and two parts with one
+// heading.
 func NewSessionStartDelivery(hook *SessionStartHook, forget func() error) (*SessionStartDelivery, error) {
 	if hook == nil {
 		return nil, nil
 	}
-	if hook.Label == "" || hook.Command == "" || hook.Heading == "" || hook.Ending == "" || hook.Stamp == "" {
-		return nil, errors.New("SessionStart hook: label, command, heading, ending and stamp are all required")
+	if hook.Label == "" || hook.Ending == "" || hook.Stamp == "" || len(hook.Parts) == 0 {
+		return nil, errors.New("SessionStart hook: label, ending, stamp and a part are all required")
 	}
-	return &SessionStartDelivery{hook: *hook, forget: forget}, nil
+	headings := map[string]bool{}
+	for _, part := range hook.Parts {
+		if part.Command == "" || part.Heading == "" || headings[part.Heading] {
+			return nil, errors.New("SessionStart hook: each part needs a command and a heading of its own")
+		}
+		headings[part.Heading] = true
+	}
+	followed := *hook
+	followed.Parts = slices.Clone(hook.Parts)
+	return &SessionStartDelivery{hook: followed, forget: forget, delivered: make([]bool, len(hook.Parts))}, nil
 }
 
 // Hook is the hook the delivery follows; nil for a nil delivery.
@@ -121,6 +153,7 @@ func (d *SessionStartDelivery) Hook() *SessionStartHook {
 		return nil
 	}
 	hook := d.hook
+	hook.Parts = slices.Clone(hook.Parts)
 	return &hook
 }
 
@@ -145,7 +178,8 @@ func (d *SessionStartDelivery) ExpectAfresh(after SessionStartEvent) {
 		return
 	}
 	d.mu.Lock()
-	d.delivered, d.failure = false, ""
+	clear(d.delivered)
+	d.failure = ""
 	d.after = after
 	d.mu.Unlock()
 }
@@ -161,7 +195,7 @@ func (d *SessionStartDelivery) Expecting() SessionStartEvent {
 	return d.after
 }
 
-// Pending reports whether the open expectation still waits for the hook's
+// Pending reports whether the open expectation still waits for a part's
 // output.
 func (d *SessionStartDelivery) Pending() bool {
 	if d == nil {
@@ -169,17 +203,21 @@ func (d *SessionStartDelivery) Pending() bool {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.after != "" && !d.delivered
+	return d.after != "" && slices.Contains(d.delivered, false)
 }
 
-// Deliver records SessionStart context a provider reported whole when it
-// opens with the hook's heading; another hook's context is ignored.
+// Deliver records SessionStart context a provider reported for the part
+// whose heading it opens with; another hook's context is ignored.
 func (d *SessionStartDelivery) Deliver(context string) {
-	if d == nil || !strings.HasPrefix(context, d.hook.Heading) {
+	if d == nil {
+		return
+	}
+	part := d.hook.partOf(context)
+	if part < 0 {
 		return
 	}
 	d.mu.Lock()
-	d.delivered = true
+	d.delivered[part] = true
 	d.mu.Unlock()
 }
 
@@ -191,7 +229,8 @@ func (d *SessionStartDelivery) Drop() {
 		return
 	}
 	d.mu.Lock()
-	d.after, d.delivered, d.failure = "", false, ""
+	d.after, d.failure = "", ""
+	clear(d.delivered)
 	d.mu.Unlock()
 }
 
@@ -230,23 +269,38 @@ func (d *SessionStartDelivery) Fail(detail string) {
 }
 
 // Settle ends the expectation and forgets what was delivered and failed. It
-// returns the warning when the expected output did not arrive, "" when it
-// did or none was expected, and then runs forget: the next prompt delivers
-// the whole memory.
+// returns the warning when an expected part's output did not arrive, "" when
+// every one did or none was expected, and then runs forget: the next prompt
+// delivers the whole memory.
 func (d *SessionStartDelivery) Settle() string {
 	if d == nil {
 		return ""
 	}
 	d.mu.Lock()
-	after, failure, delivered := d.after, d.failure, d.delivered
-	d.after, d.failure, d.delivered = "", "", false
+	after, failure := d.after, d.failure
+	var missing []string
+	for i, delivered := range d.delivered {
+		if !delivered {
+			missing = append(missing, strconv.Itoa(i+1))
+		}
+	}
+	d.after, d.failure = "", ""
+	clear(d.delivered)
 	d.mu.Unlock()
-	if after == "" || delivered {
+	if after == "" || len(missing) == 0 {
 		return ""
 	}
-	warning := fmt.Sprintf("%s did not reach this session after its %s: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings.", d.hook.Label, after)
+	what := d.hook.Label
+	switch {
+	case len(missing) == len(d.hook.Parts):
+	case len(missing) == 1:
+		what = fmt.Sprintf("Part %s of %d of %s", missing[0], len(d.hook.Parts), what)
+	default:
+		what = fmt.Sprintf("Parts %s of %d of %s", strings.Join(missing, ", "), len(d.hook.Parts), what)
+	}
+	warning := fmt.Sprintf("%s did not reach this session after its %s: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings.", what, after)
 	if failure != "" {
-		warning = fmt.Sprintf("%s did not reach this session after its %s: a SessionStart hook failed (%s).", d.hook.Label, after, failure)
+		warning = fmt.Sprintf("%s did not reach this session after its %s: a SessionStart hook failed (%s).", what, after, failure)
 	}
 	if d.forget != nil {
 		if err := d.forget(); err != nil {

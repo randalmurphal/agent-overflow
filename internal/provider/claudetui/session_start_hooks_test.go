@@ -19,14 +19,26 @@ import (
 )
 
 var testSessionStartHook = provider.SessionStartHook{
-	Label: "the memory", Command: `'/opt/ao' deliver '/h'`, PromptCommand: `'/opt/ao' changes '/h'`,
-	Heading: "## Memory", Ending: "(End of memory)", Stamp: "(Delivered at ",
+	Label:  "the memory",
+	Parts:  []provider.SessionStartPart{{Command: `'/opt/ao' deliver one '/h'`, PromptCommand: `'/opt/ao' changes one '/h'`, Heading: "## Memory"}},
+	Ending: "(End of memory)", Stamp: "(Delivered at ",
 }
 
 // testHook is a copy of testSessionStartHook.
 func testHook() *provider.SessionStartHook {
 	hook := testSessionStartHook
+	hook.Parts = slices.Clone(hook.Parts)
 	return &hook
+}
+
+// partsHook is testHook delivered in two parts.
+func partsHook() *provider.SessionStartHook {
+	hook := testHook()
+	hook.Parts = []provider.SessionStartPart{
+		{Command: `'/opt/ao' deliver one '/h'`, Heading: "## Memory, part 1 of 2"},
+		{Command: `'/opt/ao' deliver two '/h'`, Heading: "## Memory, part 2 of 2"},
+	}
+	return hook
 }
 
 // The hook joins the relay's SessionStart entry as a matcher group of its
@@ -173,6 +185,25 @@ func TestTheFirstMainRequestSettlesTheStart(t *testing.T) {
 	s.observeMainRequest(requestBody())
 	if events := rec.take(); len(events) > 0 {
 		t.Fatalf("a later request settled again: %+v", events)
+	}
+
+	// Each part of a hook of several counts, in the run's one block or in
+	// blocks of their own, and a missing part is the warning.
+	at := time.Now().Add(time.Minute)
+	part1 := stampedAt("## Memory, part 1 of 2\n\n- a\n\n(End of memory)", at)
+	part2 := stampedAt("## Memory, part 2 of 2\n\n- b\n\n(End of memory)", at)
+	for name, body := range map[string][]byte{
+		"one block":   requestBody(hookBlock("user hook output", part1, part2)),
+		"two blocks":  requestBody(hookBlock(part1), hookBlock(part2)),
+		"one missing": requestBody(hookBlock(part1)),
+	} {
+		s, rec = sessionStartTestSessionWith(t, "", partsHook(), nil)
+		s.observeMainRequest(body)
+		if events := rec.take(); name == "one missing" {
+			onlyWarning(t, events, "Part 2 of 2 of the memory did not reach this session after its start: ")
+		} else if len(events) > 0 {
+			t.Fatalf("%s: events %+v", name, events)
+		}
 	}
 
 	// A resumed session runs the hook only after a compaction.
@@ -326,9 +357,9 @@ func TestNewSessionFollowsTheHook(t *testing.T) {
 
 	_, err := NewSession(context.Background(), testThread, Config{
 		Binary: binary, WorkDir: t.TempDir(), HookCmd: "/opt/ao",
-		SessionStartHook: &provider.SessionStartHook{Label: "a", Command: "a"},
+		SessionStartHook: &provider.SessionStartHook{Label: "a", Parts: []provider.SessionStartPart{{Command: "a"}}},
 	}, func(provider.ProviderEvent) {})
-	if err == nil || !strings.Contains(err.Error(), "heading, ending and stamp are all required") {
+	if err == nil || !strings.Contains(err.Error(), "are all required") {
 		t.Fatalf("NewSession with a hook without a heading: %v", err)
 	}
 }

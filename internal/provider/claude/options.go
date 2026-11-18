@@ -686,22 +686,33 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 }
 
 // SessionStartHookGroup is the SessionStart matcher group that registers
-// hook in a settings block, for its sources (provider.SessionStartHookSources).
-// Claude Code runs it beside the user's own SessionStart hooks. Shared with
-// claude-tui, which drives the same binary.
+// hook in a settings block, one command handler per part, for its sources
+// (provider.SessionStartHookSources). Claude Code runs it beside the user's
+// own SessionStart hooks, and bounds each handler's output on its own.
+// Shared with claude-tui, which drives the same binary.
 func SessionStartHookGroup(hook provider.SessionStartHook) map[string]any {
-	return map[string]any{
-		"matcher": provider.SessionStartHookSources,
-		"hooks":   []any{commandHandler(hook.Command)},
+	handlers := make([]any, len(hook.Parts))
+	for i, part := range hook.Parts {
+		handlers[i] = commandHandler(part.Command)
 	}
+	return map[string]any{"matcher": provider.SessionStartHookSources, "hooks": handlers}
 }
 
 // UserPromptSubmitHookGroup is the UserPromptSubmit group that registers
-// hook's PromptCommand, which Claude Code runs beside the user's own
-// UserPromptSubmit hooks, at every prompt, a queued one included. Shared
-// with claude-tui.
+// the PromptCommand of each of hook's parts, which Claude Code runs beside
+// the user's own UserPromptSubmit hooks, at every prompt, a queued one
+// included; nil when no part has one. Shared with claude-tui.
 func UserPromptSubmitHookGroup(hook provider.SessionStartHook) map[string]any {
-	return map[string]any{"hooks": []any{commandHandler(hook.PromptCommand)}}
+	var handlers []any
+	for _, part := range hook.Parts {
+		if part.PromptCommand != "" {
+			handlers = append(handlers, commandHandler(part.PromptCommand))
+		}
+	}
+	if len(handlers) == 0 {
+		return nil
+	}
+	return map[string]any{"hooks": handlers}
 }
 
 // commandHandler is a command hook handler running command.
@@ -721,8 +732,8 @@ func inlineSettingsHooksForCLI(cfg Config) map[string]any {
 		return nil
 	}
 	hooks := map[string]any{"SessionStart": []any{SessionStartHookGroup(*hook)}}
-	if hook.PromptCommand != "" {
-		hooks["UserPromptSubmit"] = []any{UserPromptSubmitHookGroup(*hook)}
+	if prompt := UserPromptSubmitHookGroup(*hook); prompt != nil {
+		hooks["UserPromptSubmit"] = []any{prompt}
 	}
 	return hooks
 }

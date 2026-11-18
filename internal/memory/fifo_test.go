@@ -33,11 +33,11 @@ func TestAFIFOIsRefusedWithoutBlocking(t *testing.T) {
 		}
 	}
 	done := make(chan struct{})
-	var text string
+	var outputs []Output
 	var problems []error
 	go func() {
 		defer close(done)
-		text, problems = Build(s.plan, day)
+		outputs, problems = Build(s.plan, day)
 	}()
 	select {
 	case <-done:
@@ -47,6 +47,7 @@ func TestAFIFOIsRefusedWithoutBlocking(t *testing.T) {
 	if len(problems) != 3 {
 		t.Fatalf("problems: %v", problems)
 	}
+	text := joined(outputs)
 	// A FIFO in a folder is not a fact.
 	if strings.Contains(text, "pipe.md") {
 		t.Errorf("listed a FIFO:\n%s", text)

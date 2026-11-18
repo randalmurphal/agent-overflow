@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -256,7 +257,7 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 				}
 				for event, commands := range map[string][]string{"session_start": started.hooks, "user_prompt_submit": started.prompts} {
 					for i := range commands {
-						if _, ok := state["/<session-flags>/config.toml:"+event+":"+strconv.Itoa(i)+":0"]; !ok {
+						if _, ok := state["/<session-flags>/config.toml:"+event+":0:"+strconv.Itoa(i)]; !ok {
 							t.Fatalf("%s hook %d is not trusted: %v", event, i, state)
 						}
 					}
@@ -323,59 +324,78 @@ func codexTurnWritableRoots(t *testing.T, logPath string) []string {
 // what they delivered for.
 const memoryHookSession = "provider-session-1"
 
-// runMemoryHook runs the one SessionStart memory hook command as both
-// providers do, through a POSIX shell with the hook input on stdin, and
-// returns what it delivered without the stamp under its heading.
+// runMemoryHook runs the SessionStart memory hook commands, one per part of
+// the delivery, as both providers do, through a POSIX shell with the hook
+// input on stdin, and returns what they delivered in order, a blank line
+// apart, without the stamp under each heading.
 func runMemoryHook(t *testing.T, commands []string) string {
 	t.Helper()
-	context := runHookCommand(t, commands, "SessionStart", `{"hook_event_name":"SessionStart","source":"startup","session_id":"`+memoryHookSession+`"}`)
-	// Each delivery carries its stamp on the line under its heading.
-	heading, rest, _ := strings.Cut(context, "\n")
-	stampLine, body, _ := strings.Cut(rest, "\n")
-	if heading != memory.Heading || !strings.HasPrefix(stampLine, memory.StampPrefix) {
-		t.Fatalf("hook output %q has no stamp under its heading", context)
+	contexts := runHookCommands(t, commands, "SessionStart", `{"hook_event_name":"SessionStart","source":"startup","session_id":"`+memoryHookSession+`"}`)
+	for i, context := range contexts {
+		// Each part carries its stamp on the line under its heading.
+		heading, rest, _ := strings.Cut(context, "\n")
+		stampLine, body, _ := strings.Cut(rest, "\n")
+		if !strings.HasPrefix(heading, memory.Heading) || !strings.HasPrefix(stampLine, memory.StampPrefix) {
+			t.Fatalf("hook output %q has no stamp under its heading", context)
+		}
+		contexts[i] = heading + "\n" + body
 	}
-	return heading + "\n" + body
+	return strings.Join(contexts, "\n\n")
 }
 
-// runPromptHook runs the one UserPromptSubmit memory hook command as both
-// providers do and returns what it delivered, "" for nothing.
+// builtMemoryText is plan's delivery as runMemoryHook returns it.
+func builtMemoryText(plan memory.Plan) string {
+	built, _ := memory.Build(plan, time.Now())
+	texts := make([]string, len(built))
+	for i, output := range built {
+		texts[i] = output.Text
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+// runPromptHook runs the UserPromptSubmit memory hook commands as both
+// providers do and returns what they delivered, a blank line apart, "" for
+// nothing.
 func runPromptHook(t *testing.T, commands []string) string {
 	t.Helper()
-	return runHookCommand(t, commands, "UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","prompt":"next","session_id":"`+memoryHookSession+`"}`)
+	return strings.Join(runHookCommands(t, commands, "UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","prompt":"next","session_id":"`+memoryHookSession+`"}`), "\n\n")
 }
 
-// runHookCommand runs the one command of event with input and returns the
-// context its output carries, "" for no output.
-func runHookCommand(t *testing.T, commands []string, event, input string) string {
+// runHookCommands runs each memory hook command of event with input and
+// returns the contexts their outputs carry, none for no output.
+func runHookCommands(t *testing.T, commands []string, event, input string) []string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the providers run hooks through a POSIX shell")
 	}
-	if len(commands) != 1 {
-		t.Fatalf("%s hook commands = %q, want the one memory hook", event, commands)
+	if len(commands) == 0 {
+		t.Fatalf("no %s memory hook commands", event)
 	}
-	cmd := exec.Command("/bin/sh", "-c", commands[0])
-	cmd.Stdin = strings.NewReader(input)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	stdout, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("hook %s: %v: %s", commands[0], err, stderr.String())
+	var contexts []string
+	for _, command := range commands {
+		cmd := exec.Command("/bin/sh", "-c", command)
+		cmd.Stdin = strings.NewReader(input)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		stdout, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("hook %s: %v: %s", command, err, stderr.String())
+		}
+		if len(stdout) == 0 {
+			continue
+		}
+		var output struct {
+			HookSpecificOutput struct {
+				HookEventName     string `json:"hookEventName"`
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(stdout, &output); err != nil || output.HookSpecificOutput.HookEventName != event {
+			t.Fatalf("hook output %q: %v", stdout, err)
+		}
+		contexts = append(contexts, output.HookSpecificOutput.AdditionalContext)
 	}
-	if len(stdout) == 0 {
-		return ""
-	}
-	var output struct {
-		HookSpecificOutput struct {
-			HookEventName     string `json:"hookEventName"`
-			AdditionalContext string `json:"additionalContext"`
-		} `json:"hookSpecificOutput"`
-	}
-	if err := json.Unmarshal(stdout, &output); err != nil || output.HookSpecificOutput.HookEventName != event {
-		t.Fatalf("hook output %q: %v", stdout, err)
-	}
-	return output.HookSpecificOutput.AdditionalContext
+	return contexts
 }
 
 func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
@@ -451,7 +471,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("memoryPlan = %v, %v", ok, err)
 			}
-			if built, _ := memory.Build(plan, time.Now()); delivered != built {
+			if built := builtMemoryText(plan); delivered != built {
 				t.Fatalf("the hook delivered what the app does not build:\n%s\nbuilt:\n%s", delivered, built)
 			}
 			// The session may write every memory folder and the project:
@@ -497,12 +517,12 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 				t.Fatalf("a start after the edit differs:\n%q %q %q\n%q %q %q", first.block, first.hooks, first.prompts, second.block, second.hooks, second.prompts)
 			}
 
-			// ---- Past the limit nothing is cut: the delivery opens with
-			// its size, so the start a provider shows carries it.
+			// ---- Past the limit nothing is cut: the instructions' part
+			// opens with its size, so the start a provider shows carries it.
 			long := homeContentsRole + "\n" + strings.Repeat(strings.Repeat("x", 99)+"\n", 120) + "INSTRUCTIONS TAIL\n"
 			writeHomeFile(t, row.Home, agenthome.InstructionsFile, long)
 			whole := runMemoryHook(t, first.hooks)
-			if !strings.Contains(whole, "INSTRUCTIONS TAIL") || !strings.HasPrefix(whole, memory.Heading+"\n\n[This memory is ") {
+			if !strings.Contains(whole, "INSTRUCTIONS TAIL") || !strings.HasPrefix(whole, plan.HeadingOf(memory.PartInstructions)+"\n\n[This part is ") {
 				t.Fatalf("a delivery over the limit:\n%s", whole)
 			}
 			if third := start(t); third.block != first.block {
@@ -647,13 +667,14 @@ func TestMemoryHookRefusesWhatItCannotRun(t *testing.T) {
 	if err != nil || hook == nil {
 		t.Fatalf("hook = %+v, %v", hook, err)
 	}
-	start, _ := memory.HookCommand(exe, memory.AtSessionStart, plan)
-	prompt, _ := memory.HookCommand(exe, memory.AtPrompt, plan)
-	if *hook != (provider.SessionStartHook{
-		Label: memory.Label, Command: start, PromptCommand: prompt, Heading: memory.Heading, Ending: memory.Ending,
-		Stamp: memory.StampPrefix, Failure: memory.HookSubcommand + ":",
-	}) {
-		t.Errorf("hook = %+v", *hook)
+	want := provider.SessionStartHook{Label: memory.Label, Ending: memory.Ending, Stamp: memory.StampPrefix, Failure: memory.HookSubcommand + ":"}
+	for _, part := range plan.Parts() {
+		start, _ := memory.HookCommand(exe, memory.AtSessionStart, part, plan)
+		prompt, _ := memory.HookCommand(exe, memory.AtPrompt, part, plan)
+		want.Parts = append(want.Parts, provider.SessionStartPart{Command: start, PromptCommand: prompt, Heading: plan.HeadingOf(part)})
+	}
+	if !reflect.DeepEqual(*hook, want) {
+		t.Errorf("hook = %+v\nwant %+v", *hook, want)
 	}
 }
 

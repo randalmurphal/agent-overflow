@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/memory"
@@ -177,11 +176,10 @@ func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 	}
 }
 
-// builtMemory is plan's whole delivery as one text.
+// builtMemory is plan's whole delivery as one text, its parts in order.
 func builtMemory(t *testing.T, plan memory.Plan) string {
 	t.Helper()
-	delivered, _ := memory.Build(plan, time.Now())
-	return delivered
+	return builtMemoryText(plan)
 }
 
 // The status reads the provider home the sessions use, and the variable as

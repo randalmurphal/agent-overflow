@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
@@ -42,6 +43,35 @@ type sessionStartHook struct {
 	// order is the handler's position across the configuration, Codex's
 	// displayOrder.
 	order int
+	// limit is the most of the handler's context the model sees whole, in
+	// UTF-16 units when utf16 is set (Claude) and bytes otherwise (Codex);
+	// 0 for no limit. A longer context reaches the model as its start and
+	// the path of the file the CLI saved it to.
+	limit int
+	utf16 bool
+}
+
+// hookOutputLimit is the default limit of a hook's context on both CLIs:
+// Claude's 10,000 UTF-16 units, and Codex's 2,500 tokens of four bytes.
+const hookOutputLimit = 10000
+
+// spilledPreview is how many characters of a context over its limit the
+// model sees, Claude's preview.
+const spilledPreview = 2000
+
+// modelContext is text, a context the handler delivered, as the model
+// receives it: whole within the limit, else its start and a line naming the
+// saved file (Claude's bundle and codex-rs/hooks/src/output_spill.rs). The
+// spec reads this, so a part over the limit shows as cut.
+func (h sessionStartHook) modelContext(text string) string {
+	size := len(text)
+	if h.utf16 {
+		size = len(utf16.Encode([]rune(text)))
+	}
+	if h.limit == 0 || size <= h.limit {
+		return text
+	}
+	return string([]rune(text)[:spilledPreview]) + "\n\nFull hook output saved to: (ao-mockprovider keeps no file)"
 }
 
 // defaultSessionStartHookTimeout is the timeout of a handler that names
@@ -56,6 +86,9 @@ type sessionStartHookGroups []struct {
 		Type    string `json:"type"`
 		Command string `json:"command"`
 		Timeout *int   `json:"timeout"`
+		// AdditionalContextLimit is Codex's per-handler limit in tokens, 0
+		// for none.
+		AdditionalContextLimit *int `json:"additionalContextLimit"`
 	} `json:"hooks"`
 }
 
@@ -88,10 +121,10 @@ func sessionStartMatcherTakes(matcher, source string) bool {
 	return err == nil && re.MatchString(source)
 }
 
-// commandHooks are the command handlers of groups, a hooks map's value for
-// one event, with timeout for a handler that names none. A
-// UserPromptSubmit group's matcher is ignored by both CLIs, and reads as
-// taking every prompt.
+// commandHooks are the command handlers of groups, a Claude hooks map's
+// value for one event, with timeout for a handler that names none and
+// Claude's limit on each handler's context. A UserPromptSubmit group's
+// matcher is ignored, and reads as taking every prompt.
 func commandHooks(groups sessionStartHookGroups, event string) []sessionStartHook {
 	var hooks []sessionStartHook
 	for _, group := range groups {
@@ -107,7 +140,7 @@ func commandHooks(groups sessionStartHookGroups, event string) []sessionStartHoo
 			if event == "UserPromptSubmit" {
 				matcher = ""
 			}
-			hooks = append(hooks, sessionStartHook{matcher: matcher, command: handler.Command, timeout: timeout})
+			hooks = append(hooks, sessionStartHook{matcher: matcher, command: handler.Command, timeout: timeout, limit: hookOutputLimit, utf16: true})
 		}
 	}
 	return hooks
@@ -292,13 +325,14 @@ func (r sessionStartRun) context() (text string, ok bool) {
 }
 
 // reportSessionStartRuns posts the contexts runs delivered for source,
-// promptSource for a prompt's UserPromptSubmit runs, before the adapter
-// writes the frames of their outcome.
+// promptSource for a prompt's UserPromptSubmit runs, each as the model
+// receives it (modelContext), before the adapter writes the frames of their
+// outcome.
 func (e *engine) reportSessionStartRuns(sessionRef, source string, runs []sessionStartRun) {
 	contexts := []string{}
 	for _, run := range runs {
 		if text, ok := run.context(); ok {
-			contexts = append(contexts, text)
+			contexts = append(contexts, run.hook.modelContext(text))
 		}
 	}
 	e.rep.report(control.Report{
