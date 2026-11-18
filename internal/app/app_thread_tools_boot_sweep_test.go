@@ -10,11 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
-	"agent-overflow/internal/attachedbackends"
-	"agent-overflow/internal/buildvariant/remotetest"
-	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -200,69 +195,5 @@ func TestTheBootRequestSweepReportsAScratchThreadItCouldNotDelete(t *testing.T) 
 	if len(failures) != 1 || !strings.HasPrefix(failures[0], "app.finish_thread_request_sweep: ") ||
 		!strings.Contains(failures[0], scratch.ID) || !strings.Contains(failures[0], "injected mark failure") {
 		t.Fatalf("failures = %q, want the scratch deletion's, naming the thread", failures)
-	}
-}
-
-// Start binds the records that name no pairing, as the migration from
-// v0.0.19 leaves them, before anything can change a pairing: one whose
-// computer is paired to that pairing, one whose computer is not to none,
-// which ends it.
-func TestABootBindsRecordsThatNameNoPairingBeforeAnythingRuns(t *testing.T) {
-	remotetest.Require(t)
-	a := newBootTestApp(t)
-	dbPath := filepath.Join(a.dataDirOverride, "agent-overflow", databaseFileName)
-	migratedDatabaseAt(t, dbPath)
-	st, err := store.New(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UnixMilli()
-	workspace := t.TempDir()
-	if _, err := st.CreateProject(store.Project{ID: defaultTestProjectID, Path: workspace, Name: "Project", CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	const caller = "thread-caller"
-	if err := st.CreateThread(store.Thread{ID: caller, ProjectID: defaultTestProjectID, Title: caller, Provider: string(provider.Claude),
-		WorkspacePath: workspace, Model: "claude-opus-4-7", Mode: threadmode.ModeChat, CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	paired, gone := uuid.NewString(), uuid.NewString()
-	for _, computer := range []string{paired, gone} {
-		if err := st.InsertThreadRequest(store.ThreadRequest{Token: computer, CallerThreadID: caller, Kind: store.ThreadRequestSend,
-			State: store.ThreadRequestRunning, TargetComputerID: computer, TargetThreadID: uuid.NewString()}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
-	profiles := t.TempDir()
-	if err := deviceclient.SaveSession(profiles, deviceclient.Session{BackendID: paired, SessionID: "held", Credential: "test", Endpoint: "https://127.0.0.1:1"}); err != nil {
-		t.Fatal(err)
-	}
-	manager, err := attachedbackends.New(profiles, "Host", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	SetAttachedBackends(a, manager)
-	a.startSessionFn = func(string) error { return nil }
-	ParkUnattendedWork(a)
-	t.Cleanup(func() {
-		if err := a.Shutdown(context.Background()); err != nil {
-			t.Errorf("Shutdown: %v", err)
-		}
-	})
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	for computer, want := range map[string]string{paired: "held", gone: store.PairingNoneHeld} {
-		row, _, err := a.store.GetThreadRequest(computer)
-		if err != nil || row.Pairing != want {
-			t.Fatalf("the boot bound the record on %s to %q (%v), want %q", computer, row.Pairing, err, want)
-		}
-	}
-	if row, _, _ := a.store.GetThreadRequest(gone); row.State != store.ThreadRequestErrored {
-		t.Fatalf("the record on a computer with no pairing left is %q, want ended", row.State)
 	}
 }

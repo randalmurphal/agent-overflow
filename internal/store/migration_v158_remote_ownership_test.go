@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// releasedSchemaVersion is the schema v0.0.19, the last release, shipped.
+const releasedSchemaVersion = 152
+
 // v158 adds the link a paired computer's owned spawn makes and what its
 // owner owes it, and a remote request's admission deadline. Rows from
 // before it are not links, owe nothing and have no deadline left; the new
@@ -39,15 +42,14 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 		t.Fatalf("old rows read link %d seen %d seq %d/%d ack owed %d late reply expired %d admit_until %d, want all 0",
 			link, seen, receiptSeq, requestSeq, ackOwed, lateExpired, admitUntil)
 	}
-	// Admitted before pairings were recorded: no pairing, no name kept. The
-	// boot binds its pairing (BindRecordPairing).
-	var pairing, name string
-	if err := db.QueryRow(`SELECT pairing, target_computer_name FROM thread_requests WHERE token = 'old-spawn'`).Scan(&pairing, &name); err != nil ||
-		pairing != "" || name != "" {
-		t.Fatalf("an old request's pairing %q and name %q, %v; want both empty", pairing, name, err)
+	// Admitted before names were kept: none, until the end of its pairing
+	// writes one (EndPairing).
+	var name string
+	if err := db.QueryRow(`SELECT target_computer_name FROM thread_requests WHERE token = 'old-spawn'`).Scan(&name); err != nil || name != "" {
+		t.Fatalf("an old request's computer name %q, %v; want none", name, err)
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('remote_watches') WHERE name IN ('pairing', 'computer_name')`).Scan(&seen); err != nil || seen != 2 {
-		t.Fatalf("remote_watches has %d of its pairing and name columns, %v", seen, err)
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('remote_watches') WHERE name = 'computer_name'`).Scan(&seen); err != nil || seen != 1 {
+		t.Fatalf("remote_watches has %d computer_name columns, %v", seen, err)
 	}
 	var placement string
 	if err := db.QueryRow(`SELECT placement FROM threads WHERE id = 'worker'`).Scan(&placement); err != nil || placement != PlacementStandalone {
@@ -58,7 +60,6 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 	rows, err := db.Query(`SELECT type, name FROM sqlite_master WHERE name IN (
 		'idx_thread_request_receipts_spawn_link', 'idx_thread_request_receipts_owner_seen',
 		'idx_thread_requests_remote_spawn_target', 'idx_thread_requests_ack_owed', 'thread_owner_ops', 'idx_thread_owner_ops_due', 'idx_thread_owner_ops_computer',
-		'idx_thread_requests_unbound_pairing', 'idx_remote_watches_unbound_pairing',
 		'trg_thread_placement_link_gone', 'trg_thread_placement_link_deleted')`)
 	if err != nil {
 		t.Fatal(err)
@@ -74,8 +75,8 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for kind, want := range map[string][]string{
-		"index": {"idx_remote_watches_unbound_pairing", "idx_thread_owner_ops_computer", "idx_thread_owner_ops_due", "idx_thread_request_receipts_owner_seen",
-			"idx_thread_request_receipts_spawn_link", "idx_thread_requests_ack_owed", "idx_thread_requests_remote_spawn_target", "idx_thread_requests_unbound_pairing"},
+		"index": {"idx_thread_owner_ops_computer", "idx_thread_owner_ops_due", "idx_thread_request_receipts_owner_seen",
+			"idx_thread_request_receipts_spawn_link", "idx_thread_requests_ack_owed", "idx_thread_requests_remote_spawn_target"},
 		"table":   {"thread_owner_ops"},
 		"trigger": {"trg_thread_placement_link_deleted", "trg_thread_placement_link_gone"},
 	} {
@@ -109,9 +110,11 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 // kept no record of whether it arrived. v158 owes it again, once, for each
 // answer from another computer that computer could still be holding, at the
 // revision this computer holds of it: an answer collected there (its hold
-// recorded), whose hold, or its late reply's, has not run out.
+// recorded), whose hold, or its late reply's, has not run out. The rows
+// are written in the schema v0.0.19 shipped, and the whole chain runs over
+// them.
 func TestRemoteOwnershipMigrationOwesTheAcknowledgementsAnUpgradeMayHaveLost(t *testing.T) {
-	db := migrateThrough(t, remoteOwnershipMigrationVersion-1)
+	db := migrateThrough(t, releasedSchemaVersion)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, mode)
 		VALUES ('lead', 'p', 'lead', 'claude', '/tmp/p', 'test-model', 1, 1, 0, 'chat')`)
@@ -137,7 +140,7 @@ func TestRemoteOwnershipMigrationOwesTheAcknowledgementsAnUpgradeMayHaveLost(t *
 			row.token, row.computer, row.state, row.revision, row.state, now-24*hour, row.expires, row.lateAt, row.lateAt, now+hour)
 	}
 
-	migrateFrom(t, db, remoteOwnershipMigrationVersion-1)
+	migrateFrom(t, db, releasedSchemaVersion)
 
 	want := map[string]int64{"replied": 1, "late": 2}
 	rows, err := db.Query(`SELECT token, ack_owed, next_check FROM thread_requests`)

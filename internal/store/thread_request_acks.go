@@ -18,12 +18,11 @@ import (
 // poller's own clock for the row (idx_thread_requests_ack_owed).
 
 // ThreadRequestAck is one acknowledgement owed: the destination's revision
-// a request holds, and the pairing that admitted the request.
+// a request holds.
 type ThreadRequestAck struct {
 	Token      string
 	ComputerID string
 	Revision   int64
-	Pairing    string
 }
 
 // oweThreadRequestAck records on ex that the request holds revision of its
@@ -68,22 +67,21 @@ func ackPage(limit int) int {
 	return limit
 }
 
-// OwedThreadRequestAcks returns the acknowledgements owed to one computer
-// for what the pairing held now (live, its generation) admitted, due or not, at
-// most limit of them: every call to that computer carries them. What an
-// ended pairing admitted is owed nothing (EndPairing).
-func (s *Store) OwedThreadRequestAcks(computerID, live string, limit int) ([]ThreadRequestAck, error) {
+// OwedThreadRequestAcks returns the acknowledgements owed to one computer,
+// due or not, at most limit of them: every call to that computer carries
+// them. The end of the pairing with it clears them (EndPairing).
+func (s *Store) OwedThreadRequestAcks(computerID string, limit int) ([]ThreadRequestAck, error) {
 	return s.queryThreadRequestAcks("store: list the acknowledgements owed to "+computerID,
-		`SELECT token, target_computer_id, ack_owed, pairing FROM thread_requests
-		  WHERE `+ackOwedSQL+` AND target_computer_id = `+textParam("?1")+` AND NOT `+pairingStaleSQL("?2")+`
-		  ORDER BY next_check LIMIT `+strconv.Itoa(ackPage(limit)), computerID, live)
+		`SELECT token, target_computer_id, ack_owed FROM thread_requests
+		  WHERE `+ackOwedSQL+` AND target_computer_id = `+boundText+`
+		  ORDER BY next_check LIMIT `+strconv.Itoa(ackPage(limit)), computerID)
 }
 
 // DueThreadRequestAcks returns the acknowledgements whose retry is due by
 // now, oldest first, at most limit of them.
 func (s *Store) DueThreadRequestAcks(now int64, limit int) ([]ThreadRequestAck, error) {
 	return s.queryThreadRequestAcks("store: list due thread request acknowledgements",
-		`SELECT token, target_computer_id, ack_owed, pairing FROM thread_requests
+		`SELECT token, target_computer_id, ack_owed FROM thread_requests
 		  WHERE `+ackOwedSQL+` AND next_check <= ? ORDER BY next_check LIMIT `+strconv.Itoa(ackPage(limit)), now)
 }
 
@@ -100,7 +98,7 @@ func (s *Store) queryThreadRequestAcks(action, query string, args ...any) (_ []T
 	var out []ThreadRequestAck
 	for rows.Next() {
 		var ack ThreadRequestAck
-		if err := rows.Scan(&ack.Token, &ack.ComputerID, &ack.Revision, &ack.Pairing); err != nil {
+		if err := rows.Scan(&ack.Token, &ack.ComputerID, &ack.Revision); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
 		out = append(out, ack)

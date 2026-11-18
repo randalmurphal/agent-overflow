@@ -4926,11 +4926,15 @@ export function RemoteCommandStatus(id: string): $CancellablePromise<app$0.Remot
  * requests this computer still has open there, and the finished jobs whose
  * completions are held for archived conversations, which can no longer be
  * delivered. Without it they are named and the call refuses; with it the
- * pairing ends with their wakes dropped, the held
- * completions are discarded, and the pairing goes, all inside the fence
- * admission takes, so no request enters it meanwhile. The other computer
- * is not told, because forgetting it is exactly the decision to stop
- * talking to it.
+ * pairing goes, then its work ends with the wakes dropped and the held
+ * completions are discarded, all inside the fence admission takes, so no
+ * request enters it meanwhile. The other computer is not told, because
+ * forgetting it is exactly the decision to stop talking to it.
+ * 
+ * Removing the profile is the commit point: a forget that fails before it
+ * leaves the pairing and every record for it as they were, and one whose
+ * ledger write fails after it leaves the records to the sweep, which ends
+ * the work of a computer with no pairing saved (endUnpaired).
  */
 export function RemoveBackend(id: string, abandon: boolean): $CancellablePromise<void> {
     return $Call.ByID(3005272623, id, abandon);

@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -19,30 +20,23 @@ import (
 	"agent-overflow/internal/transport"
 )
 
-// The sweeps' share of the end of a pairing: what an ended pairing admitted
-// is ended by the first sweep that finds it, when nothing announced the end
-// (pairedRemoteSource wires no observer), and nothing is asked about it.
+// The sweeps' share of the end of a pairing: the work of a computer with no
+// pairing saved is ended by the first sweep that finds it, when nothing
+// announced the end (pairedRemoteSource wires no observer), and nothing is
+// asked about it.
 
-// A pairing whose end this computer missed (its removal was announced while
-// nothing here listened) is found by the poll: what it admitted is ended
-// then, and the poll asks the other computer nothing about it under the
-// pairing that replaced it.
-func TestAPollEndsWhatAPairingNoLongerHeldAdmittedAndAsksNothingOfIt(t *testing.T) {
+// A pairing whose profile went where this process was not told (another
+// process removed it) is found by the poll: the computer has no pairing
+// saved, so its work is ended then and the poll asks it nothing, though a
+// connection to it is still open here.
+func TestAPollEndsTheWorkOfAComputerWithNoPairingAndAsksNothingOfIt(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair, faults := faultyReachPair(t)
 	token := pair.runningThere(t)
-	pair.manager.SetChanged(func(attachedbackends.SetChange) {})
-	revokeReachDevice(t, pair.dest, "source")
-	pair.learnPairingEnded(t)
-	if row := pair.request(t, token); row.State != store.ThreadRequestRunning {
-		t.Fatalf("with its end missed the request is %q, want still running", row.State)
+	if err := deviceclient.ForgetSession(pair.profile, pair.computer); err != nil {
+		t.Fatal(err)
 	}
-	restoreReachDevice(t, pair.dest, "source")
-	if id := attachDestination(t, pair, pair.destWire, pair.dest); id != pair.computer {
-		t.Fatalf("the replacement pairing names the computer %s, want %s", id, pair.computer)
-	}
-	pair.manager.SetChanged(pair.source.backendSetChanged)
 	var mu sync.Mutex
 	var asked []string
 	record := func(poll *ThreadPeerPoll) {
@@ -54,12 +48,12 @@ func TestAPollEndsWhatAPairingNoLongerHeldAdmittedAndAsksNothingOfIt(t *testing.
 
 	pair.poll(t)
 	if row := pair.request(t, token); row.State != store.ThreadRequestErrored || string(row.Answer) != pairingEndedHere || row.Polling {
-		t.Fatalf("the poll left the old pairing's request %q %q polling=%v, want it ended", row.State, row.Answer, row.Polling)
+		t.Fatalf("the poll left the request %q %q polling=%v, want it ended", row.State, row.Answer, row.Polling)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if slices.Contains(asked, token) {
-		t.Fatalf("the poll asked about the old pairing's request under the new one: %v", asked)
+		t.Fatalf("the poll asked a computer with no pairing about its request: %v", asked)
 	}
 }
 
@@ -117,7 +111,8 @@ func TestACommandCheckEndsAPairingNoLongerHeldWithoutAskingIt(t *testing.T) {
 }
 
 // A poll refused because the pairing ended ends that pairing then, so its
-// open requests settle on that one poll.
+// open requests settle on that one poll, as the other computer's verdict
+// ends them though nothing here acted on its announcement.
 func TestAPollRefusedForAnEndedPairingEndsItAtOnce(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -126,8 +121,8 @@ func TestAPollRefusedForAnEndedPairingEndsItAtOnce(t *testing.T) {
 	pair.manager.SetChanged(func(attachedbackends.SetChange) {})
 	revokeReachDevice(t, pair.dest, "source")
 	pair.poll(t)
-	if row := pair.request(t, token); row.State != store.ThreadRequestErrored || row.Polling {
-		t.Fatalf("the refused poll left the request %q polling=%v (%s)", row.State, row.Polling, row.Issue)
+	if row := pair.request(t, token); row.State != store.ThreadRequestErrored || row.Polling || string(row.Answer) != pairingEndedByComputer {
+		t.Fatalf("the refused poll left the request %q %q polling=%v (%s)", row.State, row.Answer, row.Polling, row.Issue)
 	}
 }
 

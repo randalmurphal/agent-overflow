@@ -176,7 +176,7 @@ func TestAStatusAnswerOmitsTheTextOfARevisionTheAskerHolds(t *testing.T) {
 	mu.Unlock()
 
 	// An asker that names no held revision (v0.0.19) is answered in full.
-	full, err := pair.source.callThreadRequestStatus(pair.computer, pair.held(t), ThreadPeerPoll{Tokens: []string{token}})
+	full, err := pair.source.callThreadRequestStatus(pair.computer, ThreadPeerPoll{Tokens: []string{token}})
 	if err != nil || len(full.Requests) != 1 || full.Requests[0].Answer != "a long final answer" {
 		t.Fatalf("an asker that holds nothing named was answered %+v, %v", full.Requests, err)
 	}
@@ -364,7 +364,7 @@ func TestAStatusAnswerSendsOnlyTheTextsTheAskerLacks(t *testing.T) {
 		for token, revision := range held {
 			poll.Held = append(poll.Held, ThreadPeerAck{Token: token, Revision: revision})
 		}
-		reply, err := pair.source.callThreadRequestStatus(pair.computer, pair.held(t), poll)
+		reply, err := pair.source.callThreadRequestStatus(pair.computer, poll)
 		if err != nil {
 			t.Fatalf("ask about %v holding %v: %v", tokens, held, err)
 		}

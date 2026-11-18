@@ -75,6 +75,10 @@ type Manager struct {
 
 	mu       sync.Mutex
 	carriers map[string]*carrier
+	// verdicts holds, per computer whose last pairing it ended with its
+	// verdict (endSession), the name that pairing gave it, until a pairing
+	// replaces it or the end of its work takes it (TakeVerdict).
+	verdicts map[string]string
 	profiles *keyedlock.Registry
 	// closed refuses new carriers once Close has begun, and renewals joins
 	// the renewal goroutine each carrier runs.
@@ -105,7 +109,7 @@ func New(dir, label, platform string) (*Manager, error) {
 		return nil, errors.New("attachedbackends: a device profile directory is required")
 	}
 	life, endLife := context.WithCancel(context.Background())
-	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
+	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, verdicts: map[string]string{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -183,6 +187,9 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	}
 	m.wire(built, id)
 	m.carriers[id] = built
+	// A profile saved again since a verdict is a pairing that replaced the
+	// one it ended.
+	delete(m.verdicts, id)
 	return built, nil
 }
 
@@ -226,12 +233,14 @@ func (m *Manager) Close() {
 // people watching it. The carrier leaves so nothing keeps answering for a
 // session that is gone, its agent opt-in goes the way a removal takes it,
 // and the observer retires the row. A carrier a newer pairing has already
-// replaced is not the cached one, and nothing here touches it.
+// replaced is not the cached one, and nothing here touches it. The verdict
+// is kept, with the name the pairing gave the computer, for TakeVerdict.
 func (m *Manager) endSession(id string, held *carrier) {
 	m.mu.Lock()
 	current := m.carriers[id] == held
 	if current {
 		delete(m.carriers, id)
+		m.verdicts[id] = strings.Join(strings.Fields(displayName(held.client.Session())), " ")
 	}
 	m.mu.Unlock()
 	if !current {
@@ -240,6 +249,18 @@ func (m *Manager) endSession(id string, held *carrier) {
 	held.leave(errPairingEnded)
 	_ = m.writeAgentAccess(id, false)
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
+}
+
+// TakeVerdict reports whether the last pairing this installation held with
+// computer id ended by that computer's verdict and no pairing has been
+// saved since. It reports that once per verdict, with the name that pairing
+// gave the computer.
+func (m *Manager) TakeVerdict(id string) (name string, ended bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name, ended = m.verdicts[id]
+	delete(m.verdicts, id)
+	return name, ended
 }
 
 // Attached is one attached machine as the desktop's own admin surface
@@ -272,8 +293,6 @@ type Attached struct {
 	LastReachedMs       int64  `json:"lastReachedMs,omitempty"`
 	DeviceNameSyncError string `json:"deviceNameSyncError,omitempty"`
 	OwnDeviceSyncError  string `json:"ownDeviceSyncError,omitempty"`
-	// Generation is the pairing's generation (Grant). Not on the wire.
-	Generation string `json:"-"`
 }
 
 // List reads every attached machine.
@@ -307,12 +326,11 @@ func (m *Manager) Lookup(id string) (Attached, bool, error) {
 // reachability when one has been built.
 func (m *Manager) attached(session deviceclient.Session) Attached {
 	row := Attached{
-		ID:         session.BackendID,
-		BackendID:  session.BackendID,
-		Name:       displayName(session),
-		Nickname:   session.Nickname,
-		Endpoint:   session.Endpoint,
-		Generation: generationOf(session),
+		ID:        session.BackendID,
+		BackendID: session.BackendID,
+		Name:      displayName(session),
+		Nickname:  session.Nickname,
+		Endpoint:  session.Endpoint,
 	}
 	m.mu.Lock()
 	if held, ok := m.carriers[session.BackendID]; ok {
@@ -396,9 +414,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
 		return Attachment{}, err
 	}
-	// A new generation of the pairing too: nothing the pairing it replaces
-	// admitted is this one's (generation.go).
-	attachment, err := m.addLinkLocked(ctx, link, "")
+	attachment, err := m.addLinkLocked(ctx, link)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -414,9 +430,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 // Caller holds the destination profile lock across one enrollment. It installs
 // the pairing session and nothing more — the agent-command opt-in is a separate
 // grant this primitive never touches, so own-device re-enrollment preserves it.
-// The session continues the pairing generation continues names, or begins
-// one of its own when that is empty (generation.go).
-func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link, continues string) (Attachment, error) {
+func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
 	m.mu.Lock()
 	if old := m.carriers[link.BackendID]; old != nil {
 		old.leave(errPairingReplaced)
@@ -428,8 +442,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link, con
 	if err != nil {
 		return Attachment{}, err
 	}
-	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform,
-		append(m.clientOptions(), deviceclient.WithPairingGeneration(continues))...)
+	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, m.clientOptions()...)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -445,6 +458,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link, con
 		m.wire(built, link.BackendID)
 		m.carriers[link.BackendID] = built
 	}
+	delete(m.verdicts, link.BackendID)
 	m.mu.Unlock()
 	return Attachment{
 		ID:                 link.BackendID,
@@ -485,7 +499,8 @@ func (m *Manager) Remove(id string) error {
 		return err
 	}
 	if err := m.forgetLocked(id); err != nil {
-		return err
+		// The pairing stays, so neither does its exclusion.
+		return errors.Join(err, m.excludeOwnDevice(id, false))
 	}
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
 	return nil
@@ -567,9 +582,6 @@ type carrier struct {
 	// peers is every connection this carrier opened that is still open
 	// (openRPC), so none outlives the pairing it was opened under.
 	peers peerConns
-	// generation is the pairing generation its session carries, fixed for
-	// the carrier's life (generation.go).
-	generation string
 
 	// lastReachedMs is when this machine last answered, Unix
 	// milliseconds. One atomic, written where an answer arrives and read
@@ -595,7 +607,7 @@ func newCarrier(client *deviceclient.Client, name string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &carrier{client: client, proxy: proxy, stopRenewal: func() {}, generation: generationOf(client.Session())}, nil
+	return &carrier{client: client, proxy: proxy, stopRenewal: func() {}}, nil
 }
 
 // keepRenewed rotates the session before each access window closes for

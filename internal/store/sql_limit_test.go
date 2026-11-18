@@ -208,7 +208,7 @@ func TestNonPositiveLimitReadsTheDefaultPage(t *testing.T) {
 				return err
 			}},
 			{"OwedThreadRequestAcks", "LIMIT 32", func() error {
-				_, err := s.OwedThreadRequestAcks("c", "", limit)
+				_, err := s.OwedThreadRequestAcks("c", limit)
 				return err
 			}},
 			{"DueThreadRequestAcks", "LIMIT 32", func() error {

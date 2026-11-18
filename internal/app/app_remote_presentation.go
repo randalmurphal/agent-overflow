@@ -42,7 +42,7 @@ func remoteProfileName(profile attachedbackends.Attached) string {
 // whatever a later pairing calls it. A command that kept no name falls back
 // to the pairing held now.
 func remoteWatchComputerName(computers map[string]attachedbackends.Attached, w store.RemoteWatch) string {
-	if held, paired := computers[w.ComputerID]; paired && (held.Generation == w.Pairing || w.ComputerName == "") {
+	if held, paired := computers[w.ComputerID]; paired {
 		return remoteProfileName(held)
 	}
 	return w.ComputerName

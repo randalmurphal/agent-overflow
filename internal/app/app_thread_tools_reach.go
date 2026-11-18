@@ -350,10 +350,9 @@ func (t threadToolsApp) dispatchedAck(
 }
 
 // admitRemoteRequest checks the pairing with computerID, admits the
-// caller's work and writes row under that pairing, with the name the person
-// knows the computer by, all inside the pairing's fence
-// (lockComputerPairing), so a pairing being ended takes the row with the
-// rest or refuses it. The work stays admitted from the row to the
+// caller's work and writes row with the name the person knows the computer
+// by, all inside the pairing's fence (lockComputerPairing), so a pairing
+// being ended takes the row with the rest or refuses it. The work stays admitted from the row to the
 // destination's answer, so a rest of the caller stops a request the
 // destination has settled or holds; the caller ends it with done.
 func (t threadToolsApp) admitRemoteRequest(
@@ -364,13 +363,6 @@ func (t threadToolsApp) admitRemoteRequest(
 	peer, err := t.Peer(ctx, computerID)
 	if err != nil {
 		return nil, nil, err
-	}
-	if row.Pairing, err = t.app.currentPairing(computerID); err != nil {
-		return nil, nil, err
-	}
-	if row.Pairing == "" {
-		// The profile went after Peer read it: no pairing to admit under.
-		return nil, nil, threadComputerNotPaired(computerID)
 	}
 	row.TargetComputerName = peer.Computer().Name
 	done, err = t.app.admitWork(caller.ThreadID, caller.Session)

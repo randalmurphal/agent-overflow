@@ -486,7 +486,7 @@ func attachedLabel(row attachedbackends.Attached) string {
 // falls back to the pairing held now.
 func (t threadToolsApp) requestComputerName(row store.ThreadRequest) (name, id string) {
 	held, paired := t.threadToolsPairing(row.TargetComputerID)
-	if !paired || (held.Generation != row.Pairing && row.TargetComputerName != "") {
+	if !paired {
 		return row.TargetComputerName, row.TargetComputerID
 	}
 	return attachedLabel(held), held.ID

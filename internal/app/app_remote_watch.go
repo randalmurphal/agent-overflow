@@ -128,9 +128,8 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 		return false, err
 	}
 	digest := sha256.Sum256(raw)
-	// Under the generation of the pairing held now, with the name the
-	// person knows the computer by, which names the command once that
-	// pairing ends.
+	// With the name the person knows the computer by, which names the
+	// command once the pairing ends.
 	profile, paired, err := a.backends.Lookup(input.ComputerID)
 	if err != nil {
 		return false, err
@@ -139,7 +138,7 @@ func (a *App) registerRemoteWatch(input AgentRemoteRequest) (bool, error) {
 		return false, errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", nil)
 	}
 	registered, err := a.store.RegisterRemoteWatch(store.RemoteWatch{ComputerID: input.ComputerID, RequestID: input.Request.ID, ThreadID: input.Request.SourceThreadID,
-		Fingerprint: hex.EncodeToString(digest[:]), Label: label, Command: command, Pairing: profile.Generation, ComputerName: truncateRunes(attachedComputerName(profile), remoteJobCommandMaxRunes)})
+		Fingerprint: hex.EncodeToString(digest[:]), Label: label, Command: command, ComputerName: truncateRunes(attachedComputerName(profile), remoteJobCommandMaxRunes)})
 	if registered {
 		a.nudgeRemoteWatches()
 	}
@@ -245,15 +244,15 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	receipt := w.Receipt
 	if receipt.ID == "" || receipt.State == "running" {
-		// Asked only under the pairing that admitted it. One that ended is
-		// ended here instead: its end records the outcome as unknown, which
-		// the next check delivers with no call to that computer.
-		pairing, err := a.endEndedPairings(w.ComputerID, []string{w.Pairing})
+		// A computer no longer paired here is asked nothing: the end of its
+		// pairing records the outcome as unknown, which the next check
+		// delivers with no call to that computer.
+		ended, err := a.endUnpaired(w.ComputerID)
 		if err != nil {
 			_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, remoteIssueText("status", err), time.Now().Add(30*time.Second).UnixMilli())
 			return
 		}
-		if !pairingLive(w.Pairing, pairing) {
+		if ended {
 			return
 		}
 	}
@@ -268,7 +267,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		// tail. The saved log supplies the excerpt below; delivery never waits
 		// on it, and an older destination simply omits it.
 	case receipt.ID != "":
-		err = a.backends.CallAgentPeerUnder(ctx, w.ComputerID, w.Pairing, "RemoteCommandStatus", &receipt, w.RequestID)
+		err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", &receipt, w.RequestID)
 	default:
 		var settled bool
 		if settled, err = a.probeUnacceptedRemoteWatch(ctx, w, &receipt); settled {
@@ -280,9 +279,9 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	issue := ""
 	if err != nil {
-		if a.pairingEndedSince(w.ComputerID, w.Pairing) {
-			// The refusal ended the pairing it was made under, which
-			// recorded the outcome as unknown.
+		if a.unpairedAfterFailure(w.ComputerID) {
+			// The refusal ended the pairing, which recorded the outcome as
+			// unknown.
 			return
 		}
 		issue = remoteIssueText("status", err)
@@ -338,7 +337,7 @@ func (a *App) probeUnacceptedRemoteWatch(ctx context.Context, w store.RemoteWatc
 		return true, a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, w.Error, time.Now().Add(5*time.Second).UnixMilli())
 	}
 	defer unlock()
-	err = a.backends.CallAgentPeerUnder(ctx, w.ComputerID, w.Pairing, "RemoteCommandStatus", receipt, w.RequestID)
+	err = a.backends.CallAgentPeer(ctx, w.ComputerID, "RemoteCommandStatus", receipt, w.RequestID)
 	var remote *rpcclient.Error
 	if !errors.As(err, &remote) || remote.Code != "remote_job_not_found" {
 		return false, err
@@ -518,17 +517,7 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	var receipt RemoteCommand
-	// Under the pairing that admitted the command alone. One another
-	// pairing replaced is ended here instead, which records its outcome as
-	// unknown, and that is what the Stop answers.
-	err = a.backends.CallAgentPeerUnder(call, computerID, w.Pairing, "RemoteCommandCancel", &receipt, requestID)
-	if err != nil && a.pairingEndedSince(computerID, w.Pairing) {
-		ended, readErr := a.store.GetRemoteWatch(computerID, requestID)
-		if readErr != nil {
-			return RemoteCommand{}, readErr
-		}
-		return ended.Receipt, nil
-	}
+	err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandCancel", &receipt, requestID)
 	if err == nil {
 		err = a.observeRemoteCommand(computerID, requestID, threadID, receipt)
 	}
@@ -566,13 +555,12 @@ const (
 	remoteCancelSettlePoll = 500 * time.Millisecond
 )
 
-// remoteCommandStatus asks for the receipt of the command w watches, under
-// the pairing that admitted it.
+// remoteCommandStatus asks for the receipt of the command w watches.
 func (a *App) remoteCommandStatus(ctx context.Context, w store.RemoteWatch) (RemoteCommand, error) {
 	call, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	var receipt RemoteCommand
-	err := a.backends.CallAgentPeerUnder(call, w.ComputerID, w.Pairing, "RemoteCommandStatus", &receipt, w.RequestID)
+	err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandStatus", &receipt, w.RequestID)
 	return receipt, err
 }
 
@@ -625,14 +613,9 @@ func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []
 		if unfinished && a.backends != nil {
 			call, cancel := context.WithTimeout(ctx, 20*time.Second)
 			var receipt RemoteCommand
-			callErr := a.backends.CallAgentPeerUnder(call, w.ComputerID, w.Pairing, "RemoteCommandCancel", &receipt, w.RequestID)
+			callErr := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
 			cancel()
-			if callErr != nil && a.pairingGone(w.ComputerID, w.Pairing) {
-				// Its pairing ended: nothing can be sent there, and no cancel is
-				// owed. Ended detached, since the caller can hold the thread's
-				// locks.
-				a.endPairingDetached(w.ComputerID, pairingEndedHere)
-			} else if callErr != nil {
+			if callErr != nil {
 				now := time.Now()
 				if oweErr := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, now.UnixMilli(), now.Add(remoteCancelRetryDelay).UnixMilli()); oweErr != nil {
 					failed = append(failed, fmt.Errorf("remote command %s on %s: owe its cancel: %w", w.RequestID, w.ComputerID, oweErr))
@@ -681,16 +664,16 @@ func (a *App) retryOwedRemoteCancels(now time.Time) {
 			a.settleOwedRemoteCancel(w)
 			continue
 		}
-		// Sent only under the pairing that admitted the command; the end of
-		// one that ended settles every cancel it owed.
-		pairing, err := a.endEndedPairings(w.ComputerID, []string{w.Pairing})
-		if err == nil && !pairingLive(w.Pairing, pairing) {
+		// A computer no longer paired here is sent nothing: the end of its
+		// pairing settles every cancel owed there.
+		ended, err := a.endUnpaired(w.ComputerID)
+		if ended {
 			continue
 		}
 		if err == nil {
 			call, cancel := context.WithTimeout(a.lifeCtx(), 20*time.Second)
 			var receipt RemoteCommand
-			err = a.backends.CallAgentPeerUnder(call, w.ComputerID, w.Pairing, "RemoteCommandCancel", &receipt, w.RequestID)
+			err = a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
 			cancel()
 			code := ""
 			if err != nil {
@@ -700,7 +683,7 @@ func (a *App) retryOwedRemoteCancels(now time.Time) {
 				a.settleOwedRemoteCancel(w)
 				continue
 			}
-			if a.pairingEndedSince(w.ComputerID, w.Pairing) {
+			if a.unpairedAfterFailure(w.ComputerID) {
 				continue
 			}
 		}

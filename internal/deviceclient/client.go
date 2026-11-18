@@ -214,7 +214,6 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 		Endpoint:           link.Endpoint,
 		CertFingerprint:    link.CertFingerprint,
 		SessionID:          issued.SessionID,
-		PairingGeneration:  resolveOptions(opts).generation,
 		Credential:         issued.Credential,
 		ExpiresAtMs:        issued.ExpiresAtMs,
 		RefreshSecret:      issued.RefreshSecret,

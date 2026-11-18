@@ -29,43 +29,31 @@ import (
 // the revision each settled row already holds, which that computer answers
 // without the text this one has (ThreadPeerPoll.Held).
 //
-// It asks only about what the pairing held now admitted, under that
-// pairing: what a pairing no longer held admitted is ended first
-// (endEndedPairings), whichever of the rows, or of the due
-// acknowledgements, names one. With no row left to ask about, it sends the
-// acknowledgements owed there alone. A pass that cannot read the pairing
-// puts off the rows and the due acknowledgements by the error delay.
+// A computer this one holds no saved pairing with is asked nothing: its
+// work ends (endUnpaired). A pass that cannot read the pairing puts off the
+// rows and the due acknowledgements by the error delay. With no row to ask
+// about, it sends the acknowledgements owed there alone.
 func (a *App) pollThreadRequestsOn(now time.Time, computerID string, rows []store.ThreadRequest, dueAcks []store.ThreadRequestAck) {
 	if len(rows) > threadPeerTokenLimit {
 		rows = rows[:threadPeerTokenLimit]
 	}
-	rows = a.withOpenThreadRequestsOn(computerID, rows)
-	pairings := make([]string, 0, len(rows)+len(dueAcks))
-	for _, row := range rows {
-		pairings = append(pairings, row.Pairing)
-	}
-	for _, ack := range dueAcks {
-		pairings = append(pairings, ack.Pairing)
-	}
-	pairing, err := a.endEndedPairings(computerID, pairings)
+	ended, err := a.endUnpaired(computerID)
 	if err != nil {
-		logThreadRequestSweep("end the pairings with "+computerID+" no longer held", err)
+		logThreadRequestSweep("read the pairing with "+computerID, err)
 		for _, row := range rows {
 			a.rescheduleThreadRequest(row, threadPollErrorDelay, "This computer could not read its pairing with the other computer.")
 		}
 		a.deferThreadRequestAcks(dueAcks)
 		return
 	}
-	live := make([]store.ThreadRequest, 0, len(rows))
-	for _, row := range rows {
-		if pairingLive(row.Pairing, pairing) {
-			live = append(live, row)
-		}
-	}
-	if rows = live; len(rows) == 0 {
-		a.sendOwedThreadRequestAcksUnder(computerID, pairing)
+	if ended {
 		return
 	}
+	if len(rows) == 0 {
+		a.sendOwedThreadRequestAcks(computerID)
+		return
+	}
+	rows = a.withOpenThreadRequestsOn(computerID, rows)
 	poll := ThreadPeerPoll{Tokens: make([]string, 0, len(rows))}
 	for _, row := range rows {
 		poll.Tokens = append(poll.Tokens, row.Token)
@@ -73,15 +61,15 @@ func (a *App) pollThreadRequestsOn(now time.Time, computerID string, rows []stor
 			poll.Held = append(poll.Held, ThreadPeerAck{Token: row.Token, Revision: row.Revision})
 		}
 	}
-	acks, err := a.store.OwedThreadRequestAcks(computerID, pairing, threadPeerTokenLimit)
+	acks, err := a.store.OwedThreadRequestAcks(computerID, threadPeerTokenLimit)
 	if err != nil {
 		// They stay owed, and the call after this one carries them.
 		logThreadRequestSweep("read the acknowledgements owed to "+computerID, err)
 	}
 	poll.Ack = threadPeerAcks(acks)
-	reply, v2, err := a.callThreadRequestStatusProving(computerID, pairing, poll)
+	reply, v2, err := a.callThreadRequestStatusProving(computerID, poll)
 	if err != nil {
-		a.failThreadRequestPoll(computerID, pairing, rows, acks, err)
+		a.failThreadRequestPoll(computerID, rows, acks, err)
 		return
 	}
 	a.clearThreadRequestAcks(acks)
@@ -114,32 +102,15 @@ func (a *App) pollThreadRequestsOn(now time.Time, computerID string, rows []stor
 	a.deliverThreadWakes(wakes)
 	// What this pass collected is acknowledged now rather than by the next
 	// poll: a row that just settled may never be polled again.
-	a.sendOwedThreadRequestAcksUnder(computerID, pairing)
+	a.sendOwedThreadRequestAcks(computerID)
 }
 
 // sendOwedThreadRequestAcks sends one computer the acknowledgements owed to
-// it under the pairing held now (sendOwedThreadRequestAcksUnder). A pairing
-// that cannot be read leaves them owed on their own schedule, which the
-// sweep's pass puts off when it cannot read it either.
-func (a *App) sendOwedThreadRequestAcks(computerID string) {
-	pairing, err := a.currentPairing(computerID)
-	if err != nil {
-		logThreadRequestSweep("read the pairing with "+computerID, err)
-		return
-	}
-	a.sendOwedThreadRequestAcksUnder(computerID, pairing)
-}
-
-// sendOwedThreadRequestAcksUnder sends one computer the acknowledgements
-// owed to it for what the pairing generation admitted, under that pairing,
-// on a call of their own, which every build of the destination reads
+// it on a call of their own, which every build of the destination reads
 // (ThreadPeerPoll with no tokens). They are cleared once it takes them, and
 // retried by the sweep after the error delay when it does not.
-func (a *App) sendOwedThreadRequestAcksUnder(computerID, pairing string) {
-	if pairing == "" {
-		return
-	}
-	acks, err := a.store.OwedThreadRequestAcks(computerID, pairing, threadPeerTokenLimit)
+func (a *App) sendOwedThreadRequestAcks(computerID string) {
+	acks, err := a.store.OwedThreadRequestAcks(computerID, threadPeerTokenLimit)
 	if err != nil {
 		logThreadRequestSweep("read the acknowledgements owed to "+computerID, err)
 		return
@@ -147,8 +118,8 @@ func (a *App) sendOwedThreadRequestAcksUnder(computerID, pairing string) {
 	if len(acks) == 0 {
 		return
 	}
-	if _, err := a.callThreadRequestStatus(computerID, pairing, ThreadPeerPoll{Ack: threadPeerAcks(acks)}); err != nil {
-		a.failThreadRequestAcks(computerID, pairing, acks)
+	if _, err := a.callThreadRequestStatus(computerID, ThreadPeerPoll{Ack: threadPeerAcks(acks)}); err != nil {
+		a.failThreadRequestAcks(computerID, acks)
 		return
 	}
 	a.clearThreadRequestAcks(acks)
@@ -172,10 +143,10 @@ func (a *App) clearThreadRequestAcks(acks []store.ThreadRequestAck) {
 }
 
 // failThreadRequestAcks answers a destination that did not take the acks
-// owed under pairing: a pairing that ended is the end of the pairing, which
-// owes it nothing more; anything else is retried after the error delay.
-func (a *App) failThreadRequestAcks(computerID, pairing string, acks []store.ThreadRequestAck) {
-	if a.pairingEndedSince(computerID, pairing) {
+// owed to it: a computer no longer paired here is owed nothing more
+// (endUnpaired); anything else is retried after the error delay.
+func (a *App) failThreadRequestAcks(computerID string, acks []store.ThreadRequestAck) {
+	if a.unpairedAfterFailure(computerID) {
 		return
 	}
 	a.deferThreadRequestAcks(acks)
@@ -228,21 +199,21 @@ func (a *App) withOpenThreadRequestsOn(computerID string, due []store.ThreadRequ
 	return due
 }
 
-// callThreadRequestStatus asks one computer about requests the pairing
-// generation admitted, under that pairing alone.
-func (a *App) callThreadRequestStatus(computerID, pairing string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
-	reply, _, err := a.callThreadRequestStatusProving(computerID, pairing, poll)
+// callThreadRequestStatus asks one computer about requests this one made
+// there.
+func (a *App) callThreadRequestStatus(computerID string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
+	reply, _, err := a.callThreadRequestStatusProving(computerID, poll)
 	return reply, err
 }
 
 // callThreadRequestStatusProving is callThreadRequestStatus that also
 // reports whether the destination that answered is on thread-tools.v2,
 // whose answer marks a token a handler there may still admit.
-func (a *App) callThreadRequestStatusProving(computerID, pairing string, poll ThreadPeerPoll) (ThreadPeerPollReply, bool, error) {
+func (a *App) callThreadRequestStatusProving(computerID string, poll ThreadPeerPoll) (ThreadPeerPollReply, bool, error) {
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadPollCallTimeout)
 	defer cancel()
 	var reply ThreadPeerPollReply
-	v2, err := a.backends.CallThreadPeerProvingUnder(ctx, computerID, pairing, transport.CapabilityThreadToolsV2,
+	v2, err := a.backends.CallThreadPeerProving(ctx, computerID, transport.CapabilityThreadTools, transport.CapabilityThreadToolsV2,
 		"ThreadToolRequestStatus", &reply, poll)
 	if err != nil {
 		return ThreadPeerPollReply{}, false, a.threadOperationError("status", computerID, "", err)
@@ -252,12 +223,12 @@ func (a *App) callThreadRequestStatusProving(computerID, pairing string, poll Th
 
 // failThreadRequestPoll answers one unreachable or refusing destination.
 //
-// A pairing that has ended is terminal (endPairing): nothing it admitted can
-// be collected again, so those requests settle and leave the poll rather
+// A computer no longer paired here is terminal (endUnpaired): nothing there
+// can be collected again, so its requests settle and leave the poll rather
 // than being retried forever. Anything else is a computer that is asleep,
 // offline or busy, which is what the error backoff is for.
-func (a *App) failThreadRequestPoll(computerID, pairing string, rows []store.ThreadRequest, acks []store.ThreadRequestAck, cause error) {
-	if a.pairingEndedSince(computerID, pairing) {
+func (a *App) failThreadRequestPoll(computerID string, rows []store.ThreadRequest, acks []store.ThreadRequestAck, cause error) {
+	if a.unpairedAfterFailure(computerID) {
 		return
 	}
 	_, message, _ := threadErrorDetails("status", cause)
@@ -384,9 +355,9 @@ func (a *App) retireThreadRequestPoll(token string) {
 // It is the one place a peer's answer becomes this computer's record, so
 // the confirmation a spawn, send or ask gets in its own reply and the one
 // the poller gets a tick later cannot disagree. It applies inside the
-// computer's fence, and only to a request the pairing held now admitted: an
-// answer that arrives on a connection of a pairing that ended, after its
-// end, is the end's to answer, and changes nothing here.
+// computer's fence, and only while a pairing with that computer is saved:
+// an answer that arrives after the pairing's end is the end's to answer,
+// and changes nothing here.
 func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeerRequest, heard threadPeerHearing) ([]threadWakeRef, error) {
 	unlock := a.lockComputerPairing(computerID)
 	defer unlock()
@@ -394,11 +365,11 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	if err != nil || !found {
 		return nil, err
 	}
-	pairing, err := a.currentPairing(computerID)
+	paired, err := a.pairingSaved(computerID)
 	if err != nil {
 		return nil, err
 	}
-	if row.TargetComputerID != computerID || !pairingLive(row.Pairing, pairing) {
+	if row.TargetComputerID != computerID || !paired {
 		return nil, nil
 	}
 	if !answer.Known {

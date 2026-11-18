@@ -159,11 +159,15 @@ func (a *App) awaitAttachment(id string) {
 // requests this computer still has open there, and the finished jobs whose
 // completions are held for archived conversations, which can no longer be
 // delivered. Without it they are named and the call refuses; with it the
-// pairing ends with their wakes dropped, the held
-// completions are discarded, and the pairing goes, all inside the fence
-// admission takes, so no request enters it meanwhile. The other computer
-// is not told, because forgetting it is exactly the decision to stop
-// talking to it.
+// pairing goes, then its work ends with the wakes dropped and the held
+// completions are discarded, all inside the fence admission takes, so no
+// request enters it meanwhile. The other computer is not told, because
+// forgetting it is exactly the decision to stop talking to it.
+//
+// Removing the profile is the commit point: a forget that fails before it
+// leaves the pairing and every record for it as they were, and one whose
+// ledger write fails after it leaves the records to the sweep, which ends
+// the work of a computer with no pairing saved (endUnpaired).
 //
 //ao:scope host
 //ao:route home
@@ -181,22 +185,33 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 		return errors.New("This computer has remote commands awaiting completion or confirmation" + stoppedRemoteCommands(stopped) +
 			". Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
 	}
-	if err := a.releaseForgottenComputerWork(id, held, abandon); err != nil {
+	if err := a.refuseForgettingOpenWork(id, held, abandon); err != nil {
 		return err
 	}
-	return a.backends.Remove(id)
+	// The name it goes by now, which names its work from before names
+	// were kept once it is gone.
+	profile, _, err := a.backends.Lookup(id)
+	if err != nil {
+		return err
+	}
+	if err := a.backends.Remove(id); err != nil {
+		return err
+	}
+	a.releaseForgottenComputerWork(id, attachedComputerName(profile))
+	return nil
 }
 
-// releaseForgottenComputerWork refuses once with what forgetting drops
-// named, then drops it when the caller confirms: the pairing ends, every
-// open thread request settling with its wake disarmed, and the held
-// completions are discarded. The caller holds the computer's fence.
-func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) error {
+// refuseForgettingOpenWork refuses once with what forgetting drops named,
+// unless the caller confirmed it.
+func (a *App) refuseForgettingOpenWork(id string, held int, abandon bool) error {
+	if abandon {
+		return nil
+	}
 	rows, open, err := a.store.ListOpenThreadRequestsForComputer(id, threadForgetRequestListing)
 	if err != nil {
 		return err
 	}
-	if !abandon && (open > 0 || held > 0) {
+	if open > 0 || held > 0 {
 		// Public, so the listing reaches a connected browser too and so
 		// the confirm affordance keys on the code rather than the prose.
 		if open == 0 {
@@ -210,24 +225,34 @@ func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) er
 			describeOpenThreadRequests(rows, open)+
 				". Forgetting it stops them from ever being collected."+discarded+" Confirm to forget it anyway; the other computer is not told and any work it started keeps running there.", nil)
 	}
+	return nil
+}
+
+// releaseForgottenComputerWork drops the work of a computer whose pairing
+// the person just removed: every open thread request settles with its wake
+// disarmed, every command there not known to have finished is recorded with
+// an unknown outcome, the held completions are discarded, and its records
+// that kept no name take name. The caller holds the computer's fence. The
+// pairing is gone already, so a write that fails here is logged and left
+// to the sweep, which ends the work of a computer with no pairing saved.
+func (a *App) releaseForgottenComputerWork(id, name string) {
 	// Disarmed: the person chose to stop hearing from that computer, so
-	// no answer that can no longer arrive is told as an error either. The
-	// pairing held now ends with the rest: none is kept live.
-	if _, err := a.endPairingFenced(id, "", store.PairingEnd{
+	// no answer that can no longer arrive is told as an error either.
+	if _, err := a.endPairingFenced(id, store.PairingEnd{
 		RequestAnswer: []byte("This computer was forgotten, so this request can no longer be collected. The other computer was not told, and any work it started keeps running there."),
 		CommandError:  "This computer was forgotten, so this command's outcome is unknown.",
 		Disarm:        true,
+		ComputerName:  name,
 	}); err != nil {
-		return err
+		log.Printf("app: forget %s: end its work, which the sweep ends instead: %v", id, err)
 	}
 	threads, err := a.store.DismissArchivedRemoteCompletions(id)
 	if err != nil {
-		return err
+		log.Printf("app: forget %s: discard the completions held for archived conversations: %v", id, err)
 	}
 	for _, threadID := range threads {
 		a.emitBackgroundChanged(threadID)
 	}
-	return nil
 }
 
 // stoppedRemoteCommands names the stopped commands there whose cancel is
@@ -315,7 +340,9 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 	switch change.Action {
 	case attachedbackends.SetRemoved:
-		a.endPairingDetached(change.ID, pairingEndReason(change.Reason))
+		if change.Reason == attachedbackends.RemovedByComputer {
+			a.endRevokedPairing(change)
+		}
 		a.forgetPeerAgentRows(change.ID)
 	case attachedbackends.SetMembership:
 		a.forgetUnpairedPeerAgentRows()

@@ -25,7 +25,7 @@ import (
 
 // holdPairing gives an app that holds no pairings a pairing with computerID,
 // for a test that applies that computer's answers directly, as a poll does
-// after its call: an answer applies only to what the pairing held admitted.
+// after its call: an answer applies only while a pairing is saved.
 func holdPairing(t *testing.T, a *App, computerID string) {
 	t.Helper()
 	if a.backends != nil {
@@ -49,11 +49,7 @@ func holdPairing(t *testing.T, a *App, computerID string) {
 // runs, as the watcher last saw it.
 func runningRemoteWatch(t *testing.T, a *App, computerID string, thread store.Thread) store.RemoteWatch {
 	t.Helper()
-	pairing, err := a.currentPairing(computerID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := store.RemoteWatch{ComputerID: computerID, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "nightly build", Pairing: pairing}
+	w := store.RemoteWatch{ComputerID: computerID, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "nightly build"}
 	if _, err := a.store.RegisterRemoteWatch(w); err != nil {
 		t.Fatal(err)
 	}
@@ -141,11 +137,10 @@ func (p *reachPair) learnPairingEnded(t *testing.T) {
 }
 
 // A pairing the other computer ended, learned by an ordinary call rather
-// than by the ledger's own sweeps, ends what this computer holds under it
-// at once. A pairing made with that computer afterwards starts with none of
-// it: nothing the old pairing ended is taken up again under the new one,
-// and the end of the old one settles nothing admitted under the new one.
-func TestAPairingEndedOutsideTheLedgerIsEndedAndAReplacementStartsClean(t *testing.T) {
+// than by the ledger's own sweeps, ends what this computer holds for that
+// computer at once, and what it ended stays ended: pairing the computer
+// again takes none of it up.
+func TestAPairingEndedOutsideTheLedgerStaysEndedWhenPairedAgain(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
@@ -180,16 +175,6 @@ func TestAPairingEndedOutsideTheLedgerIsEndedAndAReplacementStartsClean(t *testi
 	if receipt := pair.receipt(t, token); receipt.CollectedRevision != 1 {
 		t.Fatalf("the replacement pairing acknowledged revision %d of the old pairing's request", receipt.CollectedRevision)
 	}
-
-	// Work admitted under the new pairing is not the old one's to end.
-	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
-	fresh := pair.spawnThere(t, "work under the new pairing", nil).Token
-	if err := pair.source.endPairing(pair.computer, "the old pairing ended"); err != nil {
-		t.Fatal(err)
-	}
-	if row := pair.request(t, fresh); threadRequestSettled(row) || !row.Polling {
-		t.Fatalf("the end of the old pairing settled a request the new one admitted: %q polling=%v", row.State, row.Polling)
-	}
 }
 
 // agentRowOf finds a request's row in its caller's Agents segment, open or
@@ -213,12 +198,11 @@ func agentRowOf(t *testing.T, a *App, callerThreadID, token string) ThreadAgentR
 	return ThreadAgentRow{}
 }
 
-// An answer from a paired computer applies only to what the pairing held
-// now admitted: one about a request an earlier pairing admitted, as a call
-// made on that pairing's connection brings back after its end, neither
-// settles it nor leaves it owing that computer anything, and with no pairing
-// held nothing applies at all.
-func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
+// An answer from another computer applies only while this one holds a
+// pairing with it: one a call brings back after the pairing went neither
+// settles the request nor leaves it owing that computer anything, since the
+// end of the pairing settles it instead.
+func TestAnAnswerAppliesOnlyWhileAPairingIsSaved(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	computer := uuid.NewString()
@@ -226,11 +210,11 @@ func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
 		return ThreadPeerRequest{Token: token, Known: true, State: store.ThreadReceiptFinished, Answer: "done there",
 			AnswerKind: store.ThreadAnswerFinal, Revision: 1, SettledAt: time.Now().UnixMilli()}
 	}
-	seed := func(pairing string) string {
+	seed := func() string {
 		t.Helper()
 		token := uuid.NewString()
 		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
-			State: store.ThreadRequestRunning, TargetComputerID: computer, TargetThreadID: uuid.NewString(), Pairing: pairing}); err != nil {
+			State: store.ThreadRequestRunning, TargetComputerID: computer, TargetThreadID: uuid.NewString()}); err != nil {
 			t.Fatal(err)
 		}
 		return token
@@ -244,16 +228,14 @@ func TestAnAnswerAppliesOnlyToWhatThePairingHeldNowAdmitted(t *testing.T) {
 			t.Fatalf("%s changed the request: %+v", why, row)
 		}
 	}
-	unchanged(seed("held"), "an answer with no pairing held")
+	unchanged(seed(), "an answer with no pairing held")
 	holdPairing(t, f.app, computer)
-	unchanged(seed("an-ended-pairing"), "an answer about an earlier pairing's request")
-	unchanged(seed(""), "an answer about a request that names no pairing")
-	token := seed("held")
+	token := seed()
 	if _, err := f.app.applyThreadPeerRequest(token, computer, answer(token), threadPeerHearing{at: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if row := f.request(t, token); row.State != store.ThreadRequestFinished || row.AckOwed != 1 {
-		t.Fatalf("an answer about the held pairing's request left it %+v", row)
+		t.Fatalf("an answer while the pairing is held left the request %+v", row)
 	}
 }
 

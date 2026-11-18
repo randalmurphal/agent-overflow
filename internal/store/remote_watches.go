@@ -52,11 +52,9 @@ type RemoteWatch struct {
 	// when none did (StopRemoteWatch, DismissUndeliveredRemoteWatches). Such
 	// a dismissal is final: nothing brings the completion back.
 	StoppedAt int64 `json:"-"`
-	// Pairing is the generation of the pairing with ComputerID the command
-	// was admitted under (ThreadRequest.Pairing).
-	Pairing string `json:"-"`
 	// ComputerName is what the person called that computer when the command
-	// was admitted, which names it once no pairing here does.
+	// was admitted, or when its pairing ended for a command that kept none
+	// (EndPairing), which names it once no pairing here does.
 	ComputerName string `json:"-"`
 }
 
@@ -75,12 +73,12 @@ CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DE
 
 const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at,stopped_at,pairing,computer_name`
+const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at,stopped_at,computer_name`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt, &w.StoppedAt, &w.Pairing, &w.ComputerName)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt, &w.StoppedAt, &w.ComputerName)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -137,14 +135,14 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		return false, errorsx.Public("remote_tracking_capacity", "256 remote jobs are awaiting completion or reconnection."+held+" Resolve those jobs before starting more.", nil)
 	}
 	if !fresh {
-		// A start refused before is tried again under the pairing held now.
-		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',next_check=?,pairing=?,computer_name=? WHERE computer_id=? AND request_id=?`, time.Now().Add(25*time.Second).UnixMilli(), w.Pairing, w.ComputerName, w.ComputerID, w.RequestID)
+		// A start refused before is tried again, named as the computer is now.
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',next_check=?,computer_name=? WHERE computer_id=? AND request_id=?`, time.Now().Add(25*time.Second).UnixMilli(), w.ComputerName, w.ComputerID, w.RequestID)
 		if err != nil {
 			return false, err
 		}
 		return true, tx.Commit()
 	}
-	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,next_check,created_at,pairing,computer_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli(), w.Pairing, w.ComputerName)
+	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,next_check,created_at,computer_name) VALUES(?,?,?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli(), w.ComputerName)
 	if err != nil {
 		return false, err
 	}

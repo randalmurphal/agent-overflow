@@ -68,10 +68,6 @@ type Session struct {
 
 	// SessionID is stable across every rotation of this session.
 	SessionID string `json:"sessionId"`
-	// PairingGeneration names the relationship a replacement session
-	// continues (WithPairingGeneration). The owner of the set assigns it;
-	// here it is opaque, written by Pair and kept by every rotation.
-	PairingGeneration string `json:"pairingGeneration,omitempty"`
 	// Credential is the signed session credential presented on every
 	// request.
 	Credential string `json:"credential"`

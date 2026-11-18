@@ -184,13 +184,9 @@ type ThreadRequest struct {
 	// caller spawned there, whose answer means its turn ended
 	// (ThreadReceiptAnswer.RestUnreported).
 	RestUnreported bool `json:"-"`
-	// Pairing is the generation of the pairing with TargetComputerID the
-	// request was admitted under (attachedbackends.Manager.Grant); empty for
-	// a local request. A remote record from before generations were recorded
-	// is given one at boot (BindRecordPairing).
-	Pairing string `json:"-"`
 	// TargetComputerName is what the person called that computer when the
-	// request was admitted, which names it once no pairing here does.
+	// request was admitted, or when its pairing ended for a request that
+	// kept none (EndPairing), which names it once no pairing here does.
 	TargetComputerName string `json:"-"`
 }
 
@@ -315,7 +311,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
     late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg, admit_until,
-    late_reply_expired, ack_owed, pairing, target_computer_name`
+    late_reply_expired, ack_owed, target_computer_name`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -347,7 +343,7 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg, &r.AdmitUntil,
-		&lateReplyExpired, &r.AckOwed, &r.Pairing, &r.TargetComputerName,
+		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName,
 	}, extra...)...)
 	r.LateReplyExpired = lateReplyExpired != 0
 	r.NestedOpen = nestedOpen != 0
@@ -412,11 +408,11 @@ func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
 		`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, lineage_only, created_at, updated_at, admit_until, pairing, target_computer_name
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    next_check, attempts, issue, lineage_only, created_at, updated_at, admit_until, target_computer_name
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
-		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt, r.AdmitUntil, r.Pairing, r.TargetComputerName,
+		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt, r.AdmitUntil, r.TargetComputerName,
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
