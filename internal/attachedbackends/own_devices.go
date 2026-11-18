@@ -159,9 +159,14 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	if excluded, err := m.ownDeviceExcluded(link.BackendID); err != nil || excluded {
 		return false, err
 	}
+	// An ordinary pairing still held is upgraded, and the group session
+	// continues its generation; with none held this begins its own.
+	continues := ""
 	if session, err := deviceclient.LoadSession(m.dir, link.BackendID); err == nil && session.OwnDevice {
 		return false, nil
-	} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
+	} else if err == nil {
+		continues = generationOf(session)
+	} else if !errors.Is(err, deviceclient.ErrNoSession) {
 		return false, err
 	}
 	route, err := deviceclient.SelectPairingRoute(ctx, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
@@ -173,7 +178,7 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	// whether or not the caller still waits; Close still ends it.
 	ctx, release := ctxutil.Detach(ctx, m.life)
 	defer release()
-	if _, err := m.addLinkLocked(ctx, link); err != nil {
+	if _, err := m.addLinkLocked(ctx, link, continues); err != nil {
 		return false, err
 	}
 	// Introductions are already approved and must not create a human

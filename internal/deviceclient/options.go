@@ -10,8 +10,9 @@ import (
 // the destination authority, credential scope, or request retry policy.
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type options struct {
-	dial  DialContextFunc
-	probe time.Duration
+	dial       DialContextFunc
+	probe      time.Duration
+	generation string
 }
 type Option func(*options)
 
@@ -27,6 +28,13 @@ func WithDialContext(dial DialContextFunc) Option { return func(o *options) { o.
 func WithProbeInterval(interval time.Duration) Option {
 	return func(o *options) { o.probe = interval }
 }
+
+// WithPairingGeneration is the Session.PairingGeneration Pair saves with the
+// session it is issued. Open ignores it: a held session keeps its own.
+func WithPairingGeneration(generation string) Option {
+	return func(o *options) { o.generation = generation }
+}
+
 func resolveOptions(values []Option) options {
 	var result options
 	for _, value := range values {

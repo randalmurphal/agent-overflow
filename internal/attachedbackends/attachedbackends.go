@@ -256,6 +256,8 @@ type Attached struct {
 	LastReachedMs       int64  `json:"lastReachedMs,omitempty"`
 	DeviceNameSyncError string `json:"deviceNameSyncError,omitempty"`
 	OwnDeviceSyncError  string `json:"ownDeviceSyncError,omitempty"`
+	// Generation is the pairing's generation (Grant). Not on the wire.
+	Generation string `json:"-"`
 }
 
 // List reads every attached machine.
@@ -285,26 +287,16 @@ func (m *Manager) Lookup(id string) (Attached, bool, error) {
 	return m.attached(session), true, nil
 }
 
-// Grant names the pairing held with one machine now: its session's id,
-// which every rotation keeps and a new pairing replaces. Empty when nothing
-// is paired under that id.
-func (m *Manager) Grant(id string) (string, error) {
-	session, err := deviceclient.LoadSession(m.dir, id)
-	if errors.Is(err, deviceclient.ErrNoSession) || errors.Is(err, deviceclient.ErrInvalidBackendID) {
-		return "", nil
-	}
-	return session.SessionID, err
-}
-
 // attached is one session as the app reads it, with the live hop's
 // reachability when one has been built.
 func (m *Manager) attached(session deviceclient.Session) Attached {
 	row := Attached{
-		ID:        session.BackendID,
-		BackendID: session.BackendID,
-		Name:      displayName(session),
-		Nickname:  session.Nickname,
-		Endpoint:  session.Endpoint,
+		ID:         session.BackendID,
+		BackendID:  session.BackendID,
+		Name:       displayName(session),
+		Nickname:   session.Nickname,
+		Endpoint:   session.Endpoint,
+		Generation: generationOf(session),
 	}
 	m.mu.Lock()
 	if held, ok := m.carriers[session.BackendID]; ok {
@@ -388,7 +380,9 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
 		return Attachment{}, err
 	}
-	attachment, err := m.addLinkLocked(ctx, link)
+	// A new generation of the pairing too: nothing the pairing it replaces
+	// admitted is this one's (generation.go).
+	attachment, err := m.addLinkLocked(ctx, link, "")
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -404,7 +398,9 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 // Caller holds the destination profile lock across one enrollment. It installs
 // the pairing session and nothing more — the agent-command opt-in is a separate
 // grant this primitive never touches, so own-device re-enrollment preserves it.
-func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
+// The session continues the pairing generation continues names, or begins
+// one of its own when that is empty (generation.go).
+func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link, continues string) (Attachment, error) {
 	m.mu.Lock()
 	if old := m.carriers[link.BackendID]; old != nil {
 		old.leave()
@@ -416,7 +412,8 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 	if err != nil {
 		return Attachment{}, err
 	}
-	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, m.clientOptions()...)
+	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform,
+		append(m.clientOptions(), deviceclient.WithPairingGeneration(continues))...)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -553,6 +550,9 @@ type carrier struct {
 	stopRenewal context.CancelFunc
 	// peers holds the connections agent calls left open (callPeer).
 	peers peerConns
+	// generation is the pairing generation its session carries, fixed for
+	// the carrier's life (generation.go).
+	generation string
 
 	// lastReachedMs is when this machine last answered, Unix
 	// milliseconds. One atomic, written where an answer arrives and read
@@ -578,7 +578,7 @@ func newCarrier(client *deviceclient.Client, name string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &carrier{client: client, proxy: proxy, stopRenewal: func() {}}, nil
+	return &carrier{client: client, proxy: proxy, stopRenewal: func() {}, generation: generationOf(client.Session())}, nil
 }
 
 // keepRenewed rotates the session before each access window closes for

@@ -82,6 +82,33 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // EXISTING rotating credential owner. It neither retries mutations nor copies
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	if err := m.agentCallAllowed(id, method); err != nil {
+		return err
+	}
+	held, err := m.peerCarrier(id)
+	if err != nil {
+		return err
+	}
+	return held.callPeer(ctx, transport.CapabilityRemoteCommands, method, result, params...)
+}
+
+// CallAgentPeerUnder is CallAgentPeer for a call made on behalf of a command
+// admitted under the pairing generation, which a carrier of any other
+// refuses before sending (peerCarrierUnder).
+func (m *Manager) CallAgentPeerUnder(ctx context.Context, id, generation, method string, result any, params ...any) error {
+	if err := m.agentCallAllowed(id, method); err != nil {
+		return err
+	}
+	held, err := m.peerCarrierUnder(id, generation)
+	if err != nil {
+		return err
+	}
+	return held.callPeer(ctx, transport.CapabilityRemoteCommands, method, result, params...)
+}
+
+// agentCallAllowed checks the computer id, the method and, for a method
+// that starts or reads more than one command's own record, the opt-in.
+func (m *Manager) agentCallAllowed(id, method string) error {
 	if !entityid.Valid(id) {
 		return errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)
 	}
@@ -97,13 +124,17 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" && method != "RemoteCommandLogArtifact" {
 		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)
 	}
-	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
+	return nil
 }
 
 // CheckAgentPeer proves the pairing, protocol, and command scope before an
 // owner opts in. It runs no command and does not enable access on its own.
 func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
-	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
+	held, err := m.peerCarrier(id)
+	if err != nil {
+		return err
+	}
+	return held.callPeer(ctx, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
 }
 
 // The refusals this package raises for the agent thread tools. They are
@@ -138,32 +169,50 @@ var threadPeerMethods = map[string]struct{}{
 // agent-commands opt-in exists because a remote command runs a shell;
 // nothing here does.
 func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	if err := threadCallAllowed(id, method); err != nil {
+		return err
+	}
+	held, err := m.peerCarrier(id)
+	if err != nil {
+		return err
+	}
+	return held.callPeer(ctx, transport.CapabilityThreadTools, method, result, params...)
+}
+
+// CallThreadPeerUnder is CallThreadPeer for a call made on behalf of a
+// request admitted under the pairing generation, which a carrier of any
+// other refuses before sending (peerCarrierUnder).
+func (m *Manager) CallThreadPeerUnder(ctx context.Context, id, generation, method string, result any, params ...any) error {
+	if err := threadCallAllowed(id, method); err != nil {
+		return err
+	}
+	held, err := m.peerCarrierUnder(id, generation)
+	if err != nil {
+		return err
+	}
+	return held.callPeer(ctx, transport.CapabilityThreadTools, method, result, params...)
+}
+
+func threadCallAllowed(id, method string) error {
 	if !entityid.Valid(id) {
 		return errorsx.Public(CodeThreadUnreachable, "computer_id must be a computer UUID from thread_options.", nil)
 	}
 	if _, ok := threadPeerMethods[method]; !ok {
 		return errors.New("this method is not available to agent thread tools")
 	}
-	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
+	return nil
 }
 
-// callPeer is the shared body: load the carrier, take or open an RPC that
-// proves the destination advertises `capability` (peerconns.go), and make
-// the call. The
-// capability is the only thing that differs between the two surfaces, and
-// it is what turns an older destination into a clear refusal instead of a
-// method error.
-func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
-	held, err := m.carrier(id)
-	if err != nil {
-		if errors.Is(err, deviceclient.ErrNoSession) {
-			return errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)
-		}
-		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
-	}
-	rpc := held.peers.take(ctx, capability)
+// callPeer is the shared body once the carrier is chosen: take or open an
+// RPC that proves the destination advertises `capability` (peerconns.go),
+// and make the call. The capability is the only thing that differs between
+// the two surfaces, and it is what turns an older destination into a clear
+// refusal instead of a method error.
+func (c *carrier) callPeer(ctx context.Context, capability, method string, result any, params ...any) error {
+	var err error
+	rpc := c.peers.take(ctx, capability)
 	if rpc == nil {
-		rpc, err = openPeerRPC(ctx, held, capability)
+		rpc, err = openPeerRPC(ctx, c, capability)
 		if err != nil {
 			return err
 		}
@@ -175,8 +224,8 @@ func (m *Manager) callPeer(ctx context.Context, id, capability, method string, r
 		rpc.Close()
 		return err
 	}
-	held.reached()
-	held.peers.put(capability, rpc)
+	c.reached()
+	c.peers.put(capability, rpc)
 	return err
 }
 
