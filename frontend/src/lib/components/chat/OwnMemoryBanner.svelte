@@ -51,7 +51,7 @@
     data-testid="own-memory-banner"
     class="shrink-0 border-b bg-warning/15 border-warning/30 text-warning px-4 py-2 flex items-center gap-2"
   >
-    <p class="text-xs flex-1 line-clamp-2">
+    <p class="text-xs flex-1 min-w-0">
       {providerName}'s own memory is also on for this assistant, so it may save what it learns there instead of in
       Agent Overflow memory.
     </p>

@@ -759,6 +759,8 @@ export async function expectOwnMemoryBanner(
     `${name}'s own memory is also on for this assistant, so it may save what it learns there instead of in Agent Overflow memory.`,
   );
   await expect(banner.getByRole('button')).toHaveText(['Memory settings']);
+  // The warning wraps whole: no line of it is cut off.
+  await expect.poll(() => banner.locator('p').evaluate((text) => text.scrollHeight <= text.clientHeight)).toBe(true);
   await expectFirstMessageUncovered(page);
 
   await open('projects', 'Parser review');
