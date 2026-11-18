@@ -49,6 +49,9 @@ network work. Reload profiles under their OS lock and compare the current pairin
 and refresh generation after the response. A late reply/refusal cannot
 replace/delete a newer generation, rename or re-pairing. Unknown JSON fields
 survive every update. Retired clients never write again.
+`Session.PairingGeneration` is opaque here: `Pair` saves what
+`WithPairingGeneration` names and every later update keeps it;
+`internal/attachedbackends` owns what it means.
 
 Each credential step (redemption, renewal, ticket, health probe, profile lock
 wait) is timed through `logging.LogSlowStep`.

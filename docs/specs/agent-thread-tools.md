@@ -1869,12 +1869,21 @@ this computer learns that a pairing's credential or profile ended: any
 call there that the other computer refuses as revoked (a poll, an
 acknowledgement, a command's status, an owed cancel or an ordinary tool
 call), the pruning of own-device membership, and the person forgetting
-the computer. Each request and command records the pairing it was
-admitted under, and the transition reaches only what a pairing other
-than the one held now admitted, under the same fence admission takes, so
-no request or command enters a pairing being ended, an answer that a
-retired connection brings back changes nothing, and a new pairing starts
-owing nothing of the old one's. For those, every open request settles
+the computer. Each request and command records the generation of the
+pairing it was admitted under. An automatic own-device upgrade or
+re-enrollment of a live pairing keeps its generation; an explicit new
+pairing, or any pairing after a retirement, revocation or forget, begins
+a new one. A record from before generations were recorded is bound at
+boot, before any pairing can change, to the generation held then, or to
+none when its computer has no pairing left, which ends it. A call made
+for a record (a poll, an acknowledgement, a cancel, a command's status or
+cancel) names the record's generation where its connection is chosen; a
+connection of another generation refuses it before anything is sent, and
+the caller runs the transition here. The transition reaches only what a
+pairing other than the one held now admitted, under the same fence
+admission takes, so no request or command enters a pairing being ended,
+an answer that a retired connection brings back changes nothing, and a
+new pairing starts owing nothing of the old one's. For those, every open request settles
 `errored` with the reason; every settled one leaves the poll with its
 answer kept and owes no acknowledgement; every command there not known to
 have finished is recorded as finished with an unknown outcome and the
