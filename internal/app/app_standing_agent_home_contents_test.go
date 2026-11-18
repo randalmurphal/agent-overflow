@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
@@ -416,17 +417,17 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			}
 			record := filepath.Join(t.TempDir(), "record.txt")
 			var start startSession
-			settings := map[string]any{"agentGuideEnabled": false}
+			launch := map[string]any{"agentGuideEnabled": false}
 			switch providerName {
 			case string(provider.Codex):
-				settings["codexBinaryPath"] = writeRecordingCodex(t, record)
+				launch["codexBinaryPath"] = writeRecordingCodex(t, record)
 				start = codexStarted(app, thread.ID, record)
 				codexWritesTheWorkspace(t, app, thread)
 			default:
-				settings["claudeBinaryPath"] = writeArgvRecordingClaude(t, record)
+				launch["claudeBinaryPath"] = writeArgvRecordingClaude(t, record)
 				start = claudeStarted(app, thread.ID, record)
 			}
-			if _, err := app.settings.Update(settings); err != nil {
+			if _, err := app.settings.Update(launch); err != nil {
 				t.Fatalf("settings: %v", err)
 			}
 			row := testAssistant(t, app, thread.ID)
@@ -468,7 +469,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			if !strings.Contains(delivered, "\n\n### Project memory: "+project.Name+" ("+projectDir+"/)\nNo facts yet.") {
 				t.Fatalf("no project index for %s:\n%s", projectDir, delivered)
 			}
-			plan, ok, err := app.memoryPlan(thread, &row)
+			plan, ok, err := app.memoryPlan(app.currentSettings(), thread, &row)
 			if err != nil || !ok {
 				t.Fatalf("memoryPlan = %v, %v", ok, err)
 			}
@@ -487,8 +488,10 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 					t.Errorf("%s is an --add-dir: %q", dir, first.addDirs)
 				}
 			}
-			if first.memoryOff {
-				t.Error("the provider's own memory was turned off by default")
+			// It uses Agent Overflow memory, so by default it runs without
+			// the provider's own.
+			if !first.memoryOff {
+				t.Error("an assistant's session kept the provider's own memory by default")
 			}
 
 			// ---- A prompt after the start delivers nothing while nothing
@@ -530,16 +533,19 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 				t.Fatalf("the long file changed the block:\n%s", third.block)
 			}
 
-			// ---- The provider's own memory goes off by its setting.
-			off := map[string]any{"claudeNativeMemoryDisabled": true}
+			// ---- The provider's own memory follows its setting at the next
+			// start.
+			key := "claudeOwnMemoryOff"
 			if providerName == string(provider.Codex) {
-				off = map[string]any{"codexNativeMemoryDisabled": true}
+				key = "codexOwnMemoryOff"
 			}
-			if _, err := app.settings.Update(off); err != nil {
-				t.Fatal(err)
-			}
-			if !start(t).memoryOff {
-				t.Fatal("the setting did not turn the provider's own memory off")
+			for _, when := range []string{settings.OwnMemoryOffNever, settings.OwnMemoryOffAlways} {
+				if _, err := app.settings.Update(map[string]any{key: when}); err != nil {
+					t.Fatal(err)
+				}
+				if got := start(t).memoryOff; got != (when == settings.OwnMemoryOffAlways) {
+					t.Fatalf("with %s %q the provider's own memory off = %v", key, when, got)
+				}
 			}
 		})
 	}

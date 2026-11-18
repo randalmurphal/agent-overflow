@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,71 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 	}
 	if forked.ForkedFromThreadID != source.ID {
 		t.Fatalf("forkedFromThreadId = %q, want %q", forked.ForkedFromThreadID, source.ID)
+	}
+}
+
+// A Codex fork is created with Codex's own memory as a start of the fork
+// decides it: by default a fork that works for an assistant (a local
+// spawn's or ask's lineage) runs without it, and the person's fork of the
+// same thread keeps it. Once linked to its lineage, a start decides the
+// same.
+func TestCodexForkDecidesOwnMemoryAsItsStart(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	forkLog := filepath.Join(t.TempDir(), "requests.jsonl")
+	if _, err := app.settings.Update(map[string]any{
+		"codexBinaryPath": writeCodexForkBinary(t, "resume-memory-thread", "fork-memory-thread", forkLog),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := testThread("thread-codex-memory-source")
+	source.Provider = string(provider.Codex)
+	source.SessionRef = "resume-memory-thread"
+	source.WorkspacePath = t.TempDir()
+	assistant := testThread("thread-codex-memory-assistant")
+	assistant.Provider = string(provider.Codex)
+	for _, thread := range []store.Thread{source, assistant} {
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertForkTestItems(t, app.store, source.ID)
+	testAssistant(t, app, assistant.ID)
+	for _, tc := range []struct {
+		name, lineage string
+		off           bool
+	}{
+		{"working for an assistant", assistant.ID, true},
+		{"the person's", "", false},
+	} {
+		if err := os.Remove(forkLog); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		fork, err := app.forkThreadTail(t.Context(), source.ID, forkOptions{Lineage: tc.lineage})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		raw, err := os.ReadFile(forkLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var request string
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.Contains(line, `"method":"thread/fork"`) {
+				request = line
+			}
+		}
+		if off := strings.Contains(request, `"features.memories":false`) && strings.Contains(request, `"memories.generate_memories":false`); off != tc.off {
+			t.Fatalf("%s: thread/fork turns Codex's memory off = %v, want %v: %s", tc.name, off, tc.off, request)
+		}
+		if tc.lineage != "" {
+			ownSpawn(t, app, "spawn-"+fork.ID, tc.lineage, fork.ID)
+		}
+		mem, err := app.readSessionMemory(fork, nil, false, false)
+		if err != nil || mem.OwnMemoryOff != tc.off {
+			t.Fatalf("%s: a start of the fork turns it off = %v, %v; want %v", tc.name, mem.OwnMemoryOff, err, tc.off)
+		}
 	}
 }
 

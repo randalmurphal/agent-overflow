@@ -16,6 +16,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -238,43 +239,62 @@ func TestConversationRollbackCodexForksThroughTempSessionWhenStopped(t *testing.
 }
 
 // The cold cut resumes the source and forks it in a throwaway app-server,
-// and both load a thread of this app's: with Codex's own memory off, both
-// state it, so the cut child follows the setting as a session's thread does.
+// and both load a thread of this app's: both state Codex's own memory as a
+// start of the thread decides it, so the cut child follows the setting as
+// a session's thread does.
 func TestConversationRollbackCodexColdCutStatesTheMemorySetting(t *testing.T) {
 	t.Parallel()
-	app := newTestApp(t)
-	thread := createAppTestThread(t, app, "codex-cold-memory", "codex", t.TempDir())
-	thread.SessionRef = "provider-cold-memory"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
-	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
-	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
-	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
-	dir := t.TempDir()
-	forkLog, resumeLog := filepath.Join(dir, "fork.jsonl"), filepath.Join(dir, "resume.jsonl")
-	binary := writeCodexForkAtBinary(t, codexForkMock{
-		resumedThreadID: "provider-cold-memory",
-		forkedThreadID:  "forked-cold-memory",
-		requestLogPath:  forkLog,
-		resumeLogPath:   resumeLog,
-	})
-	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary, "codexNativeMemoryDisabled": true}); err != nil {
-		t.Fatalf("update settings: %v", err)
-	}
-	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	resume, err := os.ReadFile(resumeLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for what, request := range map[string]string{"thread/resume": string(resume), "thread/fork": readCodexForkRequest(t, forkLog)} {
-		if !strings.Contains(request, `"features.memories":false`) || !strings.Contains(request, `"memories.generate_memories":false`) {
-			t.Errorf("%s does not turn Codex's memory off: %s", what, request)
-		}
+	for _, tc := range []struct {
+		name      string
+		when      string
+		assistant bool
+		off       bool
+	}{
+		{"always", settings.OwnMemoryOffAlways, false, true},
+		{"an ordinary thread by default", settings.OwnMemoryOffWhereAgentOverflowMemory, false, false},
+		{"an assistant by default", settings.OwnMemoryOffWhereAgentOverflowMemory, true, true},
+		{"an assistant, never", settings.OwnMemoryOffNever, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			thread := createAppTestThread(t, app, "codex-cold-memory", "codex", t.TempDir())
+			thread.SessionRef = "provider-cold-memory"
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("update thread: %v", err)
+			}
+			if tc.assistant {
+				testAssistant(t, app, thread.ID)
+			}
+			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+			insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+			insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+			insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+			seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+			dir := t.TempDir()
+			forkLog, resumeLog := filepath.Join(dir, "fork.jsonl"), filepath.Join(dir, "resume.jsonl")
+			binary := writeCodexForkAtBinary(t, codexForkMock{
+				resumedThreadID: "provider-cold-memory",
+				forkedThreadID:  "forked-cold-memory",
+				requestLogPath:  forkLog,
+				resumeLogPath:   resumeLog,
+			})
+			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary, "codexOwnMemoryOff": tc.when}); err != nil {
+				t.Fatalf("update settings: %v", err)
+			}
+			if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+				t.Fatalf("revert: %v", err)
+			}
+			resume, err := os.ReadFile(resumeLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for what, request := range map[string]string{"thread/resume": string(resume), "thread/fork": readCodexForkRequest(t, forkLog)} {
+				if off := strings.Contains(request, `"features.memories":false`) && strings.Contains(request, `"memories.generate_memories":false`); off != tc.off {
+					t.Errorf("%s turns Codex's memory off = %v, want %v: %s", what, off, tc.off, request)
+				}
+			}
+		})
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -37,17 +38,17 @@ func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 				t.Fatalf("CreateThread: %v", err)
 			}
 			record := filepath.Join(t.TempDir(), "record.txt")
-			settings := map[string]any{"agentGuideEnabled": false}
+			launch := map[string]any{"agentGuideEnabled": false}
 			var start startSession
 			if providerName == string(provider.Codex) {
-				settings["codexBinaryPath"] = writeRecordingCodex(t, record)
+				launch["codexBinaryPath"] = writeRecordingCodex(t, record)
 				start = codexStarted(app, thread.ID, record)
 				codexWritesTheWorkspace(t, app, thread)
 			} else {
-				settings["claudeBinaryPath"] = writeArgvRecordingClaude(t, record)
+				launch["claudeBinaryPath"] = writeArgvRecordingClaude(t, record)
 				start = claudeStarted(app, thread.ID, record)
 			}
-			if _, err := app.settings.Update(settings); err != nil {
+			if _, err := app.settings.Update(launch); err != nil {
 				t.Fatal(err)
 			}
 			project, err := app.store.GetProject(thread.ProjectID)
@@ -154,7 +155,7 @@ func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		plan, ok, err := app.memoryPlan(sub, nil)
+		plan, ok, err := app.memoryPlan(app.currentSettings(), sub, nil)
 		if err != nil || !ok || plan.Home != "" || plan.User != userDir {
 			t.Fatalf("%s: plan = %+v, %v, %v", name, plan, ok, err)
 		}
@@ -179,8 +180,74 @@ func TestAnAssistantsSubThreadsReceiveMemory(t *testing.T) {
 			t.Fatalf("%s: delivered:\n%s", name, delivered)
 		}
 	}
-	if _, ok, err := app.memoryPlan(unowned, nil); ok || err != nil {
+	if _, ok, err := app.memoryPlan(app.currentSettings(), unowned, nil); ok || err != nil {
 		t.Fatalf("a thread no assistant spawned: ok %v, %v", ok, err)
+	}
+}
+
+// Each session decides the provider's own memory from its provider's
+// setting and whether it receives Agent Overflow memory: by default an
+// assistant, its sub-threads, a read-only one among them, and every thread
+// while shared memory is on run without it; "always" turns it off
+// everywhere and "never" nowhere. The other provider's setting plays no
+// part.
+func TestOwnMemoryFollowsItsSettingPerSession(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex)} {
+		key, other, model := "claudeOwnMemoryOff", "codexOwnMemoryOff", "claude-opus-4-7"
+		if providerName == string(provider.Codex) {
+			key, other, model = other, key, "gpt-5.4"
+		}
+		thread := func() store.Thread {
+			t.Helper()
+			created, err := createTestThread(t, app, providerName, t.TempDir(), model, "chat")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return created
+		}
+		owner, worker, ordinary := thread(), thread(), thread()
+		// An assistant's name is unique.
+		owner.Title = "Assistant on " + providerName
+		if err := app.store.UpdateThread(owner); err != nil {
+			t.Fatal(err)
+		}
+		row := testAssistant(t, app, owner.ID)
+		ownSpawn(t, app, "spawn-"+providerName, owner.ID, worker.ID)
+		for _, when := range []string{settings.OwnMemoryOffWhereAgentOverflowMemory, settings.OwnMemoryOffAlways, settings.OwnMemoryOffNever} {
+			// The other provider's setting says the opposite.
+			otherWhen := settings.OwnMemoryOffAlways
+			if when == settings.OwnMemoryOffAlways {
+				otherWhen = settings.OwnMemoryOffNever
+			}
+			for _, tc := range []struct {
+				name     string
+				thread   store.Thread
+				agent    *store.StandingAgent
+				readOnly bool
+				shared   bool
+				receives bool
+			}{
+				{"assistant", owner, &row, false, false, true},
+				{"sub-thread", worker, nil, false, false, true},
+				{"read-only sub-thread", worker, nil, true, false, true},
+				{"ordinary, shared memory off", ordinary, nil, false, false, false},
+				{"ordinary, shared memory on", ordinary, nil, false, true, true},
+			} {
+				if _, err := app.settings.Update(map[string]any{key: when, other: otherWhen, "sharedMemoryEnabled": tc.shared}); err != nil {
+					t.Fatal(err)
+				}
+				mem, err := app.readSessionMemory(tc.thread, tc.agent, false, tc.readOnly)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := when == settings.OwnMemoryOffAlways || when == settings.OwnMemoryOffWhereAgentOverflowMemory && tc.receives
+				if mem.OwnMemoryOff != want || (mem.Hook != nil) != tc.receives {
+					t.Errorf("%s, %s %q, %s: own memory off %v with hook %v, want %v", providerName, key, when, tc.name, mem.OwnMemoryOff, mem.Hook != nil, want)
+				}
+			}
+		}
 	}
 }
 

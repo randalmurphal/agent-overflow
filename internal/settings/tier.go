@@ -154,8 +154,8 @@ var tierByKey = map[string]Tier{
 	// The providers' own memory is a spawn-time preference of the same
 	// kind; shared memory is host tier, since it grants write access
 	// outside the workspace.
-	"claudeNativeMemoryDisabled": TierUser,
-	"codexNativeMemoryDisabled":  TierUser,
+	"claudeOwnMemoryOff": TierUser,
+	"codexOwnMemoryOff":  TierUser,
 	// The command timeout ceiling is the same kind of preference.
 	"claudeMaxCommandTimeoutHours": TierUser,
 	// Account auto-switch applies to every provider and travels with the

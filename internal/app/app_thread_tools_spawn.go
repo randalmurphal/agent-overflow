@@ -110,6 +110,9 @@ type spawnOptions struct {
 	// owned says the naming write will own the thread: a local spawn
 	// placed owned, or a paired computer's owned spawn through its link.
 	owned bool
+	// lineage is the thread the spawned thread works for
+	// (threadRequestOrigin.lineage).
+	lineage string
 }
 
 func (t threadToolsApp) createSpawned(
@@ -140,6 +143,7 @@ func (t threadToolsApp) createSpawned(
 		Group:        &groupID,
 		Instructions: call.Instructions,
 		SpawnLevel:   call.Level,
+		Lineage:      spawn.lineage,
 	})
 	return thread, threadapp.CutWorktree{}, err
 }

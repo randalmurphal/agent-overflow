@@ -39,6 +39,15 @@ type threadRequestOrigin struct {
 	agent *threadtools.SenderAgent
 }
 
+// lineage is the thread on this computer a thread made for the request
+// works for (forkOptions.Lineage): the caller, "" for a paired computer's.
+func (o threadRequestOrigin) lineage() string {
+	if o.foreign {
+		return ""
+	}
+	return o.caller.ThreadID
+}
+
 // localOrigin is the origin of a request one of this computer's own
 // threads made. The caller thread is read back so a request is never
 // accepted for a thread that has gone, and so a spawn inherits its

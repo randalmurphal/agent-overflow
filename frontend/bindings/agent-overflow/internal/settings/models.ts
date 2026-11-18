@@ -770,19 +770,20 @@ export class Settings {
     "subThreadLevels": number;
 
     /**
-     * ClaudeNativeMemoryDisabled turns Claude Code's own auto memory off in
-     * this app's Claude and claude-tui sessions, through their inline
-     * settings; the user's settings files are never touched. Spawn-only.
+     * ClaudeOwnMemoryOff is in which of this app's Claude and claude-tui
+     * sessions Claude Code's own auto memory is turned off, through their
+     * inline settings (OwnMemoryOff*); the user's settings files are never
+     * touched. Spawn-only.
      */
-    "claudeNativeMemoryDisabled": boolean;
+    "claudeOwnMemoryOff": string;
 
     /**
-     * CodexNativeMemoryDisabled turns Codex's own memories off in this app's
-     * Codex threads, through their thread config, so a thread neither uses
-     * memories nor is mined for them. Spawn-only; a loaded thread keeps the
-     * memory mode it was loaded with.
+     * CodexOwnMemoryOff is in which of this app's Codex threads Codex's own
+     * memories are turned off, through their thread config, so a thread
+     * neither uses memories nor is mined for them (OwnMemoryOff*).
+     * Spawn-only; a loaded thread keeps the memory mode it was loaded with.
      */
-    "codexNativeMemoryDisabled": boolean;
+    "codexOwnMemoryOff": string;
     "confirmArchive": boolean;
     "confirmDelete": boolean;
     "autoPinNewThreads": boolean;
@@ -1483,11 +1484,11 @@ export class Settings {
         if (!("subThreadLevels" in $$source)) {
             this["subThreadLevels"] = 0;
         }
-        if (!("claudeNativeMemoryDisabled" in $$source)) {
-            this["claudeNativeMemoryDisabled"] = false;
+        if (!("claudeOwnMemoryOff" in $$source)) {
+            this["claudeOwnMemoryOff"] = "";
         }
-        if (!("codexNativeMemoryDisabled" in $$source)) {
-            this["codexNativeMemoryDisabled"] = false;
+        if (!("codexOwnMemoryOff" in $$source)) {
+            this["codexOwnMemoryOff"] = "";
         }
         if (!("confirmArchive" in $$source)) {
             this["confirmArchive"] = false;

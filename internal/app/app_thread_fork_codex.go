@@ -33,7 +33,9 @@ import (
 // `InsertTurn` stamps provider_turn_id at insert, so an OPEN turn row
 // really can carry an anchor codex would refuse, and the failure mode is
 // a fork whose provider history disagrees with the items it shows.
-func (a *App) forkCodexThread(ctx context.Context, source store.Thread, atTurnIndex *int) (string, error) {
+//
+// lineage is the thread the fork works for (forkOptions.Lineage).
+func (a *App) forkCodexThread(ctx context.Context, source store.Thread, atTurnIndex *int, lineage string) (string, error) {
 	const op = "fork codex thread"
 	lastTurnID := ""
 	if atTurnIndex != nil {
@@ -65,7 +67,7 @@ func (a *App) forkCodexThread(ctx context.Context, source store.Thread, atTurnIn
 	if source.SessionRef == "" {
 		return "", fmt.Errorf("%s: source thread %q is missing a Codex thread reference", op, source.ID)
 	}
-	forkedID, err := a.forkCodexThreadAt(ctx, source, lastTurnID)
+	forkedID, err := a.forkCodexThreadAt(ctx, source, lastTurnID, lineage)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
@@ -112,17 +114,24 @@ var codexForkTimeout = 60 * time.Second
 // The cut runs to its answer whatever its caller does: Codex cannot delete
 // a child over JSON-RPC, so a cut stopped after the child exists would
 // leave it with no thread pointing at it.
-func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTurnID string) (string, error) {
+//
+// The child is created with Codex's own memory as its sessions will run
+// it, the fork working for lineage: a child created with it off would stay
+// out of mining after a start that leaves it on.
+func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTurnID, lineage string) (string, error) {
+	memoryOff, err := a.lineageOwnMemoryOff(source.Provider, lineage)
+	if err != nil {
+		return "", err
+	}
 	cut, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexForkTimeout)
 	defer cancel()
 	return codex.ForkThread(cut, codex.ForkSpec{
-		Binary:         a.providerBinaryPath(source.Provider),
-		WorkDir:        source.WorkspacePath,
-		Env:            a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
-		SourceThreadID: source.SessionRef,
-		LastTurnID:     lastTurnID,
-		// The child is a new thread of this app's.
-		NativeMemoryOff: a.currentSettings().CodexNativeMemoryDisabled,
+		Binary:          a.providerBinaryPath(source.Provider),
+		WorkDir:         source.WorkspacePath,
+		Env:             a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
+		SourceThreadID:  source.SessionRef,
+		LastTurnID:      lastTurnID,
+		NativeMemoryOff: memoryOff,
 		Reaper:          a.groupReaper("codex fork"),
 	})
 }
@@ -157,6 +166,12 @@ func (a *App) withCodexThreadSessionPreparedBy(
 		return fn(activeSession)
 	}
 
+	// The resume loads the thread with the memory mode it states, as every
+	// start of the thread does.
+	memoryOff, err := a.lineageOwnMemoryOff(source.Provider, source.ID)
+	if err != nil {
+		return fmt.Errorf("resume source thread: %w", err)
+	}
 	tempSession, err := codex.NewSession(context.Background(), source.ID, codex.Config{
 		Binary:         a.providerBinaryPath(source.Provider),
 		Model:          source.Model,
@@ -166,11 +181,9 @@ func (a *App) withCodexThreadSessionPreparedBy(
 		// Boot-mode overrides only, deliberately no `ao` credential: this is a
 		// throwaway app-server used to issue one fork request, not a session an
 		// agent takes a turn in.
-		Env:         a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
-		EventLogger: a.logger,
-		// The resume loads the thread with the memory mode it states, as
-		// every process that loads one of this app's threads does.
-		NativeMemoryOff: a.currentSettings().CodexNativeMemoryDisabled,
+		Env:             a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
+		EventLogger:     a.logger,
+		NativeMemoryOff: memoryOff,
 		Reaper:          a.groupReaper("codex fork session"),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {

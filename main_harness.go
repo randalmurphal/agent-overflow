@@ -425,8 +425,8 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 
 // settingsAfterV0019 are the Settings keys v0.0.19's Settings does not have.
 var settingsAfterV0019 = []string{
-	"agentNotes", "agentProfiles", "assistantsEnabled", "claudeNativeMemoryDisabled",
-	"codexNativeMemoryDisabled", "notifyThreadAttention", "sharedMemoryEnabled", "subThreadLevels",
+	"agentNotes", "agentProfiles", "assistantsEnabled", "claudeOwnMemoryOff",
+	"codexOwnMemoryOff", "notifyThreadAttention", "sharedMemoryEnabled", "subThreadLevels",
 }
 
 // settingsWithoutNewerKeys is a settings snapshot as v0.0.19 encodes it.

@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
 
@@ -37,6 +38,9 @@ type sessionMemory struct {
 	// Problems are what the caller reports once the start has happened or
 	// failed (reportSessionMemory).
 	Problems []memoryProblem
+	// OwnMemoryOff turns the provider's own memory off in the session
+	// (ownMemoryOff).
+	OwnMemoryOff bool
 	// resumed is set for a session that resumes its provider session: it
 	// delivers the whole memory only after a compaction, so its start does
 	// not report the delivery's size.
@@ -81,27 +85,71 @@ func sizeProblems(outputs []memory.Output) []memoryProblem {
 	return problems
 }
 
-// memoryPlan is the delivery threadID's sessions receive; ok is false for
-// none. An assistant's current thread always receives one, with its home
-// and the projects it serves. Any other thread receives its project's
-// memory when it has a project, and the user's: always when it works for
-// an assistant (a helper, or a worker below one, store.WorksForAssistant),
-// otherwise only while shared memory is on.
-func (a *App) memoryPlan(thread store.Thread, agent *store.StandingAgent) (_ memory.Plan, ok bool, _ error) {
+// receivesMemory reports whether the sessions of a thread receive Agent
+// Overflow memory under current: an assistant's current thread always
+// does, and any other thread when it works for an assistant (a helper, or
+// a thread below one, store.WorksForAssistant of lineage) or while shared
+// memory is on. lineage is the thread whose lineage counts, "" for one
+// with none on this computer.
+func (a *App) receivesMemory(current settings.Settings, lineage string, assistant bool) (bool, error) {
 	if a.configDir == "" {
-		return memory.Plan{}, false, nil
+		return false, nil
+	}
+	if assistant || current.SharedMemoryEnabled {
+		return true, nil
+	}
+	if lineage == "" {
+		return false, nil
+	}
+	return a.store.WorksForAssistant(lineage)
+}
+
+// ownMemoryOff reports whether a session of providerName runs with the
+// provider's own memory off under current, given whether it receives Agent
+// Overflow memory (receivesMemory): a session that does uses that memory,
+// whether or not its mode lets it write.
+func ownMemoryOff(current settings.Settings, providerName string, receives bool) bool {
+	when := current.ClaudeOwnMemoryOff
+	if providerName == string(provider.Codex) {
+		when = current.CodexOwnMemoryOff
+	}
+	switch when {
+	case settings.OwnMemoryOffAlways:
+		return true
+	case settings.OwnMemoryOffNever:
+		return false
+	default:
+		return receives
+	}
+}
+
+// lineageOwnMemoryOff is ownMemoryOff for a session of providerName on a
+// thread that is no assistant's current thread and works for lineage: a
+// fork (forkOptions.Lineage), or a thread itself, whose walk counts it when
+// it is an assistant's current thread or helper (store.WorksForAssistant).
+func (a *App) lineageOwnMemoryOff(providerName, lineage string) (bool, error) {
+	current := a.currentSettings()
+	receives, err := a.receivesMemory(current, lineage, false)
+	if err != nil {
+		return false, err
+	}
+	return ownMemoryOff(current, providerName, receives), nil
+}
+
+// memoryPlan is the delivery threadID's sessions receive under current; ok
+// is false for none (receivesMemory). An assistant's current thread
+// receives its home and the projects it serves. Any other thread receives
+// its project's memory when it has a project, and the user's.
+func (a *App) memoryPlan(current settings.Settings, thread store.Thread, agent *store.StandingAgent) (_ memory.Plan, ok bool, _ error) {
+	receives, err := a.receivesMemory(current, thread.ID, agent != nil)
+	if err != nil || !receives {
+		return memory.Plan{}, false, err
 	}
 	records, err := memory.RecordsDir(a.configDir, thread.ID)
 	if err != nil {
 		return memory.Plan{}, false, err
 	}
 	plan := memory.Plan{User: memory.UserDir(a.configDir), Records: records}
-	if agent == nil && !a.currentSettings().SharedMemoryEnabled {
-		works, err := a.store.WorksForAssistant(thread.ID)
-		if err != nil || !works {
-			return memory.Plan{}, false, err
-		}
-	}
 	var projects []store.Project
 	switch {
 	case agent != nil:
@@ -141,11 +189,12 @@ func (a *App) memoryPlan(thread store.Thread, agent *store.StandingAgent) (_ mem
 // not build the delivery: the hook does, and reportSessionMemory reads it
 // for its failures after the start.
 func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent, resumed, readOnly bool) (sessionMemory, error) {
-	plan, ok, err := a.memoryPlan(thread, agent)
+	current := a.currentSettings()
+	plan, ok, err := a.memoryPlan(current, thread, agent)
 	if err != nil {
 		return sessionMemory{}, fmt.Errorf("read the memory of %s: %w", thread.ID, err)
 	}
-	out := sessionMemory{resumed: resumed}
+	out := sessionMemory{OwnMemoryOff: ownMemoryOff(current, thread.Provider, ok), resumed: resumed}
 	if !ok {
 		// A compaction in a session with no hook removes what earlier
 		// sessions were shown, and nothing records that: a later prompt
