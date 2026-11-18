@@ -419,6 +419,31 @@ func requireMemoryRecordsForgotten(t *testing.T, app *App, threadID, label strin
 	}
 }
 
+// A session that starts without its hook because the hook could not be
+// built, here because the plan file cannot be written, forgets the
+// thread's records as a session that receives no memory does: a compaction
+// in it removes what they say the model holds.
+func TestASessionWhoseHookCannotBeBuiltForgetsTheRecords(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.settings.Update(map[string]any{"sharedMemoryEnabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	seedMemoryRecords(t, app, thread.ID)
+	if err := os.WriteFile(filepath.Join(app.configDir, "memory-plans"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mem, err := app.readSessionMemory(thread, nil, true, false)
+	if err != nil || mem.Hook != nil || !slices.ContainsFunc(mem.Problems, func(p memoryProblem) bool { return p.cost == memoryUndelivered }) {
+		t.Fatalf("session memory = %+v, %v; want no hook and the undelivered problem", mem, err)
+	}
+	requireMemoryRecordsForgotten(t, app, thread.ID, "a start whose hook could not be built")
+}
+
 // seedMemoryPlan writes threadID's plan file, as a start of its session
 // does, and returns its path.
 func seedMemoryPlan(t *testing.T, app *App, threadID string) string {

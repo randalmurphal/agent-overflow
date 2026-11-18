@@ -189,6 +189,25 @@ func (a *App) memoryPlan(current settings.Settings, thread store.Thread, agent *
 // not build the delivery: the hook does, and reportSessionMemory reads it
 // for its failures after the start.
 func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent, resumed, readOnly bool) (sessionMemory, error) {
+	out, err := a.sessionMemoryHook(thread, agent, resumed, readOnly)
+	if err != nil {
+		return sessionMemory{}, err
+	}
+	if out.Hook == nil {
+		// A compaction in a session with no hook removes what earlier
+		// sessions were shown, and nothing records that: a later prompt
+		// must not trust their records, whatever kept the hook out.
+		if err := a.forgetMemoryRecords(thread.ID); err != nil {
+			out.Problems = append(out.Problems, memoryProblem{memoryUnforgotten, err})
+		}
+	}
+	return out, nil
+}
+
+// sessionMemoryHook is readSessionMemory before it settles a session with
+// no hook: the session's memory, its hook nil when the thread receives no
+// memory or the hook could not be built.
+func (a *App) sessionMemoryHook(thread store.Thread, agent *store.StandingAgent, resumed, readOnly bool) (sessionMemory, error) {
 	current := a.currentSettings()
 	plan, ok, err := a.memoryPlan(current, thread, agent)
 	if err != nil {
@@ -196,12 +215,6 @@ func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent,
 	}
 	out := sessionMemory{OwnMemoryOff: ownMemoryOff(current, thread.Provider, ok), resumed: resumed}
 	if !ok {
-		// A compaction in a session with no hook removes what earlier
-		// sessions were shown, and nothing records that: a later prompt
-		// must not trust their records.
-		if err := a.forgetMemoryRecords(thread.ID); err != nil {
-			out.Problems = append(out.Problems, memoryProblem{memoryUnforgotten, err})
-		}
 		return out, nil
 	}
 	plan.ReadOnly = readOnly
