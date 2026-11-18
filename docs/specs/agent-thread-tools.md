@@ -1944,8 +1944,10 @@ happened; the token and `thread_status` do.
   claim is made that the other computer stopped anything. A lost
   machine can always be forgotten. A pairing that ends, by a forget, a
   new pairing with the same computer or that computer's verdict, closes
-  every connection open under it, so a call still on its way fails with
-  that reason and an export copy stops and removes what it staged.
+  every connection open under it. A call still on its way fails as
+  unanswered, since that computer may have acted on it; a later call is
+  refused unsent with that reason, so an export copy stops and removes
+  what it staged.
 - Flipping a computer's switch toggles the server in every live session
   on that computer except one holding an open request from another
   computer, which keeps it until that request settles. Its threads stay

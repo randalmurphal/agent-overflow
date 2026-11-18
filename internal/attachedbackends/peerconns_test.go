@@ -461,9 +461,9 @@ func TestAConnectionWhosePathDiedSilentlyIsReplaced(t *testing.T) {
 }
 
 // TestEveryConnectionCheckedOutOfAPairingEndsWithIt: however a pairing's
-// carrier leaves, the connections calls hold close with the idle ones, and
-// each call on one fails with the pairing's verdict rather than a lost
-// connection. Nothing is dialled under that pairing afterwards.
+// carrier leaves, the connections calls hold close with the idle ones. A
+// call made after it fails unsent with the pairing's verdict; one already in
+// flight fails unanswered. Nothing is dialed under that pairing afterwards.
 func TestEveryConnectionCheckedOutOfAPairingEndsWithIt(t *testing.T) {
 	for _, end := range []struct {
 		name  string
@@ -519,10 +519,15 @@ func TestEveryConnectionCheckedOutOfAPairingEndsWithIt(t *testing.T) {
 				}
 				return call(ctx, "ThreadToolQuery", nil)
 			})
-			for name, err := range map[string]error{"the held call": err, "the hung call": <-hung} {
-				if code, _, _ := errorsx.PublicDetails(err); code != end.code {
-					t.Fatalf("%s after the pairing was %s = %v, want %s", name, end.name, err, end.code)
-				}
+			// The call made after the pairing ended is refused unsent, with
+			// its verdict. The one in flight may have reached the computer,
+			// so it reads as unanswered, never as a refusal that says it was
+			// not sent.
+			if code, _, _ := errorsx.PublicDetails(err); code != end.code {
+				t.Fatalf("the held call after the pairing was %s = %v, want %s", end.name, err, end.code)
+			}
+			if err := <-hung; !Unanswered(err) {
+				t.Fatalf("the hung call after the pairing was %s = %v, want it unanswered", end.name, err)
 			}
 			if got := p.opened.Load(); got != 2 {
 				t.Fatalf("%d connections opened, want none after the pairing was %s", got, end.name)

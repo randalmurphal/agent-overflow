@@ -226,7 +226,7 @@ func threadRequestNeverSent(code string) bool {
 	switch code {
 	case attachedbackends.CodeThreadUnsupported, attachedbackends.CodeThreadUnreachable,
 		"remote_not_paired", "remote_pairing_pending", "remote_pairing_unavailable",
-		"remote_pairing_expired":
+		"remote_pairing_expired", "remote_pairing_replaced":
 		return true
 	}
 	return false

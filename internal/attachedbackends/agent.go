@@ -160,11 +160,12 @@ func (m *Manager) HoldThreadPeer(ctx context.Context, id string, use func(PeerCa
 // PeerCall makes one call on a connection holdPeer holds.
 type PeerCall func(ctx context.Context, method string, result any, params ...any) error
 
-// Unanswered reports whether a PeerCall ended without an answer while its
-// pairing stood: its connection closed or went quiet, or the call's own
-// context ended. The hold has dropped that connection, so a read sent again
-// goes over a fresh one, pinged or dialled. A refusal the computer answered
-// and a refusal about the pairing are not unanswered.
+// Unanswered reports whether a PeerCall ended without an answer: its
+// connection closed or went quiet, or the call's own context ended. The hold
+// has dropped that connection, so a read sent again goes over a fresh one,
+// pinged or dialed, or is refused unsent once the pairing has ended. A
+// refusal the computer answered and a refusal about the pairing are not
+// unanswered.
 func Unanswered(err error) bool {
 	var answered *rpcclient.Error
 	if err == nil || errors.As(err, &answered) {
@@ -204,11 +205,25 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability string, use func(
 		}
 	}()
 	return use(func(ctx context.Context, method string, result any, params ...any) error {
+		// Once the carrier has left, a call is refused with its verdict
+		// before it is sent. A call already in flight when it left fails on
+		// its closed connection instead: the destination may have acted on
+		// it, which a pairing refusal would deny.
+		if verdict := held.peers.verdict(); verdict != nil {
+			if rpc != nil {
+				rpc.Close()
+				rpc = nil
+			}
+			return pairingRefusal(verdict)
+		}
 		if rpc == nil {
 			if rpc = held.peers.take(ctx, capability); rpc == nil {
 				opened, err := openPeerRPC(ctx, held, capability)
 				if err != nil {
-					return held.lost(err)
+					if verdict := held.peers.verdict(); verdict != nil {
+						return pairingRefusal(errors.Join(verdict, err))
+					}
+					return err
 				}
 				rpc = opened
 			}
@@ -218,26 +233,17 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability string, use func(
 		if err != nil && !errors.As(err, &answered) {
 			rpc.Close()
 			rpc = nil
-			return held.lost(err)
+			return err
 		}
 		held.reached()
 		return err
 	})
 }
 
-// lost is what a call that got no answer reads: the pairing's verdict when
-// its carrier left meanwhile, which is what closed the connection, or else
-// its own failure.
-func (c *carrier) lost(err error) error {
-	if verdict := c.peers.verdict(); verdict != nil {
-		return pairingRefusal(errors.Join(verdict, err))
-	}
-	return err
-}
-
 // pairingRefusal maps why a pairing cannot carry a call, its carrier's
 // lookup failing or the verdict the carrier left with, onto the agent
-// surfaces' codes.
+// surfaces' codes. Each says the call was not sent
+// (app.threadRequestNeverSent).
 func pairingRefusal(err error) error {
 	switch {
 	case errors.Is(err, errPairingEnded):
