@@ -152,8 +152,7 @@ func (a *App) workerUnrest(threadID string) (workerRest, error) {
 // state, the zero value when it is, from every source in the order a row
 // shows them: what triage holds (workerHeldUnrest), then a turn whose row
 // is open (src.TurnOpen) as running; what it waits on (threadWaits: src,
-// what the store holds, with what memory holds of its background work and
-// workflow runs);
+// what the store holds, with what memory holds of its background work);
 // the provider's timers (workerTimerUnrest). A source added later is one
 // more case in one of them, and the event that changes it one more call
 // of noteWorkerLiveness or noteWorkerWaiting, and for one memory holds, of
@@ -208,14 +207,11 @@ func (a *App) threadWaits(threadID string, src store.ThreadRestSources) (workerR
 }
 
 // memoryWaits is what memory holds of a thread that it waits on: Codex's
-// background terminals and subagents, which triage holds, and a workflow
-// run's obligation to report to it, which the workflow service holds
-// (workflowapp.Service.ReportOwedTo). Both owners bump the thread's
-// revision when it changes (noteBackgroundTrayLiveness,
-// noteWorkflowObligation).
+// background terminals and subagents, which triage holds and whose frames
+// bump the thread's revision (noteBackgroundTrayLiveness).
 type memoryWaits struct {
-	background, workflow           bool
-	backgroundDetail, workflowGoal string
+	background       bool
+	backgroundDetail string
 }
 
 func (a *App) memoryWaits(threadID string) memoryWaits {
@@ -232,7 +228,6 @@ func (a *App) memoryWaits(threadID string) memoryWaits {
 			}
 		}
 	}
-	mem.workflowGoal, mem.workflow = a.workflowApplication().ReportOwedTo(threadID)
 	return mem
 }
 
@@ -243,8 +238,8 @@ func (a *App) memoryWaits(threadID string) memoryWaits {
 // to a request it made on its way to it (queued, store.ThreadAnswerDue);
 // or, waiting, running background work (Claude tasks and background agents
 // and remote commands, which the store holds; Codex subagents and
-// terminals, which memory does), a workflow run reporting to it that runs
-// or owes it its report, an armed loop or watch, or a reminder that has
+// terminals, which memory does), a workflow run bound to it that runs or
+// owes it its report (the store's), an armed loop or watch, or a reminder that has
 // not fired. The detail is the background work's summary, a remote
 // command's computer (named by names, when given) and label, the run's
 // goal, or the loop, watch or reminder named as its wake rows name it
@@ -269,8 +264,6 @@ func restWaits(src store.ThreadRestSources, mem memoryWaits, names func() map[st
 		return workerRest{unrest: workerWaiting, detail: mem.backgroundDetail}, true
 	case src.Workflow:
 		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(src.WorkflowGoal)}, false
-	case mem.workflow:
-		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(mem.workflowGoal)}, false
 	case src.Wake:
 		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(src.WakeKind, src.WakeLabel)}, false
 	case src.Reminder:

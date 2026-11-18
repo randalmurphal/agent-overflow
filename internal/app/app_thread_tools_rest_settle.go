@@ -560,7 +560,7 @@ func (a *App) restRecoverySources() []restRecoverySource {
 		{"reminders", a.store.ThreadsWithOpenReminders},
 		{"remote commands", a.store.RemoteWatchThreadIDs},
 		{"answers on their way", a.store.ThreadsWithAnswerDue},
-		{"workflow runs", a.store.ThreadsWithRunningWorkflowRuns},
+		{"workflow runs", a.store.ThreadsHeldByWorkflowRuns},
 		{"unanswered questions", a.store.ThreadsWithUnansweredAsyncQuestions},
 		{"queued messages", a.store.ListThreadsWithFlushQueueItems},
 	}

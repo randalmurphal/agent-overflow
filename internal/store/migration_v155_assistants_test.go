@@ -52,8 +52,10 @@ func TestMigrationV155Schema(t *testing.T) {
 		('spawn-helper', 'lead', 'spawn', 'helper', 'finished', 6, 6)`)
 	mustExec(t, db, `INSERT INTO async_questions (thread_id, item_id, question_index, title, options, created_at) VALUES
 		('worker', 'ask', 0, 'Which scope?', '[]', 7), ('worker', 'ask', 1, 'When?', '[]', 7), ('worker', 'other', 0, 'Why?', '[]', 8)`)
+	mustExec(t, db, `INSERT INTO work_items (id, project_id, goal, workflow_id, workflow_scope, state, source, source_ref, created_at)
+		VALUES ('run', 'p', 'Ship', 'build', 'project', 'done', 'manual', '', 9)`)
 	threadsBefore := migrationThreadRows(t, db)
-	ledger := []string{"threads", "thread_requests", "thread_request_receipts", "async_questions"}
+	ledger := []string{"threads", "thread_requests", "thread_request_receipts", "async_questions", "work_items"}
 	columnsBefore := map[string][]string{}
 	for _, table := range ledger {
 		columns, err := queryIDs(db, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
@@ -91,6 +93,7 @@ func TestMigrationV155Schema(t *testing.T) {
 		"idx_thread_request_receipts_age", "idx_thread_request_receipts_lineage", "idx_thread_requests_age", "idx_thread_requests_answer_due", "idx_thread_requests_caller_settled", "idx_thread_requests_lineage",
 		"idx_thread_requests_nested_caller", "idx_thread_requests_nested_open", "idx_thread_requests_open_below", "idx_thread_requests_open_created", "idx_thread_requests_open_deep", "idx_thread_requests_remote_rest",
 		"idx_thread_requests_spawn_caller", "idx_thread_requests_spawn_link", "idx_thread_requests_spawn_target", "idx_threads_delete_claim",
+		"idx_work_items_holding",
 		"session_start_failures",
 		"sqlite_autoindex_agent_helpers_1", "sqlite_autoindex_agent_past_threads_1",
 		"sqlite_autoindex_agent_wakes_1", "sqlite_autoindex_agents_1", "sqlite_autoindex_agents_2", "sqlite_autoindex_session_start_failures_1",
@@ -149,6 +152,7 @@ func TestMigrationV155Schema(t *testing.T) {
 		},
 		"async_questions": {"revision|INTEGER|1|1|0"},
 		"threads":         {"delete_claim|TEXT|1|''|0", "spawn_instructions|TEXT|1|''|0", "spawn_level|INTEGER|1|0|0"},
+		"work_items":      {"reports_owed|INTEGER|1|0|0"},
 	}
 	for _, table := range ledger {
 		got := columns(table)
@@ -184,6 +188,7 @@ func TestMigrationV155Schema(t *testing.T) {
 		"idx_agent_past_threads_agent": {"agent_id", "superseded_at", "thread_id"},
 		"idx_agent_wakes_due":          {"state", "next_at"},
 		"idx_agent_wakes_thread":       {"thread_id", "state"},
+		"idx_work_items_holding":       {"origin_thread_id", "created_at", "id"},
 	} {
 		if got, err := queryIDs(db, `SELECT name FROM pragma_index_info(?) ORDER BY seqno`, index); err != nil || !slices.Equal(got, want) {
 			t.Errorf("%s = %q %v, want %q", index, got, err, want)
@@ -204,6 +209,7 @@ func TestMigrationV155Schema(t *testing.T) {
 		`UPDATE thread_requests SET late_reply_agent = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET nested_open = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET late_delivered_how = 'mail' WHERE token = 'spawn'`,
+		`UPDATE work_items SET reports_owed = -1 WHERE id = 'run'`,
 	} {
 		if _, err := db.Exec(bad); err == nil {
 			t.Errorf("accepted %s", bad)

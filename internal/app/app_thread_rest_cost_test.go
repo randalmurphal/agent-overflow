@@ -131,7 +131,7 @@ func TestARestDecisionCostsItsSubtree(t *testing.T) {
 // oweReports owes count workflow reports to threads, round robin: runs
 // bound to them that rested, whose wake jobs wait behind a held queue. The
 // returned func unbinds the runs, so their wake jobs deliver nothing, lets
-// the jobs run, and checks no obligation is left.
+// the jobs run, and checks no report is left owed.
 func (f *requestFixture) oweReports(t *testing.T, threads []string, count int) (settle func()) {
 	t.Helper()
 	service := f.app.workflowApplication()
@@ -144,9 +144,12 @@ func (f *requestFixture) oweReports(t *testing.T, threads []string, count int) (
 	items := make([]string, count)
 	for i := range count {
 		item := store.WorkItem{ID: fmt.Sprintf("owed-%03d", i), ProjectID: thread.ProjectID, Goal: "elsewhere", WorkflowID: "build",
-			WorkflowScope: "project", State: string(engine.StateCancelled), Source: "manual", OriginThreadID: threads[i%len(threads)],
+			WorkflowScope: "project", State: string(engine.StateRunning), Source: "manual", OriginThreadID: threads[i%len(threads)],
 			CreatedAt: time.Now().UnixMilli()}
 		if err := f.app.store.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.app.store.UpdateWorkItemState(item.ID, string(engine.StateCancelled), string(engine.ReasonInterrupted), time.Now().UnixMilli()); err != nil {
 			t.Fatal(err)
 		}
 		service.HandleEngineEvent(eventchan.WorkflowItemState, engine.StateEvent{
@@ -155,23 +158,26 @@ func (f *requestFixture) oweReports(t *testing.T, threads []string, count int) (
 		items[i] = item.ID
 	}
 	for _, id := range threads {
-		if _, owed := service.ReportOwedTo(id); !owed {
-			t.Fatalf("no report owed to %s", id)
+		if src, err := f.app.store.ReadThreadRestSources(id); err != nil || !src.Workflow {
+			t.Fatalf("no report owed to %s: %+v, %v", id, src, err)
 		}
 	}
 	return func() {
 		t.Helper()
 		for _, id := range items {
-			change, err := f.app.store.UpdateWorkItemOriginThread(id, "")
-			if err != nil {
+			if _, err := f.app.store.UpdateWorkItemOriginThread(id, ""); err != nil {
 				t.Fatal(err)
 			}
-			service.BindingMoved(change)
 		}
 		unblock()
 		service.WaitWake()
-		if left := service.ReportObligations(); left != 0 {
-			t.Fatalf("%d runs still hold a thread once their wake jobs ran", left)
+		// Bound to the caller, which no other run holds, a run whose report
+		// is still owed would hold it.
+		for _, id := range items {
+			if _, err := f.app.store.UpdateWorkItemOriginThread(id, f.caller.ID); err != nil {
+				t.Fatal(err)
+			}
 		}
+		f.expectNoReportOwed(t, f.caller.ID)
 	}
 }

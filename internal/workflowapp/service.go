@@ -57,13 +57,13 @@ type Deps struct {
 	Attention           AttentionPorts
 	ResumeRun           func(context.Context, string) error
 	// OriginChanged hears a run's binding move, with the thread it
-	// reported to before and the one it reports to now (BindingMoved).
+	// reported to before and the one it reports to now.
 	OriginChanged func(store.WorkItemOriginChange)
-	// ObligationChanged hears that whether a run holds threadID from rest
-	// may have changed (ReportOwedTo), once the record holds the change.
-	ObligationChanged func(threadID string)
-	Logf              func(format string, args ...any)
-	Now               func() time.Time
+	// ReportSettled hears that a rest's report of run itemID is no longer
+	// owed (settleOwedReport), once the store says so.
+	ReportSettled func(itemID string)
+	Logf          func(format string, args ...any)
+	Now           func() time.Time
 }
 
 // Service owns the store-backed workflow agent read surface. It has no
@@ -77,7 +77,6 @@ type Service struct {
 	autoDisposition    serialqueue.Queue
 	wake               serialqueue.Queue
 	holds              wakeHolds
-	obligations        reportObligations
 	autoResume         autoResumeState
 	digestMu           sync.Mutex
 	digestSlots        chan struct{}

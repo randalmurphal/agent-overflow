@@ -35,8 +35,9 @@ type ThreadRestSources struct {
 	Background         bool
 	BackgroundDetail   string
 	BackgroundComputer string
-	// Workflow: a workflow run that reports to it and runs; WorkflowGoal is
-	// the oldest's.
+	// Workflow: a workflow run bound to it now that runs, or that rested
+	// with its report owed (workflowRunHoldsSQL); WorkflowGoal is the
+	// oldest's.
 	Workflow     bool
 	WorkflowGoal string
 	// Wake: an armed or running loop or watch; WakeKind and WakeLabel are
@@ -265,10 +266,9 @@ func remoteCommandRunningSQL(alias string) string {
 // holds only that source's live rows (idx_async_questions_pending,
 // idx_thread_requests_answer_due, idx_items_running_bg_tool_calls,
 // idx_agent_wakes_thread, idx_thread_requests_open_created,
-// idx_thread_requests_nested_caller) or the thread's own rows
-// (idx_remote_watches_thread, and for the workflow runs the thread's bound
-// runs, idx_work_items_origin_thread), and its latest turn, one probe of
-// turns_thread_index. An accepted reminder is open (settled_at IS NULL),
+// idx_thread_requests_nested_caller, idx_work_items_holding) or the
+// thread's own rows (idx_remote_watches_thread), and its latest turn, one
+// probe of turns_thread_index. An accepted reminder is open (settled_at IS NULL),
 // so it is read among the open rows, not the caller's history.
 var threadRestSourcesSQL = `SELECT j.value,
        COALESCE((SELECT t.completed_at IS NULL FROM turns t INDEXED BY turns_thread_index
@@ -287,8 +287,8 @@ var threadRestSourcesSQL = `SELECT j.value,
          (SELECT json_array(rw.label, rw.computer_id) FROM remote_watches rw INDEXED BY idx_remote_watches_thread
            WHERE rw.thread_id = j.value AND ` + remoteCommandRunningSQL("rw") + `
            ORDER BY rw.created_at DESC LIMIT 1)),
-       (SELECT json_array(w.goal) FROM work_items w INDEXED BY idx_work_items_origin_thread
-         WHERE w.origin_thread_id = j.value AND w.origin_thread_id <> '' AND w.state = 'running'
+       (SELECT json_array(w.goal) FROM work_items w INDEXED BY idx_work_items_holding
+         WHERE w.origin_thread_id = j.value AND ` + workflowRunHoldsSQL("w") + `
          ORDER BY w.created_at, w.id LIMIT 1),
        (SELECT json_array(a.kind, a.label) FROM agent_wakes a INDEXED BY idx_agent_wakes_thread
          WHERE a.thread_id = j.value AND a.state IN ('armed','running') ORDER BY a.label LIMIT 1),

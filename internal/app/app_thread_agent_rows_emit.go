@@ -95,24 +95,15 @@ func (a *App) noteWorkerWaiting(threadID string) {
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.liveness[threadID] = true })
 }
 
-// noteWorkflowRunChanged reports a workflow run's state changed: the thread
-// it reports to may have moved into or out of rest.
+// noteWorkflowRunChanged reports a workflow run's state or owed report
+// changed: the thread it reports to may have moved into or out of rest.
 func (a *App) noteWorkflowRunChanged(itemID string) {
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.workflowRuns[itemID] = struct{}{} })
 }
 
-// noteWorkflowObligation reports that whether a workflow run holds threadID
-// from rest may have changed (workflowapp.Service.ReportOwedTo): memory a
-// decision on rest under way is told of, and a thread read again.
-func (a *App) noteWorkflowObligation(threadID string) {
-	a.noteThreadRestChange(threadID)
-	a.noteWorkerWaiting(threadID)
-}
-
-// noteWorkflowOriginChange reports a workflow run's binding moved, through
-// the workflow service (workflowapp.Service.BindingMoved): a running run
-// keeps the thread it reports to from rest, so the thread it left and the
-// one it reports to now are both read again.
+// noteWorkflowOriginChange reports a workflow run's binding moved: a run
+// that runs or owes a report keeps the thread it reports to from rest, so
+// the thread it left and the one it reports to now are both read again.
 func (a *App) noteWorkflowOriginChange(change store.WorkItemOriginChange) {
 	for _, threadID := range change.Threads() {
 		a.noteWorkerWaiting(threadID)

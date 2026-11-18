@@ -532,10 +532,15 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 
 // UpdateWorkItemState writes the transition result atomically. Transition
 // validity belongs to the workflow engine; the store enforces only schema
-// constraints.
+// constraints. A run that moves to a rest, any state but running, owes
+// that rest's report in the same write (reports_owed), until the rest's
+// wake job ends (SettleWorkItemReport); a root run's owed report holds the
+// thread it is bound to.
 func (s *Store) UpdateWorkItemState(id, state, reason string, endedAt int64) error {
 	result, err := s.db.Exec(
-		`UPDATE work_items SET state = ?, reason = ?, ended_at = ? WHERE id = ?`,
+		`UPDATE work_items SET state = ?1, reason = ?2, ended_at = ?3,
+		        reports_owed = reports_owed + (state <> ?1 AND ?1 <> 'running')
+		  WHERE id = ?4`,
 		state, reason, endedAt, id,
 	)
 	if err != nil {

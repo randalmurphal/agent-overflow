@@ -61,11 +61,39 @@ func (s *Store) ThreadsWithAnswerDue() ([]string, error) {
 		WHERE `+threadAnswerDueSQL(""))
 }
 
-// ThreadsWithRunningWorkflowRuns lists the threads a running workflow run
-// reports to.
-func (s *Store) ThreadsWithRunningWorkflowRuns() ([]string, error) {
-	return s.queryThreadIDs("store: list the threads a running workflow run reports to",
-		`SELECT DISTINCT origin_thread_id FROM work_items WHERE state = 'running' AND origin_thread_id <> ''`)
+// workflowRunHoldsSQL matches a root run that keeps the thread it reports
+// to from rest: one that runs, or one that rested with a rest's report its
+// wake job has not yet delivered or dropped (reports_owed). It is
+// idx_work_items_holding's predicate.
+func workflowRunHoldsSQL(alias string) string {
+	return alias + `.origin_thread_id <> '' AND (` + alias + `.state = 'running' OR ` + alias + `.reports_owed > 0)`
+}
+
+// ThreadsHeldByWorkflowRuns lists the threads a workflow run keeps from
+// rest (workflowRunHoldsSQL).
+func (s *Store) ThreadsHeldByWorkflowRuns() ([]string, error) {
+	return s.queryThreadIDs("store: list the threads workflow runs keep from rest",
+		`SELECT DISTINCT w.origin_thread_id FROM work_items w INDEXED BY idx_work_items_holding WHERE `+workflowRunHoldsSQL("w"))
+}
+
+// SettleWorkItemReport records that one rest's wake job of run itemID has
+// ended, whatever it did with the report: one fewer report is owed. A run
+// with none owed is left as it is.
+func (s *Store) SettleWorkItemReport(itemID string) error {
+	if _, err := s.db.Exec(`UPDATE work_items SET reports_owed = reports_owed - 1 WHERE id = ? AND reports_owed > 0`, itemID); err != nil {
+		return fmt.Errorf("store: settle a report of workflow run %s: %w", itemID, err)
+	}
+	return nil
+}
+
+// ClearWorkItemReportsOwed forgets every report owed: the wake jobs that
+// would deliver them were the process's that wrote them. The workflow
+// engine's start calls it before it emits anything.
+func (s *Store) ClearWorkItemReportsOwed() error {
+	if _, err := s.db.Exec(`UPDATE work_items SET reports_owed = 0 WHERE reports_owed > 0`); err != nil {
+		return fmt.Errorf("store: clear the workflow reports owed: %w", err)
+	}
+	return nil
 }
 
 // WorkItemOriginThread names the thread a workflow run reports to, empty
@@ -80,61 +108,6 @@ func (s *Store) WorkItemOriginThread(itemID string) (string, error) {
 		return "", fmt.Errorf("store: read the thread workflow run %s reports to: %w", itemID, err)
 	}
 	return thread, nil
-}
-
-// WorkItemBinding is a root workflow run as the thread it reports to sees
-// it: that thread, empty for none, and the run's goal and creation.
-type WorkItemBinding struct {
-	ID        string
-	ThreadID  string
-	Goal      string
-	CreatedAt int64
-}
-
-const workItemBindingColumns = `id, origin_thread_id, goal, created_at`
-
-func scanWorkItemBinding(row rowScanner) (WorkItemBinding, error) {
-	var binding WorkItemBinding
-	err := row.Scan(&binding.ID, &binding.ThreadID, &binding.Goal, &binding.CreatedAt)
-	return binding, err
-}
-
-// RootWorkItemBinding reads a root run's binding; found is false for a run
-// that is gone or is called by another.
-func (s *Store) RootWorkItemBinding(itemID string) (_ WorkItemBinding, found bool, err error) {
-	binding, err := scanWorkItemBinding(s.reader().QueryRow(`SELECT `+workItemBindingColumns+` FROM work_items
-		WHERE id = ? AND parent_item_id = ''`, itemID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return WorkItemBinding{}, false, nil
-	}
-	if err != nil {
-		return WorkItemBinding{}, false, fmt.Errorf("store: read the binding of workflow run %s: %w", itemID, err)
-	}
-	return binding, true, nil
-}
-
-// RunningRootWorkItemBindings lists the bindings of the root runs that
-// run.
-func (s *Store) RunningRootWorkItemBindings() (_ []WorkItemBinding, err error) {
-	const action = "store: list the running workflow runs"
-	rows, err := s.reader().Query(`SELECT ` + workItemBindingColumns + ` FROM work_items
-		WHERE state = 'running' AND parent_item_id = '' ORDER BY created_at, id`)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	var out []WorkItemBinding
-	for rows.Next() {
-		binding, err := scanWorkItemBinding(rows)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", action, err)
-		}
-		out = append(out, binding)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	return out, nil
 }
 
 // CallerSpawnedRemote reports whether callerThreadID spawned threadID on

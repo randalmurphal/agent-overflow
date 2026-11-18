@@ -163,6 +163,16 @@ import (
 // superseded row left behind owns nothing. An assistant's helper, outside every
 // project, stays owned: its assistant's delete deletes it.
 //
+// work_items gains `reports_owed`: the rests of a run whose reports
+// its wake jobs have not yet delivered or dropped. The write of a rest
+// counts one (UpdateWorkItemState) and the end of that rest's wake job
+// settles it (SettleWorkItemReport); the engine's start clears what a
+// previous process owed, as its wake jobs went with it.
+// idx_work_items_holding holds the runs that keep the thread they report
+// to from rest, running or with a report owed, by that thread and in
+// creation order, so a read of a thread's rest costs only those
+// (threadRestSourcesSQL).
+//
 // idx_agent_past_threads_agent orders an assistant's past threads newest
 // superseded first, ties by thread id, the page order of
 // ListAssistantPastThreads.
@@ -265,6 +275,10 @@ ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent_role TEXT NOT NU
 ALTER TABLE thread_request_receipts ADD COLUMN own_turn INTEGER NOT NULL DEFAULT 0 CHECK(own_turn IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE work_items ADD COLUMN reports_owed INTEGER NOT NULL DEFAULT 0 CHECK(reports_owed >= 0);
+CREATE INDEX idx_work_items_holding ON work_items(origin_thread_id, created_at, id)
+ WHERE origin_thread_id <> '' AND (state = 'running' OR reports_owed > 0);
 
 CREATE TEMP TABLE v155_undelivered_wakes (
     thread_id TEXT NOT NULL,
