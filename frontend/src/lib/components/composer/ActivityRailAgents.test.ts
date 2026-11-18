@@ -17,6 +17,7 @@ import { HOME_BACKEND } from '../../transport/backendKey';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { OBSERVE_SCOPES, grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
+import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 
 const BENCH_UUID = '11111111-2222-4333-8444-555555555555';
 const UNGRANTED = 'Not granted to this device';
@@ -212,6 +213,34 @@ describe('the Agents segment', () => {
     expect(within(digest).getByTestId('agent-tray-row-digest-activity').textContent).toBe('Reading the logs');
     expect(within(digest).getByTestId('agent-tray-row-digest-last').textContent).toBe('On it.');
     expect(view.getByTestId('agent-tray-row-open').getAttribute('aria-label')).toBe('Open Agent child');
+  });
+
+  it('says a late reply a paired computer dropped before it was collected arrived and when, with the first answer kept', async () => {
+    const arrived = new Date(2026, 10, 16, 21, 5).getTime();
+    const { view, toggle } = await openTray((caller) => [row('far', {
+      callerThreadId: caller, state: 'finished', settledAt: Date.now(), computerId: 'pc', computer: 'Laptop',
+      answer: 'The build is green.', answerKind: 'final', lateReplyExpiredAt: arrived,
+    })]);
+    await fireEvent.click(toggle);
+    const far = await view.findByTestId('agent-tray-row');
+    expect(within(far).getByTestId('agent-tray-row-state').textContent).toBe('finished, late reply expired');
+    await fireEvent.click(within(far).getByTestId('agent-tray-row-details'));
+    const digest = within(far).getByTestId('agent-tray-row-digest');
+    expect(within(digest).getByTestId('agent-tray-row-digest-answer').textContent).toBe('The build is green.');
+    const late = within(digest).getByTestId('agent-tray-row-digest-late-expired').textContent ?? '';
+    expect(late).toContain(formatCalendarDate(arrived));
+    expect(late).toContain(formatTimeOfDay(arrived));
+    expect(late).toContain('expired there before it was collected');
+  });
+
+  it('offers the digest of a row whose only news is a late reply that expired', async () => {
+    const { view, toggle } = await openTray((caller) => [row('far', {
+      callerThreadId: caller, state: 'finished', settledAt: Date.now(), lateReplyExpiredAt: Date.now() - 60_000,
+    })]);
+    await fireEvent.click(toggle);
+    const far = await view.findByTestId('agent-tray-row');
+    await fireEvent.click(within(far).getByTestId('agent-tray-row-details'));
+    expect(within(far).getByTestId('agent-tray-row-digest-late-expired')).toBeTruthy();
   });
 
   it('opens an open row\'s thread, and takes a settled row out on its click, scrolling to its answer here', async () => {

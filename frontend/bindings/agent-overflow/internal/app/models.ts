@@ -8256,6 +8256,13 @@ export class ThreadAgentRow {
      * LateReply is a reply that arrived after the request settled.
      */
     "lateReply"?: boolean;
+
+    /**
+     * LateReplyExpiredAt is when such a reply reached a paired computer that
+     * dropped it before this one collected it
+     * (threadtools.RequestState.LateReplyExpiredAt).
+     */
+    "lateReplyExpiredAt"?: number;
     "createdAt": number;
     "settledAt"?: number;
 
@@ -9162,6 +9169,14 @@ export class ThreadPeerPoll {
     "tokens"?: string[];
     "ack"?: ThreadPeerAck[];
 
+    /**
+     * Held names the revision the source already holds of tokens it asks
+     * about. The answer about one at or below it leaves out the texts the
+     * source has (ThreadPeerRequest.Answer, Cause and LateReply). A source
+     * that does not send it is answered in full.
+     */
+    "held"?: ThreadPeerAck[];
+
     /** Creates a new ThreadPeerPoll instance. */
     constructor($$source: Partial<ThreadPeerPoll> = {}) {
 
@@ -9174,12 +9189,16 @@ export class ThreadPeerPoll {
     static createFrom($$source: any = {}): ThreadPeerPoll {
         const $$createField0_0 = $$createType8;
         const $$createField1_0 = $$createType171;
+        const $$createField2_0 = $$createType171;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tokens" in $$parsedSource) {
             $$parsedSource["tokens"] = $$createField0_0($$parsedSource["tokens"]);
         }
         if ("ack" in $$parsedSource) {
             $$parsedSource["ack"] = $$createField1_0($$parsedSource["ack"]);
+        }
+        if ("held" in $$parsedSource) {
+            $$parsedSource["held"] = $$createField2_0($$parsedSource["held"]);
         }
         return new ThreadPeerPoll($$parsedSource as Partial<ThreadPeerPoll>);
     }

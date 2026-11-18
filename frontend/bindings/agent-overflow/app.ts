@@ -4926,9 +4926,11 @@ export function RemoteCommandStatus(id: string): $CancellablePromise<app$0.Remot
  * requests this computer still has open there, and the finished jobs whose
  * completions are held for archived conversations, which can no longer be
  * delivered. Without it they are named and the call refuses; with it the
- * requests are settled locally as errored, their wakes are dropped, the held
- * completions are discarded, and the pairing goes. The other computer is not
- * told, because forgetting it is exactly the decision to stop talking to it.
+ * pairing ends with their wakes dropped, the held
+ * completions are discarded, and the pairing goes, all inside the fence
+ * admission takes, so no request enters it meanwhile. The other computer
+ * is not told, because forgetting it is exactly the decision to stop
+ * talking to it.
  */
 export function RemoveBackend(id: string, abandon: boolean): $CancellablePromise<void> {
     return $Call.ByID(3005272623, id, abandon);
