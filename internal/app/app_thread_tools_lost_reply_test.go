@@ -315,3 +315,18 @@ func TestAStatusAskedWhileTheHandlerAdmitsFindsItsReceipt(t *testing.T) {
 			row.State, row.Answer, row.TargetThreadID, receipt.TargetThreadID)
 	}
 }
+
+func TestRemoteSpawnReturnsItsWorkerAfterAnOwnerChangeDuringDispatch(t *testing.T) {
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	pair.dest.peerAdmissionForTest = func(token string) {
+		pair.source.ownerReads.changed([]string{token})
+	}
+	ack := pair.spawnThere(t, "work", nil)
+	receipt := pair.receipt(t, ack.Token)
+	current := pair.request(t, ack.Token)
+	if receipt.TargetThreadID == "" || ack.ThreadID != receipt.TargetThreadID || current.TargetThreadID != receipt.TargetThreadID {
+		t.Fatalf("spawn returned worker %q, stored %q, after the peer confirmed %q", ack.ThreadID, current.TargetThreadID, receipt.TargetThreadID)
+	}
+}
