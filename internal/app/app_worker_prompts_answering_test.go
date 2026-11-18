@@ -469,11 +469,6 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 				t.Fatalf("the send's state there = %+v, %v; want blocked, routed to the spawner and not to the sender", state, err)
 			}
 			waitUntil(t, 15*time.Second, func() bool {
-				pair.poll(t)
-				if err := pair.source.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
-					t.Fatal(err)
-				}
-				pair.source.waitAgentNoticeWork()
 				return len(remoteWakes(t, pair.source, holder.ID)) == 1
 			})
 			for _, other := range []string{sibling.ID, pair.caller.ID} {
@@ -481,14 +476,15 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 					t.Fatalf("%s holds %+v; want the wake on %s alone", other, wakes, holder.ID)
 				}
 			}
-			rows, err := pair.source.ListThreadAgentRows(t.Context(), sibling.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			row, found := agentRowByToken(rows.Rows, send.Token)
-			if !found || !row.BlockedRoutedHere || row.BlockedRoutedTo != holder.Title {
-				t.Fatalf("the sender's row = %+v (found %v); want it routed here to %q, which holds the wake", row, found, holder.Title)
-			}
+			// The spawner's wake and the sibling's status are separate receipts.
+			waitUntil(t, 15*time.Second, func() bool {
+				rows, err := pair.source.ListThreadAgentRows(t.Context(), sibling.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, found := agentRowByToken(rows.Rows, send.Token)
+				return found && row.BlockedRoutedHere && row.BlockedRoutedTo == holder.Title
+			})
 		})
 	}
 }

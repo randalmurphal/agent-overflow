@@ -76,12 +76,12 @@ func newRemotePromptPairOn(t *testing.T, pair *reachPair, lease time.Duration, l
 	return p
 }
 
-// routeWorkerPromptsOn wires triage's prompt router and the prompt tap of
-// an app built without Start.
+// routeWorkerPromptsOn sends the fixture's router events through the same
+// prompt and Agents observers as a running destination.
 func routeWorkerPromptsOn(app *App, bus *capturedEventBus) {
 	app.triage.SetPromptRouter(app.routeWorkerPrompt)
 	bus.mu.Lock()
-	bus.tap = app.tapWorkerPrompt
+	bus.tap = app.emit
 	bus.mu.Unlock()
 }
 
