@@ -6,6 +6,7 @@ import (
 	"strconv"
 )
 
+// ActivityOwner identifies the paired device and request token to notify of a change.
 type ActivityOwner struct {
 	Device string
 	Token  string
