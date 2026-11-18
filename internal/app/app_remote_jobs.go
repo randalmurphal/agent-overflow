@@ -371,7 +371,11 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 		}
 	}
 	if err != nil {
-		publicErr := a.remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+		// A watch kept from an earlier attempt stands for a start that may
+		// have run, whatever became of this one.
+		ref := a.remoteRef(input.ComputerID, input.Request.ID)
+		ref.EarlierStart = !freshWatch
+		publicErr := remoteOperationErrorFor("run", ref, err)
 		if freshWatch && remoteStartNeverRan(publicErr) {
 			if refuseErr := a.refuseRemoteWatch(input.ComputerID, input.Request.ID, scope.ThreadID, publicErr); refuseErr != nil {
 				return result, errors.Join(publicErr, refuseErr)

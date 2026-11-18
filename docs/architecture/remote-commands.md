@@ -280,11 +280,14 @@ in host logs behind a reference; they are never marked as public failures.
 
 A failed network reply does not establish whether a command ran. Inspect its
 original receipt, then retry identical arguments with the same ID if needed.
-A call that never left the source (its pairing could not be loaded or no
-connection to the destination opened, `attachedbackends.NotSent`) says
-that nothing was sent, and a start refused that way releases its fresh
-watch at once, as a refusal the destination answers before accepting
-does.
+A call whose request frame was never written (its pairing could not be
+loaded, no connection to the destination opened, or the call ended before
+its write, `rpcclient.NotSent`) says that nothing was sent, and a start
+refused that way releases its fresh watch at once, as a refusal the
+destination answers before accepting does. A start retried under an ID
+whose earlier attempt may have run keeps that attempt's watch, and its
+failure says the earlier attempt may have run and to check its status
+first.
 A cancellation reply lost in transit likewise requires status verification.
 An older destination may still redact its errors; the source explains that
 limitation and preserves the destination's reference instead of guessing why

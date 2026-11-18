@@ -31,6 +31,9 @@ type remoteRef struct {
 	ComputerName string
 	RequestID    string
 	Label        string
+	// EarlierStart says an earlier start under RequestID may have run and
+	// is not resolved, so a failure of this call says nothing about it.
+	EarlierStart bool
 }
 
 // remoteRef resolves the names this computer holds for a computer and one of
@@ -86,7 +89,10 @@ func remoteOperationErrorFor(action string, ref remoteRef, err error) error {
 	}
 	if entityid.Valid(ref.RequestID) {
 		switch {
-		case uncertain:
+		case uncertain || ref.EarlierStart:
+			if !uncertain {
+				message += " An earlier attempt with this request_id may already have run."
+			}
 			message += " Check remote_status with these same IDs."
 			if action == "run" {
 				message += " If necessary, retry identical arguments with the SAME request_id; a new ID could run the command twice."
