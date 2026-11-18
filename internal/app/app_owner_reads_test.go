@@ -8,9 +8,9 @@ import (
 func TestNewerPeerReadWinsAndChangeDuringReadStaysOwed(t *testing.T) {
 	var reads ownerReads
 	var result string
-	first := reads.start([]string{"token"})
+	first := reads.start(t.Context(), "desk", []string{"token"})
 	defer first.close()
-	later := reads.start([]string{"token"})
+	later := reads.start(t.Context(), "desk", []string{"token"})
 	defer later.close()
 	if err := later.apply(func() error { result = "new title"; return nil }); err != nil {
 		t.Fatal(err)
@@ -18,7 +18,7 @@ func TestNewerPeerReadWinsAndChangeDuringReadStaysOwed(t *testing.T) {
 	if err := first.apply(func() error { result = "old title"; return nil }); !errors.Is(err, errReadSuperseded) || result != "new title" {
 		t.Fatalf("older completion applied %q, %v", result, err)
 	}
-	current := reads.start([]string{"token"})
+	current := reads.start(t.Context(), "desk", []string{"token"})
 	defer current.close()
 	reads.changed([]string{"token"})
 	if err := current.apply(func() error { result = "previous state"; return nil }); !errors.Is(err, errReadSuperseded) {

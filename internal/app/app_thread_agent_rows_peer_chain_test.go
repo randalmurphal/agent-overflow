@@ -176,7 +176,7 @@ func newAgentChain(t *testing.T, n int) *agentChain {
 			t.Fatalf("await the pairing of computer %d: %v", i, err)
 		}
 		c.apps[i].backends = manager
-		manager.SetChanged(c.apps[i].backendSetChanged)
+		c.apps[i].observePairedComputers(manager)
 		c.computers = append(c.computers, peer.ID)
 	}
 	caller, err := createTestThread(t, c.apps[0], string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)

@@ -649,12 +649,12 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 	other.Token, other.TargetComputerID = "other-computer", uuid.NewString()
 	// Only the queue's bounds are under test: no second computer is paired.
 	// Held, the call it starts stays running for the check.
-	a.threadAgentPeers.recording.Lock()
+	unlock := a.lockComputerPairing(other.TargetComputerID)
 	a.refreshPairedPeerAgentRows(other, 0)
 	a.threadAgentPeers.mu.Lock()
 	started := a.threadAgentPeers.running[other.Token]
 	a.threadAgentPeers.mu.Unlock()
-	a.threadAgentPeers.recording.Unlock()
+	unlock()
 	if !started {
 		t.Fatal("another computer's spawn did not start beside a stalled computer")
 	}
@@ -1063,14 +1063,14 @@ func TestThreadAgentPeerAnswerDuringShutdownIsNotAskedAgain(t *testing.T) {
 	a.threadAgentPeers.mu.Unlock()
 	before, answered := peer.calls.Load(), peer.answered.Load()
 	// Held, the call's answer waits to be recorded until shutdown began.
-	a.threadAgentPeers.recording.Lock()
+	unlock := a.lockComputerPairing(pair.computer)
 	a.refreshPairedPeerAgentRows(pair.spawn, 0)
 	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+1 })
 	a.refreshPairedPeerAgentRows(pair.spawn, 0)
 	waitUntil(t, 5*time.Second, func() bool { return peer.answered.Load() == answered+1 })
 	time.Sleep(200 * time.Millisecond)
 	a.appCancel()
-	a.threadAgentPeers.recording.Unlock()
+	unlock()
 	a.threadRequestsWG.Wait()
 	if answer, cached := a.cachedPeerAgentRows(pair.spawn); !cached || answer.err != nil {
 		t.Fatalf("cached answer = %+v (%v); the call did not answer before shutdown", answer, cached)
@@ -1088,19 +1088,19 @@ func TestThreadAgentRowsForgetWaitsForAnAnswerBeingRecorded(t *testing.T) {
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
 	a := pair.source
 	settleWithOpenWorkThere(t, pair)
-	a.threadAgentPeers.recording.Lock()
+	a.ownerReads.mu.Lock()
 	forgot := make(chan struct{})
 	go func() { a.forgetPeerAgentRows(pair.computer); close(forgot) }()
 	select {
 	case <-forgot:
-		a.threadAgentPeers.recording.Unlock()
+		a.ownerReads.mu.Unlock()
 		t.Fatal("the forget ran while an answer was being recorded")
 	case <-time.After(200 * time.Millisecond):
 	}
 	if _, err := a.store.SetThreadRequestNestedOpen(pair.spawn.Token, true); err != nil {
 		t.Fatal(err)
 	}
-	a.threadAgentPeers.recording.Unlock()
+	a.ownerReads.mu.Unlock()
 	<-forgot
 	if pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("an answer recorded during the forget left open work there")

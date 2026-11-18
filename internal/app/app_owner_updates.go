@@ -24,6 +24,7 @@ type ownerUpdates struct {
 }
 
 type ownerPeer struct {
+	read         ownerRead
 	origin       attachedbackends.PeerRead
 	cancel       context.CancelFunc
 	done         chan struct{}
@@ -129,10 +130,9 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 		hadLaunch := p.launch != ""
 		a.ownerUpdates.mu.Unlock()
 		if errors.Is(err, errOwnerCursorReset) {
-			a.invalidateOwnerTrees(id, nil)
 			continue
 		}
-		if !legacy || hadLaunch {
+		if !hadLaunch && !legacy {
 			a.invalidateOwnerTrees(id, err)
 		}
 		if legacy {
@@ -154,6 +154,18 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 }
 
 func (a *App) invalidateOwnerTrees(computer string, failure error) {
+	a.ownerReads.mu.Lock()
+	defer a.ownerReads.mu.Unlock()
+	a.invalidateOwnerTreesLocked(computer, failure)
+}
+
+func (a *App) invalidateOwnerTreesLocked(computer string, failure error) {
+	delete(a.ownerReads.peers, computer)
+	a.ownerUpdates.mu.Lock()
+	if p := a.ownerUpdates.peers[computer]; p != nil {
+		p.ready = false
+	}
+	a.ownerUpdates.mu.Unlock()
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	var callers []string
@@ -181,6 +193,7 @@ func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
 		}
 	}
 	for key := (&OwnerPageKey{}); key != nil; {
+		read := a.ownerReads.start(ctx, id, nil)
 		var page OwnerRecoveryPage
 		call, cancel := context.WithTimeout(ctx, threadPollCallTimeout)
 		origin, err := a.backends.ReadThreadPeer(call, id, transport.CapabilityThreadToolsV2, "", "ThreadOwnerRecovery", &page, launch, *key)
@@ -188,11 +201,16 @@ func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
 		if err != nil {
 			return err
 		}
-		if err := origin.Apply(launch, func() error { return ctx.Err() }); err != nil {
+		tokens := append(page.Tokens, ownerRevisionTokens(page.Structural)...)
+		if err := read.commit(origin, launch, nil, func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			a.ownerReads.changedLocked(tokens)
+			return nil
+		}); err != nil {
 			return err
 		}
-		tokens := append(page.Tokens, ownerRevisionTokens(page.Structural)...)
-		a.ownerReads.changed(tokens)
 		if err = a.readOwnerChanges(ctx, id, launch, tokens, page.Structural); err != nil {
 			return err
 		}

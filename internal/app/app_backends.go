@@ -338,9 +338,14 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 		if a.netReach.LoopbackOnly() {
 			manager.DisableLANDiscovery()
 		}
-		manager.SetChanged(a.backendSetChanged)
-		manager.SetContactObserver(a.ownerUpdates.contact)
+		a.observePairedComputers(manager)
 	}
+}
+
+func (a *App) observePairedComputers(manager *attachedbackends.Manager) {
+	manager.SetPeerInvalidationObserver(a.invalidateOwnerTrees)
+	manager.SetChanged(a.backendSetChanged)
+	manager.SetContactObserver(a.ownerUpdates.contact)
 }
 
 // backendSetChanged is the attached-machine set's one observer: a removed

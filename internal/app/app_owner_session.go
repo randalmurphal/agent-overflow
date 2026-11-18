@@ -20,6 +20,7 @@ type ownerObligation struct {
 }
 
 type ownerSession struct {
+	scope             ownerRead
 	app               *App
 	peer              *ownerPeer
 	id                string
@@ -43,20 +44,24 @@ func (a *App) waitOwnerChanges(ctx context.Context, id string, cursor OwnerCurso
 }
 
 func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) error {
+	read := a.ownerReads.start(ctx, id, nil)
 	first, origin, err := a.waitOwnerChanges(ctx, id, OwnerCursor{})
 	if err != nil {
 		return err
 	}
-	if !first.Reset {
+	if !first.Reset || first.Launch == "" {
 		return errors.New("peer omitted reset on first owner wait")
 	}
 	ctx, cancel := context.WithCancelCause(origin.Bind(ctx))
 	s := &ownerSession{app: a, peer: p, id: id, launch: first.Launch, ordinary: make(chan struct{}, 1), prompts: make(chan struct{}, 1)}
-	err = origin.Apply(first.Launch, func() error {
+	err = read.commit(origin, first.Launch, nil, func() error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		a.invalidateOwnerTreesLocked(id, nil)
+		s.scope = ownerRead{owner: &a.ownerReads, generation: a.ownerReads.generationLocked(id)}
 		a.ownerUpdates.mu.Lock()
+		p.read = s.scope
 		defer a.ownerUpdates.mu.Unlock()
 		s.progress = make(chan struct{})
 		p.origin = origin
@@ -73,7 +78,7 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 		cancel(err)
 		return err
 	}
-	a.invalidateOwnerTrees(id, nil)
+	ctx = s.scope.bind(ctx)
 	var workers sync.WaitGroup
 	for _, prompt := range []bool{true, false} {
 		workers.Go(func() {
@@ -82,7 +87,7 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 					cancel(err)
 					return
 				}
-				if err := origin.Apply(first.Launch, func() error {
+				if err := s.scope.commit(origin, first.Launch, nil, func() error {
 					a.ownerUpdates.mu.Lock()
 					defer a.ownerUpdates.mu.Unlock()
 					if ctx.Err() != nil {
@@ -102,9 +107,11 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 	}
 	defer func() {
 		cancel(context.Canceled)
-		a.ownerUpdates.mu.Lock()
-		p.ready = false
-		a.ownerUpdates.mu.Unlock()
+		a.ownerReads.mu.Lock()
+		if a.ownerReads.peers[id] == s.scope.generation {
+			a.invalidateOwnerTreesLocked(id, context.Cause(ctx))
+		}
+		a.ownerReads.mu.Unlock()
 		workers.Wait()
 	}()
 	cursor := first.OwnerCursor
@@ -112,10 +119,6 @@ func (a *App) runOwnerSession(ctx context.Context, id string, p *ownerPeer) erro
 		answer, from, err := a.waitOwnerChanges(ctx, id, cursor)
 		if err != nil {
 			cancel(err)
-			break
-		}
-		if answer.Reset {
-			cancel(errOwnerCursorReset)
 			break
 		}
 		if err := s.observe(ctx, answer, from); err != nil {
@@ -155,9 +158,6 @@ func (s *ownerSession) waitForRoom(ctx context.Context, cursor OwnerCursor) erro
 		if err != nil {
 			return err
 		}
-		if answer.Reset {
-			return errOwnerCursorReset
-		}
 		if err = s.observe(ctx, answer, from); err != nil {
 			return err
 		}
@@ -189,11 +189,15 @@ func (s *ownerSession) waitPriorityPage(ctx context.Context, keys []string) erro
 
 func (s *ownerSession) observe(ctx context.Context, answer OwnerChanges, from attachedbackends.PeerRead) error {
 	keys := append(slices.Clone(answer.Tokens), ownerRevisionTokens(answer.Structural)...)
-	s.app.ownerReads.changed(keys)
-	return from.Apply(answer.Launch, func() error {
+	return s.scope.commit(from, s.launch, nil, func() error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if answer.Reset || answer.Launch != s.launch {
+			s.app.invalidateOwnerTreesLocked(s.id, nil)
+			return errOwnerCursorReset
+		}
+		s.app.ownerReads.changedLocked(keys)
 		s.record(answer, from, keys)
 		return nil
 	})

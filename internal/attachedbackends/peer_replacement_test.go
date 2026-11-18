@@ -24,12 +24,7 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 			}
 			stop := errors.New("stop before redemption")
 			m.SetLabelGetter(func() (string, error) { return "", stop })
-			commitHeld, release := make(chan struct{}), make(chan struct{})
-			applied := make(chan error, 1)
-			go func() {
-				applied <- (PeerRead{pool: &held.peers, launch: "launch"}).Commit(func() error { close(commitHeld); <-release; return nil })
-			}()
-			<-commitHeld
+			held.peers.mu.Lock()
 			finished := make(chan error, 1)
 			go func() {
 				if retired {
@@ -46,10 +41,7 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 			} else {
 				t.Error("manager locked while the old carrier waits for its observation to commit")
 			}
-			close(release)
-			if err := <-applied; err != nil {
-				t.Fatal(err)
-			}
+			held.peers.mu.Unlock()
 			if err := <-finished; !errors.Is(err, stop) && !errors.Is(err, deviceclient.ErrNoSession) {
 				t.Fatal(err)
 			}

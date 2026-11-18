@@ -136,8 +136,8 @@ func TestPromptClosureQueuedBehindItsFirstListingWithdrawsTheWake(t *testing.T) 
 	}
 	release := make(chan struct{})
 	p.source.workerPrompts.run(func() { <-release })
-	first := p.source.noteRemotePrompts(origin, p.spawn, listing, nil)
-	second := p.source.noteRemotePrompts(origin, p.spawn, ThreadAgentRows{}, nil)
+	first := p.source.noteRemotePrompts(p.source.ownerReads.start(t.Context(), p.computer, nil), origin, p.spawn, listing, nil)
+	second := p.source.noteRemotePrompts(p.source.ownerReads.start(t.Context(), p.computer, nil), origin, p.spawn, ThreadAgentRows{}, nil)
 	close(release)
 	if second == nil {
 		t.Fatal("the closure behind the first listing was dropped")
@@ -165,7 +165,9 @@ func TestPromptWithdrawalRetriesItsDurableQueueDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	remove := func() error { return <-p.source.noteRemotePrompts(origin, p.spawn, ThreadAgentRows{}, nil) }
+	remove := func() error {
+		return <-p.source.noteRemotePrompts(p.source.ownerReads.start(t.Context(), p.computer, nil), origin, p.spawn, ThreadAgentRows{}, nil)
+	}
 	if err := remove(); err == nil {
 		t.Fatal("failed queue delete acknowledged")
 	}

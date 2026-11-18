@@ -63,8 +63,9 @@ type Manager struct {
 	lanDiscoveryOff bool
 
 	// changed is the one observer of set mutations (SetChanged).
-	changed func(SetChange)
-	reached atomic.Pointer[func(string)]
+	changed     func(SetChange)
+	reached     atomic.Pointer[func(string)]
+	invalidated atomic.Pointer[func(string, error)]
 	// labelGetter reads this installation's current name; label is the static
 	// fallback for embedders. Platform describes this process, not a pairing.
 	labelGetter func() (string, error)
@@ -204,6 +205,11 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 // its session renewal, which reports through those hooks. Caller holds m.mu
 // and has checked m.closed, so Close cannot miss the renewal.
 func (m *Manager) wire(built *carrier, id string) {
+	built.peers.invalidated = func(err error) {
+		if notify := m.invalidated.Load(); notify != nil {
+			(*notify)(id, err)
+		}
+	}
 	built.onContact = func() {
 		if f := m.reached.Load(); f != nil {
 			(*f)(id)
@@ -667,6 +673,15 @@ func (c *carrier) reached() {
 	if c.onContact != nil {
 		c.onContact()
 	}
+}
+
+// SetPeerInvalidationObserver receives carrier and launch changes outside the connection lock.
+func (m *Manager) SetPeerInvalidationObserver(f func(string, error)) {
+	if f == nil {
+		m.invalidated.Store(nil)
+		return
+	}
+	m.invalidated.Store(&f)
 }
 
 // SetContactObserver receives successful contact on any carrier.

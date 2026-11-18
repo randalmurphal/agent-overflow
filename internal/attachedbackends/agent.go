@@ -335,10 +335,11 @@ func (r PeerRead) Bind(ctx context.Context) context.Context {
 	return context.WithValue(ctx, peerReadContextKey{}, r)
 }
 
-// Apply serializes a local commit with replacement of its peer connection's
-// carrier and launch. The commit must not make a network call.
-func (r PeerRead) Apply(launch string, commit func() error) error {
-	if r.pool == nil || r.launch != launch {
+// Validate checks the responding carrier and, when supplied, the expected launch.
+// The owner serializes its commit with its peer invalidation observer. No owner
+// code runs under the carrier lock.
+func (r PeerRead) Validate(launch string) error {
+	if r.pool == nil || (launch != "" && r.launch != launch) {
 		return errors.New("the answer came from a different peer launch")
 	}
 	r.pool.mu.Lock()
@@ -346,15 +347,14 @@ func (r PeerRead) Apply(launch string, commit func() error) error {
 	if r.pool.ended != nil {
 		return r.pool.ended
 	}
-	if r.pool.launch != launch {
+	if r.pool.launch != r.launch {
 		return errors.New("the peer restarted before its answer was recorded")
 	}
-	return commit()
+	return nil
 }
 
-func (r PeerRead) ProvedGeneration() bool           { return r.proved }
-func (r PeerRead) Answered() bool                   { return r.pool != nil }
-func (r PeerRead) Commit(commit func() error) error { return r.Apply(r.launch, commit) }
+func (r PeerRead) ProvedGeneration() bool { return r.proved }
+func (r PeerRead) Answered() bool         { return r.pool != nil }
 
 // Disconnected closes when the connection that supplied the observation ends.
 func (r PeerRead) Disconnected() <-chan struct{} { return r.disconnected }

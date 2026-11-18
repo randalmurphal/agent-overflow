@@ -76,12 +76,12 @@ func (a *App) maintainOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 		case <-timer.C:
 		}
 		a.ownerUpdates.mu.Lock()
-		launch, legacy, origin := p.launch, p.legacy, p.origin
+		launch, legacy, origin, session := p.launch, p.legacy, p.origin, p.read
 		a.ownerUpdates.mu.Unlock()
 		if launch == "" || legacy {
 			continue
 		}
-		readCtx := origin.Bind(ctx)
+		readCtx := session.bind(origin.Bind(ctx))
 		keys := a.workerPrompts.remote.heldLinks(id)
 		if err := a.readOwnerChanges(readCtx, id, launch, keys, nil); err != nil && ctx.Err() == nil {
 			log.Printf("owner prompt renewal on %s will retry: %v", id, err)
@@ -93,6 +93,7 @@ func (a *App) maintainOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 }
 
 func (a *App) proveDueLinks(ctx context.Context, id, launch string, now time.Time) error {
+	read := a.ownerReads.start(ctx, id, nil)
 	rows, err := a.store.DueLinkContacts(id, now.UnixMilli(), ownerPageSize)
 	if err != nil || len(rows) == 0 {
 		return err
@@ -109,7 +110,7 @@ func (a *App) proveDueLinks(ctx context.Context, id, launch string, now time.Tim
 	if err != nil {
 		return err
 	}
-	return origin.Apply(launch, func() error {
+	return read.commit(origin, launch, nil, func() error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

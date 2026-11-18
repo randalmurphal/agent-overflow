@@ -52,7 +52,7 @@ func (a *App) applyOwnerStatus(id string, answer ThreadPeerRequest, started time
 	return wakes, err
 }
 
-func (a *App) applyOwnerLink(origin attachedbackends.PeerRead, spawn store.ThreadRequest, state OwnerLinkState, end string) (<-chan error, error) {
+func (a *App) applyOwnerLink(read ownerRead, origin attachedbackends.PeerRead, spawn store.ThreadRequest, state OwnerLinkState, end string) (<-chan error, error) {
 	id := spawn.TargetComputerID
 	if state.End == "pending" {
 		return nil, nil
@@ -85,7 +85,7 @@ func (a *App) applyOwnerLink(origin attachedbackends.PeerRead, spawn store.Threa
 	if _, err := a.store.SetThreadRequestNestedOpen(state.Token, peerListingOpen(listing)); err != nil {
 		return nil, err
 	}
-	done := a.noteRemotePrompts(origin, spawn, listing, nil)
+	done := a.noteRemotePrompts(read.delivery(), origin, spawn, listing, nil)
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	changed := c.noteAnswerLocked(spawn, listing, nil, true)
@@ -96,7 +96,7 @@ func (a *App) applyOwnerLink(origin attachedbackends.PeerRead, spawn store.Threa
 	return done, nil
 }
 func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []string, structural []store.SpawnRevision) error {
-	read := a.ownerReads.start(keys)
+	read := a.ownerReads.start(ctx, id, keys)
 	defer read.close()
 	rows, err := a.store.OwnerRequests(id, keys)
 	if err != nil {
@@ -127,48 +127,46 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 	var wakes []threadWakeRef
 	var promptResults []<-chan error
 	unlock := a.lockComputerPairing(id)
-	err = read.apply(func() error {
-		return origin.Apply(launch, func() error {
-			if ctx.Err() != nil {
-				return ctx.Err()
+	err = read.commit(origin, launch, nil, func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		for _, edit := range structural {
+			if !slices.Contains(keys, edit.Token) {
+				continue
 			}
-			for _, edit := range structural {
-				if !slices.Contains(keys, edit.Token) {
-					continue
-				}
-				if _, err := a.store.ApplySpawnRevision(id, edit); err != nil {
-					return err
-				}
-				acks = append(acks, edit.SpawnRevisionAck)
-				ends[edit.Token] = edit.End
+			if _, err := a.store.ApplySpawnRevision(id, edit); err != nil {
+				return err
 			}
-			if len(reply.Requests) != len(poll.Tokens) || len(reply.Links) != len(poll.Links) {
-				return errors.New("incomplete owner read")
+			acks = append(acks, edit.SpawnRevisionAck)
+			ends[edit.Token] = edit.End
+		}
+		if len(reply.Requests) != len(poll.Tokens) || len(reply.Links) != len(poll.Links) {
+			return errors.New("incomplete owner read")
+		}
+		for i, answer := range reply.Requests {
+			if answer.Token != poll.Tokens[i] {
+				return fmt.Errorf("unexpected status token %q", answer.Token)
 			}
-			for i, answer := range reply.Requests {
-				if answer.Token != poll.Tokens[i] {
-					return fmt.Errorf("unexpected status token %q", answer.Token)
-				}
-				w, err := a.applyOwnerStatus(id, answer, started)
-				wakes = append(wakes, w...)
-				if err != nil {
-					return err
-				}
+			w, err := a.applyOwnerStatus(id, answer, started)
+			wakes = append(wakes, w...)
+			if err != nil {
+				return err
 			}
-			for i, state := range reply.Links {
-				if state.Token != poll.Links[i].Token {
-					return fmt.Errorf("unexpected link token %q", state.Token)
-				}
-				done, err := a.applyOwnerLink(origin, spawns[state.Token], state, ends[state.Token])
-				if err != nil {
-					return err
-				}
-				if done != nil {
-					promptResults = append(promptResults, done)
-				}
+		}
+		for i, state := range reply.Links {
+			if state.Token != poll.Links[i].Token {
+				return fmt.Errorf("unexpected link token %q", state.Token)
 			}
-			return nil
-		})
+			done, err := a.applyOwnerLink(read, origin, spawns[state.Token], state, ends[state.Token])
+			if err != nil {
+				return err
+			}
+			if done != nil {
+				promptResults = append(promptResults, done)
+			}
+		}
+		return nil
 	})
 	unlock()
 	a.deliverThreadWakes(wakes)

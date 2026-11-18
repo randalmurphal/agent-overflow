@@ -71,7 +71,7 @@ func (a *App) pollThreadRequestsOn(now time.Time, computerID string, rows []stor
 		logThreadRequestSweep("read the acknowledgements owed to "+computerID, err)
 	}
 	poll.Ack = threadPeerAcks(acks)
-	read := a.ownerReads.start(poll.Tokens)
+	read := a.ownerReads.start(a.lifeCtx(), computerID, poll.Tokens)
 	defer read.close()
 	reply, origin, err := a.readThreadRequestStatus(computerID, poll)
 	if err != nil {
@@ -80,34 +80,32 @@ func (a *App) pollThreadRequestsOn(now time.Time, computerID string, rows []stor
 	}
 	var wakes []threadWakeRef
 	unlock := a.lockComputerPairing(computerID)
-	err = read.apply(func() error {
-		return origin.Commit(func() error {
-			a.clearThreadRequestAcks(acks)
-			heard := threadPeerHearing{at: now, v2: origin.ProvedGeneration()}
-			answers := make(map[string]ThreadPeerRequest, len(reply.Requests))
-			for _, answer := range reply.Requests {
-				answers[answer.Token] = answer
+	err = read.commit(origin, "", nil, func() error {
+		a.clearThreadRequestAcks(acks)
+		heard := threadPeerHearing{at: now, v2: origin.ProvedGeneration()}
+		answers := make(map[string]ThreadPeerRequest, len(reply.Requests))
+		for _, answer := range reply.Requests {
+			answers[answer.Token] = answer
+		}
+		for _, row := range rows {
+			answer, found := answers[row.Token]
+			if !found {
+				// The destination answered without this token. Nothing is known
+				// about it, so it waits for the next pass rather than being
+				// settled on an answer nobody gave.
+				a.rescheduleThreadRequest(row, threadPollErrorDelay, "The other computer did not report this request.")
+				continue
 			}
-			for _, row := range rows {
-				answer, found := answers[row.Token]
-				if !found {
-					// The destination answered without this token. Nothing is known
-					// about it, so it waits for the next pass rather than being
-					// settled on an answer nobody gave.
-					a.rescheduleThreadRequest(row, threadPollErrorDelay, "The other computer did not report this request.")
-					continue
-				}
-				owed, err := a.applyCurrentPeerRow(row.Token, computerID, answer, heard)
-				wakes = append(wakes, owed...)
-				if err != nil {
-					logThreadRequestSweep("apply request "+row.Token, err)
-					a.rescheduleThreadRequest(row, threadPollErrorDelay, err.Error())
-					continue
-				}
-				a.scheduleNextThreadPoll(row, now)
+			owed, err := a.applyCurrentPeerRow(row.Token, computerID, answer, heard)
+			wakes = append(wakes, owed...)
+			if err != nil {
+				logThreadRequestSweep("apply request "+row.Token, err)
+				a.rescheduleThreadRequest(row, threadPollErrorDelay, err.Error())
+				continue
 			}
-			return nil
-		})
+			a.scheduleNextThreadPoll(row, now)
+		}
+		return nil
 	})
 	unlock()
 	if err != nil {
@@ -138,11 +136,14 @@ func (a *App) sendOwedThreadRequestAcks(computerID string) {
 	if len(acks) == 0 {
 		return
 	}
-	if _, err := a.callThreadRequestStatus(computerID, ThreadPeerPoll{Ack: threadPeerAcks(acks)}); err != nil {
-		a.failThreadRequestAcks(computerID, acks)
-		return
+	read := a.ownerReads.start(a.lifeCtx(), computerID, nil)
+	_, origin, err := a.readThreadRequestStatus(computerID, ThreadPeerPoll{Ack: threadPeerAcks(acks)})
+	if err == nil {
+		err = read.commit(origin, "", nil, func() error { a.clearThreadRequestAcks(acks); return nil })
 	}
-	a.clearThreadRequestAcks(acks)
+	if err != nil {
+		a.failThreadRequestAcks(computerID, acks)
+	}
 }
 
 func threadPeerAcks(acks []store.ThreadRequestAck) []ThreadPeerAck {

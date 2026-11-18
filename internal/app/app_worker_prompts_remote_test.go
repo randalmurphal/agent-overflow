@@ -335,7 +335,7 @@ func TestARemotePromptLeftOutOfALateAnswerIsDeliveredAgain(t *testing.T) {
 		t.Fatalf("the listing there: %+v, %v; want one prompt", listing.Prompts, err)
 	}
 	reconcile := func(listed []ThreadAgentPrompt) {
-		done := p.source.noteRemotePrompts(origin, p.spawn, ThreadAgentRows{Prompts: listed}, nil)
+		done := p.source.noteRemotePrompts(p.source.ownerReads.start(t.Context(), p.computer, nil), origin, p.spawn, ThreadAgentRows{Prompts: listed}, nil)
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}

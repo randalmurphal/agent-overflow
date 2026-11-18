@@ -129,7 +129,7 @@ func parseWorkerPromptWake(sendID string) (workerPromptWake, bool) {
 // noteRemotePrompts takes up what one recorded agent_rows answer says of
 // the prompts the spawn's worker routed here. A failed call says nothing;
 // a refusal of the thread as not the spawn's says there are none.
-func (a *App) noteRemotePrompts(origin attachedbackends.PeerRead, spawn store.ThreadRequest, listing ThreadAgentRows, err error) <-chan error {
+func (a *App) noteRemotePrompts(read ownerRead, origin attachedbackends.PeerRead, spawn store.ThreadRequest, listing ThreadAgentRows, err error) <-chan error {
 	if err != nil && !threadAgentPeerRefused(err) {
 		return nil
 	}
@@ -145,7 +145,7 @@ func (a *App) noteRemotePrompts(origin attachedbackends.PeerRead, spawn store.Th
 			return
 		}
 		name := a.remoteComputerNames()[spawn.TargetComputerID]
-		done <- origin.Commit(func() error { return a.reconcileRemotePrompts(spawn, prompts, name) })
+		done <- read.commit(origin, "", err, func() error { return a.reconcileRemotePrompts(spawn, prompts, name) })
 	}) {
 		done <- context.Canceled
 	}

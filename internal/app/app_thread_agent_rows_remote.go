@@ -40,12 +40,8 @@ const (
 // threadAgentPeerCache is the last agent_rows answer for each remote spawn,
 // by the spawn's token, and the asking of them.
 type threadAgentPeerCache struct {
-	// recording is held across an answer's pairing check and its record,
-	// and across a forget, so an answer whose computer was forgotten while
-	// its call ran is never recorded. It is taken before mu.
-	recording sync.Mutex
-	mu        sync.Mutex
-	entries   map[string]*threadAgentPeerEntry
+	mu      sync.Mutex
+	entries map[string]*threadAgentPeerEntry
 	// waiting is the spawns to ask about, oldest first; queued holds
 	// their tokens, and running the tokens being asked now. again holds the
 	// running spawns a refresh asked about meanwhile: a change may have
@@ -226,7 +222,7 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 // readPeerAgentRows orders pane and forwarded detail reads with the owner's
 // state reads. A reply superseded while it was in flight uses the current tree.
 func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, depth int) threadAgentPeerAnswer {
-	read := a.ownerReads.start([]string{spawn.Token})
+	read := a.ownerReads.start(ctx, spawn.TargetComputerID, []string{spawn.Token})
 	defer read.close()
 	listing, origin, err := a.peerThreadAgentRows(ctx, spawn, depth)
 	answer := threadAgentPeerAnswer{listing: listing, err: err}
@@ -234,14 +230,14 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 		return answer
 	}
 	c := &a.threadAgentPeers
-	c.recording.Lock()
+	unlock := a.lockComputerPairing(spawn.TargetComputerID)
 	paired, lookupErr := a.peerPaired(spawn.TargetComputerID)
 	if lookupErr != nil {
-		c.recording.Unlock()
+		unlock()
 		return threadAgentPeerAnswer{err: lookupErr}
 	}
 	if !paired {
-		c.recording.Unlock()
+		unlock()
 		return threadAgentPeerAnswer{err: errThreadAgentPeerUnpaired}
 	}
 	changed := false
@@ -251,7 +247,7 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 			if _, writeErr := a.store.SetThreadRequestNestedOpen(spawn.Token, err == nil && peerListingOpen(listing)); writeErr != nil {
 				return writeErr
 			}
-			prompts = a.noteRemotePrompts(origin, spawn, listing, err)
+			prompts = a.noteRemotePrompts(read.delivery(), origin, spawn, listing, err)
 		}
 		c.mu.Lock()
 		changed = c.noteAnswerLocked(spawn, listing, err, depth <= 0 && listing.Open != nil)
@@ -260,15 +256,10 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 		c.mu.Unlock()
 		return nil
 	}
-	applyErr := read.apply(func() error {
-		if origin.Answered() {
-			return origin.Commit(commit)
-		}
-		return commit()
-	})
-	c.recording.Unlock()
+	applyErr := read.commit(origin, "", err, commit)
+	unlock()
 	if applyErr != nil {
-		if errors.Is(applyErr, errReadSuperseded) {
+		if errors.Is(applyErr, errReadSuperseded) || errors.Is(applyErr, errPeerReadInvalidated) {
 			if kept, ok := a.cachedPeerAgentRows(spawn); ok {
 				return kept
 			}
@@ -398,7 +389,8 @@ func errorText(err error) string {
 // flight records nothing when it returns.
 func (a *App) forgetPeerAgentRows(computerID string) {
 	c := &a.threadAgentPeers
-	c.recording.Lock()
+	a.ownerReads.mu.Lock()
+	delete(a.ownerReads.peers, computerID)
 	c.mu.Lock()
 	for token, entry := range c.entries {
 		if entry.spawn.TargetComputerID == computerID {
@@ -421,7 +413,7 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	// Behind every reconcile an answer recorded before this queued, and
 	// ahead of none: no answer from it is recorded from here on.
 	a.workerPrompts.run(func() { a.forgetRemotePrompts(computerID) })
-	c.recording.Unlock()
+	a.ownerReads.mu.Unlock()
 	if err != nil {
 		// The sweep clears what this could not: it drops a spawn whose
 		// computer is no longer paired.

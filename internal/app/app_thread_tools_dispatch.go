@@ -56,7 +56,7 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
-	read := t.app.ownerReads.start([]string{row.Token})
+	read := t.app.ownerReads.start(ctx, computerID, []string{row.Token})
 	defer read.close()
 	reply, sent, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
 		Tool:        tool,
@@ -101,9 +101,9 @@ func (t threadToolsApp) dispatchedAck(
 	var failed error
 	if sendErr == nil {
 		err := t.app.recordDispatchStatus(computer.ID, row.Token, read, reply)
-		if errors.Is(err, errReadSuperseded) {
+		if errors.Is(err, errReadSuperseded) || errors.Is(err, errPeerReadInvalidated) {
 			ctx, cancel := context.WithTimeout(ctx, threadPollCallTimeout)
-			for errors.Is(err, errReadSuperseded) && ctx.Err() == nil {
+			for (errors.Is(err, errReadSuperseded) || errors.Is(err, errPeerReadInvalidated)) && ctx.Err() == nil {
 				err = t.app.rereadDispatchStatus(ctx, computer.ID, row.Token)
 			}
 			cancel()
@@ -143,7 +143,7 @@ func (t threadToolsApp) dispatchedAck(
 // A notification can supersede dispatch before the owner has read the new
 // target. Read its receipt before returning the acknowledgment to the caller.
 func (a *App) rereadDispatchStatus(ctx context.Context, computer, token string) error {
-	read := a.ownerReads.start([]string{token})
+	read := a.ownerReads.start(ctx, computer, []string{token})
 	defer read.close()
 	var reply ThreadPeerPollReply
 	origin, err := a.backends.ReadThreadPeer(ctx, computer, transport.CapabilityThreadTools, "", "ThreadToolRequestStatus", &reply, ThreadPeerPoll{Tokens: []string{token}})
@@ -159,12 +159,10 @@ func (a *App) rereadDispatchStatus(ctx context.Context, computer, token string) 
 func (a *App) recordDispatchStatus(computer, token string, read ownerRead, reply peerDispatchReply) error {
 	var wakes []threadWakeRef
 	unlock := a.lockComputerPairing(computer)
-	err := read.apply(func() error {
-		return reply.origin.Commit(func() error {
-			var err error
-			wakes, err = a.applyCurrentPeerRow(token, computer, reply.ThreadPeerRequest, threadPeerHearing{at: time.Now()})
-			return err
-		})
+	err := read.commit(reply.origin, "", nil, func() error {
+		var err error
+		wakes, err = a.applyCurrentPeerRow(token, computer, reply.ThreadPeerRequest, threadPeerHearing{at: time.Now()})
+		return err
 	})
 	unlock()
 	a.deliverThreadWakes(wakes)

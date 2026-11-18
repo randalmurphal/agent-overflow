@@ -385,7 +385,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 			<-release
 		})
 		<-busy
-		done := p.source.noteRemotePrompts(origin, p.spawn, listing, nil)
+		done := p.source.noteRemotePrompts(p.source.ownerReads.start(t.Context(), p.computer, nil), origin, p.spawn, listing, nil)
 		if err := p.manager.Remove(p.computer); err != nil {
 			close(release)
 			t.Fatal(err)
