@@ -3,7 +3,7 @@ package app
 // The write that cannot be taken back carries its own precondition: what
 // a decision on rest reads of the store is read again inside the write's
 // transaction, on that transaction's connection, so work a thread below
-// takes before the write holds it, a workflow run's obligation has no gap
+// takes before the write holds it, a workflow run's hold has no gap
 // between its rest and its report, and the write needs no second
 // connection.
 
@@ -180,8 +180,8 @@ func TestARunBelowBetweenItsRestAndItsEventHoldsTheRequest(t *testing.T) {
 	f.expectHeld(t, worker, token, "between a run's rest below and its event")
 }
 
-// A run bound to the worker comes to rest in the store before its event
-// records the report it owes, with the report's delivery held: the
+// A run bound to the worker comes to rest in the store, the write owing
+// its report, before its event, with the report's delivery held: the
 // worker's request stays held through the rest's write, its event and the
 // held delivery, and settles once the worker has read the report.
 func TestARunsRestHoldsItsThreadUntilTheReportIsDelivered(t *testing.T) {

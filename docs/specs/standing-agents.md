@@ -912,19 +912,17 @@ Ruling 36, as built:
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
-  has no turn, no queued message, no open prompt (`threadWaitingOn`:
+  has no turn (its latest turn row open, or a turn triage is opening), no queued message, no open prompt (`threadWaitingOn`:
   the session's prompts, and a Codex async question not yet answered or
   dismissed, which reads `blocked` while nothing else runs or is queued,
   as `thread_status` reads it awaiting input), no running background work
   (Claude tasks and background agents and remote commands, which the
   store holds, and Codex subagents and terminals, which triage holds), no
   armed loop or watch (`agent_wakes`), no reminder that has not fired, no
-  workflow run that reports to it running or owing it its report (the
-  workflow service holds that obligation by thread, from the run's running
-  event, the engine's start for a run already running, or the binding of a
-  running run, until its last rest's wake job ends, whatever it did with
-  the report: `workflowapp.Service.ReportOwedTo`; a running run is also
-  read from the store), no answer on its way to it (a request it made
+  workflow run bound to it now that runs or that rested with its report
+  owed (`work_items.reports_owed`, counted in the statement that writes
+  the rest and taken when that rest's wake job ends, whatever it did with
+  the report; the engine's start clears what a previous process owed), no answer on its way to it (a request it made
   settled with its answer owed as a message, not yet echoed by the turn
   that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
@@ -956,8 +954,13 @@ Ruling 36, as built:
   thread by spawn link, and its durable sources in one snapshot
   (`ReadSubtreeRest`); then it notes each reached thread's revision; then
   what memory holds of each reached thread (its turn, queued messages,
-  prompts, provider timers, parked calls, Codex background work and
-  workflow obligations). The write carries that rest as its precondition
+  prompts, provider timers, parked calls and Codex background work). The
+  durable sources include each thread's latest turn row and its workflow
+  runs' state and owed reports, joined to each run's binding as it stands,
+  so a rebinding in any order moves the hold with nothing told. A turn
+  marked opening before its row commits (a provider start, a soft-close
+  continuation, a queued message's echo) bumps the thread's revision at
+  the mark, under the lock that marks it. The write carries that rest as its precondition
   (`store.RestGuard`): inside its own transaction, on that transaction's
   connection, the store reads the subtree and its durable sources again,
   and the write happens only if every thread reached then was reached by
@@ -975,8 +978,11 @@ Ruling 36, as built:
   computer's other threads, requests, parked calls, workflow runs or owed
   reports. A decision the write stops waits for the pass the change asks
   for. A read that fails holds the request, is logged, and wakes the
-  request sweep, which reads it again within the retry delay, with no new
-  event, until it reads or the request settles another way; the sweep
+  request sweep, which tries again within the retry delay, with no new
+  event, until an attempt completes: its guarded write ran, settling the
+  request or finding the thread no longer at rest, or its read found the
+  thread not at rest; a thread none of whose requests is still held is
+  dropped. The retention sweep
   leaves whole each spawn it could not read at rest and reads it again on
   its next pass. Otherwise the memory record and the counts below only
   draw rows, frames, summaries and Stop All's selection, which the next
@@ -988,8 +994,8 @@ Ruling 36, as built:
   prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
   and its background tray, wake, question, request and workflow frames,
   a workflow run's binding, which names the thread it left and the one
-  it reports to now, both re-evaluated, a workflow run's obligation
-  changing, and its session's end (`noteWorkerWaiting`,
+  it reports to now, both re-evaluated, a workflow run's report settling,
+  and its session's end (`noteWorkerWaiting`,
   which reads its durable sources again: its unanswered questions, the
   answers on their way to it, the background inventory, its workflow
   runs, its loops and watches, and its reminders). A changed request
@@ -999,8 +1005,8 @@ Ruling 36, as built:
   settles the
   background work it owned and ends its timers. At boot one indexed read
   per durable source (armed loops and watches, unfired reminders, pending
-  remote commands, answers on their way, running workflow runs,
-  unanswered questions, queued messages) names the threads to record,
+  remote commands, answers on their way, workflow runs running or owing a
+  report, unanswered questions, queued messages) names the threads to record,
   each re-evaluated before any request held for a thread's rest may
   settle (`recoverRestAtBoot`); the memory sources report themselves
   once they change. A deleted thread is forgotten. A

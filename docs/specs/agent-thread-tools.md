@@ -1399,13 +1399,13 @@ What settles a request, in order:
    once. `thread_status` and a parked wait report it running with what
    it waits on (`waiting_on`); a request on another computer carries it
    in the poll's answer (`waitingOn`), and its row there reads
-   `waiting`. Every change that can bring a thread to rest reaches the
-   Agents rows' drain, which asks for a pass over the held requests;
-   a pass reads each held thread's rest itself, from facts complete when
-   it reads them, a thread's durable sources before its memory ones, so
-   an answer on its way to a thread keeps it from rest until the turn it
-   starts is open, and a workflow run's report from its rest until that
-   rest's wake job ends. The
+   `waiting`. Every change that can bring a thread to rest asks for a
+   pass over the held requests, which decides each by the rule in
+   [owned workers](standing-agents.md#owned-workers): an answer on its
+   way to a thread keeps it from rest until the turn it starts is open,
+   a turn starting keeps it from rest from the moment it is marked, and
+   a workflow run bound to it keeps it while the run runs and, once it
+   rests, until its report is delivered or dropped. The
    Stop of the thread, the person's or the spawner's `thread_cancel` by
    thread id, and an explicit `thread_reply` settle it as before. A
    boot holds again a running receipt whose turn ended as it would
@@ -1414,10 +1414,11 @@ What settles a request, in order:
    with a later turn's error; no held request settles at rest until the
    boot has recorded every thread a recovered source keeps from rest
    (`recoverRestAtBoot`), a pass asked for meanwhile waiting for it. A
-   source or thread the recovery could not read, and a held request's
-   read of rest that failed, which wakes the request sweep, are read
-   again within the retry delay by each pass of the sweep until they
-   succeed. A paired computer that
+   source or thread the recovery could not read is read again within the
+   retry delay by each pass of the sweep until it reads; a held request
+   whose read of rest failed stays held and is retried as
+   [owned workers](standing-agents.md#owned-workers) states, with no new
+   event. A paired computer that
    settles at rest says so in the poll's answer (`restRule`); one that
    does not settles such a request when its turn ends, and its
    `finished` answer is recorded `rest_unreported`, which

@@ -176,9 +176,12 @@ sources (`readRest`, `app_thread_rest_assess.go`) and passes the store
 write its guard (`restDecision.guard`), which reads the durable sources
 again inside the write's transaction and compares each reached thread's
 revision. An owner of a source memory holds bumps the thread's revision
-after each change (`noteThreadRestChange`); a new memory source needs its
-bump, and nothing the guard calls may take a store connection or an
-owner's lock.
+after each change (`noteThreadRestChange`), and one whose durable row
+commits later, such as a turn triage marks opening, bumps at the mark
+under the lock that marks it; a new memory source needs its bump, and
+nothing the guard calls may take a store connection or an owner's lock.
+A durable source belongs in the store's read (`threadRestSourcesSQL`),
+joined there to whatever names its thread, not in a memory copy.
 `liveWorkers` and the `open_below_*` marks only draw rows, frames,
 summaries and Stop All's selection.
 

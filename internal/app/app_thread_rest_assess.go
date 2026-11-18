@@ -17,10 +17,11 @@ import (
 // only draw rows, frames and summaries, and writes neither.
 //
 // The decision is made twice. Before its write it reads the subtree and its
-// durable sources (store.ReadSubtreeRest), notes the reached threads'
-// revisions (restRevisions), then reads what memory holds of them: a turn,
-// a queued message, a prompt, a provider timer, a call parked on a send or
-// ask, a workflow run's obligation, Codex's background work. The write
+// durable sources (store.ReadSubtreeRest), among them each thread's
+// latest turn row and its workflow runs' holds, notes the reached threads'
+// revisions (restRevisions), then reads what memory holds of them: a turn
+// triage holds, a queued message, a prompt, a provider timer, a call parked
+// on a send or ask, Codex's background work. The write
 // carries the rest as its precondition (store.RestGuard): inside its own
 // transaction the store reads the subtree and its durable sources again,
 // and the write happens only if they read at rest, no thread is reached
