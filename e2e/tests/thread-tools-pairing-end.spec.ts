@@ -2,11 +2,11 @@
 // ends before this computer hears of it: a late reply the other computer
 // dropped before it was collected reads so on the caller's Agents row, with
 // the first answer kept; a command running there when the person pairs
-// with that computer again names it as it was named when the command
-// started, though the new pairing is live under another name; and a
-// command running there when that computer revokes this one is told to its
-// thread once, finished with its outcome unknown, naming that computer as
-// the person knew it, and its transcript row says why.
+// with that computer again keeps running and is collected under the new
+// pairing, named as that pairing names the computer; and a command running
+// there when that computer revokes this one is told to its thread once,
+// finished with its outcome unknown, naming that computer as the person
+// knew it, and its transcript row says why.
 // Specs: docs/specs/agent-thread-tools.md ("Wakes from another computer",
 // "Reaching another computer"), docs/architecture/remote-commands.md.
 import { randomUUID } from 'node:crypto';
@@ -156,7 +156,7 @@ test('a late reply the other computer dropped before it was collected reads as e
   await row.screenshot({ path: test.info().outputPath('late-reply-expired.png'), animations: 'disabled' });
 });
 
-test('a command a replaced pairing started names the computer as it was named then', async ({ page }) => {
+test('a command running when the computer is paired again finishes under the new pairing, named as it names the computer', async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(30_000);
   const builder = await seed(home, 'replaced-builder', ['Replaced builder']);
@@ -173,7 +173,7 @@ test('a command a replaced pairing started names the computer as it was named th
           argv: ['sh', '-c', `while [ ! -f '${finish}' ]; do sleep 0.1; done`], wait_seconds: 0,
         },
       } }], text: 'The build runs over there.' },
-      { text: 'Its outcome is unknown.' },
+      { text: 'It finished.' },
     ],
     afterTurns: 'silent',
   }));
@@ -188,7 +188,7 @@ test('a command a replaced pairing started names the computer as it was named th
   // nickname, so it is live under that computer's own name.
   const told = home.waitForEvent<HarnessMockEventData>(
     'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === builder.path && (ev.report.input ?? '').includes('Result: unknown'),
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === builder.path && (ev.report.input ?? '').includes('Remote job finished on'),
     90_000,
   );
   const pairing = await headlessPairing(remote);
@@ -202,20 +202,24 @@ test('a command a replaced pairing started names the computer as it was named th
   const live = (await home.rpc<{ id: string; name: string; nickname?: string }[]>('ListBackends')).find((b) => b.id === remoteID)!;
   expect(live.nickname ?? '').toBe('');
   expect(live.name).not.toBe('GPU computer');
-  const input = (await told).report.input ?? '';
-  expect(input).toContain('Remote job finished on GPU computer');
-  expect(input).not.toContain(live.name);
-  expect(input).toContain("The pairing with this computer ended, so this command's outcome is unknown.");
+
+  // The command still runs there; once it finishes, the new pairing
+  // collects it and its thread is told, naming the computer as now.
   await writeFile(finish, '');
+  const input = (await told).report.input ?? '';
+  expect(input).toContain(`Remote job finished on ${live.name}: release build`);
+  expect(input).toContain('Result: succeeded; exit code: 0');
+  expect(input).not.toContain('GPU computer');
 
   await home.open(page);
   await page.getByTestId('thread-row-title').getByText('Replaced builder', { exact: true }).click();
   const timeline = page.getByRole('log', { name: 'Message History' });
-  await expect(timeline.getByText(/release build on GPU computer.* unknown/)).toBeVisible();
+  await expect(timeline.getByTestId('agent-message-sender').getByText(`release build on ${live.name}`, { exact: true })).toBeVisible();
   await timeline.getByRole('button', { name: /Expand 1 activity row/ }).click();
   const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
-  await expect(card.locator('[data-machine]').first()).toHaveText('(GPU computer)');
-  await card.screenshot({ path: test.info().outputPath('replaced-command-name.png'), animations: 'disabled' });
+  await expect(card.locator('[data-machine]').first()).toHaveText(`(${live.name})`);
+  await expect(card.getByTestId('row-error-msg')).toHaveCount(0);
+  await card.screenshot({ path: test.info().outputPath('repaired-command-name.png'), animations: 'disabled' });
 
   // The next case starts under the new pairing, named as before.
   await home.rpc('RenameBackend', remoteID, 'GPU computer');

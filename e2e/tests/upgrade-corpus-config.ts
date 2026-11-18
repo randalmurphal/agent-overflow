@@ -764,9 +764,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   {
     table: 'thread_requests',
-    columns: ['owner_op_seq', 'ack_owed', 'late_reply_expired', 'pairing', 'target_computer_name'],
+    columns: ['owner_op_seq', 'ack_owed', 'late_reply_expired', 'target_computer_name'],
     values: { late_reply_expired: [1] },
-    reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the pairing and computer name a request there was admitted under (v158), which need a second computer",
+    reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the computer name a request there was admitted under (v158), which need a second computer",
   },
   { table: 'thread_owner_ops', reason: 'an archive, delete or release owed to a paired computer for a spawn there (v158), which needs a second computer' },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
