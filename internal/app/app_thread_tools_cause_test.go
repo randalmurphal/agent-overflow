@@ -161,6 +161,22 @@ func TestAnInterruptionsCauseCrossesComputersAsData(t *testing.T) {
 		}
 	})
 
+	t.Run("a code this computer does not know, with nothing said", func(t *testing.T) {
+		row := collected(t, func(r *ThreadPeerRequest) {
+			// A newer computer's own cause for a turn stopped before it
+			// said anything.
+			r.Cause = &ThreadPeerCause{Code: "evicted"}
+			r.Answer, r.AnswerKind = "", store.ThreadAnswerFinal
+		}, settleThere(threadtools.Cause{Code: threadtools.CauseTurn}, ""))
+		if row.Cause != "" || len(row.Answer) != 0 {
+			t.Fatalf("collected cause %q answer %q, want no cause and no text", row.Cause, row.Answer)
+		}
+		text, facts := wakeOf(t, row)
+		if !strings.HasSuffix(text, "] was interrupted.") || facts.StoppedBy != "" || len(facts.Body) != 0 {
+			t.Errorf("wake %q with facts %+v, want a status line saying it was interrupted and no stopper", text, facts)
+		}
+	})
+
 	t.Run("a code this computer does not know", func(t *testing.T) {
 		row := collected(t, func(r *ThreadPeerRequest) {
 			if r.Cause != nil {

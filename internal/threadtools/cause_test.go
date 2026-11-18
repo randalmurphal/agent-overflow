@@ -149,6 +149,35 @@ func TestADigestClipsTheAnswerAsTheSingleWakeDoes(t *testing.T) {
 	}
 }
 
+// TestAnInterruptionWithNothingToSaySaysItWasInterrupted holds a request
+// interrupted with no cause this build knows and no text, a newer
+// computer's own code with nothing written, to a wake that still says it
+// was interrupted: a status line for one thread, a heading for several,
+// with no body and no stopper.
+func TestAnInterruptionWithNothingToSaySaysItWasInterrupted(t *testing.T) {
+	one := []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}}}
+	several := []WakeSource{
+		{Title: "Worker", ThreadID: "t-work", Tokens: []string{"tok"}},
+		{Title: "Other", ThreadID: "t-other", Tokens: []string{"tok-2"}},
+	}
+	for _, cause := range []Cause{{}, {Code: "evicted"}} {
+		text, facts := Wake{Kind: WakeInterrupted, Sources: one, Cause: cause}.Message()
+		if want := `"Worker" (t-work) [token tok] was interrupted.`; text != want {
+			t.Errorf("%+v: wake = %q, want %q", cause, text, want)
+		}
+		if facts.Outcome != WakeInterrupted || facts.StoppedBy != "" || len(facts.Body) != 0 {
+			t.Errorf("%+v: facts = %+v, want an interruption with no body and no stopper", cause, facts)
+		}
+		text, facts = Wake{Kind: WakeInterrupted, Sources: several, Cause: cause}.Message()
+		if want := "2 threads were interrupted.\n- \"Worker\" (t-work) [token tok]\n- \"Other\" (t-other) [token tok-2]"; text != want {
+			t.Errorf("%+v: digest = %q, want %q", cause, text, want)
+		}
+		if facts.StoppedBy != "" || len(facts.Body) != 0 {
+			t.Errorf("%+v: digest facts = %+v, want no body and no stopper", cause, facts)
+		}
+	}
+}
+
 // TestACausesOwnSentenceIsNeverClipped says a cause's sentence whole
 // however long the canceller's title, and still as the row's message: the
 // preview bounds what a turn wrote, not why it stopped.

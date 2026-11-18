@@ -189,9 +189,13 @@ func (w Wake) status(b *spanBuilder, facts *MessageFacts) {
 			b.write(fmt.Sprintf("%s was interrupted by a restart of %s.", who, restartedComputer(source.Computer)))
 			return
 		}
-		// The reason is said whole; with no known cause the text is the
-		// answer, whole, and names no stopper.
+		// With no known cause the text is the answer, whole, and names no
+		// stopper; with no text either, it was interrupted.
 		shown := w.Cause.render(w.Text)
+		if shown == (shownCause{}) {
+			b.write(who + " was interrupted.")
+			return
+		}
 		facts.StoppedBy = shown.stoppedBy
 		b.write(who + ": ")
 		w.writeShown(b, facts, shown)
@@ -262,10 +266,12 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 			break
 		}
 		// Their shared cause in its words, or with no known cause their
-		// shared text, whole.
+		// shared text, whole; with no text either, they were interrupted.
 		cause := w.Cause.render(w.Text)
 		facts.StoppedBy = cause.stoppedBy
 		switch {
+		case cause == (shownCause{}):
+			head, shared = fmt.Sprintf("%d threads were interrupted.", count), false
 		case w.Cause.Code == CauseUserStop:
 			// The head says it for every thread.
 			head, shown, shared = fmt.Sprintf("%d threads: %s", count, WakeDigestPersonStopped), shownCause{answer: cause.answer}, cause.answer != ""
@@ -273,8 +279,7 @@ func (w Wake) digest(b *spanBuilder, facts *MessageFacts) {
 				head += " Each one's last message:"
 			}
 		default:
-			head, shown = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count), cause
-			shared = cause.reason+cause.sentence+cause.answer != ""
+			head, shown, shared = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count), cause, true
 		}
 	case WakeExpired:
 		head, shared = fmt.Sprintf("%d threads did not answer within a day.", count), false

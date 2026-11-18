@@ -1738,6 +1738,53 @@
     ]
   },
   {
+    "name": "interrupted, with no cause this build knows and no text",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was interrupted.",
+    "members": [
+      79
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 79,
+          "outcome": "interrupted",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
     "name": "interrupted before its thread existed",
     "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: That request was accepted but its thread was never created.",
     "members": [
@@ -3253,6 +3300,101 @@
     "parts": [
       {
         "body": "The thread's session ended before it read the request.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "computerId": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "computerId": "computer-desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: interrupted, with no cause this build knows and no text",
+    "text": "2 threads were interrupted.\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]",
+    "members": [
+      158
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 158,
+          "outcome": "interrupted",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "threads": [
+            {
+              "threadId": "t-work",
+              "title": "Worker",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ]
+            },
+            {
+              "threadId": "t-lex",
+              "title": "Lexer",
+              "computerId": "computer-desk",
+              "computerName": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "",
         "footer": null,
         "wake": {
           "kind": "interrupted",
