@@ -12,6 +12,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import ErrorReportActions from '../shared/ErrorReportActions.svelte';
   import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
+  import OwnMemoryBanner from './OwnMemoryBanner.svelte';
   import type { PaneErrorKind } from '../../stores/threadPaneShared';
   import {
     getProviderStatus,
@@ -378,6 +379,7 @@
       </div>
     {/each}
   {/if}
+  <OwnMemoryBanner thread={pane.thread} />
   {#if pane.thread && pane.unsavedRows}
     {@const unsaved = pane.unsavedRows}
     <div

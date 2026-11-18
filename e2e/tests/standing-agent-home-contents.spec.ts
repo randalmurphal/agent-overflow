@@ -25,7 +25,9 @@
 // whole memory. Then the timeline: neither the block nor the delivery shows as a
 // message, the worker's first message is an agent row whose body shows the
 // attached file and whose facts name the agent's role and the route of its
-// questions.
+// questions. The banner on the assistant while it runs with its provider's
+// own memory too (expectOwnMemoryBanner): shown and cleared on the
+// assistant, never on its worker or an ordinary thread.
 //
 // No mock speaks claude-tui; its leg is proven at the argv level by
 // TestStandingAgentSessionsCarryTheirHomeFiles in internal/app.
@@ -39,6 +41,7 @@ import {
   ATTACHED_OPENING,
   ROLE,
   VERIFICATION,
+  expectOwnMemoryBanner,
   runHomeContents,
   runHomeHooksOff,
   scrollTimelineToTop,
@@ -93,6 +96,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await showTextUncovered(page, first, 'Go to the sender, which spawned this thread');
     // The whole expanded message, attached file to facts, in one shot.
     await capture(page, `${provider}-worker-first-message.png`, first);
+
+    await expectOwnMemoryBanner(harness, page, provider, (section, title) => openThread(page, section, title));
   });
 
   test(`${provider}: a session whose hooks do not run shows why its memory is missing`, async ({ harness, page }) => {

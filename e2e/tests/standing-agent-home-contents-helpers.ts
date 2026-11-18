@@ -705,3 +705,65 @@ export async function showTextUncovered(page: Page, scope: Locator, text: string
     })
     .toBe(true);
 }
+
+/** Where a thread row lives in the sidebar: an assistant's, or a thread in a project. */
+export type SidebarSection = 'assistants' | 'projects';
+
+/**
+ * The banner on an assistant that runs with two memories
+ * (docs/specs/standing-agents.md, "Memory"). By default the assistant runs
+ * without its provider's own memory and shows none. With that provider's
+ * choice at "never" while its own memory is on, the assistant's thread
+ * shows it, with one action that opens the memory settings and nothing
+ * that dismisses it; its worker and an ordinary thread never do. It goes
+ * when the choice changes, and when the provider's own memory is turned
+ * off and the window comes back. `open` shows a thread by its sidebar row.
+ */
+export async function expectOwnMemoryBanner(
+  harness: HarnessApp,
+  page: Page,
+  provider: ProviderName,
+  open: (section: SidebarSection, title: string) => Promise<void>,
+): Promise<void> {
+  const name = provider === 'codex' ? 'Codex' : 'Claude';
+  const key = provider === 'codex' ? 'codexOwnMemoryOff' : 'claudeOwnMemoryOff';
+  const ownMemory = (on: boolean) =>
+    provider === 'codex'
+      ? { path: '.codex/config.toml', content: `[features]\nmemories = ${on}\n` }
+      : { path: '.claude/settings.json', content: `${JSON.stringify({ autoMemoryEnabled: on })}\n` };
+  await harness.rpc('HarnessSeed', { providerHome: [ownMemory(true)] });
+  const banner = page.getByTestId('own-memory-banner');
+
+  await open('assistants', 'Release lead');
+  await expect(page.getByText('Noted.', { exact: true })).toBeVisible();
+  await expect(banner).toHaveCount(0);
+  await harness.rpc('UpdateSettings', { [key]: 'never' });
+  await expect(banner).toContainText(
+    `${name}'s own memory is also on for this assistant, so it may save what it learns there instead of in Agent Overflow memory.`,
+  );
+  await expect(banner.getByRole('button')).toHaveText(['Memory settings']);
+
+  await open('projects', 'Parser review');
+  await expect(page.getByTestId('agent-message-row').first()).toBeVisible();
+  await expect(banner).toHaveCount(0);
+  await open('projects', 'Ordinary');
+  await expect(page.getByTestId('own-memory-banner')).toHaveCount(0);
+
+  await open('assistants', 'Release lead');
+  await expect(banner).toBeVisible();
+  await banner.getByRole('button', { name: 'Memory settings' }).click();
+  await expect(page.getByTestId('settings-memory')).toBeVisible();
+  await expect(page.getByTestId(`own-memory-${key}-never`).locator('input')).toBeChecked();
+  await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
+  await expect(page.getByTestId('settings-overlay')).toHaveCount(0);
+
+  // The choice changes, then the provider's own memory goes off outside
+  // the app and the window comes back.
+  await harness.rpc('UpdateSettings', { [key]: 'agentOverflowMemory' });
+  await expect(banner).toHaveCount(0);
+  await harness.rpc('UpdateSettings', { [key]: 'never' });
+  await expect(banner).toBeVisible();
+  await harness.rpc('HarnessSeed', { providerHome: [ownMemory(false)] });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(banner).toHaveCount(0);
+}
