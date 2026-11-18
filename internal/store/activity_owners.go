@@ -13,7 +13,7 @@ type ActivityOwner struct {
 
 // ActivityOwners resolves changed requests and threads to the foreign
 // receipts that read them, including the lineage of settled spawns.
-func (s *Store) ActivityOwners(tokens, threads []string) ([]ActivityOwner, error) {
+func (s *Store) ActivityOwners(tokens, threads []string) (_ []ActivityOwner, err error) {
 	if len(tokens)+len(threads) == 0 {
 		return nil, nil
 	}
@@ -29,7 +29,7 @@ func (s *Store) ActivityOwners(tokens, threads []string) ([]ActivityOwner, error
 	if err != nil {
 		return nil, fmt.Errorf("store: find owners of changed activity: %w", err)
 	}
-	defer rows.Close()
+	defer closeAgentWakeRows(rows, "find owners of changed activity", &err)
 	var out []ActivityOwner
 	for rows.Next() {
 		var owner ActivityOwner

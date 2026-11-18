@@ -23,7 +23,7 @@ type SpawnRevision struct {
 	Archived       bool   `json:"archived,omitempty"`
 }
 
-func (s *Store) PendingSpawnRevisions(device, after string, limit int) ([]SpawnRevision, error) {
+func (s *Store) PendingSpawnRevisions(device, after string, limit int) (_ []SpawnRevision, err error) {
 	if device == "" || limit < 1 {
 		return nil, fmt.Errorf("store: listing spawn revisions requires a device and a positive limit")
 	}
@@ -34,7 +34,7 @@ func (s *Store) PendingSpawnRevisions(device, after string, limit int) ([]SpawnR
 	if err != nil {
 		return nil, fmt.Errorf("store: read pending spawn revisions: %w", err)
 	}
-	defer rows.Close()
+	defer closeAgentWakeRows(rows, "read pending spawn revisions", &err)
 	var revisions []SpawnRevision
 	for rows.Next() {
 		var change SpawnRevision

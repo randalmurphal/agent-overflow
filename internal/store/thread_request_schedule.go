@@ -212,10 +212,35 @@ func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []T
 
 // A capable destination reports accepted work as it changes. Its final
 // status at the late reply deadline remains due across a suspended process.
-const ownerPollMomentSQL = `CASE
-	WHEN target_computer_id NOT IN (SELECT value FROM json_each(?1) WHERE value IS NOT NULL) OR state='unconfirmed' THEN next_check
-	WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000))
-	END`
+const remotePollingSQL = `polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','accepted','running','finished')`
+const clockedOwnerRequestSQL = `polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','finished')`
+const ownerDeadlineSQL = `CASE WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000)) ELSE next_check END`
+
+// Seek one index entry per computer. Each computer's clock then seeks its
+// earliest deadline using the index for its advertised protocol.
+const pollingComputersCTE = `computers(id) AS (SELECT '' UNION ALL
+ SELECT (SELECT target_computer_id FROM thread_requests WHERE ` + remotePollingSQL + `
+  AND target_computer_id > computers.id ORDER BY target_computer_id LIMIT 1)
+ FROM computers WHERE id IS NOT NULL),
+ modes(id,capable) AS (SELECT id, id IN (SELECT value FROM json_each(?1) WHERE value IS NOT NULL)
+ FROM computers WHERE id <> '')`
+
+const earliestRemotePollSQL = `WITH RECURSIVE ` + pollingComputersCTE + `
+ SELECT MIN(CASE WHEN capable THEN (SELECT MIN(` + ownerDeadlineSQL + `) FROM thread_requests
+  WHERE target_computer_id=m.id AND ` + clockedOwnerRequestSQL + `)
+ ELSE (SELECT MIN(next_check) FROM thread_requests WHERE target_computer_id=m.id AND ` + remotePollingSQL + `) END)
+ FROM modes m`
+
+func dueRemotePollSQL(limit int) string {
+	return `WITH RECURSIVE ` + pollingComputersCTE + `,
+ due(key,at) AS (
+ SELECT token,next_check FROM modes m CROSS JOIN thread_requests WHERE target_computer_id=m.id AND NOT m.capable
+ AND ` + remotePollingSQL + ` AND next_check <= ?2
+ UNION ALL SELECT token,` + ownerDeadlineSQL + ` FROM modes m CROSS JOIN thread_requests WHERE target_computer_id=m.id AND m.capable
+ AND ` + clockedOwnerRequestSQL + ` AND ` + ownerDeadlineSQL + ` <= ?2
+ ORDER BY 2 LIMIT ` + strconv.Itoa(limit) + `)
+ SELECT ` + threadRequestColumns + ` FROM due CROSS JOIN thread_requests WHERE token=due.key ORDER BY due.at`
+}
 
 // DueThreadRequestPolls returns the remote requests the poller should visit.
 // The predicate matches idx_thread_requests_poll exactly, including the
@@ -229,13 +254,7 @@ func (s *Store) DueThreadRequestPolls(now int64, limit int, owners []string) ([]
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.reader().Query(
-		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE polling = 1
-		    AND target_computer_id <> ''
-		    AND state IN ('unconfirmed','accepted','running','finished')
-		    AND next_check <= ?2 AND (`+ownerPollMomentSQL+`) <= ?2
-		  ORDER BY next_check ASC LIMIT `+strconv.Itoa(limit), string(devices), now)
+	rows, err := s.reader().Query(dueRemotePollSQL(limit), string(devices), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due thread request polls: %w", err)
 	}
@@ -362,9 +381,7 @@ func (s *Store) NextThreadRequestWork(owners []string) (ThreadRequestSchedule, e
 		     WHERE kind = 'remind' AND state = 'accepted'
 		       AND `+s.assistantPauseSQL("thread_requests.caller_thread_id")+`),
 		   (SELECT MIN(next_check) FROM (
-		     SELECT MIN(`+ownerPollMomentSQL+`) AS next_check FROM thread_requests
-		      WHERE polling = 1 AND target_computer_id <> ''
-		        AND state IN ('unconfirmed','accepted','running','finished')
+		     SELECT (`+earliestRemotePollSQL+`) AS next_check
 		     UNION ALL
 		     SELECT MIN(next_check) FROM thread_requests WHERE `+ackOwedSQL+`)),
 		   (SELECT MIN(wake_next_check) FROM thread_requests

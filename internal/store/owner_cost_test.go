@@ -16,11 +16,13 @@ func TestOwnerChangeAndRecoveryReadTheSameWorkWithTenOrTenThousandSettledLinks(t
 		t.Helper()
 		const numbers = `WITH RECURSIVE n(x) AS (SELECT ?1 UNION ALL SELECT x+1 FROM n WHERE x<?2) `
 		mustExec(t, s.db, numbers+`INSERT INTO thread_requests(token,caller_thread_id,kind,target_computer_id,target_thread_id,state,polling,settled_at,created_at,updated_at,contact_due)
-		SELECT 'old-'||x,'caller','spawn','desk','worker-'||x,'finished',0,2,1,2,100 FROM n`, from, to)
+		SELECT 'old-'||x,'caller','spawn','desk','worker-'||x,'finished',1,2,1,2,100 FROM n`, from, to)
 		mustExec(t, s.db, numbers+`INSERT INTO thread_request_receipts(token,owner_device_id,kind,target_thread_id,state,created_at,updated_at)
 		SELECT 'old-'||x,'owner','spawn','resting','finished',1,2 FROM n`, from, to)
 		return []int{
 			statementVMSteps(t, s, ownerComputersSQL),
+			statementVMSteps(t, s, earliestRemotePollSQL, `["desk"]`),
+			statementVMSteps(t, s, dueRemotePollSQL(32), `["desk"]`, 3),
 			statementVMSteps(t, s, activityOwnersSQL+" ORDER BY 1,2", "[]", `["working"]`),
 			statementVMSteps(t, s, threadsWithOpenAgentRowsSQL(33), "", `{"waiting":[],"live":[]}`),
 		}
