@@ -82,7 +82,7 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 	if err != nil {
 		return store.WorkItem{}, err
 	}
-	a.noteWorkflowOriginChange(change)
+	a.workflowApplication().BindingMoved(change)
 	return a.store.GetWorkItem(item.ID)
 }
 
@@ -102,7 +102,7 @@ func (a *App) WorkflowUnbindThread(itemID string) (store.WorkItem, error) {
 	if err != nil {
 		return store.WorkItem{}, err
 	}
-	a.noteWorkflowOriginChange(change)
+	a.workflowApplication().BindingMoved(change)
 	return a.store.GetWorkItem(item.ID)
 }
 

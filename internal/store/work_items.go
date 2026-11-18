@@ -696,12 +696,13 @@ func (s *Store) UpdateWorkItemOriginThread(id, threadID string) (WorkItemOriginC
 	if err := tx.Commit(); err != nil {
 		return WorkItemOriginChange{}, fmt.Errorf("%s: commit: %w", label, err)
 	}
-	return WorkItemOriginChange{Previous: previous, Current: threadID}, nil
+	return WorkItemOriginChange{ItemID: id, Previous: previous, Current: threadID}, nil
 }
 
-// WorkItemOriginChange is a run's binding moved: the thread it reported to
-// before and the one it reports to now, either empty for none.
+// WorkItemOriginChange is run ItemID's binding moved: the thread it
+// reported to before and the one it reports to now, either empty for none.
 type WorkItemOriginChange struct {
+	ItemID            string
 	Previous, Current string
 }
 

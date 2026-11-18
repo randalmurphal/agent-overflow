@@ -322,7 +322,7 @@ func TestThreadRequestSweepSkipsWithNothingPastTheFloor(t *testing.T) {
 		settleAgentRequest(t, s, token, 2_000+int64(i))
 	}
 	writes, commits := s.WriteCount(), s.CommitCount()
-	swept, _, err := s.DeleteThreadRequestsBefore(1_500, everySpawnRests(s, 1_500))
+	swept, _, err := s.DeleteThreadRequestsBefore(1_500, everySpawnRests(t, s, 1_500))
 	if err != nil || swept != 0 {
 		t.Fatalf("sweep = %d, %v", swept, err)
 	}
@@ -369,7 +369,7 @@ func TestThreadRequestSweepAfterTheSkip(t *testing.T) {
 	settleAgentRequest(t, s, "orphan-spawn", 20)
 	seedAgentRequest(t, s, "open", "lead", ThreadRequestSend, "child", false, 10)
 
-	swept, _, err := s.DeleteThreadRequestsBefore(1_000, everySpawnRests(s, 1_000))
+	swept, _, err := s.DeleteThreadRequestsBefore(1_000, everySpawnRests(t, s, 1_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestThreadRequestSweepAfterTheSkip(t *testing.T) {
 	if err := s.DeleteThread("gone"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(1_000, everySpawnRests(s, 1_000)); err != nil {
+	if _, _, err := s.DeleteThreadRequestsBefore(1_000, everySpawnRests(t, s, 1_000)); err != nil {
 		t.Fatal(err)
 	}
 	var tokens []string

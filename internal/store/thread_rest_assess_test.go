@@ -1,66 +1,74 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
+	"time"
 )
 
-// everySpawnRests names every spawn past cutoff as read at rest: the
-// sweep's answer on a computer whose threads all rest.
-func everySpawnRests(s *Store, cutoff int64) RestedSpawns {
-	return func() ([]string, error) {
-		spawns, err := s.SpawnsPastFloor(cutoff)
-		if err != nil {
-			return nil, err
+// everySpawnRests guards a sweep at cutoff with every thread of a spawn
+// past it read at rest: the sweep on a computer whose threads all rest.
+func everySpawnRests(t *testing.T, s *Store, cutoff int64) *RestGuard {
+	t.Helper()
+	roots, err := s.SpawnThreadsPastFloor(cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &RestGuard{Roots: roots, AtRest: func(subtree SubtreeRest) []string {
+		return slices.Sorted(maps.Keys(subtree.Reached))
+	}}
+}
+
+// storeSourcesRest guards a sweep at cutoff with the store's sources: a
+// root rests when every thread it reaches reads at rest by them, what the
+// app answers when nothing in memory keeps those threads busy.
+func storeSourcesRest(t *testing.T, s *Store, cutoff int64) *RestGuard {
+	t.Helper()
+	roots, err := s.SpawnThreadsPastFloor(cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &RestGuard{Roots: roots, AtRest: durableSourcesRest}
+}
+
+// durableSourcesRest names the roots of subtree every thread of which reads
+// at rest by its durable sources.
+func durableSourcesRest(subtree SubtreeRest) []string {
+	var out []string
+	for root, reached := range subtree.Reached {
+		rests := true
+		for _, id := range reached {
+			src := subtree.Sources[id]
+			rests = rests && !src.Asking && !src.AnswerDue && !src.Background && !src.Workflow && !src.Wake && !src.Reminder && !src.OpenWork
 		}
-		tokens := make([]string, 0, len(spawns))
-		for _, spawn := range spawns {
-			tokens = append(tokens, spawn.Token)
+		if rests {
+			out = append(out, root)
 		}
-		return tokens, nil
+	}
+	slices.Sort(out)
+	return out
+}
+
+// guardOf guards roots with atRest.
+func guardOf(atRest func(SubtreeRest) []string, roots ...string) *RestGuard {
+	return &RestGuard{Roots: roots, AtRest: atRest}
+}
+
+func armLoop(t *testing.T, s *Store, id, threadID string) {
+	t.Helper()
+	if _, err := s.RegisterAgentWake(AgentWake{ID: id, ThreadID: threadID, Kind: AgentWakeLoop, Label: "board", IntervalSeconds: 60, NextAt: 1 << 50}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// storeSourcesRest names the spawns past cutoff whose subtree's stored
-// sources read at rest: what the app answers when nothing in memory keeps
-// those threads busy (the app's rule, workerUnrest, also reads turns,
-// queues, prompts, background work and timers).
-func storeSourcesRest(s *Store, cutoff int64) RestedSpawns {
-	return func() ([]string, error) {
-		spawns, err := s.SpawnsPastFloor(cutoff)
-		if err != nil {
-			return nil, err
-		}
-		roots := make([]string, 0, len(spawns))
-		for _, spawn := range spawns {
-			roots = append(roots, spawn.ThreadID)
-		}
-		read, err := s.ReadSubtreeRest(roots, nil)
-		if err != nil {
-			return nil, err
-		}
-		var tokens []string
-		for _, spawn := range spawns {
-			rests := true
-			for _, id := range read.Reached[spawn.ThreadID] {
-				src := read.Sources[id]
-				rests = rests && !src.Asking && !src.AnswerDue && !src.Workflow && !src.Wake && !src.Reminder && !src.OpenWork
-			}
-			if rests {
-				tokens = append(tokens, spawn.Token)
-			}
-		}
-		return tokens, nil
-	}
-}
-
-// A spawn past the floor whose thread is here is cleared only when the
-// caller names it as read at rest: a sweep told nothing, or told of
-// another spawn, leaves it whole on both sides, and one told of it keeps
-// only its lineage. Its thread's own state does not enter: the store does
-// not read rest.
-func TestTheSweepClearsNoWorkingSpawnUnlessTold(t *testing.T) {
+// A spawn past the floor whose thread is here is cleared only when its
+// thread reads at rest inside the sweep's transaction: a sweep with no
+// guard, or one whose read there leaves the thread out, leaves it whole on
+// both sides, and one whose read names it keeps only its lineage.
+func TestTheSweepClearsNoWorkingSpawnUnlessItsWriteReadsItAtRest(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "root", "other"} {
@@ -68,9 +76,8 @@ func TestTheSweepClearsNoWorkingSpawnUnlessTold(t *testing.T) {
 	}
 	spawnWithReceipt(t, s, "to-root", "lead", "root", 200)
 	spawnWithReceipt(t, s, "to-other", "lead", "other", 200)
-	spawns, err := s.SpawnsPastFloor(1000)
-	if err != nil || !slices.Equal(spawns, []PastFloorSpawn{{"to-other", "other"}, {"to-root", "root"}}) {
-		t.Fatalf("spawns past the floor = %+v, %v; want both, by token", spawns, err)
+	if threads, err := s.SpawnThreadsPastFloor(1000); err != nil || !slices.Equal(threads, []string{"other", "root"}) {
+		t.Fatalf("threads of the spawns past the floor = %v, %v; want both", threads, err)
 	}
 	whole := func(what string) {
 		t.Helper()
@@ -81,56 +88,160 @@ func TestTheSweepClearsNoWorkingSpawnUnlessTold(t *testing.T) {
 			t.Fatalf("the receipt after %s: %+v, found %v, %v; want it whole", what, receipt, found, err)
 		}
 	}
+	every := func(subtree SubtreeRest) []string { return slices.Sorted(maps.Keys(subtree.Reached)) }
 	if _, _, err := s.DeleteThreadRequestsBefore(1000, nil); err != nil {
 		t.Fatal(err)
 	}
-	whole("a sweep told nothing")
-	if _, _, err := s.DeleteThreadRequestsBefore(1000, func() ([]string, error) { return []string{"to-other"}, nil }); err != nil {
+	whole("a sweep with no guard")
+	if _, _, err := s.DeleteThreadRequestsBefore(1000, guardOf(every, "other")); err != nil {
 		t.Fatal(err)
 	}
-	whole("a sweep told of another spawn")
+	whole("a sweep guarding another spawn's thread")
 	if row := rawThreadRequest(t, s, "to-other"); !row.LineageOnly {
-		t.Fatalf("the spawn the sweep was told of: %+v; want its lineage", row)
+		t.Fatalf("the spawn whose thread the sweep read at rest: %+v; want its lineage", row)
 	}
-	if _, _, err := s.DeleteThreadRequestsBefore(1000, func() ([]string, error) { return nil, fmt.Errorf("unread") }); err == nil {
-		t.Fatal("a sweep whose answer failed reported no error")
+	if _, _, err := s.DeleteThreadRequestsBefore(1000, guardOf(func(SubtreeRest) []string { return nil }, "root")); err != nil {
+		t.Fatal(err)
 	}
-	whole("a sweep whose answer failed")
-	if _, _, err := s.DeleteThreadRequestsBefore(1000, func() ([]string, error) { return []string{"to-root"}, nil }); err != nil {
+	whole("a sweep whose write read the thread not at rest")
+	if _, _, err := s.DeleteThreadRequestsBefore(1000, guardOf(every, "root")); err != nil {
 		t.Fatal(err)
 	}
 	if row := rawThreadRequest(t, s, "to-root"); !row.LineageOnly || row.Answer != nil {
-		t.Fatalf("the spawn once told of it: %+v; want its lineage alone", row)
+		t.Fatalf("the spawn once its thread read at rest: %+v; want its lineage alone", row)
 	}
 	if _, found, err := s.GetThreadRequestReceipt("to-root"); err != nil || found {
-		t.Fatalf("the receipt once told of it: found %v, %v; want its lineage alone", found, err)
+		t.Fatalf("the receipt once its thread read at rest: found %v, %v; want its lineage alone", found, err)
 	}
 }
 
-// The sweep reads what it may clear again with the writer held: a spawn
-// its first answer named and its second does not stays whole.
-func TestTheSweepWritesWhatItReadsWithTheWriterHeld(t *testing.T) {
+// The guard reads inside the write's transaction what was committed before
+// it: a loop armed on a thread after its rest was decided keeps the spawn
+// whole, for the sweep and for a settlement.
+func TestTheGuardReadsWhatWasCommittedBeforeTheWrite(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	for _, id := range []string{"lead", "root"} {
+	for _, id := range []string{"lead", "root", "child", "worker"} {
 		mustCreateThread(t, s, id)
 	}
 	spawnWithReceipt(t, s, "to-root", "lead", "root", 200)
-	calls := 0
-	if _, _, err := s.DeleteThreadRequestsBefore(1000, func() ([]string, error) {
-		calls++
-		if calls == 1 {
-			return []string{"to-root"}, nil
-		}
-		return nil, nil
-	}); err != nil {
+	seedAgentRequest(t, s, "to-child", "root", ThreadRequestSpawn, "child", false, 210)
+	settleAgentRequest(t, s, "to-child", 211)
+	sweep := storeSourcesRest(t, s, 1000)
+	armLoop(t, s, "child-loop", "child")
+	if _, _, err := s.DeleteThreadRequestsBefore(1000, sweep); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("the sweep asked %d times; want before and inside its write", calls)
+	if row := rawThreadRequest(t, s, "to-root"); row.LineageOnly {
+		t.Fatalf("the spawn whose subtree armed a loop after its rest was read: %+v; want it whole", row)
 	}
-	if row, found, err := s.GetThreadRequest("to-root"); err != nil || !found || string(row.Answer) != "done" {
-		t.Fatalf("the spawn after a sweep whose second answer left it out: %+v, found %v, %v; want it whole", row, found, err)
+
+	acceptReceipt(t, s, "to-worker", "lead", "worker", 300)
+	settle := guardOf(durableSourcesRest, "worker")
+	armLoop(t, s, "worker-loop", "worker")
+	finished := ThreadRequestSettlement{State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 400}
+	result, err := s.SettleLocalThreadRequestAtRest("to-worker", ThreadReceiptOpenStates(), finished, ThreadRequestFinished, settle)
+	if err != nil || result.Settled || !result.Unrested {
+		t.Fatalf("a settlement whose thread armed a loop after its rest was read = %+v, %v; want unrested, nothing written", result, err)
+	}
+	if receipt, _, err := s.GetThreadRequestReceipt("to-worker"); err != nil || receipt.State == ThreadReceiptFinished {
+		t.Fatalf("the receipt = %+v, %v; want it open", receipt, err)
+	}
+	if result, err := s.SettleLocalThreadRequestAtRest("to-worker", ThreadReceiptOpenStates(), finished, ThreadRequestFinished, guardOf(durableSourcesRest)); err != nil || !result.Unrested {
+		t.Fatalf("a settlement whose guard names no root at rest = %+v, %v; want unrested", result, err)
+	}
+	every := func(subtree SubtreeRest) []string { return slices.Sorted(maps.Keys(subtree.Reached)) }
+	if result, err := s.SettleLocalThreadRequestAtRest("to-worker", ThreadReceiptOpenStates(), finished, ThreadRequestFinished, guardOf(every, "worker")); err != nil || !result.Settled {
+		t.Fatalf("a settlement whose thread reads at rest = %+v, %v; want it settled", result, err)
+	}
+}
+
+// acceptReceipt opens a local spawn and its receipt, not yet settled.
+func acceptReceipt(t *testing.T, s *Store, token, caller, target string, at int64) {
+	t.Helper()
+	seedAgentRequest(t, s, token, caller, ThreadRequestSpawn, target, false, at)
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "local", Kind: ThreadRequestSpawn,
+		SourceThreadID: caller, TargetThreadID: target, CreatedAt: at, UpdatedAt: at}); err != nil {
+		t.Fatalf("accept %s: %v", token, err)
+	}
+}
+
+// On a store with one connection, where every read and the writer share
+// it, the guard reads on the write's own transaction: the sweep and a
+// settlement both complete.
+func TestTheGuardReadsOnTheWritesConnection(t *testing.T) {
+	t.Parallel()
+	s, err := New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			// A write stuck on the one connection would hold Close too.
+			return
+		}
+		if err := s.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	if s.reader() != s.db {
+		t.Fatal("the store reads on a pool; want one connection")
+	}
+	if _, err := s.CreateProject(Project{ID: defaultTestProjectID, Path: "/tmp/test", Name: "One", Slug: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"lead", "root", "worker"} {
+		mustCreateThread(t, s, id)
+	}
+	spawnWithReceipt(t, s, "to-root", "lead", "root", 200)
+	acceptReceipt(t, s, "to-worker", "lead", "worker", 300)
+	within := func(what string, write func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- write() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s waits for its own connection", what)
+		}
+	}
+	within("the sweep", func() error {
+		_, _, err := s.DeleteThreadRequestsBefore(1000, storeSourcesRest(t, s, 1000))
+		return err
+	})
+	if row := rawThreadRequest(t, s, "to-root"); !row.LineageOnly {
+		t.Fatalf("the spawn after the sweep: %+v; want its lineage", row)
+	}
+	within("the settlement", func() error {
+		result, err := s.SettleLocalThreadRequestAtRest("to-worker", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 400,
+		}, ThreadRequestFinished, guardOf(durableSourcesRest, "worker"))
+		if err == nil && !result.Settled {
+			err = fmt.Errorf("not settled: %+v", result)
+		}
+		return err
+	})
+}
+
+// insertRemoteWatch records a command thread runs on computer, running
+// unless receipt says otherwise.
+func insertRemoteWatch(t *testing.T, s *Store, request, threadID, computer, label, receipt, notification string) {
+	t.Helper()
+	if _, err := s.db.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,receipt,notification,created_at)
+		VALUES(?,?,?,?,'',?,?,?,1)`, computer, request, threadID, threadID, label, receipt, notification); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// insertBackgroundLaunch records a live background launch in threadID.
+func insertBackgroundLaunch(t *testing.T, s *Store, id, threadID, summary string) {
+	t.Helper()
+	if err := s.InsertItem(Item{ID: id, ThreadID: threadID, TurnIndex: 1, ItemIndex: 1, Role: "assistant", Kind: "tool_call", Status: "running",
+		Summary: summary, ToolName: "Bash", IsBackground: true, CreatedAt: 1000}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -161,15 +272,15 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 	seedAgentRequest(t, s, "armed-send", "a", ThreadRequestSend, "peer", true, 101)
 	seedAgentRequest(t, s, "owed", "a", ThreadRequestAsk, "peer", true, 102)
 	settleAgentRequestOwed(t, s, "owed", 103)
-	if _, err := s.RegisterAgentWake(AgentWake{ID: "w", ThreadID: "a", Kind: AgentWakeLoop, Label: "board", IntervalSeconds: 60, NextAt: 1 << 50}); err != nil {
-		t.Fatal(err)
-	}
+	armLoop(t, s, "w", "a")
 	if err := s.InsertThreadRequest(ThreadRequest{Token: "remind", CallerThreadID: "a", Kind: ThreadRequestRemind, Answer: []byte("check the board"),
 		State: ThreadRequestAccepted, DueAt: 1 << 50, CreatedAt: 104, UpdatedAt: 104}); err != nil {
 		t.Fatal(err)
 	}
-	// c's: a workflow run bound to it, running; one rested whose report is
-	// owed; and a spawn on another computer that reports open work.
+	// c's: a workflow run bound to it, running, and a spawn on another
+	// computer that reports open work. b's: a run that ended, which holds
+	// it only while the workflow service owes its report, and a command on
+	// another computer. root's: a live background launch.
 	running := testWorkItem("run-c", "project-a", "running", 1)
 	running.Goal, running.OriginThreadID = "ship it", "c"
 	rested := testWorkItem("rested-b", "project-a", "done", 2)
@@ -183,8 +294,12 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 		TargetThreadID: "there", State: ThreadRequestFinished, NestedOpen: true, SettledAt: 120, CreatedAt: 110, UpdatedAt: 120}); err != nil {
 		t.Fatal(err)
 	}
+	insertRemoteWatch(t, s, "deploy", "b", "pc", "deploy", `{}`, "pending")
+	insertRemoteWatch(t, s, "ended", "c", "pc", "ended", `{"id":"j","state":"finished"}`, "pending")
+	insertRemoteWatch(t, s, "dismissed", "c", "pc", "dismissed", `{}`, "dismissed")
+	insertBackgroundLaunch(t, s, "launch", "root", "npm test")
 
-	read, err := s.ReadSubtreeRest([]string{"root", "b"}, []string{"rested-b"})
+	read, err := s.ReadSubtreeRest([]string{"root", "b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,10 +314,10 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 		t.Error("the read read a thread off the subtree")
 	}
 	want := map[string]ThreadRestSources{
-		"root": {Unarmed: []string{}},
+		"root": {Background: true, BackgroundDetail: "npm test", Unarmed: []string{}},
 		"a": {AnswerDue: true, Wake: true, WakeKind: AgentWakeLoop, WakeLabel: "board", Reminder: true, ReminderNote: "check the board",
 			OpenWork: true, Unarmed: []string{"quiet-send"}},
-		"b": {Workflow: true, WorkflowGoal: "review it", Unarmed: []string{}},
+		"b": {Background: true, BackgroundDetail: "deploy", BackgroundComputer: "pc", Unarmed: []string{}},
 		"c": {Workflow: true, WorkflowGoal: "ship it", OpenWork: true, Unarmed: []string{}},
 	}
 	for id, src := range want {
@@ -210,23 +325,19 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 			t.Errorf("sources of %s = %+v; want %+v", id, got, src)
 		}
 	}
-	one, err := s.ReadThreadRestSources("a", nil)
+	one, err := s.ReadThreadRestSources("a")
 	if err != nil || fmt.Sprintf("%+v", one) != fmt.Sprintf("%+v", want["a"]) {
 		t.Errorf("one thread's sources = %+v, %v; want %+v", one, err, want["a"])
-	}
-	if threads, err := s.ThreadsOfRestChanges([]string{"armed-send", "gone"}, []string{"run-c"}); err != nil {
-		t.Fatal(err)
-	} else if slices.Sort(threads); !slices.Equal(threads, []string{"a", "c", "peer"}) {
-		t.Errorf("threads of the changes = %v; want the send's caller and thread and the run's", threads)
 	}
 }
 
 // A subtree read costs its subtree: the virtual machine steps of its
 // statements are the same with nothing else on the computer as with busy
 // threads off the subtree, each with open work, a loop, a reminder, an
-// answer on its way, a running workflow run and a remote spawn reporting
-// open work, and as with a reached thread whose settled sends and asks
-// number hundreds. One more thread below costs more.
+// answer on its way, a running workflow run, 500 ended runs whose reports
+// may be owed, live background work, a command on another computer and a
+// remote spawn reporting open work, and as with a reached thread whose
+// settled sends and asks number hundreds. One more thread below costs more.
 func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -239,12 +350,11 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 	settleAgentRequest(t, s, "to-child", 13)
 	steps := func(threads ...string) int {
 		t.Helper()
-		walk := statementVMSteps(t, s, subtreeReachedSQL, `["root"]`)
-		encoded := `["` + threads[0] + `"`
-		for _, id := range threads[1:] {
-			encoded += `,"` + id + `"`
+		encoded, err := json.Marshal(threads)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return walk + statementVMSteps(t, s, threadRestSourcesSQL, encoded+`]`, `[]`)
+		return statementVMSteps(t, s, subtreeReachedSQL, `["root"]`) + statementVMSteps(t, s, threadRestSourcesSQL, string(encoded))
 	}
 	quiet := steps("root", "child")
 
@@ -257,9 +367,7 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 		seedAgentRequest(t, s, "open-"+id, id, ThreadRequestSend, "lead", true, at+2)
 		seedAgentRequest(t, s, "owed-"+id, id, ThreadRequestAsk, "lead", true, at+3)
 		settleAgentRequestOwed(t, s, "owed-"+id, at+4)
-		if _, err := s.RegisterAgentWake(AgentWake{ID: "w-" + id, ThreadID: id, Kind: AgentWakeLoop, Label: "board", IntervalSeconds: 60, NextAt: 1 << 50}); err != nil {
-			t.Fatal(err)
-		}
+		armLoop(t, s, "w-"+id, id)
 		if err := s.InsertThreadRequest(ThreadRequest{Token: "remind-" + id, CallerThreadID: id, Kind: ThreadRequestRemind, Answer: []byte("later"),
 			State: ThreadRequestAccepted, DueAt: 1 << 50, CreatedAt: at + 5, UpdatedAt: at + 5}); err != nil {
 			t.Fatal(err)
@@ -273,11 +381,20 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 		if err := s.CreateWorkItem(run); err != nil {
 			t.Fatal(err)
 		}
+		insertBackgroundLaunch(t, s, "launch-"+id, id, "npm test")
+		insertRemoteWatch(t, s, "deploy-"+id, id, "pc", "deploy", `{}`, "pending")
 		// The reached child's history: settled sends and asks it made.
 		for _, kind := range []string{ThreadRequestSend, ThreadRequestAsk} {
 			token := fmt.Sprintf("hist-%s-%03d", kind, i)
 			seedAgentRequest(t, s, token, "child", kind, "lead", true, at+8)
 			settleAgentRequest(t, s, token, at+9)
+		}
+	}
+	for i := range 500 {
+		ended := testWorkItem(fmt.Sprintf("ended-%03d", i), "project-a", "done", int64(5000+i))
+		ended.OriginThreadID = fmt.Sprintf("busy-%03d", i%200)
+		if err := s.CreateWorkItem(ended); err != nil {
+			t.Fatal(err)
 		}
 	}
 	busy := steps("root", "child")
@@ -292,5 +409,5 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 	if deeper <= busy {
 		t.Fatalf("one more thread below takes %d steps, the read before it %d; want more", deeper, busy)
 	}
-	t.Logf("a subtree read of two threads: %d steps, the same with 200 busy threads off it and 400 settled sends and asks below; a third thread: %d", quiet, deeper)
+	t.Logf("a subtree read of two threads: %d steps, the same with 200 busy threads and 500 ended runs off it and 400 settled sends and asks below; a third thread: %d", quiet, deeper)
 }

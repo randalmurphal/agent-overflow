@@ -943,9 +943,9 @@ func (a *App) settleRemoteThreadRequestOwing(row store.ThreadRequest, settlement
 // expireThreadRequests is the retention pass: answers nobody collected are
 // dropped a day after they were written, rows are deleted at the floor (a
 // spawn's lineage is kept with its payload cleared, and a spawn whose
-// thread here is not at rest is left whole: restedSpawnsPastFloor), remote job watches with
-// nothing left to deliver go at the same floor, and answer files nobody
-// read go with them.
+// thread here is not at rest is left whole: sweepThreadRequestsBefore),
+// remote job watches with nothing left to deliver go at the same floor, and
+// answer files nobody read go with them.
 func (a *App) expireThreadRequests(now time.Time) {
 	if dropped, err := a.store.ExpireThreadRequestAnswers(now.UnixMilli()); err != nil {
 		logThreadRequestSweep("expire answers", err)
@@ -969,15 +969,6 @@ func (a *App) expireThreadRequests(now time.Time) {
 		log.Printf("thread tools: deleted %d finished remote job watch(es) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
 	}
 	a.sweepThreadExports(now)
-}
-
-// sweepThreadRequestsBefore deletes the requests past floor, and clears
-// the spawns past it whose threads here read at rest
-// (restedSpawnsPastFloor), leaving the others whole.
-func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []string, err error) {
-	rested, done := a.restedSpawnsPastFloor(floor)
-	defer done()
-	return a.store.DeleteThreadRequestsBefore(floor, rested)
 }
 
 // sweepThreadExports deletes the two kinds of export file nobody keeps: an

@@ -1,8 +1,6 @@
 package app
 
 import (
-	"errors"
-	"fmt"
 	"log"
 	"sync"
 
@@ -11,265 +9,255 @@ import (
 
 // A decision on rest that cannot be taken back, a held request settling
 // `finished` (heldThreadAtRest) or the retention sweep clearing a spawn
-// past the floor (restedSpawnsPastFloor), reads the rest of the thread in
-// question and of every thread a local spawn link reaches below it, from
-// those threads' own sources (docs/specs/standing-agents.md, "Owned
-// workers"): one snapshot of their durable sources (store.ReadSubtreeRest),
-// the rule each thread's own state answers by (ownRest), and the open work
-// each has outstanding below it. It reads neither liveWorkers nor the
-// open_below marks, which only draw rows, frames and summaries, and writes
-// nothing.
+// past the floor (sweepThreadRequestsBefore), reads the rest of the thread
+// in question and of every thread a local spawn link reaches below it,
+// from those threads' own sources (docs/specs/standing-agents.md, "Owned
+// workers"). It reads neither liveWorkers nor the open_below marks, which
+// only draw rows, frames and summaries, and writes neither.
 //
-// Work can be admitted to a reached thread after its sources were read.
-// Every owner of a source signals each change after its write (the rest
-// change notes below, raised where the Agents rows' drain is told), and a
-// read takes the change count before it reads: the write that settles or
-// clears is made only when no change to a reached thread was signalled
-// since (restRead.stillAtRest). Otherwise the decision is taken again on
-// the next pass, which the change itself asks for. A change elsewhere on
-// the computer does not stop it.
+// The decision is made twice. Before its write it reads the subtree and its
+// durable sources (store.ReadSubtreeRest), notes the reached threads'
+// revisions (restRevisions), then reads what memory holds of them: a turn,
+// a queued message, a prompt, a provider timer, a call parked on a send or
+// ask, a workflow run's obligation, Codex's background work. The write
+// carries the rest as its precondition (store.RestGuard): inside its own
+// transaction the store reads the subtree and its durable sources again,
+// and the write happens only if they read at rest, no thread is reached
+// that the first read did not reach, and no reached thread's revision
+// moved. A durable change is so either read there or ordered after the
+// write; a change to memory is covered by its owner's bump. Only a change
+// to memory between that comparison and the commit is outside it.
 
-// restChanges counts the signals of a change to what keeps a thread from
-// rest. While a read is under way it keeps, by key, the count at each
-// key's last change: a thread, a request's token or a workflow run, the
-// last two named by the thread they belong to when a read compares
-// (store.ThreadsOfRestChanges). With no read under way it keeps nothing.
-type restChanges struct {
+// restRevisions is the revision of what memory holds of a thread's rest,
+// for the threads a decision in flight watches: a memory owner names the
+// thread and bumps it after each change it makes (noteThreadRestChange).
+// It is a leaf: its lock is held across no call and no store read, so a
+// write's transaction may read it. A thread nobody watches costs a bump a
+// map miss and keeps nothing.
+type restRevisions struct {
 	mu      sync.Mutex
-	count   uint64
-	readers int
-	threads map[string]uint64
-	tokens  map[string]uint64
-	runs    map[string]uint64
+	next    uint64
+	watched map[string]*restRevision
 }
 
-func (c *restChanges) begin() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.readers++
-	return c.count
+// restRevision is one watched thread's revision and how many decisions
+// watch it.
+type restRevision struct {
+	rev      uint64
+	watchers int
 }
 
-func (c *restChanges) end() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.readers--; c.readers == 0 {
-		c.threads, c.tokens, c.runs = nil, nil, nil
+func (r *restRevisions) bump(threadID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if watched := r.watched[threadID]; watched != nil {
+		r.next++
+		watched.rev = r.next
 	}
 }
 
-// note counts one change to key in set.
-func (c *restChanges) note(set *map[string]uint64, key string) {
-	if key == "" {
-		return
+// watch starts watching threads and returns each one's revision now.
+func (r *restRevisions) watch(threads []string) map[string]uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.watched == nil {
+		r.watched = map[string]*restRevision{}
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.count++
-	if c.readers == 0 {
-		return
+	noted := make(map[string]uint64, len(threads))
+	for _, id := range threads {
+		watched := r.watched[id]
+		if watched == nil {
+			watched = &restRevision{}
+			r.watched[id] = watched
+		}
+		watched.watchers++
+		noted[id] = watched.rev
 	}
-	if *set == nil {
-		*set = map[string]uint64{}
-	}
-	(*set)[key] = c.count
+	return noted
 }
 
-// since lists the keys changed after count.
-func (c *restChanges) since(count uint64) (threads map[string]bool, tokens, runs []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	threads = map[string]bool{}
-	for id, at := range c.threads {
-		if at > count {
-			threads[id] = true
+// unwatch ends a watch watch started.
+func (r *restRevisions) unwatch(noted map[string]uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range noted {
+		if watched := r.watched[id]; watched != nil {
+			if watched.watchers--; watched.watchers == 0 {
+				delete(r.watched, id)
+			}
 		}
 	}
-	for token, at := range c.tokens {
-		if at > count {
-			tokens = append(tokens, token)
-		}
-	}
-	for run, at := range c.runs {
-		if at > count {
-			runs = append(runs, run)
-		}
-	}
-	return threads, tokens, runs
 }
 
-// noteThreadRestChange signals a change to one of threadID's sources.
+// moved names the threads of noted whose revision moved since.
+func (r *restRevisions) moved(noted map[string]uint64) map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]bool{}
+	for id, rev := range noted {
+		if watched := r.watched[id]; watched == nil || watched.rev != rev {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// watchedThreads counts the threads watched now.
+func (r *restRevisions) watchedThreads() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.watched)
+}
+
+// noteThreadRestChange bumps threadID's revision: something memory holds of
+// its rest changed. Its owner calls it after the change.
 func (a *App) noteThreadRestChange(threadID string) {
-	a.restChanges.note(&a.restChanges.threads, threadID)
+	a.restRevisions.bump(threadID)
 }
 
-// noteRequestRestChange signals a change to the request token: its state,
-// its wake, or a call parked on it.
-func (a *App) noteRequestRestChange(token string) {
-	a.restChanges.note(&a.restChanges.tokens, token)
-}
-
-// noteRunRestChange signals a change to the workflow run itemID: its state
-// or the report it owes.
-func (a *App) noteRunRestChange(itemID string) {
-	a.restChanges.note(&a.restChanges.runs, itemID)
-}
-
-// restRead is one read of the rest of the threads reached from some roots,
-// held open until done so the changes since it began are kept.
-type restRead struct {
-	app     *App
-	since   uint64
+// restDecision is one decision on the rest of some roots: the first read,
+// held until done, and the check its write carries (guard).
+type restDecision struct {
+	app *App
+	// reached is each root's subtree as the first read walked it.
 	reached map[string][]string
+	// unarmed is, by thread, the open sends and asks with no wake armed
+	// whose parked calls the first read checked.
+	unarmed map[string]map[string]bool
 	atRest  map[string]bool
+	noted   map[string]uint64
 	once    sync.Once
 }
 
 // readRest reads whether each of roots, and every thread a local spawn link
 // reaches below it, is at rest by its own sources and has no open work
-// outstanding. The read is always returned, to be done; a root whose read
-// failed is not at rest, and the error names each such thread.
-func (a *App) readRest(roots []string) (*restRead, error) {
-	read := &restRead{app: a, since: a.restChanges.begin(), atRest: map[string]bool{}}
-	subtree, err := a.store.ReadSubtreeRest(roots, a.workflowApplication().OwedReports())
+// outstanding. The decision is always returned, to be done; a root whose
+// read failed is not at rest, and the error names each such thread.
+func (a *App) readRest(roots []string) (*restDecision, error) {
+	d := &restDecision{app: a, atRest: map[string]bool{}, unarmed: map[string]map[string]bool{}}
+	subtree, err := a.store.ReadSubtreeRest(roots)
 	if err != nil {
-		return read, err
+		return d, err
 	}
-	read.reached = subtree.Reached
-	threads := map[string]bool{}
-	var errs []error
-	for _, root := range roots {
-		rests := true
-		for _, id := range subtree.Reached[root] {
-			at, known := threads[id]
-			if !known {
-				var err error
-				if at, err = a.restsWithin(id, subtree.Sources[id]); err != nil {
-					errs = append(errs, fmt.Errorf("read whether %s, below %s, is at rest: %w", id, root, err))
-				}
-				threads[id] = at
-			}
-			if rests = at; !rests {
-				break
-			}
+	d.reached = subtree.Reached
+	threads := make([]string, 0, len(subtree.Sources))
+	for id := range subtree.Sources {
+		threads = append(threads, id)
+	}
+	// Noted before memory is read: a change after the note bumps it.
+	d.noted = a.restRevisions.watch(threads)
+	rests := make(map[string]bool, len(threads))
+	for _, id := range threads {
+		src := subtree.Sources[id]
+		checked := make(map[string]bool, len(src.Unarmed))
+		for _, token := range src.Unarmed {
+			checked[token] = true
 		}
-		read.atRest[root] = rests
+		d.unarmed[id] = checked
+		rests[id] = a.restsWithin(id, src)
+	}
+	for _, root := range roots {
+		at := len(subtree.Reached[root]) > 0
+		for _, id := range subtree.Reached[root] {
+			at = at && rests[id]
+		}
+		d.atRest[root] = at
 	}
 	if hook := a.restReadForTest; hook != nil {
 		hook(roots)
 	}
-	return read, errors.Join(errs...)
+	return d, nil
 }
 
 // restsWithin reports whether a reached thread is at rest and has no open
 // work outstanding: no request it made that is open work, no send or ask
 // of it a call is parked on, and its own sources at rest (ownRest).
-func (a *App) restsWithin(threadID string, src store.ThreadRestSources) (bool, error) {
+func (a *App) restsWithin(threadID string, src store.ThreadRestSources) bool {
 	if src.OpenWork {
-		return false, nil
+		return false
 	}
 	for _, token := range src.Unarmed {
 		if a.parkedOn(token) {
-			return false, nil
+			return false
 		}
 	}
-	rest, err := a.ownRest(threadID, src)
-	if err != nil {
-		return false, err
-	}
-	return rest.unrest == "", nil
+	return a.ownRest(threadID, src).unrest == ""
 }
 
 // rests reports whether root read at rest; false for no read.
-func (r *restRead) rests(root string) bool {
-	return r != nil && r.atRest[root]
+func (d *restDecision) rests(root string) bool {
+	return d != nil && d.atRest[root]
 }
 
-// stillAtRest lists those of roots that read at rest and whose reached
-// threads no change was signalled to since the read began. The changed
-// requests and workflow runs are named by their threads in one read.
-func (r *restRead) stillAtRest(roots ...string) ([]string, error) {
-	changed, tokens, runs := r.app.restChanges.since(r.since)
-	threads, err := r.app.store.ThreadsOfRestChanges(tokens, runs)
-	if err != nil {
-		return nil, fmt.Errorf("read which threads the changes since the read of rest reach: %w", err)
-	}
-	for _, id := range threads {
-		changed[id] = true
-	}
-	var out []string
+// guard is the precondition the write for roots carries: those of them
+// that read at rest, read again inside the write's transaction (stillAtRest).
+func (d *restDecision) guard(roots ...string) *store.RestGuard {
+	var at []string
 	for _, root := range roots {
-		still := r.atRest[root] && !changed[root]
-		for _, id := range r.reached[root] {
-			still = still && !changed[id]
+		if d.rests(root) {
+			at = append(at, root)
 		}
-		if still {
+	}
+	return &store.RestGuard{Roots: at, AtRest: d.stillAtRest}
+}
+
+// stillAtRest is the guard's check, inside the write's transaction, of the
+// subtrees and durable sources that transaction read: a root is still at
+// rest when every thread it reaches was reached by the first read, reads at
+// rest by its durable sources with no open work and no open send or ask the
+// first read did not check for a parked call, and kept its revision. It
+// reads only the revision record.
+func (d *restDecision) stillAtRest(subtree store.SubtreeRest) []string {
+	moved := d.app.restRevisions.moved(d.noted)
+	var out []string
+	for root, reached := range subtree.Reached {
+		at := d.rests(root)
+		for _, id := range reached {
+			if !at {
+				break
+			}
+			_, read := d.noted[id]
+			src := subtree.Sources[id]
+			waits, _ := restWaits(src, memoryWaits{}, nil)
+			at = read && !moved[id] && !src.OpenWork && waits.unrest == ""
+			for _, token := range src.Unarmed {
+				at = at && d.unarmed[id][token]
+			}
+		}
+		if at {
 			out = append(out, root)
 		}
 	}
-	return out, nil
+	return out
 }
 
-// unchanged reports whether root read at rest and still does.
-func (r *restRead) unchanged(root string) (bool, error) {
-	if !r.rests(root) {
-		return false, nil
-	}
-	still, err := r.stillAtRest(root)
-	return len(still) == 1, err
-}
-
-// done ends the read; the changes since it began are no longer kept for it.
-func (r *restRead) done() {
-	if r != nil {
-		r.once.Do(r.app.restChanges.end)
+// done ends the decision; its threads are no longer watched for it.
+func (d *restDecision) done() {
+	if d != nil {
+		d.once.Do(func() { d.app.restRevisions.unwatch(d.noted) })
 	}
 }
 
-// restedSpawnsPastFloor reads the rest of the threads of the spawns past
-// floor and every thread below them, for the retention sweep: the spawns
-// it may clear, named at the write's moment by those whose threads read at
-// rest and took no work since (store.RestedSpawns). A spawn whose read
-// failed is not named; the failure is logged and the next sweep reads
-// again. done ends the read once the sweep's write is made.
-func (a *App) restedSpawnsPastFloor(floor int64) (rested store.RestedSpawns, done func()) {
-	spawns, err := a.store.SpawnsPastFloor(floor)
+// sweepThreadRequestsBefore deletes the requests past floor, and clears the
+// spawns past it whose threads here, and every thread below them, read at
+// rest, read again inside the sweep's write transaction (RestGuard). A
+// thread whose read failed keeps its spawns whole; the failure is logged
+// and the next sweep reads again.
+func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []string, err error) {
+	roots, err := a.store.SpawnThreadsPastFloor(floor)
 	if err != nil {
 		logThreadRequestSweep("list the spawns past retention", err)
-		return nil, func() {}
 	}
-	if len(spawns) == 0 {
-		return nil, func() {}
-	}
-	var roots []string
-	seen := map[string]bool{}
-	for _, spawn := range spawns {
-		if !seen[spawn.ThreadID] {
-			seen[spawn.ThreadID] = true
-			roots = append(roots, spawn.ThreadID)
-		}
-	}
-	read, err := a.readRest(roots)
-	if err != nil {
-		logThreadRequestSweep("read the rest of the threads of spawns past retention", err)
-	}
-	return func() ([]string, error) {
-		still, err := read.stillAtRest(roots...)
+	var rest *store.RestGuard
+	if len(roots) > 0 {
+		decision, err := a.readRest(roots)
+		defer decision.done()
 		if err != nil {
-			return nil, err
+			logThreadRequestSweep("read the rest of the threads of spawns past retention", err)
 		}
-		at := map[string]bool{}
-		for _, id := range still {
-			at[id] = true
-		}
-		var tokens []string
-		for _, spawn := range spawns {
-			if at[spawn.ThreadID] {
-				tokens = append(tokens, spawn.Token)
-			}
-		}
-		return tokens, nil
-	}, read.done
+		rest = decision.guard(roots...)
+	}
+	return a.store.DeleteThreadRequestsBefore(floor, rest)
 }
 
 // noteRestRead records how a held request's read of threadID's rest went:

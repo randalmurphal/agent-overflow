@@ -13,8 +13,9 @@ import (
 // (docs/specs/standing-agents.md, "Owned workers"): what a thread's own
 // sources hold that starts a turn there without a person, and the open
 // work it has outstanding below it. The app applies the rule to them
-// (workerUnrest); a decision that cannot be taken back reads them for a
-// whole subtree in one snapshot (ReadSubtreeRest).
+// (durableUnrest); a decision that cannot be taken back reads them for a
+// whole subtree, once before its write and again inside the write's own
+// transaction (RestGuard).
 
 // ThreadRestSources is what the store holds of one thread's rest.
 type ThreadRestSources struct {
@@ -23,8 +24,16 @@ type ThreadRestSources struct {
 	// AnswerDue: an answer to a request it made on its way to it
 	// (threadAnswerDueSQL).
 	AnswerDue bool
-	// Workflow: a workflow run that reports to it and runs, or is one of
-	// the owed reports the read was given; WorkflowGoal is the oldest's.
+	// Background: background work of it running, as the background tray
+	// lists it: a live background launch at any depth, or else a command it
+	// runs on another computer. BackgroundDetail is the first launch's
+	// summary or tool, or the command's label, with BackgroundComputer the
+	// command's computer.
+	Background         bool
+	BackgroundDetail   string
+	BackgroundComputer string
+	// Workflow: a workflow run that reports to it and runs; WorkflowGoal is
+	// the oldest's.
 	Workflow     bool
 	WorkflowGoal string
 	// Wake: an armed or running loop or watch; WakeKind and WakeLabel are
@@ -56,20 +65,41 @@ type SubtreeRest struct {
 	Sources map[string]ThreadRestSources
 }
 
+// RestGuard is the precondition a write that cannot be taken back carries:
+// the write happens only for the roots still at rest when its own
+// transaction reads them. The store reads each root's subtree and its
+// sources inside that transaction, on its connection (SubtreeRest), and
+// AtRest names the roots that read at rest. A durable change by anyone else
+// is so either read there or ordered after the write.
+//
+// AtRest runs with the write's transaction open: it takes no store
+// connection and no lock that is held across a store write.
+type RestGuard struct {
+	Roots  []string
+	AtRest func(SubtreeRest) []string
+}
+
+// atRestTx reads the guard's roots inside tx and names those AtRest says
+// are at rest. A nil guard names none.
+func (g *RestGuard) atRestTx(tx *sql.Tx) ([]string, error) {
+	if g == nil || len(g.Roots) == 0 {
+		return nil, nil
+	}
+	subtree, err := readSubtreeRest(tx, g.Roots)
+	if err != nil {
+		return nil, fmt.Errorf("read the rest of %s: %w", strings.Join(g.Roots, ", "), err)
+	}
+	return g.AtRest(subtree), nil
+}
+
 // ReadSubtreeRest reads, in one read transaction, the threads reached from
-// each of roots and the sources of each (ThreadRestSources). owedRuns are
-// the workflow runs that rested and still owe their report, which only the
-// workflow owner knows; a run that runs is read from the store. The walk
+// each of roots and the sources of each (ThreadRestSources). The walk
 // probes each reached thread's spawn links by caller
 // (idx_thread_requests_spawn_caller), and every source is one indexed
-// search per reached thread, so the read's cost follows the subtree,
-// not the computer's other threads or a reached thread's settled history.
-func (s *Store) ReadSubtreeRest(roots, owedRuns []string) (_ SubtreeRest, err error) {
+// search per reached thread, so the read's cost follows the subtree, not
+// the computer's other threads or a reached thread's settled history.
+func (s *Store) ReadSubtreeRest(roots []string) (_ SubtreeRest, err error) {
 	action := "store: read the rest below " + strings.Join(roots, ", ")
-	encodedRoots, err := json.Marshal(roots)
-	if err != nil {
-		return SubtreeRest{}, fmt.Errorf("%s: encode: %w", action, err)
-	}
 	tx, err := s.reader().BeginTx(context.Background(), nil)
 	if err != nil {
 		return SubtreeRest{}, fmt.Errorf("%s: begin: %w", action, err)
@@ -79,9 +109,23 @@ func (s *Store) ReadSubtreeRest(roots, owedRuns []string) (_ SubtreeRest, err er
 			err = fmt.Errorf("%s: end the read: %w", action, rollbackErr)
 		}
 	}()
+	out, err := readSubtreeRest(tx, roots)
+	if err != nil {
+		return SubtreeRest{}, fmt.Errorf("%s: %w", action, err)
+	}
+	return out, nil
+}
+
+// readSubtreeRest walks from roots down the local spawn links and reads the
+// sources of every thread reached, on q.
+func readSubtreeRest(q sqlQueryer, roots []string) (SubtreeRest, error) {
+	encodedRoots, err := json.Marshal(roots)
+	if err != nil {
+		return SubtreeRest{}, fmt.Errorf("encode the roots: %w", err)
+	}
 	out := SubtreeRest{Reached: map[string][]string{}}
 	threads, err := func() (_ []string, err error) {
-		rows, err := tx.Query(subtreeReachedSQL, string(encodedRoots))
+		rows, err := q.Query(subtreeReachedSQL, string(encodedRoots))
 		if err != nil {
 			return nil, err
 		}
@@ -102,18 +146,18 @@ func (s *Store) ReadSubtreeRest(roots, owedRuns []string) (_ SubtreeRest, err er
 		return threads, rows.Err()
 	}()
 	if err != nil {
-		return SubtreeRest{}, fmt.Errorf("%s: walk the spawn links: %w", action, err)
+		return SubtreeRest{}, fmt.Errorf("walk the spawn links: %w", err)
 	}
-	if out.Sources, err = readRestSources(tx, threads, owedRuns); err != nil {
-		return SubtreeRest{}, fmt.Errorf("%s: %w", action, err)
+	if out.Sources, err = readRestSources(q, threads); err != nil {
+		return SubtreeRest{}, err
 	}
 	return out, nil
 }
 
 // ReadThreadRestSources reads one thread's sources of rest
-// (ThreadRestSources), with ReadSubtreeRest's owedRuns.
-func (s *Store) ReadThreadRestSources(threadID string, owedRuns []string) (ThreadRestSources, error) {
-	sources, err := readRestSources(s.reader(), []string{threadID}, owedRuns)
+// (ThreadRestSources).
+func (s *Store) ReadThreadRestSources(threadID string) (ThreadRestSources, error) {
+	sources, err := readRestSources(s.reader(), []string{threadID})
 	if err != nil {
 		return ThreadRestSources{}, fmt.Errorf("store: read the rest of %s: %w", threadID, err)
 	}
@@ -121,23 +165,16 @@ func (s *Store) ReadThreadRestSources(threadID string, owedRuns []string) (Threa
 }
 
 // readRestSources reads the sources of each of threads in one statement.
-func readRestSources(q sqlQueryer, threads, owedRuns []string) (_ map[string]ThreadRestSources, err error) {
+func readRestSources(q sqlQueryer, threads []string) (_ map[string]ThreadRestSources, err error) {
 	out := make(map[string]ThreadRestSources, len(threads))
 	if len(threads) == 0 {
 		return out, nil
-	}
-	if owedRuns == nil {
-		owedRuns = []string{}
 	}
 	encodedThreads, err := json.Marshal(threads)
 	if err != nil {
 		return nil, fmt.Errorf("encode the threads: %w", err)
 	}
-	encodedRuns, err := json.Marshal(owedRuns)
-	if err != nil {
-		return nil, fmt.Errorf("encode the owed reports: %w", err)
-	}
-	rows, err := q.Query(threadRestSourcesSQL, string(encodedThreads), string(encodedRuns))
+	rows, err := q.Query(threadRestSourcesSQL, string(encodedThreads))
 	if err != nil {
 		return nil, fmt.Errorf("read the sources: %w", err)
 	}
@@ -145,10 +182,16 @@ func readRestSources(q sqlQueryer, threads, owedRuns []string) (_ map[string]Thr
 	for rows.Next() {
 		var id string
 		var src ThreadRestSources
-		var workflow, wake, reminder sql.NullString
+		var background, workflow, wake, reminder sql.NullString
 		var unarmed string
-		if err := rows.Scan(&id, &src.Asking, &src.AnswerDue, &workflow, &wake, &reminder, &src.OpenWork, &unarmed); err != nil {
+		if err := rows.Scan(&id, &src.Asking, &src.AnswerDue, &background, &workflow, &wake, &reminder, &src.OpenWork, &unarmed); err != nil {
 			return nil, fmt.Errorf("scan the sources: %w", err)
+		}
+		if background.Valid {
+			src.Background = true
+			if err := decodeRestFields(background.String, &src.BackgroundDetail, &src.BackgroundComputer); err != nil {
+				return nil, fmt.Errorf("the background work of %s: %w", id, err)
+			}
 		}
 		if workflow.Valid {
 			src.Workflow = true
@@ -207,14 +250,22 @@ var subtreeReachedSQL = `WITH RECURSIVE reached(root, id) AS (
      WHERE link.caller_thread_id = reached.id AND ` + agentSpawnLinkSQL("link") + `)
 SELECT reached.root, reached.id FROM reached CROSS JOIN threads ON threads.id = reached.id`
 
+// remoteCommandRunningSQL matches a remote command watch the background
+// tray lists as running: not dismissed, and with no receipt of its end.
+func remoteCommandRunningSQL(alias string) string {
+	return alias + `.notification <> 'dismissed' AND (COALESCE(json_extract(` + alias + `.receipt, '$.id'), '') = ''
+	         OR json_extract(` + alias + `.receipt, '$.state') = 'running')`
+}
+
 // threadRestSourcesSQL reads each thread of ?1 (a JSON array) with its
-// sources, ?2 the owed reports (a JSON array): one search per source and
-// thread, each through the index that holds only that source's live rows
-// (idx_async_questions_pending, idx_thread_requests_answer_due,
+// sources: one search per source and thread, each through the index that
+// holds only that source's live rows (idx_async_questions_pending,
+// idx_thread_requests_answer_due, idx_items_running_bg_tool_calls,
 // idx_agent_wakes_thread, idx_thread_requests_open_created,
-// idx_thread_requests_nested_caller) or, for the workflow runs, the
-// thread's bound runs (idx_work_items_origin_thread). An accepted reminder
-// is open (settled_at IS NULL), so it is read among the open rows, not the
+// idx_thread_requests_nested_caller) or the thread's own rows
+// (idx_remote_watches_thread, and for the workflow runs the thread's bound
+// runs, idx_work_items_origin_thread). An accepted reminder is open
+// (settled_at IS NULL), so it is read among the open rows, not the
 // caller's history.
 var threadRestSourcesSQL = `SELECT j.value,
        EXISTS (SELECT 1 FROM async_questions q INDEXED BY idx_async_questions_pending
@@ -222,9 +273,17 @@ var threadRestSourcesSQL = `SELECT j.value,
          AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = j.value AND t.archived = 0),
        EXISTS (SELECT 1 FROM thread_requests d INDEXED BY idx_thread_requests_answer_due
                 WHERE d.caller_thread_id = j.value AND ` + threadAnswerDueSQL("d") + `),
+       COALESCE(
+         (SELECT json_array(COALESCE(NULLIF(items.summary, ''), items.tool_name), '') FROM items INDEXED BY idx_items_running_bg_tool_calls
+           WHERE items.thread_id = j.value AND items.kind = 'tool_call' AND items.status = 'running' AND items.is_background = 1
+             AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+             AND ` + noCompletionSiblingIndexedSQL + `
+           ORDER BY items.turn_index, items.item_index LIMIT 1),
+         (SELECT json_array(rw.label, rw.computer_id) FROM remote_watches rw INDEXED BY idx_remote_watches_thread
+           WHERE rw.thread_id = j.value AND ` + remoteCommandRunningSQL("rw") + `
+           ORDER BY rw.created_at DESC LIMIT 1)),
        (SELECT json_array(w.goal) FROM work_items w INDEXED BY idx_work_items_origin_thread
-         WHERE w.origin_thread_id = j.value AND w.origin_thread_id <> ''
-           AND (w.state = 'running' OR w.id IN (SELECT value FROM json_each(?2)))
+         WHERE w.origin_thread_id = j.value AND w.origin_thread_id <> '' AND w.state = 'running'
          ORDER BY w.created_at, w.id LIMIT 1),
        (SELECT json_array(a.kind, a.label) FROM agent_wakes a INDEXED BY idx_agent_wakes_thread
          WHERE a.thread_id = j.value AND a.state IN ('armed','running') ORDER BY a.label LIMIT 1),
@@ -240,52 +299,3 @@ var threadRestSourcesSQL = `SELECT j.value,
          WHERE u.caller_thread_id = j.value AND u.lineage_only = 0 AND u.settled_at IS NULL
            AND u.kind IN ('send','ask') AND u.notify = 0)
   FROM json_each(?1) j`
-
-// ThreadsOfRestChanges names the threads whose rest a change to the
-// requests among tokens, or to the workflow runs among runs, may have
-// moved: each request's caller and its thread on this computer, the
-// thread of each receipt, and the thread each run reports to. One read,
-// by key; a token or run that is gone names nothing.
-func (s *Store) ThreadsOfRestChanges(tokens, runs []string) (_ []string, err error) {
-	if len(tokens)+len(runs) == 0 {
-		return nil, nil
-	}
-	action := "store: read the threads of changed requests and workflow runs"
-	if tokens == nil {
-		tokens = []string{}
-	}
-	if runs == nil {
-		runs = []string{}
-	}
-	encodedTokens, err := json.Marshal(tokens)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode: %w", action, err)
-	}
-	encodedRuns, err := json.Marshal(runs)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode: %w", action, err)
-	}
-	rows, err := s.reader().Query(`SELECT r.caller_thread_id FROM json_each(?1) j CROSS JOIN thread_requests r WHERE r.token = j.value
-		UNION SELECT r.target_thread_id FROM json_each(?1) j CROSS JOIN thread_requests r
-		 WHERE r.token = j.value AND r.target_computer_id = '' AND r.target_thread_id <> ''
-		UNION SELECT rc.target_thread_id FROM json_each(?1) j CROSS JOIN thread_request_receipts rc
-		 WHERE rc.token = j.value AND rc.target_thread_id IS NOT NULL
-		UNION SELECT w.origin_thread_id FROM json_each(?2) j CROSS JOIN work_items w
-		 WHERE w.id = j.value AND w.origin_thread_id <> ''`, string(encodedTokens), string(encodedRuns))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate: %w", action, err)
-	}
-	return out, nil
-}

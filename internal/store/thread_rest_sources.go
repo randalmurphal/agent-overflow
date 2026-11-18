@@ -82,6 +82,61 @@ func (s *Store) WorkItemOriginThread(itemID string) (string, error) {
 	return thread, nil
 }
 
+// WorkItemBinding is a root workflow run as the thread it reports to sees
+// it: that thread, empty for none, and the run's goal and creation.
+type WorkItemBinding struct {
+	ID        string
+	ThreadID  string
+	Goal      string
+	CreatedAt int64
+}
+
+const workItemBindingColumns = `id, origin_thread_id, goal, created_at`
+
+func scanWorkItemBinding(row rowScanner) (WorkItemBinding, error) {
+	var binding WorkItemBinding
+	err := row.Scan(&binding.ID, &binding.ThreadID, &binding.Goal, &binding.CreatedAt)
+	return binding, err
+}
+
+// RootWorkItemBinding reads a root run's binding; found is false for a run
+// that is gone or is called by another.
+func (s *Store) RootWorkItemBinding(itemID string) (_ WorkItemBinding, found bool, err error) {
+	binding, err := scanWorkItemBinding(s.reader().QueryRow(`SELECT `+workItemBindingColumns+` FROM work_items
+		WHERE id = ? AND parent_item_id = ''`, itemID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemBinding{}, false, nil
+	}
+	if err != nil {
+		return WorkItemBinding{}, false, fmt.Errorf("store: read the binding of workflow run %s: %w", itemID, err)
+	}
+	return binding, true, nil
+}
+
+// RunningRootWorkItemBindings lists the bindings of the root runs that
+// run.
+func (s *Store) RunningRootWorkItemBindings() (_ []WorkItemBinding, err error) {
+	const action = "store: list the running workflow runs"
+	rows, err := s.reader().Query(`SELECT ` + workItemBindingColumns + ` FROM work_items
+		WHERE state = 'running' AND parent_item_id = '' ORDER BY created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	var out []WorkItemBinding
+	for rows.Next() {
+		binding, err := scanWorkItemBinding(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", action, err)
+		}
+		out = append(out, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return out, nil
+}
+
 // CallerSpawnedRemote reports whether callerThreadID spawned threadID on
 // the paired computer computerID: a send of it there waits for that
 // thread's rest as a spawn does.

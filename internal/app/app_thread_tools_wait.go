@@ -176,10 +176,10 @@ func (a *App) threadRequestSettleLock(token string) func() {
 func (a *App) beginRequestWait(ctx context.Context, threadID string, keys []string) (context.Context, <-chan string, func()) {
 	waitCtx, woke, end := a.beginWait(ctx, threadRequestWait{threadID: threadID}, keys)
 	// A send or ask is an Agents row while its caller waits on it.
-	a.noteThreadAgentWait(keys)
+	a.noteThreadAgentWait(threadID, keys)
 	return waitCtx, woke, func() {
 		end()
-		a.noteThreadAgentWait(keys)
+		a.noteThreadAgentWait(threadID, keys)
 		a.nudgeThreadRequestSweep()
 	}
 }

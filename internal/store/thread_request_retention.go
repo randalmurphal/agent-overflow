@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
@@ -42,12 +41,12 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // (idx_thread_request_receipts_age), and a lineage row whose spawned thread
 // is gone (idx_thread_requests_lineage, idx_thread_request_receipts_lineage). An open row is in neither age
 // index: it is still work, and waits for its own settlement. A spawn whose
-// thread is here waits the same way until the caller read that thread at
-// rest: past the floor, a spawn of this computer, its request or its
-// receipt, is cleared only when its token is among ?2 (a JSON array, the
-// spawns the caller assessed, SpawnsPastFloor), so the Agents segment
-// keeps listing it with its answer and its worker can still reply on its
-// token. A spawn on another computer that last reported open work there
+// thread is here waits the same way until that thread reads at rest: past
+// the floor, a spawn, its request or its receipt, whose thread is here is
+// cleared only when that thread is among ?2 (a JSON array, the threads the
+// sweep's RestGuard read at rest inside its transaction), so the Agents
+// segment keeps listing it with its answer and its worker can still reply
+// on its token. A spawn on another computer that last reported open work there
 // (nested_open) waits for that report to end: deleting it would take the
 // open rows below it out of its caller's tree. A local spawn's lineage
 // stays its target's link once cleared (agentSpawnLinkSQL). A spawn's
@@ -64,10 +63,10 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 var (
 	requestPastFloorSQL = `lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running')
 	    AND COALESCE(settled_at, due_at, created_at) < ?1 AND NOT (` + nestedRemoteSpawnSQL("thread_requests") + `)
-	    AND NOT (` + agentSpawnLinkSQL("thread_requests") + ` AND thread_requests.token NOT IN (SELECT value FROM json_each(?2))
+	    AND NOT (` + agentSpawnLinkSQL("thread_requests") + ` AND thread_requests.target_thread_id NOT IN (SELECT value FROM json_each(?2))
 	             AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id))`
 	receiptPastFloorSQL = `lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?1
-	    AND NOT (kind = 'spawn' AND thread_request_receipts.token NOT IN (SELECT value FROM json_each(?2))
+	    AND NOT (kind = 'spawn' AND COALESCE(thread_request_receipts.target_thread_id, '') NOT IN (SELECT value FROM json_each(?2))
 	             AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id))`
 )
 
@@ -89,54 +88,23 @@ const (
 	WHERE `
 )
 
-// PastFloorSpawn is a spawn past the retention floor whose thread is on
-// this computer: its token, which names its request, its receipt or both,
-// and that thread.
-type PastFloorSpawn struct {
-	Token    string
-	ThreadID string
+// SpawnThreadsPastFloor lists the threads here of the spawns past the
+// floor at cutoff, a spawn's request or its receipt not yet reduced to its
+// lineage: the threads whose rest the sweep reads (RestGuard) before it
+// clears those spawns (DeleteThreadRequestsBefore). One read through the
+// age indexes, so it follows the rows past the floor.
+func (s *Store) SpawnThreadsPastFloor(cutoff int64) ([]string, error) {
+	return s.queryThreadIDs(fmt.Sprintf("store: list the threads of the spawns past %d", cutoff),
+		`SELECT target_thread_id FROM thread_requests
+		     WHERE lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running') AND COALESCE(settled_at, due_at, created_at) < ?1
+		       AND `+agentSpawnLinkSQL("thread_requests")+`
+		       AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)
+		    UNION
+		    SELECT target_thread_id FROM thread_request_receipts
+		     WHERE lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?1
+		       AND kind = 'spawn' AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id)
+		    ORDER BY 1`, cutoff)
 }
-
-// SpawnsPastFloor lists the spawns past the floor at cutoff whose thread
-// exists here, its request or its receipt not yet reduced to its lineage:
-// the spawns the sweep clears only once their threads read at rest
-// (DeleteThreadRequestsBefore). One read through the age indexes, so it
-// follows the rows past the floor.
-func (s *Store) SpawnsPastFloor(cutoff int64) (_ []PastFloorSpawn, err error) {
-	action := fmt.Sprintf("store: list the spawns past %d", cutoff)
-	rows, err := s.reader().Query(`SELECT token, target_thread_id FROM thread_requests
-	     WHERE lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running') AND COALESCE(settled_at, due_at, created_at) < ?1
-	       AND `+agentSpawnLinkSQL("thread_requests")+`
-	       AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)
-	    UNION
-	    SELECT token, target_thread_id FROM thread_request_receipts
-	     WHERE lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?1
-	       AND kind = 'spawn' AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id)
-	    ORDER BY 1`, cutoff)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	var out []PastFloorSpawn
-	for rows.Next() {
-		var spawn PastFloorSpawn
-		if err := rows.Scan(&spawn.Token, &spawn.ThreadID); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		out = append(out, spawn)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate: %w", action, err)
-	}
-	return out, nil
-}
-
-// RestedSpawns names, by token, the spawns among SpawnsPastFloor whose
-// threads the caller read at rest and still reads at rest when it is
-// called. DeleteThreadRequestsBefore calls it once to see whether a write
-// is due, and again inside the write's transaction, whose answer the write
-// applies.
-type RestedSpawns func() ([]string, error)
 
 // DeleteThreadRequestsBefore removes both sides of every request that has
 // been settled longer than the retention floor, and reports how many rows
@@ -153,8 +121,9 @@ type RestedSpawns func() ([]string, error)
 // for a day. A local spawn request whose thread exists keeps its lineage
 // past the floor, marked lineage_only with its payload cleared
 // (spawnLineageSQL), and so does a spawn's receipt (receiptLineageSQL).
-// A spawn whose thread is here is cleared only when rested names it: a
-// nil rested, or one that names nothing, clears no such spawn.
+// A spawn whose thread is here is cleared only when its thread is among the
+// roots rest reads at rest inside the sweep's transaction: a nil rest, or
+// one whose roots leave it out, clears no such spawn.
 //
 // The same transaction releases each paired computer's link whose owner has
 // not reached it since the floor (staleSpawnLinkSQL), one link at a time
@@ -164,22 +133,22 @@ type RestedSpawns func() ([]string, error)
 // The sweep runs every few minutes and almost never finds anything, so it
 // asks first, on the read pool, through the indexes the sets have, and
 // takes the writer only when something is past the floor.
-func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rested RestedSpawns) (swept int64, released []string, err error) {
-	restedNow := func() (string, error) {
-		tokens := []string{}
-		if rested != nil {
-			named, err := rested()
-			if err != nil {
-				return "", fmt.Errorf("read which spawns rest: %w", err)
-			}
-			tokens = append(tokens, named...)
-		}
-		encoded, err := json.Marshal(tokens)
-		return string(encoded), err
+func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept int64, released []string, err error) {
+	var roots []string
+	if rest != nil {
+		roots = rest.Roots
 	}
-	tokens, err := restedNow()
+	encoded := func(threads []string) (string, error) {
+		if threads == nil {
+			threads = []string{}
+		}
+		out, err := json.Marshal(threads)
+		return string(out), err
+	}
+	// The roots read at rest before the sweep: what may be due.
+	threads, err := encoded(roots)
 	if err != nil {
-		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: %w", cutoff, err)
+		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: encode: %w", cutoff, err)
 	}
 	var due bool
 	// staleSpawnLinkSQL's two bare parameters follow ?1 and ?2: ?3 and ?4.
@@ -189,7 +158,7 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rested RestedSpawns) (s
 	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)`,
-		cutoff, tokens, cutoff, cutoff).Scan(&due); err != nil {
+		cutoff, threads, cutoff, cutoff).Scan(&due); err != nil {
 		return 0, nil, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
 	if !due {
@@ -200,15 +169,19 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rested RestedSpawns) (s
 		return 0, nil, fmt.Errorf("store: begin thread request retention sweep: %w", err)
 	}
 	defer rollbackTx(tx, "store: thread request retention sweep", &err)
-	// Read again with the writer held: a spawn whose thread took work since
-	// the first answer is left whole.
-	if tokens, err = restedNow(); err != nil {
+	// The roots read at rest again with the writer held: a thread that took
+	// work since keeps its spawns whole.
+	rested, err := rest.atRestTx(tx)
+	if err != nil {
 		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: %w", cutoff, err)
+	}
+	if threads, err = encoded(rested); err != nil {
+		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: encode: %w", cutoff, err)
 	}
 	if released, err = releaseSpawnLinksTx(tx, staleSpawnLinkSQL, cutoff, cutoff); err != nil {
 		return 0, nil, fmt.Errorf("store: release the spawn links silent since %d: %w", cutoff, err)
 	}
-	floor := []any{cutoff, tokens}
+	floor := []any{cutoff, threads}
 	steps := []struct {
 		what, query string
 		args        []any

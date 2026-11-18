@@ -141,35 +141,34 @@ func (rest workerRest) waitingLine() string {
 // workerUnrest says why threadID is not at rest, the zero value when it
 // is: its own sources read now, the store's first (ownRest).
 func (a *App) workerUnrest(threadID string) (workerRest, error) {
-	src, err := a.store.ReadThreadRestSources(threadID, a.workflowApplication().OwedReports())
+	src, err := a.store.ReadThreadRestSources(threadID)
 	if err != nil {
 		return workerRest{}, err
 	}
-	return a.ownRest(threadID, src)
+	return a.ownRest(threadID, src), nil
 }
 
 // ownRest is the one answer to why threadID is not at rest by its own
 // state, the zero value when it is, from every source in the order a row
-// shows them: src, what the store holds (durableRest); what triage holds
-// (workerHeldUnrest); the provider's timers (workerTimerUnrest). A source
-// added later is one more case in one of them, and the event that changes
-// it one more call of noteWorkerLiveness or noteWorkerWaiting.
+// shows them: what it waits on (threadWaits: src, what the store holds,
+// with what memory holds of its background work and workflow runs); what
+// triage holds (workerHeldUnrest); the provider's timers
+// (workerTimerUnrest). A source added later is one more case in one of
+// them, and the event that changes it one more call of noteWorkerLiveness
+// or noteWorkerWaiting, and for one memory holds, of noteThreadRestChange.
 //
 // The store is read before triage, as reassessWorker reads them: an answer
 // on its way stops being one when the turn it starts echoes it, so a read
 // that finds it delivered then finds that turn, or that turn's end.
-func (a *App) ownRest(threadID string, src store.ThreadRestSources) (workerRest, error) {
-	waits, _, err := a.durableRest(threadID, src)
-	if err != nil {
-		return workerRest{}, err
-	}
+func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
+	waits, _ := a.threadWaits(threadID, src)
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
-		return workerRest{unrest: unrest}, nil
+		return workerRest{unrest: unrest}
 	}
 	if waits.unrest != "" {
-		return waits, nil
+		return waits
 	}
-	return a.workerTimerUnrest(threadID), nil
+	return a.workerTimerUnrest(threadID)
 }
 
 // workerHeldUnrest is why threadID is not at rest from what the app holds
@@ -188,56 +187,88 @@ func (a *App) workerHeldUnrest(threadID string) string {
 	return ""
 }
 
-// workerDurableUnrest is durableRest over threadID's sources read now.
-func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
-	src, err := a.store.ReadThreadRestSources(threadID, a.workflowApplication().OwedReports())
+// workerWaits is threadWaits over threadID's sources read now.
+func (a *App) workerWaits(threadID string) (workerRest, bool, error) {
+	src, err := a.store.ReadThreadRestSources(threadID)
 	if err != nil {
 		return workerRest{}, false, err
 	}
-	return a.durableRest(threadID, src)
+	waits, background := a.threadWaits(threadID, src)
+	return waits, background, nil
 }
 
-// durableRest is whether threadID waits on something the store records
-// (src) that starts a turn there without a person: a question it asked
-// that nobody answered yet (blocked, as its prompt reads); an answer to a
-// request it made on its way to it (queued, store.ThreadAnswerDue); or,
-// waiting, running background work (what runningBackgroundWorkForThread
-// reports: Claude tasks and background agents, Codex subagents and
-// terminals, remote commands), a workflow run reporting to it that runs or
-// whose report is owed (workflowapp.Service.OwedReports), an armed loop or
-// watch, or a reminder that has not fired. The detail is the background
-// work's summary, the run's goal, or the loop, watch or reminder named as
-// its wake rows name it (wakeWaitingLine); background says the wait is
-// background work. The background inventory is read here, per thread,
-// while nothing earlier answered.
-func (a *App) durableRest(threadID string, src store.ThreadRestSources) (workerRest, bool, error) {
-	if src.Asking {
-		return workerRest{unrest: workerBlocked}, false, nil
-	}
-	if src.AnswerDue {
-		return workerRest{unrest: workerQueued}, false, nil
-	}
-	work, err := a.runningBackgroundWorkForThread(threadID, "")
-	if err != nil {
-		return workerRest{}, false, fmt.Errorf("read the running background work: %w", err)
-	}
-	if len(work) > 0 {
-		detail := work[0].Summary
-		if detail == "" {
-			detail = work[0].ToolName
+// threadWaits is restWaits over src and what memory holds of threadID now.
+func (a *App) threadWaits(threadID string, src store.ThreadRestSources) (workerRest, bool) {
+	return restWaits(src, a.memoryWaits(threadID), a.remoteComputerNames)
+}
+
+// memoryWaits is what memory holds of a thread that it waits on: Codex's
+// background terminals and subagents, which triage holds, and a workflow
+// run's obligation to report to it, which the workflow service holds
+// (workflowapp.Service.ReportOwedTo). Both owners bump the thread's
+// revision when it changes (noteBackgroundTrayLiveness,
+// noteWorkflowObligation).
+type memoryWaits struct {
+	background, workflow           bool
+	backgroundDetail, workflowGoal string
+}
+
+func (a *App) memoryWaits(threadID string) memoryWaits {
+	var mem memoryWaits
+	if a.triage != nil {
+		for _, item := range append(a.triage.ListLiveCodexBackgroundTasks(threadID, 0, 0), a.triage.ListLiveCodexAgentTasks(threadID)...) {
+			mem.background = true
+			if mem.backgroundDetail = item.Summary; mem.backgroundDetail == "" {
+				mem.backgroundDetail = item.ToolName
+			}
+			break
 		}
-		return workerRest{unrest: workerWaiting, detail: detail}, true, nil
 	}
-	if src.Workflow {
-		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(src.WorkflowGoal)}, false, nil
+	mem.workflowGoal, mem.workflow = a.workflowApplication().ReportOwedTo(threadID)
+	return mem
+}
+
+// restWaits is the one rule for whether a thread waits on something that
+// starts a turn there without a person, read from what the store holds of
+// it (src) and what memory does (mem), no read of its own: a question it
+// asked that nobody answered yet (blocked, as its prompt reads); an answer
+// to a request it made on its way to it (queued, store.ThreadAnswerDue);
+// or, waiting, running background work (Claude tasks and background agents
+// and remote commands, which the store holds; Codex subagents and
+// terminals, which memory does), a workflow run reporting to it that runs
+// or owes it its report, an armed loop or watch, or a reminder that has
+// not fired. The detail is the background work's summary, a remote
+// command's computer (named by names, when given) and label, the run's
+// goal, or the loop, watch or reminder named as its wake rows name it
+// (wakeWaitingLine); background says the wait is background work. A
+// write's own check applies it to the sources its transaction read, with
+// nothing from memory (restDecision.stillAtRest).
+func restWaits(src store.ThreadRestSources, mem memoryWaits, names func() map[string]string) (workerRest, bool) {
+	switch {
+	case src.Asking:
+		return workerRest{unrest: workerBlocked}, false
+	case src.AnswerDue:
+		return workerRest{unrest: workerQueued}, false
+	case src.Background && (src.BackgroundComputer == "" || !mem.background):
+		detail := src.BackgroundDetail
+		if src.BackgroundComputer != "" && names != nil {
+			if name := names()[src.BackgroundComputer]; name != "" {
+				detail = name + " · " + detail
+			}
+		}
+		return workerRest{unrest: workerWaiting, detail: detail}, true
+	case mem.background:
+		return workerRest{unrest: workerWaiting, detail: mem.backgroundDetail}, true
+	case src.Workflow:
+		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(src.WorkflowGoal)}, false
+	case mem.workflow:
+		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(mem.workflowGoal)}, false
+	case src.Wake:
+		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(src.WakeKind, src.WakeLabel)}, false
+	case src.Reminder:
+		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(threadWakeKindReminder, reminderLabel(src.ReminderNote))}, false
 	}
-	if src.Wake {
-		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(src.WakeKind, src.WakeLabel)}, false, nil
-	}
-	if src.Reminder {
-		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(threadWakeKindReminder, reminderLabel(src.ReminderNote))}, false, nil
-	}
-	return workerRest{}, false, nil
+	return workerRest{}, false
 }
 
 // wakeWaitingLine names a loop, watch or reminder a worker waits on as the
@@ -291,7 +322,7 @@ func (a *App) workerTimerUnrest(threadID string) workerRest {
 //   - triage's sources and the timers are memory;
 //   - the spawn link is recorded, or up to two searches for a thread not
 //     recorded, or recorded with none and read with durable (workerLinkOf);
-//   - with durable, for a spawned thread only, workerDurableUnrest's reads.
+//   - with durable, for a spawned thread only, workerWaits's reads.
 //
 // It reports whether the thread is a worker, one a spawn made, now
 // or as last recorded, so a change on either side is framed. A failed read
@@ -319,7 +350,7 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 		next.link = link
 	}
 	if durable && next.link != "" {
-		waits, background, err := a.workerDurableUnrest(threadID)
+		waits, background, err := a.workerWaits(threadID)
 		if err != nil {
 			return true, err
 		}

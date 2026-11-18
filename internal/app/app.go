@@ -226,10 +226,10 @@ type App struct {
 	// liveWorkers is the threads last found not at rest, which keep the
 	// local spawn that made each open (app_thread_agent_live.go).
 	liveWorkers liveWorkers
-	// restChanges counts the changes to what keeps a thread from rest, for
-	// the decisions on rest that cannot be taken back
+	// restRevisions is the revision of what memory holds of a thread's
+	// rest, for the decisions on rest that cannot be taken back
 	// (app_thread_rest_assess.go).
-	restChanges restChanges
+	restRevisions restRevisions
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache
@@ -821,8 +821,9 @@ type App struct {
 	// what liveWorkers records behind a change.
 	threadAgentDrainForTest func()
 	// restReadForTest, when set, runs in a read of rest a decision acts on
-	// once the threads reached from roots have been read and before the
-	// decision is written (readRest), so a test can admit work there.
+	// once the threads reached from roots have been read, memory included,
+	// and before the decision is written (readRest), so a test can admit
+	// work there.
 	restReadForTest func(roots []string)
 	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
 	// sleeps until the channel it returns for the delay asked sends

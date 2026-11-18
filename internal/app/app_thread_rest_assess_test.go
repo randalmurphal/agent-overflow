@@ -2,14 +2,13 @@ package app
 
 // A decision on rest that cannot be taken back reads the threads' own
 // sources (readRest) and is written only if no work came to a thread it
-// read before the write (restRead.stillAtRest): work admitted during the
+// read before the write (restDecision.guard): work admitted during the
 // read holds it, a stale record of work that ended does not, a read that
 // fails is retried by the sweep with no new event, and changes elsewhere
 // on the computer neither hold it nor add to what it reads.
 
 import (
 	"bytes"
-	"context"
 	"log"
 	"path/filepath"
 	"slices"
@@ -19,9 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 )
 
 // armChildLoop arms a loop on threadID as registerAgentWake does: the row,
@@ -285,86 +282,4 @@ func TestSteadyChangesOffTheTreeDoNotStarveASettlement(t *testing.T) {
 	if row := f.request(t, token); row.State != store.ThreadRequestFinished || string(row.Answer) != "Handed it on." {
 		t.Fatalf("request %+v with work changing only off its subtree; want finished at its turn end", row)
 	}
-}
-
-// A held request's read of rest costs its subtree: the same statements with
-// nothing else on the computer as with busy threads off it, each with open
-// work, a loop, a call parked on its send, a running workflow run and a
-// live record, and as with a reached thread that made hundreds of sends and
-// asks. A third thread below costs more. The rows each statement examines
-// are held by TestASubtreeReadCostsItsSubtree.
-func TestARestReadCostsItsSubtree(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	worker, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child := f.settledChild(t, worker.ID)
-	f.settledChild(t, child.ID)
-	measure := func(what string) (int, map[string]int) {
-		t.Helper()
-		f.app.threadRequestsWG.Wait()
-		stop := readsUnder(f.app.store, "app.(*App).heldThreadAtRest")
-		read, err := f.app.heldThreadAtRest(worker.ID)
-		total, by := stop()
-		read.done()
-		if err != nil || !read.rests(worker.ID) {
-			t.Fatalf("%s: worker at rest %v, %v; want at rest", what, read.rests(worker.ID), err)
-		}
-		return total, by
-	}
-	quiet, quietBy := measure("nothing else on the computer")
-
-	now := time.Now().UnixMilli()
-	for i := range 20 {
-		busy := f.settledChild(t, f.caller.ID)
-		at := now + int64(10*i)
-		f.armChildLoop(t, busy.ID, "board")
-		for _, send := range []struct {
-			token  string
-			notify bool
-		}{{"busy-send-" + busy.ID, true}, {"busy-parked-" + busy.ID, false}} {
-			if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: send.token, CallerThreadID: busy.ID,
-				Kind: store.ThreadRequestSend, TargetThreadID: f.caller.ID, Notify: send.notify, State: store.ThreadRequestRunning,
-				CreatedAt: at, UpdatedAt: at}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		_, _, end := f.app.beginRequestWait(context.Background(), busy.ID, []string{"busy-parked-" + busy.ID})
-		t.Cleanup(end)
-		if err := f.app.store.CreateWorkItem(store.WorkItem{ID: "run-" + busy.ID, ProjectID: busy.ProjectID, Goal: "elsewhere",
-			WorkflowID: "build", WorkflowScope: "project", State: "running", Source: "manual", OriginThreadID: busy.ID, CreatedAt: at}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.app.reassessWorker(busy.ID, true); err != nil || !f.app.liveWorker(busy.ID) {
-			t.Fatalf("busy thread %s is not recorded live: %v", busy.ID, err)
-		}
-		for _, kind := range []string{store.ThreadRequestSend, store.ThreadRequestAsk} {
-			hist := "hist-" + kind + "-" + busy.ID
-			if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: hist, CallerThreadID: child.ID, Kind: kind,
-				TargetThreadID: f.caller.ID, Notify: true, State: store.ThreadRequestRunning, CreatedAt: at + 1, UpdatedAt: at + 1}); err != nil {
-				t.Fatal(err)
-			}
-			if settled, err := f.app.store.SettleThreadRequest(hist, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-				State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: at + 2,
-			}); err != nil || !settled {
-				t.Fatalf("settle %s: %v %v", hist, settled, err)
-			}
-			if _, err := f.app.store.MarkThreadRequestDelivered(hist, store.ThreadWakeInline, at+2, false); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	busy, busyBy := measure("20 busy threads off the subtree and 40 settled sends and asks below")
-	if busy != quiet {
-		t.Fatalf("the read costs %d statements with busy threads off the subtree, %d without; want the same\n%v\n%v", busy, quiet, busyBy, quietBy)
-	}
-
-	f.settledChild(t, child.ID)
-	deeper, deeperBy := measure("one more thread below")
-	if deeper <= quiet {
-		t.Fatalf("one more thread below costs %d statements, the read before it %d; want more\n%v\n%v", deeper, quiet, deeperBy, quietBy)
-	}
-	t.Logf("a held request's read of rest with two threads below: %d statements %v; a third below: %d", quiet, quietBy, deeper)
 }
