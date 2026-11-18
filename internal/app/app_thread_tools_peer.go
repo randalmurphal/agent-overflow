@@ -182,10 +182,11 @@ type ThreadPeerRequest struct {
 type ThreadPeerPoll struct {
 	Tokens []string        `json:"tokens,omitempty"`
 	Ack    []ThreadPeerAck `json:"ack,omitempty"`
-	// Held names the revision the source already holds of tokens it asks
-	// about. The answer about one at or below it leaves out the texts the
-	// source has (ThreadPeerRequest.Answer, Cause and LateReply). A source
-	// that does not send it is answered in full.
+	// Held names the revision the source already holds of settled tokens it
+	// asks about, which includes the settlement: the answer about one leaves
+	// out its Answer and Cause, and its LateReply too when the source holds
+	// the receipt's revision. A source that does not send it is answered in
+	// full.
 	Held []ThreadPeerAck `json:"held,omitempty"`
 }
 
@@ -343,10 +344,14 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 		if err != nil {
 			return ThreadPeerPollReply{}, err
 		}
-		if revision, ok := held[token]; ok && state.Known && state.Revision > 0 && state.Revision <= revision {
-			// The source has these texts at this revision already; it reads
-			// the answer as already collected and takes nothing from them.
-			state.Answer, state.Cause, state.LateReply = "", nil, ""
+		if revision, ok := held[token]; ok && state.Known && revision > 0 && state.Revision > 0 {
+			// The source holds the settlement at any revision, and the late
+			// reply too at the receipt's own: it takes neither again, so
+			// only the texts it lacks are sent.
+			state.Answer, state.Cause = "", nil
+			if state.Revision <= revision {
+				state.LateReply = ""
+			}
 		}
 		reply.Requests = append(reply.Requests, state)
 	}
