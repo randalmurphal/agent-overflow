@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,9 @@ import (
 )
 
 func (p *peerFaults) ThreadToolExportChunk(ctx context.Context, exportID string, offset int64) (RemoteArtifactChunk, error) {
+	p.exportMu.Lock()
+	p.exportAsked = append(p.exportAsked, offset)
+	p.exportMu.Unlock()
 	chunk, err := p.App.ThreadToolExportChunk(ctx, exportID, offset)
 	if err == nil && p.exportChunk != nil {
 		p.exportChunk(ctx, offset, &chunk)
@@ -319,5 +323,68 @@ func TestAPairingThatEndsMidCopyEndsTheCopy(t *testing.T) {
 				t.Fatalf("the ended copy left %d entries in the export directory", len(entries))
 			}
 		})
+	}
+}
+
+// askedOffsets is every offset the destination was asked for, in order.
+func (p *peerFaults) askedOffsets() []int64 {
+	p.exportMu.Lock()
+	defer p.exportMu.Unlock()
+	return slices.Clone(p.exportAsked)
+}
+
+// TestAnExportChunkWhoseConnectionWasLostIsReadAgain: the connection a copy
+// holds closes under a chunk while the pairing stands, as a network change
+// closes it. That chunk is asked for once more, at the same offset, over a
+// new connection, and the copy completes.
+func TestAnExportChunkWhoseConnectionWasLostIsReadAgain(t *testing.T) {
+	t.Parallel()
+	pair, faults, threadID := newExportPair(t, 2*remoteArtifactChunkBytes)
+	var dropped atomic.Bool
+	faults.exportChunk = func(ctx context.Context, offset int64, _ *RemoteArtifactChunk) {
+		if offset == remoteArtifactChunkBytes && dropped.CompareAndSwap(false, true) {
+			// The connection goes, the session it rode on stays live.
+			pair.destWire.srv.SessionConns().CloseSession(transport.ConnStateFromContext(ctx).SessionID())
+		}
+	}
+	result, err := exportToFile(pair, t, threadID)
+	if err != nil {
+		t.Fatalf("a copy that lost its connection once = %v, want it completed", err)
+	}
+	file, _ := result["file"].(map[string]any)
+	path, _ := file["path"].(string)
+	if info, err := os.Stat(path); err != nil || info.Size() <= 2*remoteArtifactChunkBytes {
+		t.Fatalf("the published copy = %v, %v; want the whole export", info, err)
+	}
+	asked := faults.askedOffsets()
+	want := []int64{0, remoteArtifactChunkBytes, remoteArtifactChunkBytes, 2 * remoteArtifactChunkBytes}
+	if !slices.Equal(asked, want) {
+		t.Fatalf("offsets asked = %v, want %v: the lost chunk once more, then on", asked, want)
+	}
+}
+
+// TestAnExportChunkTheDestinationRefusedIsNotReadAgain: a refusal is the
+// destination's answer, not a lost connection, so the copy ends on it.
+func TestAnExportChunkTheDestinationRefusedIsNotReadAgain(t *testing.T) {
+	t.Parallel()
+	pair, faults, threadID := newExportPair(t, 2*remoteArtifactChunkBytes)
+	faults.exportChunk = func(_ context.Context, offset int64, _ *RemoteArtifactChunk) {
+		if offset != 0 {
+			return
+		}
+		// The export's file changes under the copy, so the next chunk is
+		// refused under the stamp its render recorded.
+		path := filepath.Join(pair.dest.configDir, threadExportDirName, onlyPeerExport(t, pair.dest))
+		later := time.Now().Add(time.Hour)
+		if err := os.Chtimes(path, later, later); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := exportToFile(pair, t, threadID)
+	if code, _, _ := errorsx.PublicDetails(err); code != "remote_artifact_changed" {
+		t.Fatalf("a copy whose chunk was refused = %v, want remote_artifact_changed", err)
+	}
+	if asked, want := faults.askedOffsets(), []int64{0, remoteArtifactChunkBytes}; !slices.Equal(asked, want) {
+		t.Fatalf("offsets asked = %v, want %v: a refused chunk is not asked for again", asked, want)
 	}
 }

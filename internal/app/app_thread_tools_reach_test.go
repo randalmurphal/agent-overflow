@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -508,6 +509,10 @@ type peerFaults struct {
 	// exportChunk, when set, sees each export chunk this destination serves
 	// and may change it before it goes back (app_thread_tools_export_test.go).
 	exportChunk func(ctx context.Context, offset int64, chunk *RemoteArtifactChunk)
+	// exportAsked is every offset an export chunk was asked for, served or
+	// refused.
+	exportMu    sync.Mutex
+	exportAsked []int64
 	// resolveHold, when set, holds every ThreadToolResolve until it is
 	// closed, after telling resolveHeld.
 	resolveHold atomic.Pointer[chan struct{}]

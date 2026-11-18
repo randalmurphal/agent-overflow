@@ -160,6 +160,20 @@ func (m *Manager) HoldThreadPeer(ctx context.Context, id string, use func(PeerCa
 // PeerCall makes one call on a connection holdPeer holds.
 type PeerCall func(ctx context.Context, method string, result any, params ...any) error
 
+// Unanswered reports whether a PeerCall ended without an answer while its
+// pairing stood: its connection closed or went quiet, or the call's own
+// context ended. The hold has dropped that connection, so a read sent again
+// goes over a fresh one, pinged or dialled. A refusal the computer answered
+// and a refusal about the pairing are not unanswered.
+func Unanswered(err error) bool {
+	var answered *rpcclient.Error
+	if err == nil || errors.As(err, &answered) {
+		return false
+	}
+	_, _, refused := errorsx.PublicDetails(err)
+	return !refused
+}
+
 func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
 	return m.holdPeer(ctx, id, capability, func(call PeerCall) error { return call(ctx, method, result, params...) })
 }

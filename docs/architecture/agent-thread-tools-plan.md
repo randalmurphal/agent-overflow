@@ -947,7 +947,8 @@ under the recorded stamp, with the recorded digest on the first piece
 instead of a second read of the file. An export with no record (after a
 restart or the sweep) is refused with "ask for the window again". The
 source holds one connection for the whole copy
-(`attachedbackends.HoldThreadPeer`) and calls `receiveRemoteArtifact`
+(`attachedbackends.HoldThreadPeer`), reads a chunk the connection lost
+once more on a fresh one (`attachedbackends.Unanswered`), and calls `receiveRemoteArtifact`
 with the announced size and digest, landing the file in its own
 `thread-exports/`. That
 receiver refuses files over `remoteArtifactMaxBytes` (1 GiB); an

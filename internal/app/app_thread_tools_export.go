@@ -120,13 +120,23 @@ func (a *App) fetchThreadExport(ctx context.Context, computer threadtools.Comput
 	dir := filepath.Join(a.configDir, threadExportDirName)
 	var artifact RemoteArtifact
 	err := a.backends.HoldThreadPeer(ctx, computer.ID, func(call attachedbackends.PeerCall) error {
+		readOnce := func(ctx context.Context, offset int64) (RemoteArtifactChunk, error) {
+			callCtx, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolExportChunk"))
+			defer cancel()
+			var chunk RemoteArtifactChunk
+			err := call(callCtx, "ThreadToolExportChunk", &chunk, file.ExportID, offset)
+			return chunk, err
+		}
 		var err error
 		artifact, err = receiveRemoteArtifact(ctx, dir, file.ExportID, threadID, artifactAnnouncement{Size: file.Size, SHA256: file.SHA256},
 			func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
-				callCtx, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolExportChunk"))
-				defer cancel()
-				var chunk RemoteArtifactChunk
-				err := call(callCtx, "ThreadToolExportChunk", &chunk, file.ExportID, request.Offset)
+				chunk, err := readOnce(ctx, request.Offset)
+				// A read is safe to send again, and a held connection skips the
+				// liveness check a pooled one gets, so one that died between
+				// chunks costs a second attempt rather than the copy.
+				if attachedbackends.Unanswered(err) {
+					chunk, err = readOnce(ctx, request.Offset)
+				}
 				return chunk, err
 			})
 		return err

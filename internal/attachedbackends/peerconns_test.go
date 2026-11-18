@@ -222,6 +222,46 @@ func TestAHeldConnectionThatLosesACallIsReplaced(t *testing.T) {
 	}
 }
 
+// TestACallWhoseHeldConnectionClosedIsUnanswered: the far side closes a held
+// connection between two calls, as a network change does. The next call is
+// unanswered, so a read may be sent again, and the one after it goes over a
+// new connection. An answered refusal and the pairing's verdict are not
+// unanswered.
+func TestACallWhoseHeldConnectionClosedIsUnanswered(t *testing.T) {
+	m, p := newThreadPeerManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.HoldThreadPeer(ctx, p.id, func(call PeerCall) error {
+		var first int32
+		if err := call(ctx, "ThreadToolQuery", &first); err != nil {
+			return err
+		}
+		if err := call(ctx, "ThreadToolResolve", nil); err == nil || Unanswered(err) {
+			return fmt.Errorf("an answered refusal = %v, unanswered %t", err, Unanswered(err))
+		}
+		p.closeAll()
+		if closed := p.nextClosed(t); closed != first {
+			return fmt.Errorf("the far side closed connection %d, want the held %d", closed, first)
+		}
+		if err := call(ctx, "ThreadToolQuery", nil); !Unanswered(err) {
+			return fmt.Errorf("a call on a connection the far side closed = %v, want it unanswered", err)
+		}
+		var again int32
+		if err := call(ctx, "ThreadToolQuery", &again); err != nil || again == first {
+			return fmt.Errorf("the call sent again = connection %d, %v; want a new one", again, err)
+		}
+		if err := m.Remove(p.id); err != nil {
+			return err
+		}
+		if err := call(ctx, "ThreadToolQuery", nil); err == nil || Unanswered(err) {
+			return fmt.Errorf("a call after the pairing was forgotten = %v, unanswered %t", err, Unanswered(err))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestAConnectionOutlastsTheIntervalOfAPeriodicCheck: a status poll or a
 // running command's watch asks again five seconds after its last answer,
 // and that check reuses the connection the last one left, pinged first,
