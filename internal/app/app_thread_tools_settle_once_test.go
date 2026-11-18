@@ -62,8 +62,8 @@ func TestALocalSettlementThatCannotWriteTheRequestWritesNeitherRow(t *testing.T)
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
 	row := after.request(t, ack.Token)
-	if row.State != store.ThreadRequestInterrupted || string(row.Answer) != threadtools.InterruptRestart {
-		t.Fatalf("request = %q %q, want it interrupted by the restart", row.State, row.Answer)
+	if row.State != store.ThreadRequestInterrupted || row.Cause != threadtools.CauseRestart || len(row.Answer) != 0 {
+		t.Fatalf("request = %q %q %q, want it interrupted by the restart", row.State, row.Cause, row.Answer)
 	}
 	receipt := after.receipt(t, ack.Token)
 	if receipt.State != store.ThreadReceiptInterrupted || receipt.CollectedRevision != receipt.Revision {
@@ -176,8 +176,8 @@ func TestBootSettlesALocalRequestNothingElseCanSettle(t *testing.T) {
 	if receipt := after.receipt(t, answered); receipt.CollectedRevision != receipt.Revision {
 		t.Errorf("receipt collected %d of %d, want its answer collected", receipt.CollectedRevision, receipt.Revision)
 	}
-	if row := after.request(t, unaccepted); row.State != store.ThreadRequestInterrupted || string(row.Answer) != threadtools.InterruptRestart {
-		t.Errorf("unaccepted request = %q %q, want it interrupted by the restart", row.State, row.Answer)
+	if row := after.request(t, unaccepted); row.State != store.ThreadRequestInterrupted || row.Cause != threadtools.CauseRestart || len(row.Answer) != 0 {
+		t.Errorf("unaccepted request = %q %q %q, want it interrupted by the restart", row.State, row.Cause, row.Answer)
 	}
 	if row := after.request(t, reminder); row.State != store.ThreadRequestAccepted {
 		t.Errorf("reminder = %q, want it left for its clock", row.State)

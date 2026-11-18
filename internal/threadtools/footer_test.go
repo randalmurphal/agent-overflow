@@ -129,52 +129,52 @@ func TestWakeTemplates(t *testing.T) {
 		},
 		{
 			name: "interrupted states the recorded cause",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Its workflow stopped the turn before it answered."},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseWorkflow}},
 			want: "\"Parser\" (7f3a) [token tok]: Its workflow stopped the turn before it answered.",
 		},
 		{
 			name: "interrupted by a restart of another computer",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Tokens: []string{"tok"}}}, Text: InterruptRestart},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseRestart}},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",
 		},
 		{
 			name: "interrupted locally names this computer",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptRestart},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseRestart}},
 			want: "\"Parser\" (7f3a) [token tok] was interrupted by a restart of this computer.",
 		},
 		{
 			name: "interrupted by its session ending before it read the request",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptSessionEndedUnread},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseSessionEndedUnread}},
 			want: "\"Parser\" (7f3a) [token tok]: The thread's session ended before it read the request.",
 		},
 		{
 			name: "interrupted by its session ending during the turn, with what it wrote",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done."},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseSessionEndedMidTurn}, Text: "Half done."},
 			want: "\"Parser\" (7f3a) [token tok]: The thread's session ended during the turn that read the request. What it had written by then:\n\nHalf done.",
 		},
 		{
 			name: "interrupted by a move",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptMoved("Desk")},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseMoved, Arg: "Desk"}},
 			want: "\"Parser\" (7f3a) [token tok]: The thread was moved to Desk before it answered.",
 		},
 		{
 			name: "interrupted by something other than a person",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptTurn},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Cause: Cause{Code: CauseTurn}},
 			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
 		},
 		{
-			name: "interrupted with no reason recorded never claims a restart",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
-			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
+			name: "interrupted with no cause shows its text whole",
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "This computer restarted before the request finished."},
+			want: "\"Parser\" (7f3a) [token tok]: This computer restarted before the request finished.",
 		},
 		{
 			name: "stopped by the person, with its last message",
-			wake: Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Half done."},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Half done."},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered. Its last message:\nHalf done.",
 		},
 		{
 			name: "stopped by the person before it said anything",
-			wake: Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered.",
 		},
 		{
@@ -384,23 +384,23 @@ func TestWakeDigestNamesEveryThread(t *testing.T) {
 	}{
 		{
 			name: "interrupted with one cause",
-			wake: Wake{Kind: WakeInterrupted, Sources: sources, Text: InterruptSessionEndedUnread},
+			wake: Wake{Kind: WakeInterrupted, Sources: sources, Cause: Cause{Code: CauseSessionEndedUnread}},
 			head: "2 threads were interrupted, each for the same reason:",
-			tail: InterruptSessionEndedUnread,
+			tail: "The thread's session ended before it read the request.",
 		},
 		{
 			name: "interrupted by restarts of the computers they ran on",
-			wake: Wake{Kind: WakeInterrupted, Sources: sources, Text: InterruptRestart},
+			wake: Wake{Kind: WakeInterrupted, Sources: sources, Cause: Cause{Code: CauseRestart}},
 			head: "2 threads were interrupted by a restart of the computer each ran on.",
 		},
 		{
 			name: "stopped by the user",
-			wake: Wake{Kind: WakeStopped, Sources: sources},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: sources},
 			head: "2 threads: The user stopped their turns before they answered.",
 		},
 		{
 			name: "stopped by the user with the same last message",
-			wake: Wake{Kind: WakeStopped, Sources: sources, Text: "Half done."},
+			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: sources, Text: "Half done."},
 			head: "2 threads: The user stopped their turns before they answered. Each one's last message:",
 			tail: "Half done.",
 		},
@@ -412,8 +412,9 @@ func TestWakeDigestNamesEveryThread(t *testing.T) {
 		},
 		{
 			name: "interrupted with no cause",
-			wake: Wake{Kind: WakeInterrupted, Sources: sources},
-			head: "2 threads were interrupted.",
+			wake: Wake{Kind: WakeInterrupted, Sources: sources, Text: "This computer restarted before the request finished."},
+			head: "2 threads were interrupted, each for the same reason:",
+			tail: "This computer restarted before the request finished.",
 		},
 		{
 			name: "errored",
@@ -485,7 +486,7 @@ func TestWakeDigestClipsALongSharedText(t *testing.T) {
 // TestWakeDigestOnOneComputerNamesIt: a restart that interrupted threads on
 // one computer names that computer, as a single wake does.
 func TestWakeDigestOnOneComputerNamesIt(t *testing.T) {
-	got := Wake{Kind: WakeInterrupted, Text: InterruptRestart, Sources: []WakeSource{
+	got := Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseRestart}, Sources: []WakeSource{
 		{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok-a"}},
 		{Title: "Lexer", ThreadID: "91bb", Tokens: []string{"tok-b"}},
 	}}.String()

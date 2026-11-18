@@ -19,8 +19,8 @@ import (
 // lifecycle, settled by the same observer. While held, each later turn end
 // and session end on the thread is read as the request's own would be: an
 // error settles it `errored`, an interruption `interrupted` with its cause,
-// a person's Stop as a Stop does, and a session that ends mid-turn
-// `interrupted` (InterruptSessionEndedWorking). Only a turn that ends with
+// the user's Stop with what the turn said, and a session that ends mid-turn
+// `interrupted` (threadtools.CauseSessionEndedWorking). Only a turn that ends with
 // the thread at rest settles it `finished`, with the thread's last message
 // from the request's turn on.
 //
@@ -222,7 +222,7 @@ func (a *App) settleHeldReceiptLocked(receipt store.ThreadRequestReceipt, gate r
 // heldTurnsSettlement reads the ends of thread's turns from the last one a
 // held request read, oldest first: the first that did not end `finished`
 // decides its settlement, as its own turn's end would (turnSettlement). A
-// turn a session's end cut is InterruptSessionEndedWorking, with what the
+// turn a session's end cut is threadtools.CauseSessionEndedWorking, with what the
 // thread wrote since the request's turn. through is the last turn read
 // that ended `finished`; pending says a turn from it on is still to be
 // read at its own end: one open, or, for a pass, one interrupted with no
@@ -288,25 +288,17 @@ func (a *App) heldSessionEndSettlement(threadID string, turn int) (store.ThreadR
 			return store.ThreadRequestSettlement{}, err
 		}
 	}
-	answer := threadtools.InterruptSessionEndedWorking
+	written := ""
 	row, found, err := a.store.LastTopLevelItem(threadID, "assistant_text")
 	if err != nil {
 		return store.ThreadRequestSettlement{}, err
 	}
 	if found && row.TurnIndex >= turn {
-		text, _, err := a.threadTools().itemBody(row, threadItemWholeBody)
-		if err != nil {
+		if written, _, err = a.threadTools().itemBody(row, threadItemWholeBody); err != nil {
 			return store.ThreadRequestSettlement{}, err
 		}
-		if strings.TrimSpace(text) != "" {
-			answer += threadtools.SessionEndedWrittenSoFar + text
-		}
 	}
-	return store.ThreadRequestSettlement{
-		State:      store.ThreadReceiptInterrupted,
-		Answer:     []byte(answer),
-		AnswerKind: store.ThreadAnswerError,
-	}, nil
+	return interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedWorking}, written), nil
 }
 
 // noteRestWaitsMayChange asks for a pass over the held requests, on its own
@@ -463,15 +455,11 @@ func (a *App) settleHeldReceipt(hold heldReceipt, end heldEnd) (threadSettlement
 // of its thread ended other than `finished`, whose end then settles it.
 // held is false for any other receipt, which the boot settles as
 // interrupted by the restart; settlement is what one that is no longer
-// held settles with, InterruptRestart for a turn the restart cut. Its first
+// held settles with, CauseRestart for a turn the restart cut. Its first
 // pass runs once the boot recovered what the thread may wait on
 // (recoverRestAtBoot).
 func (a *App) heldReceiptAtBoot(receipt store.ThreadRequestReceipt) (store.ThreadRequestSettlement, bool, error) {
-	restart := store.ThreadRequestSettlement{
-		State:      store.ThreadReceiptInterrupted,
-		Answer:     []byte(threadtools.InterruptRestart),
-		AnswerKind: store.ThreadAnswerError,
-	}
+	restart := interruptedSettlement(threadtools.Cause{Code: threadtools.CauseRestart}, "")
 	if receipt.State != store.ThreadReceiptRunning || receipt.TurnID == "" {
 		return restart, false, nil
 	}

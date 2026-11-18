@@ -122,7 +122,7 @@ func TestAParkedTrialSettlesTheLastRunsRequestsButActsOnlyAfterItsCommit(t *test
 		row, _, _ := a.store.GetThreadRequest(token)
 		return errors.Is(err, sql.ErrNoRows) && row.DeliveredHow == store.ThreadWakeQueued
 	})
-	// The wake renders the restart cause (threadtools.InterruptRestart) as
+	// The wake renders the restart cause (threadtools.CauseRestart) as
 	// the computer that restarted.
 	const restartCause = "was interrupted by a restart of this computer"
 	rows, err := a.store.ListFlushQueueItems(caller)

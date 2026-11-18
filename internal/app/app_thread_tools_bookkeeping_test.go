@@ -144,7 +144,7 @@ func TestEveryTurnReaderReadsAKeptBinding(t *testing.T) {
 			}
 		}},
 		{"not-read settlement", func(t *testing.T, f *requestFixture, threadID, token string) {
-			f.app.runThreadSettlementWork(f.app.settleReceiptNotRead(threadID, token, store.ThreadReceiptRunning, threadtools.InterruptSessionEndedUnread))
+			f.app.runThreadSettlementWork(f.app.settleReceiptNotRead(threadID, token, store.ThreadReceiptRunning, threadtools.CauseSessionEndedUnread))
 			if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {
 				t.Fatalf("receipt = %q, want a delivered request still running", receipt.State)
 			}

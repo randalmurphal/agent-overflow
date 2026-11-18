@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -123,12 +122,12 @@ func TestADeliveryHandledOnceTheReplacementIsLiveSettlesAtItsOwnSessionsEnd(t *t
 	}{
 		{"taken in before its turn opened", func(t *testing.T, q *queuedRequests, r *queuedRequest) {
 			r.started(t)
-		}, threadtools.InterruptSessionEndedUnanswered},
+		}, threadtools.CauseSessionEndedUnanswered},
 		{"delivered into its turn", func(t *testing.T, q *queuedRequests, r *queuedRequest) {
 			q.startPickupTurn(t)
 			r.consumed(t)
 			q.say(t, 1, "halfway there")
-		}, threadtools.InterruptSessionEndedMidTurn},
+		}, threadtools.CauseSessionEndedMidTurn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -154,8 +153,8 @@ func TestADeliveryHandledOnceTheReplacementIsLiveSettlesAtItsOwnSessionsEnd(t *t
 			r.wantRunning(t, "after the replacement's end")
 			q.endSession(t, queuedTargetSession)
 			receipt := f.receipt(t, r.token)
-			if receipt.State != store.ThreadReceiptInterrupted || !strings.HasPrefix(string(receipt.Answer), tc.want) {
-				t.Fatalf("receipt = %s %q, want interrupted with %q", receipt.State, receipt.Answer, tc.want)
+			if receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != tc.want {
+				t.Fatalf("receipt = %s %q, want interrupted for %q", receipt.State, receipt.Cause, tc.want)
 			}
 		})
 	}

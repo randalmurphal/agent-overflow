@@ -106,8 +106,8 @@ func TestHandOffInterruptsAReadRequest(t *testing.T) {
 		t.Fatalf("StartNextAssistantThread: %v", err)
 	}
 	receipt := f.receipt(t, ack.Token)
-	if receipt.State != store.ThreadReceiptInterrupted || !strings.Contains(string(receipt.Answer), target.ID) {
-		t.Fatalf("receipt = %s %q, want interrupted naming %s", receipt.State, receipt.Answer, target.ID)
+	if receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != threadtools.CauseHandedOff || receipt.CauseArg != target.ID {
+		t.Fatalf("receipt = %s %q %q, want interrupted by the handoff, naming %s", receipt.State, receipt.Cause, receipt.CauseArg, target.ID)
 	}
 	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(string(agentmeta.ReportHandOff), target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
 	if !strings.Contains(opening, "token "+ack.Token) || !strings.Contains(opening, f.caller.ID) {

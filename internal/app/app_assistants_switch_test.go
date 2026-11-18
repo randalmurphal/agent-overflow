@@ -109,8 +109,8 @@ func TestAssistantsOffPausesTheirWorkAndOnResumesIt(t *testing.T) {
 		t.Fatal("the assistant's session is still live")
 	}
 	request := f.request(t, ack.Token)
-	if request.SettledAt == 0 || !strings.Contains(string(request.Answer), "Assistants were turned off") {
-		t.Fatalf("the open request = state %s answer %q; want it settled saying assistants were turned off", request.State, request.Answer)
+	if words := requestAnswerWords(request, request.Answer); request.SettledAt == 0 || !strings.Contains(words, "Assistants were turned off") {
+		t.Fatalf("the open request = state %s answer %q; want it settled saying assistants were turned off", request.State, words)
 	}
 	if row := agentWake(t, a, watch.ID); row.State != store.AgentWakeArmed || row.LastOutcome != agentWakeOutcomePaused || agentWakeRunning(a, watch.ID) {
 		t.Fatalf("the watch after the pause = %+v running=%v; want it armed with the pause's outcome and nothing running", row, agentWakeRunning(a, watch.ID))

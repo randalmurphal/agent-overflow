@@ -473,8 +473,8 @@ func TestAnArchiveSettlesARequestOnTheThreadAsItsSessionEnds(t *testing.T) {
 					t.Fatal(err)
 				}
 				row = f.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
-				if !strings.HasPrefix(string(row.Answer), threadtools.InterruptSessionEndedMidTurn) {
-					t.Fatalf("answer = %q, want the session's end mid-turn", row.Answer)
+				if row.Cause != threadtools.CauseSessionEndedMidTurn {
+					t.Fatalf("cause = %q, want the session's end mid-turn", row.Cause)
 				}
 				return
 			}

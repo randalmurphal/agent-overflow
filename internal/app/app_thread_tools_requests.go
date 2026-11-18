@@ -488,7 +488,7 @@ func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, ti
 		Delivered:  row.DeliveryRoute(row.LateDeliveredAt != 0),
 		ExpiresAt:  row.ExpiresAt,
 		DueAt:      row.DueAt,
-		Answer:     string(answer),
+		Answer:     requestAnswerWords(row, answer),
 		WakeIssue:  row.WakeIssue,
 		// Kept as a late reply supersedes it: the computer still could not
 		// say whether the thread came to rest.
@@ -501,6 +501,14 @@ func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, ti
 		state.State = threadtools.RequestBlocked
 	}
 	return state
+}
+
+// requestAnswerWords is answer as an agent reads it: an interruption's
+// cause in its words, with what its turn wrote (threadtools.Cause.Answer),
+// and any other answer as it was written. Only a `finished` request, which
+// has no cause, takes a late reply.
+func requestAnswerWords(row store.ThreadRequest, answer []byte) string {
+	return threadtools.Cause{Code: row.Cause, Arg: row.CauseArg}.Answer(string(answer))
 }
 
 // requestTitle names a request's target thread.
@@ -678,10 +686,10 @@ func (t threadToolsApp) ExportAnswer(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.ExportFile{}, err
 	}
-	answer := row.Answer
-	late := false
-	if len(row.LateReply) > 0 {
-		answer, late = row.LateReply, true
+	late := len(row.LateReply) > 0
+	answer := row.LateReply
+	if !late {
+		answer = []byte(requestAnswerWords(row, row.Answer))
 	}
 	if len(answer) == 0 {
 		return threadtools.ExportFile{}, errorsx.Public(threadtools.CodeInvalidRequest,

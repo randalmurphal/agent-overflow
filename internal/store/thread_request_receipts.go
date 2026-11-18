@@ -68,8 +68,11 @@ type ThreadRequestReceipt struct {
 	OwnTurn bool   `json:"ownTurn,omitempty"`
 	State   string `json:"state"`
 	// Answer is the copy of record for a remote caller until collected.
-	Answer      []byte `json:"-"`
-	AnswerKind  string `json:"answerKind,omitempty"`
+	Answer     []byte `json:"-"`
+	AnswerKind string `json:"answerKind,omitempty"`
+	// Cause and CauseArg are ThreadRequest.Cause and CauseArg.
+	Cause       string `json:"-"`
+	CauseArg    string `json:"-"`
 	LateReply   []byte `json:"-"`
 	LateReplyAt int64  `json:"lateReplyAt,omitempty"`
 	Revision    int64  `json:"revision"`
@@ -118,7 +121,7 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
     created_at, updated_at, answer_agent, answer_agent_role, own_turn,
     late_reply_agent, late_reply_agent_role, spawn_instructions,
-    spawn_link, owner_seen_at, owner_op_seq`
+    spawn_link, owner_seen_at, owner_op_seq, answer_cause, answer_cause_arg`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
@@ -132,7 +135,7 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
 		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
 		&lateReplyAgent, &lateReplyAgentRole, &r.SpawnInstructions,
-		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq,
+		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq, &r.Cause, &r.CauseArg,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
@@ -599,11 +602,11 @@ func settleThreadReceiptRow(q sqlQueryer, token string, from []string, settlemen
 		settlement.ExpiresAt = settlement.SettledAt + threadAnswerHoldMillis
 	}
 	agent, role := answerAgentColumns(settlement.Agent)
-	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
+	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind, settlement.Cause, settlement.CauseArg,
 		settlement.SettledAt, settlement.ExpiresAt, agent, role, nowMillis(), token}
 	receipt, err := scanThreadReceipt(q.QueryRow(
 		`UPDATE thread_request_receipts
-		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
+		    SET state = ?, answer = ?, answer_kind = ?, answer_cause = ?, answer_cause_arg = ?, revision = revision + 1,
 		        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?, updated_at = ?
 		  WHERE token = ? AND `+clause+` RETURNING `+threadReceiptColumns,
 		append(set, args...)...))
@@ -721,12 +724,12 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		// disarms it.
 		err := tx.QueryRow(
 			`UPDATE thread_requests
-			    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
+			    SET state = ?, answer = ?, answer_kind = ?, answer_cause = ?, answer_cause_arg = ?, revision = revision + 1,
 			        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?,
 			        notify = CASE WHEN ? = 1 THEN 0 ELSE `+threadRequestArmSQL+` END, updated_at = ?
 			  WHERE token = ? AND `+openClause+`
 			  RETURNING notify`,
-			append([]any{sourceState, nilIfEmptyBytes(receipt.Answer), receipt.AnswerKind, receipt.SettledAt,
+			append([]any{sourceState, nilIfEmptyBytes(receipt.Answer), receipt.AnswerKind, receipt.Cause, receipt.CauseArg, receipt.SettledAt,
 				nilIfZero(receipt.ExpiresAt), agent, role, boolToInt(disarmWake), boolToInt(armWake), now, token},
 				openArgs...)...).Scan(&notify)
 		switch {
@@ -919,7 +922,7 @@ func (s *Store) ExpireThreadRequestAnswers(now int64) (int64, error) {
 	action := "store: expire thread request answers"
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
-		    SET answer = NULL, late_reply = NULL, state = 'expired', updated_at = ?
+		    SET answer = NULL, answer_cause = '', answer_cause_arg = '', late_reply = NULL, state = 'expired', updated_at = ?
 		  WHERE settled_at IS NOT NULL
 		    AND expires_at IS NOT NULL AND expires_at <= ?
 		    AND collected_revision < revision

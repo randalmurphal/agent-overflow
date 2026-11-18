@@ -142,27 +142,29 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a final message", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeErrored, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "boom\nstack"}, from("wake", worker))
 	add("an error", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."}, from("wake", worker))
 	add("a person's Stop with its last message", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}}, from("wake", worker))
 	add("a person's Stop before anything was said", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptRestart}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseRestart}}, from("wake", worker))
 	add("a restart", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: stopByWorkflow().cause}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: stopByWorkflow().cause}, from("wake", worker))
 	add("a stop with its recorded cause", text, meta)
-	for _, reason := range threadtools.InterruptSessionEndedReasons {
-		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: reason}, from("wake", worker))
-		add("a session that ended: "+reason, text, meta)
+	for _, code := range []string{threadtools.CauseSessionEndedUnread, threadtools.CauseSessionEndedUnanswered, threadtools.CauseSessionEndedMidTurn, threadtools.CauseSessionEndedWorking} {
+		cause := threadtools.Cause{Code: code}
+		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: cause}, from("wake", worker))
+		add("a session that ended: "+cause.Answer(""), text, meta)
 	}
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseSessionEndedMidTurn}, Text: "Half done."}, from("wake", worker))
 	add("a session that ended during the turn, with what it wrote", text, meta)
-	for _, reason := range []string{threadtools.InterruptNotTakenIn, threadtools.InterruptNotTakenInToComposer} {
-		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: reason}, from("wake", worker))
-		add("a message the thread did not take in: "+reason, text, meta)
+	for _, code := range []string{threadtools.CauseNotTakenIn, threadtools.CauseNotTakenInToComposer} {
+		cause := threadtools.Cause{Code: code}
+		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: cause}, from("wake", worker))
+		add("a message the thread did not take in: "+cause.Answer(""), text, meta)
 	}
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptMoved("Desk")}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseMoved, Arg: "Desk"}}, from("wake", worker))
 	add("a move", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptNeverStarted}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseNeverStarted}}, from("wake", worker))
 	add("a request whose thread was never created", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReminder, Sources: []threadtools.WakeSource{{Tokens: []string{"tok-1"}}}, Text: "Check the build."}, from("wake", "Self"))
 	add("a reminder", text, meta)
@@ -180,28 +182,32 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a digest with no text", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: digest, Text: "- No findings.\n- Nothing else."}, from("wake", worker))
 	add("a digest whose shared reply is a Markdown list", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Cause: threadtools.Cause{Code: threadtools.CauseSessionEndedMidTurn}, Text: "Half done."}, from("wake", worker))
 	add("a digest of sessions that ended during the turn", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: stopByWorkflow().cause}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Cause: stopByWorkflow().cause}, from("wake", worker))
 	add("a digest of stops with their recorded cause", text, meta)
 	// A request made in an assistant's past thread names it after the status
 	// line, or after a digest's list; the label reads past it.
 	for _, w := range []threadtools.Wake{
 		{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "All green."},
 		{Kind: threadtools.WakeReminder, Sources: []threadtools.WakeSource{{Tokens: []string{"tok-1"}}}, Text: "Check the build."},
-		{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}},
-		{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."},
-		{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptSessionEndedUnanswered},
+		{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}},
+		{Kind: threadtools.WakeInterrupted, Cause: threadtools.Cause{Code: threadtools.CauseUserStop}, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."},
+		{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseSessionEndedUnanswered}},
 		{Kind: threadtools.WakeReply, Sources: digest, Text: "Same answer."},
-		{Kind: threadtools.WakeInterrupted, Sources: digest, Text: threadtools.InterruptSessionEndedUnread},
+		{Kind: threadtools.WakeInterrupted, Sources: digest, Cause: threadtools.Cause{Code: threadtools.CauseSessionEndedUnread}},
 	} {
 		w.MadeIn, w.Now = "t-old", "t-new"
 		text, meta = answer(w, from("wake", worker))
-		add("made in a past thread: "+w.Kind+" from "+strconv.Itoa(len(w.Sources))+" sources, "+firstNonEmpty(w.Text, "no text"), text, meta)
+		kind := w.Kind
+		if w.Cause.Code == threadtools.CauseUserStop {
+			kind = "stopped"
+		}
+		add("made in a past thread: "+kind+" from "+strconv.Itoa(len(w.Sources))+" sources, "+firstNonEmpty(w.Cause.Answer(w.Text), "no text"), text, meta)
 	}
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Untitled reply."}, nil)
 	add("a reply whose attribution names no thread", text, meta)
-	firstWake, firstWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}}, from("wake", "A"))
+	firstWake, firstWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}, Cause: threadtools.Cause{Code: threadtools.CauseTurn}}, from("wake", "A"))
 	secondWake, secondWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: "B", ThreadID: "t-b", Tokens: []string{"tok-2"}}}, Text: "two"}, from("wake", "B"))
 	text, meta = joined([]string{firstWake, secondWake}, []string{firstWakeMeta, secondWakeMeta})
 	add("two wakes joined, the first saying nothing", text, meta)
@@ -314,14 +320,14 @@ func TestAgentMessageLabelFixture(t *testing.T) {
 func TestAgentMessageLabelQuotesTheAnswerNotTheRouting(t *testing.T) {
 	t.Parallel()
 	want := map[string]string{
-		"made in a past thread: reply from 1 sources, All green.":                                           "Worker: All green.",
-		"made in a past thread: reminder from 1 sources, Check the build.":                                  "This thread: Check the build.",
-		"made in a past thread: stopped from 1 sources, no text":                                            "Worker",
-		"made in a past thread: stopped from 1 sources, Half done.":                                         "Worker: Half done.",
-		"made in a past thread: interrupted from 1 sources, " + threadtools.InterruptSessionEndedUnanswered: "Worker",
-		"made in a past thread: reply from 2 sources, Same answer.":                                         "2 threads: Same answer.",
-		"made in a past thread: interrupted from 2 sources, " + threadtools.InterruptSessionEndedUnread:     "2 threads: Worker, Lexer",
-		"a digest whose shared reply is a Markdown list":                                                    "2 threads: - No findings.",
+		"made in a past thread: reply from 1 sources, All green.":                                                       "Worker: All green.",
+		"made in a past thread: reminder from 1 sources, Check the build.":                                              "This thread: Check the build.",
+		"made in a past thread: stopped from 1 sources, no text":                                                        "Worker",
+		"made in a past thread: stopped from 1 sources, Half done.":                                                     "Worker: Half done.",
+		"made in a past thread: interrupted from 1 sources, The thread's session ended before it answered the request.": "Worker",
+		"made in a past thread: reply from 2 sources, Same answer.":                                                     "2 threads: Same answer.",
+		"made in a past thread: interrupted from 2 sources, The thread's session ended before it read the request.":     "2 threads: Worker, Lexer",
+		"a digest whose shared reply is a Markdown list":                                                                "2 threads: - No findings.",
 		"an error":                 "Worker: boom",
 		"a standing agent's reply": "Worker: Done.",
 		"a loop":                   "nightly: Check the build.",

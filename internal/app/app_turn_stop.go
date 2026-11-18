@@ -17,24 +17,20 @@ import (
 type turnStop struct {
 	// label is the stop row in the stopped thread's timeline.
 	label string
-	// cause is the settlement text of a request the stopped turn answers.
-	cause string
-	// person marks the user's own Stop. A request its turn answers settles
-	// with what the turn wrote by then as its final answer; every other
-	// stop's request settles with cause as its error.
-	person bool
+	// cause is why a request the stopped turn answers was interrupted.
+	cause threadtools.Cause
 	// consent is set only on the user's own Stop: the background agents it
 	// was confirmed to kill. Every other stop is never refused.
 	consent *agentKillConsent
 }
 
 // stopByUser is the user's Stop, confirmed to kill the background agents
-// named by transcriptRootIDs.
+// named by transcriptRootIDs. A request its turn answers settles with what
+// the turn said by then (turnSettlement).
 func stopByUser(transcriptRootIDs []string) turnStop {
 	return turnStop{
 		label:   triage.StoppedByUser,
-		cause:   threadtools.WakePersonStopped,
-		person:  true,
+		cause:   threadtools.Cause{Code: threadtools.CauseUserStop},
 		consent: personalStop(transcriptRootIDs),
 	}
 }
@@ -44,7 +40,7 @@ func stopByUser(transcriptRootIDs []string) turnStop {
 func stopForTakeover() turnStop {
 	return turnStop{
 		label: triage.StoppedByUser,
-		cause: "The user took the thread over from its workflow before it answered.",
+		cause: threadtools.Cause{Code: threadtools.CauseTakeover},
 	}
 }
 
@@ -52,7 +48,7 @@ func stopForTakeover() turnStop {
 func stopByWorkflow() turnStop {
 	return turnStop{
 		label: "Stopped by its workflow",
-		cause: "Its workflow stopped the turn before it answered.",
+		cause: threadtools.Cause{Code: threadtools.CauseWorkflow},
 	}
 }
 
@@ -66,7 +62,7 @@ func stopByThread(title, threadID, computer string) turnStop {
 	}
 	return turnStop{
 		label: fmt.Sprintf("Stopped by thread %q%s", title, on),
-		cause: fmt.Sprintf("%q (%s) stopped its turn with thread_cancel before it answered.", title, where),
+		cause: threadtools.Cause{Code: threadtools.CauseThreadCancel, Arg: fmt.Sprintf("%q (%s)", title, where)},
 	}
 }
 
@@ -83,11 +79,7 @@ func (a *App) stoppingComputerName(computerID string) string {
 
 // valid reports whether the stop names who is stopping the turn on both
 // surfaces it reaches.
-func (s turnStop) valid() bool { return s.label != "" && s.cause != "" }
-
-// turnStoppedUnknown is the settlement text of an interrupted turn no stop
-// was recorded for, such as one the provider aborted on its own.
-const turnStoppedUnknown = threadtools.InterruptTurn
+func (s turnStop) valid() bool { return s.label != "" && s.cause.Known() }
 
 // stoppedTurn names the turn a stop cut. The index is the turn's from the
 // stop on: the open turn, or the turn a send the provider holds will open,
@@ -141,9 +133,7 @@ type recordedTurnStop struct {
 	// so a retirement removes only the records it read.
 	seq   uint64
 	turn  stoppedTurn
-	cause string
-	// person is turnStop.person.
-	person bool
+	cause threadtools.Cause
 }
 
 // recordTurnStop remembers who is stopping a turn, for the requests it
@@ -169,7 +159,7 @@ func (a *App) recordTurnStop(threadID string, turn stoppedTurn, stop turnStop) {
 		a.threadRequests.stops = make(map[string][]recordedTurnStop)
 	}
 	a.threadRequests.stopSeq++
-	recorded := recordedTurnStop{seq: a.threadRequests.stopSeq, turn: turn, cause: stop.cause, person: stop.person}
+	recorded := recordedTurnStop{seq: a.threadRequests.stopSeq, turn: turn, cause: stop.cause}
 	stops := slices.DeleteFunc(a.threadRequests.stops[threadID], func(kept recordedTurnStop) bool {
 		return kept.turn.index == turn.index
 	})
@@ -214,16 +204,7 @@ func (a *App) turnStopOf(threadID string, turn store.Turn) (recordedTurnStop, bo
 // stoppedByPerson reports whether the user's own Stop cut turn.
 func (a *App) stoppedByPerson(threadID string, turn store.Turn) bool {
 	recorded, ok := a.turnStopOf(threadID, turn)
-	return ok && recorded.person
-}
-
-// turnStopCause is the recorded cause of a stopped turn, or the generic one
-// when nothing recorded it.
-func (a *App) turnStopCause(threadID string, turnIndex int) string {
-	if recorded, ok := a.turnStopOf(threadID, store.Turn{TurnIndex: turnIndex}); ok {
-		return recorded.cause
-	}
-	return turnStoppedUnknown
+	return ok && recorded.cause.Code == threadtools.CauseUserStop
 }
 
 // endedTurnStops is the thread's stops whose turn is over, read before a

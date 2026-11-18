@@ -400,8 +400,8 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	if got := f.interrupts(t); got != 1 {
 		t.Fatalf("interrupts = %d, want 1", got)
 	}
-	if got, want := f.app.turnStopCause(f.thread.ID, 1), stopByUser(nil).cause; got != want {
-		t.Fatalf("cause of turn 1 = %q, want %q", got, want)
+	if recorded, ok := f.app.turnStopOf(f.thread.ID, store.Turn{TurnIndex: 1}); !ok || recorded.cause.Code != threadtools.CauseUserStop {
+		t.Fatalf("stop of turn 1 = %+v, %v; want the person's Stop recorded", recorded, ok)
 	}
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)
 	if rows := stopRowsOf(t, f.app.store, f.thread.ID); len(rows) != 0 {
@@ -451,7 +451,7 @@ func TestInterruptTurnAtIndexFencesOnTheTurnOfASendWaitingForIt(t *testing.T) {
 		t.Fatalf("interrupts = %d, want 0", got)
 	}
 	if got := f.app.turnStopCause(f.thread.ID, 2); got != turnStoppedUnknown {
-		t.Fatalf("cause of turn 2 = %q, want none recorded", got)
+		t.Fatalf("cause of turn 2 = %+v, want none recorded", got)
 	}
 
 	interrupted, err = f.app.interruptTurnAtIndex(context.Background(), f.thread.ID, 2, stop)
@@ -486,7 +486,7 @@ func TestThreadCancelStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 		t.Fatalf("interrupts = %d, want 1", got)
 	}
 	if got := f.app.turnStopCause(f.thread.ID, 1); got != stop.cause {
-		t.Fatalf("cause of turn 1 = %q, want %q", got, stop.cause)
+		t.Fatalf("cause of turn 1 = %+v, want %+v", got, stop.cause)
 	}
 }
 

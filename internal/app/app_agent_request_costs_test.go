@@ -293,8 +293,8 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 		why   string
 		reads uint64
 	}{
-		"tok-mid-turn": {threadtools.InterruptSessionEndedMidTurn, 6},
-		"tok-taken-in": {threadtools.InterruptSessionEndedUnanswered, 3},
+		"tok-mid-turn": {threadtools.CauseSessionEndedMidTurn, 6},
+		"tok-taken-in": {threadtools.CauseSessionEndedUnanswered, 3},
 	} {
 		before := app.store.ReadCount()
 		work, err := app.settleReceiptOnSessionEnd(thread.ID, testSessionToken(app, thread.ID), token, map[string]bool{})
@@ -304,7 +304,7 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 		app.runThreadSettlementWork(work)
 		reads := app.store.ReadCount() - before
 		receipt, _, err := app.store.GetThreadRequestReceipt(token)
-		if err != nil || receipt.State != store.ThreadReceiptInterrupted || !strings.HasPrefix(string(receipt.Answer), want.why) {
+		if err != nil || receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != want.why {
 			t.Fatalf("%s: receipt = %+v, %v", token, receipt, err)
 		}
 		if reads > want.reads {

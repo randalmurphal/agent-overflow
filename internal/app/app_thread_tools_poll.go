@@ -848,12 +848,15 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 	if err != nil {
 		return false, false, err
 	}
+	text, cause := remoteAnswerCause(answer)
 	collected, err := a.store.CollectThreadRequest(row.Token, store.ThreadReceiptAnswer{
 		RestUnreported: restUnreported,
 		Revision:       answer.Revision,
 		State:          answer.State,
-		Answer:         []byte(answer.Answer),
+		Answer:         []byte(text),
 		AnswerKind:     answer.AnswerKind,
+		Cause:          cause.Code,
+		CauseArg:       cause.Arg,
 		SettledAt:      answer.SettledAt,
 		ExpiresAt:      answer.ExpiresAt,
 		Agent:          remoteAnswerAgent(answer.AnswerAgent),
@@ -866,6 +869,20 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 	}
 	wake, late = a.collectionWake(row.Token, collected)
 	return wake, late, nil
+}
+
+// remoteAnswerCause is the text and cause a paired computer's answer is
+// recorded with: an interruption's cause it reports in this computer's
+// vocabulary, with what the turn had written as the text; otherwise its
+// answer, whole and with no cause, which is what a computer that reports no
+// cause, or one this computer does not know, gives.
+func remoteAnswerCause(answer ThreadPeerRequest) (string, threadtools.Cause) {
+	if reported := answer.Cause; reported != nil {
+		if cause := (threadtools.Cause{Code: reported.Code, Arg: reported.Arg}); cause.Known() {
+			return reported.Written, cause
+		}
+	}
+	return answer.Answer, threadtools.Cause{}
 }
 
 // remoteRestUnreported reports whether answer settles row `finished` from
@@ -1095,11 +1112,8 @@ func (a *App) settleOrphanedThreadRequest(row store.ThreadRequest) (threadSettle
 		work.wake, work.late = a.collectionWake(row.Token, collected)
 		return work, nil
 	}
-	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-		State:      store.ThreadRequestInterrupted,
-		Answer:     []byte(threadtools.InterruptRestart),
-		AnswerKind: store.ThreadAnswerError,
-	})
+	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(),
+		interruptedSettlement(threadtools.Cause{Code: threadtools.CauseRestart}, ""))
 	if err != nil || !settled {
 		return threadSettlementWork{}, err
 	}

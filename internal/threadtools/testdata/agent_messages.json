@@ -1371,10 +1371,10 @@
     ]
   },
   {
-    "name": "interrupted by the person's Stop with no last message recorded",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped this turn before it answered.",
+    "name": "interrupted by its session ending while it was still working, having written nothing",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended while it was still working on the request.",
     "members": [
-      110
+      133
     ],
     "legacy": false,
     "origins": [
@@ -1385,12 +1385,12 @@
         "kind": "wake",
         "facts": {
           "form": "answer",
-          "bytes": 110,
+          "bytes": 133,
           "outcome": "interrupted",
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
           ],
-          "stoppedBy": "the user"
+          "stoppedBy": "the session ended while it was still working on the request"
         }
       }
     ],
@@ -1409,7 +1409,7 @@
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
           ],
           "agentRole": null,
-          "stoppedBy": "the user",
+          "stoppedBy": "the session ended while it was still working on the request",
           "clipped": false,
           "madeIn": "",
           "now": "",
@@ -1419,10 +1419,10 @@
     ]
   },
   {
-    "name": "interrupted with no reason recorded",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
+    "name": "interrupted by its session ending while it was still working, with what it wrote",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended while it was still working on the request. What it had written by then:\n\nHalf done.",
     "members": [
-      108
+      174
     ],
     "legacy": false,
     "origins": [
@@ -1433,12 +1433,330 @@
         "kind": "wake",
         "facts": {
           "form": "answer",
-          "bytes": 108,
+          "bytes": 174,
           "outcome": "interrupted",
+          "body": [
+            {
+              "start": 164,
+              "end": 174
+            }
+          ],
           "tokens": [
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
           ],
-          "stoppedBy": "an interrupt"
+          "stoppedBy": "the session ended while it was still working on the request"
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "Half done.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the session ended while it was still working on the request",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by the user from the Agents tray",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user stopped its turn from the Agents tray before it answered.",
+    "members": [
+      130
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 130,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 64,
+              "end": 130
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "The user stopped its turn from the Agents tray before it answered.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by the user taking the thread over from its workflow",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The user took the thread over from its workflow before it answered.",
+    "members": [
+      131
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 131,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 64,
+              "end": 131
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "The user took the thread over from its workflow before it answered.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by another thread's thread_cancel",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: \"Lead \\\"one\\\"\" (t-lead, on desk) stopped its turn with thread_cancel before it answered.",
+    "members": [
+      152
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 152,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 64,
+              "end": 152
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "\"Lead \\\"one\\\"\" (t-lead, on desk) stopped its turn with thread_cancel before it answered.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by assistants being turned off",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: Assistants were turned off in Settings before it answered.",
+    "members": [
+      122
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 122,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 64,
+              "end": 122
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "Assistants were turned off in Settings before it answered.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted, recorded with no cause by an earlier build",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: This computer restarted before the request finished.",
+    "members": [
+      116
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 116,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 64,
+              "end": 116
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "This computer restarted before the request finished.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted, with no cause this build knows and no text",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was interrupted.",
+    "members": [
+      79
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 79,
+          "outcome": "interrupted",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+          ]
         }
       }
     ],
@@ -1457,7 +1775,7 @@
             "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
           ],
           "agentRole": null,
-          "stoppedBy": "an interrupt",
+          "stoppedBy": "",
           "clipped": false,
           "madeIn": "",
           "now": "",
@@ -2929,7 +3247,108 @@
     ]
   },
   {
-    "name": "digest: interrupted with no reason recorded",
+    "name": "digest: interrupted, recorded with no cause by another computer's earlier build",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nThe thread's session ended before it read the request.",
+    "members": [
+      239
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 239,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 185,
+              "end": 239
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "threads": [
+            {
+              "threadId": "t-work",
+              "title": "Worker",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ]
+            },
+            {
+              "threadId": "t-lex",
+              "title": "Lexer",
+              "computerId": "computer-desk",
+              "computerName": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "The thread's session ended before it read the request.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "computerId": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "computerId": "computer-desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: interrupted, with no cause this build knows and no text",
     "text": "2 threads were interrupted.\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]",
     "members": [
       158
@@ -2950,7 +3369,6 @@
             "tok-2",
             "tok-3"
           ],
-          "stoppedBy": "an interrupt",
           "threads": [
             {
               "threadId": "t-work",
@@ -2991,7 +3409,7 @@
             "tok-3"
           ],
           "agentRole": null,
-          "stoppedBy": "an interrupt",
+          "stoppedBy": "",
           "clipped": false,
           "madeIn": "",
           "now": "",
@@ -3094,6 +3512,210 @@
           "agentRole": null,
           "stoppedBy": "",
           "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "computerId": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "computerId": "computer-desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: interrupted by assistants being turned off",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nAssistants were turned off in Settings before it answered.",
+    "members": [
+      243
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 243,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 185,
+              "end": 243
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "threads": [
+            {
+              "threadId": "t-work",
+              "title": "Worker",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ]
+            },
+            {
+              "threadId": "t-lex",
+              "title": "Lexer",
+              "computerId": "computer-desk",
+              "computerName": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "Assistants were turned off in Settings before it answered.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "computerId": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "computerId": "computer-desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "digest: interrupted while still working, with what they wrote, past the preview",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\nThe thread's session ended while it was still working on the request. What it had written by then:\n\nLong answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long a\n[preview; thread_status 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d for the whole answer]",
+    "members": [
+      24944
+    ],
+    "legacy": false,
+    "origins": [
+      {
+        "threadId": "t-work",
+        "title": "Worker",
+        "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+        "kind": "wake",
+        "facts": {
+          "form": "answer",
+          "bytes": 24944,
+          "outcome": "interrupted",
+          "body": [
+            {
+              "start": 285,
+              "end": 24861
+            }
+          ],
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "stoppedBy": "the session ended while it was still working on the request",
+          "clipped": true,
+          "threads": [
+            {
+              "threadId": "t-work",
+              "title": "Worker",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ]
+            },
+            {
+              "threadId": "t-lex",
+              "title": "Lexer",
+              "computerId": "computer-desk",
+              "computerName": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "parts": [
+      {
+        "body": "Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long a",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "the session ended while it was still working on the request",
+          "clipped": true,
           "madeIn": "",
           "now": "",
           "threads": [

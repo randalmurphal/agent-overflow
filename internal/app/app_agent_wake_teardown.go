@@ -79,7 +79,7 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 			// A request's text is in the composer now; queued again, it
 			// would be sent twice.
 			if token := threadRequestSendIDToken(id); token != "" {
-				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.InterruptNotTakenInToComposer})
+				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.CauseNotTakenInToComposer})
 			}
 		}
 		return part, true, owed
@@ -92,7 +92,7 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 			if sessionEnded {
 				owed.requests = append(owed.requests, returnedRequest{token: token, message: messages[id]})
 			} else {
-				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.InterruptNotTakenIn})
+				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.CauseNotTakenIn})
 			}
 		}
 	}
@@ -234,7 +234,7 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 			if _, err := a.cleanupStaleFlushRow(threadID, send.userItemID); err != nil {
 				log.Printf("thread tools: remove the row of %s's dropped request message %s: %v", threadID, send.userItemID, err)
 				for _, r := range send.requests {
-					settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread))
+					settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.CauseSessionEndedUnread))
 				}
 				for _, w := range send.wakes {
 					a.noteMovedAgentWakeUndelivered(threadID, w)
@@ -264,7 +264,7 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 	for _, r := range requests {
 		if err := a.threadTools().requeueRequest(r.token, threadID, r.message); err != nil {
 			log.Printf("thread tools: give request %s back to %s after its session's end: %v", r.token, threadID, err)
-			settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread))
+			settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.CauseSessionEndedUnread))
 			continue
 		}
 		requeued = true
@@ -309,7 +309,8 @@ type returnedRequest struct {
 	message usermessage.AgentMessage
 }
 
-// unreadRequest is another thread's request a restore settles, with why.
+// unreadRequest is another thread's request a restore settles, with why:
+// the code of its cause (threadtools.Cause).
 type unreadRequest struct {
 	token string
 	why   string

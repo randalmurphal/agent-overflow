@@ -783,8 +783,11 @@ func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
 		t.Fatalf("retry of a half-created request: code = %q, err = %v", code, err)
 	}
-	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted {
-		t.Fatalf("receipt state = %q, want interrupted", receipt.State)
+	if _, message, _ := errorsx.PublicDetails(err); message != "That request was accepted but its thread was never created. It is settled as interrupted; make the request again." {
+		t.Fatalf("retry of a half-created request reads %q", message)
+	}
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != threadtools.CauseNeverStarted || len(receipt.Answer) != 0 {
+		t.Fatalf("receipt = %q %q %q, want interrupted, never started", receipt.State, receipt.Cause, receipt.Answer)
 	}
 	if after := threadIDsInStore(t, f.app); len(after) != len(before) {
 		t.Fatalf("threads after the refusal = %v, want the %v it started with", after, before)
@@ -1662,7 +1665,7 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 		}
 		body, err := wakeBodyOf(f.app, store.ThreadRequest{
 			Token: "tok-1", TargetThreadID: threadID, State: settlement.State,
-			Answer: settlement.Answer, AnswerKind: settlement.AnswerKind,
+			Answer: settlement.Answer, AnswerKind: settlement.AnswerKind, Cause: settlement.Cause, CauseArg: settlement.CauseArg,
 		}, false)
 		if err != nil {
 			t.Fatal(err)
@@ -1675,11 +1678,11 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 	}
 	reused := stopped
 	reused.StartedAt = started + 1
-	if body := wakeFor(reused); !strings.Contains(body, threadtools.InterruptTurn) {
+	if body := wakeFor(reused); !strings.Contains(body, ": The turn was interrupted before it answered.") {
 		t.Fatalf("another turn at the stopped index reaches the sender as %q", body)
 	}
 	f.app.forgetReceiptRunning(threadID, "tok-1")
-	if body := wakeFor(stopped); !strings.Contains(body, threadtools.InterruptTurn) {
+	if body := wakeFor(stopped); !strings.Contains(body, ": The turn was interrupted before it answered.") {
 		t.Fatalf("with the request settled, the mark should be gone; the wake reads %q", body)
 	}
 }
@@ -3074,6 +3077,35 @@ func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
 	}
 	if again := f.request(t, ack.Token); again.State != store.ThreadRequestCancelled {
 		t.Fatalf("the interrupted turn re-settled the request as %q", again.State)
+	}
+}
+
+// An interrupted request's answer file and thread_status say its cause in
+// its words, with what the turn had written after them.
+func TestAnInterruptedAnswerIsWrittenOutInItsWords(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := newThreadRequestToken()
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: f.caller.ID, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(),
+		interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedWorking}, "Half done.")); err != nil {
+		t.Fatal(err)
+	}
+	const words = "The thread's session ended while it was still working on the request. What it had written by then:\n\nHalf done."
+	export, err := f.adapter().ExportAnswer(t.Context(), f.callerIdentity(), token)
+	if err != nil {
+		t.Fatalf("ExportAnswer: %v", err)
+	}
+	if body, err := os.ReadFile(export.Path); err != nil || string(body) != words || export.Size != int64(len(words)) {
+		t.Fatalf("export = %q (%d bytes), %v; want %q", body, export.Size, err, words)
+	}
+	if state := f.adapter().requestStateView(f.request(t, token)); state.Answer != words {
+		t.Fatalf("thread_status answer = %q, want %q", state.Answer, words)
 	}
 }
 

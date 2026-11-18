@@ -195,7 +195,7 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 
 	app.recordTurnStop("thread", stoppedTurn{index: 3}, stop)
 	if got := app.turnStopCause("thread", 3); got != turnStoppedUnknown {
-		t.Fatalf("a thread with no open request kept a stop: %q", got)
+		t.Fatalf("a thread with no open request kept a stop: %+v", got)
 	}
 
 	app.noteReceiptRunning("thread", "tok-a", testSessionToken(app, "thread"))
@@ -205,29 +205,32 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 		t.Fatal("a stop with no open turn was kept")
 	}
 	app.recordTurnStop("thread", stoppedTurn{index: 3}, stop)
-	want := `"Lead" (lead-id, on Studio) stopped its turn with thread_cancel before it answered.`
+	want := threadtools.Cause{Code: threadtools.CauseThreadCancel, Arg: `"Lead" (lead-id, on Studio)`}
 	if got := app.turnStopCause("thread", 3); got != want {
-		t.Fatalf("cause = %q, want %q", got, want)
+		t.Fatalf("cause = %+v, want %+v", got, want)
+	}
+	if words := want.Answer(""); words != `"Lead" (lead-id, on Studio) stopped its turn with thread_cancel before it answered.` {
+		t.Fatalf("the cause reads %q", words)
 	}
 	if got := app.turnStopCause("thread", 4); got != turnStoppedUnknown {
-		t.Fatalf("another turn read the stop: %q", got)
+		t.Fatalf("another turn read the stop: %+v", got)
 	}
 
 	// An undelivered interrupt of some other turn leaves this one's stop.
 	app.dropTurnStop("thread", 4)
 	if got := app.turnStopCause("thread", 3); got != want {
-		t.Fatalf("dropping another turn's stop removed this one: %q", got)
+		t.Fatalf("dropping another turn's stop removed this one: %+v", got)
 	}
 	app.dropTurnStop("thread", 3)
 	if got := app.turnStopCause("thread", 3); got != turnStoppedUnknown {
-		t.Fatalf("an undelivered stop was kept: %q", got)
+		t.Fatalf("an undelivered stop was kept: %+v", got)
 	}
 
 	// Two requests answered by one turn both read it; it leaves with the last.
 	app.recordTurnStop("thread", stoppedTurn{index: 3}, stop)
 	app.forgetReceiptRunning("thread", "tok-a")
 	if got := app.turnStopCause("thread", 3); got != want {
-		t.Fatalf("the second request lost the stop: %q", got)
+		t.Fatalf("the second request lost the stop: %+v", got)
 	}
 	app.forgetReceiptRunning("thread", "tok-b")
 	if app.holdsTurnStop("thread") {
@@ -240,7 +243,7 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 func TestInterruptWithoutACauseIsRefused(t *testing.T) {
 	t.Parallel()
 	app := &App{}
-	for _, stop := range []turnStop{{}, {cause: "c"}, {label: "l"}} {
+	for _, stop := range []turnStop{{}, {cause: threadtools.Cause{Code: threadtools.CauseWorkflow}}, {label: "l"}, {label: "l", cause: threadtools.Cause{Code: "evicted"}}} {
 		if _, err := app.interruptTurnAtIndex(context.Background(), "thread", anyOpenTurn, stop); err == nil || !strings.Contains(err.Error(), "no stop cause") {
 			t.Errorf("interruptTurnAtIndex(%+v): err = %v, want the missing cause refused", stop, err)
 		}

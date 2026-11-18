@@ -199,6 +199,7 @@ export {
     ThreadPeerAck,
     ThreadPeerAgent,
     ThreadPeerCall,
+    ThreadPeerCause,
     ThreadPeerPoll,
     ThreadPeerPollReply,
     ThreadPeerReply,
