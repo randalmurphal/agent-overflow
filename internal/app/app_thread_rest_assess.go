@@ -274,20 +274,22 @@ func (a *App) restedSpawnsPastFloor(floor int64) (rested store.RestedSpawns, don
 
 // noteRestRead records how a held request's read of threadID's rest went:
 // one that failed is read again by the request sweep's next pass
-// (retryFailedRestReads), however long no change comes; one that read
-// ends that.
+// (retryFailedRestReads), which recording it wakes, however long no change
+// comes; one that read ends that.
 func (a *App) noteRestRead(threadID string, err error) {
 	r := &a.threadRequests
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if err == nil {
 		delete(r.rest.failed, threadID)
+		r.mu.Unlock()
 		return
 	}
 	if r.rest.failed == nil {
 		r.rest.failed = map[string]bool{}
 	}
 	r.rest.failed[threadID] = true
+	r.mu.Unlock()
+	a.nudgeThreadRequestSweep()
 }
 
 // retryFailedRestReads reads again, as one pass, the rest of the threads

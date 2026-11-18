@@ -824,6 +824,10 @@ type App struct {
 	// once the threads reached from roots have been read and before the
 	// decision is written (readRest), so a test can admit work there.
 	restReadForTest func(roots []string)
+	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
+	// sleeps until the channel it returns for the delay asked sends
+	// (sweepSleep).
+	sweepSleepForTest func(d time.Duration) <-chan time.Time
 	// admitWorkForTest, when set, runs as a call reaches admitWork, after
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.

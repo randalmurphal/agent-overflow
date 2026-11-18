@@ -168,14 +168,23 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		case <-done:
 			return
 		case <-nudge:
-		case <-time.After(a.threadRequestSweepDelay(lastExpiry)):
+		case <-a.sweepSleep(a.threadRequestSweepDelay(lastExpiry)):
 		}
 	}
 }
 
+// sweepSleep is the request sweep's sleep of d.
+func (a *App) sweepSleep(d time.Duration) <-chan time.Time {
+	if sleep := a.sweepSleepForTest; sleep != nil {
+		return sleep(d)
+	}
+	return time.After(d)
+}
+
 // threadRequestSweepDelay is how long the sweep sleeps before its next pass:
 // until the ledger's next due moment, bounded below by the floor and above
-// by the retention clock.
+// by the retention clock. A read of rest owed again and the next loop or
+// watch fire bound it whether or not the ledger's schedule reads.
 //
 // A poll already in flight is left out of the answer. Its rows are still due
 // by their own column, because the pass that owns them has not rescheduled
@@ -185,11 +194,20 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 // the poll's timeout.
 func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 	delay := threadRequestExpiryInterval - time.Since(lastExpiry)
+	var due []store.ScheduledMoment
+	if a.restRecoveryPending() || a.restReadsFailed() {
+		due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
+	}
+	if loops, err := a.store.NextAgentWakeDue(); err != nil {
+		logThreadRequestSweep("read the next loop or watch fire", err)
+	} else {
+		due = append(due, loops)
+	}
 	schedule, err := a.store.NextThreadRequestWork()
 	if err != nil {
 		logThreadRequestSweep("read the next scheduled request work", err)
 	} else {
-		due := []store.ScheduledMoment{schedule.Reminder, schedule.Wake}
+		due = append(due, schedule.Reminder, schedule.Wake)
 		if schedule.NestedOpen {
 			// A settled spawn on another computer whose work there is still
 			// open: its rows are asked for again at the poll's pace.
@@ -208,21 +226,13 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 			// same terms as the poll's rows.
 			due = append(due, schedule.OwnerOp)
 		}
-		if a.restRecoveryPending() || a.restReadsFailed() {
-			due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
+	}
+	for _, moment := range due {
+		if !moment.Set {
+			continue
 		}
-		if loops, err := a.store.NextAgentWakeDue(); err != nil {
-			logThreadRequestSweep("read the next loop or watch fire", err)
-		} else {
-			due = append(due, loops)
-		}
-		for _, moment := range due {
-			if !moment.Set {
-				continue
-			}
-			if until := time.Until(time.UnixMilli(moment.At)); until < delay {
-				delay = until
-			}
+		if until := time.Until(time.UnixMilli(moment.At)); until < delay {
+			delay = until
 		}
 	}
 	if delay < threadRequestSweepFloor {
