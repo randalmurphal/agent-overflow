@@ -328,16 +328,32 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	if err != nil {
 		return RemoteCommand{}, err
 	}
+	// A retry under an ID whose watch this conversation holds stands for a
+	// start that may have run. Every refusal of this attempt says so and
+	// names that start, whatever refuses it, so the watch is read before
+	// anything is checked.
+	earlier, err := a.heldRemoteStart(input.ComputerID, input.Request.ID, scope.ThreadID)
+	if err != nil {
+		return RemoteCommand{}, err
+	}
+	refuse := func(err error) error {
+		if !earlier {
+			return err
+		}
+		ref := a.remoteRef(input.ComputerID, input.Request.ID)
+		ref.EarlierStart = true
+		return remoteOperationErrorFor("run", ref, rpcclient.NotSentError{Err: err})
+	}
 	// The authenticated source session owns this provenance, not argv/JSON.
 	input.Request.SourceThreadID = scope.ThreadID
 	// Older destinations refuse a zero timeout without this flag; newer ones
 	// ignore it. Derived here so every caller and retry encodes it alike.
 	input.Request.Unlimited = input.Request.TimeoutSeconds == 0
 	if err := remotejobs.Validate(input.Request); err != nil {
-		return RemoteCommand{}, a.remoteOperationError("run", input.ComputerID, input.Request.ID, err)
+		return RemoteCommand{}, refuse(err)
 	}
 	if !entityid.Valid(input.Workspace.ProjectID) {
-		return RemoteCommand{}, errorsx.Public("remote_invalid_project", "project_id must be a destination project UUID from remote_computers.", nil)
+		return RemoteCommand{}, refuse(errorsx.Public("remote_invalid_project", "project_id must be a destination project UUID from remote_computers.", nil))
 	}
 	if !entityid.Valid(input.ComputerID) {
 		return RemoteCommand{}, errorsx.Public("remote_invalid_computer", "computer_id must be a UUID from remote_computers.", nil)
@@ -349,17 +365,17 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	// being asked to start.
 	done, err := a.admitWork(scope.ThreadID, scope.Session)
 	if err != nil {
-		return RemoteCommand{}, err
+		return RemoteCommand{}, refuse(err)
 	}
 	defer done()
 	unlock, err := a.remoteStartLocks().LockCtx(ctx, input.ComputerID+":"+input.Request.ID)
 	if err != nil {
-		return RemoteCommand{}, err
+		return RemoteCommand{}, refuse(err)
 	}
 	defer unlock()
 	freshWatch, err := a.registerRemoteWatch(input)
 	if err != nil {
-		return RemoteCommand{}, err
+		return RemoteCommand{}, refuse(err)
 	}
 	call, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -384,6 +400,20 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 		return result, publicErr
 	}
 	return result, nil
+}
+
+// heldRemoteStart reports whether threadID already holds the watch of a
+// start under requestID that may have run: any but one its destination
+// refused before accepting it (store.RemoteWatch.Refused).
+func (a *App) heldRemoteStart(computerID, requestID, threadID string) (bool, error) {
+	w, err := a.store.GetRemoteWatch(computerID, requestID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return w.ThreadID == threadID && !w.Refused(), nil
 }
 
 // remoteStartNeverRan reports whether a failed RemoteCommandStart cannot

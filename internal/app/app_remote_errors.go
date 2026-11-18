@@ -174,7 +174,7 @@ func remoteFailureText(err error, sent bool) (code, message string) {
 		if sent {
 			return "remote_internal_error", "Agent Overflow could not complete this request. Check the originating computer's logs using the reference below."
 		}
-		return "remote_internal_error", "Agent Overflow could not reach the destination, so nothing was sent. Check the originating computer's logs using the reference below."
+		return "remote_internal_error", "Agent Overflow could not send this request, so nothing was sent. Check the originating computer's logs using the reference below."
 	case sent:
 		return "remote_connection_failed", "Could not get a response from the destination. Check that it is awake, Agent Overflow is running, and LAN or Tailscale connectivity is available."
 	}

@@ -285,9 +285,11 @@ loaded, no connection to the destination opened, or the call ended before
 its write, `rpcclient.NotSent`) says that nothing was sent, and a start
 refused that way releases its fresh watch at once, as a refusal the
 destination answers before accepting does. A start retried under an ID
-whose earlier attempt may have run keeps that attempt's watch, and its
-failure says the earlier attempt may have run and to check its status
-first.
+whose watch the same conversation holds, for an attempt the destination did
+not refuse, keeps that watch. Any failure of the retry, including a refusal
+before it is sent such as agent commands turned off for that computer,
+names the request and says the earlier attempt may have run and to check
+its status first.
 A cancellation reply lost in transit likewise requires status verification.
 An older destination may still redact its errors; the source explains that
 limitation and preserves the destination's reference instead of guessing why
