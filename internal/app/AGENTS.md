@@ -240,9 +240,10 @@ the thread's activity and read state; the marks it reads are kept by
 tap.
 
 A spawned thread's prompts are stamped with their route to its spawner
-by triage (`SetPromptRouter`) and delivered, answered and settled in
-`app_worker_prompts.go`, off the emit path on one serial queue so a
-resolution never overtakes its delivery. Triage's `RoutedTo` is the one
+by triage (`SetPromptRouter`), delivered and settled in
+`app_worker_prompts.go` and answered in `app_worker_prompts_answering.go`,
+off the emit path on one serial queue so a resolution never overtakes its
+delivery. Triage's `RoutedTo` is the one
 record of a prompt's route, and the registry follows its announcements. A
 prompt whose wake cannot reach the spawner (a failed delivery, a session
 that ended with it unconfirmed, a cleared queue) is rejected

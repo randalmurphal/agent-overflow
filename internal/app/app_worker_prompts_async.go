@@ -21,7 +21,7 @@ import (
 // by asking, answered by a later message) are its prompts too, and a
 // spawned thread's go where its approvals and blocking questions go: the
 // registry, the wake, the spawner's thread_reply, the hand-back and the
-// reconcile of app_worker_prompts.go serve all three kinds. Only the record
+// reconcile of app_worker_prompts*.go serve all three kinds. Only the record
 // of where an open question goes is kept here. Triage's RoutedTo lives in a
 // thread's live state, which a session's end drops whole
 // (triage.cleanupThread), and an async question outlives its session in
