@@ -391,6 +391,7 @@ var threadDriveBoundaries = map[string]string{
 	"(*agent-overflow/internal/provider/claude.Session).RenamePeerSession": "a /rename the Claude CLI answers itself, with no model turn",
 	"(*agent-overflow/internal/provider/claude.Session).sendConfigCommand": "a configuration command the Claude CLI answers itself, with no model turn",
 	"param:(*agent-overflow/internal/app.workerPrompts).run#0":             "delivers a worker's own approval or question to the agent that spawned it, on the prompts' serial queue",
+	appMethodKey + "reconcileRemotePrompts":                                "on the prompt queue, applies prompts the peer held for the recorded spawner using the authenticated read",
 	appMethodKey + "queueThreadAgentEmit":                                  "batches agent-row frames for a drain that only emits them",
 	"(*agent-overflow/internal/workflowapp.Service).deliverWorkflowWake":   "tells a run's bound thread about the workflow run it is bound to",
 	appMethodKey + "giveBackToOwners":                                      "gives the answers, reminders and completions a queue drop took back to the threads that are owed them",

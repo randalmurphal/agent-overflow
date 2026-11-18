@@ -120,7 +120,9 @@ CREATE INDEX idx_thread_requests_owner_deadline ON thread_requests(target_comput
  CASE WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000)) ELSE next_check END)
  WHERE polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','finished');
 CREATE INDEX idx_thread_requests_owner_recovery ON thread_requests(target_computer_id, token)
- WHERE target_computer_id <> '' AND (nested_open = 1 OR (polling = 1 AND state IN ('accepted','running','finished')));
+ WHERE target_computer_id <> '' AND (nested_open = 1 OR (polling = 1 AND state IN ('accepted','running')));
+CREATE INDEX idx_thread_request_receipts_owner_uncollected ON thread_request_receipts(owner_device_id, token)
+ WHERE lineage_only=0 AND settled_at IS NOT NULL AND collected_revision < revision;
 CREATE TABLE spawn_revisions (
   revision INTEGER PRIMARY KEY AUTOINCREMENT,
   owner_device_id TEXT NOT NULL,

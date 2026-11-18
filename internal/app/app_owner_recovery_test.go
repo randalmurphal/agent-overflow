@@ -147,7 +147,7 @@ func TestOwnerRecoveryWireCallsDoNotGrowWithSettledHistory(t *testing.T) {
 		t.Helper()
 		execOnStore(t, pair.dbPath, `WITH RECURSIVE n(x) AS (SELECT ?1 UNION ALL SELECT x+1 FROM n WHERE x<?2)
 		INSERT INTO thread_requests(token,caller_thread_id,kind,target_computer_id,target_thread_id,state,polling,settled_at,created_at,updated_at,contact_due)
-		SELECT 'old-'||x,?3,'spawn',?4,'resting-'||x,'finished',0,1,1,1,9223372036854775807 FROM n`, from, to, pair.caller.ID, pair.computer)
+		SELECT 'old-'||x,?3,'spawn',?4,'resting-'||x,'finished',1,1,1,1,9223372036854775807 FROM n`, from, to, pair.caller.ID, pair.computer)
 		server.pages.Store(0)
 		server.batches.Store(0)
 		if err := pair.source.recoverOwnerPeer(t.Context(), pair.computer, pair.destWire.srv.LaunchID()); err != nil {
@@ -174,6 +174,20 @@ func TestReadingAContinuingGrandchildDoesNotAdvanceTheOwnersClock(t *testing.T) 
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
 	owner := pair.receipt(t, pair.spawn.Token).OwnerDeviceID
 	launch := pair.destWire.srv.LaunchID()
+	for _, thread := range []string{pair.child, pair.receipt(t, pair.grand).TargetThreadID} {
+		waitUntil(t, 10*time.Second, func() bool {
+			items, err := pair.dest.store.ListItems(thread)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range items {
+				if item.Summary == "working" {
+					return true
+				}
+			}
+			return false
+		})
+	}
 	pair.dest.threadRequestsWG.Wait()
 	first, _ := pair.dest.ownerActivity.snapshot(owner, launch, OwnerCursor{})
 	for range 3 {

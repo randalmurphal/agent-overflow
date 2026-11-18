@@ -36,14 +36,27 @@ func (s *Store) OwnerRequests(computer string, tokens []string) ([]ThreadRequest
 	return collectThreadRequests(rows, "read changed requests on "+computer)
 }
 
+var recoverOwnerRequestsSQL = `SELECT token FROM thread_requests
+	  WHERE target_computer_id = ` + textParam("?1") + ` AND target_computer_id <> '' AND token > ?2
+	    AND (nested_open = 1 OR (polling = 1 AND state IN ('accepted','running')))
+	  ORDER BY token LIMIT `
+
 func (s *Store) RecoverOwnerRequests(computer, after string, limit int) ([]string, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("store: positive recovery page size required")
 	}
-	return s.queryThreadIDs("read requests to reconcile", `SELECT token FROM thread_requests
-	  WHERE target_computer_id = `+textParam("?1")+` AND target_computer_id <> '' AND token > ?2
-	    AND (nested_open = 1 OR (polling = 1 AND state IN ('accepted','running','finished')))
-	  ORDER BY token LIMIT `+strconv.Itoa(limit), computer, after)
+	return s.queryThreadIDs("read requests to reconcile", recoverOwnerRequestsSQL+strconv.Itoa(limit), computer, after)
+}
+
+const uncollectedOwnerTokensSQL = `SELECT token FROM thread_request_receipts
+	  WHERE owner_device_id=?1 AND token>?2 AND lineage_only=0 AND settled_at IS NOT NULL
+	    AND collected_revision < revision ORDER BY token LIMIT `
+
+func (s *Store) UncollectedOwnerTokens(device, after string, limit int) ([]string, error) {
+	if device == "" || limit < 1 {
+		return nil, fmt.Errorf("store: listing uncollected answers requires a device and a positive limit")
+	}
+	return s.queryThreadIDs("read uncollected owner answers", uncollectedOwnerTokensSQL+strconv.Itoa(limit), device, after)
 }
 
 func (s *Store) DueLinkContacts(computer string, now int64, limit int) ([]ThreadRequest, error) {

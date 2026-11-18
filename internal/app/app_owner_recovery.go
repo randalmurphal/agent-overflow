@@ -101,7 +101,16 @@ func (a *App) ThreadOwnerRecovery(ctx context.Context, launch string, key OwnerP
 		case more || key.Through != "":
 			page.Next = &OwnerPageKey{Phase: "active", After: through}
 		default:
-			page.Next = &OwnerPageKey{Phase: "structural"}
+			page.Next = &OwnerPageKey{Phase: "answers"}
+		}
+	case "answers":
+		page.Tokens, err = a.store.UncollectedOwnerTokens(owner, key.After, ownerPageSize)
+		if err != nil {
+			return page, err
+		}
+		page.Next = &OwnerPageKey{Phase: "structural"}
+		if len(page.Tokens) == ownerPageSize {
+			page.Next = &OwnerPageKey{Phase: "answers", After: page.Tokens[len(page.Tokens)-1]}
 		}
 	case "structural":
 		page.Structural, err = a.store.PendingSpawnRevisions(owner, key.After, ownerPageSize)

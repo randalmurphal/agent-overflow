@@ -79,6 +79,7 @@ type SubtreeRest struct {
 // AtRest runs with the write's transaction open: it takes no store
 // connection and no lock that is held across a store write.
 type RestGuard struct {
+	ForgottenComputers  []string
 	ReconciledComputers []string
 	OwedRemoteTokens    []string
 	Roots               []string

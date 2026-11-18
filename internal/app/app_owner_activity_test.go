@@ -1,12 +1,8 @@
 package app
 
 import (
-	"context"
 	"slices"
 	"testing"
-	"time"
-
-	"agent-overflow/internal/store"
 )
 
 func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
@@ -38,41 +34,24 @@ func TestOwnerActivityKeepsChangesUntilObserved(t *testing.T) {
 
 func TestOwnerRecoversRenamedWorkerWithoutReadingPane(t *testing.T) {
 	pair := newReachPair(t)
-	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine, `{"type":"result","subtype":"success","is_error":false}`}})
-	ack := pair.spawnThere(t, "finish the work", nil)
-	target := pair.receipt(t, ack.Token).TargetThreadID
-	if err := pair.dest.RenameThread(target, "renamed while away"); err != nil {
+	spawn, child := remoteRestedWorker(t, pair)
+	launch := pair.destWire.srv.LaunchID()
+	recover := func() {
+		t.Helper()
+		if err := pair.source.recoverOwnerPeer(t.Context(), pair.computer, launch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recover()
+	if _, err := pair.source.store.RetireThreadRequestPoll(spawn.Token); err != nil {
 		t.Fatal(err)
 	}
-	changed := make(chan struct{}, 1)
-	pair.source.store.OnThreadRequestChanged(func(c store.ThreadRequestChange) {
-		pair.source.noteThreadRequestChanged(c)
-		select {
-		case changed <- struct{}{}:
-		default:
-		}
-	})
-	if err := pair.source.refreshOwnerPeers(); err != nil {
+	if err := pair.dest.RenameThread(child, "renamed while away"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		o := &pair.source.ownerUpdates
-		o.mu.Lock()
-		p := o.peers[pair.computer]
-		o.mu.Unlock()
-		if p != nil {
-			p.cancel()
-			<-p.done
-		}
-	})
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	for pair.request(t, ack.Token).TargetThreadTitle != "renamed while away" {
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			t.Fatal("rename never reached the spawner")
-		}
+	recover()
+	if got := pair.request(t, spawn.Token).TargetThreadTitle; got != "renamed while away" {
+		t.Fatalf("resting worker title after reconnect = %q", got)
 	}
 }
 

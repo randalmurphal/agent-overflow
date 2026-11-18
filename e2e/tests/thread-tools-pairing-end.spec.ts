@@ -10,7 +10,8 @@
 // Specs: docs/specs/agent-thread-tools.md ("Wakes from another computer",
 // "Reaching another computer"), docs/architecture/remote-commands.md.
 import { randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test, expect } from '@playwright/test';
@@ -26,9 +27,11 @@ test.describe.configure({ mode: 'serial' });
 let home: HarnessApp;
 let remote: HarnessApp;
 let remoteID = '';
+let homeDataDir = '';
 
 test.beforeAll(async () => {
-  [home, remote] = await startTogether(launchHarness(), launchHarness());
+  homeDataDir = await mkdtemp(join(tmpdir(), 'ao-pairing-end-'));
+  [home, remote] = await startTogether(launchHarness({ dataDir: homeDataDir }), launchHarness());
   const pairing = await headlessPairing(remote);
   try {
     const attachment = await home.rpc<{ id: string; verificationNumber: string }>('AddBackend', pairing.invite.url);
@@ -63,6 +66,7 @@ test.beforeEach(() => {
 test.afterAll(async () => {
   await home?.close();
   await remote?.close();
+  if (homeDataDir) await rm(homeDataDir, { recursive: true, force: true });
 });
 
 interface SeededProject {
@@ -124,6 +128,8 @@ test('a late reply the other computer dropped before it was collected reads as e
   // A late reply arrived there an hour ago, while this computer was away,
   // and its hold ran out before this computer asked again: the late reply's
   // revision, then the retention pass's expiry (ExpireThreadRequestAnswers).
+  const [{ id: homeID }] = await remote.rpc<Array<{ id: string }>>('ListAgentComputers');
+  expect(await home.stop()).toBe(true);
   const arrived = Date.now() - 3_600_000;
   const db = new DatabaseSync(storePath(remote));
   try {
@@ -135,6 +141,9 @@ test('a late reply the other computer dropped before it was collected reads as e
   } finally {
     db.close();
   }
+
+  home = await launchHarness({ dataDir: homeDataDir });
+  await remote.rpc('RepairBackendAddress', homeID, 'https://127.0.0.1:' + home.bootstrap.port);
 
   // This computer records it, keeps the first answer, and only then tells
   // that computer it holds the revision.

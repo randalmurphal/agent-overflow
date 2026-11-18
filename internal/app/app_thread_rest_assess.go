@@ -263,6 +263,26 @@ func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []st
 	if rest == nil {
 		rest = &store.RestGuard{}
 	}
+	// There is no peer to reconcile after an explicit unpair. Its historical
+	// rows still identify the surviving worker until ordinary retention.
+	computers, err := a.store.OwnerComputers()
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, id := range computers {
+		unlock := a.lockComputerPairing(id)
+		paired, err := a.pairingSaved(id)
+		if err != nil {
+			unlock()
+			return 0, nil, err
+		}
+		if paired {
+			unlock()
+		} else {
+			defer unlock()
+			rest.ForgottenComputers = append(rest.ForgottenComputers, id)
+		}
+	}
 	o := &a.ownerUpdates
 	o.mu.Lock()
 	defer o.mu.Unlock()

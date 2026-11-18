@@ -775,6 +775,8 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 		t.Error("acknowledging a revision already collected must report no change")
 	}
 
+	var changed []string
+	s.OnThreadRequestChanged(func(change ThreadRequestChange) { changed = append(changed, change.Token) })
 	dropped, err := s.ExpireThreadRequestAnswers(1999)
 	if err != nil {
 		t.Fatalf("early expiry sweep: %v", err)
@@ -789,6 +791,9 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 	}
 	if dropped != 1 {
 		t.Fatalf("dropped = %d, want only the uncollected answer", dropped)
+	}
+	if len(changed) != 1 || changed[0] != "tok-uncollected" {
+		t.Fatalf("owner was told of expired receipts %v", changed)
 	}
 	expired, _, err := s.GetThreadRequestReceipt("tok-uncollected")
 	if err != nil {

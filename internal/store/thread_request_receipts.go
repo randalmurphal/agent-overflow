@@ -951,21 +951,20 @@ func (s *Store) ListOpenThreadRequestReceipts() ([]ThreadRequestReceipt, error) 
 // keeps answering "already ran". Returns how many answers were dropped.
 func (s *Store) ExpireThreadRequestAnswers(now int64) (int64, error) {
 	action := "store: expire thread request answers"
-	result, err := s.db.Exec(
+	tokens, err := queryIDs(s.db,
 		`UPDATE thread_request_receipts
 		    SET answer = NULL, answer_cause = '', answer_cause_arg = '', late_reply = NULL, state = 'expired', updated_at = ?
 		  WHERE settled_at IS NOT NULL
 		    AND expires_at IS NOT NULL AND expires_at <= ?
 		    AND collected_revision < revision
-		    AND state <> 'expired'`,
+		    AND state <> 'expired' RETURNING token`,
 		nowMillis(), now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", action, err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("%s: rows affected: %w", action, err)
+	for _, token := range tokens {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
-	return affected, nil
+	return int64(len(tokens)), nil
 }

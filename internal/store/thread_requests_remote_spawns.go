@@ -25,8 +25,8 @@ func (s *Store) ForgetRemoteSpawnsOnComputer(computerID string) (_ []string, err
 		`DELETE FROM thread_requests
 		  WHERE target_computer_id = ` + textParam("?2") + ` AND target_computer_id <> '' AND lineage_only = 1
 		  RETURNING caller_thread_id`,
-		`UPDATE thread_requests SET nested_open = 0, link_end='detached', updated_at = ?1
-		  WHERE target_computer_id = ` + textParam("?2") + ` AND target_computer_id <> '' AND kind='spawn' AND (nested_open=1 OR link_end IN ('','released'))
+		`UPDATE thread_requests SET nested_open = 0, updated_at = ?1
+		  WHERE target_computer_id = ` + textParam("?2") + ` AND target_computer_id <> '' AND nested_open=1
 		  RETURNING caller_thread_id`,
 	} {
 		rows, err := tx.Query(statement, nowMillis(), computerID)

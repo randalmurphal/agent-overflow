@@ -620,6 +620,6 @@ the backend launch. A replaced carrier or launch invalidates outstanding
 reads. Disconnecting the waiter cancels the server call.
 
 `ThreadOwnerRecovery` pages by stable keys through held prompts, active
-work and structural revisions. `ThreadToolRequestStatus` carries batched
+work, uncollected answers and structural revisions. `ThreadToolRequestStatus` carries batched
 status and link-state reads, original-source link contact and exact
 structural acknowledgments. These operations use `thread-tools.v2`.

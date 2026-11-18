@@ -150,9 +150,9 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	if err != nil {
 		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: encode: %w", cutoff, err)
 	}
-	var computers, owed []string
+	var computers, owed, forgotten []string
 	if rest != nil {
-		computers, owed = rest.ReconciledComputers, rest.OwedRemoteTokens
+		computers, owed, forgotten = rest.ReconciledComputers, rest.OwedRemoteTokens, rest.ForgottenComputers
 	}
 	eligible, err := encoded(computers)
 	if err != nil {
@@ -162,7 +162,14 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	if err != nil {
 		return 0, nil, err
 	}
+	unpaired, err := encoded(forgotten)
+	if err != nil {
+		return 0, nil, err
+	}
+	const keepLineage = spawnLineageSQL + " AND target_computer_id NOT IN (SELECT value FROM json_each(?5))"
+	const orphan = orphanLineageSQL + " OR (lineage_only = 1 AND target_computer_id IN (SELECT value FROM json_each(?5)))"
 	const reconciled = ` AND (kind <> 'spawn' OR target_computer_id = '' OR target_thread_id = '' OR link_end IN ('gone','detached')
+	    OR target_computer_id IN (SELECT value FROM json_each(?5))
 	    OR (target_computer_id IN (SELECT value FROM json_each(?3)) AND token NOT IN (SELECT value FROM json_each(?4))))`
 	requestFloor := requestPastFloorSQL + reconciled
 	var due bool
@@ -170,10 +177,10 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	if err := s.reader().QueryRow(`SELECT
 	    EXISTS (SELECT 1 FROM thread_requests WHERE `+requestFloor+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
-	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphan+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)`,
-		cutoff, threads, eligible, outstanding, cutoff, cutoff).Scan(&due); err != nil {
+		cutoff, threads, eligible, outstanding, unpaired, cutoff, cutoff).Scan(&due); err != nil {
 		return 0, nil, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
 	if !due {
@@ -197,14 +204,14 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 		return 0, nil, fmt.Errorf("store: release the spawn links silent since %d: %w", cutoff, err)
 	}
 	floor := []any{cutoff, threads}
-	remoteFloor := []any{cutoff, threads, eligible, outstanding}
+	remoteFloor := []any{cutoff, threads, eligible, outstanding, unpaired}
 	steps := []struct {
 		what, query string
 		args        []any
 	}{
-		{"clear kept thread_requests", clearLineagePayloadSQL + ` AND ` + requestFloor + ` AND ` + spawnLineageSQL, remoteFloor},
-		{"sweep thread_requests", `DELETE FROM thread_requests WHERE ` + requestFloor + ` AND NOT (` + spawnLineageSQL + `)`, remoteFloor},
-		{"sweep lineage thread_requests", `DELETE FROM thread_requests WHERE ` + orphanLineageSQL, nil},
+		{"clear kept thread_requests", clearLineagePayloadSQL + ` AND ` + requestFloor + ` AND ` + keepLineage, remoteFloor},
+		{"sweep thread_requests", `DELETE FROM thread_requests WHERE ` + requestFloor + ` AND NOT (` + keepLineage + `)`, remoteFloor},
+		{"sweep lineage thread_requests", `DELETE FROM thread_requests WHERE ` + orphan, remoteFloor},
 		{"clear kept thread_request_receipts", clearReceiptLineageSQL + receiptPastFloorSQL + ` AND ` + receiptLineageSQL, floor},
 		// The step before kept the lineage, which the floor's set leaves out.
 		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, floor},

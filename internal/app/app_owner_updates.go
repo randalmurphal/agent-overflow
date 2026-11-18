@@ -51,12 +51,15 @@ func (a *App) refreshOwnerPeers() error {
 	o.mu.Unlock()
 	var failures []error
 	for _, id := range ids {
-		ended, err := a.endUnpaired(id)
+		unlock := a.lockComputerPairing(id)
+		paired, err := a.pairingSaved(id)
 		if err != nil {
+			unlock()
 			failures = append(failures, fmt.Errorf("computer %s: %w", id, err))
 			continue
 		}
-		if ended {
+		if !paired {
+			unlock()
 			continue
 		}
 		o := &a.ownerUpdates
@@ -92,6 +95,7 @@ func (a *App) refreshOwnerPeers() error {
 			}
 		}
 		o.mu.Unlock()
+		unlock()
 	}
 	return errors.Join(failures...)
 }
@@ -114,14 +118,12 @@ func (a *App) runOwnerPeer(ctx context.Context, id string, p *ownerPeer) {
 				}
 				p.launch, p.legacy = answer.Launch, false
 				p.disconnected = origin.Disconnected()
-				p.owed = append(p.owed, answer.Tokens...)
-				for _, rev := range answer.Structural {
-					p.owed = append(p.owed, rev.Token)
-				}
-				slices.Sort(p.owed)
-				p.owed = slices.Compact(p.owed)
 				if answer.Reset {
 					p.ready = false
+				} else {
+					p.owed = append(slices.Clone(answer.Tokens), ownerRevisionTokens(answer.Structural)...)
+					slices.Sort(p.owed)
+					p.owed = slices.Compact(p.owed)
 				}
 				return nil
 			})
@@ -224,10 +226,12 @@ func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
 		if err := origin.Apply(launch, func() error { return ctx.Err() }); err != nil {
 			return err
 		}
-		if err = a.readOwnerChanges(ctx, id, launch, page.Tokens, page.Structural); err != nil {
+		tokens := append(page.Tokens, ownerRevisionTokens(page.Structural)...)
+		a.ownerReads.changed(tokens)
+		if err = a.readOwnerChanges(ctx, id, launch, tokens, page.Structural); err != nil {
 			return err
 		}
-		a.invalidateChangedOwnerTrees(id, page.Tokens)
+		a.invalidateChangedOwnerTrees(id, tokens)
 		key = page.Next
 	}
 	for after := ""; ; {
@@ -244,6 +248,14 @@ func (a *App) recoverOwnerPeer(ctx context.Context, id, launch string) error {
 		}
 		after = keys[len(keys)-1]
 	}
+}
+
+func ownerRevisionTokens(changes []store.SpawnRevision) []string {
+	tokens := make([]string, len(changes))
+	for i, change := range changes {
+		tokens[i] = change.Token
+	}
+	return tokens
 }
 
 func (a *App) readOwnerChanges(ctx context.Context, id, launch string, keys []string, structural []store.SpawnRevision) error {

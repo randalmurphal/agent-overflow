@@ -1058,7 +1058,7 @@ Ruling 36, as built:
   it displays a changed link. Held prompts take priority and renew
   their two-minute lease on the worker's computer.
   After reconnecting, the spawner discards cached placement, collects
-  held prompts, active workers and pending structural revisions, and
+  held prompts, active workers, uncollected answers and pending structural revisions, and
   reconciles the links it recorded open. A rename, placement change,
   archive or end survives a restart until its owner applies and
   acknowledges the revision. A released link can still list its
