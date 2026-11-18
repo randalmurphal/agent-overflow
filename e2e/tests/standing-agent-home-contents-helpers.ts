@@ -719,6 +719,23 @@ export type SidebarSection = 'assistants' | 'projects';
  * when the choice changes, and when the provider's own memory is turned
  * off and the window comes back. `open` shows a thread by its sidebar row.
  */
+// The banner takes its own row above the conversation: scrolled to the top,
+// the first message is under nothing.
+async function expectFirstMessageUncovered(page: Page): Promise<void> {
+  const scroller = page.getByTestId('message-timeline-scroll').first();
+  const first = page.getByTestId('user-message-bubble').first();
+  await expect
+    .poll(async () => {
+      await scroller.evaluate((el) => { el.scrollTop = 0; });
+      return first.evaluate((row) => {
+        const box = row.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
+        return hit !== null && row.contains(hit);
+      });
+    })
+    .toBe(true);
+}
+
 export async function expectOwnMemoryBanner(
   harness: HarnessApp,
   page: Page,
@@ -742,6 +759,7 @@ export async function expectOwnMemoryBanner(
     `${name}'s own memory is also on for this assistant, so it may save what it learns there instead of in Agent Overflow memory.`,
   );
   await expect(banner.getByRole('button')).toHaveText(['Memory settings']);
+  await expectFirstMessageUncovered(page);
 
   await open('projects', 'Parser review');
   await expect(page.getByTestId('agent-message-row').first()).toBeVisible();

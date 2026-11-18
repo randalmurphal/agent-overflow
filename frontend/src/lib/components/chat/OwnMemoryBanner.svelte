@@ -9,7 +9,8 @@
   // providerMemory.svelte.ts, watched while the banner could show. A
   // provider whose configuration cannot be read shows no banner; Settings >
   // Memory says why. Shown on an assistant's current thread only, never on
-  // its workers or an ordinary thread.
+  // its workers or an ordinary thread. ChatView gives it a row of its own
+  // above the conversation.
   import { fade } from 'svelte/transition';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { providerMemory, watchProviderMemory } from '../../stores/providerMemory.svelte';
@@ -48,7 +49,7 @@
     role="alert"
     aria-live="polite"
     data-testid="own-memory-banner"
-    class="border-b bg-warning/15 border-warning/30 text-warning px-4 py-2 flex items-center gap-2"
+    class="shrink-0 border-b bg-warning/15 border-warning/30 text-warning px-4 py-2 flex items-center gap-2"
   >
     <p class="text-xs flex-1 line-clamp-2">
       {providerName}'s own memory is also on for this assistant, so it may save what it learns there instead of in

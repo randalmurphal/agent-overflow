@@ -678,8 +678,8 @@ how a missing delivery or an unreadable file is reported, is in
 own memory unless the computer's choice for that provider is "never"
 ([memory](memory.md#settings)). While it is, and that provider's own
 memory is on (`GetNativeMemoryStatus`), the assistant's thread shows a
-warning row at the top of its timeline, on desktop and compact and on
-every connected screen: "Claude's own memory is also on for this
+warning row of its own above its timeline, never over it, on desktop and
+compact and on every connected screen: "Claude's own memory is also on for this
 assistant, so it may save what it learns there instead of in Agent
 Overflow memory." (Codex's for a Codex assistant), with one action,
 Memory settings, which opens that computer's memory settings. It is not
