@@ -216,7 +216,7 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 		return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, createdBranch))
 	}
 	// A head only origin had is checked out as a local branch the cut made.
-	createdBranch = createdBranch || cut.CreatedBranch
+	createdBranch = createdBranch || cut.Tip != ""
 	_, err = a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{
 		ThreadID: thread.ID, Forge: req.PR.Forge, Host: req.PR.Host, Project: req.PR.Project(), Number: req.PR.Number,
 		URL: strings.TrimSpace(req.URL), NodeID: strings.TrimSpace(req.NodeID), Branch: thread.Branch,

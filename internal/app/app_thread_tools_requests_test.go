@@ -3806,11 +3806,11 @@ func TestASpawnWhoseCallerIsDeletedMidCreateStillRuns(t *testing.T) {
 	}
 	token := newThreadRequestToken()
 	target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{Token: token, Kind: store.ThreadRequestSpawn},
-		func() (store.Thread, threadapp.CutWorktree, error) {
+		func() (store.Thread, madeWithThread, error) {
 			if err := f.app.store.DeleteThread(f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
-			return made, threadapp.CutWorktree{}, nil
+			return made, madeWithThread{}, nil
 		}, true)
 	if err != nil || target != made.ID || !fresh {
 		t.Fatalf("accept = %q %v, %v; want the created thread", target, fresh, err)

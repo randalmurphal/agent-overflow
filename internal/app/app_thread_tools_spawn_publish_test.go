@@ -7,7 +7,6 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 )
@@ -164,7 +163,7 @@ func TestAcceptingASpawnAnnouncesItsThreadOnceNamed(t *testing.T) {
 			rec.reset()
 			id, _, err := adapter.acceptRequest(tc.origin, store.ThreadRequest{
 				Token: newThreadRequestToken(), Kind: store.ThreadRequestSpawn,
-			}, func() (store.Thread, threadapp.CutWorktree, error) {
+			}, func() (store.Thread, madeWithThread, error) {
 				return adapter.createSpawnedThread(t.Context(), call, create)
 			}, create.owned)
 			if err != nil {

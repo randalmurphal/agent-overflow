@@ -3,9 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io/fs"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +13,6 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -184,60 +180,6 @@ func TestAReleasedReceiverIsSentAgainWhatItCanAnswerOnce(t *testing.T) {
 	}
 }
 
-// A spawn settled while its worktree is being cut never names its thread,
-// and the creation that cut the worktree takes it back: the checkout and
-// the branch it made are gone with the thread.
-func TestASpawnSettledWhileItsWorktreeIsCutRemovesTheCheckoutAndBranch(t *testing.T) {
-	t.Parallel()
-	repo, _ := initGitRepoWithOrigin(t)
-	f := newRequestFixtureIn(t, repo)
-	f.mockClaude(t, "never asked")
-	const branch = "settled-while-cut"
-	creating, release := make(chan struct{}), make(chan struct{})
-	released := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(released)
-	f.app.spawnNamingForTest = func(string) {
-		close(creating)
-		<-release
-	}
-	spawned := make(chan error, 1)
-	go func() {
-		_, err := f.adapter().Spawn(context.WithoutCancel(t.Context()), f.callerIdentity(),
-			threadtools.SpawnCall{Prompt: "work in a fresh checkout", WorktreeBranch: branch})
-		spawned <- err
-	}()
-	select {
-	case <-creating:
-	case err := <-spawned:
-		t.Fatalf("the spawn ended before naming its thread: %v", err)
-	}
-	checkout := worktreeOfBranch(t, repo, branch)
-	if checkout == "" || !branchExists(repo, branch) {
-		t.Fatalf("the cut made no checkout of %s", branch)
-	}
-	rows, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 4, 0)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("the spawn's request: %d rows, %v", len(rows), err)
-	}
-	if _, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: rows[0].Token}); err != nil {
-		t.Fatalf("cancel the spawn while its worktree is cut: %v", err)
-	}
-
-	released()
-	if err := <-spawned; err == nil {
-		t.Fatal("a spawn settled while its thread was made was accepted")
-	}
-	if _, err := os.Stat(checkout); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("the checkout %s is still there: %v", checkout, err)
-	}
-	if path := worktreeOfBranch(t, repo, branch); path != "" {
-		t.Errorf("git still lists the worktree %s", path)
-	}
-	if branchExists(repo, branch) {
-		t.Errorf("the branch %s the cut made is still there", branch)
-	}
-}
-
 // worktreeOfBranch is the path git lists for the worktree that has branch
 // checked out, or "".
 func worktreeOfBranch(t *testing.T, repo, branch string) string {
@@ -325,19 +267,19 @@ func TestAConcurrentAttemptNeverSettlesTheReceiptItDidNotWrite(t *testing.T) {
 	first := make(chan accepted, 1)
 	go func() {
 		target, _, err := adapter.acceptRequest(origin, store.ThreadRequest{Token: token, Kind: store.ThreadRequestSpawn},
-			func() (store.Thread, threadapp.CutWorktree, error) {
+			func() (store.Thread, madeWithThread, error) {
 				close(creating)
 				<-release
-				return made, threadapp.CutWorktree{}, nil
+				return made, madeWithThread{}, nil
 			}, false)
 		first <- accepted{target, err}
 	}()
 	<-creating
 
 	target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{Token: token, Kind: store.ThreadRequestSpawn},
-		func() (store.Thread, threadapp.CutWorktree, error) {
+		func() (store.Thread, madeWithThread, error) {
 			t.Error("the second attempt made a thread")
-			return store.Thread{}, threadapp.CutWorktree{}, nil
+			return store.Thread{}, madeWithThread{}, nil
 		}, false)
 	if err != nil || fresh || target != "" {
 		t.Fatalf("second attempt = %q fresh %v, %v; want the pending acceptance", target, fresh, err)

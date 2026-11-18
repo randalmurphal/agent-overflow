@@ -205,7 +205,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		}
 	}
 
-	worktreePath, err := a.cutWorktreeWithCarry(worktreeCutRequest{
+	worktreePath, tip, err := a.cutWorktreeWithCarry(worktreeCutRequest{
 		projectPath:       project,
 		sourceWorkspace:   sourceWorkspace,
 		base:              base,
@@ -222,8 +222,9 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	// The worktree was created on disk, so any failure past here tears it
 	// back down rather than leaking a directory — and a transcript that
 	// cannot be relocated refuses the whole create, leaving the thread
-	// resumable from the workspace it still occupies.
-	move.rollback = func() { a.undoWorktreeCut(project, worktreePath, resolvedBranch, true) }
+	// resumable from the workspace it still occupies. Changes it carried
+	// keep the checkout.
+	move.rollback = func() error { return a.undoWorktreeCut(project, worktreePath, resolvedBranch, tip) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
@@ -300,7 +301,7 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 	if err != nil {
 		return store.Thread{}, err
 	}
-	createdBranch, err := a.gitCore().AttachWorktreeAt(project, worktreePath, ref)
+	tip, err := a.gitCore().AttachWorktreeAt(project, worktreePath, ref)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -310,7 +311,7 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 	// transcript that cannot be relocated (or a store write that fails) tears
 	// it back down instead of leaving it behind, with the local branch the
 	// attach made from origin's.
-	move.rollback = func() { a.undoWorktreeCut(project, worktreePath, branch, createdBranch) }
+	move.rollback = func() error { return a.undoWorktreeCut(project, worktreePath, branch, tip) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = branch
@@ -1163,9 +1164,9 @@ type threadCheckoutMove struct {
 	// label prefixes the errors this move can produce ("create worktree").
 	label string
 	// rollback tears down a checkout THIS call created, when the transcript
-	// relocation or the store write fails. Nil for a move between checkouts
-	// that both already existed.
-	rollback func()
+	// relocation or the store write fails, and returns what it kept or could
+	// not remove. Nil for a move between checkouts that both already existed.
+	rollback func() error
 }
 
 // checkoutMoveFrom snapshots the triple a move is leaving, before the caller
@@ -1202,10 +1203,11 @@ func checkoutMoveFrom(thread store.Thread, label string) threadCheckoutMove {
 // old slug, so neither the restart nor the relocation applies there.
 func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove) (store.Thread, error) {
 	threadID := thread.ID
-	rollback := func() {
-		if move.rollback != nil {
-			move.rollback()
+	rollback := func() error {
+		if move.rollback == nil {
+			return nil
 		}
+		return move.rollback()
 	}
 	var purge []string
 	if !gitops.SameFilesystemPath(move.previousWorkspace, thread.WorkspacePath) && !a.hasActiveSession(threadID) {
@@ -1217,8 +1219,7 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 		// the thread with the file left intact under the old slug.
 		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, move.previousWorkspace)
 		if err != nil {
-			rollback()
-			return store.Thread{}, fmt.Errorf("%s: %w", move.label, err)
+			return store.Thread{}, errors.Join(fmt.Errorf("%s: %w", move.label, err), rollback())
 		}
 		purge = moved
 	}
@@ -1226,8 +1227,7 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	// write to another column since then must survive.
 	write, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch)
 	if err != nil {
-		rollback()
-		return store.Thread{}, err
+		return store.Thread{}, errors.Join(err, rollback())
 	}
 	// Commit succeeded — drop the stale pre-move copies (best-effort).
 	a.purgeRelocatedClaudeSessions(threadID, purge)
@@ -1261,14 +1261,17 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 	return a.worktreeApplication().Find(project, path)
 }
 
-// undoWorktreeCut takes back a worktree a checkout move cut, and its branch
-// when the cut made it. The move's own error is what its caller reports, so
-// a failure here is logged.
-func (a *App) undoWorktreeCut(projectPath, worktreePath, branch string, createdBranch bool) {
-	err := (threadWorkspacePort{app: a}).RemoveCutWorktree(projectPath, threadapp.CutWorktree{Path: worktreePath, Branch: branch, CreatedBranch: createdBranch})
+// undoWorktreeCut takes back a worktree a checkout move cut, and the branch
+// the cut made at tip, as far as both are still the cut's alone. What it
+// kept or could not remove is returned for the move's caller beside the
+// move's own error.
+func (a *App) undoWorktreeCut(projectPath, worktreePath, branch, tip string) error {
+	err := (threadWorkspacePort{app: a}).RemoveCutWorktree(projectPath, threadapp.CutWorktree{Path: worktreePath, Branch: branch, Tip: tip})
 	if err != nil {
 		log.Printf("worktree %s: undo the cut after a failed move: %v", worktreePath, err)
+		return fmt.Errorf("undo the worktree cut: %w", err)
 	}
+	return nil
 }
 
 // cutWorktreeFromFreshRef is the app's one entry point for cutting a NEW
@@ -1281,13 +1284,13 @@ func (a *App) undoWorktreeCut(projectPath, worktreePath, branch string, createdB
 // caller: a fetch that fails or times out is a log line and nothing more.
 // The user asked for a worktree, not for a network round trip, and the cut
 // they asked for succeeded, from the local base.
-func (a *App) cutWorktreeFromFreshRef(ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string) error {
+func (a *App) cutWorktreeFromFreshRef(ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string) (tip string, err error) {
 	seed, err := a.gitCore().CreateWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
 	if seed.FetchErr != nil {
 		log.Printf("create worktree %s: fetch origin for base %q: %v (cutting from the local branch)",
 			projectPath, base.Wire(), seed.FetchErr)
 	}
-	return err
+	return seed.Tip, err
 }
 
 // worktreeCutRequest states one "cut a new worktree off a base branch"
@@ -1306,11 +1309,12 @@ type worktreeCutRequest struct {
 }
 
 // cutWorktreeWithCarry runs the stash → cut → apply → drop bracket and returns
-// the path of the worktree it created.
+// the path of the worktree it created and the commit it made its branch at.
 //
-// On stash-apply failure the worktree is removed and the stash entry is kept so
-// the user can recover via `git stash list`; the message names the entry.
-func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
+// On stash-apply failure the worktree and its branch are removed and the stash
+// entry is kept so the user can recover via `git stash list`; the message
+// names the entry.
+func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (path, tip string, err error) {
 	core := a.gitCore()
 
 	stashMessage := ""
@@ -1319,7 +1323,7 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
 		stashMessage = fmt.Sprintf("ao-carry-%s", gitops.RandomStashSuffix())
 		created, err := core.StashPushIncludeUntracked(req.sourceWorkspace, stashMessage)
 		if err != nil {
-			return "", fmt.Errorf("create worktree: stash local changes: %w", err)
+			return "", "", fmt.Errorf("create worktree: stash local changes: %w", err)
 		}
 		stashed = created
 	}
@@ -1329,7 +1333,7 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
 		if stashed {
 			a.restoreStashOnError(req.sourceWorkspace, stashMessage)
 		}
-		return "", err
+		return "", "", err
 	}
 	// Carry-over pins the cut to the LOCAL base. The dirty tree about to be
 	// applied was authored against the branch as it exists on this machine,
@@ -1338,23 +1342,26 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
 	// whole create (the worktree is torn down, the stash left for manual
 	// recovery). Every other cut takes the fetched base.
 	if req.carryLocalChanges {
-		err = core.CreateWorktreeFromRef(req.projectPath, worktreePath, req.base, req.newBranch)
+		tip, err = core.CreateWorktreeFromRef(req.projectPath, worktreePath, req.base, req.newBranch)
 	} else {
-		err = a.cutWorktreeFromFreshRef(a.lifeCtx(), req.projectPath, worktreePath, req.base, req.newBranch)
+		tip, err = a.cutWorktreeFromFreshRef(a.lifeCtx(), req.projectPath, worktreePath, req.base, req.newBranch)
 	}
 	if err != nil {
 		if stashed {
 			a.restoreStashOnError(req.sourceWorkspace, stashMessage)
 		}
-		return "", err
+		return "", "", err
 	}
 
 	if stashed {
 		if err := core.StashApplyByMessage(worktreePath, stashMessage); err != nil {
-			// Apply failed in the new worktree. Tear the worktree down and
-			// keep the stash so the user can recover the changes manually.
-			_ = core.RemoveWorktreeForce(req.projectPath, worktreePath, true)
-			return "", fmt.Errorf("create worktree: apply local changes in new worktree: %w (recover with: git stash list  →  git stash apply <ref> for entry %q)", err, stashMessage)
+			// Apply failed in the new worktree. Tear the worktree and its
+			// branch down and keep the stash so the user can recover the
+			// changes manually: the stash holds them, not the checkout.
+			applyErr := fmt.Errorf("create worktree: apply local changes in new worktree: %w (recover with: git stash list  →  git stash apply <ref> for entry %q)", err, stashMessage)
+			return "", "", errors.Join(applyErr,
+				core.RemoveWorktreeForce(req.projectPath, worktreePath, true),
+				core.DeleteBranch(req.projectPath, req.newBranch, true))
 		}
 		if err := core.StashDropByMessage(req.sourceWorkspace, stashMessage); err != nil {
 			// Apply succeeded but the source stash drop failed. The new
@@ -1363,7 +1370,7 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
 			log.Printf("create worktree: drop carried stash %q: %v", stashMessage, err)
 		}
 	}
-	return worktreePath, nil
+	return worktreePath, tip, nil
 }
 
 func (a *App) defaultWorktreePath(projectPath, branch string) (string, error) {

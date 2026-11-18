@@ -20,21 +20,23 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 // several remotes other than origin, is an error. A tag or commit leaves the worktree detached there,
 // and any number of worktrees may sit on one tag. createdBranch reports
 // that the branch was a remote's alone and this call made the local branch,
-// which a caller undoing the attach deletes with the worktree. A failed
-// attach leaves neither a worktree nor a branch it made (checkoutWorktree).
-func (c *Core) AttachWorktreeAt(cwd, path string, ref Ref) (createdBranch bool, err error) {
+// which a caller undoing the attach deletes with the worktree: madeTip is
+// the commit this call made that branch at, "" when it made none
+// (UndoCut). A failed attach leaves neither a worktree nor a branch it made
+// (checkoutWorktree).
+func (c *Core) AttachWorktreeAt(cwd, path string, ref Ref) (madeTip string, err error) {
 	if strings.TrimSpace(path) == "" {
-		return false, errors.New("git worktree path is required")
+		return "", errors.New("git worktree path is required")
 	}
 	if ref.IsZero() {
-		return false, errors.New("git worktree ref is required")
+		return "", errors.New("git worktree ref is required")
 	}
 	if err := ref.validate(); err != nil {
-		return false, err
+		return "", err
 	}
 	unlock, err := c.lockWorktreeCheckout(cwd)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	defer unlock()
 	ownedBranch := ""
@@ -45,39 +47,44 @@ func (c *Core) AttachWorktreeAt(cwd, path string, ref Ref) (createdBranch bool, 
 		// one remote to have it.
 		local, remote, err := c.checkoutSource(cwd, ref.Name)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		if !local {
 			_, stderr, err := c.Execute(cwd, "branch", "--track", "--", ref.Name, "refs/remotes/"+remote+"/"+ref.Name)
 			if err != nil {
-				return false, fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+				return "", fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 			}
 			ownedBranch = ref.Name
+			if madeTip, err = c.madeBranchTip(cwd, ownedBranch); err != nil {
+				return "", err
+			}
 		}
 	}
 	if err := c.checkoutWorktree(cwd, path, ref, ownedBranch); err != nil {
-		return false, err
+		return "", err
 	}
-	return ownedBranch != "", nil
+	return madeTip, nil
 }
 
 // CreateWorktreeFromBranch is CreateWorktreeFromRef from a base branch;
 // an empty baseBranch cuts from the current HEAD.
 func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string) error {
-	return c.CreateWorktreeFromRef(cwd, path, branchArg(baseBranch), newBranch)
+	_, err := c.CreateWorktreeFromRef(cwd, path, branchArg(baseBranch), newBranch)
+	return err
 }
 
 // CreateWorktreeFromRef creates a new worktree backed by newBranch cut from
 // base exactly as it exists locally; the zero base is the current HEAD. A
-// tag or commit base gives the branch no upstream.
+// tag or commit base gives the branch no upstream. tip is the commit it
+// made newBranch at (UndoCut).
 //
 // Use this when the base is a ref only this machine has (a branch another
 // worktree just cut). When the base is a branch that also lives on origin,
 // CreateWorktreeFromFreshRef is the one to call: it refreshes origin first
 // so the new worktree doesn't inherit a stale local base.
-func (c *Core) CreateWorktreeFromRef(cwd, path string, base Ref, newBranch string) error {
+func (c *Core) CreateWorktreeFromRef(cwd, path string, base Ref, newBranch string) (tip string, err error) {
 	if err := base.validate(); err != nil {
-		return err
+		return "", err
 	}
 	return c.createWorktreeAt(cwd, path, base.revision(), newBranch, !base.IsZero() && !base.IsBranch())
 }
@@ -103,31 +110,32 @@ func branchArg(branch string) Ref {
 // set the new branch's upstream whenever the start point is a remote-tracking
 // ref. It is the caller's decision because it is only correct for a start
 // point the caller resolved: a base the user named keeps git's default
-// behaviour.
-func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack bool) error {
+// behaviour. tip is the commit newBranch was made at, read before the
+// checkout's hook can run.
+func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack bool) (tip string, err error) {
 	if strings.TrimSpace(path) == "" {
-		return errors.New("git worktree path is required")
+		return "", errors.New("git worktree path is required")
 	}
 	newBranch = strings.TrimSpace(newBranch)
 	startPoint = strings.TrimSpace(startPoint)
 	if newBranch == "" {
-		return errors.New("git worktree branch is required")
+		return "", errors.New("git worktree branch is required")
 	}
 	if err := validateBranchName(newBranch); err != nil {
-		return err
+		return "", err
 	}
 	if startPoint != "" {
 		if err := validateBranchName(startPoint); err != nil {
-			return err
+			return "", err
 		}
 	}
 	unlock, err := c.lockWorktreeCheckout(cwd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
 	if err := c.ensureBranchDoesNotExist(cwd, newBranch); err != nil {
-		return err
+		return "", err
 	}
 
 	args := []string{"branch"}
@@ -140,11 +148,17 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 	}
 	if _, stderr, err := c.Execute(cwd, args...); err != nil {
 		if c.branchAlreadyExistsAfterCreationError(cwd, stderr, newBranch) {
-			return branchAlreadyExistsError(newBranch)
+			return "", branchAlreadyExistsError(newBranch)
 		}
-		return fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		return "", fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 	}
-	return c.checkoutWorktree(cwd, path, BranchRef(newBranch), newBranch)
+	if tip, err = c.madeBranchTip(cwd, newBranch); err != nil {
+		return "", err
+	}
+	if err := c.checkoutWorktree(cwd, path, BranchRef(newBranch), newBranch); err != nil {
+		return "", err
+	}
+	return tip, nil
 }
 
 // checkoutWorktree checks ref out in a new worktree at path: a branch on

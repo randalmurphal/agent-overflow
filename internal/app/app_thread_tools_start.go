@@ -12,9 +12,9 @@ import (
 	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -281,7 +281,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		Kind:           store.ThreadRequestSpawn,
 		OriginThreadID: call.FromThread,
 		Notify:         call.Notify,
-	}, func() (store.Thread, threadapp.CutWorktree, error) {
+	}, func() (store.Thread, madeWithThread, error) {
 		return t.createSpawnedThread(ctx, call, create)
 	}, create.owned)
 	if err != nil {
@@ -465,7 +465,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 		Kind:           store.ThreadRequestAsk,
 		OriginThreadID: source.ID,
 		Notify:         call.Notify,
-	}, func() (store.Thread, threadapp.CutWorktree, error) {
+	}, func() (store.Thread, madeWithThread, error) {
 		thread, err := t.app.forkScratchThread(ctx, source, scratchForkOptions{
 			TitlePrefix: askScratchTitlePrefix,
 			// Read-only WHATEVER the source runs: an ask is a question, and
@@ -477,7 +477,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 			// (store.SubThreadLevel); a paired computer's carries its level.
 			SpawnLevel: carriedLevel(origin, call.Level),
 		})
-		return thread, threadapp.CutWorktree{}, err
+		return thread, madeWithThread{}, err
 	}, false)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -534,11 +534,11 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 // twice either. A local token is fresh, so it is never a retry. own places the
 // thread owned by the naming write: a local spawn's through its request, a
 // paired computer's through its receipt, which is then its link. `create`
-// returns the worktree it cut with the thread; until the naming write names
-// the thread, the cut is this attempt's to undo.
+// returns what it made with the thread, a worktree cut and a group; until
+// the naming write names the thread, they are this attempt's to undo.
 func (t threadToolsApp) acceptRequest(
 	origin threadRequestOrigin, request store.ThreadRequest,
-	create func() (store.Thread, threadapp.CutWorktree, error), own bool,
+	create func() (store.Thread, madeWithThread, error), own bool,
 ) (target string, fresh bool, err error) {
 	token, kind := request.Token, request.Kind
 	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID, origin.foreign && own)
@@ -567,7 +567,7 @@ func (t threadToolsApp) acceptRequest(
 	made := false
 	listing := store.ListingUnchanged
 	if target == "" && create != nil {
-		thread, cut, err := create()
+		thread, madeWith, err := create()
 		if err != nil {
 			return "", false, err
 		}
@@ -589,7 +589,7 @@ func (t threadToolsApp) acceptRequest(
 			listing, err = t.app.store.NameLocalThreadRequestTarget(token, target, own)
 		}
 		if err != nil {
-			return "", false, t.discardUnnamedThread(thread, cut, err)
+			return "", false, t.discardUnnamedThread(thread, madeWith, err)
 		}
 		made = true
 	}
@@ -617,33 +617,45 @@ func (t threadToolsApp) acceptRequest(
 }
 
 // discardUnnamedThread takes back a thread its request could not name, and
-// the worktree and branch its creation cut, and returns the refusal.
-// Nothing names it: no receipt, no request and no owner, and its message
-// was never sent, so it would be work the caller cannot reach and will make
-// again. The cut is undone here rather than by the delete, which never
-// touches a worktree: it is this creation's own unfinished work.
-func (t threadToolsApp) discardUnnamedThread(thread store.Thread, cut threadapp.CutWorktree, cause error) error {
+// what its creation made with it as far as that is still the creation's
+// alone, and returns the refusal. Nothing names the thread: no receipt, no
+// request and no owner, and its message was never sent, so it would be
+// work the caller cannot reach and will make again. The cut and the group
+// are undone here rather than by the delete, which never touches a
+// worktree: they are this creation's own unfinished work. A checkout or
+// branch the undo kept, because something not the cut's is in it, is named
+// in the refusal with why.
+func (t threadToolsApp) discardUnnamedThread(thread store.Thread, made madeWithThread, cause error) error {
 	if err := t.app.deleteThread(thread.ID); err != nil {
 		log.Printf("thread tools: delete thread %s after its request could not name it: %v", thread.ID, err)
 		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
 			"Thread %s was created but its request could not record it (%v), and removing it failed too. It is on this computer.",
 			thread.ID, cause), errors.Join(cause, err))
 	}
-	if cut.Path == "" {
+	if made.group != nil {
+		t.dropSpawnGroup(*made.group)
+	}
+	if made.cut.Path == "" {
 		return cause
 	}
 	// The delete stopped and joined the thread's setup run, so no recipe is
 	// writing into the checkout while it goes.
-	if err := threadWorkspacePort(t).RemoveCutWorktree(thread.ProjectPath, cut); err != nil {
-		log.Printf("thread tools: undo the worktree %s of thread %s its request could not name: %v", cut.Path, thread.ID, err)
-		_, said, public := errorsx.PublicDetails(cause)
-		if !public {
-			said = "Its request could not record the thread made for it, so the thread was removed."
-		}
-		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-			"%s Removing the worktree made for it at %s failed (%v); it is on this computer.", said, cut.Path, err), errors.Join(cause, err))
+	undoErr := threadWorkspacePort(t).RemoveCutWorktree(thread.ProjectPath, made.cut)
+	if undoErr == nil {
+		return cause
 	}
-	return cause
+	log.Printf("thread tools: undo the worktree %s of thread %s its request could not name: %v", made.cut.Path, thread.ID, undoErr)
+	_, said, public := errorsx.PublicDetails(cause)
+	if !public {
+		said = "Its request could not record the thread made for it, so the thread was removed."
+	}
+	var kept *gitops.CutKept
+	if errors.As(undoErr, &kept) {
+		said += " " + kept.Error()
+	} else {
+		said += fmt.Sprintf(" Removing the worktree made for it at %s failed (%v); it is on this computer.", made.cut.Path, undoErr)
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest, said, errors.Join(cause, undoErr))
 }
 
 // threadReceiptFor is the receipt origin's request token is accepted

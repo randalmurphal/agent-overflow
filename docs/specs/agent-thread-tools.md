@@ -1262,9 +1262,14 @@ again. While the attempt that wrote the row is still making its thread
 yet and the source collects the thread from a later poll. A row that
 names no thread is settled only by the attempt making its thread, when
 creation fails; by a cancel, after which that attempt removes the
-thread it made, with the worktree and branch it cut for it, instead of
-naming it; and by the destination's boot, as never started, since the
-attempt making it ended with the last run. A retry never settles it.
+thread it made instead of naming it; and by the destination's boot, as
+never started, since the attempt making it ended with the last run. A
+retry never settles it. An attempt that removes its thread takes back
+what it made with it only while that is still its own: the checkout it
+cut unless it holds a change or an untracked file, the branch it made
+unless the branch moved or another checkout has it, and a group it made
+while the group is empty. Its refusal names a checkout or branch it kept
+and why.
 
 An attempt whose failure may have reached the destination, a lost reply
 or a dropped connection, is tried again with the same token, up to three

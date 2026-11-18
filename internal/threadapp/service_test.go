@@ -65,10 +65,10 @@ type testWorkspace struct {
 	// base choice reached git.
 	createErr error
 	cuts      []WorktreeCut
-	// createdBranch is what each cut reports it made; removed records the
-	// cuts RemoveCutWorktree was asked to undo.
-	createdBranch bool
-	removed       []CutWorktree
+	// createdTip is the commit each cut reports it made its branch at;
+	// removed records the cuts RemoveCutWorktree was asked to undo.
+	createdTip string
+	removed    []CutWorktree
 	// origin is what ObserveOrigin reports for any path. Zero by default, so
 	// a test that says nothing about git provenance asserts the "workspace is
 	// not a repository" shape for free.
@@ -86,7 +86,7 @@ func (w *testWorkspace) CreateWorktree(_ context.Context, _ string, cut Worktree
 	if w.createErr != nil {
 		return CutWorktree{}, w.createErr
 	}
-	return CutWorktree{Path: w.createPath, Branch: w.createBranch, CreatedBranch: w.createdBranch}, nil
+	return CutWorktree{Path: w.createPath, Branch: w.createBranch, Tip: w.createdTip}, nil
 }
 
 func (w *testWorkspace) RemoveCutWorktree(_ string, cut CutWorktree) error {
@@ -261,7 +261,7 @@ func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
 func TestCreateUndoesTheCutWhenTheThreadCannotBeWritten(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
-	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdTip: "c0ffee"}
 	service.deps.Workspace = workspace
 	service.deps.WorktreeSetup = setup
 	// The fixture mints one id, so a second thread's insert collides.
@@ -273,7 +273,7 @@ func TestCreateUndoesTheCutWhenTheThreadCannotBeWritten(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create reported a thread whose row was never written")
 	}
-	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", Tip: "c0ffee"}
 	if len(workspace.removed) != 1 || workspace.removed[0] != want {
 		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
 	}
@@ -683,7 +683,7 @@ func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	setup := &setupRecorder{store: database}
-	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdTip: "c0ffee"}
 	service := New(Deps{
 		Store: database, Models: &testModels{}, Workspace: workspace, WorktreeSetup: setup,
 		Now: func() time.Time { return time.UnixMilli(1234) }, NewID: func() string { return "thread" },
@@ -705,7 +705,7 @@ func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
 	if _, getErr := database.GetThread("thread"); !errors.Is(getErr, sql.ErrNoRows) {
 		t.Fatalf("GetThread after the failed create = %v, want no row", getErr)
 	}
-	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", Tip: "c0ffee"}
 	if len(workspace.removed) != 1 || workspace.removed[0] != want {
 		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
 	}

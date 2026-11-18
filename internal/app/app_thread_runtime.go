@@ -135,13 +135,13 @@ func (p threadWorkspacePort) attachWorktree(projectPath string, ref gitops.Ref) 
 	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	created, err := p.app.gitCore().AttachWorktreeAt(projectPath, worktreePath, ref)
+	tip, err := p.app.gitCore().AttachWorktreeAt(projectPath, worktreePath, ref)
 	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	made := threadapp.CutWorktree{Path: worktreePath}
+	made := threadapp.CutWorktree{Path: worktreePath, Tip: tip}
 	if ref.IsBranch() {
-		made.Branch, made.CreatedBranch = ref.Name, created
+		made.Branch = ref.Name
 	}
 	return made, nil
 }
@@ -166,28 +166,21 @@ func (p threadWorkspacePort) cutNewBranch(ctx context.Context, projectPath, reso
 	if cut.BaseLocal {
 		// The caller asked for this computer's head of the base, unpushed
 		// commits included, so origin is not consulted at all.
-		if err := p.app.gitCore().CreateWorktreeFromRef(projectPath, worktreePath, base, resolvedBranch); err != nil {
+		tip, err := p.app.gitCore().CreateWorktreeFromRef(projectPath, worktreePath, base, resolvedBranch)
+		if err != nil {
 			return threadapp.CutWorktree{}, err
 		}
-		return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
+		return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, Tip: tip}, nil
 	}
-	if err := p.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, resolvedBranch); err != nil {
+	tip, err := p.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, resolvedBranch)
+	if err != nil {
 		return threadapp.CutWorktree{}, err
 	}
-	return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
+	return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, Tip: tip}, nil
 }
 
 func (p threadWorkspacePort) RemoveCutWorktree(projectPath string, cut threadapp.CutWorktree) error {
-	core := p.app.gitCore()
-	if err := core.RemoveWorktreeForce(projectPath, cut.Path, true); err != nil {
-		return fmt.Errorf("remove worktree %s: %w", cut.Path, err)
-	}
-	if cut.CreatedBranch {
-		if err := core.DeleteBranch(projectPath, cut.Branch, true); err != nil {
-			return fmt.Errorf("delete branch %s: %w", cut.Branch, err)
-		}
-	}
-	return nil
+	return p.app.gitCore().UndoCut(projectPath, cut.Path, cut.Branch, cut.Tip)
 }
 
 type threadWorktreeSetupPort struct{ app *App }
