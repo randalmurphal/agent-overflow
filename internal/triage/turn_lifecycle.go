@@ -41,18 +41,15 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 // its deliveries name it (SendDelivery). A retired session's frame opens
 // nothing.
 func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, error)) error {
-	if r.frameRetired(evt.ThreadID, evt.SessionToken) {
+	started, published := r.beginTurnStart(evt)
+	if started == nil {
 		return nil
 	}
+	defer published()
 	// An interrupt sampled from here until the open turn is set waits
 	// for it (SampleInterrupt): the row written below is already the
 	// active turn GetActiveTurn-gated callers stop.
-	started := r.beginTurnStart(evt.ThreadID)
 	defer started()
-	// The turn is owed until the start returns: its round published, or
-	// nothing opened.
-	opening := r.beginTurnOpening(evt.ThreadID)
-	defer opening()
 	turnIndex, err := resolve()
 	if err != nil {
 		return err
@@ -741,7 +738,7 @@ func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.Pr
 func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(evt.ThreadID)
-	if st == nil || !st.softClosedTurnSet || st.openTurnSet || r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+	if st == nil || !st.softClosedTurnSet || st.openTurnSet || r.frameRefusalLocked(evt) != "" {
 		r.mu.Unlock()
 		return false, nil
 	}
@@ -1253,15 +1250,18 @@ func (r *Router) SampleInterrupt(threadID string) InterruptSample {
 	}
 }
 
-// beginTurnStart marks threadID as starting a turn and returns the
-// function that ends the mark, releasing SampleInterrupt waiters.
-// Ending is idempotent: handleTurnStart ends it once the open turn is
-// set and again, as a no-op, when it returns.
-func (r *Router) beginTurnStart(threadID string) func() {
-	starting := make(chan struct{})
+// beginTurnStart admits the start for both interrupt and cleanup. The caller
+// releases interrupt waiters when the turn is set and cleanup when its round is published.
+func (r *Router) beginTurnStart(evt provider.ProviderEvent) (started, published func()) {
 	r.mu.Lock()
-	r.state(threadID).turnStarting = starting
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if r.frameRefusalLocked(evt) != "" {
+		return nil, nil
+	}
+	threadID := evt.ThreadID
+	st := r.state(threadID)
+	starting := make(chan struct{})
+	st.turnStarting = starting
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -1272,7 +1272,7 @@ func (r *Router) beginTurnStart(threadID string) func() {
 			r.mu.Unlock()
 			close(starting)
 		})
-	}
+	}, r.markTurnOpeningLocked(threadID, st)
 }
 
 // SetTurnOpeningObserver wires the callback told that threadID marked a
@@ -1282,14 +1282,6 @@ func (r *Router) SetTurnOpeningObserver(fn func(threadID string)) {
 	r.mu.Lock()
 	r.turnOpening = fn
 	r.mu.Unlock()
-}
-
-// beginTurnOpening marks threadID as opening a turn and returns the
-// function that ends the mark.
-func (r *Router) beginTurnOpening(threadID string) func() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.markTurnOpeningLocked(threadID, r.state(threadID))
 }
 
 // markTurnOpeningLocked marks st, threadID's state, as opening a turn,
@@ -1308,6 +1300,10 @@ func (r *Router) markTurnOpeningLocked(threadID string, st *threadState) func() 
 		once.Do(func() {
 			r.mu.Lock()
 			st.turnOpenings--
+			if st.turnOpenings == 0 && st.openingsDone != nil {
+				close(st.openingsDone)
+				st.openingsDone = nil
+			}
 			r.mu.Unlock()
 		})
 	}
@@ -1431,7 +1427,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string
 // here.
 func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int, sessionToken string) {
 	r.mu.Lock()
-	if r.frameRetiredLocked(threadID, sessionToken) {
+	if r.frameRefusalLocked(provider.ProviderEvent{ThreadID: threadID, SessionToken: sessionToken}) != "" {
 		r.mu.Unlock()
 		return
 	}
@@ -2229,11 +2225,37 @@ func (r *Router) CleanupThreadIfEpoch(threadID string, epoch uint64) bool {
 	return r.cleanupThread(threadID, &epoch)
 }
 
+// closeTurnAdmission fences new wire frames before cleanup settles the last
+// turn. A turn already writing its row must publish its round first.
+func (r *Router) closeTurnAdmission(threadID string, requireEpoch *uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identity(threadID)
+	if requireEpoch != nil && identity.epoch != *requireEpoch {
+		return false
+	}
+	epoch := identity.epoch
+	identity.closing = true
+	if st := r.threadStateIfPresent(threadID); st != nil && st.turnOpenings != 0 {
+		if st.openingsDone == nil {
+			st.openingsDone = make(chan struct{})
+		}
+		done := st.openingsDone
+		r.mu.Unlock()
+		<-done
+		r.mu.Lock()
+	}
+	return identity.epoch == epoch
+}
+
 // cleanupThread is the shared body behind CleanupThread (requireEpoch
 // nil: unconditional) and CleanupThreadIfEpoch (requireEpoch set: the
 // locked sweep aborts when the thread's epoch no longer matches).
 // Returns false only on an epoch-abort.
 func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
+	if !r.closeTurnAdmission(threadID, requireEpoch) {
+		return false
+	}
 	cleanupAt := time.Now().UnixMilli()
 	if r.HasInFlightTurnOrRound(threadID) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
@@ -2272,6 +2294,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// Set the stopped flag BEFORE dropping other state so Handle observes
 	// a consistent snapshot: any concurrent Handle call either sees a live
 	// thread with full state, or a stopped thread with no state.
+	identity.closing = false
 	identity.stopped = true
 	var orphanSpan trace.Span
 	// Invalidate a span start that is still outside the lock doing thread
@@ -2312,11 +2335,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		hasStrandedRound       bool
 	)
 	if st != nil {
-		// The truncated complete synthesized above closed the round that
-		// was open then. A round opened since, by a frame the dying
-		// session delivered before the stopped flag was set, would
-		// otherwise vanish with the state and leave every client showing
-		// it running.
+		// If settlement failed before announcing the round's end, release its clients.
 		strandedRound, hasStrandedRound = st.currentRound, st.currentRoundOpen
 		// The cards are store handles: closed below, once r.mu is
 		// released, or by the write still holding one.
@@ -2407,7 +2426,7 @@ func (r *Router) frameRefusal(evt provider.ProviderEvent) string {
 // events carry no token and are refused only while the thread is stopped.
 // Caller holds r.mu.
 func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
-	if id := r.identityIfPresent(evt.ThreadID); id != nil && id.stopped {
+	if id := r.identityIfPresent(evt.ThreadID); id != nil && (id.closing || id.stopped) {
 		return "stopped thread"
 	}
 	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
@@ -2485,6 +2504,7 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	identity := r.identity(threadID)
 	r.mu.Lock()
+	identity.closing = false
 	identity.stopped = false
 	identity.sessionToken = sessionToken
 	identity.epoch++
