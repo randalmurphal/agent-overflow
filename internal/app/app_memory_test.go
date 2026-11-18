@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -8,13 +9,19 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/memory"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
+	"agent-overflow/internal/threadtools"
 )
 
 // Shared memory (docs/specs/memory.md, "Delivery"): an ordinary thread's
@@ -246,6 +253,91 @@ func TestOwnMemoryFollowsItsSettingPerSession(t *testing.T) {
 				if mem.OwnMemoryOff != want || (mem.Hook != nil) != tc.receives {
 					t.Errorf("%s, %s %q, %s: own memory off %v with hook %v, want %v", providerName, key, when, tc.name, mem.OwnMemoryOff, mem.Hook != nil, want)
 				}
+			}
+		}
+	}
+}
+
+// A Codex fork a thread tool makes works for its caller: by default a
+// spawn from a thread and an ask copy an assistant makes run without
+// Codex's own memory, as their starts do, and the same calls from an
+// ordinary thread leave it on.
+func TestThreadToolForksDecideOwnMemoryFromTheirCaller(t *testing.T) {
+	f := newRequestFixture(t)
+	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
+	requests := filepath.Join(t.TempDir(), "codex.jsonl")
+	inner := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-memory-fork"}}}`,
+		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-memory-fork"}}}`,
+		`"method":"thread/fork"`:   `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-memory-fork"}}}`,
+		`"method":"config/read"`:   `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
+		`"method":"turn/start"`:    `{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"turn-1","status":"inProgress","items":[]}}}`,
+		"":                         `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+	})
+	binary := mockexec.Write(t, filepath.Join(t.TempDir(), "codex.sh"),
+		"#!/bin/bash\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.160.0'; exit 0; fi\ntee -a '"+requests+"' | '"+inner+"'\n")
+	// The Codex catalog the app ships, in place of the live one tests turn off.
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		return provider.CodexModels, nil
+	}, time.Now)
+	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	source, err := createTestThread(t, f.app, string(provider.Codex), t.TempDir(), "gpt-5.6-sol", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.SessionRef = "codex-memory-source"
+	if err := f.app.store.UpdateThread(source); err != nil {
+		t.Fatal(err)
+	}
+	insertForkTestItems(t, f.app.store, source.ID)
+	assistant, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testAssistant(t, f.app, assistant.ID)
+	if _, found, err := f.app.store.SetAgentProjects(assistant.ID, true, nil); err != nil || !found {
+		t.Fatalf("serve every project: %v %v", found, err)
+	}
+	adapter := f.adapter()
+	for _, caller := range []struct {
+		name string
+		who  threadtools.Caller
+		off  bool
+	}{
+		{"an assistant", threadtools.Caller{ThreadID: assistant.ID}, true},
+		{"an ordinary thread", f.callerIdentity(), false},
+	} {
+		for kind, call := range map[string]func() error{
+			"spawn": func() error {
+				_, err := adapter.Spawn(t.Context(), caller.who, threadtools.SpawnCall{Prompt: "work", FromThread: source.ID})
+				return err
+			},
+			"ask": func() error {
+				_, err := adapter.Ask(t.Context(), caller.who, threadtools.AskCall{ThreadID: source.ID, Question: "why?"})
+				return err
+			},
+		} {
+			if err := os.Remove(requests); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if err := call(); err != nil {
+				t.Fatalf("%s's %s: %v", caller.name, kind, err)
+			}
+			raw, err := os.ReadFile(requests)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fork string
+			for _, line := range strings.Split(string(raw), "\n") {
+				if strings.Contains(line, `"method":"thread/fork"`) {
+					fork = line
+				}
+			}
+			if off := strings.Contains(fork, `"features.memories":false`) && strings.Contains(fork, `"memories.generate_memories":false`); fork == "" || off != caller.off {
+				t.Errorf("%s's %s: thread/fork turns Codex's memory off = %v, want %v: %q", caller.name, kind, off, caller.off, fork)
 			}
 		}
 	}
