@@ -162,12 +162,9 @@ func (a *App) readThreadExportChunk(ctx context.Context, exportID string, offset
 			"That export is no longer on this computer. Ask for the window again.", nil)
 	}
 	dir := filepath.Join(a.configDir, threadExportDirName)
-	chunk, err := readRemoteArtifactChunk(ctx, dir, RemoteArtifactRequest{Path: exportID, Offset: offset, Stamp: record.stamp})
+	chunk, err := readRemoteArtifactChunk(ctx, dir, RemoteArtifactRequest{Path: exportID, Offset: offset, Stamp: record.stamp}, record.sha256)
 	if err != nil {
 		return RemoteArtifactChunk{}, err
-	}
-	if offset == 0 {
-		chunk.SHA256 = record.sha256
 	}
 	chunk.SourceThreadID = threadID
 	return chunk, nil

@@ -180,21 +180,31 @@ func TestACopyOfAnotherSizeThanAnnouncedIsRefused(t *testing.T) {
 	}
 }
 
-// TestAFirstReadPinnedToAStampIsNotDigested: only a first read of a file
-// the reader knows nothing of pays for a whole-file digest.
-func TestAFirstReadPinnedToAStampIsNotDigested(t *testing.T) {
+// TestAWorkspaceArtifactsFirstReadIsDigestedWhateverItsStamp: a stamp says
+// nothing of whether its reader holds the file's digest, so a command
+// artifact's first read carries the digest of what is on disk now, stamped
+// or not.
+func TestAWorkspaceArtifactsFirstReadIsDigestedWhateverItsStamp(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "export"), []byte("rendered"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "report"), []byte("written"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	first, err := readRemoteArtifactChunk(t.Context(), dir, RemoteArtifactRequest{Path: "export"})
-	if err != nil || first.SHA256 == "" {
-		t.Fatalf("an unpinned first read = %+v, %v; want it digested", first, err)
+	sum := sha256.Sum256([]byte("written"))
+	want := hex.EncodeToString(sum[:])
+	first, err := readRemoteArtifactChunk(t.Context(), dir, RemoteArtifactRequest{Path: "report"}, "")
+	if err != nil || first.SHA256 != want {
+		t.Fatalf("an unstamped first read = %+v, %v; want digest %s", first, err, want)
 	}
-	pinned, err := readRemoteArtifactChunk(t.Context(), dir, RemoteArtifactRequest{Path: "export", Stamp: first.Stamp})
-	if err != nil || pinned.SHA256 != "" || string(pinned.Data) != "rendered" {
-		t.Fatalf("a pinned first read = %+v, %v; want its bytes without a digest", pinned, err)
+	stamped, err := readRemoteArtifactChunk(t.Context(), dir, RemoteArtifactRequest{Path: "report", Stamp: first.Stamp}, "")
+	if err != nil || stamped.SHA256 != want || string(stamped.Data) != "written" {
+		t.Fatalf("a stamped first read = %+v, %v; want its bytes and digest %s", stamped, err, want)
+	}
+	// A recorded digest stands for the file only under the stamp it was
+	// recorded with.
+	unpinned, err := readRemoteArtifactChunk(t.Context(), dir, RemoteArtifactRequest{Path: "report"}, "recorded")
+	if err != nil || unpinned.SHA256 != want {
+		t.Fatalf("a first read with a recorded digest and no stamp = %+v, %v; want digest %s", unpinned, err, want)
 	}
 }
 

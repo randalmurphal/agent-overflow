@@ -55,12 +55,16 @@ func (a *App) RemoteCommandArtifact(ctx context.Context, id string, request Remo
 	if err != nil {
 		return RemoteArtifactChunk{}, err
 	}
-	result, err := readRemoteArtifactChunk(ctx, job.Workspace, request)
+	result, err := readRemoteArtifactChunk(ctx, job.Workspace, request, "")
 	result.SourceThreadID = job.SourceThreadID
 	return result, err
 }
 
-func readRemoteArtifactChunk(ctx context.Context, workspace string, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
+// readRemoteArtifactChunk reads one chunk of a file under workspace. The
+// first chunk carries the file's digest: recorded, the digest a render took
+// of a file this computer wrote, when the request pins the stamp the render
+// recorded beside it, or else one read of the file as it is now.
+func readRemoteArtifactChunk(ctx context.Context, workspace string, request RemoteArtifactRequest, recorded string) (RemoteArtifactChunk, error) {
 	fail := func(code, message string, err error) (RemoteArtifactChunk, error) {
 		return RemoteArtifactChunk{}, errorsx.Public(code, message, err)
 	}
@@ -109,10 +113,11 @@ func readRemoteArtifactChunk(ctx context.Context, workspace string, request Remo
 		return changed()
 	}
 	result := RemoteArtifactChunk{Name: filepath.Base(name), Size: info.Size(), Stamp: stamp}
-	// The first read of a file the reader knows nothing of carries its
-	// digest. A read pinned to a stamp is of a file whose digest its reader
-	// already holds: a later chunk, or an export whose render recorded both.
-	if request.Offset == 0 && request.Stamp == "" {
+	switch {
+	case request.Offset != 0:
+	case recorded != "" && request.Stamp != "":
+		result.SHA256 = recorded
+	default:
 		hash := sha256.New()
 		// Compute once, streamed. The receiver verifies the finished copy against
 		// this digest, so a writer restoring timestamps cannot create a mixed file.

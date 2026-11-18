@@ -55,12 +55,12 @@ func TestRemoteOutputGuidanceDistinguishesOmittedDiscardedAndExpired(t *testing.
 
 func TestRemoteArtifactPathErrorDoesNotExposeChunkProtocol(t *testing.T) {
 	t.Parallel()
-	_, err := readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "../outside"})
+	_, err := readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "../outside"}, "")
 	code, message, _ := errorsx.PublicDetails(err)
 	if code != "remote_artifact_path" || !strings.Contains(message, "workspace") || strings.Contains(message, "stamp") || strings.Contains(message, "offset") {
 		t.Fatalf("path guidance: %v", err)
 	}
-	_, err = readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "file", Offset: 1})
+	_, err = readRemoteArtifactChunk(context.Background(), t.TempDir(), RemoteArtifactRequest{Path: "file", Offset: 1}, "")
 	code, message, _ = errorsx.PublicDetails(err)
 	if code != "remote_artifact_transfer" || !strings.Contains(message, "remote_fetch_artifact") {
 		t.Fatalf("transfer recovery: %v", err)
