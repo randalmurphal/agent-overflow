@@ -513,8 +513,13 @@ func (m *Manager) Remove(id string) error {
 // rather than during it: m.mu is not held across the OS lock, and the
 // caller's profile lock is what keeps a second owner from being built from
 // the file in the meantime. A removal that failed retires the old owner
-// all the same, so the retry that rebuilds a carrier never has two.
+// all the same, so the retry that rebuilds a carrier never has two, and
+// gives back the agent opt-in it took, since the pairing stays.
 func (m *Manager) forgetLocked(id string) error {
+	access, err := m.AgentAccess()
+	if err != nil {
+		return err
+	}
 	if err := m.writeAgentAccess(id, false); err != nil {
 		return err
 	}
@@ -523,14 +528,17 @@ func (m *Manager) forgetLocked(id string) error {
 	delete(m.carriers, id)
 	m.mu.Unlock()
 	if held == nil {
-		return deviceclient.ForgetSession(m.dir, id)
+		err = deviceclient.ForgetSession(m.dir, id)
+	} else {
+		held.leave(errPairingForgotten)
+		if err = held.client.Forget(); err != nil {
+			held.client.Retire()
+		}
 	}
-	held.leave(errPairingForgotten)
-	if err := held.client.Forget(); err != nil {
-		held.client.Retire()
-		return err
+	if err != nil && access[id] {
+		return errors.Join(err, m.writeAgentAccess(id, true))
 	}
-	return nil
+	return err
 }
 
 // Rename sets the owner's own label for one machine, or clears it when

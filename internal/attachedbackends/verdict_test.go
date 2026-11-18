@@ -326,3 +326,33 @@ func TestARemovalThatFailsLeavesThePairingUnexcluded(t *testing.T) {
 		t.Fatalf("the failed removal left the computer excluded=%v (%v)", excluded, err)
 	}
 }
+
+// A removal whose profile cannot be deleted gives back the agent opt-in it
+// took first: the pairing stays, and so does what it was allowed.
+func TestARemovalThatFailsKeepsTheAgentOptIn(t *testing.T) {
+	manager, dir := newManager(t)
+	const id = "0f6f8d3e-6f8b-4c39-9d5e-3a8f8f3f1c11"
+	seed(t, dir, deviceclient.Session{
+		BackendID: id, Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1",
+	})
+	if err := manager.SetAgentAccess(id, true); err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(dir, deviceclient.SessionsDirName)
+	if err := os.Chmod(sessions, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sessions, 0o700) })
+	if err := manager.Remove(id); err == nil {
+		t.Fatal("a removal whose profile cannot be deleted succeeded")
+	}
+	if err := os.Chmod(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deviceclient.LoadSession(dir, id); err != nil {
+		t.Fatalf("the failed removal took the profile: %v", err)
+	}
+	if access, err := manager.AgentAccess(); err != nil || !access[id] {
+		t.Fatalf("the failed removal left agent access %v (%v), want it kept", access, err)
+	}
+}
