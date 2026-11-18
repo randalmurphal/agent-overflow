@@ -309,7 +309,7 @@ func factLine(f fact) string {
 		line += "; until " + f.until
 	}
 	if f.confirmed != "" {
-		line += "; confirmed " + f.confirmed
+		line += "; unchecked since " + f.confirmed
 	}
 	return line + ")"
 }
@@ -724,7 +724,7 @@ func writeRules(home, project bool) string {
 	scopes = strings.ToUpper(scopes[:1]) + scopes[1:]
 	rules := []string{
 		"Save a fact only when a future session would act differently knowing it, it is confirmed (verified, or the user said it), no file, doc or code already holds it, and it outlives the current task. Never save progress, plans, task notes or anything temporary.",
-		"Update the fact on the subject instead of adding a near-duplicate. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today; first check one whose line shows its confirmed date.",
+		"Update the fact on the subject instead of adding a near-duplicate. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today.",
 		scopes,
 		"A user's correction is a ruling in the scope it is about, or a user preference when it holds across projects.",
 	}

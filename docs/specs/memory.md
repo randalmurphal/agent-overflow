@@ -166,8 +166,8 @@ Verification:
 A context line carries its `expires` or `until`. A fact whose
 `confirmed` is more than 90 days before the backend's local date at
 delivery carries that date last, as in
-`(release-notes.md; confirmed 2026-06-01)`, so an agent checks it before
-it relies on it; the day a fact crosses the mark its line changes, and
+`(release-notes.md; unchecked since 2026-06-01)`, which tells any reader,
+one that may not write included, to check it before relying on it; the day a fact crosses the mark its line changes, and
 the next prompt delivers it as a changed line. Descriptions are
 cleaned as attached files are (`agenthome.CleanText`), kept to one line
 and cut to 300 characters; an `until` to 200. An empty scope shows
@@ -361,7 +361,7 @@ session that writes, naming only the scopes that session may write:
 - One fact per file, with the frontmatter above.
 - Update the existing fact instead of adding a near-duplicate. Delete a
   fact the moment it is shown wrong. Bump `confirmed` when you rely on a
-  fact and it holds; check one whose line shows `confirmed` first.
+  fact and it holds.
 - Scope: the home for the assistant's role, the project for the
   project, the user only for how the user decides. A user's correction
   is a project `ruling` or a user `preference`. A check that caught a

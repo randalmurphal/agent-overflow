@@ -422,7 +422,7 @@ func TestAnOldConfirmedDateIsShownAndDelivered(t *testing.T) {
 	write(t, s.project, "fresh.md", confirmed(day.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout)))
 	write(t, s.project, "old.md", confirmed("2026-07-22"))
 	index := block(t, build(t, s.plan), "### Project memory")
-	if !strings.Contains(index, "\n- Deploys go through CI. (fresh.md)\n") || !strings.HasSuffix(index, "\n- Deploys go through CI. (old.md; confirmed 2026-07-22)") {
+	if !strings.Contains(index, "\n- Deploys go through CI. (fresh.md)\n") || !strings.HasSuffix(index, "\n- Deploys go through CI. (old.md; unchecked since 2026-07-22)") {
 		t.Fatalf("index:\n%s", index)
 	}
 	run := newSession(t, s.plan, "s1")
@@ -431,7 +431,7 @@ func TestAnOldConfirmedDateIsShownAndDelivered(t *testing.T) {
 	if stderr != "" {
 		t.Fatal(stderr)
 	}
-	want := "### Project memory: app (" + folderShown(s.project) + ")\nNew or changed:\n- ruling: Deploys go through CI. (fresh.md; confirmed " + day.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout) + ")"
+	want := "### Project memory: app (" + folderShown(s.project) + ")\nNew or changed:\n- ruling: Deploys go through CI. (fresh.md; unchecked since " + day.AddDate(0, 0, -confirmedShownAfter).Format(dateLayout) + ")"
 	if body := changesBody(t, next); body != want {
 		t.Fatalf("changes:\n%s\nwant:\n%s", body, want)
 	}
