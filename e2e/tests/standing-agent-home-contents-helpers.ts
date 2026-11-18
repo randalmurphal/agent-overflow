@@ -57,6 +57,8 @@ const CHANGES_HEADING = '## Changes to Agent Overflow memory';
 const CHANGES_NOTE =
   '[Memory changed since the copy you last received, by another session, the user or you. A list shows only its new or changed lines and the files removed from it; a section shown whole replaces the earlier one.]';
 const CHANGES_ENDING = '[End of changes to Agent Overflow memory]';
+/** The maintenance block of an assistant whose folders need nothing. */
+const NO_WARNINGS = '### Memory maintenance\n[Nothing here needs fixing now.]';
 /** The source the mock reports a prompt's UserPromptSubmit run under. */
 const PROMPT = 'prompt';
 
@@ -86,23 +88,32 @@ export function blockOf(delivery: string, heading: string): string {
   return rest.slice(0, next >= 0 && next < ending ? next : ending);
 }
 
-/** The one delivery of a run, checked for its frame. */
+/**
+ * The delivery of a run: its parts, one hook output each, in order, each
+ * checked for its frame, a blank line apart.
+ */
 export function deliveryOf(run: MockSessionStartRun): string {
-  expect(run.contexts).toHaveLength(1);
-  const [delivery] = run.contexts;
-  expect(delivery.startsWith(`${MEMORY_HEADING}\n\n`), delivery).toBe(true);
-  expect(delivery.endsWith(`\n\n${MEMORY_ENDING}`), delivery).toBe(true);
-  return delivery;
+  expect(run.contexts.length).toBeGreaterThan(0);
+  run.contexts.forEach((part, i) => {
+    const heading = run.contexts.length === 1 ? MEMORY_HEADING : `${MEMORY_HEADING}, part ${i + 1} of ${run.contexts.length}`;
+    expect(part.startsWith(`${heading}\n\n`), part).toBe(true);
+    expect(part.endsWith(`\n\n${MEMORY_ENDING}`), part).toBe(true);
+  });
+  return run.contexts.join('\n\n');
 }
 
-/** The one delivery of changes of a prompt's run, checked for its frame. */
+/**
+ * The deliveries of changes of a prompt's run, one per part that changed,
+ * each checked for its frame, a blank line apart.
+ */
 export function changesOf(run: MockSessionStartRun): string {
   expect(run.source).toBe(PROMPT);
-  expect(run.contexts).toHaveLength(1);
-  const [changes] = run.contexts;
-  expect(changes.startsWith(`${CHANGES_HEADING}\n${CHANGES_NOTE}\n`), changes).toBe(true);
-  expect(changes.endsWith(`\n\n${CHANGES_ENDING}`), changes).toBe(true);
-  return changes;
+  expect(run.contexts.length).toBeGreaterThan(0);
+  for (const changes of run.contexts) {
+    expect(changes.startsWith(`${CHANGES_HEADING}\n${CHANGES_NOTE}\n`), changes).toBe(true);
+    expect(changes.endsWith(`\n\n${CHANGES_ENDING}`), changes).toBe(true);
+  }
+  return run.contexts.join('\n\n');
 }
 
 /** A delivery of changes holding blocks, as the hook writes one under the size limit. */
@@ -141,17 +152,17 @@ export function homeBlockOpening(name: string, agentId: string, thread: string, 
   );
 }
 
-/** The stamp each delivery carries under its heading. */
+/** The stamp each part of a delivery carries under its heading: a part of several calls itself one. */
 const STAMP =
-  /^## Agent Overflow memory\n\[Delivered at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z; it replaces any earlier copy of this memory in this conversation\.\]\n/;
+  /^(## Agent Overflow memory(?:, part \d+ of \d+)?)\n\[Delivered at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z; it replaces any earlier copy of this (?:memory|part) in this conversation\.\]\n/;
 
-/** run with its delivery as the folders read, after checking that it carries its stamp. */
+/** run with its delivery as the folders read, after checking that each part carries its stamp. */
 export function unstamped(run: MockSessionStartRun): MockSessionStartRun {
   return {
     ...run,
     contexts: run.contexts.map((context) => {
       expect(STAMP.test(context), context).toBe(true);
-      return context.replace(STAMP, `${MEMORY_HEADING}\n`);
+      return context.replace(STAMP, '$1\n');
     }),
   };
 }
@@ -210,9 +221,10 @@ function agentScenario(provider: ProviderName, name: string, turns: ScriptedTurn
  * between sessions reaching the next with its first prompt as the
  * maintenance warnings alone; a worker spawned with home_files; the
  * footer's role line both ways between the agent and an ordinary thread;
- * and a memory past the size limit delivered whole, cut nowhere, opening
- * with its size and the maintenance warning, at the prompt after it grew
- * and at the compaction, with one warning row for its size and no other.
+ * and sections over the size limit together reaching the model whole, at
+ * the prompt after they grew and at the compaction, then one section over
+ * it opening with its size, whole on Codex and its start on Claude, named
+ * by the maintenance warning, with one warning row for it and no other.
  */
 export async function runHomeContents(harness: HarnessApp, provider: ProviderName, tag: string): Promise<HomeContentsRun> {
   const names = [`${tag}-lead-${provider}`, `${tag}-workers-${provider}`, `${tag}-ordinary-${provider}`];
@@ -266,7 +278,8 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(firstRuns.map((run) => run.source)).toEqual(['startup']);
   expectQuietPrompts(first.runs, 1);
   const started = deliveryOf(firstRuns[0]);
-  expect(started.startsWith(`${MEMORY_HEADING}\n\n${instructionsHeading}\n`), started).toBe(true);
+  expect(firstRuns[0].contexts).toHaveLength(5);
+  expect(started.startsWith(`${MEMORY_HEADING}, part 1 of 5\n\n${instructionsHeading}\n`), started).toBe(true);
   expect(blockOf(started, instructionsHeading)).toBe(`${instructionsHeading}\n${INSTRUCTIONS.trimEnd()}`);
   expect(blockOf(started, homeHeading)).toBe(`${homeHeading}\nRulings:\n- Never use em dashes in anything committed. (no-em-dashes.md)`);
   const projectsMemory = join(dirname(dirname(home)), 'memory', 'projects');
@@ -277,8 +290,8 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
     expect(listed[i].endsWith('/, 0 facts'), listed[i]).toBe(true);
   }
   expect(started).not.toContain('### Project memory');
-  expect(started).not.toContain('### Memory maintenance');
-  expect(started).not.toContain('[This memory is');
+  expect(blockOf(started, '### Memory maintenance')).toBe(NO_WARNINGS);
+  expect(started).not.toContain('[This part is');
   await harness.rpc('StopSession', agent);
 
   // ---- A resume of unchanged memory carries the same block and runs no
@@ -343,13 +356,11 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(startRunsOf(maintained.runs)).toEqual([]);
   const maintainedPrompts = promptRunsOf(maintained.runs);
   expect(maintainedPrompts).toHaveLength(1);
-  expect(changesOf(maintainedPrompts[0])).toBe(
-    changesWith(
-      '### Memory maintenance\nKeeping these folders sound is your job. Fix these:\n' +
-        `- ${join(memoryDir, 'broken.md')}: it does not open with a --- frontmatter line. Fix its frontmatter or delete it.\n` +
-        `- ${join(memoryDir, 'release-dates.md')} expired on 2026-01-01. Delete it, or move expires if it still holds.`,
-    ),
-  );
+  const fixThese = '### Memory maintenance\nKeeping these folders sound is your job. Fix these:';
+  const fileWarnings =
+    `- ${join(memoryDir, 'broken.md')}: it does not open with a --- frontmatter line. Fix its frontmatter or delete it.\n` +
+    `- ${join(memoryDir, 'release-dates.md')} expired on 2026-01-01. Delete it, or move expires if it still holds.`;
+  expect(changesOf(maintainedPrompts[0])).toBe(changesWith(`${fixThese}\n${fileWarnings}`));
   await harness.rpc('StopSession', agent);
 
   // ---- The agent spawns a worker with its verification file and messages
@@ -449,44 +460,75 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(promptRunsOf((await sessionIn(harness, home, 4)).runs).every((run) => run.contexts.length === 0)).toBe(true);
   await harness.rpc('StopSession', agent);
 
-  // ---- Past the size limit nothing is cut: the first prompt after the
-  // memory grew delivers what changed, whole, and the compaction the whole
-  // memory, each opening with its size so the start a provider shows
-  // carries it. The maintenance warning names the size, the thread gets one
-  // warning row for it, and the block does not change.
+  // ---- Past the size limit nothing is cut. Each section is a hook output
+  // of its own, so sections over 10,000 bytes together, each under it,
+  // reach the model whole on both providers: at the first prompt after the
+  // memory grew, as what changed, and at the compaction. A section itself
+  // over the limit opens with its size: Claude shows the model the start,
+  // which carries the size, and Codex, with its spill off, all of it. The
+  // maintenance warning names that section and how to fix it, the thread
+  // gets one warning row for it, and the block does not change.
   const line = `${'x'.repeat(99)}\n`;
-  const longInstructions = `${ROLE}\n${line.repeat(100)}INSTRUCTIONS TAIL\n`;
+  const longInstructions = `${ROLE}\n${line.repeat(60)}INSTRUCTIONS TAIL\n`;
+  const bulk = (from: number, to: number) => {
+    for (let i = from; i < to; i++) {
+      writeFileSync(join(memoryDir, `bulk-${String(i).padStart(3, '0')}.md`), fact(`Bulk fact ${i}: ${'y'.repeat(90)}`, 'reference'));
+    }
+  };
   writeFileSync(join(home, 'instructions.md'), longInstructions);
-  for (let i = 0; i < 120; i++) {
-    writeFileSync(join(memoryDir, `bulk-${String(i).padStart(3, '0')}.md`), fact(`Bulk fact ${i}: ${'y'.repeat(90)}`, 'reference'));
-  }
+  bulk(0, 60);
   await setScenario(
     harness,
     home,
-    agentScenario(provider, `${tag}-large-${provider}`, [{ steps: [{ emitLines: compactionLines(provider) }], text: 'Read the rest myself.' }]),
+    agentScenario(provider, `${tag}-large-${provider}`, [
+      { steps: [{ emitLines: compactionLines(provider) }], text: 'All of it arrived.' },
+      { steps: [{ emitLines: compactionLines(provider) }], text: 'Read the rest myself.' },
+    ]),
   );
   await harness.rpc('SendMessage', agent, 'Your memory grew.', null);
   await awaitTurnCompleted(harness, agent);
-  const large = await sessionIn(harness, home, 5);
-  expect(appended(provider, large.config)).toBe(block);
-  const sizeNotice = /\[This memory is (\d+) bytes, more than the 10000 a hook's output reaches you whole\. If you see only its start, read all of it from the file the provider saved it to before you act\.\]/;
-  const oversizeWarning =
-    '- Your memory is more than the 10000 bytes a hook\'s output reaches the model whole, so every session sees only its start until it reads the file the provider saved it to. Shorten instructions.md and your context facts, and merge or delete facts.';
-  const [grown] = promptRunsOf(large.runs);
-  const changes = changesOf(grown);
-  expect(changes.split('\n')[2]).toMatch(new RegExp(`^${sizeNotice.source}$`));
-  expect(blockOf(changes, instructionsHeading)).toBe(`${instructionsHeading}\n${longInstructions.trimEnd()}`);
-  expect((blockOf(changes, homeHeading).match(/^- reference: Bulk fact /gm) ?? []).length).toBe(120);
-  expect(blockOf(changes, '### Memory maintenance')).toContain(oversizeWarning);
-  const largeRuns = startRunsOf(large.runs);
-  expect(largeRuns.map((run) => run.source)).toEqual(['compact']);
-  const whole = deliveryOf(largeRuns[0]);
-  const size = whole.split('\n')[2].match(sizeNotice);
-  expect(size, whole.slice(0, 400)).not.toBeNull();
-  expect(Number(size![1])).toBe(Buffer.byteLength(large.runs.find((run) => run.source === 'compact')!.contexts[0]));
-  expect(blockOf(whole, instructionsHeading)).toBe(`${instructionsHeading}\n${longInstructions.trimEnd()}`);
-  expect((blockOf(whole, homeHeading).match(/^- Bulk fact /gm) ?? []).length).toBe(120);
-  expect(blockOf(whole, '### Memory maintenance')).toContain(oversizeWarning);
+  const grown = await sessionIn(harness, home, 5);
+  expect(appended(provider, grown.config)).toBe(block);
+  const grownChanges = changesOf(promptRunsOf(grown.runs)[0]);
+  const grownRuns = startRunsOf(grown.runs);
+  expect(grownRuns.map((run) => run.source)).toEqual(['compact']);
+  const grownWhole = deliveryOf(grownRuns[0]);
+  for (const delivered of [grownChanges, grownWhole]) {
+    expect(Buffer.byteLength(delivered)).toBeGreaterThan(10000);
+    expect(delivered).not.toContain('[This ');
+    expect(blockOf(delivered, instructionsHeading)).toBe(`${instructionsHeading}\n${longInstructions.trimEnd()}`);
+    expect((blockOf(delivered, homeHeading).match(/^- (reference: )?Bulk fact /gm) ?? []).length).toBe(60);
+  }
+  expect(blockOf(grownWhole, '### Memory maintenance')).toBe(`${fixThese}\n${fileWarnings}`);
+
+  bulk(60, 160);
+  await harness.rpc('SendMessage', agent, 'It grew again.', null);
+  await awaitTurnCompleted(harness, agent);
+  const over = await sessionIn(harness, home, 5);
+  const overRuns = startRunsOf(over.runs);
+  expect(overRuns.map((run) => run.source)).toEqual(['compact', 'compact']);
+  const part = (run: MockSessionStartRun, n: number) => run.contexts.find((context) => context.startsWith(`${MEMORY_HEADING}, part ${n} of 5\n`)) ?? '';
+  const homeIndex = part(overRuns[1], 2);
+  const partNotice = /^\[This part is (\d+) bytes, more than the 10000 a hook's output reaches you whole\. If you see only its start, read all of it from the file the provider saved it to before you act\.\]$/;
+  const size = homeIndex.split('\n')[2].match(partNotice);
+  expect(size, homeIndex.slice(0, 400)).not.toBeNull();
+  expect(homeIndex).toContain(`\n\n${homeHeading}\n`);
+  if (provider === 'codex') {
+    expect(Number(size![1])).toBe(Buffer.byteLength(over.runs.filter((run) => run.source === 'compact')[1].contexts[1]));
+    expect(homeIndex.endsWith(`\n\n${MEMORY_ENDING}`), homeIndex.slice(-200)).toBe(true);
+    expect((homeIndex.match(/^- Bulk fact /gm) ?? []).length).toBe(160);
+  } else {
+    expect(Number(size![1])).toBeGreaterThan(10000);
+    expect(homeIndex.endsWith('Full hook output saved to: (ao-mockprovider keeps no file)'), homeIndex.slice(-200)).toBe(true);
+    expect(homeIndex).not.toContain('Bulk fact 159');
+  }
+  // The other parts are whole on both, the warnings naming the index.
+  const overWarning = `- The index of ${memoryDir}/ is more than the 10000 bytes a hook's output reaches every provider's model whole, so a session may see only its start until it reads the file the provider saved it to. Merge or delete facts, or move detail from their descriptions into their bodies.`;
+  for (const n of [1, 3, 4, 5]) {
+    expect(part(overRuns[1], n).endsWith(`\n\n${MEMORY_ENDING}`), part(overRuns[1], n).slice(0, 200)).toBe(true);
+  }
+  expect(blockOf(part(overRuns[1], 5), '### Memory maintenance')).toBe(`${fixThese}\n${overWarning}\n${fileWarnings}`);
+  expect(promptRunsOf(over.runs)[1].contexts.some((context) => context.includes(overWarning))).toBe(true);
   await harness.rpc('StopSession', agent);
 
   // Every start, resume and compaction delivered what it ran: no error row,
@@ -499,7 +541,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await expect
     .poll(() => rows('notification'), { timeout: 15_000 })
     .toEqual([
-      `This conversation's memory is longer than a provider shows the model whole, so its sessions see its start and the path of a file holding all of it: ${size![1]} bytes, over the 10000 a hook's output reaches the model whole.`,
+      `Part of this conversation's memory is longer than a provider may show the model of one hook output, so its sessions may see only that part's start and the path of a file holding all of it: the assistant's own memory index is ${size![1]} bytes, over the 10000 a hook's output reaches every provider's model whole.`,
     ]);
   expect(await rows('error')).toEqual([]);
 

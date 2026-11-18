@@ -15,9 +15,10 @@
 // worker spawned with home_files whose first message opens with the
 // attached verification file and whose footer names the agent, its role
 // and the route of its questions; the role line on a message from the
-// agent to an ordinary thread and none on one back; a memory past the size
-// limit delivered whole, opening with its size, with the maintenance
-// warning and one warning row. A provider that runs no hook leaves a
+// agent to an ordinary thread and none on one back; sections over the size
+// limit together delivered whole, each a hook output of its own, then one
+// section over it opening with its size, whole on Codex and its start on
+// Claude, named by the maintenance warning, with one warning row. A provider that runs no hook leaves a
 // warning row for the start and for each compaction, and none for a
 // resume; a prompt with no record of what its session was shown, and the
 // first prompt after a compaction whose hook did not deliver, delivers the
