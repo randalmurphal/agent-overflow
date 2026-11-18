@@ -15,10 +15,7 @@ import (
 // address of the failed one's, whether the engine answers it as an error or
 // not, so only the address that loaded is recorded.
 func TestNativeEngineRealFailedLoadIsNoRecentAddress(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {

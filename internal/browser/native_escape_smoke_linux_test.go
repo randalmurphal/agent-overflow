@@ -20,10 +20,7 @@ import (
 // real input event or composition, so the press reaches AO's gate and not
 // the page's DOM, and the composing input is only ever read as false here.
 func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	ctrl := keybindings.Accelerator{Key: "escape", Ctrl: true}
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{
 		NativeWindow: window.NativeWindow,

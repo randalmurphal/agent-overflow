@@ -58,9 +58,7 @@ func TestChromiumBackendHelper(t *testing.T) {
 func TestABackendsDeathEndsEveryProcessOfItsChromium(t *testing.T) {
 	dir := t.TempDir()
 	backend := exec.Command(os.Args[0], "-test.run=^TestChromiumBackendHelper$")
-	// The backend is killed, so it removes nothing it creates: its temporary
-	// files go in this test's directory.
-	backend.Env = append(os.Environ(), chromiumBackendHelperEnv+"="+dir, "TMPDIR="+dir)
+	backend.Env = append(os.Environ(), chromiumBackendHelperEnv+"="+dir)
 	stdout, err := backend.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

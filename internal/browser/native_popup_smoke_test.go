@@ -14,10 +14,7 @@ import (
 // change before AO observes them: the adopted tab still shows its title,
 // from the reports alone, with no read of the page.
 func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	holdPopupAdoption(manager, time.Second)
 	t.Cleanup(func() {
@@ -62,10 +59,7 @@ func TestNativeEngineRealAdoptedPopupShowsItsLoadedPage(t *testing.T) {
 // open a child at once, while the Manager still holds the popup from its
 // adoption: the child becomes a tab of the same thread, after its opener.
 func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	holdPopupAdoption(manager, time.Second)
 	t.Cleanup(func() {

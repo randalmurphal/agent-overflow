@@ -20,10 +20,7 @@ import (
 // the next key to; the page document's focus is checked as well when the
 // window is active, which a headless compositor may not make it.
 func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	bound := keybindings.Accelerator{Key: "f", Ctrl: true}
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{
 		NativeWindow: window.NativeWindow,
@@ -218,10 +215,7 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 // widget to the SPA's webview, and showing a page again takes nothing. A
 // click into the page is grabFocus, as in the chord smoke above.
 func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {

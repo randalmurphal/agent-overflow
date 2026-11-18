@@ -61,10 +61,7 @@ const smokePDF = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<
 // link, a missing Downloads folder, and a finished file opened in a tab and
 // by browser_open_file.
 func TestNativeEngineRealDownloads(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	release, gate := make(chan struct{}), make(chan struct{})
 	payload := bytes.Repeat([]byte("a"), 300_000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

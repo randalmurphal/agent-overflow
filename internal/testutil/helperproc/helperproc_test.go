@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,7 +17,7 @@ import (
 
 // helperRoleEnv makes TestHelperRole a process of the test below: "starter"
 // stands in for a test binary that starts a tied helper, "held" for the
-// helper.
+// helper, and "temp" for a helper that reports its temporary directories.
 const helperRoleEnv = "HELPERPROC_TEST_ROLE"
 
 // TestHelperRole is not a test of its own.
@@ -37,8 +38,10 @@ func TestHelperRole(t *testing.T) {
 		}
 	case "held":
 		Hold()
+	case "temp":
+		fmt.Printf("temp %s\n%s\n", os.TempDir(), t.TempDir())
 	default:
-		t.Skip("runs only as a process of TestAHeldHelperEndsWhenItsStarterIsKilled")
+		t.Skip("runs only as a process of this file's tests")
 	}
 }
 
@@ -51,6 +54,9 @@ func TestAHeldHelperEndsWhenItsStarterIsKilled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The starter is killed too, so the directory its own Tie makes goes in
+	// this test's.
+	Tie(t, starter)
 	if err := starter.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +87,33 @@ func TestAHeldHelperEndsWhenItsStarterIsKilled(t *testing.T) {
 	}
 	if running(held) {
 		t.Fatal("the helper outlived the process that started it")
+	}
+}
+
+// A killed helper removes nothing. What it creates under os.TempDir, and its
+// own tests' t.TempDir, land in the directory of the test that tied it,
+// wherever the run's own temporary directories point.
+func TestATiedHelpersTemporaryFilesGoInItsTestsDirectory(t *testing.T) {
+	elsewhere := t.TempDir()
+	t.Setenv("TMPDIR", elsewhere)
+	t.Setenv("GOTMPDIR", elsewhere)
+	helper := exec.Command(os.Args[0], "-test.run=^TestHelperRole$")
+	helper.Env = append(os.Environ(), helperRoleEnv+"=temp")
+	Tie(t, helper)
+	out, err := helper.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, ok := strings.CutPrefix(string(out), "temp ")
+	if !ok {
+		t.Fatalf("the helper reported %q", out)
+	}
+	dirs := strings.Split(rest, "\n")[:2]
+	root := filepath.Dir(elsewhere) + string(filepath.Separator)
+	for _, dir := range dirs {
+		if !strings.HasPrefix(dir, root) || strings.HasPrefix(dir+string(filepath.Separator), elsewhere+string(filepath.Separator)) {
+			t.Fatalf("the helper's temporary directories are %q; want them in this test's %s, outside the run's %s", dirs, root, elsewhere)
+		}
 	}
 }
 

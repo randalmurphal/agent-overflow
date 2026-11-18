@@ -25,15 +25,29 @@ import (
 //
 //	AO_NATIVE_BROWSER_SMOKE=1 go test ./internal/browser -run TestNativeEngineReal -count=1
 //
-// On Linux the run starts its own headless weston and runs inside it, and
-// is refused without one unless AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY=1
-// puts its window on the session display (nativeSmokeDisplay). macOS needs
-// a logged-in session. Nothing else runs them.
+// On Linux the run starts its own headless weston and runs inside it. A
+// window on the session display, the only place macOS has for one, needs
+// AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY=1 as well, and the run is refused
+// without it (nativeSmokeDisplay). Nothing else runs them.
 const nativeBrowserSmokeEnv = "AO_NATIVE_BROWSER_SMOKE"
 
 // nativeSmokeWindow is the window the gated run hosts pages in, nil unless
 // the gate is set.
 var nativeSmokeWindow atomic.Pointer[application.WebviewWindow]
+
+// smokeWindow answers the window the gated run hosts pages in, and skips t
+// in a run without the gate. It reads the gate inside the test, so the gate
+// is an input `go test` caches the result by: a run with the gate never
+// reuses the skip of one without it.
+func smokeWindow(t *testing.T) *application.WebviewWindow {
+	t.Helper()
+	_ = os.Getenv(nativeBrowserSmokeEnv)
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	return window
+}
 
 // nativeSmokeMain runs the package's tests for TestMain when the gate is
 // set, and answers ran false when it is not.
@@ -79,7 +93,13 @@ func runInNativeWindow(m *testing.M) int {
 	// second only activates the first, which would run the tests again. The
 	// pid keeps another smoke run under way from being that process.
 	app := application.New(application.Options{Name: fmt.Sprintf("ao-native-browser-smoke-%d", os.Getpid())})
+	var started atomic.Bool
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		// GTK reports every activation of the application as a start. Only
+		// the first runs the tests.
+		if !started.CompareAndSwap(false, true) {
+			return
+		}
 		window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 			Title: "AO native browser smoke", Width: 1280, Height: 800,
 			// Grey, so a pixel check tells a page's white from the window.
@@ -127,10 +147,7 @@ func awaitNativeHandle(window *application.WebviewWindow) bool {
 // still load, in every cookie jar: a jar never decides file authority, so a
 // worktree outside the project root keeps its files in a shared jar too.
 func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	// Left alone, the Manager adopts a popup before the popup decides its
 	// first navigation, and the page's policy answers every decision.
@@ -211,10 +228,7 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 // TestNativeEngineRealEvaluateSemantics holds this engine to the evaluate
 // contract on a page whose script policy forbids eval, as AO's own UI does.
 func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
@@ -255,10 +269,7 @@ func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
 // next and previous moving the selected match with wrap, a miss, and a stop
 // that leaves a later search starting over.
 func TestNativeEngineRealFind(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
@@ -434,10 +445,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 // to the top, clears nothing; a frame announcing itself again and again, or
 // removed, does not grow the top frame's list of children.
 func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {

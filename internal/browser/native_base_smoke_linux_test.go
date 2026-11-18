@@ -31,10 +31,7 @@ import (
 //
 // AO_NATIVE_BROWSER_SMOKE_SHOTS names a directory that keeps each screenshot.
 func TestNativeEngineRealPageBase(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	if os.Getenv(nativeSmokeWestonEnv) == "" {
 		t.Skip("the screenshot needs the run's own weston")
 	}
@@ -159,10 +156,7 @@ func TestNativeEngineRealPageBase(t *testing.T) {
 // under the hidden document. The shown blank tab's own screenshot is read
 // first, so the snapshot is known to include the base.
 func TestNativeEngineRealHiddenPageBase(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
@@ -259,10 +253,7 @@ func (e *heldBaseEngine) SetPageBase(handle, color string) {
 // show the page on the pane's color while the base is held, and shows it
 // white once it lands.
 func TestNativeEngineRealHeldBase(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	if os.Getenv(nativeSmokeWestonEnv) == "" {
 		t.Skip("the screenshot needs the run's own weston")
 	}
@@ -372,10 +363,7 @@ func TestNativeEngineRealHeldBase(t *testing.T) {
 // The screenshot is live, not a stale buffer: the hidden state is checked
 // in the same region first, and the pink page shown in between is.
 func TestNativeEngineRealStaticPageShowsAgain(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	if os.Getenv(nativeSmokeWestonEnv) == "" {
 		t.Skip("the screenshot needs the run's own weston")
 	}

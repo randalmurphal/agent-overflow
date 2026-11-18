@@ -18,10 +18,7 @@ import (
 // the download is listed in the popup's tab, finished. A popup's own popup
 // becomes a tab of the same thread.
 func TestNativeEngineRealPopupDownloadsAndNesting(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	payload := bytes.Repeat([]byte("p"), 50_000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

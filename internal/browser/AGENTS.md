@@ -208,8 +208,9 @@ boots. Real Chromium launch and CDP page operations are covered only by the
 documented `AO_HEADLESS_CHROMIUM_SMOKE=1` manual gate. Real WebKitGTK and WKWebView
 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1` manual gate
 (`native_engine_smoke_test.go`), which opens a window. On Linux it starts its
-own headless weston and is refused without one, unless
-`AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY=1` allows the session display.
+own headless weston. A window on the session display, the only one macOS
+has, also needs `AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY=1`; the run is
+refused without it.
 
 - [embedded-browser.md](../../docs/specs/embedded-browser.md)
 - [codex-browser-parity.md](../../docs/references/codex-browser-parity.md)

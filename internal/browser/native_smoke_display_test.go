@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,14 +12,18 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/procutil"
 )
 
 // The native smoke maps a real window. On Linux that window goes to a
-// headless weston the run starts for itself, never to the session display
-// the user works in, unless the run is explicitly opted in to it.
+// headless weston the run starts for itself. It goes to the session display
+// the user works in, the only display macOS has, only when the run is
+// explicitly opted in to it.
 
-// nativeSmokeSessionDisplayEnv opts a Linux smoke run in to the session's
-// own display, where its window appears on the user's desktop.
+// nativeSmokeSessionDisplayEnv opts a smoke run in to the session's own
+// display, where its window appears on the user's desktop.
 const nativeSmokeSessionDisplayEnv = "AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY"
 
 // nativeSmokeWestonEnv names the headless weston socket a smoke run started
@@ -35,26 +40,33 @@ const (
 	smokeUnderWeston
 )
 
-var errNoHeadlessDisplay = errors.New("native browser smoke: no headless weston is installed, and the session display is the user's; install weston, or set " +
-	nativeSmokeSessionDisplayEnv + "=1 to run on the session display")
+var (
+	errNoHeadlessDisplay = errors.New("native browser smoke: no headless weston is installed, and the session display is the user's; install weston, or set " +
+		nativeSmokeSessionDisplayEnv + "=1 to run on the session display")
+	errSessionDisplayOnly = errors.New("native browser smoke: this OS has no headless display, and the session display is the user's; set " +
+		nativeSmokeSessionDisplayEnv + "=1 to run on the session display")
+)
 
 // nativeSmokeDisplay decides where a smoke run puts its window, from the
-// environment, the weston binary found (or ""), and the OS. macOS has no
-// headless compositor and runs in its logged-in session. On Linux a run
-// re-executed inside its own weston runs there; one opted in to the session
-// display runs on it; any other starts a weston, or is refused without one.
+// environment, the weston binary found (or ""), and the OS. A run opted in
+// to the session display runs on it, on any OS. Without the opt-in, macOS
+// has no headless compositor and is refused; on Linux a run re-executed
+// inside its own weston runs there, and any other starts a weston, or is
+// refused without one.
 func nativeSmokeDisplay(getenv func(string) string, weston, goos string) (nativeSmokePlan, error) {
-	if goos != "linux" {
-		return smokeHere, nil
-	}
-	if socket := getenv(nativeSmokeWestonEnv); socket != "" {
-		if getenv("WAYLAND_DISPLAY") != socket || getenv("DISPLAY") != "" {
-			return smokeHere, errors.New("native browser smoke: re-executed for weston " + socket + " with another display")
+	if goos == "linux" {
+		if socket := getenv(nativeSmokeWestonEnv); socket != "" {
+			if getenv("WAYLAND_DISPLAY") != socket || getenv("DISPLAY") != "" {
+				return smokeHere, errors.New("native browser smoke: re-executed for weston " + socket + " with another display")
+			}
+			return smokeHere, nil
 		}
-		return smokeHere, nil
 	}
 	if getenv(nativeSmokeSessionDisplayEnv) == "1" {
 		return smokeHere, nil
+	}
+	if goos != "linux" {
+		return smokeHere, errSessionDisplayOnly
 	}
 	if weston == "" {
 		return smokeHere, errNoHeadlessDisplay
@@ -80,17 +92,30 @@ func headlessSmokeEnv(environ []string, socket string) []string {
 
 // runUnderHeadlessWeston starts a headless weston on a socket of the run's
 // own, runs this test binary again inside it with headlessSmokeEnv, stops
-// the weston, and answers the inner run's exit code.
+// the weston, and answers the inner run's exit code. The weston and the
+// inner run each lead a process group a reaper sidecar watches, so a kill
+// of this process, which stops neither, still ends both.
 func runUnderHeadlessWeston(weston string) int {
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
 		fmt.Fprintln(os.Stderr, "native browser smoke: weston needs XDG_RUNTIME_DIR")
 		return 1
 	}
+	sidecar, err := orphanreaper.Spawn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "native browser smoke: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := sidecar.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "native browser smoke: stop the reaper sidecar: %v\n", err)
+		}
+	}()
 	socket := fmt.Sprintf("ao-native-smoke-%d", os.Getpid())
 	// --debug lets the run's own clients capture the output
 	// (westonScreenshot); the compositor serves nothing else.
-	compositor := exec.Command(weston, "--backend=headless", "--renderer=pixman", "--socket="+socket,
+	// A context that never ends: ConfigureGroup needs one to set the group.
+	compositor := exec.CommandContext(context.Background(), weston, "--backend=headless", "--renderer=pixman", "--socket="+socket,
 		"--width=1280", "--height=800", "--no-config", "--debug")
 	// The compositor itself sees no display: it must not nest in the
 	// session's.
@@ -98,10 +123,12 @@ func runUnderHeadlessWeston(weston string) int {
 		return strings.HasPrefix(kv, "DISPLAY=") || strings.HasPrefix(kv, "WAYLAND_DISPLAY=")
 	})
 	compositor.Stdout, compositor.Stderr = os.Stderr, os.Stderr
+	procutil.ConfigureGroup(compositor)
 	if err := compositor.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "native browser smoke: start weston: %v\n", err)
 		return 1
 	}
+	sidecar.Watch(compositor.Process.Pid)
 	exited := make(chan error, 1)
 	go func() { exited <- compositor.Wait() }()
 	stop := func() {
@@ -112,11 +139,13 @@ func runUnderHeadlessWeston(weston string) int {
 			_ = compositor.Process.Kill()
 			<-exited
 		}
+		sidecar.Release(compositor.Process.Pid)
 	}
 	ready := false
 	for deadline := time.Now().Add(30 * time.Second); !ready && time.Now().Before(deadline); {
 		select {
 		case err := <-exited:
+			sidecar.Release(compositor.Process.Pid)
 			fmt.Fprintf(os.Stderr, "native browser smoke: weston exited before its socket was ready: %v\n", err)
 			return 1
 		case <-time.After(50 * time.Millisecond):
@@ -129,10 +158,16 @@ func runUnderHeadlessWeston(weston string) int {
 		fmt.Fprintln(os.Stderr, "native browser smoke: weston's socket never appeared")
 		return 1
 	}
-	inner := exec.Command(os.Args[0], os.Args[1:]...)
+	inner := exec.CommandContext(context.Background(), os.Args[0], os.Args[1:]...)
 	inner.Env = headlessSmokeEnv(os.Environ(), socket)
 	inner.Stdin, inner.Stdout, inner.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err := inner.Run()
+	procutil.ConfigureGroup(inner)
+	err = inner.Start()
+	if err == nil {
+		sidecar.Watch(inner.Process.Pid)
+		err = inner.Wait()
+		sidecar.Release(inner.Process.Pid)
+	}
 	stop()
 	var exit *exec.ExitError
 	switch {
@@ -167,7 +202,8 @@ func TestNativeSmokeDisplayRefusesTheSessionDisplay(t *testing.T) {
 		{"inside its weston it runs there", map[string]string{"WAYLAND_DISPLAY": "ao-smoke-1", nativeSmokeWestonEnv: "ao-smoke-1"}, "/usr/bin/weston", "linux", smokeHere, false},
 		{"inside its weston with an X display left is refused", map[string]string{"DISPLAY": ":0", "WAYLAND_DISPLAY": "ao-smoke-1", nativeSmokeWestonEnv: "ao-smoke-1"}, "/usr/bin/weston", "linux", smokeHere, true},
 		{"inside its weston on another socket is refused", map[string]string{"WAYLAND_DISPLAY": "wayland-0", nativeSmokeWestonEnv: "ao-smoke-1"}, "/usr/bin/weston", "linux", smokeHere, true},
-		{"macOS runs in its session", session, "", "darwin", smokeHere, false},
+		{"macOS is refused: its only display is the session's", session, "", "darwin", smokeHere, true},
+		{"macOS runs in its session only when opted in", map[string]string{nativeSmokeSessionDisplayEnv: "1"}, "", "darwin", smokeHere, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := nativeSmokeDisplay(env(tc.vars), tc.weston, tc.goos)
