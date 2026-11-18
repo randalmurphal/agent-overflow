@@ -176,7 +176,7 @@ func TestCallSaysWhetherItsFrameWasSent(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		defer conn.CloseNow()
+		defer func() { _ = conn.CloseNow() }()
 		go func() {
 			<-hangUp
 			_ = conn.CloseNow()

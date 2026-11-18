@@ -634,7 +634,7 @@ func (t threadToolsApp) discardUnnamedThread(thread store.Thread, cut threadapp.
 	}
 	// The delete stopped and joined the thread's setup run, so no recipe is
 	// writing into the checkout while it goes.
-	if err := (threadWorkspacePort{app: t.app}).RemoveCutWorktree(thread.ProjectPath, cut); err != nil {
+	if err := threadWorkspacePort(t).RemoveCutWorktree(thread.ProjectPath, cut); err != nil {
 		log.Printf("thread tools: undo the worktree %s of thread %s its request could not name: %v", cut.Path, thread.ID, err)
 		_, said, public := errorsx.PublicDetails(cause)
 		if !public {
