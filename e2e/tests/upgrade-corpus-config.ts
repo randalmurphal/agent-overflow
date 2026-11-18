@@ -719,7 +719,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'remote_watches', reason: 'a watch on a connected computer' },
   { table: 'thread_transfers', reason: 'a conversation moved or copied to a connected computer' },
   { table: 'thread_transfer_sessions', reason: 'a transfer session with a connected computer' },
-  { table: 'thread_requests', columns: ['target_computer_id', 'target_thread_title', 'next_check', 'attempts', 'issue', 'polling'], values: { polling: [0] }, reason: 'the poll of a request to a thread on a connected computer' },
+  { table: 'thread_requests', columns: ['target_computer_id', 'target_thread_title', 'next_check', 'attempts', 'issue', 'polling', 'admit_until'], values: { polling: [0] }, reason: 'the poll of a request to a thread on a connected computer, and its admission deadline there (v158)' },
   {
     table: 'thread_requests',
     columns: [

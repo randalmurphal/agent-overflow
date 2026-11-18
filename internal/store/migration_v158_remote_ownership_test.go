@@ -6,8 +6,9 @@ import (
 )
 
 // v158 adds the link a paired computer's owned spawn makes and what its
-// owner owes it. Rows from before it are not links and owe nothing; the
-// new objects exist and enforce what they declare.
+// owner owes it, and a remote request's admission deadline. Rows from
+// before it are not links, owe nothing and have no deadline left; the new
+// objects exist and enforce what they declare.
 func TestRemoteOwnershipMigration(t *testing.T) {
 	db := migrateThrough(t, remoteOwnershipMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
@@ -22,14 +23,17 @@ func TestRemoteOwnershipMigration(t *testing.T) {
 
 	migrateFrom(t, db, remoteOwnershipMigrationVersion-1)
 
-	var link, seen, receiptSeq, requestSeq int64
+	var link, seen, receiptSeq, requestSeq, admitUntil int64
 	if err := db.QueryRow(`SELECT spawn_link, owner_seen_at, owner_op_seq,
-		(SELECT owner_op_seq FROM thread_requests WHERE token = 'old-spawn')
-		FROM thread_request_receipts WHERE token = 'old'`).Scan(&link, &seen, &receiptSeq, &requestSeq); err != nil {
+		(SELECT owner_op_seq FROM thread_requests WHERE token = 'old-spawn'),
+		(SELECT admit_until FROM thread_requests WHERE token = 'old-spawn')
+		FROM thread_request_receipts WHERE token = 'old'`).Scan(&link, &seen, &receiptSeq, &requestSeq, &admitUntil); err != nil {
 		t.Fatal(err)
 	}
-	if link != 0 || seen != 0 || receiptSeq != 0 || requestSeq != 0 {
-		t.Fatalf("old rows read link %d seen %d seq %d/%d, want all 0", link, seen, receiptSeq, requestSeq)
+	// An old request's deadline is past: v0.0.19 fenced its poll by
+	// next_check alone, so an unknown answer once it is polled is final.
+	if link != 0 || seen != 0 || receiptSeq != 0 || requestSeq != 0 || admitUntil != 0 {
+		t.Fatalf("old rows read link %d seen %d seq %d/%d admit_until %d, want all 0", link, seen, receiptSeq, requestSeq, admitUntil)
 	}
 	var placement string
 	if err := db.QueryRow(`SELECT placement FROM threads WHERE id = 'worker'`).Scan(&placement); err != nil || placement != PlacementStandalone {

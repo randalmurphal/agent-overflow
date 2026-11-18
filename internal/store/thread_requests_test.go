@@ -406,6 +406,39 @@ func TestThreadRequestDueQueries(t *testing.T) {
 	}
 }
 
+// A remote request's admission deadline is written with the row and moved by
+// each attempt before it is sent, never earlier: an earlier attempt's
+// handler may still be running. The attempt keeps the poller away until its
+// own deadline.
+func TestThreadRequestDispatchKeepsTheLatestAdmissionDeadline(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-remote", CallerThreadID: "t-caller", Kind: ThreadRequestSpawn,
+		TargetComputerID: "backend-2", State: ThreadRequestUnconfirmed, NextCheck: 5000, AdmitUntil: 5000,
+	}); err != nil {
+		t.Fatalf("insert remote request: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 5000 {
+		t.Fatalf("inserted deadline = %d, want 5000", got.AdmitUntil)
+	}
+	if err := s.DispatchThreadRequest("tok-remote", 9000); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 9000 || got.NextCheck != 9000 {
+		t.Fatalf("after a later attempt: deadline %d next check %d, want both 9000", got.AdmitUntil, got.NextCheck)
+	}
+	if err := s.DispatchThreadRequest("tok-remote", 7000); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 9000 || got.NextCheck != 7000 {
+		t.Fatalf("after an attempt with an earlier window: deadline %d next check %d, want 9000 and 7000", got.AdmitUntil, got.NextCheck)
+	}
+	if err := s.DispatchThreadRequest("tok-missing", 9000); err == nil {
+		t.Fatal("dispatching a request that does not exist succeeded")
+	}
+}
+
 // The notify flag is what a settlement checks before waking a caller, so
 // arming and disarming it must report whether anything changed.
 func TestThreadRequestNotifyFlag(t *testing.T) {

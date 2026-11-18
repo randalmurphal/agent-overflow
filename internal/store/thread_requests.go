@@ -137,6 +137,11 @@ type ThreadRequest struct {
 	NextCheck int64  `json:"-"`
 	Attempts  int64  `json:"-"`
 	Issue     string `json:"issue,omitempty"`
+	// AdmitUntil is, for a request on another computer, the last moment a
+	// handler there could still admit an attempt this computer sent (the
+	// attempt's dispatch plus the call's wait), 0 before any was sent. Past
+	// it, a destination that does not hold the token never started it.
+	AdmitUntil int64 `json:"-"`
 	// WakeAttempts, WakeNextCheck and WakeIssue schedule and bound the
 	// retry of a wake the settlement could not hand over.
 	WakeAttempts  int64  `json:"-"`
@@ -270,7 +275,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
-    late_reply_agent, late_reply_agent_role, rest_unreported`
+    late_reply_agent, late_reply_agent_role, rest_unreported, admit_until`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -301,7 +306,7 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
-		&lateReplyAgent, &lateReplyAgentRole, &restUnreported,
+		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.AdmitUntil,
 	}, extra...)...)
 	r.NestedOpen = nestedOpen != 0
 	r.RestUnreported = restUnreported != 0
@@ -365,11 +370,11 @@ func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
 		`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, lineage_only, created_at, updated_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    next_check, attempts, issue, lineage_only, created_at, updated_at, admit_until
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
-		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt,
+		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt, r.AdmitUntil,
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
