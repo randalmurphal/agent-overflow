@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -40,7 +41,7 @@ func (s *Store) SnapshotTo(destPath string) error {
 // (connection-scoped pragma; the store holds exactly one connection):
 // delete all rows from every table, then INSERT ... SELECT from the
 // attached snapshot per table. sqlite_sequence is reset so AUTOINCREMENT
-// counters match the snapshot.
+// counters of copied tables match the snapshot.
 // It returns the post-restore Identity so the caller MUST decide where
 // to publish it — the App caches identity for the bootstrap manifest,
 // and a restore that skipped re-publishing would keep serving the dead
@@ -207,18 +208,17 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if _, err := tx.Exec(dropThreadTallyTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: suspend thread tally triggers: %w", err)
 	}
+	var copied []string
 	for _, table := range tables {
 		if restoreSkipsTable(table) {
 			continue
 		}
+		copied = append(copied, table)
 		if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
 			return Identity{}, fmt.Errorf("store: restore: clear %s: %w", table, err)
 		}
 	}
-	for _, table := range tables {
-		if restoreSkipsTable(table) {
-			continue
-		}
+	for _, table := range copied {
 		if !srcTables[table] {
 			// The migrated snapshot is on the same schema version, so a
 			// missing table means real corruption, not drift.
@@ -228,14 +228,17 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 			return Identity{}, fmt.Errorf("store: restore: copy %s: %w", table, err)
 		}
 	}
-	// Align AUTOINCREMENT counters (usage_ledger uses one). The table
-	// only exists once an AUTOINCREMENT table has been written to, on
-	// either side.
-	if _, err := tx.Exec(`DELETE FROM main.sqlite_sequence`); err != nil && !isNoSuchTable(err) {
+	// A counter follows the table it numbers, including revisions already acknowledged.
+	names, err := json.Marshal(copied)
+	if err != nil {
+		return Identity{}, fmt.Errorf("store: encode restored tables: %w", err)
+	}
+	const copiedSequences = ` WHERE name IN (SELECT value FROM json_each(?))`
+	if _, err := tx.Exec(`DELETE FROM main.sqlite_sequence`+copiedSequences, string(names)); err != nil && !isNoSuchTable(err) {
 		return Identity{}, fmt.Errorf("store: restore: clear sqlite_sequence: %w", err)
 	}
 	if srcTables["sqlite_sequence"] {
-		if _, err := tx.Exec(`INSERT INTO main.sqlite_sequence SELECT * FROM restore_src.sqlite_sequence`); err != nil && !isNoSuchTable(err) {
+		if _, err := tx.Exec(`INSERT INTO main.sqlite_sequence SELECT * FROM restore_src.sqlite_sequence`+copiedSequences, string(names)); err != nil && !isNoSuchTable(err) {
 			return Identity{}, fmt.Errorf("store: restore: copy sqlite_sequence: %w", err)
 		}
 	}
@@ -332,7 +335,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 func restoreSkipsTable(table string) bool {
 	switch table {
 	case "thread_transfers", "thread_transfer_sessions", "remote_jobs", "remote_watches",
-		"thread_requests", "thread_request_receipts", "thread_owner_ops":
+		"thread_requests", "thread_request_receipts", "thread_owner_ops", "spawn_revisions":
 		return true
 	}
 	return strings.HasPrefix(table, "thread_search")

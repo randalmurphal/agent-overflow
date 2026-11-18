@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestOwnerCanCollectSpawnChangesAcrossAcknowledgments(t *testing.T) {
 	s := newTestStore(t)
@@ -81,5 +84,40 @@ func TestEndedRemoteSpawnKeepsHistoryAndOwesNoOwnerOperation(t *testing.T) {
 		if err := s.db.QueryRow(`SELECT target_thread_id, answer FROM thread_requests WHERE token='link'`).Scan(&target, &answer); err != nil || target != "worker" || (!lineage && string(answer) != "completed") {
 			t.Fatalf("history became %q, %q, %v", target, answer, err)
 		}
+	}
+}
+
+func TestRestoreKeepsOwedSpawnRevisionsAndTheirSequence(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"pending", "collected", "next"} {
+		mustCreateThread(t, s, id)
+	}
+	path := filepath.Join(t.TempDir(), "history.db")
+	if err := s.SnapshotTo(path); err != nil {
+		t.Fatal(err)
+	}
+	accept := func(id string) SpawnRevision {
+		t.Helper()
+		acceptLink(t, s, id, id, id, 1)
+		rows, err := s.PendingSpawnRevisions(id, "", 1)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("accepted %s: %+v, %v", id, rows, err)
+		}
+		return rows[0]
+	}
+	pending := accept("pending")
+	collected := accept("collected")
+	if err := s.AcknowledgeSpawnRevisions("collected", []SpawnRevisionAck{collected.SpawnRevisionAck}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RestoreFrom(path); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.PendingSpawnRevisions("pending", "", 1)
+	if err != nil || len(rows) != 1 || rows[0].SpawnRevisionAck != pending.SpawnRevisionAck {
+		t.Errorf("owed after restore = %+v, %v, want %+v", rows, err, pending)
+	}
+	if next := accept("next"); next.Revision <= collected.Revision {
+		t.Errorf("after restore issued %d, previously collected %d", next.Revision, collected.Revision)
 	}
 }
