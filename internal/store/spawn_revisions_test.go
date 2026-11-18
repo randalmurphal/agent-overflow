@@ -48,3 +48,38 @@ func TestOwnerCanCollectSpawnChangesAcrossAcknowledgments(t *testing.T) {
 		t.Fatalf("after delete = %+v, previously %+v", got, owned)
 	}
 }
+
+func TestEndedRemoteSpawnKeepsHistoryAndOwesNoOwnerOperation(t *testing.T) {
+	for _, lineage := range []bool{false, true} {
+		s := newTestStore(t)
+		mustCreateThread(t, s, "caller")
+		if err := s.InsertThreadRequest(ThreadRequest{Token: "link", CallerThreadID: "caller", Kind: ThreadRequestSpawn, TargetComputerID: "desk", TargetThreadID: "worker", State: ThreadRequestRunning}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SettleThreadRequest("link", ThreadRequestOpenStates(), ThreadRequestSettlement{State: ThreadRequestFinished, AnswerKind: ThreadAnswerFinal, Answer: []byte("completed")}); err != nil {
+			t.Fatal(err)
+		}
+		if lineage {
+			mustExec(t, s.db, `UPDATE thread_requests SET lineage_only=1, answer=NULL WHERE token='link'`)
+		}
+		if _, err := s.ApplySpawnRevision("desk", SpawnRevision{SpawnRevisionAck: SpawnRevisionAck{Token: "link", Revision: 1}, End: "gone"}); err != nil {
+			t.Fatal(err)
+		}
+		tokens, err := s.ListRemoteSpawnTokens([]string{"caller"})
+		if len(tokens) != 0 || err != nil {
+			t.Fatalf("ended spawn still offered to delete: %v, %v", tokens, err)
+		}
+		if _, _, err := s.ArchiveThread("caller"); err != nil {
+			t.Fatal(err)
+		}
+		ops, err := s.OweRemoteArchives("caller")
+		if err != nil || len(ops) != 0 {
+			t.Fatalf("archive owes %+v, %v", ops, err)
+		}
+		var target string
+		var answer []byte
+		if err := s.db.QueryRow(`SELECT target_thread_id, answer FROM thread_requests WHERE token='link'`).Scan(&target, &answer); err != nil || target != "worker" || (!lineage && string(answer) != "completed") {
+			t.Fatalf("history became %q, %q, %v", target, answer, err)
+		}
+	}
+}

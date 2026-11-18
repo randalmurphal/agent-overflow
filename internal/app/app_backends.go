@@ -175,6 +175,12 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
+	var stoppedWait <-chan struct{}
+	defer func() {
+		if stoppedWait != nil {
+			<-stoppedWait
+		}
+	}()
 	unlock := a.lockComputerPairing(id)
 	defer unlock()
 	held, other, stopped, err := a.store.PendingRemoteWatchesForComputer(id)
@@ -198,6 +204,7 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	if err := a.backends.Remove(id); err != nil {
 		return err
 	}
+	stoppedWait = a.ownerUpdates.cancelPeer(id)
 	a.releaseForgottenComputerWork(id, attachedComputerName(profile))
 	return nil
 }
@@ -332,6 +339,7 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 			manager.DisableLANDiscovery()
 		}
 		manager.SetChanged(a.backendSetChanged)
+		manager.SetContactObserver(a.ownerUpdates.contact)
 	}
 }
 
@@ -341,6 +349,7 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 	switch change.Action {
 	case attachedbackends.SetRemoved:
+		a.ownerUpdates.cancelPeer(change.ID)
 		if change.Reason == attachedbackends.RemovedByComputer {
 			a.endRevokedPairing(change)
 		}
@@ -350,5 +359,6 @@ func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 	}
 	a.emit(eventchan.BackendSetChanged, change)
 	a.signalRemotePeers()
+	a.nudgeThreadRequestSweep()
 	a.emit(eventchan.AgentComputersChanged, struct{}{})
 }

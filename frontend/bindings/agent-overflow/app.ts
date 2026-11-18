@@ -6551,6 +6551,25 @@ export function TerminateCodexBackgroundTerminal(threadID: string, processID: st
 }
 
 /**
+ * ThreadOwnerChanges waits for changes to the calling device's work.
+ */
+export function ThreadOwnerChanges(cursor: app$0.OwnerCursor): $CancellablePromise<app$0.OwnerChanges> {
+    return $Call.ByID(3558393553, cursor).then(($result: any) => {
+        return $$createType253($result);
+    });
+}
+
+/**
+ * ThreadOwnerRecovery lists the current sources of work for the authenticated
+ * owner. The version in the preceding wait covers every page of the listing.
+ */
+export function ThreadOwnerRecovery(launch: string, key: app$0.OwnerPageKey): $CancellablePromise<app$0.OwnerRecoveryPage> {
+    return $Call.ByID(3143780103, launch, key).then(($result: any) => {
+        return $$createType254($result);
+    });
+}
+
+/**
  * ThreadToolCall runs one write tool here. spawn, send, ask and cancel
  * carry the source's token and mint or settle a receipt; thread_update
  * and thread_group are ordinary tool calls with no request behind them.
@@ -6559,7 +6578,7 @@ export function TerminateCodexBackgroundTerminal(threadID: string, processID: st
  */
 export function ThreadToolCall(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
     return $Call.ByID(894716875, call).then(($result: any) => {
-        return $$createType253($result);
+        return $$createType255($result);
     });
 }
 
@@ -6582,7 +6601,7 @@ export function ThreadToolExportChunk(exportID: string, offset: number): $Cancel
  */
 export function ThreadToolQuery(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
     return $Call.ByID(2624544009, call).then(($result: any) => {
-        return $$createType253($result);
+        return $$createType255($result);
     });
 }
 
@@ -6593,7 +6612,7 @@ export function ThreadToolQuery(call: app$0.ThreadPeerCall): $CancellablePromise
  */
 export function ThreadToolRequestStatus(poll: app$0.ThreadPeerPoll): $CancellablePromise<app$0.ThreadPeerPollReply> {
     return $Call.ByID(4150382574, poll).then(($result: any) => {
-        return $$createType254($result);
+        return $$createType256($result);
     });
 }
 
@@ -6604,7 +6623,7 @@ export function ThreadToolRequestStatus(poll: app$0.ThreadPeerPoll): $Cancellabl
  */
 export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $CancellablePromise<threadtools$0.Resolution> {
     return $Call.ByID(1018082581, resolve).then(($result: any) => {
-        return $$createType255($result);
+        return $$createType257($result);
     });
 }
 
@@ -6620,7 +6639,7 @@ export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $Cancellabl
  */
 export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
     return $Call.ByID(515024442, call).then(($result: any) => {
-        return $$createType253($result);
+        return $$createType255($result);
     });
 }
 
@@ -6632,7 +6651,7 @@ export function ThreadToolWatch(call: app$0.ThreadPeerCall): $CancellablePromise
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<app$0.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType256($result);
+        return $$createType258($result);
     });
 }
 
@@ -6644,7 +6663,7 @@ export function TriggerMcpAuth(threadID: string, name: string): $CancellableProm
  */
 export function TriggerWorkspaceMcpAuth(providerName: string, workspacePath: string, serverName: string): $CancellablePromise<app$0.MCPAuthInitResult> {
     return $Call.ByID(417766274, providerName, workspacePath, serverName).then(($result: any) => {
-        return $$createType256($result);
+        return $$createType258($result);
     });
 }
 
@@ -7027,7 +7046,7 @@ export function VerifyBrowserUnlock(ceremonyID: string, response: json$0.RawMess
  */
 export function VerifyEditDiffs(threadID: string, req: app$0.VerifyEditDiffsRequest): $CancellablePromise<app$0.VerifyEditDiffsResult> {
     return $Call.ByID(3907724148, threadID, req).then(($result: any) => {
-        return $$createType257($result);
+        return $$createType259($result);
     });
 }
 
@@ -7072,7 +7091,7 @@ export function WakeThreadWakeNow(threadID: string, kind: string, id: string): $
  */
 export function WatchBackgroundTaskOutput(threadID: string, launchItemID: string): $CancellablePromise<tasktail$0.Snapshot> {
     return $Call.ByID(2263729048, threadID, launchItemID).then(($result: any) => {
-        return $$createType258($result);
+        return $$createType260($result);
     });
 }
 
@@ -7100,7 +7119,7 @@ export function WorkflowAnswerQuestion(itemID: string, answer: string): $Cancell
  */
 export function WorkflowBindThread(itemID: string, threadID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1931806823, itemID, threadID).then(($result: any) => {
-        return $$createType259($result);
+        return $$createType261($result);
     });
 }
 
@@ -7122,7 +7141,7 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
  */
 export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(1792283305, itemID).then(($result: any) => {
-        return $$createType260($result);
+        return $$createType262($result);
     });
 }
 
@@ -7132,7 +7151,7 @@ export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.
  */
 export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(2163033761, itemID).then(($result: any) => {
-        return $$createType260($result);
+        return $$createType262($result);
     });
 }
 
@@ -7145,7 +7164,7 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.W
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<app$0.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
-        return $$createType261($result);
+        return $$createType263($result);
     });
 }
 
@@ -7176,7 +7195,7 @@ export function WorkflowDropUnit(itemID: string, unitID: string, note: string): 
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<app$0.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
-        return $$createType262($result);
+        return $$createType264($result);
     });
 }
 
@@ -7186,13 +7205,13 @@ export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromi
  */
 export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
     return $Call.ByID(2130001947).then(($result: any) => {
-        return $$createType263($result);
+        return $$createType265($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType264($result);
+        return $$createType266($result);
     });
 }
 
@@ -7209,7 +7228,7 @@ export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.Workf
  */
 export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.WorkflowRunMapView> {
     return $Call.ByID(4156752389, itemID).then(($result: any) => {
-        return $$createType265($result);
+        return $$createType267($result);
     });
 }
 
@@ -7219,7 +7238,7 @@ export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.Wor
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<app$0.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType266($result);
+        return $$createType268($result);
     });
 }
 
@@ -7242,13 +7261,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType267($result);
+        return $$createType269($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType268($result);
+        return $$createType270($result);
     });
 }
 
@@ -7259,7 +7278,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType268($result);
+        return $$createType270($result);
     });
 }
 
@@ -7269,7 +7288,7 @@ export function WorkflowListUnresolvedItems(projectID: string): $CancellableProm
  */
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
-        return $$createType260($result);
+        return $$createType262($result);
     });
 }
 
@@ -7422,7 +7441,7 @@ export function WorkflowSetGlobalPause(paused: boolean): $CancellablePromise<voi
  */
 export function WorkflowStartRun(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
-        return $$createType259($result);
+        return $$createType261($result);
     });
 }
 
@@ -7444,7 +7463,7 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
  */
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {
-        return $$createType259($result);
+        return $$createType261($result);
     });
 }
 
@@ -7724,19 +7743,21 @@ const $$createType249 = app$0.PRListSubscriptionResult.createFrom;
 const $$createType250 = app$0.PRUpdateSubscriptionResult.createFrom;
 const $$createType251 = app$0.PipelineSubscriptionResult.createFrom;
 const $$createType252 = app$0.SyncThreadWindowResponse.createFrom;
-const $$createType253 = app$0.ThreadPeerReply.createFrom;
-const $$createType254 = app$0.ThreadPeerPollReply.createFrom;
-const $$createType255 = threadtools$0.Resolution.createFrom;
-const $$createType256 = app$0.MCPAuthInitResult.createFrom;
-const $$createType257 = app$0.VerifyEditDiffsResult.createFrom;
-const $$createType258 = tasktail$0.Snapshot.createFrom;
-const $$createType259 = store$0.WorkItem.createFrom;
-const $$createType260 = app$0.WorkflowDispositionReceipt.createFrom;
-const $$createType261 = app$0.WorkflowDiscardPreview.createFrom;
-const $$createType262 = app$0.WorkflowPRReviewComments.createFrom;
-const $$createType263 = engine$0.EngineState.createFrom;
-const $$createType264 = app$0.WorkflowItemDetailView.createFrom;
-const $$createType265 = app$0.WorkflowRunMapView.createFrom;
-const $$createType266 = app$0.WorkflowDefinitionCatalog.createFrom;
-const $$createType267 = $Create.Map($Create.Any, $Create.Any);
-const $$createType268 = $Create.Array($$createType259);
+const $$createType253 = app$0.OwnerChanges.createFrom;
+const $$createType254 = app$0.OwnerRecoveryPage.createFrom;
+const $$createType255 = app$0.ThreadPeerReply.createFrom;
+const $$createType256 = app$0.ThreadPeerPollReply.createFrom;
+const $$createType257 = threadtools$0.Resolution.createFrom;
+const $$createType258 = app$0.MCPAuthInitResult.createFrom;
+const $$createType259 = app$0.VerifyEditDiffsResult.createFrom;
+const $$createType260 = tasktail$0.Snapshot.createFrom;
+const $$createType261 = store$0.WorkItem.createFrom;
+const $$createType262 = app$0.WorkflowDispositionReceipt.createFrom;
+const $$createType263 = app$0.WorkflowDiscardPreview.createFrom;
+const $$createType264 = app$0.WorkflowPRReviewComments.createFrom;
+const $$createType265 = engine$0.EngineState.createFrom;
+const $$createType266 = app$0.WorkflowItemDetailView.createFrom;
+const $$createType267 = app$0.WorkflowRunMapView.createFrom;
+const $$createType268 = app$0.WorkflowDefinitionCatalog.createFrom;
+const $$createType269 = $Create.Map($Create.Any, $Create.Any);
+const $$createType270 = $Create.Array($$createType261);

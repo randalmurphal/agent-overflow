@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 )
 
 // The Agents rows across computers: a thread spawned on a paired computer
@@ -106,13 +108,13 @@ func threadAgentPeerOlder(err error) bool {
 }
 
 // callThreadAgentPeer forwards one Agents tool to a paired computer.
-func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourceThreadID string, args threadAgentPeerArgs, out any) error {
+func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourceThreadID string, args threadAgentPeerArgs, out any) (attachedbackends.PeerRead, error) {
 	if a.backends == nil {
-		return errors.New("no paired computers are reachable")
+		return attachedbackends.PeerRead{}, errors.New("no paired computers are reachable")
 	}
 	encoded, err := json.Marshal(args)
 	if err != nil {
-		return fmt.Errorf("encode %s: %w", method, err)
+		return attachedbackends.PeerRead{}, fmt.Errorf("encode %s: %w", method, err)
 	}
 	tool, timeout := threadAgentPeerRows, threadAgentPeerListTimeout
 	if method == "ThreadToolCall" {
@@ -121,41 +123,42 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var reply ThreadPeerReply
-	if err := a.backends.CallThreadPeer(call, computerID, method, &reply, ThreadPeerCall{
+	origin, err := a.backends.ReadThreadPeer(call, computerID, transport.CapabilityThreadTools, "", method, &reply, ThreadPeerCall{
 		Tool: tool, Args: encoded, Token: newThreadRequestToken(), Source: a.threadAgentCaller(sourceThreadID),
-	}); err != nil {
+	})
+	if err != nil {
 		if threadAgentPeerOlder(err) {
-			return errThreadAgentPeerOlder
+			return origin, errThreadAgentPeerOlder
 		}
 		err = a.threadOperationError(tool, computerID, args.ThreadID, err)
 		if errors.Is(call.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			return fmt.Errorf("%w: %w", errThreadAgentPeerTimedOut, err)
+			return origin, fmt.Errorf("%w: %w", errThreadAgentPeerTimedOut, err)
 		}
-		return err
+		return origin, err
 	}
 	if err := json.Unmarshal(reply.Result, out); err != nil {
-		return fmt.Errorf("read %s from %s: %w", tool, computerID, err)
+		return origin, fmt.Errorf("read %s from %s: %w", tool, computerID, err)
 	}
-	return nil
+	return origin, nil
 }
 
 // peerThreadAgentRows reads the Agents rows of the thread spawn made on a
 // paired computer, nested depth levels, or with depth 0 the thread's state
 // alone, and the prompts its worker routed here, renewing those held here.
-func (a *App) peerThreadAgentRows(ctx context.Context, spawn store.ThreadRequest, depth int) (ThreadAgentRows, error) {
+func (a *App) peerThreadAgentRows(ctx context.Context, spawn store.ThreadRequest, depth int) (ThreadAgentRows, attachedbackends.PeerRead, error) {
 	args := threadAgentPeerArgs{ThreadID: spawn.TargetThreadID, Depth: depth, Spawn: spawn.Token, Held: a.heldRemotePrompts(spawn)}
 	if depth <= 0 {
 		args.Depth, args.StateOnly = 1, true
 	}
 	var rows ThreadAgentRows
-	err := a.callThreadAgentPeer(ctx, "ThreadToolQuery", spawn.TargetComputerID, spawn.MadeIn(), args, &rows)
-	return rows, err
+	origin, err := a.callThreadAgentPeer(ctx, "ThreadToolQuery", spawn.TargetComputerID, spawn.MadeIn(), args, &rows)
+	return rows, origin, err
 }
 
 // peerThreadAgentStop runs a Stop's cascade on a paired computer.
 func (a *App) peerThreadAgentStop(ctx context.Context, computerID, sourceThreadID, threadID, token string) (ThreadAgentStop, error) {
 	var stop ThreadAgentStop
-	err := a.callThreadAgentPeer(ctx, "ThreadToolCall", computerID, sourceThreadID,
+	_, err := a.callThreadAgentPeer(ctx, "ThreadToolCall", computerID, sourceThreadID,
 		threadAgentPeerArgs{ThreadID: threadID, Token: token}, &stop)
 	return stop, err
 }
@@ -231,6 +234,7 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	if err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read thread %s: %w", args.ThreadID, err)
 	}
+	listing.Title = thread.Title
 	listing.ThreadProvider = thread.Provider
 	listing.Placement, listing.Archived = thread.Placement, thread.Archived
 	waiting := a.threadWaitingOn(args.ThreadID)

@@ -279,3 +279,8 @@ Query work on timeline, lifecycle, workflow, or restore paths needs result
 parity and a plan assertion when index use is part of the contract. Use
 `storetest` or a `t.TempDir()` database and never share a database file between
 tests.
+
+
+Remote spawn changes and their revision-specific acknowledgments live in
+`spawn_revisions.go`. Owner activity and recovery reads start in
+`activity_owners.go` and `owner_reads.go`.

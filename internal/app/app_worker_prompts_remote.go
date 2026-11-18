@@ -131,18 +131,22 @@ func parseWorkerPromptWake(sendID string) (workerPromptWake, bool) {
 // noteRemotePrompts takes up what one recorded agent_rows answer says of
 // the prompts the spawn's worker routed here. A failed call says nothing;
 // a refusal of the thread as not the spawn's says there are none.
-func (a *App) noteRemotePrompts(spawn store.ThreadRequest, listing ThreadAgentRows, err error) {
+func (a *App) noteRemotePrompts(spawn store.ThreadRequest, listing ThreadAgentRows, err error) <-chan error {
 	if err != nil && !threadAgentPeerRefused(err) {
-		return
+		return nil
 	}
 	prompts := listing.Prompts
 	if err != nil {
 		prompts = nil
 	}
 	if len(prompts) == 0 && !a.workerPrompts.remote.knows(spawn.Token) {
-		return
+		return nil
 	}
-	a.workerPrompts.run(func() { a.reconcileRemotePrompts(spawn, prompts) })
+	done := make(chan error, 1)
+	if !a.workerPrompts.run(func() { done <- a.reconcileRemotePrompts(spawn, prompts) }) {
+		done <- context.Canceled
+	}
+	return done
 }
 
 // knows reports whether any prompt of the spawn is registered.
@@ -161,7 +165,7 @@ func (r *remoteWorkerPrompts) knows(spawnToken string) bool {
 // that are new, or that an earlier answer left out, and closes those no
 // longer listed, withdrawing their wakes. It runs on the prompts' serial
 // queue.
-func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadAgentPrompt) {
+func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadAgentPrompt) error {
 	r := &a.workerPrompts.remote
 	now := time.Now()
 	byToken := make(map[string]ThreadAgentPrompt, len(listed))
@@ -203,6 +207,8 @@ func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadA
 		case prompt == nil:
 			r.byKey[key] = &remoteWorkerPrompt{key: key, spawn: spawn, computerName: name, prompt: listing}
 			deliver = append(deliver, key)
+		case prompt.state == remotePromptRouted && !prompt.held && prompt.delivery == "":
+			deliver = append(deliver, key)
 		case prompt.state == remotePromptClosed:
 			// An earlier answer left it out, read before this one.
 			prompt.state, prompt.closedAt, prompt.prompt, prompt.spawn = remotePromptRouted, time.Time{}, listing, spawn
@@ -213,38 +219,42 @@ func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadA
 	for _, prompt := range withdraw {
 		a.withdrawRemotePromptWake(prompt)
 	}
+	var errs []error
 	for _, key := range deliver {
-		a.deliverRemotePrompt(key)
+		if err := a.deliverRemotePrompt(key); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // deliverRemotePrompt queues the wake of a routed prompt to its spawn's
 // caller now, under a new delivery, and withdraws the wake of the delivery
 // it replaces; a prompt nobody here can take goes back. It runs on the
 // prompts' serial queue.
-func (a *App) deliverRemotePrompt(key remotePromptKey) {
+func (a *App) deliverRemotePrompt(key remotePromptKey) error {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
 	prompt := r.byKey[key]
 	if prompt == nil || prompt.state != remotePromptRouted {
 		r.mu.Unlock()
-		return
+		return nil
 	}
 	spawnToken := prompt.spawn.Token
 	r.mu.Unlock()
 	holder, _, found, err := a.store.RemotePromptHolder(spawnToken)
 	if err != nil {
-		log.Printf("worker prompts: %v", err)
+		return err
 	}
-	if err != nil || !found {
+	if !found {
 		a.returnRemotePrompt(key, "")
-		return
+		return nil
 	}
 	r.mu.Lock()
 	prompt = r.byKey[key]
 	if prompt == nil || prompt.state != remotePromptRouted {
 		r.mu.Unlock()
-		return
+		return nil
 	}
 	replaced := *prompt
 	if r.boot == "" {
@@ -262,9 +272,8 @@ func (a *App) deliverRemotePrompt(key remotePromptKey) {
 		Computer: current.computerName, ComputerID: key.computerID,
 	}, current.workerPrompt())
 	if err != nil {
-		log.Printf("worker prompts: put %s of %s to %s: %v", key.token, key.computerID, holder, err)
-		a.returnRemotePrompt(key, current.delivery)
-		return
+		r.retryDelivery(key, current.delivery)
+		return fmt.Errorf("prepare prompt %s: %w", key.token, err)
 	}
 	live := func() bool { return r.live(key, current.delivery) }
 	queued := false
@@ -286,12 +295,20 @@ func (a *App) deliverRemotePrompt(key remotePromptKey) {
 		},
 	})
 	if err != nil {
-		log.Printf("worker prompts: deliver %s of %s to %s: %v", key.token, key.computerID, holder, err)
-		a.remotePromptNotTaken(key, current.delivery)
-		return
+		r.retryDelivery(key, current.delivery)
+		return fmt.Errorf("queue prompt %s for %s: %w", key.token, holder, err)
 	}
 	if queued {
 		r.hold(key, current.delivery)
+	}
+	return nil
+}
+
+func (r *remoteWorkerPrompts) retryDelivery(key remotePromptKey, delivery string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p := r.byKey[key]; p != nil && p.state == remotePromptRouted && p.delivery == delivery {
+		p.delivery, p.holder, p.held = "", "", false
 	}
 }
 
@@ -394,7 +411,9 @@ func (a *App) rerouteRemotePrompt(key remotePromptKey, delivery string, reject b
 	}
 	switch {
 	case err == nil && found && holder != from:
-		a.deliverRemotePrompt(key)
+		if err := a.deliverRemotePrompt(key); err != nil {
+			log.Printf("retry routed prompt %s: %v", key.token, err)
+		}
 	case err == nil && found && !reject:
 	default:
 		a.returnRemotePrompt(key, delivery)
@@ -504,7 +523,7 @@ func (a *App) heldRemotePrompts(spawn store.ThreadRequest) []string {
 	var held []string
 	for key, prompt := range r.byKey {
 		if prompt.spawn.Token == spawn.Token && key.computerID == spawn.TargetComputerID &&
-			((prompt.state == remotePromptRouted && prompt.held) || prompt.state == remotePromptAnswering) {
+			prompt.isHeld() {
 			held = append(held, key.token)
 		}
 	}

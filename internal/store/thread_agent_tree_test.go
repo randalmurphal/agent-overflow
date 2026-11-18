@@ -138,9 +138,6 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	if _, found, err := s.GetThreadRequest("remote"); err != nil || found {
 		t.Fatalf("the remote lineage's token = %v %v; want unknown", found, err)
 	}
-	if resting, err := s.ListRestingRemoteSpawns(0, "", 8); err != nil || !slices.Equal(agentRequestTokens(resting), []string{"remote"}) {
-		t.Fatalf("the rest pass's spawns = %v, %v; want the remote lineage", agentRequestTokens(resting), err)
-	}
 
 	// Its thread there is continued: the lineage lists again, and counts
 	// in the marks of the spawns above its caller.
@@ -169,17 +166,15 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	}
 	assertAgentTreeMarks(t, s.db, "a remote lineage's open work")
 
-	// That computer refuses one thread as gone, and is forgotten with the
-	// other: both lineages go.
-	if gone, err := s.DeleteRemoteSpawnLineage("remote"); err != nil || !gone {
-		t.Fatalf("delete the refused lineage = %v, %v", gone, err)
-	}
-	if gone, err := s.DeleteRemoteSpawnLineage("l-c"); err != nil || gone {
-		t.Fatalf("delete a local lineage as remote = %v, %v; want it kept", gone, err)
+	// An end clears open work while retaining the recorded target. Forget
+	// removes the lineages of both workers.
+	if _, err := s.ApplySpawnRevision("desk", SpawnRevision{SpawnRevisionAck: SpawnRevisionAck{Token: "remote"}, End: "gone"}); err != nil {
+		t.Fatal(err)
 	}
 	callers, err := s.ForgetRemoteSpawnsOnComputer("desk")
-	if err != nil || !slices.Equal(callers, []string{"grand"}) {
-		t.Fatalf("forget the computer = %v, %v; want the deep lineage's caller", callers, err)
+	slices.Sort(callers)
+	if err != nil || !slices.Equal(callers, []string{"grand", "lead"}) {
+		t.Fatalf("forget callers = %v, %v", callers, err)
 	}
 	var left int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE target_computer_id = 'desk'`).Scan(&left); err != nil || left != 0 {

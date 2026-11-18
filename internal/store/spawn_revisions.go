@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -60,4 +62,39 @@ func (s *Store) AcknowledgeSpawnRevisions(device string, acks []SpawnRevisionAck
 		}
 	}
 	return tx.Commit()
+}
+
+// ApplySpawnRevision records the end separately from the historical target.
+// A returned caller needs its Agents rows refreshed.
+func (s *Store) ApplySpawnRevision(computer string, change SpawnRevision) (caller string, err error) {
+	if computer == "" || change.Token == "" {
+		return "", fmt.Errorf("store: a spawn revision requires a computer and token")
+	}
+	const action = "store: apply remote spawn revision"
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	err = tx.QueryRow(`UPDATE thread_requests SET link_end = ?3,
+	  target_thread_title = CASE WHEN ?4 <> '' THEN ?4 ELSE target_thread_title END,
+	  nested_open = CASE WHEN ?3 IN ('gone','detached') THEN 0 ELSE nested_open END
+	  WHERE token = ?1 AND target_computer_id = ?2 AND kind = 'spawn'
+	    AND (link_end <> ?3 OR (?4 <> '' AND target_thread_title <> ?4))
+	  RETURNING caller_thread_id`, change.Token, computer, change.End, change.Title).Scan(&caller)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	if change.End != "" {
+		if _, err = tx.Exec(`DELETE FROM thread_owner_ops WHERE token = ? AND computer_id = ?`, change.Token, computer); err != nil {
+			return "", fmt.Errorf("%s: %w", action, err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	if caller != "" {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: change.Token, CallerThreadID: caller})
+	}
+	return caller, nil
 }

@@ -237,6 +237,9 @@ type App struct {
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache
+	ownerActivity    ownerActivity
+	ownerUpdates     ownerUpdates
+	ownerReads       ownerReads
 	// agentRoles keeps each standing agent's role line until its
 	// instructions file changes, for the sends, spawns, settlements and
 	// thread reads that name it. Read it through assistantRoles, which

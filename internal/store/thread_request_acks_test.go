@@ -86,7 +86,7 @@ func TestAnOwedAcknowledgementIsScheduledWhenItsRowIsNoLongerPolled(t *testing.T
 	if err := s.RescheduleThreadRequest("r", 5000, 0, ""); err != nil {
 		t.Fatal(err)
 	}
-	schedule, err := s.NextThreadRequestWork()
+	schedule, err := s.NextThreadRequestWork(nil)
 	if err != nil || schedule.Poll != (ScheduledMoment{At: 5000, Set: true}) {
 		t.Fatalf("schedule = %+v, %v; want the owed acknowledgement at 5000", schedule.Poll, err)
 	}
@@ -106,7 +106,7 @@ func TestAnOwedAcknowledgementIsScheduledWhenItsRowIsNoLongerPolled(t *testing.T
 	if err := s.ClearThreadRequestAcks(due); err != nil {
 		t.Fatal(err)
 	}
-	if schedule, err := s.NextThreadRequestWork(); err != nil || schedule.Poll.Set {
+	if schedule, err := s.NextThreadRequestWork(nil); err != nil || schedule.Poll.Set {
 		t.Fatalf("schedule with nothing owed = %+v, %v", schedule.Poll, err)
 	}
 }

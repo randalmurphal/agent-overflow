@@ -210,21 +210,32 @@ func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []T
 	return reminders, total, nil
 }
 
+// A capable destination reports accepted work as it changes. Its final
+// status at the late reply deadline remains due across a suspended process.
+const ownerPollMomentSQL = `CASE
+	WHEN target_computer_id NOT IN (SELECT value FROM json_each(?1) WHERE value IS NOT NULL) OR state='unconfirmed' THEN next_check
+	WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000))
+	END`
+
 // DueThreadRequestPolls returns the remote requests the poller should visit.
 // The predicate matches idx_thread_requests_poll exactly, including the
 // `finished` state a late reply still needs polling for and the `polling`
 // gate that retires a row once there is nothing left to ask about.
-func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, error) {
+func (s *Store) DueThreadRequestPolls(now int64, limit int, owners []string) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 32
+	}
+	devices, err := json.Marshal(owners)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE polling = 1
 		    AND target_computer_id <> ''
 		    AND state IN ('unconfirmed','accepted','running','finished')
-		    AND next_check <= ?
-		  ORDER BY next_check ASC LIMIT `+strconv.Itoa(limit), now)
+		    AND next_check <= ?2 AND (`+ownerPollMomentSQL+`) <= ?2
+		  ORDER BY next_check ASC LIMIT `+strconv.Itoa(limit), string(devices), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due thread request polls: %w", err)
 	}
@@ -328,12 +339,6 @@ type ThreadRequestSchedule struct {
 	Reminder ScheduledMoment
 	Poll     ScheduledMoment
 	Wake     ScheduledMoment
-	// NestedOpen is whether a settled spawn on another computer still has
-	// open work there, which the poller reads agent_rows for at its pace.
-	NestedOpen bool
-	// RestingRemote is whether a settled spawn on another computer is at
-	// rest there, which the rest pass asks about at its slower pace.
-	RestingRemote bool
 	// OwnerOp is the earliest attempt of an operation owed to a paired
 	// computer (thread_owner_ops.go).
 	OwnerOp ScheduledMoment
@@ -345,28 +350,27 @@ type ThreadRequestSchedule struct {
 //
 // One query, five indexed minima and two probes, so the answer describes
 // one snapshot.
-func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
+func (s *Store) NextThreadRequestWork(owners []string) (ThreadRequestSchedule, error) {
+	devices, err := json.Marshal(owners)
+	if err != nil {
+		return ThreadRequestSchedule{}, err
+	}
 	var reminder, poll, wake, ownerOp sql.NullInt64
-	var nestedOpen, restingRemote bool
 	if err := s.reader().QueryRow(
 		`SELECT
 		   (SELECT MIN(due_at) FROM thread_requests
 		     WHERE kind = 'remind' AND state = 'accepted'
 		       AND `+s.assistantPauseSQL("thread_requests.caller_thread_id")+`),
 		   (SELECT MIN(next_check) FROM (
-		     SELECT MIN(next_check) AS next_check FROM thread_requests
+		     SELECT MIN(`+ownerPollMomentSQL+`) AS next_check FROM thread_requests
 		      WHERE polling = 1 AND target_computer_id <> ''
 		        AND state IN ('unconfirmed','accepted','running','finished')
 		     UNION ALL
 		     SELECT MIN(next_check) FROM thread_requests WHERE `+ackOwedSQL+`)),
 		   (SELECT MIN(wake_next_check) FROM thread_requests
 		     WHERE notify = 1 AND `+threadWakeOwedSQL+`),
-		   EXISTS (SELECT 1 FROM thread_requests
-		     WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-		       AND target_computer_id <> ''),
-		   EXISTS (SELECT 1 FROM thread_requests WHERE `+restingRemoteSpawnSQL+`),
-		   (SELECT MIN(next_at) FROM thread_owner_ops)`,
-	).Scan(&reminder, &poll, &wake, &nestedOpen, &restingRemote, &ownerOp); err != nil {
+		   (SELECT MIN(next_at) FROM thread_owner_ops)`, string(devices),
+	).Scan(&reminder, &poll, &wake, &ownerOp); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
 	moment := func(value sql.NullInt64) ScheduledMoment {
@@ -374,6 +378,6 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	}
 	return ThreadRequestSchedule{
 		Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake),
-		NestedOpen: nestedOpen, RestingRemote: restingRemote, OwnerOp: moment(ownerOp),
+		OwnerOp: moment(ownerOp),
 	}, nil
 }

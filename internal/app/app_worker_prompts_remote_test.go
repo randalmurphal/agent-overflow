@@ -17,8 +17,7 @@ import (
 
 // A worker on a paired computer that this computer's thread spawned, owned
 // there through the spawn's link: its questions and approvals reach the
-// spawner here, over the real wire, by the polling this computer already
-// does, and the spawner's reply answers them there.
+// spawner here, over the real wire, by its owner wait, and the spawner's reply answers them there.
 
 const (
 	remoteApproveLine = `{"type":"control_request","request_id":"req-allow","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make deploy"}}}`
@@ -91,6 +90,13 @@ func routeWorkerPromptsOn(app *App, bus *capturedEventBus) {
 func (p *remotePromptPair) sweep() {
 	p.source.threadPollOverride = 100 * time.Millisecond
 	p.source.startThreadRequestSweeps()
+}
+
+func (p *remotePromptPair) readOwnerState(t *testing.T, owner *App) {
+	t.Helper()
+	if err := owner.readOwnerChanges(t.Context(), p.computer, p.dest.transportServer.Load().LaunchID(), []string{p.spawn.Token}, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (p *remotePromptPair) drain(t *testing.T) {
@@ -260,7 +266,7 @@ func TestARemoteWorkersPromptsWakeItsSpawnerAndItsRepliesAnswerThem(t *testing.T
 	if held := p.source.heldRemotePrompts(p.spawn); len(held) != 0 {
 		t.Fatalf("this computer still holds %q", held)
 	}
-	listing, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	listing, _, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 	if err != nil || len(listing.Prompts) != 0 {
 		t.Fatalf("the worker lists %+v, %v; want no prompts", listing.Prompts, err)
 	}
@@ -324,7 +330,7 @@ func TestARemotePromptLeftOutOfALateAnswerIsDeliveredAgain(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.openThere(t, 1)
-	listing, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	listing, _, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 	if err != nil || len(listing.Prompts) != 1 {
 		t.Fatalf("the listing there: %+v, %v; want one prompt", listing.Prompts, err)
 	}
@@ -468,12 +474,12 @@ func TestARemoteWorkersPromptFollowsTheAssistantsHandoffs(t *testing.T) {
 	testAssistant(t, p.source, p.caller.ID)
 	p.openThere(t, 1)
 	second := handOffOn(t, p.source, p.caller.ID)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	first := p.wakesFor(t, second.ID, 1)[0]
 	third := handOffOn(t, p.source, second.ID)
 	p.drain(t)
 	fourth := handOffOn(t, p.source, third.ID)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	last := p.wakesFor(t, fourth.ID, 1)[0]
 	if last.token != first.token || last.delivery == first.delivery {
 		t.Fatalf("the successor's wake is %+v, want the same prompt under a new delivery than %+v", last, first)
@@ -539,7 +545,7 @@ func TestAPromptGoesBackWhenItsHolderCannotAnswer(t *testing.T) {
 			t.Parallel()
 			p := newRemotePromptPair(t, remoteApproveLine)
 			p.openThere(t, 1)
-			p.poll(t)
+			p.readOwnerState(t, p.source)
 			wake := p.wakesFor(t, p.caller.ID, 1)[0]
 			end(t, p)
 			waitUntil(t, 15*time.Second, func() bool {
@@ -571,7 +577,7 @@ func TestAPromptForAnArchivedSpawnerGoesBackAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, 15*time.Second, func() bool {
-		p.poll(t)
+		p.readOwnerState(t, p.source)
 		p.drain(t)
 		route, open := p.routeThere("req-allow")
 		return open && route == nil && p.announcedToPerson("req-allow")
@@ -588,7 +594,7 @@ func TestARemotePromptIsAskedAgainAfterTheSpawnersComputerRestarts(t *testing.T)
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.openThere(t, 1)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	before := p.wakesFor(t, p.caller.ID, 1)[0]
 
 	restarted, _ := setupE2EAppOn(t, p.dbPath, p.settingsDir)
@@ -602,7 +608,7 @@ func TestARemotePromptIsAskedAgainAfterTheSpawnersComputerRestarts(t *testing.T)
 	}
 	var after workerPromptWake
 	waitUntil(t, 15*time.Second, func() bool {
-		p.pollOn(t, restarted)
+		p.readOwnerState(t, restarted)
 		if err := restarted.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
 			t.Fatal(err)
 		}
@@ -641,7 +647,7 @@ func TestARemoteAnswerWhoseAcknowledgementIsLostIsAcknowledgedOnTheRetry(t *test
 	})
 	p := newRemotePromptPairOn(t, pair, 0, remoteApproveLine)
 	p.openThere(t, 1)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	wake := p.wakesFor(t, p.caller.ID, 1)[0]
 	before := faults.calls.Load()
 	faults.dropReplies.Store(before + 1)
@@ -669,7 +675,7 @@ func TestAWithdrawnRemoteWakeEndsItsOwnHold(t *testing.T) {
 	p := newRemotePromptPair(t, remoteApproveLine)
 	testAssistant(t, p.source, p.caller.ID)
 	p.openThere(t, 1)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	first := p.wakesFor(t, p.caller.ID, 1)[0]
 	next := handOffOn(t, p.source, p.caller.ID)
 	p.drain(t)
@@ -705,7 +711,7 @@ func TestAPausedAssistantsWorkerThereAsksThePersonThere(t *testing.T) {
 	p := newRemotePromptPair(t, remoteApproveLine)
 	testAssistant(t, p.source, p.caller.ID)
 	p.openThere(t, 1)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	p.wakesFor(t, p.caller.ID, 1)
 	switchAssistants(t, p.source, false)
 	p.source.convergeAssistants()
@@ -715,7 +721,7 @@ func TestAPausedAssistantsWorkerThereAsksThePersonThere(t *testing.T) {
 	})
 	askOn(t, p.dest, p.worker, "approval-2", false)
 	waitUntil(t, 15*time.Second, func() bool {
-		p.poll(t)
+		p.readOwnerState(t, p.source)
 		p.drain(t)
 		route, open := p.routeThere("approval-2")
 		return open && route == nil
@@ -725,7 +731,7 @@ func TestAPausedAssistantsWorkerThereAsksThePersonThere(t *testing.T) {
 	}
 	switchAssistants(t, p.source, true)
 	p.source.convergeAssistants()
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	p.drain(t)
 	for _, request := range []string{"req-allow", "approval-2"} {
 		if route, open := p.routeThere(request); !open || route != nil {
@@ -738,10 +744,8 @@ func TestAPausedAssistantsWorkerThereAsksThePersonThere(t *testing.T) {
 }
 
 // A send to the worker after it rested, which then asks something, is
-// picked up at the poll's pace: the send's answer says its prompt came
-// back here, which asks for the spawn's rows though the spawn itself left
-// the poll.
-func TestASendThatBlocksARestedRemoteWorkerIsPickedUpAtThePollsPace(t *testing.T) {
+// wakes its spawner even after the original request left the poll.
+func TestASendThatBlocksARestedRemoteWorkerWakesItsSpawner(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
@@ -759,6 +763,7 @@ func TestASendThatBlocksARestedRemoteWorkerIsPickedUpAtThePollsPace(t *testing.T
 	})
 	// Past its late-reply window, the spawn is no longer polled.
 	pair.source.retireThreadRequestPoll(ack.Token)
+	startReconciledOwner(t, pair)
 	send, err := threadToolsApp{app: pair.source}.Send(t.Context(), pair.callerIdentity(), threadtools.SendCall{
 		ThreadID: worker, ComputerID: pair.computer, Message: "one more thing",
 	})

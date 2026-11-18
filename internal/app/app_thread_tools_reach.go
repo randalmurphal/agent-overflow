@@ -275,6 +275,8 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
+	read := t.app.ownerReads.start([]string{row.Token})
+	defer read.close()
 	reply, sent, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
 		Tool:        tool,
 		Args:        args,
@@ -300,7 +302,7 @@ func (t threadToolsApp) startRemoteRequest(
 		t.refuseRequest(row.Token, refusal, nil)
 		return threadtools.RequestAck{}, err
 	}
-	return t.dispatchedAck(ctx, caller, row, peer.Computer(), call, reply, err, waitSeconds, done)
+	return t.dispatchedAck(ctx, caller, row, peer.Computer(), call, reply, read, err, waitSeconds, done)
 }
 
 // dispatchedAck is every outcome of a remote request the destination may
@@ -313,11 +315,25 @@ func (t threadToolsApp) startRemoteRequest(
 // far; the request's row stays in the poll, which reconciles it.
 func (t threadToolsApp) dispatchedAck(
 	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, computer threadtools.Computer,
-	call any, reply ThreadPeerRequest, sendErr error, waitSeconds int, done func(),
+	call any, reply peerDispatchReply, read ownerRead, sendErr error, waitSeconds int, done func(),
 ) (threadtools.RequestAck, error) {
 	var failed error
 	if sendErr == nil {
-		if err := t.app.collectThreadPeerReply(row.Token, computer.ID, reply); err != nil {
+		var wakes []threadWakeRef
+		unlock := t.app.lockComputerPairing(computer.ID)
+		err := read.apply(func() error {
+			return reply.origin.Commit(func() error {
+				var err error
+				wakes, err = t.app.applyCurrentPeerRow(row.Token, computer.ID, reply.ThreadPeerRequest, threadPeerHearing{at: time.Now()})
+				return err
+			})
+		})
+		unlock()
+		t.app.deliverThreadWakes(wakes)
+		if err == nil {
+			t.app.sendOwedThreadRequestAcks(computer.ID)
+		}
+		if err != nil && !errors.Is(err, errReadSuperseded) {
 			failed = fmt.Errorf("record the answer: %w", err)
 		}
 	}
@@ -328,7 +344,7 @@ func (t threadToolsApp) dispatchedAck(
 	}
 	if failed == nil {
 		if sendErr == nil {
-			ack.Notice = t.unownedSpawnNotice(call, reply, computer.ID)
+			ack.Notice = t.unownedSpawnNotice(call, reply.ThreadPeerRequest, computer.ID)
 		}
 		return ack, nil
 	}
@@ -424,7 +440,12 @@ var threadRequestAdmissionWindow = threadPeerCallWait("ThreadToolCall")
 // call is left to the poll, and no attempt is recorded that is not sent. A
 // refusal of a later attempt says nothing about the work an earlier one may
 // have started, so the request stays open for the poller.
-func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, time.Time, error) {
+type peerDispatchReply struct {
+	ThreadPeerRequest
+	origin attachedbackends.PeerRead
+}
+
+func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (peerDispatchReply, time.Time, error) {
 	var sent time.Time
 	var failed error
 	v2 := false
@@ -433,7 +454,7 @@ func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Co
 		if attempt > 1 {
 			if call.Tool != "thread_send" {
 				if !v2 {
-					return ThreadPeerRequest{}, sent, failed
+					return peerDispatchReply{}, sent, failed
 				}
 				protocol = transport.CapabilityThreadToolsV2
 			}
@@ -442,20 +463,20 @@ func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Co
 				// never started while it is being admitted: it is not sent,
 				// and the earlier attempt's deadline stands.
 				logThreadRequestSweep("record the retry of request "+call.Token, err)
-				return ThreadPeerRequest{}, sent, failed
+				return peerDispatchReply{}, sent, failed
 			}
 		}
 		dispatched := time.Now()
 		rpc, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolCall"))
 		var reply ThreadPeerReply
-		proved, err := a.backends.CallThreadPeerProving(rpc, computer.ID, protocol, transport.CapabilityThreadToolsV2, "ThreadToolCall", &reply, call)
+		origin, err := a.backends.ReadThreadPeer(rpc, computer.ID, protocol, transport.CapabilityThreadToolsV2, "ThreadToolCall", &reply, call)
 		cancel()
 		if attempt == 1 {
-			v2 = proved
+			v2 = origin.ProvedGeneration()
 		}
 		if err != nil {
 			if attempt > 1 && attachedbackends.Unsupported(err) {
-				return ThreadPeerRequest{}, sent, failed
+				return peerDispatchReply{}, sent, failed
 			}
 			_, _, uncertain := threadErrorDetails(call.Tool, err)
 			if uncertain {
@@ -463,14 +484,14 @@ func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Co
 			}
 			failed = a.threadOperationError(call.Tool, computer.ID, "", err)
 			if !uncertain || attempt == threadPeerAdmissionAttempts {
-				return ThreadPeerRequest{}, sent, failed
+				return peerDispatchReply{}, sent, failed
 			}
 			continue
 		}
 		if reply.Request == nil {
-			return ThreadPeerRequest{}, dispatched, errorsx.Public(threadtools.CodeUnreachable,
+			return peerDispatchReply{}, dispatched, errorsx.Public(threadtools.CodeUnreachable,
 				fmt.Sprintf("%s accepted %s without reporting the request.", threadtools.NameOfComputer(computer), call.Tool), nil)
 		}
-		return *reply.Request, dispatched, nil
+		return peerDispatchReply{ThreadPeerRequest: *reply.Request, origin: origin}, dispatched, nil
 	}
 }

@@ -15,21 +15,6 @@ import (
 	"agent-overflow/internal/threadtools"
 )
 
-// sweepRemoteSpawns runs the sweep's pass over remote spawns as its clock
-// would once each of its paces is due.
-func sweepRemoteSpawns(t *testing.T, a *App) {
-	t.Helper()
-	c := &a.threadAgentPeers
-	c.mu.Lock()
-	for _, entry := range c.entries {
-		entry.at = time.Time{}
-	}
-	c.restPassAt = time.Time{}
-	c.mu.Unlock()
-	a.refreshNestedOpenRemoteSpawns()
-	a.threadRequestsWG.Wait()
-}
-
 // A remote worker that answered and rested is in its spawner's Past. Its
 // person continues it from its own pane there: the sweep, with no read of
 // the spawner's pane, finds it running, and its row is open again, counted
@@ -69,6 +54,7 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 	clear(pair.source.threadAgentPeers.entries)
 	pair.source.threadAgentPeers.mu.Unlock()
 
+	startReconciledOwner(t, pair)
 	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
@@ -77,7 +63,9 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 	})
 	var row ThreadAgentRow
 	waitUntil(t, 10*time.Second, func() bool {
-		sweepRemoteSpawns(t, pair.source)
+		if !pair.request(t, ack.Token).NestedOpen {
+			return false
+		}
 		view := newThreadAgentView(pair.source)
 		view.since = time.Now().Add(time.Second).UnixMilli()
 		listing, _, err := pair.source.threadAgentTreeDepth(t.Context(), view, pair.caller.ID, threadAgentRowDepth, threadAgentPeersCached)
@@ -98,100 +86,5 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 	agentPair.askAgainUntilRow(t, rested)
 	if past, err := pair.source.ListThreadPastAgentRows(t.Context(), pair.caller.ID, store.PastAgentRowsCursor{}, 8); err != nil || past.Total != 1 {
 		t.Fatalf("past = %+v, %v; want the spawn back", past, err)
-	}
-}
-
-// The sweep's asking about remote spawns at rest is paced and bounded: one
-// page of them a pass, each asked once a cycle, a pass at most every
-// threadAgentRestPassEvery, and an answer that finds a spawn still at rest
-// is kept nowhere and frames nothing.
-func TestTheSweepAsksAboutRestingRemoteSpawnsAPageAtATime(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	var peer *stalledAgentsPeer
-	pair := newReachPairServedBy(t, serveSlowAgentsPeer(&peer, time.Millisecond))
-	settledAt := time.Now().Add(-time.Hour).UnixMilli()
-	total := threadRequestPollBatch + 3
-	for i := range total {
-		token := "resting-" + string(rune('a'+i/26)) + string(rune('a'+i%26))
-		if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
-			Token: token, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
-			TargetComputerID: pair.computer, TargetThreadID: "gone-" + token, State: store.ThreadRequestRunning,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if settled, err := pair.source.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: settledAt + int64(i),
-		}); err != nil || !settled {
-			t.Fatalf("settle %s: %v %v", token, settled, err)
-		}
-	}
-	// The seeds' own frames are sent before the count starts.
-	pair.source.threadRequestsWG.Wait()
-	frames := recordAgentRowFrames(pair.source)
-	pass := func(due bool) int32 {
-		t.Helper()
-		before := peer.calls.Load()
-		if due {
-			pair.source.threadAgentPeers.mu.Lock()
-			pair.source.threadAgentPeers.restPassAt = time.Time{}
-			pair.source.threadAgentPeers.mu.Unlock()
-		}
-		pair.source.refreshNestedOpenRemoteSpawns()
-		pair.source.threadRequestsWG.Wait()
-		return peer.calls.Load() - before
-	}
-	if got := pass(true); got != threadRequestPollBatch {
-		t.Fatalf("the first pass asked %d times; want a page of %d", got, threadRequestPollBatch)
-	}
-	if got := pass(false); got != 0 {
-		t.Fatalf("a pass before the pace asked %d times; want none", got)
-	}
-	if got := pass(true); got != 3 {
-		t.Fatalf("the second pass asked %d times; want the 3 left", got)
-	}
-	if got := pass(true); got != threadRequestPollBatch {
-		t.Fatalf("the next cycle asked %d times; want a page of %d from the start", got, threadRequestPollBatch)
-	}
-	pair.source.threadAgentPeers.mu.Lock()
-	cached := len(pair.source.threadAgentPeers.entries)
-	pair.source.threadAgentPeers.mu.Unlock()
-	if cached != 0 {
-		t.Fatalf("%d answers cached; want none kept for spawns at rest", cached)
-	}
-	if got := frames.count(pair.caller.ID); got != 0 {
-		t.Fatalf("%d frames; want none for answers that changed nothing", got)
-	}
-}
-
-// A computer that runs an older version cannot list a thread's agents: the
-// rest pass's question to it records nothing, keeps nothing and frames
-// nothing, and the spawn stays at rest here.
-func TestTheRestPassDegradesOnAnOlderComputer(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	pair := newReachPairServedBy(t, serveOlderAgentsPeer)
-	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
-		Token: "resting-older", CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
-		TargetComputerID: pair.computer, TargetThreadID: "there", State: store.ThreadRequestRunning,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if settled, err := pair.source.store.SettleThreadRequest("resting-older", store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: time.Now().Add(-time.Hour).UnixMilli(),
-	}); err != nil || !settled {
-		t.Fatalf("settle: %v %v", settled, err)
-	}
-	pair.source.threadRequestsWG.Wait()
-	frames := recordAgentRowFrames(pair.source)
-	before := pair.request(t, "resting-older").Revision
-	sweepRemoteSpawns(t, pair.source)
-	c := &pair.source.threadAgentPeers
-	c.mu.Lock()
-	cached, backoff := len(c.entries), len(c.backoff)
-	c.mu.Unlock()
-	after := pair.request(t, "resting-older")
-	if cached != 0 || backoff != 0 || frames.count(pair.caller.ID) != 0 || after.NestedOpen || after.Revision != before {
-		t.Fatalf("cached %d, backoff %d, frames %d, row %+v; want nothing recorded", cached, backoff, frames.count(pair.caller.ID), after)
 	}
 }

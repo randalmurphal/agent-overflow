@@ -11,8 +11,10 @@ import (
 
 // OwnerPageKey is the last stable key consumed in one recovery phase.
 type OwnerPageKey struct {
-	Phase string `json:"phase,omitempty"`
-	After string `json:"after,omitempty"`
+	Phase   string `json:"phase,omitempty"`
+	After   string `json:"after,omitempty"`
+	Through string `json:"through,omitempty"`
+	Token   string `json:"token,omitempty"`
 }
 
 type OwnerRecoveryPage struct {
@@ -82,18 +84,23 @@ func (a *App) ThreadOwnerRecovery(ctx context.Context, launch string, key OwnerP
 			more = true
 			ids = ids[:ownerPageSize]
 		}
-		owners, err := a.store.ActivityOwners(nil, ids)
+		through := key.Through
+		if through != "" {
+			ids = slices.DeleteFunc(ids, func(id string) bool { return id > through })
+		} else if len(ids) > 0 {
+			through = ids[len(ids)-1]
+		}
+		page.Tokens, err = a.store.RecoveryOwnerTokens(owner, ids, key.Token, ownerPageSize+1)
 		if err != nil {
 			return page, err
 		}
-		for _, ref := range owners {
-			if ref.Device == owner {
-				page.Tokens = append(page.Tokens, ref.Token)
-			}
-		}
-		if more {
-			page.Next = &OwnerPageKey{Phase: "active", After: ids[len(ids)-1]}
-		} else {
+		switch {
+		case len(page.Tokens) > ownerPageSize:
+			page.Tokens = page.Tokens[:ownerPageSize]
+			page.Next = &OwnerPageKey{Phase: "active", After: key.After, Through: through, Token: page.Tokens[ownerPageSize-1]}
+		case more || key.Through != "":
+			page.Next = &OwnerPageKey{Phase: "active", After: through}
+		default:
 			page.Next = &OwnerPageKey{Phase: "structural"}
 		}
 	case "structural":

@@ -415,32 +415,6 @@ func TestThreadAgentRowsSayWhenAPairedComputerIsOlder(t *testing.T) {
 	}
 }
 
-// Nothing here learns of a change on the paired computer by itself, so each
-// poll of an open remote spawn asks for its rows again, and an answer that
-// changed what the pane shows emits a frame for the caller.
-func TestThreadAgentRowsReadAgainOnEachPollOfARemoteSpawn(t *testing.T) {
-	t.Parallel()
-	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
-	frames := make(chan ThreadAgentRowChange, 16)
-	pair.source.testEmitHook = func(name string, data any) {
-		if change, ok := data.(ThreadAgentRowChange); ok && name == string(eventchan.ThreadAgentRowsChanged) {
-			frames <- change
-		}
-	}
-	pair.poll(t)
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case change := <-frames:
-			if change.ThreadID == pair.caller.ID && change.ID == "" {
-				return
-			}
-		case <-deadline:
-			t.Fatal("a poll of the remote spawn did not have its caller's rows read again")
-		}
-	}
-}
-
 // A remote spawn that settled while work under it there is still open, or
 // its thread there is not at rest, stays listed past the settled window,
 // and the sweep asks that computer again until it lists neither.
@@ -496,7 +470,7 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 		cache.mu.Lock()
 		cache.entries[pair.spawn.Token].at = time.Time{}
 		cache.mu.Unlock()
-		pair.source.refreshNestedOpenRemoteSpawns()
+		pair.source.refreshPeerAgentRows(pair.spawn, 0)
 		pair.source.threadRequestsWG.Wait()
 		row, ok := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token)
 		return ok && row.open() && row.Worker == workerWaiting
@@ -510,7 +484,7 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 		cache.mu.Lock()
 		cache.entries[pair.spawn.Token].at = time.Time{}
 		cache.mu.Unlock()
-		pair.source.refreshNestedOpenRemoteSpawns()
+		pair.source.refreshPeerAgentRows(pair.spawn, 0)
 		pair.source.threadRequestsWG.Wait()
 		return !pair.request(t, pair.spawn.Token).NestedOpen
 	})
@@ -530,7 +504,7 @@ func (p *agentPeerPair) askAgainUntil(t *testing.T, done func(store.ThreadReques
 			entry.at = time.Time{}
 		}
 		cache.mu.Unlock()
-		p.source.refreshNestedOpenRemoteSpawns()
+		p.source.refreshPeerAgentRows(p.spawn, 0)
 		p.source.threadRequestsWG.Wait()
 		return done(p.request(t, p.spawn.Token))
 	})
@@ -567,7 +541,7 @@ func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing
 	if !pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("the sweep here cleared the spawn's open work")
 	}
-	listing, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
+	listing, _, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
 	if err != nil {
 		t.Fatalf("the forwarded listing after both sweeps: %v", err)
 	}
@@ -588,6 +562,7 @@ func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing
 		t.Fatalf("the receipt there once its work closed = found %v, %v; want deleted", found, err)
 	}
 	pair.askAgainUntil(t, func(spawn store.ThreadRequest) bool { return !spawn.NestedOpen })
+	startReconciledOwner(t, pair.reachPair)
 	sweep(pair.source)
 	if _, found, err := pair.source.store.GetThreadRequest(pair.spawn.Token); err != nil || found {
 		t.Fatalf("the spawn here once its computer lists no open work = found %v, %v; want deleted", found, err)
@@ -604,14 +579,11 @@ func TestThreadAgentRowsForgetOpenWorkAComputerRefuses(t *testing.T) {
 	if err := pair.dest.store.DeleteThread(pair.child); err != nil {
 		t.Fatalf("delete the thread there: %v", err)
 	}
-	_, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
+	_, _, err := pair.source.peerThreadAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
 	if code, _, ok := errorsx.PublicDetails(err); !ok || code != threadtools.CodeNotYours {
 		t.Fatalf("the listing of a thread deleted there = %v, want %s", err, threadtools.CodeNotYours)
 	}
 	pair.askAgainUntil(t, func(spawn store.ThreadRequest) bool { return !spawn.NestedOpen })
-	if schedule, err := pair.source.store.NextThreadRequestWork(); err != nil || schedule.NestedOpen {
-		t.Fatalf("schedule = %+v, %v; the sweep still asks about a refused spawn", schedule, err)
-	}
 	if _, listed := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); listed {
 		t.Fatal("a refused settled spawn is still listed")
 	}
@@ -635,52 +607,6 @@ func TestThreadAgentPeerReachReturnsAFailedRead(t *testing.T) {
 	}
 	if reached, err := pair.source.peerReachesThread("device", pair.caller.ID, uuid.NewString()); reached || err != nil {
 		t.Fatalf("the walk from a thread that does not exist = %v, %v; want a refusal", reached, err)
-	}
-}
-
-// The sweep asks about the settled remote spawns with open work a page at
-// a time, starting each sweep after the last one it asked about, so the
-// spawns past the first page are asked too.
-func TestThreadAgentSweepPagesThroughRemoteSpawnsWithOpenWork(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	pair := newReachPair(t)
-	f := pair.source
-	tokens := make([]string, threadRequestPollBatch+1)
-	for index := range tokens {
-		tokens[index] = fmt.Sprintf("remote-%02d", index)
-		if err := f.store.InsertThreadRequest(store.ThreadRequest{
-			Token: tokens[index], CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
-			TargetComputerID: pair.computer, TargetThreadID: "there", State: store.ThreadRequestRunning,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if settled, err := f.store.SettleThreadRequest(tokens[index], store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: int64(1000 + index),
-		}); err != nil || !settled {
-			t.Fatalf("settle: %v %v", settled, err)
-		}
-		if _, err := f.store.SetThreadRequestNestedOpen(tokens[index], true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	asked := func(token string) bool {
-		cache := &f.threadAgentPeers
-		cache.mu.Lock()
-		defer cache.mu.Unlock()
-		_, ok := cache.entries[token]
-		return ok
-	}
-	f.refreshNestedOpenRemoteSpawns()
-	f.threadRequestsWG.Wait()
-	last := tokens[len(tokens)-1]
-	if !asked(tokens[0]) || asked(last) {
-		t.Fatalf("the first sweep asked the first page: first %v, last %v", asked(tokens[0]), asked(last))
-	}
-	f.refreshNestedOpenRemoteSpawns()
-	f.threadRequestsWG.Wait()
-	if !asked(last) {
-		t.Fatal("the second sweep did not reach the spawn past the first page")
 	}
 }
 
@@ -898,9 +824,6 @@ func requireForgotten(t *testing.T, pair *agentPeerPair, frames *agentRowFrames)
 	if pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("a forgotten computer's spawn still records open work there")
 	}
-	if schedule, err := a.store.NextThreadRequestWork(); err != nil || schedule.NestedOpen {
-		t.Fatalf("schedule = %+v, %v; the sweep still asks a forgotten computer", schedule, err)
-	}
 	if _, cached := a.cachedPeerAgentRows(pair.spawn); cached {
 		t.Fatal("a forgotten computer's answer is still cached")
 	}
@@ -943,7 +866,9 @@ func TestThreadAgentSweepForgetsAComputerNoLongerPaired(t *testing.T) {
 		t.Fatal(err)
 	}
 	pair.manager.SetChanged(pair.source.backendSetChanged)
-	pair.source.refreshNestedOpenRemoteSpawns()
+	if err := pair.source.refreshOwnerPeers(); err != nil {
+		t.Fatal(err)
+	}
 	pair.source.threadRequestsWG.Wait()
 	requireForgotten(t, pair, frames)
 }
@@ -1051,7 +976,7 @@ func TestThreadAgentRowsAnswerAfterTheForgetIsNotRecorded(t *testing.T) {
 	if err := a.RemoveBackend(pair.computer, true); err != nil {
 		t.Fatalf("forget the computer: %v", err)
 	}
-	a.notePeerAgentRows(pair.spawn, answer.listing, nil, false)
+	_ = a.readPeerAgentRows(t.Context(), pair.spawn, threadAgentRowDepth-1)
 	a.threadRequestsWG.Wait()
 	requireForgotten(t, pair, frames)
 }
@@ -1348,7 +1273,7 @@ func TestARemoteWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 		t.Fatalf("Reply there: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return pair.receipt(t, ack.Token).SettledAt != 0 })
-	pair.poll(t)
+	startReconciledOwner(t, pair)
 	waitUntil(t, 10*time.Second, func() bool {
 		pair.source.threadRequestsWG.Wait()
 		row := pair.request(t, ack.Token)

@@ -153,12 +153,14 @@ type workerPrompts struct {
 // run queues job on the prompts' serial queue, unless shutdown closed it:
 // a prompt it would deliver or settle dies with the process, and the boot
 // routes the async questions again.
-func (w *workerPrompts) run(job func()) {
+func (w *workerPrompts) run(job func()) bool {
 	w.gate.Lock()
 	defer w.gate.Unlock()
-	if !w.closed {
-		w.queue.Go(job)
+	if w.closed {
+		return false
 	}
+	w.queue.Go(job)
+	return true
 }
 
 // routeWorkerPrompt is triage's prompt router: the thread that owns
@@ -690,6 +692,7 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(workerPrompt) bool) (
 	if previous := w.byToken[w.current[prompt.key()]]; previous != nil {
 		if previous.state == workerPromptRouted {
 			previous.state, previous.closedAt = workerPromptSettled, now
+			previous.noteOwner()
 		}
 		retired := *previous
 		replaced = &retired
@@ -697,6 +700,7 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(workerPrompt) bool) (
 	for token, existing := range w.byToken {
 		if existing.state == workerPromptRouted && !open(*existing) {
 			existing.state, existing.closedAt = workerPromptSettled, now
+			existing.noteOwner()
 		}
 		if !existing.closedAt.IsZero() && now.Sub(existing.closedAt) > workerPromptRetention {
 			delete(w.byToken, token)
@@ -708,7 +712,14 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(workerPrompt) bool) (
 	stored := prompt
 	w.byToken[stored.token] = &stored
 	w.current[stored.key()] = stored.token
+	stored.noteOwner()
 	return stored, replaced
+}
+
+func (p *workerPrompt) noteOwner() {
+	if p.remote != nil && p.remote.activity != nil {
+		p.remote.activity.note(p.remote.device, p.remote.spawnToken, true)
+	}
 }
 
 func (p *workerPrompt) key() workerPromptKey {
@@ -740,6 +751,7 @@ func (w *workerPrompts) settle(workerID, requestID string, upTo provider.PromptO
 		return workerPrompt{}, false
 	}
 	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
+	prompt.noteOwner()
 	return *prompt, true
 }
 
@@ -755,6 +767,7 @@ func (w *workerPrompts) settleWorker(workerID string) []workerPrompt {
 			continue
 		}
 		prompt.state, prompt.closedAt = workerPromptSettled, now
+		prompt.noteOwner()
 		closed = append(closed, *prompt)
 	}
 	return closed
@@ -774,6 +787,7 @@ func (w *workerPrompts) settleToken(token string) (workerPrompt, bool) {
 		return workerPrompt{}, false
 	}
 	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
+	prompt.noteOwner()
 	return *prompt, true
 }
 
@@ -788,6 +802,7 @@ func (w *workerPrompts) beginAnswer(token, answer string) error {
 	switch prompt.state {
 	case workerPromptRouted:
 		prompt.state, prompt.answer = workerPromptAnswering, answer
+		prompt.noteOwner()
 		return nil
 	case workerPromptAnswering:
 		return errWorkerPromptAnswering
@@ -817,6 +832,7 @@ func (w *workerPrompts) endAnswer(token string, state workerPromptState) (worker
 		state = workerPromptSettled
 	}
 	prompt.state = state
+	prompt.noteOwner()
 	handBack := prompt.handBack
 	prompt.handBack = false
 	if state == workerPromptRouted {

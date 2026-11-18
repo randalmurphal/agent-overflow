@@ -82,7 +82,7 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 		if err != nil || found == paused || (found && spawner != "ops") {
 			t.Errorf("paused=%v SpawnOwnerOf(worker) = %q found=%v err=%v", paused, spawner, found, err)
 		}
-		schedule, err := s.NextThreadRequestWork()
+		schedule, err := s.NextThreadRequestWork(nil)
 		if err != nil {
 			t.Fatal(err)
 		}

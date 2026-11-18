@@ -260,6 +260,27 @@ func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []st
 		}
 		rest = decision.guard(roots...)
 	}
+	if rest == nil {
+		rest = &store.RestGuard{}
+	}
+	o := &a.ownerUpdates
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for id, p := range o.peers {
+		if p.legacy || p.ready {
+			if !p.legacy {
+				select {
+				case <-p.disconnected:
+					continue
+				default:
+				}
+			}
+			rest.ReconciledComputers = append(rest.ReconciledComputers, id)
+			for _, token := range p.owed {
+				rest.OwedRemoteTokens = append(rest.OwedRemoteTokens, token)
+			}
+		}
+	}
 	return a.store.DeleteThreadRequestsBefore(floor, rest)
 }
 

@@ -203,7 +203,7 @@ func TestARemotePromptWhoseAnswerFailsFollowsItsHolder(t *testing.T) {
 			p, peer := promptOwnerOpPair(t, 0)
 			testAssistant(t, p.source, p.caller.ID)
 			p.openThere(t, 1)
-			p.poll(t)
+			p.readOwnerState(t, p.source)
 			wake := p.wakesFor(t, p.caller.ID, 1)[0]
 			blocked := failRemoteAnswers(t, peer)
 			done := make(chan error, 1)
@@ -291,7 +291,7 @@ func TestOnlyASessionThatMayAnswerAPromptReadsIt(t *testing.T) {
 		t.Fatalf("the prompt is routed to %+v (open %v) after the refused calls, want the spawner", route, open)
 	}
 	// The pairing's own session reads it.
-	listing, err = p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	listing, _, err = p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 	if err != nil || len(listing.Prompts) != 1 || listing.Prompts[0].Token != token {
 		t.Fatalf("the pairing's own listing = %+v, %v; want the prompt", listing.Prompts, err)
 	}
@@ -355,7 +355,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 		t.Parallel()
 		p, peer := promptOwnerOpPair(t, 0)
 		p.openThere(t, 1)
-		p.poll(t)
+		p.readOwnerState(t, p.source)
 		wake := p.wakesFor(t, p.caller.ID, 1)[0]
 		p.source.forgetPeerAgentRows(p.computer)
 		p.wakesFor(t, p.caller.ID, 0)
@@ -373,7 +373,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 		t.Parallel()
 		p, peer := promptOwnerOpPair(t, 0)
 		p.openThere(t, 1)
-		listing, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+		listing, _, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 		if err != nil || len(listing.Prompts) != 1 {
 			t.Fatalf("the listing there: %+v, %v", listing.Prompts, err)
 		}
@@ -429,6 +429,7 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 				return threadRequestSettled(pair.request(t, ack.Token))
 			})
 			pair.source.retireThreadRequestPoll(ack.Token)
+			startReconciledOwner(t, pair)
 			holder := pair.caller
 			if handoff {
 				testAssistant(t, pair.source, pair.caller.ID)

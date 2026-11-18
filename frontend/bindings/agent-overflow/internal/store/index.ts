@@ -33,6 +33,8 @@ export {
     ProposedPlanCommentUpdate,
     ProposedPlanSourceRef,
     RemoteJob,
+    SpawnRevision,
+    SpawnRevisionAck,
     StandingAgent,
     Thread,
     ThreadAttention,

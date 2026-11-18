@@ -60,6 +60,7 @@ const workerPromptLease = 2 * time.Minute
 // that computer last said it holds the prompt, and timer are guarded by
 // workerPrompts.mu.
 type remotePromptHold struct {
+	activity                        *ownerActivity
 	computerID, computerName, title string
 	device, spawnToken              string
 	registeredAt                    time.Time
@@ -139,6 +140,7 @@ func (a *App) holdPeerWorkerPrompt(route provider.PromptRoute, prompt workerProm
 	}
 	if err == nil && linked {
 		prompt.remote.device, prompt.remote.spawnToken = link.DeviceID, link.Token
+		prompt.remote.activity = &a.ownerActivity
 	}
 	registered, replaced := a.workerPrompts.add(prompt, a.workerPromptOpen)
 	if replaced != nil {

@@ -373,7 +373,7 @@ func TestThreadRequestDueQueries(t *testing.T) {
 		t.Fatalf("due reminders = %+v", due)
 	}
 
-	polls, err := s.DueThreadRequestPolls(1000, 10)
+	polls, err := s.DueThreadRequestPolls(1000, 10, nil)
 	if err != nil {
 		t.Fatalf("due polls: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestThreadRequestDueQueries(t *testing.T) {
 	if err := s.RescheduleThreadRequest("tok-remote", 4000, 3, "backend unreachable"); err != nil {
 		t.Fatalf("reschedule: %v", err)
 	}
-	polls, err = s.DueThreadRequestPolls(1000, 10)
+	polls, err = s.DueThreadRequestPolls(1000, 10, nil)
 	if err != nil {
 		t.Fatalf("due polls after reschedule: %v", err)
 	}
@@ -1399,7 +1399,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 		t.Fatalf("target provider = %q, want claude", row.TargetProvider)
 	}
 	// It is now a remote request, so the poller must see it.
-	polls, err := s.DueThreadRequestPolls(nowMillis(), 10)
+	polls, err := s.DueThreadRequestPolls(nowMillis(), 10, nil)
 	if err != nil {
 		t.Fatalf("due polls: %v", err)
 	}
@@ -1725,7 +1725,7 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
 
-	schedule, err := s.NextThreadRequestWork()
+	schedule, err := s.NextThreadRequestWork(nil)
 	if err != nil {
 		t.Fatalf("NextThreadRequestWork: %v", err)
 	}
@@ -1761,7 +1761,7 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 		t.Fatalf("schedule wake: booked=%v err=%v", booked, err)
 	}
 
-	schedule, err = s.NextThreadRequestWork()
+	schedule, err = s.NextThreadRequestWork(nil)
 	if err != nil {
 		t.Fatalf("NextThreadRequestWork: %v", err)
 	}
@@ -1776,7 +1776,7 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 	if _, err := s.RetireThreadRequestPoll("tok-poll"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
-	if schedule, err = s.NextThreadRequestWork(); err != nil || schedule.Poll.Set {
+	if schedule, err = s.NextThreadRequestWork(nil); err != nil || schedule.Poll.Set {
 		t.Fatalf("after retirement poll = %+v err=%v, want nothing to poll", schedule.Poll, err)
 	}
 }

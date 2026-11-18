@@ -113,7 +113,7 @@ func TestAnOwnerOpEndsAPromptRoutedToTheSpawner(t *testing.T) {
 			t.Parallel()
 			p, peer := promptOwnerOpPair(t, 0)
 			p.openThere(t, 1)
-			p.poll(t)
+			p.readOwnerState(t, p.source)
 			p.wakesFor(t, p.caller.ID, 1)
 			end(t, p)
 			waitUntil(t, 15*time.Second, p.promptEnded)
@@ -148,7 +148,7 @@ func TestAPromptOfAWorkerWhoseSpawnerIsArchivedOutOfReachGoesToThePerson(t *test
 	t.Parallel()
 	p, peer := promptOwnerOpPair(t, 0)
 	p.openThere(t, 1)
-	p.poll(t)
+	p.readOwnerState(t, p.source)
 	p.wakesFor(t, p.caller.ID, 1)
 	held := p.dest.workerPrompts.heldFor(p.spawn.Token, p.worker)
 	if len(held) != 1 {

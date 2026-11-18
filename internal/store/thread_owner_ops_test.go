@@ -290,7 +290,7 @@ func TestNextThreadRequestWorkReportsOwnerOps(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "lead")
 	seedRemoteSpawn(t, s, "r", "lead", "pc", "w")
-	if schedule, err := s.NextThreadRequestWork(); err != nil || schedule.OwnerOp.Set {
+	if schedule, err := s.NextThreadRequestWork(nil); err != nil || schedule.OwnerOp.Set {
 		t.Fatalf("schedule with nothing owed = %+v, %v", schedule.OwnerOp, err)
 	}
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
@@ -302,7 +302,7 @@ func TestNextThreadRequestWorkReportsOwnerOps(t *testing.T) {
 	if _, err := s.RescheduleOwnerOp("r", 1, 4242); err != nil {
 		t.Fatal(err)
 	}
-	if schedule, err := s.NextThreadRequestWork(); err != nil || schedule.OwnerOp != (ScheduledMoment{At: 4242, Set: true}) {
+	if schedule, err := s.NextThreadRequestWork(nil); err != nil || schedule.OwnerOp != (ScheduledMoment{At: 4242, Set: true}) {
 		t.Fatalf("schedule = %+v, %v; want the owed op at 4242", schedule.OwnerOp, err)
 	}
 }

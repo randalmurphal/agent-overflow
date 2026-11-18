@@ -499,6 +499,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1289411773: 'home', // SyncOwnDevices
 	3841902986: 'thread', // SyncThreadWindow
 	870653875: 'thread', // TerminateCodexBackgroundTerminal
+	3558393553: 'selected', // ThreadOwnerChanges
+	3143780103: 'selected', // ThreadOwnerRecovery
 	894716875: 'selected', // ThreadToolCall
 	1295284198: 'selected', // ThreadToolExportChunk
 	2624544009: 'selected', // ThreadToolQuery
@@ -616,6 +618,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
 	2692607191: 600000, // SubmitPRReview
+	3558393553: 60000, // ThreadOwnerChanges
 	894716875: 780000, // ThreadToolCall
 	2624544009: 60000, // ThreadToolQuery
 	515024442: 60000, // ThreadToolWatch

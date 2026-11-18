@@ -273,6 +273,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed. Closing
 	// it refuses the settlements a later session close would start.
+	a.ownerUpdates.workers.Close()
 	a.threadRequestsWG.Close()
 	// After every producer of a notice: a session start a notice began
 	// registers its session, and Step 4 must see it to close it.

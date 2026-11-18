@@ -64,6 +64,7 @@ type Manager struct {
 
 	// changed is the one observer of set mutations (SetChanged).
 	changed func(SetChange)
+	reached atomic.Pointer[func(string)]
 	// labelGetter reads this installation's current name; label is the static
 	// fallback for embedders. Platform describes this process, not a pairing.
 	labelGetter func() (string, error)
@@ -197,6 +198,11 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 // its session renewal, which reports through those hooks. Caller holds m.mu
 // and has checked m.closed, so Close cannot miss the renewal.
 func (m *Manager) wire(built *carrier, id string) {
+	built.onContact = func() {
+		if f := m.reached.Load(); f != nil {
+			(*f)(id)
+		}
+	}
 	built.labelGetter, built.platform = m.localLabel, m.platform
 	built.nameSyncChanged = func() { m.notifyChanged(SetChange{Action: SetDeviceNameSync, ID: id}) }
 	built.onEnded = func() { m.endSession(id, built) }
@@ -579,6 +585,7 @@ type carrier struct {
 	nameSyncChanged func()
 	// onEnded is the manager's verdict path (endSession), fired once per
 	// carrier by ended below.
+	onContact     func()
 	onEnded       func()
 	nameErrorMu   sync.Mutex
 	nameSyncError string
@@ -648,7 +655,21 @@ func (c *carrier) leave(verdict error) {
 	c.peers.close(verdict)
 }
 
-func (c *carrier) reached() { c.lastReachedMs.Store(time.Now().UnixMilli()) }
+func (c *carrier) reached() {
+	c.lastReachedMs.Store(time.Now().UnixMilli())
+	if c.onContact != nil {
+		c.onContact()
+	}
+}
+
+// SetContactObserver receives successful contact on any carrier.
+func (m *Manager) SetContactObserver(f func(string)) {
+	if f == nil {
+		m.reached.Store(nil)
+		return
+	}
+	m.reached.Store(&f)
+}
 
 // ended reports a typed verdict that this pairing is finished and hands it
 // to the manager. deviceclient retires the owner on every such verdict; an

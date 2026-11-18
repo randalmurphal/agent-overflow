@@ -30,6 +30,7 @@ type threadAgentEmits struct {
 	// thread a changed workflow run (workflowRuns) reports to.
 	liveness     map[string]bool
 	workflowRuns map[string]struct{}
+	projections  map[string]struct{}
 	draining     bool
 	// activity is each running target's latest activity line, while it has
 	// a request running or is a worker not at rest; lastActivity and
@@ -44,6 +45,15 @@ type threadAgentEmits struct {
 
 // noteThreadRequestChanged is the store's change hook, called once the
 // write committed.
+func (a *App) projectPeerRows(thread string) {
+	a.queueThreadAgentEmit(func(e *threadAgentEmits) {
+		if e.projections == nil {
+			e.projections = map[string]struct{}{}
+		}
+		e.projections[thread] = struct{}{}
+	})
+}
+
 func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 	if change.Token == "" {
 		a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.callers[change.CallerThreadID] = struct{}{} })
@@ -55,7 +65,7 @@ func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 // noteThreadAgentTarget reports a change to a thread some request runs on,
 // or a worker not at rest, that leaves its rest as it was: its title.
 func (a *App) noteThreadAgentTarget(threadID string) {
-	if threadID == "" || !a.threadAgentFollows(threadID) {
+	if threadID == "" {
 		return
 	}
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.targets[threadID] = struct{}{} })
@@ -142,6 +152,9 @@ func (a *App) threadAgentFollows(threadID string) bool {
 }
 
 func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
+	if a.store == nil {
+		return
+	}
 	e := &a.threadAgentEmits
 	e.mu.Lock()
 	if e.tokens == nil {
@@ -170,7 +183,9 @@ func (a *App) drainThreadAgentEmits() {
 		}
 		e.mu.Lock()
 		tokens, callers, targets, liveness, runs := e.tokens, e.callers, e.targets, e.liveness, e.workflowRuns
-		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs) == 0 || a.lifeCtx().Err() != nil {
+		projections := e.projections
+		e.projections = nil
+		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs)+len(projections) == 0 || a.lifeCtx().Err() != nil {
 			e.draining = false
 			e.mu.Unlock()
 			return
@@ -180,6 +195,19 @@ func (a *App) drainThreadAgentEmits() {
 		e.mu.Unlock()
 		for _, threadID := range a.durableRestChanges(callers, runs) {
 			liveness[threadID] = true
+		}
+		if a.transportServer.Load() != nil {
+			changedThreads := slices.Collect(maps.Keys(liveness))
+			changedThreads = append(changedThreads, slices.Collect(maps.Keys(targets))...)
+			changedThreads = append(changedThreads, slices.Collect(maps.Keys(callers))...)
+			owners, err := a.store.ActivityOwners(slices.Collect(maps.Keys(tokens)), changedThreads)
+			if err != nil {
+				a.ownerActivity.reset()
+				log.Printf("agent rows: reset peer cursors after owner lookup failed: %v", err)
+			}
+			for _, owner := range owners {
+				a.ownerActivity.note(owner.Device, owner.Token, false)
+			}
 		}
 		for threadID, durable := range liveness {
 			worker, err := a.reassessWorker(threadID, durable)
@@ -194,6 +222,10 @@ func (a *App) drainThreadAgentEmits() {
 		if len(liveness)+len(tokens)+len(callers) > 0 {
 			// A thread's rest, or the work below one, may have changed.
 			a.noteRestWaitsMayChange()
+		}
+		projectionOnly := len(tokens)+len(targets)+len(callers)+len(liveness)+len(runs) == 0
+		for thread := range projections {
+			callers[thread] = struct{}{}
 		}
 		if len(tokens)+len(callers)+len(targets) == 0 {
 			continue
@@ -219,6 +251,9 @@ func (a *App) drainThreadAgentEmits() {
 		}
 		// A worker whose request changed may have an answer on its way, or
 		// no longer: the next pass reassesses it, framing it if it moved.
+		if projectionOnly {
+			continue
+		}
 		for _, threadID := range rest {
 			a.noteWorkerWaiting(threadID)
 		}
@@ -257,7 +292,7 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	if event, ok := data.(triage.ThreadUpdateEvent); ok {
 		if event.Thread != nil {
 			a.noteThreadAgentTarget(event.Thread.ID)
-		} else if event.Title != nil {
+		} else if event.Title != nil || event.Action == triage.ThreadActionDeleted {
 			a.noteThreadAgentTarget(event.ID)
 		}
 		return

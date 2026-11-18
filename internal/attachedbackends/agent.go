@@ -255,7 +255,7 @@ func (m *Manager) holdPeer(ctx context.Context, id, capability, generation strin
 				rpc = opened
 			}
 		}
-		read = PeerRead{pool: &held.peers, launch: rpc.LaunchID(), proved: generation != "" && rpc.Advertises(generation)}
+		read = PeerRead{pool: &held.peers, disconnected: rpc.Done(), launch: rpc.LaunchID(), proved: generation != "" && rpc.Advertises(generation)}
 		err := rpc.Call(ctx, method, result, params...)
 		var answered *rpcclient.Error
 		if err != nil && !errors.As(err, &answered) {
@@ -315,9 +315,10 @@ func unsupportedPeerError(capability string, cause error) error {
 
 // PeerRead identifies the carrier and peer launch that answered a call.
 type PeerRead struct {
-	pool   *peerConns
-	launch string
-	proved bool
+	pool         *peerConns
+	disconnected <-chan struct{}
+	launch       string
+	proved       bool
 }
 
 func (m *Manager) ReadThreadPeer(ctx context.Context, id, protocol, generation, method string, result any, params ...any) (PeerRead, error) {
@@ -341,5 +342,9 @@ func (r PeerRead) Apply(launch string, commit func() error) error {
 	return commit()
 }
 
+func (r PeerRead) ProvedGeneration() bool           { return r.proved }
 func (r PeerRead) Answered() bool                   { return r.pool != nil }
 func (r PeerRead) Commit(commit func() error) error { return r.Apply(r.launch, commit) }
+
+// Disconnected closes when the connection that supplied the observation ends.
+func (r PeerRead) Disconnected() <-chan struct{} { return r.disconnected }
