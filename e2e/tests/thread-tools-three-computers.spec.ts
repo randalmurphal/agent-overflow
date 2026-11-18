@@ -16,7 +16,7 @@
 import { test, expect, devices, type Page } from '@playwright/test';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
-import { awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { backgroundShellSteps } from './agents-tray-helpers.js';
 
 test.describe.configure({ mode: 'serial' });
@@ -271,7 +271,9 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   }));
   await setScenario(bench!, grand.path, threadToolsScenario({
     name: 'three-agents-grand', provider: 'claude',
-    turns: [{ steps: [{ gate: 'two-hop-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
+    turns: [{ steps: [{ gate: 'two-hop-grand-hold' }, { approval: {
+      toolName: 'Bash', input: {command: 'make package'}, onAllow: [], onDeny: [],
+    } }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
   await home.rpc('StartSession', lead.threadIds[0]);
@@ -281,7 +283,7 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
   expect(nested.isError, nested.text).toBe(false);
   await awaitGate(studio, 'two-hop-child-hold', child.path);
-  await awaitGate(bench!, 'two-hop-grand-hold', grand.path);
+  const heldGrand = await awaitGate(bench!, 'two-hop-grand-hold', grand.path);
 
   await home.open(page);
   await page.getByTestId('thread-row-title').getByText('Two hop lead', { exact: true }).click();
@@ -296,6 +298,9 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   await expect(grandRow).toHaveAttribute('data-depth', '1');
   await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Bench grandchild');
   await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on Bench computer');
+  await advanceGate(bench!, heldGrand.mockId, 'two-hop-grand-hold');
+  await expect(grandRow.getByTestId('agent-tray-row-state')).toHaveText('blocked');
+  await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('running');
   await body.screenshot({ path: test.info().outputPath('agents-two-hop-nested.png'), animations: 'disabled' });
 
   const childInterrupted = studio.waitForEvent<HarnessMockEventData>(
