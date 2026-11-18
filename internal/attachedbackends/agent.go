@@ -3,7 +3,9 @@ package attachedbackends
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/deviceclient"
@@ -83,19 +85,19 @@ func (m *Manager) writeAgentAccess(id string, enabled bool) error {
 // a frontend credential. Each call rechecks opt-in, identity and capability.
 func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
 	if !entityid.Valid(id) {
-		return notSentError{errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
+		return rpcclient.NotSentError{Err: errorsx.Public("remote_invalid_computer", "computer_id must be a computer UUID from remote_computers.", nil)}
 	}
 	switch method {
 	case "RemoteCommandStart", "RemoteCommandStatus", "RemoteCommandCancel", "RemoteCommandProjects", "RemoteCommandEnvironment", "RemoteCommandReadLog", "RemoteCommandSearchLog", "RemoteCommandArtifact", "RemoteCommandLogArtifact":
 	default:
-		return notSentError{errors.New("this method is not available to agent commands")}
+		return rpcclient.NotSentError{Err: errors.New("this method is not available to agent commands")}
 	}
 	access, err := m.AgentAccess()
 	if err != nil {
-		return notSentError{err}
+		return rpcclient.NotSentError{Err: err}
 	}
 	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" && method != "RemoteCommandLogArtifact" {
-		return notSentError{errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)}
+		return rpcclient.NotSentError{Err: errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)}
 	}
 	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
 }
@@ -104,21 +106,6 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 // owner opts in. It runs no command and does not enable access on its own.
 func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
 	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
-}
-
-// notSentError marks a failed peer call whose request frame never left this
-// computer: the call was refused here, its pairing could not be loaded, or
-// no connection proven for it could be opened. Every other failure may have
-// reached the destination, which may have acted on it.
-type notSentError struct{ error }
-
-func (e notSentError) Unwrap() error { return e.error }
-
-// NotSent reports whether a failed CallAgentPeer or CallThreadPeer never
-// sent its request frame, so the destination cannot have acted on it.
-func NotSent(err error) bool {
-	var never notSentError
-	return errors.As(err, &never)
 }
 
 // threadPeerMethods is the whole surface agent thread tools reach on a
@@ -130,7 +117,8 @@ var threadPeerMethods = map[string]struct{}{
 }
 
 // CallThreadPeer makes one authenticated RPC call for the agent thread
-// tools, on the same rotating credential CallAgentPeer uses.
+// tools, on the same rotating credential CallAgentPeer uses, to a
+// destination that advertises transport.CapabilityThreadTools.
 //
 // There is no opt-in check: reach is pairing alone. Pairing a computer is
 // the user saying these two computers are theirs, and the destination
@@ -139,35 +127,51 @@ var threadPeerMethods = map[string]struct{}{
 // agent-commands opt-in exists because a remote command runs a shell;
 // nothing here does.
 func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	return m.CallThreadPeerOn(ctx, id, transport.CapabilityThreadTools, method, result, params...)
+}
+
+// CallThreadPeerOn is CallThreadPeer for a destination that speaks the
+// thread peer protocol generation `protocol` (transport.CapabilityThreadTools
+// or a later one). A destination that does not advertise it is refused
+// before anything is sent, which Unsupported reports.
+func (m *Manager) CallThreadPeerOn(ctx context.Context, id, protocol, method string, result any, params ...any) error {
 	if !entityid.Valid(id) {
-		return notSentError{errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
+		return rpcclient.NotSentError{Err: errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)}
 	}
 	if _, ok := threadPeerMethods[method]; !ok {
-		return notSentError{errors.New("this method is not available to agent thread tools")}
+		return rpcclient.NotSentError{Err: errors.New("this method is not available to agent thread tools")}
 	}
-	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
+	if protocol != transport.CapabilityThreadTools && protocol != transport.CapabilityThreadToolsV2 {
+		return rpcclient.NotSentError{Err: fmt.Errorf("%s is not a thread peer protocol", protocol)}
+	}
+	return m.callPeer(ctx, id, protocol, method, result, params...)
 }
+
+// Unsupported reports whether a failed call was refused because the
+// destination does not advertise the capability it needed.
+func Unsupported(err error) bool { return errors.Is(err, errUnsupportedPeerOperation) }
 
 // callPeer is the shared body: load the carrier, take or open an RPC that
 // proves the destination advertises `capability` (peerconns.go), and make
 // the call. The
 // capability is the only thing that differs between the two surfaces, and
 // it is what turns an older destination into a clear refusal instead of a
-// method error. Every failure before the call is handed to a proven
-// connection is NotSent; from then on the destination may have it.
+// method error. Every failure before a proven connection has the call is
+// a rpcclient.NotSentError; from then on the RPC client says whether its
+// frame was written.
 func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
 	held, err := m.carrier(id)
 	if err != nil {
 		if errors.Is(err, deviceclient.ErrNoSession) {
-			return notSentError{errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)}
+			return rpcclient.NotSentError{Err: errorsx.Public("remote_not_paired", "This computer is no longer paired. Reconnect it in Remote access before retrying.", err)}
 		}
-		return notSentError{errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)}
+		return rpcclient.NotSentError{Err: errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)}
 	}
 	rpc := held.peers.take(ctx, capability)
 	if rpc == nil {
 		rpc, err = openPeerRPC(ctx, held, capability)
 		if err != nil {
-			return notSentError{err}
+			return rpcclient.NotSentError{Err: err}
 		}
 	}
 	err = rpc.Call(ctx, method, result, params...)
@@ -204,7 +208,7 @@ func openPeerRPC(ctx context.Context, held *carrier, capability string) (*rpccli
 // advertise, so the caller reads a refusal about the feature it asked for
 // rather than a method error.
 func unsupportedPeerError(capability string, cause error) error {
-	if capability == transport.CapabilityThreadTools {
+	if strings.HasPrefix(capability, "thread-tools.") {
 		return errorsx.Public("thread_unsupported", "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
 	}
 	return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", cause)

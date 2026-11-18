@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
@@ -389,7 +388,7 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 // failure may be a lost reply, whose watch the poller verifies against the
 // destination instead.
 func remoteStartNeverRan(err error) bool {
-	if attachedbackends.NotSent(err) {
+	if rpcclient.NotSent(err) {
 		return true
 	}
 	code, _, _ := errorsx.PublicDetails(err)

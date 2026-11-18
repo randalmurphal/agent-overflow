@@ -214,6 +214,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"computer-routes.v1",
 		"transport.heartbeat.v1",
 		"thread-tools.v1",
+		"thread-tools.v2",
 		"timeline.scopes.v1",
 		"timeline.digests.v1",
 		"sends-pending.v1",
@@ -228,8 +229,8 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))
 	for _, browser := range []bool{false, true} {
-		base := advertisedCapabilities(func() bool { return browser }, false, false, false)
-		withTransfers := advertisedCapabilities(func() bool { return browser }, true, false, false)
+		base := advertisedCapabilities(func() bool { return browser }, false, false, "")
+		withTransfers := advertisedCapabilities(func() bool { return browser }, true, false, "")
 		assertCapabilities(t, withTransfers, append(slices.Clone(base), "conversation.transfer.v1", "draft.project-transfer.v1", "draft.project-transfer.v2"))
 	}
 }
@@ -237,35 +238,40 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 func TestFilePreviewCapabilityRequiresExecutionHostSupport(t *testing.T) {
 	for _, browser := range []bool{false, true} {
 		for _, transfers := range []bool{false, true} {
-			base := advertisedCapabilities(func() bool { return browser }, transfers, false, false)
+			base := advertisedCapabilities(func() bool { return browser }, transfers, false, "")
 			for _, flag := range base {
 				if flag == CapabilityFilePreview {
 					t.Fatal("frontend controller advertised file previews")
 				}
 			}
-			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true, false)
+			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true, "")
 			assertCapabilities(t, withFiles, append(append([]string{}, base...), "preview.files.v1"))
 		}
 	}
 }
 
 // The one subtraction the set allows, and the reason it exists: an
-// isolated boot standing in for a build older than the agent thread
-// tools, so an end-to-end test can reach the thread_unsupported refusal.
-// It takes that name and nothing else, in every deployment shape.
-func TestThreadToolsCapabilityCanBeOmittedForAnOldPeerStandIn(t *testing.T) {
+// isolated boot standing in for a build that predates a thread peer
+// protocol generation, so an end-to-end test can reach what an older
+// destination answers. It takes that generation and every later one and
+// nothing else, in every deployment shape.
+func TestThreadToolsGenerationsCanBeOmittedForAnOlderPeerStandIn(t *testing.T) {
 	for _, browser := range []bool{false, true} {
 		for _, transfers := range []bool{false, true} {
 			for _, previews := range []bool{false, true} {
-				full := advertisedCapabilities(func() bool { return browser }, transfers, previews, false)
-				if !slices.Contains(full, CapabilityThreadTools) {
-					t.Fatal("an ordinary backend did not advertise the thread tools")
+				full := advertisedCapabilities(func() bool { return browser }, transfers, previews, "")
+				if !slices.Contains(full, CapabilityThreadTools) || !slices.Contains(full, CapabilityThreadToolsV2) {
+					t.Fatal("an ordinary backend did not advertise every thread tools generation")
 				}
-				want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
-					return name == CapabilityThreadTools
-				})
-				omitted := advertisedCapabilities(func() bool { return browser }, transfers, previews, true)
-				assertCapabilities(t, omitted, want)
+				for older, dropped := range map[string][]string{
+					CapabilityThreadTools:   {CapabilityThreadTools, CapabilityThreadToolsV2},
+					CapabilityThreadToolsV2: {CapabilityThreadToolsV2},
+				} {
+					want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
+						return slices.Contains(dropped, name)
+					})
+					assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, older), want)
+				}
 			}
 		}
 	}

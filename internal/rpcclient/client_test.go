@@ -161,3 +161,98 @@ func TestACancelledCallEndsTheConnection(t *testing.T) {
 		t.Fatal("the connection outlived the cancelled call")
 	}
 }
+
+// TestCallSaysWhetherItsFrameWasSent: a call that fails before its frame
+// reaches the socket says so, and the far side reads nothing; a call the
+// far side read and never answered does not.
+func TestCallSaysWhetherItsFrameWasSent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	received := make(chan string, 4)
+	hangUp := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.CloseNow()
+		go func() {
+			<-hangUp
+			_ = conn.CloseNow()
+		}()
+		for {
+			var request transport.ClientFrame
+			if err := wsjson.Read(ctx, conn, &request); err != nil {
+				return
+			}
+			received <- request.Method
+		}
+	}))
+	defer server.Close()
+	dial := func() *Client {
+		t.Helper()
+		conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := New(conn)
+		t.Cleanup(client.Close)
+		return client
+	}
+	nothingReceived := func(what string) {
+		t.Helper()
+		select {
+		case method := <-received:
+			t.Fatalf("%s: the far side read %s", what, method)
+		default:
+		}
+	}
+
+	client := dial()
+	if err := client.Call(ctx, "Unencodable", nil, make(chan int)); err == nil || !NotSent(err) {
+		t.Fatalf("an argument that cannot be encoded = %v, want it not sent", err)
+	}
+	var notAPointer struct{}
+	if err := client.Call(ctx, "NoDestination", notAPointer); err == nil || !NotSent(err) {
+		t.Fatalf("a result that cannot be written = %v, want it not sent", err)
+	}
+	done, stop := context.WithCancel(ctx)
+	stop()
+	if err := client.Call(done, "Cancelled", nil); !errors.Is(err, context.Canceled) || !NotSent(err) {
+		t.Fatalf("a call whose context had ended = %v, want it not sent", err)
+	}
+
+	// Read by the far side, then abandoned: it may have run.
+	call, abandon := context.WithCancel(ctx)
+	failed := make(chan error, 1)
+	go func() { failed <- client.Call(call, "Unanswered", nil) }()
+	select {
+	case method := <-received:
+		if method != "Unanswered" {
+			t.Fatalf("the far side read %s first", method)
+		}
+	case <-ctx.Done():
+		t.Fatal("the far side never read the call")
+	}
+	abandon()
+	if err := <-failed; !errors.Is(err, context.Canceled) || NotSent(err) {
+		t.Fatalf("a call the far side read = %v, want it maybe sent", err)
+	}
+
+	// A connection that has already ended sends nothing.
+	ended := dial()
+	if err := ended.Call(ctx, "StartsTheReader", nil, make(chan int)); !NotSent(err) {
+		t.Fatalf("an unencodable call = %v, want it not sent", err)
+	}
+	close(hangUp)
+	select {
+	case <-ended.Done():
+	case <-ctx.Done():
+		t.Fatal("the hang-up went unnoticed")
+	}
+	if err := ended.Call(ctx, "AfterTheEnd", nil); err == nil || !NotSent(err) {
+		t.Fatalf("a call on an ended connection = %v, want it not sent", err)
+	}
+	nothingReceived("before or after the abandoned call")
+}

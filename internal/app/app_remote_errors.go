@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
@@ -117,7 +116,7 @@ func remotePairingCode(code string) bool {
 // names the computer and the job. A cause with no reviewed public text stays
 // in the host log behind a reference. uncertain means the destination may
 // have acted on the request, which a call the carrier never sent
-// (attachedbackends.NotSent) rules out.
+// (rpcclient.NotSent) rules out.
 func remoteErrorDetails(action string, err error) (code, message string, uncertain bool) {
 	var done remoteContextError
 	if errors.As(err, &done) {
@@ -141,7 +140,7 @@ func remoteErrorDetails(action string, err error) (code, message string, uncerta
 			uncertain = true
 		}
 	} else if !known {
-		uncertain = !attachedbackends.NotSent(err)
+		uncertain = !rpcclient.NotSent(err)
 		code, message = remoteFailureText(err, uncertain)
 		cid := uuid.NewString()
 		log.Printf("remote %s failed (id: %s): %v", action, cid, err)

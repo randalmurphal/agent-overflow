@@ -508,12 +508,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// has no harness methods on it.
 		Harness:    opts.HarnessReceiver != nil,
 		PageMarker: opts.HarnessPageMarker,
-		// Test isolation: a harness backend that stands in for a build
-		// older than the agent thread tools, so a paired computer calling
-		// it gets thread_unsupported. Gated on the harness receiver, so an
-		// ordinary boot cannot be talked out of a capability it has.
-		OmitThreadToolsCapability: opts.HarnessReceiver != nil && envTruthy(os.Getenv(diagenv.HarnessOldPeer)),
-		WatermarkInterval:         opts.HarnessTiming.Watermark,
+		// Test isolation: a harness backend that stands in for an older
+		// build advertises the thread peer protocol generations that build
+		// had. Gated on the harness receiver, so an ordinary boot cannot be
+		// talked out of a capability it has.
+		ThreadToolsOlderThan: harnessThreadToolsOlderThan(opts),
+		WatermarkInterval:    opts.HarnessTiming.Watermark,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.
@@ -1077,6 +1077,22 @@ func logBootPhase(phase string, started time.Time) {
 // envTruthy treats "1"/"true" (any case) as enabled; everything else,
 // including empty, is off. Deliberately narrower than strconv.ParseBool
 // so a typo'd value reads as off rather than a surprise opt-in.
+// harnessThreadToolsOlderThan is the thread peer protocol generation a
+// harness boot standing in for an older build predates: thread-tools.v1
+// for one older than the agent thread tools, so a paired computer calling
+// it gets thread_unsupported, and thread-tools.v2 for one on v0.0.19.
+func harnessThreadToolsOlderThan(opts bootTransportOptions) string {
+	switch {
+	case opts.HarnessReceiver == nil:
+		return ""
+	case envTruthy(os.Getenv(diagenv.HarnessOldPeer)):
+		return transport.CapabilityThreadTools
+	case opts.HarnessOlderComputer:
+		return transport.CapabilityThreadToolsV2
+	}
+	return ""
+}
+
 func envTruthy(v string) bool {
 	v = strings.TrimSpace(v)
 	return v == "1" || strings.EqualFold(v, "true")

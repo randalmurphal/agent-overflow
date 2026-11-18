@@ -121,27 +121,78 @@ type Error struct{ Code, Message string }
 
 func (e *Error) Error() string { return e.Message }
 
+// NotSentError marks a failed call whose request frame never reached the
+// socket, so the far side cannot have acted on it. Every other failure of
+// a call may have been read and run there.
+type NotSentError struct{ Err error }
+
+func (e NotSentError) Error() string { return e.Err.Error() }
+func (e NotSentError) Unwrap() error { return e.Err }
+
+// NotSent reports whether err says its request frame was never sent.
+func NotSent(err error) bool {
+	var never NotSentError
+	return errors.As(err, &never)
+}
+
+// errConnectionEnded is a call made on a connection whose reader has
+// already stopped and that reported no reason.
+var errConnectionEnded = errors.New("rpcclient: the connection has ended")
+
+// Call makes one call. A failure before the request frame is handed to the
+// socket (an argument or result that cannot be used, a context already
+// done, a connection already ended) is a NotSentError; a failure from the
+// write onward may follow a request the far side read.
 func (c *Client) Call(ctx context.Context, method string, result any, params ...any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reading.Do(func() { go c.read() })
-	c.next++
-	id := fmt.Sprint(c.next)
-	body := make([]json.RawMessage, len(params))
-	for i, param := range params {
-		raw, err := json.Marshal(param)
-		if err != nil {
-			return err
-		}
-		body[i] = raw
+	frame, err := c.request(ctx, method, result, params)
+	if err != nil {
+		return NotSentError{err}
 	}
-	if err := wsjson.Write(ctx, c.conn, transport.ClientFrame{Type: "rpc", ID: id, Method: method, Params: body}); err != nil {
+	if err := wsjson.Write(ctx, c.conn, frame); err != nil {
 		if ctx.Err() != nil {
 			c.Close()
 			return ctx.Err()
 		}
 		return err
 	}
+	return c.await(ctx, frame.ID, result)
+}
+
+// request prepares one call's frame, or says why it cannot be sent.
+func (c *Client) request(ctx context.Context, method string, result any, params []any) (transport.ClientFrame, error) {
+	if result != nil {
+		if destination := reflect.ValueOf(result); destination.Kind() != reflect.Pointer || destination.IsNil() {
+			return transport.ClientFrame{}, &json.InvalidUnmarshalError{Type: reflect.TypeOf(result)}
+		}
+	}
+	body := make([]json.RawMessage, len(params))
+	for i, param := range params {
+		raw, err := json.Marshal(param)
+		if err != nil {
+			return transport.ClientFrame{}, err
+		}
+		body[i] = raw
+	}
+	if err := ctx.Err(); err != nil {
+		return transport.ClientFrame{}, err
+	}
+	select {
+	case <-c.done:
+		if c.err != nil {
+			return transport.ClientFrame{}, c.err
+		}
+		return transport.ClientFrame{}, errConnectionEnded
+	default:
+	}
+	c.next++
+	return transport.ClientFrame{Type: "rpc", ID: fmt.Sprint(c.next), Method: method, Params: body}, nil
+}
+
+// await reads the reply to the call with id, decoding it into result.
+func (c *Client) await(ctx context.Context, id string, result any) error {
 	for {
 		var frame transport.ServerFrame
 		select {
@@ -170,9 +221,6 @@ func (c *Client) Call(ctx context.Context, method string, result any, params ...
 			return nil
 		}
 		destination := reflect.ValueOf(result)
-		if destination.Kind() != reflect.Pointer || destination.IsNil() {
-			return &json.InvalidUnmarshalError{Type: reflect.TypeOf(result)}
-		}
 		fresh := reflect.New(destination.Elem().Type())
 		if err := json.Unmarshal(frame.Result, fresh.Interface()); err != nil {
 			return err

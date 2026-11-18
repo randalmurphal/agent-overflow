@@ -110,9 +110,9 @@ func TestUnsupportedPeerErrorNamesTheSurfaceItAskedFor(t *testing.T) {
 }
 
 // A failed call says whether its request could have reached the
-// destination: never when it failed before a proven connection had it,
-// always once one did, whether the destination answered or the call was
-// abandoned waiting.
+// destination: never when it failed before its frame was written, always
+// once the destination read it, whether it answered or the caller stopped
+// waiting.
 func TestTheCarrierSaysWhetherAFailedCallWasSent(t *testing.T) {
 	m, p := newThreadPeerManager(t)
 	bounded := func() (context.Context, context.CancelFunc) {
@@ -122,13 +122,34 @@ func TestTheCarrierSaysWhetherAFailedCallWasSent(t *testing.T) {
 	ctx, cancel := bounded()
 	defer cancel()
 	var remote *rpcclient.Error
-	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolResolve", nil); !errors.As(err, &remote) || NotSent(err) {
-		t.Fatalf("an answered refusal = %v, NotSent %v; want it sent", err, NotSent(err))
+	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolResolve", nil); !errors.As(err, &remote) || rpcclient.NotSent(err) {
+		t.Fatalf("an answered refusal = %v, NotSent %v; want it sent", err, rpcclient.NotSent(err))
 	}
-	waiting, stop := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer stop()
-	if err := m.CallThreadPeer(waiting, p.id, "ThreadToolCall", nil); !errors.Is(err, context.DeadlineExceeded) || NotSent(err) {
-		t.Fatalf("a call abandoned waiting = %v, NotSent %v; want it sent", err, NotSent(err))
+
+	// The destination read the call; then the caller gave up on it.
+	waiting, stop := context.WithCancel(ctx)
+	failed := make(chan error, 1)
+	go func() { failed <- m.CallThreadPeer(waiting, p.id, "ThreadToolCall", nil) }()
+	select {
+	case <-p.called:
+	case <-ctx.Done():
+		t.Fatal("the destination never read the call")
+	}
+	stop()
+	if err := <-failed; !errors.Is(err, context.Canceled) || rpcclient.NotSent(err) {
+		t.Fatalf("a call the destination read = %v, NotSent %v; want it sent", err, rpcclient.NotSent(err))
+	}
+
+	// On a connection already proven for it, a call that cannot be encoded
+	// is never written.
+	query(t, m, p.id)
+	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolCall", nil, make(chan int)); err == nil || !rpcclient.NotSent(err) {
+		t.Fatalf("a call that cannot be encoded = %v, want it marked not sent", err)
+	}
+	select {
+	case <-p.called:
+		t.Fatal("the destination read a call that could not be encoded")
+	default:
 	}
 
 	for name, call := range map[string]func(context.Context) error{
@@ -151,7 +172,7 @@ func TestTheCarrierSaysWhetherAFailedCallWasSent(t *testing.T) {
 		},
 	} {
 		ctx, cancel := bounded()
-		if err := call(ctx); err == nil || !NotSent(err) {
+		if err := call(ctx); err == nil || !rpcclient.NotSent(err) {
 			t.Errorf("%s = %v, want it marked not sent", name, err)
 		}
 		cancel()
@@ -163,7 +184,7 @@ func TestTheCarrierSaysWhetherAFailedCallWasSent(t *testing.T) {
 	p.Close()
 	ctx, cancel = bounded()
 	defer cancel()
-	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolCall", nil); err == nil || !NotSent(err) {
+	if err := m.CallThreadPeer(ctx, p.id, "ThreadToolCall", nil); err == nil || !rpcclient.NotSent(err) {
 		t.Fatalf("a call to a computer that cannot be reached = %v, want it marked not sent", err)
 	}
 }
