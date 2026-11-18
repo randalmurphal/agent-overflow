@@ -31,11 +31,8 @@ func TestHelperRole(t *testing.T) {
 			t.Fatal(err)
 		}
 		fmt.Printf("held %d\n", held.Process.Pid)
-		// Until the test kills this process. A bare select would end it at
-		// once: with no other goroutine the runtime reports a deadlock.
-		for {
-			time.Sleep(time.Hour)
-		}
+		// Until the test kills this process, or is gone itself.
+		Hold()
 	case "held":
 		Hold()
 	case "temp":
