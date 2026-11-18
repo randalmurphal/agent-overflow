@@ -195,8 +195,10 @@ type ThreadPeerPoll struct {
 	Held []ThreadPeerAck `json:"held,omitempty"`
 }
 
-// ThreadPeerAck is one collected settlement. The destination may drop an
-// answer only once its latest revision has been acknowledged.
+// ThreadPeerAck names a request and the revision of its receipt the source
+// has durably recorded. When the destination may drop that answer is the
+// hold rule's (docs/specs/agent-thread-tools.md, "Wakes from another
+// computer").
 type ThreadPeerAck struct {
 	Token    string `json:"token"`
 	Revision int64  `json:"revision"`
