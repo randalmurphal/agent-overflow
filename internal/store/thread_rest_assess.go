@@ -19,6 +19,9 @@ import (
 
 // ThreadRestSources is what the store holds of one thread's rest.
 type ThreadRestSources struct {
+	// TurnOpen: its latest turn row is open (GetActiveTurn), committed by
+	// the turn's start whether or not its frame has been published.
+	TurnOpen bool
 	// Asking: a question it asked that nobody answered yet.
 	Asking bool
 	// AnswerDue: an answer to a request it made on its way to it
@@ -184,7 +187,7 @@ func readRestSources(q sqlQueryer, threads []string) (_ map[string]ThreadRestSou
 		var src ThreadRestSources
 		var background, workflow, wake, reminder sql.NullString
 		var unarmed string
-		if err := rows.Scan(&id, &src.Asking, &src.AnswerDue, &background, &workflow, &wake, &reminder, &src.OpenWork, &unarmed); err != nil {
+		if err := rows.Scan(&id, &src.TurnOpen, &src.Asking, &src.AnswerDue, &background, &workflow, &wake, &reminder, &src.OpenWork, &unarmed); err != nil {
 			return nil, fmt.Errorf("scan the sources: %w", err)
 		}
 		if background.Valid {
@@ -264,10 +267,12 @@ func remoteCommandRunningSQL(alias string) string {
 // idx_agent_wakes_thread, idx_thread_requests_open_created,
 // idx_thread_requests_nested_caller) or the thread's own rows
 // (idx_remote_watches_thread, and for the workflow runs the thread's bound
-// runs, idx_work_items_origin_thread). An accepted reminder is open
-// (settled_at IS NULL), so it is read among the open rows, not the
-// caller's history.
+// runs, idx_work_items_origin_thread), and its latest turn, one probe of
+// turns_thread_index. An accepted reminder is open (settled_at IS NULL),
+// so it is read among the open rows, not the caller's history.
 var threadRestSourcesSQL = `SELECT j.value,
+       COALESCE((SELECT t.completed_at IS NULL FROM turns t INDEXED BY turns_thread_index
+                  WHERE t.thread_id = j.value ORDER BY t.turn_index DESC LIMIT 1), 0),
        EXISTS (SELECT 1 FROM async_questions q INDEXED BY idx_async_questions_pending
                 WHERE q.thread_id = j.value AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered')
          AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = j.value AND t.archived = 0),

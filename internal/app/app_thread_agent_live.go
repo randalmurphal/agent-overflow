@@ -150,12 +150,14 @@ func (a *App) workerUnrest(threadID string) (workerRest, error) {
 
 // ownRest is the one answer to why threadID is not at rest by its own
 // state, the zero value when it is, from every source in the order a row
-// shows them: what it waits on (threadWaits: src, what the store holds,
-// with what memory holds of its background work and workflow runs); what
-// triage holds (workerHeldUnrest); the provider's timers
-// (workerTimerUnrest). A source added later is one more case in one of
-// them, and the event that changes it one more call of noteWorkerLiveness
-// or noteWorkerWaiting, and for one memory holds, of noteThreadRestChange.
+// shows them: what triage holds (workerHeldUnrest), then a turn whose row
+// is open (src.TurnOpen) as running; what it waits on (threadWaits: src,
+// what the store holds, with what memory holds of its background work and
+// workflow runs);
+// the provider's timers (workerTimerUnrest). A source added later is one
+// more case in one of them, and the event that changes it one more call
+// of noteWorkerLiveness or noteWorkerWaiting, and for one memory holds, of
+// noteThreadRestChange.
 //
 // The store is read before triage, as reassessWorker reads them: an answer
 // on its way stops being one when the turn it starts echoes it, so a read
@@ -164,6 +166,9 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	waits, _ := a.threadWaits(threadID, src)
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}
+	}
+	if src.TurnOpen {
+		return workerRest{unrest: workerRunning}
 	}
 	if waits.unrest != "" {
 		return waits

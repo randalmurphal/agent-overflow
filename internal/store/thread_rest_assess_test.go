@@ -298,6 +298,23 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 	insertRemoteWatch(t, s, "ended", "c", "pc", "ended", `{"id":"j","state":"finished"}`, "pending")
 	insertRemoteWatch(t, s, "dismissed", "c", "pc", "dismissed", `{}`, "dismissed")
 	insertBackgroundLaunch(t, s, "launch", "root", "npm test")
+	// c's latest turn is open; b's open turn is older than its latest,
+	// which ended.
+	for _, turn := range []struct {
+		thread string
+		index  int
+		ended  bool
+	}{{"c", 1, true}, {"c", 2, false}, {"b", 1, false}, {"b", 2, true}} {
+		id := fmt.Sprintf("%s:%d", turn.thread, turn.index)
+		if err := s.InsertTurn(Turn{TurnID: id, ThreadID: turn.thread, TurnIndex: turn.index, StartedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if turn.ended {
+			if err := s.UpdateTurnCompleted(id, 2, "end_turn", "", "", ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 
 	read, err := s.ReadSubtreeRest([]string{"root", "b"})
 	if err != nil {
@@ -318,7 +335,7 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 		"a": {AnswerDue: true, Wake: true, WakeKind: AgentWakeLoop, WakeLabel: "board", Reminder: true, ReminderNote: "check the board",
 			OpenWork: true, Unarmed: []string{"quiet-send"}},
 		"b": {Background: true, BackgroundDetail: "deploy", BackgroundComputer: "pc", Unarmed: []string{}},
-		"c": {Workflow: true, WorkflowGoal: "ship it", OpenWork: true, Unarmed: []string{}},
+		"c": {TurnOpen: true, Workflow: true, WorkflowGoal: "ship it", OpenWork: true, Unarmed: []string{}},
 	}
 	for id, src := range want {
 		if got := read.Sources[id]; fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", src) {
@@ -333,10 +350,10 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 
 // A subtree read costs its subtree: the virtual machine steps of its
 // statements are the same with nothing else on the computer as with busy
-// threads off the subtree, each with open work, a loop, a reminder, an
-// answer on its way, a running workflow run, 500 ended runs whose reports
-// may be owed, live background work, a command on another computer and a
-// remote spawn reporting open work, and as with a reached thread whose
+// threads off the subtree, each with an open turn, open work, a loop, a
+// reminder, an answer on its way, a running workflow run, 500 ended runs,
+// live background work, a command on another computer and a remote spawn
+// reporting open work, and as with a reached thread whose ended turns and
 // settled sends and asks number hundreds. One more thread below costs more.
 func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 	t.Parallel()
@@ -356,6 +373,18 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 		}
 		return statementVMSteps(t, s, subtreeReachedSQL, `["root"]`) + statementVMSteps(t, s, threadRestSourcesSQL, string(encoded))
 	}
+	// endedTurn gives the reached child a turn that ended.
+	endedTurn := func(index int, at int64) {
+		t.Helper()
+		turn := fmt.Sprintf("child:%d", index)
+		if err := s.InsertTurn(Turn{TurnID: turn, ThreadID: "child", TurnIndex: index, StartedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpdateTurnCompleted(turn, at+1, "end_turn", "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	endedTurn(0, 1)
 	quiet := steps("root", "child")
 
 	for i := range 200 {
@@ -383,7 +412,12 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 		}
 		insertBackgroundLaunch(t, s, "launch-"+id, id, "npm test")
 		insertRemoteWatch(t, s, "deploy-"+id, id, "pc", "deploy", `{}`, "pending")
-		// The reached child's history: settled sends and asks it made.
+		if err := s.InsertTurn(Turn{TurnID: id + ":1", ThreadID: id, TurnIndex: 1, StartedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		// The reached child's history: turns that ended, and settled sends
+		// and asks it made.
+		endedTurn(i+1, at)
 		for _, kind := range []string{ThreadRequestSend, ThreadRequestAsk} {
 			token := fmt.Sprintf("hist-%s-%03d", kind, i)
 			seedAgentRequest(t, s, token, "child", kind, "lead", true, at+8)
@@ -409,5 +443,5 @@ func TestASubtreeReadCostsItsSubtree(t *testing.T) {
 	if deeper <= busy {
 		t.Fatalf("one more thread below takes %d steps, the read before it %d; want more", deeper, busy)
 	}
-	t.Logf("a subtree read of two threads: %d steps, the same with 200 busy threads and 500 ended runs off it and 400 settled sends and asks below; a third thread: %d", quiet, deeper)
+	t.Logf("a subtree read of two threads: %d steps, the same with 200 busy threads and 500 ended runs off it and 200 ended turns and 400 settled sends and asks below; a third thread: %d", quiet, deeper)
 }
