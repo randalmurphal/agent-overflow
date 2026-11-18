@@ -75,6 +75,10 @@ type Manager struct {
 
 	mu       sync.Mutex
 	carriers map[string]*carrier
+	// verdicts holds, per computer whose last pairing it ended with its
+	// verdict (endSession), the name that pairing gave it, until a pairing
+	// replaces it or the end of its work takes it (TakeVerdict).
+	verdicts map[string]string
 	profiles *keyedlock.Registry
 	// closed refuses new carriers once Close has begun, and renewals joins
 	// the renewal goroutine each carrier runs.
@@ -105,7 +109,7 @@ func New(dir, label, platform string) (*Manager, error) {
 		return nil, errors.New("attachedbackends: a device profile directory is required")
 	}
 	life, endLife := context.WithCancel(context.Background())
-	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
+	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, verdicts: map[string]string{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -183,6 +187,9 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	}
 	m.wire(built, id)
 	m.carriers[id] = built
+	// A profile saved again since a verdict is a pairing that replaced the
+	// one it ended.
+	delete(m.verdicts, id)
 	return built, nil
 }
 
@@ -226,12 +233,14 @@ func (m *Manager) Close() {
 // people watching it. The carrier leaves so nothing keeps answering for a
 // session that is gone, its agent opt-in goes the way a removal takes it,
 // and the observer retires the row. A carrier a newer pairing has already
-// replaced is not the cached one, and nothing here touches it.
+// replaced is not the cached one, and nothing here touches it. The verdict
+// is kept, with the name the pairing gave the computer, for TakeVerdict.
 func (m *Manager) endSession(id string, held *carrier) {
 	m.mu.Lock()
 	current := m.carriers[id] == held
 	if current {
 		delete(m.carriers, id)
+		m.verdicts[id] = strings.Join(strings.Fields(displayName(held.client.Session())), " ")
 	}
 	m.mu.Unlock()
 	if !current {
@@ -240,6 +249,18 @@ func (m *Manager) endSession(id string, held *carrier) {
 	held.leave(errPairingEnded)
 	_ = m.writeAgentAccess(id, false)
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
+}
+
+// TakeVerdict reports whether the last pairing this installation held with
+// computer id ended by that computer's verdict and no pairing has been
+// saved since. It reports that once per verdict, with the name that pairing
+// gave the computer.
+func (m *Manager) TakeVerdict(id string) (name string, ended bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name, ended = m.verdicts[id]
+	delete(m.verdicts, id)
+	return name, ended
 }
 
 // Attached is one attached machine as the desktop's own admin surface
@@ -437,6 +458,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 		m.wire(built, link.BackendID)
 		m.carriers[link.BackendID] = built
 	}
+	delete(m.verdicts, link.BackendID)
 	m.mu.Unlock()
 	return Attachment{
 		ID:                 link.BackendID,
@@ -477,7 +499,8 @@ func (m *Manager) Remove(id string) error {
 		return err
 	}
 	if err := m.forgetLocked(id); err != nil {
-		return err
+		// The pairing stays, so neither does its exclusion.
+		return errors.Join(err, m.excludeOwnDevice(id, false))
 	}
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
 	return nil
@@ -490,8 +513,13 @@ func (m *Manager) Remove(id string) error {
 // rather than during it: m.mu is not held across the OS lock, and the
 // caller's profile lock is what keeps a second owner from being built from
 // the file in the meantime. A removal that failed retires the old owner
-// all the same, so the retry that rebuilds a carrier never has two.
+// all the same, so the retry that rebuilds a carrier never has two, and
+// gives back the agent opt-in it took, since the pairing stays.
 func (m *Manager) forgetLocked(id string) error {
+	access, err := m.AgentAccess()
+	if err != nil {
+		return err
+	}
 	if err := m.writeAgentAccess(id, false); err != nil {
 		return err
 	}
@@ -500,14 +528,17 @@ func (m *Manager) forgetLocked(id string) error {
 	delete(m.carriers, id)
 	m.mu.Unlock()
 	if held == nil {
-		return deviceclient.ForgetSession(m.dir, id)
+		err = deviceclient.ForgetSession(m.dir, id)
+	} else {
+		held.leave(errPairingForgotten)
+		if err = held.client.Forget(); err != nil {
+			held.client.Retire()
+		}
 	}
-	held.leave(errPairingForgotten)
-	if err := held.client.Forget(); err != nil {
-		held.client.Retire()
-		return err
+	if err != nil && access[id] {
+		return errors.Join(err, m.writeAgentAccess(id, true))
 	}
-	return nil
+	return err
 }
 
 // Rename sets the owner's own label for one machine, or clears it when

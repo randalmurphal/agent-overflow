@@ -195,8 +195,9 @@ the watch with it, leaves the command to run there until the owner grace
 sidebar reports it in its cleanup error; a move logs it. Deletion runs it
 before provider cleanup and again under the thread
 mutation lock, so a concurrent send cannot leave an orphaned command.
-Forgetting a computer waits for outstanding jobs and notification handoff;
-reconnect an offline computer and stop its jobs first. Finished jobs held for
+Forgetting a computer waits for outstanding jobs, notification handoff and
+cancels owed for stopped jobs whose notification was dismissed, which its
+refusal counts; reconnect an offline computer and stop its jobs first. Finished jobs held for
 archived conversations do not block it: the confirmation states how many
 results it discards, and confirming dismisses them. Pairing credentials must
 remain available while AO still needs to confirm or cancel its work.
@@ -208,7 +209,11 @@ toggles survive provider-session restarts within the app process; machine
 opt-ins persist across app restarts.
 Disabling destination agent access blocks new work while preserving owned job
 status, cancellation, log reads and artifact retrieval. Revoking the pairing
-ends all peer access. A disabled conversation MCP server blocks its tools.
+ends all peer access, and unless a new pairing replaces it the source ends
+that computer's jobs
+([the end of a pairing](../specs/agent-thread-tools.md#reaching-another-computer));
+the destination stops a job left running after the owner grace. A disabled
+conversation MCP server blocks its tools.
 
 ## Logs and artifacts
 

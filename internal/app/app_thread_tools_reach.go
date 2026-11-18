@@ -78,12 +78,16 @@ func (t threadToolsApp) Peer(ctx context.Context, computerID string) (threadtool
 			"This computer could not read its pairings. Check Remote access on it and try again.", err)
 	}
 	if !paired {
-		return nil, errorsx.Public(threadtools.CodeUnreachable,
-			fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
+		return nil, threadComputerNotPaired(computerID)
 	}
 	source, _ := threadtools.CallerFrom(ctx)
 	computer := threadtools.Computer{ID: row.ID, Name: attachedComputerName(row)}
 	return threadPeerClient{app: t.app, computer: computer, source: source}, nil
+}
+
+func threadComputerNotPaired(computerID string) error {
+	return errorsx.Public(threadtools.CodeUnreachable,
+		fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
 }
 
 // pairing reads one pairing by the backend id that computer calls itself
@@ -247,10 +251,6 @@ func (t threadToolsApp) startRemoteRequest(
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	peer, err := t.Peer(ctx, computerID)
-	if err != nil {
-		return threadtools.RequestAck{}, err
-	}
 	args, err := json.Marshal(call)
 	if err != nil {
 		return threadtools.RequestAck{}, fmt.Errorf("thread tools: encode %s for %s: %w", tool, computerID, err)
@@ -270,16 +270,11 @@ func (t threadToolsApp) startRemoteRequest(
 	// once no attempt can still be admitted (threadRequestNeverStarted).
 	row.AdmitUntil = time.Now().Add(threadRequestAdmissionWindow).UnixMilli()
 	row.NextCheck = row.AdmitUntil
-	// Admitted from the row to the destination's answer, so a rest of the
-	// caller stops a request the destination has settled or holds.
-	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
+	peer, done, err := t.admitRemoteRequest(ctx, caller, computerID, row)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
-	if err := t.app.store.InsertThreadRequest(row); err != nil {
-		return threadtools.RequestAck{}, err
-	}
 	reply, sent, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
 		Tool:        tool,
 		Args:        args,
@@ -352,6 +347,33 @@ func (t threadToolsApp) dispatchedAck(
 		known.ThreadID, known.Title, known.State = reply.TargetThreadID, reply.Title, reply.State
 	}
 	return known, nil
+}
+
+// admitRemoteRequest checks the pairing with computerID, admits the
+// caller's work and writes row with the name the person knows the computer
+// by, all inside the pairing's fence (lockComputerPairing), so a pairing
+// being ended takes the row with the rest or refuses it. The work stays admitted from the row to the
+// destination's answer, so a rest of the caller stops a request the
+// destination has settled or holds; the caller ends it with done.
+func (t threadToolsApp) admitRemoteRequest(
+	ctx context.Context, caller threadtools.Caller, computerID string, row store.ThreadRequest,
+) (_ threadtools.Peer, done func(), _ error) {
+	unlock := t.app.lockComputerPairing(computerID)
+	defer unlock()
+	peer, err := t.Peer(ctx, computerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	row.TargetComputerName = peer.Computer().Name
+	done, err = t.app.admitWork(caller.ThreadID, caller.Session)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := t.app.store.InsertThreadRequest(row); err != nil {
+		done()
+		return nil, nil, err
+	}
+	return peer, done, nil
 }
 
 // unownedSpawnNotice says when an owned spawn's thread was not owned on the

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -12,14 +13,38 @@ import (
 // Presentation uses saved profiles only; naming a result never probes a peer.
 func (a *App) remoteComputerNames() map[string]string {
 	names := map[string]string{}
+	for id, profile := range a.remoteComputers() {
+		names[id] = remoteProfileName(profile)
+	}
+	return names
+}
+
+// remoteComputers reads the pairings held now, by computer id.
+func (a *App) remoteComputers() map[string]attachedbackends.Attached {
+	held := map[string]attachedbackends.Attached{}
 	if a.backends != nil {
 		if profiles, err := a.backends.List(); err == nil {
 			for _, profile := range profiles {
-				names[profile.ID] = strings.Join(strings.Fields(profile.Name), " ")
+				held[profile.ID] = profile
 			}
 		}
 	}
-	return names
+	return held
+}
+
+func remoteProfileName(profile attachedbackends.Attached) string {
+	return strings.Join(strings.Fields(profile.Name), " ")
+}
+
+// remoteWatchComputerName names a command's computer as the person knows it:
+// by its current name while a pairing with it is held, else by the name the
+// command kept, its name at admission or, for a command from before names
+// were kept, its last name, which the end of the pairing wrote.
+func remoteWatchComputerName(computers map[string]attachedbackends.Attached, w store.RemoteWatch) string {
+	if held, paired := computers[w.ComputerID]; paired {
+		return remoteProfileName(held)
+	}
+	return w.ComputerName
 }
 
 // RemoteJobRecord is one of a conversation's tracked remote jobs as the

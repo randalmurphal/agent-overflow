@@ -793,10 +793,13 @@ started is never interrupted through a token. Refused for any other
 thread with the reason. A destination that predates the rest interrupts
 the turn, and the caller keeps its spawn wakes armed; a caller that
 predates it reads `thread_stopped` as an interruption.
-Cancelling a request the caller made disarms its `notify`, because the
-report already says what happened, but only once the cancel has been
-accepted: a cancel that never reached the destination leaves the wake
-armed, since the work is still running there and still owes an answer.
+Cancelling a request the caller made is told once, by the report. Here
+the cancel's settlement disarms `notify`. On a paired computer the report
+is claimed as the delivery before the cancel is sent, so a poll that
+collects the cancellation meanwhile queues no wake, and the claim marks
+it delivered once the report is written. A report that never reached the
+agent leaves the wake to tell it, and a cancel that never reached the
+destination leaves the work running there, still owing an answer.
 A request that already settled reports its settled state and
 `nothing_to_stop`, and is not settled a second time.
 A person's Stop in the caller's Agents segment cancels the same way but
@@ -1585,6 +1588,22 @@ then follows the local delivery rule above. Restart on either side
 loses nothing: the source keeps polling, the destination keeps the
 settlement until the source has taken it.
 
+The source takes a revision by acknowledging it, and the acknowledgement
+is a debt it records in the transaction that collects the revision. Every
+status call to that computer carries what it owes, as does a call of its
+own after a collection (an acknowledgement alone, which v0.0.19 reads),
+and only that computer taking the revision clears it; one that did not
+arrive is sent again after the error delay, across a restart. A status
+call names the revision the source already holds of each settled request
+it asks about, and the answer about one it holds leaves out the texts the
+source has: the answer and its cause for any held revision, and the late
+reply too when the held revision is the latest, so a holder of the
+settlement still gets the late reply. A computer that does not name them
+is answered in full, and the source reads a full answer of a revision it
+holds as already collected. Upgrading from v0.0.19, which kept no such
+debt, owes one acknowledgement again for each answer the other computer
+could still hold, at the revision the source holds.
+
 An open request is polled every five seconds, or every two while a wait
 is parked on it. A poll for a due request also asks about the other
 requests the same thread still has open on that computer, so answers
@@ -1608,7 +1627,14 @@ naming the answer's age. After a day the destination drops the answer
 text but keeps the request's identity, so the source settles the
 request `expired` ("answered at <time>, not collected in time") when it
 next asks, never `refused`, and a retry with that token never runs the
-work again. Nothing is held indefinitely, and nothing needs a lease: a
+work again. A late reply dropped that way is recorded on the request with
+when it arrived, whenever the source first learns of it, before it
+acknowledges that revision: after it collected the first answer, which
+stays standing, or with the collection that settles the request
+`expired` when both were dropped first. `thread_status` reports
+`late_reply_expired_at`, and the Agents row reads "finished, late reply
+expired" or "expired, late reply expired" with the time in its details.
+Nobody is woken for it. Nothing is held indefinitely, and nothing needs a lease: a
 scratch thread is deleted the moment its answer is stored, whether or
 not the caller is around; the answer lives in the request record, not
 in the thread.
@@ -1907,8 +1933,31 @@ the pairing is live. The destination's own switch is not consulted, and
 neither is the Agent remote tools opt-in that `ao-remote-tools` needs:
 that opt-in exists because a remote command runs a shell, and nothing
 here does.
-Revoking the pairing ends everything between the two computers;
-outstanding requests settle `errored` with that reason.
+Work belongs to the computer, not to one pairing with it: a request or
+command records the computer and the name it had at admission, and calls
+for it use whatever pairing with that computer is held. Pairing the
+computer again continues its work, which is collected, acknowledged,
+cancelled, archived and deleted as before. The work ends only when the
+pairing ends and nothing replaces it, in one transition over both ledgers
+keyed by the computer and taken under the fence admission takes, so
+nothing admitted after it is touched and nothing admitted before it is
+missed. It runs in three places: the person forgetting the computer, once
+its profile is gone; the other computer's verdict that this one is
+revoked, only while no pairing with it has been saved since; and the
+sweeps, for a computer with no saved pairing, which also end the work of
+a forget whose ledger write failed. A profile that cannot be read is not
+"no pairing": the sweep puts that computer's work off by its error delay.
+An answer that arrives once no pairing is saved changes nothing. The
+transition settles every open request `errored` with the reason; every
+settled one leaves the poll with its answer kept and owes no
+acknowledgement; every command there not known to have finished is
+recorded as finished with an unknown outcome and the reason, its owed
+cancel settled, and is told to its thread once, the Background row and
+the command's row saying why; and the computer is asked nothing more
+about it. While a pairing is held, rows and messages name the computer by
+its current name; once none is, by the name the record kept, which the
+transition writes from the computer's last name onto records that kept
+none.
 
 The peer methods are `ThreadToolCall` (tool name, arguments, and the
 caller's thread identity) and `ThreadToolRequestStatus`, added to the
@@ -2013,15 +2062,18 @@ in [Request identity and durability](#request-identity-and-durability).
   and a move logs it. An unreachable scratch ask finishes on its own in
   read-only mode and its answer expires after a day.
 - Forgetting a computer with outstanding requests is refused once with
-  the list; confirming abandons them locally: the requests settle
-  `errored` ("computer forgotten"), their wakes are dropped, and no
-  claim is made that the other computer stopped anything. A lost
-  machine can always be forgotten. A pairing that ends, by a forget, a
-  new pairing with the same computer or that computer's verdict, closes
-  every connection open under it. A call still on its way fails as
-  unanswered, since that computer may have acted on it; a later call is
-  refused unsent with that reason, so an export copy stops and removes
-  what it staged.
+  how many there are and the oldest twenty; confirming ends the pairing
+  ([reaching another computer](#reaching-another-computer)) with every
+  one of them settled `errored` ("computer forgotten") and its wake
+  dropped, and no claim is made that the other computer stopped
+  anything. A lost machine can be forgotten whenever the
+  [Forget eligibility rule](../architecture/remote-commands.md#agent-use)
+  for its remote commands allows; its thread requests never hold it. A
+  pairing that ends, by a forget, a new pairing with the same computer or
+  that computer's verdict, closes every connection open under it. A call still on its way
+  fails as unanswered, since that computer may have acted on it; a later
+  call is refused unsent with that reason, so an export copy stops and
+  removes what it staged.
 - Flipping a computer's switch toggles the server in every live session
   on that computer except one holding an open request from another
   computer, which keeps it until that request settles. Its threads stay

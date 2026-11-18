@@ -5,6 +5,7 @@
   // The Background row's digest (BackgroundTaskTrayDigest) shows a provider
   // subagent's transcript; a thread has a pane of its own for that.
   import type { ThreadAgentRow } from '../../stores/bindings';
+  import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   let { row, id }: { row: ThreadAgentRow; id: string } = $props();
@@ -29,6 +30,12 @@
     {#if row.answer}
       <dt class="text-fg-hint">Answer</dt>
       <dd class="whitespace-pre-wrap break-words text-fg-muted" data-testid="agent-tray-row-digest-answer">{row.answer}</dd>
+    {/if}
+    {#if row.lateReplyExpiredAt}
+      <dt class="text-fg-hint">Late reply</dt>
+      <dd class="break-words text-fg-muted" data-testid="agent-tray-row-digest-late-expired">
+        Arrived {formatCalendarDate(row.lateReplyExpiredAt)}, {formatTimeOfDay(row.lateReplyExpiredAt)}, and expired there before it was collected
+      </dd>
     {/if}
     {#if row.nestedUnavailable}
       <dt class="text-fg-hint">Not shown</dt>

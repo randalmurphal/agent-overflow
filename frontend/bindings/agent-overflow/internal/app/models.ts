@@ -8256,6 +8256,13 @@ export class ThreadAgentRow {
      * LateReply is a reply that arrived after the request settled.
      */
     "lateReply"?: boolean;
+
+    /**
+     * LateReplyExpiredAt is when such a reply reached a paired computer that
+     * dropped it before this one collected it
+     * (threadtools.RequestState.LateReplyExpiredAt).
+     */
+    "lateReplyExpiredAt"?: number;
     "createdAt": number;
     "settledAt"?: number;
 
@@ -8984,8 +8991,10 @@ export class ThreadMCPServer {
 }
 
 /**
- * ThreadPeerAck is one collected settlement. The destination may drop an
- * answer only once its latest revision has been acknowledged.
+ * ThreadPeerAck names a request and the revision of its receipt the source
+ * has durably recorded. When the destination may drop that answer is the
+ * hold rule's (docs/specs/agent-thread-tools.md, "Wakes from another
+ * computer").
  */
 export class ThreadPeerAck {
     "token": string;
@@ -9162,6 +9171,15 @@ export class ThreadPeerPoll {
     "tokens"?: string[];
     "ack"?: ThreadPeerAck[];
 
+    /**
+     * Held names the revision the source already holds of settled tokens it
+     * asks about, which includes the settlement: the answer about one leaves
+     * out its Answer and Cause, and its LateReply too when the source holds
+     * the receipt's revision. A source that does not send it is answered in
+     * full.
+     */
+    "held"?: ThreadPeerAck[];
+
     /** Creates a new ThreadPeerPoll instance. */
     constructor($$source: Partial<ThreadPeerPoll> = {}) {
 
@@ -9174,12 +9192,16 @@ export class ThreadPeerPoll {
     static createFrom($$source: any = {}): ThreadPeerPoll {
         const $$createField0_0 = $$createType8;
         const $$createField1_0 = $$createType171;
+        const $$createField2_0 = $$createType171;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tokens" in $$parsedSource) {
             $$parsedSource["tokens"] = $$createField0_0($$parsedSource["tokens"]);
         }
         if ("ack" in $$parsedSource) {
             $$parsedSource["ack"] = $$createField1_0($$parsedSource["ack"]);
+        }
+        if ("held" in $$parsedSource) {
+            $$parsedSource["held"] = $$createField2_0($$parsedSource["held"]);
         }
         return new ThreadPeerPoll($$parsedSource as Partial<ThreadPeerPoll>);
     }

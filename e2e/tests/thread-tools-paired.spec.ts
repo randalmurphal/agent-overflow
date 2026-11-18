@@ -3026,6 +3026,8 @@ test('forgetting a computer with open requests refuses once, then abandons them'
     refusal = (error as Error).message;
   }
   expect(refusal).toContain('thread_requests_open');
+  // Earlier cases in this file can leave their own requests open there.
+  expect(refusal).toMatch(/This computer has \d+ agent thread requests? still open there: /);
   expect(refusal).toContain(spawn.value!.token);
   expect(await home.rpc<Array<{ id: string }>>('ListBackends')).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: remoteID })]),

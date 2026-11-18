@@ -31,8 +31,8 @@ const spawnLineageSQL = `kind = 'spawn' AND target_thread_id <> ''
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
 	SET lineage_only = 1, answer = NULL, answer_kind = '', answer_cause = '', answer_cause_arg = '', late_reply = NULL, late_reply_at = NULL,
-	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
-	    nested_open = 0, target_provider = '', polling = 0
+	    late_reply_expired = 0, answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0,
+	    issue = '', wake_issue = '', expires_at = NULL, nested_open = 0, target_provider = '', polling = 0, ack_owed = 0
 	WHERE lineage_only = 0`
 
 // The retention floor's four sets, each stated as the partial predicate of

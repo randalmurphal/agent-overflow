@@ -171,13 +171,14 @@ func TestAPolledPromptRoutedBackToTheAskerIsRoutedHere(t *testing.T) {
 		t.Fatal(err)
 	}
 	computer := "linked-computer"
+	holdPairing(t, here.app, computer)
 	if err := here.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token: token, CallerThreadID: here.caller.ID, Kind: store.ThreadRequestSpawn, State: store.ThreadRequestUnconfirmed,
 		TargetComputerID: computer, TargetThreadID: worker.ID, Notify: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := here.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
+	if _, err := here.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	listing, err := here.app.ListThreadAgentRows(t.Context(), here.caller.ID)

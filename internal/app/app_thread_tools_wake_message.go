@@ -329,7 +329,7 @@ func (a *App) threadWakeFor(message threadWakeMessage) threadtools.Wake {
 			source := threadtools.WakeSource{ThreadID: row.TargetThreadID}
 			if row.TargetComputerID != "" {
 				source.Title = row.TargetThreadTitle
-				source.Computer, source.ComputerID = a.threadTools().threadToolsBackendName(row.TargetComputerID)
+				source.Computer, source.ComputerID = a.threadTools().requestComputerName(row)
 			} else if row.TargetThreadID != "" {
 				if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 					source.Title = thread.Title

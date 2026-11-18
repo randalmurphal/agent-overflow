@@ -497,6 +497,9 @@ func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, ti
 	if lateReply {
 		state.AnswerKind = threadtools.AnswerReply
 	}
+	if row.LateReplyExpired {
+		state.LateReplyExpiredAt = row.LateReplyAt
+	}
 	if !threadRequestSettled(row) && blocked {
 		state.State = threadtools.RequestBlocked
 	}
@@ -822,13 +825,25 @@ const threadCancelTimeout = 20 * time.Second
 // settled from the receipt the reply carries, through the same collector a
 // poll would have used.
 //
-// userStop is a person's Stop in the Agents tray: the wake stays armed, so
-// the caller's agent is told, and the destination words the settlement as
-// the user's.
+// The agent's own cancel is told by this call's reply. The reply is claimed
+// as the delivery before the cancel is sent, so a poll that collects the
+// cancelled receipt meanwhile queues no message, and the claim is released
+// once the reply has been written, which marks the cancellation delivered.
+// A reply that never reached the agent leaves it owed, and its wake tells
+// it; so does a reply that found the request already settled some other way,
+// whose answer the report does not carry.
+//
+// userStop is a person's Stop in the Agents tray: nothing is claimed, so
+// the caller's agent is told by its wake, and the destination words the
+// settlement as the user's.
 func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, userStop bool) (threadtools.CancelReport, error) {
 	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID, RemoteRequest: true}
 	if _, err := t.Peer(ctx, row.TargetComputerID); err != nil {
 		return threadtools.CancelReport{}, err
+	}
+	if !userStop {
+		_, _, release := t.app.beginRequestWait(ctx, row.CallerThreadID, []string{row.Token})
+		defer t.releaseAfterResponse(ctx, release)
 	}
 	call, cancel := context.WithTimeout(ctx, threadCancelTimeout)
 	defer cancel()
@@ -853,14 +868,6 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		// finishes later with nobody to tell.
 		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)
 	}
-	// Disarmed only now, and before the reply's settlement is applied: the
-	// report the caller is about to read says what happened, so the same
-	// cancellation must not arrive again as an unread message.
-	if row.Notify && !userStop {
-		if _, err := t.app.store.SetThreadRequestNotify(row.Token, false); err != nil {
-			return threadtools.CancelReport{}, err
-		}
-	}
 	report.Effect = reply.Effect
 	if report.Effect == "" {
 		report.Effect = threadtools.EffectNothing
@@ -878,8 +885,15 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		}
 	}
 	report.State = threadtools.RequestCancelled
-	if settled, found, err := t.app.store.GetThreadRequest(row.Token); err == nil && found {
+	settled, found, err := t.app.store.GetThreadRequest(row.Token)
+	if err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	if found {
 		report.State = threadRequestStateWord(settled.State)
+		if !userStop && settled.State == store.ThreadRequestCancelled {
+			t.markDeliveredInline(ctx, row.Token, false)
+		}
 	}
 	return report, nil
 }

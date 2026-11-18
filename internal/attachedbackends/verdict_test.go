@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -169,7 +171,16 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 		t.Fatalf("manifest after revocation = %v, want the typed verdict", err)
 	}
 	if len(ended) != 1 || ended[0].ID != "peer" || ended[0].Reason != RemovedByComputer {
-		t.Errorf("observer told %v, want the one ended pairing with its reason", ended)
+		t.Fatalf("observer told %v, want the one ended pairing with its reason", ended)
+	}
+	// Nothing replaced the pairing the verdict ended, so acting on it ends
+	// that computer's work, once, naming it as that pairing did (with no
+	// nickname or name, its address).
+	if name, ended := manager.TakeVerdict("peer"); !ended || name != p.URL {
+		t.Errorf("the verdict reads ended=%v naming %q, want ended naming the computer", ended, name)
+	}
+	if _, ended := manager.TakeVerdict("peer"); ended {
+		t.Error("the verdict was reported twice")
 	}
 	if manager.Carrier(context.Background(), "peer") != nil {
 		t.Error("a revoked pairing still has a carrier")
@@ -179,6 +190,37 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 	}
 	if profiles := manager.Attached(); len(profiles) != 0 {
 		t.Errorf("attached after revocation = %+v, want none", profiles)
+	}
+}
+
+// A verdict ends nothing once a pairing with that computer is saved again,
+// here by another process, which this manager first sees when it opens the
+// profile: the work continues under the pairing that replaced the ended one.
+func TestAVerdictEndsNothingOnceAPairingIsSavedAgain(t *testing.T) {
+	remotetest.Require(t)
+	manager, dir := newManager(t)
+	p := newPeer(t)
+	seedPeer(t, dir, p, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	held, err := manager.carrier(ctx, "peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := held.Manifest(ctx); err != nil {
+		t.Fatalf("manifest before the revocation: %v", err)
+	}
+	p.revoke()
+	if _, err := held.Manifest(ctx); !errors.Is(err, deviceclient.ErrSessionEnded) {
+		t.Fatalf("manifest after revocation = %v, want the verdict", err)
+	}
+
+	seedPeer(t, dir, p, false)
+	if _, err := manager.carrier(ctx, "peer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ended := manager.TakeVerdict("peer"); ended {
+		t.Fatal("a verdict on the replaced pairing still reads as the last pairing's end")
 	}
 }
 
@@ -261,5 +303,56 @@ func TestRemoveWithNoLiveCarrierForgetsTheFile(t *testing.T) {
 	}
 	if profiles := manager.Attached(); len(profiles) != 0 {
 		t.Errorf("attached after removal = %+v, want none", profiles)
+	}
+}
+
+// A removal that fails leaves the pairing as it was, its own-device
+// exclusion included: the exclusion is what a removal adds first.
+func TestARemovalThatFailsLeavesThePairingUnexcluded(t *testing.T) {
+	manager, dir := newManager(t)
+	seed(t, dir, deviceclient.Session{
+		BackendID: "aaa", Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1",
+	})
+	if err := os.WriteFile(filepath.Join(dir, "agent-access.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Remove("aaa"); err == nil {
+		t.Fatal("a removal whose agent access cannot be written succeeded")
+	}
+	if _, err := deviceclient.LoadSession(dir, "aaa"); err != nil {
+		t.Fatalf("the failed removal took the profile: %v", err)
+	}
+	if excluded, err := manager.ownDeviceExcluded("aaa"); err != nil || excluded {
+		t.Fatalf("the failed removal left the computer excluded=%v (%v)", excluded, err)
+	}
+}
+
+// A removal whose profile cannot be deleted gives back the agent opt-in it
+// took first: the pairing stays, and so does what it was allowed.
+func TestARemovalThatFailsKeepsTheAgentOptIn(t *testing.T) {
+	manager, dir := newManager(t)
+	const id = "0f6f8d3e-6f8b-4c39-9d5e-3a8f8f3f1c11"
+	seed(t, dir, deviceclient.Session{
+		BackendID: id, Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1",
+	})
+	if err := manager.SetAgentAccess(id, true); err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(dir, deviceclient.SessionsDirName)
+	if err := os.Chmod(sessions, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sessions, 0o700) })
+	if err := manager.Remove(id); err == nil {
+		t.Fatal("a removal whose profile cannot be deleted succeeded")
+	}
+	if err := os.Chmod(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deviceclient.LoadSession(dir, id); err != nil {
+		t.Fatalf("the failed removal took the profile: %v", err)
+	}
+	if access, err := manager.AgentAccess(); err != nil || !access[id] {
+		t.Fatalf("the failed removal left agent access %v (%v), want it kept", access, err)
 	}
 }

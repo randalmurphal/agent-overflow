@@ -187,10 +187,18 @@ type ThreadPeerRequest struct {
 type ThreadPeerPoll struct {
 	Tokens []string        `json:"tokens,omitempty"`
 	Ack    []ThreadPeerAck `json:"ack,omitempty"`
+	// Held names the revision the source already holds of settled tokens it
+	// asks about, which includes the settlement: the answer about one leaves
+	// out its Answer and Cause, and its LateReply too when the source holds
+	// the receipt's revision. A source that does not send it is answered in
+	// full.
+	Held []ThreadPeerAck `json:"held,omitempty"`
 }
 
-// ThreadPeerAck is one collected settlement. The destination may drop an
-// answer only once its latest revision has been acknowledged.
+// ThreadPeerAck names a request and the revision of its receipt the source
+// has durably recorded. When the destination may drop that answer is the
+// hold rule's (docs/specs/agent-thread-tools.md, "Wakes from another
+// computer").
 type ThreadPeerAck struct {
 	Token    string `json:"token"`
 	Revision int64  `json:"revision"`
@@ -314,7 +322,7 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread request"); err != nil {
 		return ThreadPeerPollReply{}, err
 	}
-	if len(poll.Tokens) > threadPeerTokenLimit || len(poll.Ack) > threadPeerTokenLimit {
+	if len(poll.Tokens) > threadPeerTokenLimit || len(poll.Ack) > threadPeerTokenLimit || len(poll.Held) > threadPeerTokenLimit {
 		return ThreadPeerPollReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("A request poll carries at most %d tokens.", threadPeerTokenLimit), nil)
 	}
@@ -333,6 +341,10 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 			return ThreadPeerPollReply{}, err
 		}
 	}
+	held := make(map[string]int64, len(poll.Held))
+	for _, h := range poll.Held {
+		held[h.Token] = max(held[h.Token], h.Revision)
+	}
 	reply := ThreadPeerPollReply{Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
 	for _, token := range poll.Tokens {
 		// Read before the receipt: a handler that is gone by now wrote any
@@ -344,6 +356,15 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 		state, err := a.threadPeerRequestState(ctx, owner, token)
 		if err != nil {
 			return ThreadPeerPollReply{}, err
+		}
+		if revision, ok := held[token]; ok && state.Known && revision > 0 && state.Revision > 0 {
+			// The source holds the settlement at any revision, and the late
+			// reply too at the receipt's own: it takes neither again, so
+			// only the texts it lacks are sent.
+			state.Answer, state.Cause = "", nil
+			if state.Revision <= revision {
+				state.LateReply = ""
+			}
 		}
 		state.Admitting = admitting && !state.Known
 		reply.Requests = append(reply.Requests, state)

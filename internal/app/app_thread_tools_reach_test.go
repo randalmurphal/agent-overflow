@@ -50,6 +50,8 @@ type reachPair struct {
 	// destBus is what the destination's router emits to.
 	destBus *capturedEventBus
 	manager *attachedbackends.Manager
+	// profile is the device profile directory manager keeps its pairing in.
+	profile string
 	// computer is the destination's id as the source's pairings name it.
 	computer string
 	// project is a project registered on the DESTINATION. A spawn there
@@ -108,7 +110,8 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 		source: source, dest: dest, destWire: wire, destBus: destBus, sourceID: sourceID,
 		project: project.ID, dbPath: dbPath, settingsDir: settingsDir,
 	}
-	pair.manager = pair.pairWith(t, "source")
+	pair.profile = t.TempDir()
+	pair.manager = pair.pairWithIn(t, pair.profile, "source")
 	source.backends = pair.manager
 	pair.manager.SetChanged(source.backendSetChanged)
 	pair.computer = pair.attachedID(t, pair.manager)
@@ -147,7 +150,13 @@ func publishReachIdentity(t *testing.T, app *App, backendID string) {
 // ownership test needs.
 func (p *reachPair) pairWith(t *testing.T, label string) *attachedbackends.Manager {
 	t.Helper()
-	manager, err := attachedbackends.New(t.TempDir(), label, "test")
+	return p.pairWithIn(t, t.TempDir(), label)
+}
+
+// pairWithIn is pairWith over the device profile directory dir.
+func (p *reachPair) pairWithIn(t *testing.T, dir, label string) *attachedbackends.Manager {
+	t.Helper()
+	manager, err := attachedbackends.New(dir, label, "test")
 	if err != nil {
 		t.Fatalf("attachedbackends.New: %v", err)
 	}
@@ -544,6 +553,16 @@ type peerFaults struct {
 	// reword, when set, rewrites each request a ThreadToolRequestStatus
 	// reply reports, as a computer of another build would word it.
 	reword atomic.Pointer[func(*ThreadPeerRequest)]
+	// refuseAcks fails every ThreadToolRequestStatus that carries an
+	// acknowledgement before this computer reads it: the call is lost on
+	// the way there.
+	refuseAcks atomic.Bool
+	// asked, when set, sees each ThreadToolRequestStatus as it arrives, as
+	// a computer of another build would read it.
+	asked atomic.Pointer[func(*ThreadPeerPoll)]
+	// answered, when set, sees each ThreadToolCall this computer answered
+	// before its reply leaves, and can hold the reply there.
+	answered atomic.Pointer[func(ThreadPeerCall)]
 	// released answers a spawn or ask whose token holds a receipt naming no
 	// thread yet as v0.0.19 does: it settles the receipt interrupted and
 	// refuses, while the attempt making the thread runs on.
@@ -634,6 +653,9 @@ func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (T
 		return ThreadPeerReply{}, errors.New("the connection dropped")
 	}
 	reply, err := p.App.ThreadToolCall(ctx, call)
+	if answered := p.answered.Load(); answered != nil {
+		(*answered)(call)
+	}
 	if err != nil {
 		return reply, err
 	}
@@ -650,6 +672,12 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 		case <-ctx.Done():
 			return ThreadPeerPollReply{}, ctx.Err()
 		}
+	}
+	if p.refuseAcks.Load() && len(poll.Ack) > 0 {
+		return ThreadPeerPollReply{}, errors.New("the acknowledgement was lost on the way")
+	}
+	if asked := p.asked.Load(); asked != nil {
+		(*asked)(&poll)
 	}
 	reply, err := p.App.ThreadToolRequestStatus(ctx, poll)
 	if reword := p.reword.Load(); err == nil && reword != nil {
@@ -1758,8 +1786,9 @@ func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
 	if receipt.State != store.ThreadReceiptCancelled {
 		t.Fatalf("the destination's receipt is %q, want cancelled", receipt.State)
 	}
-	if row := pair.request(t, spawn.Token); row.Notify {
-		t.Fatalf("a cancelled request kept its wake: %+v", row)
+	// The report told the agent, so no wake tells it again.
+	if row := pair.request(t, spawn.Token); row.DeliveredHow != store.ThreadWakeInline {
+		t.Fatalf("a cancelled request was not delivered by its report: %+v", row)
 	}
 	// The settlement came back on the cancel's reply, so no poll will
 	// acknowledge it.

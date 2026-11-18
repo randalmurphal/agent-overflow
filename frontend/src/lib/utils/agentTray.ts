@@ -161,7 +161,7 @@ export function sameAgentRow(a: ThreadAgentRow, b: ThreadAgentRow): boolean {
 }
 
 /** The word a row's shown state (agentRowShownState) reads as. */
-export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'worker' | 'lateReply'>): string {
+export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'worker' | 'lateReply' | 'lateReplyExpiredAt'>): string {
   switch (agentRowShownState(row)) {
     case 'unconfirmed':
     case 'accepted':
@@ -176,7 +176,11 @@ export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'worker' 
     case 'replied':
       return row.lateReply ? 'replied late' : 'replied';
     case 'finished':
-      return row.lateReply ? 'finished, replied late' : 'finished';
+      if (row.lateReply) return 'finished, replied late';
+      // A paired computer dropped the late reply before it was collected.
+      return row.lateReplyExpiredAt ? 'finished, late reply expired' : 'finished';
+    case 'expired':
+      return row.lateReplyExpiredAt ? 'expired, late reply expired' : 'expired';
     case 'errored':
       return 'failed';
     case 'cancelled':
@@ -208,8 +212,10 @@ export function agentRowBlockedLabel(
 }
 
 /** Whether a row has a digest to open: what it did, waits on, said or answered. */
-export function agentRowHasDigest(row: Pick<ThreadAgentRow, 'activity' | 'blockedDetail' | 'lastMessage' | 'answer' | 'nestedUnavailable'>): boolean {
-  return Boolean(row.activity || row.blockedDetail || row.lastMessage || row.answer || row.nestedUnavailable);
+export function agentRowHasDigest(
+  row: Pick<ThreadAgentRow, 'activity' | 'blockedDetail' | 'lastMessage' | 'answer' | 'nestedUnavailable' | 'lateReplyExpiredAt'>,
+): boolean {
+  return Boolean(row.activity || row.blockedDetail || row.lastMessage || row.answer || row.nestedUnavailable || row.lateReplyExpiredAt);
 }
 
 /**

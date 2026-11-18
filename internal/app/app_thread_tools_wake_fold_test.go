@@ -196,15 +196,19 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 	f.mockClaude(t, "noted")
 	f.holdCallerTurn(t)
 	computer := uuid.NewString()
+	holdPairing(t, f.app, computer)
 	token := f.seedRemoteRequest(t, computer)
 
-	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, ThreadPeerRequest{
+	wakes, err := f.app.applyThreadPeerRequest(token, computer, ThreadPeerRequest{
 		Token: token, Known: true, State: store.ThreadReceiptReplied, Title: "Release checklist",
 		Answer: "the tag is pushed", AnswerKind: store.ThreadAnswerReply,
 		Revision: 1, SettledAt: time.Now().UnixMilli(),
 	}, threadPeerHearing{at: time.Now()})
-	if err != nil || revision != 1 {
-		t.Fatalf("applyThreadPeerRequest = revision %d err %v", revision, err)
+	if err != nil {
+		t.Fatalf("applyThreadPeerRequest: %v", err)
+	}
+	if owed := f.request(t, token).AckOwed; owed != 1 {
+		t.Fatalf("acknowledgement owed = %d, want revision 1", owed)
 	}
 	if len(wakes) != 1 || wakes[0].token != token || wakes[0].late {
 		t.Fatalf("wakes owed = %+v, want the reply's", wakes)
@@ -218,13 +222,15 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 
 // An answer from another computer that finished and then took a late reply
 // is collected whole, with the reply as its one wake, and the revision it
-// acknowledges is the one it holds. An acknowledgement lost after the
-// collection (a crash, a failed call) is sent again by the next poll that
-// finds the destination still behind, and by no other.
+// owes the acknowledgement of is the one it holds, recorded with the
+// collection. An acknowledgement the destination reports it never took,
+// though this computer cleared it, is owed again by the next poll that finds
+// the destination still behind, and by no other.
 func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	computer := uuid.NewString()
+	holdPairing(t, f.app, computer)
 	token := f.seedRemoteRequest(t, computer)
 	now := time.Now().UnixMilli()
 	answer := ThreadPeerRequest{
@@ -234,31 +240,47 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 		Revision: 2, SettledAt: now - 1000, ExpiresAt: now + time.Hour.Milliseconds(),
 	}
 
-	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
-	if err != nil || revision != 2 {
-		t.Fatalf("applyThreadPeerRequest = revision %d err %v; want 2", revision, err)
+	wakes, err := f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
+	if err != nil {
+		t.Fatalf("applyThreadPeerRequest: %v", err)
 	}
 	if len(wakes) != 1 || wakes[0] != (threadWakeRef{token: token, late: true}) {
 		t.Fatalf("wakes owed = %+v, want the late reply's alone", wakes)
 	}
 	row := f.request(t, token)
 	if row.State != store.ThreadRequestFinished || string(row.Answer) != "original final" ||
-		string(row.LateReply) != "actual requested reply" || row.LateReplyAt != now || row.Revision != 2 {
-		t.Fatalf("request = %+v, want the final and the late reply at revision 2", row)
+		string(row.LateReply) != "actual requested reply" || row.LateReplyAt != now || row.Revision != 2 || row.AckOwed != 2 {
+		t.Fatalf("request = %+v, want the final and the late reply at revision 2, its acknowledgement owed", row)
 	}
 
-	// The acknowledgement never arrived: the destination still reports
-	// nothing collected, and the poll acknowledges again, writing nothing.
-	revision, wakes, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
-	if err != nil || revision != 2 || len(wakes) != 0 {
-		t.Fatalf("poll after a lost ack = revision %d wakes %+v err %v; want revision 2 and no wake", revision, wakes, err)
+	// Still owed: a poll that finds the destination behind writes nothing.
+	wakes, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
+	if err != nil || len(wakes) != 0 {
+		t.Fatalf("poll before the ack = wakes %+v err %v; want no wake", wakes, err)
 	}
 	if again := f.request(t, token); again.Revision != row.Revision || again.UpdatedAt != row.UpdatedAt {
-		t.Fatalf("poll after a lost ack rewrote the request: %+v", again)
+		t.Fatalf("poll before the ack rewrote the request: %+v", again)
+	}
+	// Cleared, but the destination never took it: owed again.
+	ack := store.ThreadRequestAck{Token: token, ComputerID: computer, Revision: 2}
+	if err := f.app.store.ClearThreadRequestAcks([]store.ThreadRequestAck{ack}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if owed := f.request(t, token).AckOwed; owed != 2 {
+		t.Fatalf("acknowledgement owed after a lost ack = %d, want 2", owed)
+	}
+	if err := f.app.store.ClearThreadRequestAcks([]store.ThreadRequestAck{ack}); err != nil {
+		t.Fatal(err)
 	}
 	answer.CollectedRevision = 2
-	if revision, _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil || revision != 0 {
-		t.Fatalf("poll after the ack = revision %d err %v; want nothing to acknowledge", revision, err)
+	if _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if owed := f.request(t, token).AckOwed; owed != 0 {
+		t.Fatalf("acknowledgement owed after the ack = %d, want none", owed)
 	}
 }
 

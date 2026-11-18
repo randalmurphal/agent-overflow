@@ -250,9 +250,15 @@ func TestArchivedRemoteCompletionsAreKeptUntilTheirComputerIsForgotten(t *testin
 	unfinished := watch(computer, archived.ID, "running")
 	liveFinished := watch(computer, live.ID, "failed")
 	otherComputer := watch(elsewhere, archived.ID, "succeeded")
-	held, other, err := s.PendingRemoteWatchesForComputer(computer)
-	if err != nil || held != 1 || other != 2 {
-		t.Fatalf("pending for the computer: held %d, other %d, %v; want 1 and 2", held, other, err)
+	if _, _, stopped, err := s.PendingRemoteWatchesForComputer(computer); err != nil || stopped != 0 {
+		t.Fatalf("a stop that owes no cancel counted %d, %v", stopped, err)
+	}
+	if err := s.OweRemoteCancel(computer, running.RequestID, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	held, other, stopped, err := s.PendingRemoteWatchesForComputer(computer)
+	if err != nil || held != 1 || other != 2 || stopped != 1 {
+		t.Fatalf("pending for the computer: held %d, other %d, stopped %d, %v; want 1, 2 and the stopped command whose cancel is owed", held, other, stopped, err)
 	}
 	threads, err := s.DismissArchivedRemoteCompletions(computer)
 	if err != nil || !slices.Equal(threads, []string{archived.ID}) {
@@ -262,7 +268,7 @@ func TestArchivedRemoteCompletionsAreKeptUntilTheirComputerIsForgotten(t *testin
 		t.Fatalf("forgetting dropped the wrong watches: held %q, unfinished %q, live %q, other computer %q",
 			notification(finished), notification(unfinished), notification(liveFinished), notification(otherComputer))
 	}
-	if held, other, err := s.PendingRemoteWatchesForComputer(computer); err != nil || held != 0 || other != 2 {
+	if held, other, _, err := s.PendingRemoteWatchesForComputer(computer); err != nil || held != 0 || other != 2 {
 		t.Fatalf("after the dismissal: held %d, other %d, %v; want 0 and 2", held, other, err)
 	}
 }

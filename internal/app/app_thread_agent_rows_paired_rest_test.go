@@ -141,7 +141,7 @@ func TestAnOlderPairedComputersFinishedSpawnSaysItsRestIsUnreported(t *testing.T
 		if answer.AnswerKind == "" {
 			answer.AnswerKind = store.ThreadAnswerFinal
 		}
-		if _, _, err := f.app.collectRemoteThreadRequest(f.request(t, token), answer); err != nil {
+		if _, err := f.app.collectRemoteThreadRequest(f.request(t, token), answer); err != nil {
 			t.Fatalf("collectRemoteThreadRequest: %v", err)
 		}
 		return f.request(t, token)

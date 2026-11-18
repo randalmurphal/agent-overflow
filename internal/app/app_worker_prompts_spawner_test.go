@@ -424,6 +424,7 @@ func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
 	}
 	here := newRequestFixture(t)
 	computer := "peer-routed-computer"
+	holdPairing(t, here.app, computer)
 	if err := here.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token: token, CallerThreadID: here.caller.ID, Kind: store.ThreadRequestSend, State: store.ThreadRequestUnconfirmed,
 		TargetComputerID: computer, TargetThreadID: there.worker.ID, Notify: true,
@@ -446,7 +447,7 @@ func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
 		if err := json.Unmarshal(wire, &answer); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := here.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
+		if _, err := here.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}

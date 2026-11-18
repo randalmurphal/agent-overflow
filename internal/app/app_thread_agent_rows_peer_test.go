@@ -1183,7 +1183,8 @@ func TestThreadAgentRowsForgetWaitsForAnAnswerBeingRecorded(t *testing.T) {
 }
 
 // A spawn on a computer no longer paired is asked nothing: each read of its
-// row says so, queues no call and keeps no answer.
+// row says so, naming the computer as it was known, queues no call and keeps
+// no answer.
 func TestThreadAgentRowsAskNothingOfAComputerNoLongerPaired(t *testing.T) {
 	t.Parallel()
 	var peer *stalledAgentsPeer
@@ -1197,6 +1198,11 @@ func TestThreadAgentRowsAskNothingOfAComputerNoLongerPaired(t *testing.T) {
 		t.Fatalf("forget the computer: %v", err)
 	}
 	a.threadRequestsWG.Wait()
+	// Named as the person knew it when the spawn was made.
+	name := pair.request(t, pair.spawn.Token).TargetComputerName
+	if name == "" {
+		t.Fatal("the spawn kept no name for its computer")
+	}
 	calls := peer.calls.Load()
 	for read := range 3 {
 		listing := pair.listRows(t)
@@ -1204,7 +1210,7 @@ func TestThreadAgentRowsAskNothingOfAComputerNoLongerPaired(t *testing.T) {
 		if !ok {
 			t.Fatalf("read %d: the spawn is not listed: %+v", read, listing.Rows)
 		}
-		if want := "That computer is no longer paired"; row.NestedUnavailable != want {
+		if want := name + " is no longer paired"; row.NestedUnavailable != want {
 			t.Fatalf("read %d: the row says %q, want %q", read, row.NestedUnavailable, want)
 		}
 		if _, nested := agentRowByToken(listing.Rows, pair.grand); nested {

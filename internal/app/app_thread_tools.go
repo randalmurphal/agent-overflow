@@ -467,11 +467,28 @@ func (t threadToolsApp) threadToolsBackendName(backendID string) (name, id strin
 		}
 		return "", backendID
 	}
-	label := row.Nickname
-	if label == "" {
-		label = row.Name
+	return attachedLabel(row), row.ID
+}
+
+// attachedLabel is what a pairing calls its computer: the person's nickname,
+// else the computer's own name.
+func attachedLabel(row attachedbackends.Attached) string {
+	if row.Nickname != "" {
+		return row.Nickname
 	}
-	return label, row.ID
+	return row.Name
+}
+
+// requestComputerName names the computer a request went to as the person
+// knows it: by its current name while a pairing with it is held, else by the
+// name the request kept, its name at admission or, for a request from before
+// names were kept, its last name, which the end of the pairing wrote.
+func (t threadToolsApp) requestComputerName(row store.ThreadRequest) (name, id string) {
+	held, paired := t.threadToolsPairing(row.TargetComputerID)
+	if !paired {
+		return row.TargetComputerName, row.TargetComputerID
+	}
+	return attachedLabel(held), held.ID
 }
 
 // threadToolsPairing finds the pairing for a computer id, the backend id

@@ -324,6 +324,11 @@ type RequestState struct {
 	// when its turn ends: it cannot report whether the thread came to rest,
 	// so what that thread started may still be running.
 	RestUnreported bool `json:"rest_unreported,omitempty"`
+	// LateReplyExpiredAt is when a `thread_reply` reached a `finished`
+	// request on a paired computer after its answer, in Unix milliseconds,
+	// for a reply that computer dropped before this one collected it.
+	// Answer is still the first answer.
+	LateReplyExpiredAt int64 `json:"late_reply_expired_at,omitempty"`
 }
 
 // ThreadState is one watched thread's live state.
