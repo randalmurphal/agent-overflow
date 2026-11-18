@@ -24,12 +24,13 @@ type ownerUpdates struct {
 }
 
 type ownerPeer struct {
-	origin       attachedbackends.PeerRead
-	cancel       context.CancelFunc
-	done         chan struct{}
-	reprobe      chan struct{}
-	legacy       bool
-	ready        bool
+	origin  attachedbackends.PeerRead
+	cancel  context.CancelFunc
+	done    chan struct{}
+	reprobe chan struct{}
+	legacy  bool
+	ready   bool
+	// Only tokens with a local request targeting this peer enter owed, one entry per link or request.
 	owed         map[string]ownerObligation
 	launch       string
 	disconnected <-chan struct{}

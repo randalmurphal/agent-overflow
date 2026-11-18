@@ -111,10 +111,7 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 				poll.StructuralAck = append(poll.StructuralAck, edit.SpawnRevisionAck)
 			}
 		}
-		if len(poll.StructuralAck) == 0 {
-			return nil
-		}
-		return a.backends.CallThreadPeerOn(call, id, transport.CapabilityThreadToolsV2, "ThreadToolRequestStatus", &ThreadPeerPollReply{}, poll)
+		return a.ackOwnerEdits(call, id, launch, poll.StructuralAck)
 	}
 	var reply ThreadPeerPollReply
 	started := time.Now()
@@ -186,8 +183,14 @@ func (a *App) readOwnerBatch(ctx context.Context, id, launch string, keys []stri
 	if len(reply.Requests) > 0 {
 		a.sendOwedThreadRequestAcks(id)
 	}
-	if len(acks) > 0 {
-		return a.backends.CallThreadPeerOn(call, id, transport.CapabilityThreadToolsV2, "ThreadToolRequestStatus", &ThreadPeerPollReply{}, ThreadPeerPoll{Launch: launch, StructuralAck: acks})
+	return a.ackOwnerEdits(call, id, launch, acks)
+}
+
+func (a *App) ackOwnerEdits(ctx context.Context, id, launch string, acks []store.SpawnRevisionAck) error {
+	if len(acks) == 0 {
+		return nil
 	}
-	return nil
+	call, cancel := context.WithTimeout(ctx, threadPollCallTimeout)
+	defer cancel()
+	return a.backends.CallThreadPeerOn(call, id, transport.CapabilityThreadToolsV2, "ThreadToolRequestStatus", &ThreadPeerPollReply{}, ThreadPeerPoll{Launch: launch, StructuralAck: acks})
 }

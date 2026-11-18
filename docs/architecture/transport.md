@@ -617,9 +617,9 @@ The highest-value transport tests cover:
 `ThreadOwnerChanges` serves one bounded wait for the authenticated device
 on its existing carrier. The connection hello and each wait answer name
 the backend launch. A replaced carrier or launch invalidates outstanding
-reads. The caller records activity and structural revisions as owed before advancing
-its cursor. Under backpressure it can wait for prompts without consuming ordinary
-activity. Closing the listening connection releases its device log.
+reads. The caller records changes for its local requests before advancing its
+cursor and continues waiting while independent readers apply ordinary and
+prompt changes. Closing the listening connection releases its device log.
 
 `ThreadOwnerRecovery` pages by stable keys through held prompts, active
 work, uncollected answers and structural revisions. `ThreadToolRequestStatus` carries batched

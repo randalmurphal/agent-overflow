@@ -4060,11 +4060,6 @@ export type OwnDeviceMember = owndevices$0.Member;
  */
 export class OwnerChanges {
     /**
-     * PromptsOnly reads priority changes without acknowledging ordinary activity.
-     */
-    "promptsOnly"?: boolean;
-
-    /**
      * AfterRevision is the largest structural revision recorded as owed.
      */
     "afterRevision"?: number;
@@ -4115,18 +4110,18 @@ export class OwnerChanges {
      * Creates a new OwnerChanges instance from a string or object.
      */
     static createFrom($$source: any = {}): OwnerChanges {
+        const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType8;
-        const $$createField6_0 = $$createType59;
+        const $$createField5_0 = $$createType59;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tokens" in $$parsedSource) {
-            $$parsedSource["tokens"] = $$createField4_0($$parsedSource["tokens"]);
+            $$parsedSource["tokens"] = $$createField3_0($$parsedSource["tokens"]);
         }
         if ("promptTokens" in $$parsedSource) {
-            $$parsedSource["promptTokens"] = $$createField5_0($$parsedSource["promptTokens"]);
+            $$parsedSource["promptTokens"] = $$createField4_0($$parsedSource["promptTokens"]);
         }
         if ("structural" in $$parsedSource) {
-            $$parsedSource["structural"] = $$createField6_0($$parsedSource["structural"]);
+            $$parsedSource["structural"] = $$createField5_0($$parsedSource["structural"]);
         }
         return new OwnerChanges($$parsedSource as Partial<OwnerChanges>);
     }
@@ -4136,11 +4131,6 @@ export class OwnerChanges {
  * OwnerCursor records the activity and structural changes already received.
  */
 export class OwnerCursor {
-    /**
-     * PromptsOnly reads priority changes without acknowledging ordinary activity.
-     */
-    "promptsOnly"?: boolean;
-
     /**
      * AfterRevision is the largest structural revision recorded as owed.
      */
