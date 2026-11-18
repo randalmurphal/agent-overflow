@@ -129,12 +129,14 @@ the transcript both show a running call. The tool server emits
 `provider:background_tasks_changed` when a wait ends with the job still
 running, so both surfaces flip together.
 The source backend tracks outstanding jobs across frontend disconnects
-and source restarts. It polls only outstanding jobs, four checks at a time,
-with a slower retry after connection errors. It sleeps until the earliest
-due watch or owed cancel, and each write that adds or brings one forward
-wakes it (`nudgeRemoteWatches`); with no outstanding job it does no work.
-Successive checks of one host reuse its pooled connection
-(`internal/attachedbackends/peerconns.go`). An unreachable host is not an
+and source restarts, resuming from the table at boot. A pass checks up to 32
+due jobs, four at a time; a job is due again 5 s after a check, 30 s after a
+failed one, and 5 s later while a tool call is parked on it. Between passes
+the watcher sleeps until the earliest due watch or owed cancel, on a timer
+never set shorter than 2 s, and each write that adds or brings one forward
+wakes it at once (`nudgeRemoteWatches`, `app_remote_watch_loop.go`); with no
+outstanding job it does no work. Successive checks of one host reuse its
+pooled connection (`internal/attachedbackends/peerconns.go`). An unreachable host is not an
 exited process. A start whose reply was lost is checked against the destination
 once no retry is in flight: a host holding no receipt for it never accepted the
 request, and that job is released rather than watched forever.
