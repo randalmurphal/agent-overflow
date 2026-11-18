@@ -48,12 +48,6 @@ export const WORKFLOW_TOOLS_SERVER = 'ao-workflow-tools';
 export interface AoToolNames {
   computer(id: string): string;
   job(requestId: string): string;
-  /**
-   * The computer's name on the thread's record of the command `requestId`
-   * there, which names it as the pairing that started the command did
-   * (`internal/app/app_remote_presentation.go#remoteWatchComputerName`).
-   */
-  jobComputer(computerId: string, requestId: string): string;
   page(pageId: string): string;
   /** A thread's title. `id` may be the unambiguous prefix the model typed. */
   thread(id: string): string;
@@ -69,7 +63,6 @@ export interface AoToolNames {
 export const NO_AO_NAMES: AoToolNames = {
   computer: () => '',
   job: () => '',
-  jobComputer: () => '',
   page: () => '',
   thread: () => '',
   threadId: (id) => (isFullThreadId(id) ? id : ''),
@@ -184,18 +177,6 @@ function quoted(text: string): string {
 export function jobName(requestId: string, names: AoToolNames): string {
   if (!requestId) return '';
   return names.job(requestId) || `job ${requestId.slice(0, SHORT_ID_CHARS)}`;
-}
-
-/**
- * The name of the computer a tool input targets: a command's record names
- * it as the pairing that started the command did, which outlives that
- * pairing; otherwise as this client knows it now, else as the call named it.
- */
-function inputComputerName(input: Input, names: AoToolNames): string {
-  const computer = str(input, 'computer_id');
-  if (!computer) return '';
-  const request = str(input, 'request_id');
-  return (request ? names.jobComputer(computer, request) : '') || names.computer(computer) || str(input, 'computer_name');
 }
 
 /** A computer by name, or `computer c0ffee11` when this client cannot name it. */
@@ -837,7 +818,7 @@ export function aoToolPresentation(
     what: clip(fullWhat),
     fullWhat,
     computerId,
-    computerName: computerId ? inputComputerName(input, names) : '',
+    computerName: computerId ? names.computer(computerId) || str(input, 'computer_name') : '',
     requestId: server.computerField ? str(input, 'request_id') : '',
     result,
   };
@@ -899,7 +880,7 @@ export function aoToolFacts(
   const input = readInput(itemMeta);
   const facts: AoToolFact[] = [];
   const computer = str(input, 'computer_id');
-  if (computer) facts.push({ label: 'computer', value: inputComputerName(input, names) || computer });
+  if (computer) facts.push({ label: 'computer', value: names.computer(computer) || str(input, 'computer_name') || computer });
   const request = str(input, 'request_id');
   if (request && mcp.tool !== 'remote_run') facts.push({ label: 'job', value: names.job(request) || request });
   const page = str(input, 'page_id');
