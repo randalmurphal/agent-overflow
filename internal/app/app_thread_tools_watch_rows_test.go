@@ -34,6 +34,7 @@ func moveAway(t *testing.T, app *App, threadID string) {
 // the calling computer resolved them and before that computer serves the
 // wait. Each is reported as what happened to it, their resting sibling as
 // it stands, and the computer is not reported as one that did not answer.
+// The thread found gone first is the wake.
 func TestAThreadThatLeftDuringAWaitIsReportedBesideItsSiblings(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -56,6 +57,11 @@ func TestAThreadThatLeftDuringAWaitIsReportedBesideItsSiblings(t *testing.T) {
 	result := pair.call(t, "thread_status", `{"thread_ids":["`+deleted.ID+`","`+moved.ID+`","`+resting.ID+`"],"wait_seconds":30}`)
 	if result["errors"] != nil {
 		t.Fatalf("errors = %v, want none: the computer answered", result["errors"])
+	}
+	// The deleted thread, found gone first, ended the wait; reading its
+	// resting sibling fills that sibling's row and takes nothing from it.
+	if result["woke_on"] != deleted.ID {
+		t.Fatalf("woke_on = %v, want %s, the thread found gone", result["woke_on"], deleted.ID)
 	}
 	threads, _ := result["threads"].([]any)
 	if len(threads) != 3 {

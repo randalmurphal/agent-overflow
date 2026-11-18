@@ -97,7 +97,9 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 			rows[index] = state
 		}
 	}
-	wokeOn := cmp.Or(watched.wokeOn, gone)
+	// A thread found gone was the wake before the others were read, so
+	// their read fills their rows and never replaces it.
+	wokeOn := cmp.Or(gone, watched.wokeOn)
 	// A wait of zero is a read, not a wait that ran out.
 	result := statusResult{WokeOn: wokeOn, TimedOut: wokeOn == "" && wait > 0, Errors: failures}
 	for _, failure := range watched.failures {
