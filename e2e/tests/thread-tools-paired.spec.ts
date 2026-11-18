@@ -1764,7 +1764,7 @@ test('a reconnected owner sees resting worker edits and confirms only surviving 
   await expect.poll(() => offered(kept.caller)).toBe(false);
 
   expect(await home.stop()).toBe(true);
-  const db = new DatabaseSync(join(homeDataDir, 'agent-overflow.db'));
+  const db = new DatabaseSync(join(home.bootstrap.dataDir, 'agent-overflow.db'));
   try {
     expect(db.prepare('UPDATE thread_requests SET settled_at = ? WHERE token = ? AND settled_at IS NOT NULL')
       .run(Date.now() - 31 * 86_400_000, old.token).changes).toBe(1);
