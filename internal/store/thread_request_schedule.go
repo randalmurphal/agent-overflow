@@ -50,6 +50,23 @@ func (s *Store) RescheduleThreadRequest(token string, nextCheck int64, attempts 
 	return requireRowsAffected(result, fmt.Sprintf("store: reschedule thread request %s", token))
 }
 
+// DispatchThreadRequest records, before one more attempt of a request on
+// another computer is sent, until when that attempt's handler could admit
+// it there, and keeps the poller away until then: a status asked while the
+// attempt is out could find the token not yet admitted. The deadline never
+// moves earlier, since an earlier attempt's handler may still be running.
+func (s *Store) DispatchThreadRequest(token string, admitUntil int64) error {
+	result, err := s.db.Exec(
+		`UPDATE thread_requests SET admit_until = MAX(admit_until, ?1), next_check = ?1, updated_at = ?2
+		  WHERE token = ?3`,
+		admitUntil, nowMillis(), token,
+	)
+	if err != nil {
+		return fmt.Errorf("store: dispatch thread request %s: %w", token, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: dispatch thread request %s", token))
+}
+
 // RetireThreadRequestPoll takes one row out of the poller for good. A
 // settled request whose destination has nothing left to report is retired:
 // the late reply landed, or the destination's hold on the request ran out.

@@ -775,7 +775,9 @@ no version and an older build would read an unknown effect as an
 interruption; its note for a request on another computer says nothing
 could be stopped from here and the message may still be read. A request
 that has already settled stops nothing, even when the turn that answered
-it is still running. By `label`: stops the
+it is still running. A spawn or ask whose thread is still being made
+settles cancelled with `nothing_to_stop`
+([durability](#request-identity-and-durability)). By `label`: stops the
 caller's loop or watch with that label, and the run it has in flight.
 By `thread_id`:
 a thread the caller spawned is brought to rest
@@ -1274,14 +1276,49 @@ from its receipt when that settled without it, otherwise as
 
 Across computers the destination stores its own row for the request
 (token, owning device, source computer, source thread, target thread,
-state, answer) and deduplicates on it: a retry with the same token
-returns the existing acceptance, and the source retries a lost reply
-itself, with the same token, a bounded number of times. A spawn or ask
-whose acceptance is still unknown after that returns
-`thread_request_unconfirmed` with the token; the watcher (below)
-reconciles it against the destination, and a destination holding no row
-for it settles the request `refused` so the caller is never left
-waiting for something that never started.
+state, answer) and deduplicates on it: a retry with the same token is
+answered from that row as it stands, and nothing is checked or started
+again. While the attempt that wrote the row is still making its thread
+(a worktree add, a fork), a retry is answered `accepted` with no thread
+yet and the source collects the thread from a later poll. A row that
+names no thread is settled only by the attempt making its thread, when
+creation fails; by a cancel, after which that attempt removes the
+thread it made instead of naming it; and by the destination's boot, as
+never started, since the attempt making it ended with the last run. A
+retry never settles it. An attempt that removes its thread takes back
+what it made with it only while that is still its own: the checkout it
+cut unless it holds a change or an untracked file, the branch it made
+unless the branch moved or another checkout has it, and a group it made
+while the group is empty. Its refusal names a checkout or branch it kept
+and why.
+
+An attempt whose failure may have reached the destination, a lost reply
+or a dropped connection, is tried again with the same token, up to three
+attempts. A send makes nothing and is sent again to any destination. A
+spawn or an ask is sent again only to a destination that advertises
+`thread-tools.v2`: an older one would settle a row whose thread is still
+being made and let that thread run, so such a call is never sent to it
+twice, whatever its status says. When no attempt brought back the
+destination's row and any may have reached it, the request stays
+`unconfirmed` and the call returns its token, never only an error, even
+when a later attempt was refused, because the lost reply may have been
+an acceptance. When the row came back but this computer could not record
+it or read the request back, the call returns the token with the state
+the destination reported and says what failed. Either way the watcher
+(below) reconciles the request against the destination, asking at its
+normal pace once the call has returned, so a receipt the destination
+holds is collected within one poll. A destination that holds no row for
+the token never started it only when that answer is conclusive: it
+advertises `thread-tools.v2` and its status answer does not mark the
+token as still being admitted (it marks a token a spawn, send or ask
+handler there is running for, from the handler's entry to its exit), or
+the request's admission deadline has passed. The deadline is one call's
+wait after the last attempt was sent, when that attempt's handler can no
+longer admit the token; it is kept on the request's row, so it holds
+across a restart of the calling computer. A conclusive answer settles
+the request `refused`; until then the row waits for the next poll and
+nothing is reported. The caller is never left waiting for something that
+never started.
 
 A request that cannot be started is answered by its own call. A spawn
 whose worktree git refuses, a send whose message the target's queue
@@ -1299,11 +1336,12 @@ was created before its prompt failed to reach it keeps the thread and
 names it in the refusal, which tells the caller to `thread_send` the
 prompt there instead of spawning again. The record keeps
 exactly what the call returned, which for another computer names that
-computer. Across computers this holds for a refusal that answers the
-first attempt, whether that computer's handler wrote it or its
-transport refused the pairing's credentials or scope. One that answers a retry after a lost reply settles nothing,
-because the lost reply may have been an acceptance: the request stays
-`unconfirmed` and the poller settles it from the destination's record.
+computer. Across computers this holds when no attempt could have started
+the request: each was refused by that computer's handler or its
+transport (the pairing's credentials or scope), or never left this
+computer because the pairing could not be loaded or no connection
+opened, which the refusal says ("nothing was sent"). A computer that is
+asleep is refused that way at once.
 
 `ParentThreadID` is not reused for lineage, since it means "Codex
 subagent child" and would mark the caller busy while its spawns run.
@@ -1870,10 +1908,12 @@ outstanding requests settle `errored` with that reason.
 
 The peer methods are `ThreadToolCall` (tool name, arguments, and the
 caller's thread identity) and `ThreadToolRequestStatus`, added to the
-`CallAgentPeer` allowlist and advertised as a `thread-tools` capability
-in the manifest so an older destination fails as `thread_unsupported`
-("Update Agent Overflow on that computer") rather than with a confusing
-method error. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
+`CallAgentPeer` allowlist and advertised as the `thread-tools.v1`
+capability in the hello so an older destination fails as
+`thread_unsupported` ("Update Agent Overflow on that computer") rather
+than with a confusing method error. Each later generation of the thread
+peer protocol is advertised beside it as `thread-tools.v2` and so on,
+and peer behavior newer than v1 is keyed on that capability. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
 leaves that capability out of its hello, which is how an end-to-end test
 stands up such a destination; no other boot honors it. A `thread_ids`
 wait is forwarded over `ThreadToolWatch`, which ends there when the
@@ -1939,9 +1979,8 @@ Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the
 names so the model can retry with them, and raw causes kept in host
 logs. A request that could not be started is the exception and names
-its cause (see Request identity and durability). A failed network
-reply does not establish whether a spawn or ask
-happened; the token and `thread_status` do.
+its cause. What a spawn, send or ask returns when its reply is lost is
+in [Request identity and durability](#request-identity-and-durability).
 
 ## Lifecycle interactions
 

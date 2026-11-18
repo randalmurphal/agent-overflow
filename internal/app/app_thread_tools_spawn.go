@@ -34,9 +34,12 @@ import (
 // Nothing here announces a fresh thread or an owned fork: the spawn's
 // request names and places the thread first, and acceptRequest announces
 // it then, so a thread that will be owned is never listed in a sidebar.
+// The worktree a fresh thread's creation cut and the group it made are
+// returned with it, and are the caller's to undo while no request names
+// the thread.
 func (t threadToolsApp) createSpawnedThread(
 	ctx context.Context, call threadtools.SpawnCall, create spawnOptions,
-) (store.Thread, error) {
+) (store.Thread, madeWithThread, error) {
 	var source store.Thread
 	project := create.ProjectID
 	if call.FromThread != "" {
@@ -45,30 +48,45 @@ func (t threadToolsApp) createSpawnedThread(
 		// already refused a from_thread on another computer.
 		var err error
 		if source, err = t.localThread(call.FromThread); err != nil {
-			return store.Thread{}, err
+			return store.Thread{}, madeWithThread{}, err
 		}
 		project = source.ProjectID
 	}
 	var group store.ThreadGroup
-	made := false
+	var made madeWithThread
 	if call.Group != "" {
 		var err error
-		group, made, err = t.app.store.EnsureThreadGroup(project, call.Group)
+		var madeGroup bool
+		group, madeGroup, err = t.app.store.EnsureThreadGroup(project, call.Group)
 		if err != nil {
-			return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			return store.Thread{}, madeWithThread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
 				"That spawn could not join group %q: %v. Nothing was created; make the request again.", call.Group, err), err)
 		}
-		if made {
+		if madeGroup {
 			// Before the thread: a client that receives the thread's groupId
 			// before the group row has nowhere to render it.
 			t.app.emitThreadGroup("create", group)
+			made.group = &group
 		}
 	}
-	thread, err := t.createSpawned(ctx, call, create, source, group.ID)
-	if err != nil && made {
-		t.dropSpawnGroup(group)
+	thread, cut, err := t.createSpawned(ctx, call, create, source, group.ID)
+	if err != nil {
+		if made.group != nil {
+			t.dropSpawnGroup(*made.group)
+		}
+		return store.Thread{}, madeWithThread{}, err
 	}
-	return thread, err
+	made.cut = cut
+	return thread, made, nil
+}
+
+// madeWithThread is what a request's creation made for its thread besides
+// the thread: the worktree it cut and a group it made. Until the request
+// names the thread they are the creation's to take back
+// (discardUnnamedThread).
+type madeWithThread struct {
+	cut   threadapp.CutWorktree
+	group *store.ThreadGroup
 }
 
 // dropSpawnGroup takes back a group a spawn made for a thread it then did
@@ -96,7 +114,7 @@ type spawnOptions struct {
 
 func (t threadToolsApp) createSpawned(
 	ctx context.Context, call threadtools.SpawnCall, spawn spawnOptions, source store.Thread, groupID string,
-) (store.Thread, error) {
+) (store.Thread, threadapp.CutWorktree, error) {
 	create := spawn.CreateThreadOptions
 	create.GroupID = groupID
 	if call.FromThread == "" {
@@ -104,16 +122,15 @@ func (t threadToolsApp) createSpawned(
 		// the row once its request has placed it.
 		endWork, err := t.app.workAdmission.begin(ctx)
 		if err != nil {
-			return store.Thread{}, err
+			return store.Thread{}, threadapp.CutWorktree{}, err
 		}
 		defer endWork()
-		thread, _, err := t.app.createThreadRowCutting(ctx, create, spawn.worktree, false)
-		return thread, err
+		return t.app.createThreadRowCutting(ctx, create, spawn.worktree, false)
 	}
 	// Everything else on the new thread was resolved in spawnThreadOptions
 	// from the caller's settings and the call's overrides, so it reaches
 	// the fork here rather than being dropped for the source's.
-	return t.app.forkThreadTail(ctx, source.ID, forkOptions{
+	thread, err := t.app.forkThreadTail(ctx, source.ID, forkOptions{
 		Mode:         create.Mode,
 		RuntimeMode:  create.RuntimeMode,
 		Title:        create.Title,
@@ -124,6 +141,7 @@ func (t threadToolsApp) createSpawned(
 		Instructions: call.Instructions,
 		SpawnLevel:   call.Level,
 	})
+	return thread, threadapp.CutWorktree{}, err
 }
 
 // spawnThreadOptions resolves what a spawn inherits and validates what it

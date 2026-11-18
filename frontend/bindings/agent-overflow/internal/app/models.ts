@@ -9263,6 +9263,14 @@ export class ThreadPeerReply {
 export class ThreadPeerRequest {
     "token": string;
     "known": boolean;
+
+    /**
+     * Admitting marks, in a status answer, a token with no receipt here that
+     * a spawn, send or ask handler is still running for, and so may still
+     * admit (peerAdmissions). A computer on thread-tools.v2 sends it; from
+     * one, an unknown token without it was never started there.
+     */
+    "admitting"?: boolean;
     "kind"?: string;
     "targetThreadId"?: string;
     "title"?: string;
@@ -9392,18 +9400,18 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField9_0 = $$createType176;
-        const $$createField23_0 = $$createType168;
+        const $$createField10_0 = $$createType176;
         const $$createField24_0 = $$createType168;
+        const $$createField25_0 = $$createType168;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cause" in $$parsedSource) {
-            $$parsedSource["cause"] = $$createField9_0($$parsedSource["cause"]);
+            $$parsedSource["cause"] = $$createField10_0($$parsedSource["cause"]);
         }
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField23_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField24_0($$parsedSource["answerAgent"]);
         }
         if ("lateReplyAgent" in $$parsedSource) {
-            $$parsedSource["lateReplyAgent"] = $$createField24_0($$parsedSource["lateReplyAgent"]);
+            $$parsedSource["lateReplyAgent"] = $$createField25_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }

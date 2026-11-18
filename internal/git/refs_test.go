@@ -399,9 +399,9 @@ func TestAttachWorktreeAtATagDetachesAndAllowsSeveral(t *testing.T) {
 	core := NewCore()
 	for _, name := range []string{"one", "two"} {
 		path := filepath.Join(t.TempDir(), name)
-		created, err := core.AttachWorktreeAt(repo, path, TagRef("dup"))
-		if err != nil || created {
-			t.Fatalf("%s: AttachWorktreeAt(tag) = %v, %v", name, created, err)
+		madeTip, err := core.AttachWorktreeAt(repo, path, TagRef("dup"))
+		if err != nil || madeTip != "" {
+			t.Fatalf("%s: AttachWorktreeAt(tag) = %v, %v", name, madeTip, err)
 		}
 		if branch := core.CurrentBranch(path); branch != "" || revParse(t, path, "HEAD") != tagTip {
 			t.Fatalf("%s: worktree on %q at %s, want detached at %s", name, branch, revParse(t, path, "HEAD"), tagTip)
@@ -421,9 +421,9 @@ func TestAttachWorktreeAtATagUndoesAFailedCheckout(t *testing.T) {
 	t.Parallel()
 	repo, _, _ := collisionRepo(t)
 	failCheckoutHook(t, repo)
-	created, err := NewCore().AttachWorktreeAt(repo, filepath.Join(t.TempDir(), "tag"), TagRef("dup"))
-	if err == nil || created || strings.Contains(err.Error(), "undo") {
-		t.Fatalf("AttachWorktreeAt = %v, %v; want a clean failure", created, err)
+	madeTip, err := NewCore().AttachWorktreeAt(repo, filepath.Join(t.TempDir(), "tag"), TagRef("dup"))
+	if err == nil || madeTip != "" || strings.Contains(err.Error(), "undo") {
+		t.Fatalf("AttachWorktreeAt = %v, %v; want a clean failure", madeTip, err)
 	}
 	assertAddUndone(t, repo, "dup", true)
 }
@@ -453,7 +453,7 @@ func TestCreateWorktreeFromRefCutsTheNamedKind(t *testing.T) {
 	}
 
 	local := filepath.Join(t.TempDir(), "local-tag")
-	if err := core.CreateWorktreeFromRef(repo, local, TagRef("dup"), "cut-local"); err != nil {
+	if _, err := core.CreateWorktreeFromRef(repo, local, TagRef("dup"), "cut-local"); err != nil {
 		t.Fatal(err)
 	}
 	for _, branch := range []string{"cut-tag", "cut-local"} {

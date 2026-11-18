@@ -18,7 +18,10 @@ package store
 // `owner_op_seq` numbers the owner operations owed for it, and
 // `thread_owner_ops` keeps what S still owes D, one row per link, past the
 // spawn row's own delete (no foreign key). idx_thread_requests_remote_spawn_target
-// finds the remote spawn that names a thread there.
+// finds the remote spawn that names a thread there. A request's
+// `admit_until` is the last moment a handler there could still admit an
+// attempt S sent, 0 when none is out: past it, a destination that does not
+// hold the token never started it.
 const remoteOwnershipMigrationVersion = 158
 
 const remoteOwnershipV158SQL = `
@@ -32,6 +35,7 @@ CREATE INDEX idx_thread_request_receipts_owner_seen
     ON thread_request_receipts(owner_seen_at) WHERE spawn_link = 1;
 
 ALTER TABLE thread_requests ADD COLUMN owner_op_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_requests ADD COLUMN admit_until INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_thread_requests_remote_spawn_target
     ON thread_requests(target_computer_id, target_thread_id)
  WHERE kind = 'spawn' AND target_computer_id <> '';

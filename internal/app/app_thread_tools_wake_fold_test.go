@@ -202,7 +202,7 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 		Token: token, Known: true, State: store.ThreadReceiptReplied, Title: "Release checklist",
 		Answer: "the tag is pushed", AnswerKind: store.ThreadAnswerReply,
 		Revision: 1, SettledAt: time.Now().UnixMilli(),
-	})
+	}, threadPeerHearing{at: time.Now()})
 	if err != nil || revision != 1 {
 		t.Fatalf("applyThreadPeerRequest = revision %d err %v", revision, err)
 	}
@@ -234,7 +234,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 		Revision: 2, SettledAt: now - 1000, ExpiresAt: now + time.Hour.Milliseconds(),
 	}
 
-	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, answer)
+	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
 	if err != nil || revision != 2 {
 		t.Fatalf("applyThreadPeerRequest = revision %d err %v; want 2", revision, err)
 	}
@@ -249,7 +249,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 
 	// The acknowledgement never arrived: the destination still reports
 	// nothing collected, and the poll acknowledges again, writing nothing.
-	revision, wakes, err = f.app.applyThreadPeerRequest(token, computer, answer)
+	revision, wakes, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()})
 	if err != nil || revision != 2 || len(wakes) != 0 {
 		t.Fatalf("poll after a lost ack = revision %d wakes %+v err %v; want revision 2 and no wake", revision, wakes, err)
 	}
@@ -257,7 +257,7 @@ func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing
 		t.Fatalf("poll after a lost ack rewrote the request: %+v", again)
 	}
 	answer.CollectedRevision = 2
-	if revision, _, err = f.app.applyThreadPeerRequest(token, computer, answer); err != nil || revision != 0 {
+	if revision, _, err = f.app.applyThreadPeerRequest(token, computer, answer, threadPeerHearing{at: time.Now()}); err != nil || revision != 0 {
 		t.Fatalf("poll after the ack = revision %d err %v; want nothing to acknowledge", revision, err)
 	}
 }

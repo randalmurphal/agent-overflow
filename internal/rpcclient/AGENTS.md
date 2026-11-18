@@ -4,7 +4,9 @@ Serialized HTTP+WebSocket RPC client shared by local owner commands and paired
 computer calls. One outstanding call, `transport.DefaultReadLimit` inbound frame
 bound matching the transport it reads, no event subscriptions or retained
 history. The caller owns dialing, credentials and TLS. It must close the client
-after a context/read/write failure; never retry a mutation here.
+after a context/read/write failure; never retry a mutation here. `Call` owns
+dispatch certainty: a failure before its frame reaches the socket is a
+`NotSentError`, and any other failure may follow a request the far side read.
 
 For a paired peer, read Hello and verify identity, protocol and capability on
 the authenticated connection before sending an RPC. Hello is a narrow reader

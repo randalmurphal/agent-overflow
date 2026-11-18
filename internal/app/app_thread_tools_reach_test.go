@@ -226,7 +226,14 @@ func (p *reachPair) pollOn(t *testing.T, app *App) {
 	// Every open row is due: the cadence is tested by threadPollDelay, and
 	// a test that waited out five seconds per pass would prove nothing
 	// more.
-	app.pollRemoteThreadRequests(time.Now().Add(time.Hour))
+	p.pollAt(t, app, time.Now().Add(time.Hour))
+}
+
+// pollAt runs one whole pass of app's poller as the clock reads now, which
+// decides the rows it visits and what an unknown token means then.
+func (p *reachPair) pollAt(t *testing.T, app *App, now time.Time) {
+	t.Helper()
+	app.pollRemoteThreadRequests(now)
 	app.threadRequestsWG.Wait()
 }
 
@@ -499,6 +506,35 @@ type peerFaults struct {
 	dropReplies atomic.Int32
 	// calls counts every ThreadToolCall this destination answered.
 	calls atomic.Int32
+	// unread is how many ThreadToolCalls fail before the destination reads
+	// them, with an error the source cannot read: each reached the
+	// destination, and nothing there ran it.
+	unread atomic.Int32
+	// unreadRetries fails every ThreadToolCall after the first as unread
+	// does, whatever the first one does.
+	unreadRetries atomic.Bool
+	entered       atomic.Int32
+	// refuseRetries refuses every ThreadToolCall after the first with a
+	// thread tools refusal, as a destination whose state changed between
+	// two attempts does.
+	refuseRetries atomic.Bool
+	attempts      atomic.Int32
+	// detachFirst keeps the first ThreadToolCall running after its source
+	// is told it was lost, as a handler does when the socket under it
+	// drops. Its answer to the source waits for creating to close, which
+	// the test does once that handler is making its thread; detached joins
+	// the handler.
+	detachFirst atomic.Bool
+	creating    chan struct{}
+	detached    sync.WaitGroup
+	// admit, when set, holds the detached handler before it runs at all
+	// until it is closed: a handler still before admission, whose token
+	// the destination does not hold yet.
+	admit chan struct{}
+	// held, when set, is closed by the first ThreadToolCall past unread,
+	// which then waits for hold to close before it runs.
+	held, hold chan struct{}
+	holdOnce   sync.Once
 	// stall holds every ThreadToolRequestStatus until it is closed, which
 	// is what a computer that accepts a connection and never answers
 	// costs the poller.
@@ -506,6 +542,10 @@ type peerFaults struct {
 	// reword, when set, rewrites each request a ThreadToolRequestStatus
 	// reply reports, as a computer of another build would word it.
 	reword atomic.Pointer[func(*ThreadPeerRequest)]
+	// released answers a spawn or ask whose token holds a receipt naming no
+	// thread yet as v0.0.19 does: it settles the receipt interrupted and
+	// refuses, while the attempt making the thread runs on.
+	released atomic.Bool
 	// watchEnded, when set, is told each time a forwarded thread_status
 	// wait returns here, whichever peer method carried it.
 	watchEnded chan struct{}
@@ -545,6 +585,52 @@ func (p *peerFaults) endWatch(call ThreadPeerCall) {
 }
 
 func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if p.entered.Add(1) > 1 && p.unreadRetries.Load() {
+		return ThreadPeerReply{}, errors.New("the destination failed before it read the call")
+	}
+	if left := p.unread.Load(); left > 0 && p.unread.CompareAndSwap(left, left-1) {
+		return ThreadPeerReply{}, errors.New("the destination failed before it read the call")
+	}
+	if p.held != nil {
+		p.holdOnce.Do(func() {
+			close(p.held)
+			<-p.hold
+		})
+	}
+	if p.attempts.Add(1) > 1 && p.refuseRetries.Load() {
+		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, "This attempt is refused.", nil)
+	}
+	if p.released.Load() && (call.Tool == "thread_spawn" || call.Tool == "thread_ask") {
+		receipt, found, err := p.store.GetThreadRequestReceipt(call.Token)
+		if err != nil {
+			return ThreadPeerReply{}, err
+		}
+		if found && receipt.TargetThreadID == "" {
+			// The sentence v0.0.19 stored, as text with no cause.
+			const neverStarted = "That request was accepted but its thread was never created."
+			if err := p.settleThreadReceipt(call.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+				State: store.ThreadReceiptInterrupted, Answer: []byte(neverStarted), AnswerKind: store.ThreadAnswerError,
+			}); err != nil {
+				return ThreadPeerReply{}, err
+			}
+			return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
+				neverStarted+" It is settled as interrupted; make the request again.", nil)
+		}
+	}
+	if p.detachFirst.CompareAndSwap(true, false) {
+		p.detached.Go(func() {
+			if p.admit != nil {
+				<-p.admit
+			}
+			_, _ = p.App.ThreadToolCall(context.WithoutCancel(ctx), call)
+		})
+		select {
+		case <-p.creating:
+		case <-ctx.Done():
+			return ThreadPeerReply{}, ctx.Err()
+		}
+		return ThreadPeerReply{}, errors.New("the connection dropped")
+	}
 	reply, err := p.App.ThreadToolCall(ctx, call)
 	if err != nil {
 		return reply, err
@@ -572,11 +658,15 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 	return reply, err
 }
 
-// serveFaultyApp serves one destination through the fault wrapper.
-func serveFaultyApp(t *testing.T, app *App) (*pairedBackend, *peerFaults) {
+// serveFaultyApp serves one destination through the fault wrapper, its
+// listener configured further by configure.
+func serveFaultyApp(t *testing.T, app *App, configure ...func(*transport.Config)) (*pairedBackend, *peerFaults) {
 	t.Helper()
 	faults := &peerFaults{App: app}
 	wire := servePairedApp(t, app, func(cfg *transport.Config) {
+		for _, apply := range configure {
+			apply(cfg)
+		}
 		dispatcher := transport.NewDispatcher()
 		if _, err := dispatcher.Register(faults, transport.RegisterOptions{
 			Package:   "main",
@@ -1017,17 +1107,26 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 // TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken pins what a
 // call whose answer never came back owes the model: the token, so the work
 // is checked rather than started again, and a row the poller reconciles.
-// The poller waits until nothing is in flight for that token before it
-// treats the destination's "unknown" as a refusal.
+// The poller stays away while a call is out; once the call returned, a
+// destination on thread-tools.v2 with no handler admitting the token
+// settles it as never started on the first poll.
 func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
-	pair := newReachPair(t)
-	// The call is cancelled before it can be answered, which is what a
-	// lost reply looks like from the source: the destination may have
-	// accepted it, and this computer cannot tell.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	var faults *peerFaults
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		wire, injected := serveFaultyApp(t, app)
+		faults = injected
+		return wire
+	})
+	// Every attempt reaches the destination and fails with an error this
+	// computer cannot read, which is what a lost answer looks like from the
+	// source: the destination may have accepted it, and this computer
+	// cannot tell. Here it never ran any of them.
+	faults.unread.Store(threadPeerAdmissionAttempts)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	called := time.Now()
 	ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
 		Prompt: "work whose answer never came back", ComputerID: pair.computer, ProjectID: pair.project,
 	})
@@ -1037,40 +1136,38 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 	if ack.Token == "" || ack.State != store.ThreadRequestUnconfirmed || ack.Outcome != threadtools.OutcomeUnconfirmed {
 		t.Fatalf("ack = %+v, want an unconfirmed request carrying its token", ack)
 	}
+	returned := time.Now()
 	row := pair.request(t, ack.Token)
 	if row.State != store.ThreadRequestUnconfirmed {
 		t.Fatalf("the source row settled %q on a call whose answer was lost", row.State)
 	}
-
-	// A row still being admitted is fenced out of the poll, and the fence
-	// covers every attempt the admission can make.
-	if wait := threadPeerCallWait("ThreadToolCall"); threadRequestAdmissionFence < wait*threadPeerAdmissionAttempts {
-		t.Fatalf("the admission fence %s does not cover %d attempts of %s",
-			threadRequestAdmissionFence, threadPeerAdmissionAttempts, wait)
+	// The deadline covers the last attempt's handler, and it is the row's.
+	if wait := threadPeerCallWait("ThreadToolCall"); row.AdmitUntil < called.Add(wait).UnixMilli() {
+		t.Fatalf("the request's admission deadline %s is before one call's wait (%s) after %s",
+			time.UnixMilli(row.AdmitUntil), wait, called)
 	}
+
+	// A call still out keeps the poll away from its row: its frame may not
+	// have been read there yet.
 	inFlight := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
 		Token: inFlight, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
 		TargetComputerID: pair.computer, State: store.ThreadRequestUnconfirmed,
-		NextCheck: time.Now().Add(threadRequestAdmissionFence).UnixMilli(),
+		NextCheck: time.Now().Add(time.Hour).UnixMilli(), AdmitUntil: time.Now().Add(time.Hour).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert the row being admitted: %v", err)
 	}
-	pair.source.pollRemoteThreadRequests(time.Now())
-	pair.source.threadRequestsWG.Wait()
+
+	// Once the call returned, the poll asks at its normal pace. The
+	// destination holds no receipt and no handler is admitting the token,
+	// so the request was never accepted.
+	pair.pollAt(t, pair.source, returned.Add(pair.source.threadPollNormal()))
 	if state := pair.request(t, inFlight).State; state != store.ThreadRequestUnconfirmed {
 		t.Fatalf("a poll refused a request that was still being admitted: %q", state)
 	}
-	if state := pair.request(t, ack.Token).State; state != store.ThreadRequestUnconfirmed {
-		t.Fatalf("a poll refused the request before its next check: %q", state)
-	}
-
-	// Once the source is done trying, the poll is the recovery path: the
-	// destination holds no receipt, so the request was never accepted.
-	pair.poll(t)
 	row = pair.request(t, ack.Token)
 	if row.State != store.ThreadRequestRefused || !strings.Contains(string(row.Answer), "never accepted") {
-		t.Fatalf("the poll settled the lost request as %q %q, want refused", row.State, row.Answer)
+		t.Fatalf("the first poll settled the lost request as %q %q, want refused", row.State, row.Answer)
 	}
 }
 
@@ -1164,9 +1261,9 @@ func TestARecoveredRemoteForkRecordsItsInstructions(t *testing.T) {
 		case got = <-done:
 			collected = true
 		case <-time.After(100 * time.Millisecond):
-			// pair.poll skips the fence that keeps the poller off a row
-			// while its attempts are out (threadRequestAdmissionFence), so
-			// it waits for the last of them to be answered.
+			// pair.poll reaches past the next check that keeps the poller
+			// off a row while its attempts are out (DispatchThreadRequest),
+			// so it waits for the last of them to be answered.
 			if faults.calls.Load() >= int32(threadPeerAdmissionAttempts) {
 				pair.poll(t)
 			}

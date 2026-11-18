@@ -36,11 +36,14 @@ type threadPeer struct {
 	conns []*websocket.Conn
 	// closed receives each connection's number once the client ends it.
 	closed chan int32
+	// called receives once for each ThreadToolCall frame this computer has
+	// read off the wire.
+	called chan struct{}
 }
 
 func newThreadPeer(t *testing.T) *threadPeer {
 	t.Helper()
-	p := &threadPeer{id: uuid.NewString(), closed: make(chan int32, 16)}
+	p := &threadPeer{id: uuid.NewString(), closed: make(chan int32, 16), called: make(chan struct{}, 16)}
 	p.Server = httptest.NewServer(http.HandlerFunc(p.route))
 	t.Cleanup(p.Close)
 	return p
@@ -76,6 +79,7 @@ func (p *threadPeer) route(w http.ResponseWriter, r *http.Request) {
 		}
 		switch frame.Method {
 		case "ThreadToolCall":
+			p.called <- struct{}{}
 			continue
 		case "ThreadToolResolve":
 			_ = wsjson.Write(ctx, conn, map[string]any{"type": "rpc", "id": frame.ID, "error": map[string]string{"code": "thread_not_found", "message": "no such thread"}})

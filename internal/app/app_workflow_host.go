@@ -87,7 +87,8 @@ func (h workflowHostAdapter) FindWorktree(project, path string) (gitops.Worktree
 func (h workflowHostAdapter) CutWorktreeFromFreshRef(
 	ctx context.Context, projectPath, worktreePath string, base gitops.Ref, newBranch string,
 ) error {
-	return h.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
+	_, err := h.app.cutWorktreeFromFreshRef(ctx, projectPath, worktreePath, base, newBranch)
+	return err
 }
 
 func (h workflowHostAdapter) DefaultWorktreePath(projectPath, branch string) (string, error) {

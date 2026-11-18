@@ -239,42 +239,27 @@ func TestASpawnWhoseThreadExistsNamesItInTheRefusal(t *testing.T) {
 	f.nothingOwed(t)
 }
 
-// What a failed request-minting call establishes depends on which attempt
-// failed. A refusal answering the first attempt means nothing runs under the
-// token. The same refusal answering a retry does not: the reply that was
-// lost may have been an acceptance.
-func TestAPeerRefusalSettlesTheRequestOnlyOnTheFirstAttempt(t *testing.T) {
+// A failed attempt of a request-minting call may have started the request
+// unless the destination answered it with a refusal, which it gives only for
+// a request it did not start. That is what decides whether it is sent again
+// and whether the request can be refused (callThreadPeerRequest); a call the
+// carrier never sent is TestThreadToolsAnUnreachableComputerIsRefusedAtOnce's.
+func TestWhetherAFailedPeerAttemptMayHaveStartedTheRequest(t *testing.T) {
 	t.Parallel()
-	wrote := &rpcclient.Error{Code: threadtools.CodeInvalidRequest, Message: "That request could not be started: not a git repository."}
-	scope := &rpcclient.Error{Code: transport.ErrCodeScopeRequired, Message: "scope missing"}
-	unreadable := &rpcclient.Error{Code: transport.ErrCodeMethodError, Message: "method failed (id: trace)"}
-	neverSent := errorsx.Public("remote_not_paired", "This computer is not paired.", nil)
-	replaced := errorsx.Public("remote_pairing_replaced", "This computer was paired again while the call was on its way. Retry it.", nil)
-	lost := errors.New("the answer was lost on the way back")
-	local := errorsx.Public(threadtools.CodeUnreachable, "Studio answered without a usable result.", nil)
-	last := threadPeerAdmissionAttempts
 	for _, tc := range []struct {
-		name    string
-		attempt int
-		err     error
-		want    threadPeerFailure
-		retry   bool
+		name string
+		err  error
+		ran  bool
 	}{
-		{"the destination refuses the first attempt", 1, wrote, threadPeerRefused, false},
-		{"the destination refuses a retry", 2, wrote, threadPeerUnsettled, false},
-		{"the destination's transport refuses the pairing", 1, scope, threadPeerRefused, false},
-		{"the destination fails in a way this computer cannot read", 1, unreadable, threadPeerUncertain, true},
-		{"the first attempt never reaches it", 1, neverSent, threadPeerRefused, false},
-		{"a retry never reaches it", 2, neverSent, threadPeerUnsettled, false},
-		{"the first attempt finds its pairing replaced", 1, replaced, threadPeerRefused, false},
-		{"a reply is lost", 1, lost, threadPeerUncertain, true},
-		{"the last reply is lost", last, lost, threadPeerUncertain, false},
-		{"this computer cannot use the answer", 1, local, threadPeerUnsettled, false},
+		{"the destination refuses it", &rpcclient.Error{Code: threadtools.CodeInvalidRequest, Message: "That request could not be started: not a git repository."}, false},
+		{"the destination's transport refuses the pairing", &rpcclient.Error{Code: transport.ErrCodeScopeRequired, Message: "scope missing"}, false},
+		{"the destination fails in a way this computer cannot read", &rpcclient.Error{Code: transport.ErrCodeMethodError, Message: "method failed (id: trace)"}, true},
+		{"the reply is lost", errors.New("the answer was lost on the way back"), true},
+		{"the wait for the reply ends", context.DeadlineExceeded, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			failure, retry := classifyThreadPeerFailure("thread_spawn", tc.attempt, tc.err)
-			if failure != tc.want || retry != tc.retry {
-				t.Fatalf("classify = %d retry %v, want %d retry %v", failure, retry, tc.want, tc.retry)
+			if _, _, ran := threadErrorDetails("thread_spawn", tc.err); ran != tc.ran {
+				t.Fatalf("may have started = %v, want %v", ran, tc.ran)
 			}
 		})
 	}

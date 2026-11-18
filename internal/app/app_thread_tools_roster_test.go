@@ -239,7 +239,7 @@ func TestStartSession_SpawnInstructionsSurviveARestart(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
-	thread, err := app.threadTools().createSpawnedThread(context.Background(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
+	thread, _, err := app.threadTools().createSpawnedThread(context.Background(), threadtools.SpawnCall{}, spawnOptions{CreateThreadOptions: CreateThreadOptions{
 		ProjectID: mustProject(t, app).ID, Provider: string(provider.Claude), Model: "claude-opus-4-7", spawnInstructions: "Review for races.",
 	}})
 	if err != nil {

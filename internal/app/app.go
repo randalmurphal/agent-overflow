@@ -220,6 +220,10 @@ type App struct {
 	// threads own a receipt that a turn end could settle. Zero value
 	// ready. See app_thread_tools_wait.go.
 	threadRequests threadRequestState
+	// peerAdmissions is the tokens a paired computer's spawn, send or ask
+	// has a handler in flight for here (app_thread_tools_admissions.go).
+	// Zero value ready.
+	peerAdmissions peerAdmissions
 	// threadAgentEmits coalesces the Agents rows' change frames
 	// (app_thread_agent_rows_emit.go).
 	threadAgentEmits threadAgentEmits
@@ -832,6 +836,14 @@ type App struct {
 	// made and before the spawn names it (acceptRequest), so a test can hold
 	// an admitted spawn there.
 	spawnNamingForTest func(callerThreadID string)
+	// peerAdmissionForTest, when set, runs in a paired computer's spawn,
+	// send or ask once its handler holds the token and before anything can
+	// admit it (runThreadPeerRequest), so a test can hold it there.
+	peerAdmissionForTest func(token string)
+	// peerStatusReadForTest, when set, runs in a ThreadToolRequestStatus
+	// between its two reads of a token, whether a handler holds it and its
+	// receipt, so a test can let a handler admit and exit there.
+	peerStatusReadForTest func(token string)
 	// deleteClaimedForTest, when set, runs once a delete's claim committed
 	// and before it verifies anything (familyDelete.claim), with the
 	// threads it claimed.

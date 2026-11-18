@@ -748,12 +748,13 @@ func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
 	})
 }
 
-// A receipt accepted whose thread was never created is settled here, not
-// left for the next boot: the retry that finds it reads a refusal, the
-// receipt reads interrupted, and no second thread is created for it. Only a
-// paired computer's request is retried with its token; a local one mints a
-// fresh token each call.
-func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
+// A receipt accepted whose thread is not named yet belongs to the attempt
+// making that thread: a retry that finds it reports the pending acceptance,
+// settles nothing and creates no second thread. Only the boot settles one
+// whose attempt is gone (TestABootSettlesAnUnnamedReceiptAsNeverStarted).
+// Only a paired computer's request is retried with its token; a local one
+// mints a fresh token each call.
+func TestThreadSpawnRetryLeavesAReceiptWhoseThreadIsBeingMade(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	adapter := f.adapter()
@@ -765,8 +766,7 @@ func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 	origin.caller = threadtools.Caller{ThreadID: "peer-caller", ComputerID: "peer"}
 	origin.foreign, origin.ownerDevice = true, peerDevice
 
-	// The state a crash between the two writes leaves behind: an accepted
-	// receipt with no target thread.
+	// The receipt the attempt making its thread wrote before naming it.
 	const token = "half-created-token"
 	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 		Token:            token,
@@ -779,18 +779,15 @@ func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 	}
 	before := threadIDsInStore(t, f.app)
 
-	_, err = adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again", ProjectID: f.caller.ProjectID})
-	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
-		t.Fatalf("retry of a half-created request: code = %q, err = %v", code, err)
+	target, err := adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again", ProjectID: f.caller.ProjectID})
+	if err != nil || target != "" {
+		t.Fatalf("retry of a request whose thread is being made = %q, %v; want the pending acceptance", target, err)
 	}
-	if _, message, _ := errorsx.PublicDetails(err); message != "That request was accepted but its thread was never created. It is settled as interrupted; make the request again." {
-		t.Fatalf("retry of a half-created request reads %q", message)
-	}
-	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted || receipt.Cause != threadtools.CauseNeverStarted || len(receipt.Answer) != 0 {
-		t.Fatalf("receipt = %q %q %q, want interrupted, never started", receipt.State, receipt.Cause, receipt.Answer)
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted {
+		t.Fatalf("receipt state = %q, want it still accepted", receipt.State)
 	}
 	if after := threadIDsInStore(t, f.app); len(after) != len(before) {
-		t.Fatalf("threads after the refusal = %v, want the %v it started with", after, before)
+		t.Fatalf("threads after the retry = %v, want the %v it started with", after, before)
 	}
 }
 
@@ -3839,11 +3836,11 @@ func TestASpawnWhoseCallerIsDeletedMidCreateStillRuns(t *testing.T) {
 	}
 	token := newThreadRequestToken()
 	target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{Token: token, Kind: store.ThreadRequestSpawn},
-		func() (store.Thread, error) {
+		func() (store.Thread, madeWithThread, error) {
 			if err := f.app.store.DeleteThread(f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
-			return made, nil
+			return made, madeWithThread{}, nil
 		}, true)
 	if err != nil || target != made.ID || !fresh {
 		t.Fatalf("accept = %q %v, %v; want the created thread", target, fresh, err)

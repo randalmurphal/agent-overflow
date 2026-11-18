@@ -112,6 +112,12 @@ func (a *App) stopThreadRequestWorkBy(ctx context.Context, token, answer string,
 	default:
 		return threadtools.EffectNothing, nil
 	}
+	if receipt.TargetThreadID == "" {
+		// Settled while the attempt that accepted it was still making its
+		// thread: that attempt's naming write loses and it takes the thread
+		// back, so no message or turn of this request exists to stop.
+		return threadtools.EffectNothing, nil
+	}
 	ctx = context.WithoutCancel(ctx)
 
 	if state == store.ThreadReceiptAccepted {
@@ -193,7 +199,7 @@ func (a *App) cancelOpenReceipt(token, answer string, stop turnStop, receipt *st
 		if err != nil || !settled {
 			return false, err
 		}
-		if current.TurnID == "" {
+		if current.TurnID == "" && current.TargetThreadID != "" {
 			a.armRequestCancel(token, current.TargetThreadID, stop)
 		}
 		*receipt = current

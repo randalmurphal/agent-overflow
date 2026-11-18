@@ -85,6 +85,14 @@ func (s *Store) GetRemoteWatch(computerID, requestID string) (RemoteWatch, error
 	return scanRemoteWatch(s.reader().QueryRow(`SELECT `+remoteWatchColumns+` FROM remote_watches WHERE computer_id=? AND request_id=?`, computerID, requestID))
 }
 
+// Refused reports a watch released because the destination refused its
+// start before accepting it: dismissed with no receipt and by no rest or
+// archive. A retry under its ID registers fresh; any other watch stands for
+// a start that may have run.
+func (w RemoteWatch) Refused() bool {
+	return w.Notification == "dismissed" && w.Receipt.ID == "" && w.StoppedAt == 0
+}
+
 // Register before any network mutation. Retrying never replaces provenance or
 // revives delivery already handed to the message queue.
 // True permits cleanup on a definite refusal (new or previously refused).
@@ -104,7 +112,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		if old.LaunchedIn != w.ThreadID || old.Fingerprint != w.Fingerprint {
 			return false, errorsx.Public("remote_request_conflict", "This request_id already belongs to another command or conversation. Retry only the original project, workspace, argv/script and timeout.", nil)
 		}
-		if old.Notification != "dismissed" || old.Receipt.ID != "" || old.StoppedAt != 0 {
+		if !old.Refused() {
 			return false, nil
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {

@@ -31,6 +31,9 @@ type remoteRef struct {
 	ComputerName string
 	RequestID    string
 	Label        string
+	// EarlierStart says an earlier start under RequestID may have run and
+	// is not resolved, so a failure of this call says nothing about it.
+	EarlierStart bool
 }
 
 // remoteRef resolves the names this computer holds for a computer and one of
@@ -86,7 +89,10 @@ func remoteOperationErrorFor(action string, ref remoteRef, err error) error {
 	}
 	if entityid.Valid(ref.RequestID) {
 		switch {
-		case uncertain:
+		case uncertain || ref.EarlierStart:
+			if !uncertain {
+				message += " An earlier attempt with this request_id may already have run."
+			}
 			message += " Check remote_status with these same IDs."
 			if action == "run" {
 				message += " If necessary, retry identical arguments with the SAME request_id; a new ID could run the command twice."
@@ -115,7 +121,8 @@ func remotePairingCode(code string) bool {
 // operation or id prefix: the text a person reads beside a row that already
 // names the computer and the job. A cause with no reviewed public text stays
 // in the host log behind a reference. uncertain means the destination may
-// have acted on the request.
+// have acted on the request, which a call the carrier never sent
+// (rpcclient.NotSent) rules out.
 func remoteErrorDetails(action string, err error) (code, message string, uncertain bool) {
 	var done remoteContextError
 	if errors.As(err, &done) {
@@ -139,26 +146,39 @@ func remoteErrorDetails(action string, err error) (code, message string, uncerta
 			uncertain = true
 		}
 	} else if !known {
-		code = "remote_internal_error"
-		message = "Agent Overflow could not complete this request. Check the originating computer's logs using the reference below."
-		var network net.Error
-		if errors.As(err, &network) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			code = "remote_connection_failed"
-			message = "Could not get a response from the destination. Check that it is awake, Agent Overflow is running, and LAN or Tailscale connectivity is available."
-		}
-		if errors.Is(err, context.Canceled) {
-			code = "remote_request_canceled"
-			message = "The request was canceled before a response was received. This does not cancel an accepted remote job."
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			code = "remote_request_timeout"
-			message = "Timed out waiting for the destination. Check its connection and try reading the job status again."
-		}
+		uncertain = !rpcclient.NotSent(err)
+		code, message = remoteFailureText(err, uncertain)
 		cid := uuid.NewString()
 		log.Printf("remote %s failed (id: %s): %v", action, cid, err)
 		message += " Reference: " + cid + "."
-		uncertain = true
 	}
 	return code, message, uncertain
+}
+
+// remoteFailureText is the code and message for a failure with no reviewed
+// text: a connection, a cancellation or a timeout, else an internal error.
+// sent says whether the destination may have the call, which is what the
+// person or model must check before trying again.
+func remoteFailureText(err error, sent bool) (code, message string) {
+	var network net.Error
+	switch {
+	case errors.Is(err, context.Canceled) && sent:
+		return "remote_request_canceled", "The request was canceled before a response was received. This does not cancel an accepted remote job."
+	case errors.Is(err, context.Canceled):
+		return "remote_request_canceled", "The request was canceled before it was sent."
+	case errors.Is(err, context.DeadlineExceeded) && sent:
+		return "remote_request_timeout", "Timed out waiting for the destination. Check its connection and try reading the job status again."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "remote_request_timeout", "Timed out reaching the destination, so nothing was sent. Check its connection."
+	case !errors.As(err, &network) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF):
+		if sent {
+			return "remote_internal_error", "Agent Overflow could not complete this request. Check the originating computer's logs using the reference below."
+		}
+		return "remote_internal_error", "Agent Overflow could not send this request, so nothing was sent. Check the originating computer's logs using the reference below."
+	case sent:
+		return "remote_connection_failed", "Could not get a response from the destination. Check that it is awake, Agent Overflow is running, and LAN or Tailscale connectivity is available."
+	}
+	return "remote_connection_failed", "Could not reach the destination, so nothing was sent. Check that it is awake, Agent Overflow is running, and LAN or Tailscale connectivity is available."
 }
 
 // remoteIssueText is the message a row shows for a failed check on its job.
