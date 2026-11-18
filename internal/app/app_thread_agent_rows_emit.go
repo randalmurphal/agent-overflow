@@ -2,8 +2,6 @@ package app
 
 import (
 	"log"
-	"maps"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,19 +16,10 @@ import (
 // threadAgentEmits coalesces what changed into frames, off the goroutines
 // that reported it: a store write, an emit, a wait.
 type threadAgentEmits struct {
-	mu      sync.Mutex
-	tokens  map[string]struct{}
-	callers map[string]struct{}
-	targets map[string]struct{}
-	// liveness holds the threads whose rest may have changed, true where
-	// their durable sources changed too: each is reassessed
-	// (reassessWorker) and framed as a target when it is or was a worker,
-	// or a request runs on it. A changed request's caller is one, since
-	// whether an answer is on its way to it may have changed, and so is the
-	// thread a changed workflow run (workflowRuns) reports to.
-	liveness     map[string]bool
-	workflowRuns map[string]struct{}
-	draining     bool
+	mu sync.Mutex
+	threadAgentChanges
+	retryAt  time.Time
+	draining bool
 	// activity is each running target's latest activity line, while it has
 	// a request running or is a worker not at rest; lastActivity and
 	// activityDue throttle the frames activity alone emits.
@@ -44,6 +33,15 @@ type threadAgentEmits struct {
 
 // noteThreadRequestChanged is the store's change hook, called once the
 // write committed.
+func (a *App) projectPeerRows(thread string) {
+	a.queueThreadAgentEmit(func(e *threadAgentEmits) {
+		if e.projections == nil {
+			e.projections = map[string]struct{}{}
+		}
+		e.projections[thread] = struct{}{}
+	})
+}
+
 func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 	if change.Token == "" {
 		a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.callers[change.CallerThreadID] = struct{}{} })
@@ -55,7 +53,7 @@ func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 // noteThreadAgentTarget reports a change to a thread some request runs on,
 // or a worker not at rest, that leaves its rest as it was: its title.
 func (a *App) noteThreadAgentTarget(threadID string) {
-	if threadID == "" || !a.threadAgentFollows(threadID) {
+	if threadID == "" || (!a.threadAgentFollows(threadID) && !a.ownerActivity.watching()) {
 		return
 	}
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.targets[threadID] = struct{}{} })
@@ -141,14 +139,38 @@ func (a *App) threadAgentFollows(threadID string) bool {
 	return a.liveWorker(threadID)
 }
 
+func (e *threadAgentEmits) nextRetry() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.retryAt
+}
+
+func (a *App) retryThreadAgentEmits(now time.Time) {
+	e := &a.threadAgentEmits
+	e.mu.Lock()
+	if e.retryAt.IsZero() || now.Before(e.retryAt) {
+		e.mu.Unlock()
+		return
+	}
+	a.startThreadAgentEmitsLocked()
+}
+
 func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
+	if a.store == nil {
+		return
+	}
 	e := &a.threadAgentEmits
 	e.mu.Lock()
 	if e.tokens == nil {
-		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
+		e.threadAgentChanges = newThreadAgentChanges()
 	}
 	add(e)
+	a.startThreadAgentEmitsLocked()
+}
+
+// startThreadAgentEmitsLocked releases the queue lock before starting its worker.
+func (a *App) startThreadAgentEmitsLocked() {
+	e := &a.threadAgentEmits
 	if e.draining || a.lifeCtx().Err() != nil {
 		e.mu.Unlock()
 		return
@@ -169,81 +191,26 @@ func (a *App) drainThreadAgentEmits() {
 			hook()
 		}
 		e.mu.Lock()
-		tokens, callers, targets, liveness, runs := e.tokens, e.callers, e.targets, e.liveness, e.workflowRuns
-		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs) == 0 || a.lifeCtx().Err() != nil {
+		batch := e.threadAgentChanges
+		if len(batch.tokens)+len(batch.callers)+len(batch.targets)+len(batch.liveness)+len(batch.workflowRuns)+len(batch.projections) == 0 || a.lifeCtx().Err() != nil {
 			e.draining = false
 			e.mu.Unlock()
 			return
 		}
-		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
+		e.threadAgentChanges = newThreadAgentChanges()
+		e.retryAt = time.Time{}
 		e.mu.Unlock()
-		for _, threadID := range a.durableRestChanges(callers, runs) {
-			liveness[threadID] = true
-		}
-		for threadID, durable := range liveness {
-			worker, err := a.reassessWorker(threadID, durable)
-			if err != nil {
-				// Framed anyway: a frame that names nothing costs a read.
-				log.Printf("agent rows: reassess thread %s: %v", threadID, err)
-			}
-			if worker || a.threadAgentFollows(threadID) {
-				targets[threadID] = struct{}{}
-			}
-		}
-		if len(liveness)+len(tokens)+len(callers) > 0 {
-			// A thread's rest, or the work below one, may have changed.
-			a.noteRestWaitsMayChange()
-		}
-		if len(tokens)+len(callers)+len(targets) == 0 {
-			continue
-		}
-		// One statement names every frame: each changed request's caller,
-		// and each thread up to the listing's depth above it, whose listing
-		// and worker summary change with it.
-		frames, rest, err := a.store.ThreadAgentRowFrames(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)),
-			slices.Collect(maps.Keys(callers)), threadReceiptLocalOwner, threadAgentRowDepth)
-		if err != nil {
-			// The workers among the changed requests' callers keep what
-			// they last said until their next change.
-			log.Printf("agent rows: name the frames of %d changed requests, %d targets and %d callers: %v", len(tokens), len(targets), len(callers), err)
-			// The callers are known without the read; their readers read
-			// their lists again.
-			for caller := range callers {
-				a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: caller})
-			}
-			continue
-		}
-		for _, frame := range frames {
-			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
-		}
-		// A worker whose request changed may have an answer on its way, or
-		// no longer: the next pass reassesses it, framing it if it moved.
-		for _, threadID := range rest {
-			a.noteWorkerWaiting(threadID)
+		if err := a.publishThreadAgentChanges(batch); err != nil {
+			log.Printf("agent rows: projection queued for retry: %v", err)
+			e.mu.Lock()
+			e.retain(batch)
+			e.retryAt = time.Now().Add(restRecoveryRetry)
+			e.draining = false
+			e.mu.Unlock()
+			a.nudgeThreadRequestSweep()
+			return
 		}
 	}
-}
-
-// durableRestChanges names the threads whose durable sources of rest the
-// drained changes may have changed without a request's caller frame naming
-// them (ThreadAgentRowFrames names those): each caller named, whose wakes
-// were disarmed or moved, and the thread each changed workflow run reports
-// to. A read that fails is logged: its thread keeps what it last said
-// until its next change.
-func (a *App) durableRestChanges(callers, runs map[string]struct{}) []string {
-	out := slices.Collect(maps.Keys(callers))
-	for itemID := range runs {
-		origin, err := a.store.WorkItemOriginThread(itemID)
-		if err != nil {
-			log.Printf("agent rows: read the thread workflow run %s reports to: %v", itemID, err)
-			continue
-		}
-		if origin != "" {
-			out = append(out, origin)
-		}
-	}
-	return out
 }
 
 // tapThreadAgentRows is the emit tap: any thread's turn, prompt or session
@@ -257,7 +224,7 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	if event, ok := data.(triage.ThreadUpdateEvent); ok {
 		if event.Thread != nil {
 			a.noteThreadAgentTarget(event.Thread.ID)
-		} else if event.Title != nil {
+		} else if event.Title != nil || event.Action == triage.ThreadActionDeleted {
 			a.noteThreadAgentTarget(event.ID)
 		}
 		return

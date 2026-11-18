@@ -17,7 +17,7 @@ func everySpawnRests(t *testing.T, s *Store, cutoff int64) *RestGuard {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &RestGuard{Roots: roots, AtRest: func(subtree SubtreeRest) []string {
+	return &RestGuard{ReconciledComputers: fixtureRemoteComputers(t, s), Roots: roots, AtRest: func(subtree SubtreeRest) []string {
 		return slices.Sorted(maps.Keys(subtree.Reached))
 	}}
 }
@@ -31,7 +31,16 @@ func storeSourcesRest(t *testing.T, s *Store, cutoff int64) *RestGuard {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &RestGuard{Roots: roots, AtRest: durableSourcesRest}
+	return &RestGuard{ReconciledComputers: fixtureRemoteComputers(t, s), Roots: roots, AtRest: durableSourcesRest}
+}
+
+func fixtureRemoteComputers(t *testing.T, s *Store) []string {
+	t.Helper()
+	ids, err := s.queryThreadIDs("fixture computers", `SELECT DISTINCT target_computer_id FROM thread_requests WHERE target_computer_id <> ''`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
 }
 
 // durableSourcesRest names the roots of subtree every thread of which reads

@@ -186,6 +186,7 @@ type ThreadAgentRow struct {
 // ThreadAgentRows is a thread's agents in tree order: each row, then the
 // rows its spawned thread made. Hidden counts rows the bound left out.
 type ThreadAgentRows struct {
+	Title  string           `json:"title,omitempty"`
 	Rows   []ThreadAgentRow `json:"rows"`
 	Hidden bool             `json:"hidden,omitempty"`
 	// ThreadProvider is the listed thread's own provider, answered by
@@ -594,7 +595,7 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		depth := requests[index].Depth
 		// A remote spawn at the last level still reads its thread's state;
 		// it nests none of its rows.
-		if request.Kind == store.ThreadRequestSpawn && request.TargetThreadID != "" && request.TargetComputerID != "" {
+		if request.RemoteListingReach() {
 			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request})
 		}
 	}
@@ -649,8 +650,7 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 			// answer is the thread's state alone, and that computer asks
 			// none further on.
 			depth := maxDepth - remote[i].depth
-			listing, err := a.peerThreadAgentRows(call, remote[i].spawn, depth)
-			answers[i] = a.notePeerAgentRows(remote[i].spawn, listing, err, depth <= 0 && listing.Open != nil)
+			answers[i] = a.readPeerAgentRows(call, remote[i].spawn, depth)
 		})
 		return answers
 	}

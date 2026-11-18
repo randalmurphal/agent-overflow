@@ -551,6 +551,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SyncOwnDevices", ID: 1289411773, Scope: "session", Route: "home", Remote: true},                                                  // main.App.SyncOwnDevices
 	{Name: "SyncThreadWindow", ID: 3841902986, Scope: "threads:read", Route: "thread", CallerBound: true},                                    // main.App.SyncThreadWindow
 	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875, Scope: "threads:operate", Route: "thread"},                                     // main.App.TerminateCodexBackgroundTerminal
+	{Name: "ThreadOwnerChanges", ID: 3558393553, Scope: "threads:read", Route: "selected", CallerBound: true, Budget: 1 * time.Minute},       // main.App.ThreadOwnerChanges
+	{Name: "ThreadOwnerRecovery", ID: 3143780103, Scope: "threads:read", Route: "selected", CallerBound: true},                               // main.App.ThreadOwnerRecovery
 	{Name: "ThreadToolCall", ID: 894716875, Scope: "terminal:operate", Route: "selected", Budget: 13 * time.Minute},                          // main.App.ThreadToolCall
 	{Name: "ThreadToolExportChunk", ID: 1295284198, Scope: "threads:read", Route: "selected", CallerBound: true},                             // main.App.ThreadToolExportChunk
 	{Name: "ThreadToolQuery", ID: 2624544009, Scope: "threads:read", Route: "selected", Budget: 1 * time.Minute},                             // main.App.ThreadToolQuery

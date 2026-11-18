@@ -77,6 +77,9 @@ func logSlowStep(step string, started time.Time, err error) {
 }
 
 func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Client, error) {
+	c.peers.mu.Lock()
+	generation := c.peers.generation
+	c.peers.mu.Unlock()
 	ticket, err := c.client.Ticket(ctx)
 	if err != nil {
 		// The mint is where a revoked session is found out: its rotation
@@ -130,7 +133,7 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 	}
 	// From here the connection belongs to this pairing: it closes when the
 	// carrier leaves, whoever is using it.
-	if err := c.peers.admit(rpc); err != nil {
+	if err := c.peers.admit(rpc, generation); err != nil {
 		return nil, err
 	}
 	c.reached()

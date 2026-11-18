@@ -75,7 +75,7 @@ func TestRetentionKeepsTheSpawnOfARemoteWorkerThatIsNotAtRestWhole(t *testing.T)
 			if got, found, err := pair.source.store.GetThreadRequest(token); err != nil || !found || string(got.Answer) != string(agentPair.spawn.Answer) || !got.NestedOpen {
 				t.Fatalf("the spawn here after the sweeps: %+v, found %v, %v; want it whole, open, with %q", got, found, err, agentPair.spawn.Answer)
 			}
-			listing, err := pair.source.peerThreadAgentRows(t.Context(), agentPair.spawn, threadAgentRowDepth-1)
+			listing, _, err := pair.source.peerThreadAgentRows(t.Context(), agentPair.spawn, threadAgentRowDepth-1)
 			if err != nil || listing.Worker == "" {
 				t.Fatalf("the forwarded listing after the sweeps = %+v, %v; want the worker's state", listing, err)
 			}
@@ -167,13 +167,14 @@ func sweepPastTheFloor(t *testing.T, pair *reachPair, token string) {
 // A remote worker at rest through both retention sweeps keeps its link at
 // both ends: the source keeps the spawn as its lineage, payload cleared and
 // token unknown, as the destination keeps the receipt. Continued there with
-// its spawner's pane closed, the source's own sweep finds it: its row is
+// its spawner's pane closed, the owner update finds it: its row is
 // open, counted and out of Past, and its Stop reaches it.
 func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
+	startReconciledOwner(t, pair)
 	sweepPastTheFloor(t, pair, spawn.Token)
 	if _, found, err := pair.source.store.GetThreadRequest(spawn.Token); err != nil || found {
 		t.Fatalf("the spawn's token here reads found %v, %v; want unknown past the floor", found, err)
@@ -182,9 +183,7 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 		t.Fatalf("the spawn here past the floor = %+v; want its lineage, answer cleared, naming the thread there", row)
 	}
 
-	// Its spawner's pane stays closed: only the source's own sweep asks.
-	pair.source.threadPollOverride = 100 * time.Millisecond
-	pair.source.startThreadRequestSweeps()
+	// Its spawner's pane stays closed while the destination resumes.
 	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
@@ -209,13 +208,13 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 }
 
 // The source's lineage of a remote spawn lasts until that computer says
-// the thread is gone: once it is deleted there, the source's own rest pass
-// is refused and deletes the lineage, and stops asking.
-func TestARemoteSpawnsLineageGoesOnceItsThreadThereIsGone(t *testing.T) {
+// the thread is gone. Its structural revision ends the source's reach.
+func TestAnEndedRemoteLineageIsExcludedFromDeleteConfirmation(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
+	startReconciledOwner(t, pair)
 	sweepPastTheFloor(t, pair, spawn.Token)
 	if row := readRemoteSpawnRow(t, pair, spawn.Token); !row.lineage {
 		t.Fatalf("the spawn here past the floor = %+v; want its lineage", row)
@@ -223,15 +222,70 @@ func TestARemoteSpawnsLineageGoesOnceItsThreadThereIsGone(t *testing.T) {
 	if err := pair.dest.deleteThread(child); err != nil {
 		t.Fatalf("delete the thread there: %v", err)
 	}
-	// Nothing of the spawn's last answer is remembered, as after a restart:
-	// only the rest pass's question asks about it.
+	// The recorded end survives eviction of the cached listing.
 	pair.source.threadAgentPeers.mu.Lock()
 	clear(pair.source.threadAgentPeers.entries)
 	pair.source.threadAgentPeers.mu.Unlock()
-	pair.source.threadPollOverride = 100 * time.Millisecond
-	pair.source.startThreadRequestSweeps()
-	waitUntil(t, 20*time.Second, func() bool { return !readRemoteSpawnRow(t, pair, spawn.Token).found })
-	if schedule, err := pair.source.store.NextThreadRequestWork(); err != nil || schedule.RestingRemote {
-		t.Fatalf("schedule = %+v, %v; want nothing left to ask about", schedule, err)
+
+	waitUntil(t, 20*time.Second, func() bool {
+		tokens, err := pair.source.store.ListRemoteSpawnTokens([]string{pair.caller.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(tokens) == 0
+	})
+	if row := readRemoteSpawnRow(t, pair, spawn.Token); !row.found || !row.lineage {
+		t.Fatalf("ended lineage = %+v", row)
 	}
+}
+
+func TestDisconnectedOwnerKeepsRestingAnswerUntilReconciled(t *testing.T) {
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	spawn, child := remoteRestedWorker(t, pair)
+	if err := pair.dest.SendMessage(t.Context(), child, "continue this worker", nil); err != nil {
+		t.Fatal(err)
+	}
+	expirePastTheFloor(pair.source)
+	if got := readRemoteSpawnRow(t, pair, spawn.Token); !got.answer || got.lineage {
+		t.Fatalf("without a reconciled owner wait the worker lost its answer: %+v", got)
+	}
+	startReconciledOwner(t, pair)
+	waitUntil(t, 10*time.Second, func() bool { return readRemoteSpawnRow(t, pair, spawn.Token).nested })
+	expirePastTheFloor(pair.source)
+	if got := readRemoteSpawnRow(t, pair, spawn.Token); !got.answer {
+		t.Fatalf("continued worker after reconciliation = %+v", got)
+	}
+	if err := pair.dest.StopSession(child); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		if readRemoteSpawnRow(t, pair, spawn.Token).nested {
+			return false
+		}
+		expirePastTheFloor(pair.source)
+		return readRemoteSpawnRow(t, pair, spawn.Token).lineage
+	})
+
+}
+
+func startReconciledOwner(t *testing.T, pair *reachPair) {
+	t.Helper()
+	startReconciledComputer(t, pair.source, pair.computer)
+}
+
+func startReconciledComputer(t *testing.T, a *App, computer string) {
+	t.Helper()
+	if err := a.refreshOwnerPeers(); err != nil {
+		t.Fatal(err)
+	}
+	o := &a.ownerUpdates
+	o.mu.Lock()
+	p := o.peers[computer]
+	o.mu.Unlock()
+	if p == nil {
+		t.Fatal("worker's pairing did not start its wait")
+	}
+	t.Cleanup(func() { p.cancel(); <-p.done })
+	waitUntil(t, 10*time.Second, func() bool { o.mu.Lock(); defer o.mu.Unlock(); return p.ready && len(p.owed) == 0 })
 }

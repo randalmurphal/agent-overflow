@@ -106,4 +106,64 @@ BEGIN
                       WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0
                         AND target_thread_id = OLD.target_thread_id);
 END;
+
+ALTER TABLE thread_request_receipts ADD COLUMN track_spawn INTEGER NOT NULL DEFAULT 0 CHECK(track_spawn IN (0,1));
+ALTER TABLE thread_requests ADD COLUMN link_end TEXT NOT NULL DEFAULT '' CHECK(link_end IN ('','released','detached','gone'));
+ALTER TABLE thread_requests ADD COLUMN contact_due INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX idx_thread_requests_contact ON thread_requests(target_computer_id, contact_due, token)
+ WHERE kind = 'spawn' AND target_computer_id <> '' AND target_thread_id <> '' AND link_end = '';
+CREATE INDEX idx_thread_requests_listing_reach ON thread_requests(target_computer_id, token)
+ WHERE target_computer_id <> '' AND kind='spawn' AND target_thread_id <> '' AND link_end IN ('','released');
+CREATE INDEX idx_thread_requests_poll_computer ON thread_requests(target_computer_id, next_check, token)
+ WHERE target_computer_id <> '' AND polling=1 AND state IN ('unconfirmed','accepted','running','finished');
+CREATE INDEX idx_thread_requests_owner_deadline ON thread_requests(target_computer_id,
+ CASE WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000)) ELSE next_check END)
+ WHERE polling=1 AND target_computer_id <> '' AND (state IN ('unconfirmed','finished') OR
+ (kind='spawn' AND target_thread_id='' AND state IN ('accepted','running')));
+CREATE INDEX idx_thread_requests_owner_recovery ON thread_requests(target_computer_id, token)
+ WHERE target_computer_id <> '' AND (nested_open = 1 OR (polling = 1 AND state IN ('accepted','running')));
+CREATE INDEX idx_thread_request_receipts_owner_uncollected ON thread_request_receipts(owner_device_id, token)
+ WHERE lineage_only=0 AND settled_at IS NOT NULL AND collected_revision < revision;
+CREATE TABLE spawn_revisions (
+  revision INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_device_id TEXT NOT NULL,
+  token TEXT NOT NULL,
+  target TEXT NOT NULL,
+  end TEXT NOT NULL CHECK(end IN ('','released','detached','gone')),
+  UNIQUE(owner_device_id, token)
+);
+CREATE INDEX idx_spawn_revisions_owner_revision ON spawn_revisions(owner_device_id, revision);
+CREATE INDEX idx_spawn_revisions_target ON spawn_revisions(target);
+
+CREATE TRIGGER trg_spawn_revision_thread
+AFTER UPDATE OF title, placement, archived, deleting ON threads
+WHEN OLD.title IS NOT NEW.title OR OLD.placement IS NOT NEW.placement
+  OR OLD.archived IS NOT NEW.archived OR OLD.deleting IS NOT NEW.deleting
+BEGIN
+  INSERT OR REPLACE INTO spawn_revisions(owner_device_id, token, target, end)
+  SELECT owner_device_id, token, NEW.id, CASE WHEN NEW.deleting THEN 'gone' WHEN spawn_link THEN '' ELSE 'released' END
+    FROM thread_request_receipts WHERE target_thread_id = NEW.id AND track_spawn = 1;
+END;
+
+CREATE TRIGGER trg_spawn_revision_target
+AFTER UPDATE OF target_thread_id, spawn_link ON thread_request_receipts
+WHEN NEW.track_spawn = 1 AND (OLD.target_thread_id IS NOT NEW.target_thread_id OR OLD.spawn_link <> NEW.spawn_link)
+BEGIN
+  INSERT OR REPLACE INTO spawn_revisions(owner_device_id, token, target, end)
+  VALUES (NEW.owner_device_id, NEW.token, COALESCE(NEW.target_thread_id,OLD.target_thread_id,''), CASE
+    WHEN NEW.target_thread_id IS NULL AND OLD.target_thread_id IS NOT NULL THEN
+      CASE WHEN EXISTS (SELECT 1 FROM threads WHERE id = OLD.target_thread_id AND deleting = 0)
+           THEN 'detached' ELSE 'gone' END
+    WHEN NEW.spawn_link = 0 THEN 'released' ELSE '' END);
+END;
+
+CREATE TRIGGER trg_spawn_revision_removed
+AFTER DELETE ON thread_request_receipts
+WHEN OLD.track_spawn = 1 AND OLD.target_thread_id IS NOT NULL
+BEGIN
+  INSERT OR REPLACE INTO spawn_revisions(owner_device_id, token, target, end)
+  VALUES (OLD.owner_device_id, OLD.token, OLD.target_thread_id,
+    CASE WHEN EXISTS (SELECT 1 FROM threads WHERE id = OLD.target_thread_id AND deleting = 0)
+         THEN 'detached' ELSE 'gone' END);
+END;
 `

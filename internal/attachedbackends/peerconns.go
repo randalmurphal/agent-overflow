@@ -2,6 +2,7 @@ package attachedbackends
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -45,10 +46,13 @@ type idlePeerConn struct {
 // verdict that ended the pairing is what that call reads. The zero value is
 // ready.
 type peerConns struct {
-	mu sync.Mutex
+	mu          sync.Mutex
+	invalidated func(error)
 	// ended is the verdict once the carrier has left; no connection is
 	// admitted after it.
-	ended error
+	ended      error
+	launch     string
+	generation uint64
 	// open is every connection admitted and not yet seen to end, idle or
 	// held; idle is the subset waiting for a call.
 	open   []*rpcclient.Client
@@ -58,16 +62,34 @@ type peerConns struct {
 
 // admit records a connection the carrier has just opened. Once the carrier
 // has left, the connection is closed instead and the verdict returned.
-func (p *peerConns) admit(rpc *rpcclient.Client) error {
+func (p *peerConns) admit(rpc *rpcclient.Client, generation uint64) error {
 	p.mu.Lock()
 	if verdict := p.ended; verdict != nil {
 		p.mu.Unlock()
 		rpc.Close()
 		return verdict
 	}
+	var previous []*rpcclient.Client
+	restarted := false
+	if launch := rpc.LaunchID(); launch != p.launch {
+		if generation != p.generation {
+			p.mu.Unlock()
+			rpc.Close()
+			return errors.New("the paired computer restarted during the handshake")
+		}
+		restarted = p.launch != ""
+		previous = p.open
+		p.open, p.idle = nil, nil
+		p.launch = launch
+		p.generation++
+	}
 	p.open = slices.DeleteFunc(p.open, func(held *rpcclient.Client) bool { return !live(held) })
 	p.open = append(p.open, rpc)
 	p.mu.Unlock()
+	if restarted && p.invalidated != nil {
+		p.invalidated(errors.New("the paired computer restarted"))
+	}
+	closeAll(previous)
 	return nil
 }
 
@@ -119,7 +141,7 @@ func (p *peerConns) takeIdle(capability string) *rpcclient.Client {
 // closed instead once the carrier has left or enough are already idle.
 func (p *peerConns) put(capability string, rpc *rpcclient.Client) {
 	p.mu.Lock()
-	if p.ended != nil || len(p.idle) >= maxIdlePeerConns || !live(rpc) {
+	if p.ended != nil || p.launch != rpc.LaunchID() || len(p.idle) >= maxIdlePeerConns || !live(rpc) {
 		p.mu.Unlock()
 		rpc.Close()
 		return
@@ -165,7 +187,8 @@ func (p *peerConns) pruneLocked() []*rpcclient.Client {
 // verdict stands.
 func (p *peerConns) close(verdict error) {
 	p.mu.Lock()
-	if p.ended == nil {
+	first := p.ended == nil
+	if first {
 		p.ended = verdict
 	}
 	ended := p.open
@@ -175,6 +198,9 @@ func (p *peerConns) close(verdict error) {
 		p.expiry = nil
 	}
 	p.mu.Unlock()
+	if first && p.invalidated != nil {
+		p.invalidated(verdict)
+	}
 	closeAll(ended)
 }
 

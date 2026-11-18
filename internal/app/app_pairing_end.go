@@ -77,7 +77,12 @@ func (a *App) endUnpaired(computerID string) (bool, error) {
 		end = pairingEnd(pairingEndedByComputer, name)
 	}
 	wakes, err := a.endPairingFenced(computerID, end)
+	done := a.ownerUpdates.cancelPeer(computerID)
+	a.forgetPeerAgentRows(computerID)
 	unlock()
+	if done != nil {
+		a.threadRequestsWG.Go(func() { <-done })
+	}
 	a.deliverThreadWakes(wakes)
 	return err == nil, err
 }

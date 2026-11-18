@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -53,6 +54,8 @@ const (
 // workerPromptLease is how long a prompt stays routed to a paired
 // computer's thread after it was registered or that computer last said it
 // holds it (owner choice).
+const peerPromptClosed = "thread_prompt_closed"
+
 const workerPromptLease = 2 * time.Minute
 
 // remotePromptHold is a prompt routed to a thread on a paired computer:
@@ -60,6 +63,7 @@ const workerPromptLease = 2 * time.Minute
 // that computer last said it holds the prompt, and timer are guarded by
 // workerPrompts.mu.
 type remotePromptHold struct {
+	activity                        *ownerActivity
 	computerID, computerName, title string
 	device, spawnToken              string
 	registeredAt                    time.Time
@@ -139,6 +143,7 @@ func (a *App) holdPeerWorkerPrompt(route provider.PromptRoute, prompt workerProm
 	}
 	if err == nil && linked {
 		prompt.remote.device, prompt.remote.spawnToken = link.DeviceID, link.Token
+		prompt.remote.activity = &a.ownerActivity
 	}
 	registered, replaced := a.workerPrompts.add(prompt, a.workerPromptOpen)
 	if replaced != nil {
@@ -256,15 +261,14 @@ func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, ar
 	if a.requireScope(ctx, transport.ScopeApprovalsRespond, "") != nil {
 		return nil, nil
 	}
-	for _, token := range args.Held {
-		if _, err := a.remotePromptFor(owner, source, args.Spawn, token); err == nil {
-			a.workerPrompts.renew(token, time.Now())
-		}
-	}
+
 	var out []ThreadAgentPrompt
 	for _, prompt := range a.workerPrompts.heldFor(args.Spawn, args.ThreadID) {
 		if !a.workerPromptOpenTo(prompt) {
 			continue
+		}
+		if slices.Contains(args.Held, prompt.token) {
+			a.workerPrompts.renew(prompt.token, time.Now())
 		}
 		out = append(out, peerPromptWire(title, prompt))
 	}
@@ -334,6 +338,9 @@ func (a *App) servePeerPrompt(ctx context.Context, owner string, call ThreadPeer
 		ack, err := a.answerRoutedPrompt(ctx, prompt, threadtools.ReplyCall{
 			Token: args.Token, Text: args.Text, Decision: args.Decision, Answers: args.Answers,
 		})
+		if errors.Is(err, errWorkerPromptClosed) {
+			return ThreadPeerReply{}, errorsx.Public(peerPromptClosed, errWorkerPromptClosed.Error(), nil)
+		}
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}

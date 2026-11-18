@@ -1641,6 +1641,102 @@ export class RemoteJob {
 }
 
 /**
+ * SpawnRevision names the latest change to a spawn, together with the
+ * current facts read in the same database snapshot.
+ */
+export class SpawnRevision {
+    /**
+     * Token identifies the original spawn.
+     */
+    "token": string;
+
+    /**
+     * Revision increases for each change, including restores.
+     */
+    "revision": number;
+
+    /**
+     * End records why a link ended, or is empty for an active link.
+     */
+    "end"?: string;
+
+    /**
+     * TargetThreadID identifies the surviving worker.
+     */
+    "targetThreadId"?: string;
+
+    /**
+     * Placement is the worker’s current placement.
+     */
+    "placement"?: string;
+
+    /**
+     * Title is the current worker title.
+     */
+    "title"?: string;
+
+    /**
+     * Archived reports whether the worker is archived.
+     */
+    "archived"?: boolean;
+
+    /** Creates a new SpawnRevision instance. */
+    constructor($$source: Partial<SpawnRevision> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SpawnRevision instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SpawnRevision {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SpawnRevision($$parsedSource as Partial<SpawnRevision>);
+    }
+}
+
+/**
+ * SpawnRevisionAck confirms that one owner has applied this exact version.
+ */
+export class SpawnRevisionAck {
+    /**
+     * Token identifies the original spawn.
+     */
+    "token": string;
+
+    /**
+     * Revision increases for each change, including restores.
+     */
+    "revision": number;
+
+    /** Creates a new SpawnRevisionAck instance. */
+    constructor($$source: Partial<SpawnRevisionAck> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SpawnRevisionAck instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SpawnRevisionAck {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SpawnRevisionAck($$parsedSource as Partial<SpawnRevisionAck>);
+    }
+}
+
+/**
  * StandingAgent is one assistant record.
  */
 export class StandingAgent {

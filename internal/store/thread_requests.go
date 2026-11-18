@@ -97,7 +97,8 @@ type ThreadRequest struct {
 	// NestedOpen is whether the last agent_rows answer for a spawn on
 	// another computer listed open work, which keeps the settled spawn
 	// listed in the Agents segment.
-	NestedOpen bool `json:"-"`
+	NestedOpen bool   `json:"-"`
+	LinkEnd    string `json:"-"`
 	// OriginThreadID is the thread an `ask` forked; empty otherwise.
 	OriginThreadID string `json:"originThreadId,omitempty"`
 	// Notify is whether a wake is owed on settlement. Every positive wait
@@ -311,10 +312,15 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
     late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg, admit_until,
-    late_reply_expired, ack_owed, target_computer_name`
+    late_reply_expired, ack_owed, target_computer_name, link_end`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
+}
+
+// RemoteListingReach includes a placed worker after its owner releases it.
+func (r ThreadRequest) RemoteListingReach() bool {
+	return r.Kind == ThreadRequestSpawn && r.TargetComputerID != "" && r.TargetThreadID != "" && (r.LinkEnd == "" || r.LinkEnd == "released")
 }
 
 // scanThreadRequestWith scans a projection in threadRequestColumns' order
@@ -343,7 +349,7 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg, &r.AdmitUntil,
-		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName,
+		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName, &r.LinkEnd,
 	}, extra...)...)
 	r.LateReplyExpired = lateReplyExpired != 0
 	r.NestedOpen = nestedOpen != 0
@@ -737,9 +743,7 @@ func (s *Store) StoreLocalThreadRequestLateReply(token string, reply []byte, at 
 	if err := tx.Commit(); err != nil {
 		return false, ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	if collected.Any() {
-		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
-	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	return true, collected, nil
 }
 

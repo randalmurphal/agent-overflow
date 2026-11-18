@@ -144,11 +144,12 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		// rest, could not read, read again.
 		a.retryRestRecovery()
 		a.retryFailedRestReads()
+		a.retryThreadAgentEmits(now)
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
+		logThreadRequestSweep("start owner waits", a.refreshOwnerPeers())
 		a.pollRemoteThreadRequests(now)
 		a.deliverOwedOwnerOps(now)
-		a.refreshNestedOpenRemoteSpawns()
 		a.retryUndeliveredThreadWakes(now)
 		if now.Sub(lastExpiry) >= threadRequestExpiryInterval {
 			lastExpiry = now
@@ -192,6 +193,9 @@ func (a *App) sweepSleep(d time.Duration) <-chan time.Time {
 func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 	delay := threadRequestExpiryInterval - time.Since(lastExpiry)
 	var due []store.ScheduledMoment
+	if retry := a.threadAgentEmits.nextRetry(); !retry.IsZero() {
+		due = append(due, store.ScheduledMoment{At: retry.UnixMilli(), Set: true})
+	}
 	if a.restRecoveryPending() || a.restReadsFailed() {
 		due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
 	}
@@ -200,21 +204,11 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 	} else {
 		due = append(due, loops)
 	}
-	schedule, err := a.store.NextThreadRequestWork()
+	schedule, err := a.store.NextThreadRequestWork(a.ownerUpdates.capable())
 	if err != nil {
 		logThreadRequestSweep("read the next scheduled request work", err)
 	} else {
 		due = append(due, schedule.Reminder, schedule.Wake)
-		if schedule.NestedOpen {
-			// A settled spawn on another computer whose work there is still
-			// open: its rows are asked for again at the poll's pace.
-			due = append(due, store.ScheduledMoment{At: time.Now().Add(a.threadPollNormal()).UnixMilli(), Set: true})
-		}
-		if schedule.RestingRemote {
-			// Settled spawns on other computers at rest: the next page of
-			// them is asked about at the rest pass's pace.
-			due = append(due, store.ScheduledMoment{At: a.nextRestPass().UnixMilli(), Set: true})
-		}
 		if !a.threadRequestPollInFlight() {
 			due = append(due, schedule.Poll)
 		}
@@ -258,7 +252,7 @@ func (a *App) pollRemoteThreadRequests(now time.Time) {
 	if a.backends == nil || !a.beginThreadRequestPoll() {
 		return
 	}
-	rows, err := a.store.DueThreadRequestPolls(now.UnixMilli(), threadRequestPollBatch)
+	rows, err := a.store.DueThreadRequestPolls(now.UnixMilli(), threadRequestPollBatch, a.ownerUpdates.capable())
 	if err != nil {
 		a.endThreadRequestPoll()
 		logThreadRequestSweep("read due request polls", err)
@@ -426,31 +420,7 @@ func (a *App) runThreadRequestPoll(now time.Time, rows []store.ThreadRequest, ac
 		}(computerID)
 	}
 	wg.Wait()
-	// What a spawn there runs, its own agents included, changes with no
-	// frame here: each poll of one asks for its Agents rows again, at the
-	// poll's own pace, and an answer that changed emits a frame.
-	for _, row := range rows {
-		if row.Kind == store.ThreadRequestSpawn && row.TargetComputerID != "" {
-			a.refreshPeerAgentRows(row, 0)
-		}
-	}
-	// A send that woke a worker a spawn from here owns there, which then
-	// asked a prompt it routed back here, holds that prompt on the spawn's
-	// listing: the spawn itself may be at rest here, so its rows are asked
-	// for at the poll's pace too, whichever thread here sent it.
-	for _, row := range rows {
-		if row.Kind != store.ThreadRequestSend || row.TargetComputerID == "" || !a.remoteRequestBlocked(row.Token).routedHere() {
-			continue
-		}
-		spawn, found, err := a.store.RemoteSpawnLinkTo(row.TargetComputerID, row.TargetThreadID)
-		if err != nil {
-			logThreadRequestSweep("read the spawn of "+row.TargetThreadID, err)
-			continue
-		}
-		if found {
-			a.refreshPeerAgentRows(spawn, 0)
-		}
-	}
+
 }
 
 // expireThreadRequests is the retention pass: answers nobody collected are

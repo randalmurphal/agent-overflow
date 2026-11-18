@@ -55,6 +55,8 @@ type threadState struct {
 	// round before it, until its round is published, so a live read finds
 	// the turn owed throughout (LiveStateSnapshot.TurnOwed).
 	turnOpenings int
+	// openingsDone releases cleanup once every previously admitted turn is published.
+	openingsDone chan struct{}
 
 	// interruptQueue holds persistence work deferred behind an active
 	// stream (invariant 11), drained once the thread stops streaming.
@@ -460,6 +462,8 @@ type threadIdentity struct {
 	// bypass the flag via HandleSynthetic. It is set BY cleanup, which is
 	// exactly why it cannot live on threadState.
 	stopped bool
+	// closing fences new frames while previously admitted turn opens finish.
+	closing bool
 
 	// sessionToken is the host session MarkThreadActive last committed the
 	// thread to. Handle admits a provider frame only when the frame carries

@@ -1040,8 +1040,7 @@ Ruling 36, as built:
   approval's `blockedDetail` quotes its command, so a session without
   `approvals:respond` is answered without it, here and by every Agents
   rows read of a window; a question's stays, as `provider:user_input` is
-  `threads:read`. The sweep keeps
-  asking while it is (`thread_requests.nested_open`). A remote spawn at
+  `threads:read`. The spawner records this in `thread_requests.nested_open`. A remote spawn at
   the listing's last level asks for that state alone, which lists no rows
   and asks no computer further on, so a chain of computers is asked no
   deeper than the listing shows; its row says when that thread has rows.
@@ -1053,28 +1052,22 @@ Ruling 36, as built:
   Past; with no answer remembered, as after a restart, its recorded open
   work keeps it open, waiting. Only an answer
   closes it: rest there, or a refusal of the thread as not the spawn's.
-  Nothing on that computer tells this one when a thread that rested is
-  continued there, so the sweep also asks about the settled remote
-  spawns at rest, one page of 32 every six poll intervals (30 s) from a
-  cursor (`idx_thread_requests_remote_rest`), each once a cycle, through
-  the same in-flight, per-computer and backoff bounds; whether a pass is
-  due is read from the ledger on that index (`NextThreadRequestWork`), so
-  the first spawn to come to rest wakes the sweep for it: with n spawns at
-  rest each is asked every ceil(n/32) × 30 s, and the pass makes at most
-  about one call a second however many there are. An answer that finds
-  one still at rest, or none, is kept nowhere and frames nothing; one
-  that finds it working records it, and its row reopens. A computer that
-  runs an older version answers that it cannot list, which records
-  nothing. Past the retention floor a remote spawn is kept here as its
-  lineage, as a local one is: its answer, late reply and wake cleared,
-  its poll stopped and its token unknown, and still its thread's link, so
-  the rest pass keeps asking about it and its row lists, counts and stops
-  as before. It goes once that computer refuses the thread as gone, the
-  spawner is deleted, or the computer is forgotten. What it keeps is one
-  row per such spawn, read only by the rest pass's pages and by the
-  Agents reads that reach it: a person with n old remote spawns whose
-  threads there still exist keeps n rows, each asked about every
-  ceil(n/32) × 30 s, at most one call a second in all.
+  A computer with `thread-tools.v2` tells the spawner which tokens
+  changed, including work below an already open worker. The spawner
+  reads the affected state in batches. A pane reads the full tree when
+  it displays a changed link. A newly held prompt reaches its spawner during an ordinary read. Held prompts renew
+  their two-minute lease on the worker's computer.
+  After reconnecting, the spawner discards cached placement, collects
+  held prompts, active workers, uncollected answers and pending structural revisions, and
+  reconciles the links it recorded open. A rename, placement change,
+  archive or end survives a restart until its owner applies and
+  acknowledges the revision. A released link can still list its
+  surviving thread. A detached or deleted worker keeps its historical
+  target and answer and leaves the spawner's delete confirmation.
+  The retention pass clears a remote spawn past the floor only after
+  its computer has reconciled and its token reads at rest. A pairing
+  without the capability uses its recorded open state. The spawner
+  proves each standing link about daily with its original source thread.
 - Owned workers nest at most Settings, Agent profiles, Sub-thread levels
   deep (1 to 4, default 2). The level is counted along the owned spawn
   links (`Store.SubThreadLevel`): an assistant's own thread is 0 and its
@@ -1282,8 +1275,8 @@ Mechanics, as built:
   remote ("Owned workers"), its answer, late reply and wake cleared, once
   its thread rests: a local spawn waits until its thread and every thread
   below it read at rest by the rule for decisions that cannot be taken
-  back ([owned workers](#owned-workers)), and a remote one while its
-  computer last listed open work under it (`nested_open`), so the floor
+  back ([owned workers](#owned-workers)), and a remote one until its
+  reconciled state reads at rest, so the floor
   never takes rows out of a tree. The
   ledger tools treat that
   token as unknown; the lineage reads, a worker's prompt routing
@@ -1890,8 +1883,8 @@ closes up their spacing so the row holds at a phone width.
   (`blockedRoutedHere`), and does not count as needing the person,
   whichever thread's row it is: a send from another thread here names
   the holder its prompt went to though that computer names the spawner
-  the link came from (`blockedRoutedToThread`), and the poll picks the
-  prompt up through that spawner's spawn. A
+  the link came from (`blockedRoutedToThread`), and the spawner collects the
+  prompt through its own spawn. A
   spawn's row says what its thread did as a subagent's row says what its
   agent did, from the one formatter both use (`AgentMetrics.svelte`),
   read with the thread's name (`store.ThreadTally`, one probe per
@@ -2069,12 +2062,7 @@ closes up their spacing so the row holds at a phone width.
   however its pairing ended, is forgotten with its spawns' open work, and
   an answer from it that lands afterwards is dropped; nothing more is
   asked of it, and its spawns' rows say `<computer> is no longer paired`.
-  Each poll of an open remote spawn asks again; so does the sweep, at the
-  poll's pace, for a settled one whose last answer listed open work
-  (`thread_requests.nested_open`),
-  until it lists none or refuses the thread as not the spawn's, which it
-  does once that thread is deleted there and never takes back. A computer
-  that does not answer is said on the row
+  A computer that does not answer is said on the row
   (`<computer> did not answer; its agents are not shown`). A computer
   that predates the calls has the request cancelled and the turn
   interrupted, and the row and the Stop's toast say its own work was not

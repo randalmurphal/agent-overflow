@@ -67,6 +67,15 @@ func endSessionsTx(tx *sql.Tx, end sessionEnd, at int64, devices []string, where
 	if released, err = releaseSpawnLinksTx(tx, unreachableDeviceLinksSQL, string(encoded)); err != nil {
 		return nil, nil, err
 	}
+	for _, statement := range []string{
+		`UPDATE thread_request_receipts SET track_spawn = 0 WHERE track_spawn = 1 AND ` + unreachableDeviceLinksSQL,
+		`DELETE FROM spawn_revisions WHERE owner_device_id IN (SELECT value FROM json_each(?))
+		  AND NOT EXISTS (SELECT 1 FROM sessions WHERE device_id = spawn_revisions.owner_device_id AND revoked_at IS NULL)`,
+	} {
+		if _, err := tx.Exec(statement, string(encoded)); err != nil {
+			return nil, nil, fmt.Errorf("store: forget spawn changes for ended sessions: %w", err)
+		}
+	}
 	return ids, released, nil
 }
 

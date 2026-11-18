@@ -1604,7 +1604,13 @@ holds as already collected. Upgrading from v0.0.19, which kept no such
 debt, owes one acknowledgement again for each answer the other computer
 could still hold, at the revision the source holds.
 
-An open request is polled every five seconds, or every two while a wait
+A `thread-tools.v2` destination reports changes to accepted and running
+requests. An unconfirmed dispatch still needs a status check on its own
+clock. A settled request awaiting a late reply needs a final successful
+read begun at or after the reply deadline. The durable acknowledgement
+collector serves both generations.
+
+On an older destination an open request is polled every five seconds, or every two while a wait
 is parked on it. A poll for a due request also asks about the other
 requests the same thread still has open on that computer, so answers
 one turn or one restart wrote there are normally collected in one pass
@@ -1646,10 +1652,9 @@ work, and the accepting computer settles the request `interrupted`
 still wants the work. A target deleted while a request is open settles
 `errored` with that reason.
 
-An owned worker's prompt there is pulled the same way: the spawner's
-computer reads it from the spawn's `agent_rows` answer at the poll's
-pace and queues it to the spawner as a wake, and one the spawner cannot
-take goes back there ([reaching another computer](#reaching-another-computer)).
+An owned worker's prompt reaches its spawner through the paired owner's
+wait. The spawner's computer queues the prompt as a wake and renews its
+lease while it holds it. See [reaching another computer](#reaching-another-computer).
 
 ## Attribution (Q9, Q16)
 

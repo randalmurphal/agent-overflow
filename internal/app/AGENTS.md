@@ -265,8 +265,9 @@ the store closes.
 
 A worker a paired computer's spawn owns routes its prompts to that
 computer's thread. The worker's computer holds each under a lease
-(`app_worker_prompts_peer.go`); the spawner's computer pulls them on its
-`agent_rows` calls, which renew the lease of those it holds, queues the
+(`app_worker_prompts_peer.go`); the spawner's wait records changes in
+`app_owner_session.go`. Its prompt reader and lease renewal run during ordinary
+reads and recovery. The spawner queues the
 wake to the spawn's caller and forwards its `thread_reply`
 (`app_worker_prompts_remote.go`). Every renewal, answer and return passes
 one binding (`remotePromptFor`), and each delivery has its own wake send

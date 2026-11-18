@@ -98,7 +98,7 @@ func TestTheRetryDoesNotWaitForTheSchedule(t *testing.T) {
 	f := newRequestFixture(t)
 	f.app.noteRestRead("unread-thread", errUnreadable)
 	unreadable := f.breakTable(t, "thread_owner_ops")
-	if _, err := f.app.store.NextThreadRequestWork(); err == nil {
+	if _, err := f.app.store.NextThreadRequestWork(nil); err == nil {
 		t.Fatal("the schedule still reads; the test needs it not to")
 	}
 	if delay := f.app.threadRequestSweepDelay(time.Now()); delay > restRecoveryRetry {

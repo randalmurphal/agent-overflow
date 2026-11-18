@@ -237,6 +237,9 @@ type App struct {
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache
+	ownerActivity    ownerActivity
+	ownerUpdates     ownerUpdates
+	ownerReads       ownerReads
 	// agentRoles keeps each standing agent's role line until its
 	// instructions file changes, for the sends, spawns, settlements and
 	// thread reads that name it. Read it through assistantRoles, which
@@ -829,7 +832,10 @@ type App struct {
 	// threadAgentDrainForTest, when set, runs in the Agents rows' drain
 	// before it takes each batch (drainThreadAgentEmits), so a test can hold
 	// what liveWorkers records behind a change.
-	threadAgentDrainForTest func()
+	threadAgentDrainForTest     func()
+	beforeWorkerReassessForTest func(string)
+	// beforeOwnerWaitForTest holds the boundary between applying a cursor and checking out its next connection.
+	beforeOwnerWaitForTest func(context.Context, OwnerCursor)
 	// restReadForTest, when set, runs in a read of rest a decision acts on
 	// once the threads reached from roots have been read, memory included,
 	// and before the decision is written (readRest), so a test can admit

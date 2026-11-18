@@ -210,21 +210,52 @@ func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []T
 	return reminders, total, nil
 }
 
+// A capable destination reports work as it changes. The admission clock runs
+// until a spawn names its target. The final late-reply check survives suspension.
+const remotePollingSQL = `polling=1 AND target_computer_id <> '' AND state IN ('unconfirmed','accepted','running','finished')`
+const clockedOwnerRequestSQL = `polling=1 AND target_computer_id <> '' AND (state IN ('unconfirmed','finished') OR
+ (kind='spawn' AND target_thread_id='' AND state IN ('accepted','running')))`
+const ownerDeadlineSQL = `CASE WHEN state='finished' THEN MAX(next_check,COALESCE(expires_at,settled_at+86400000)) ELSE next_check END`
+
+// Seek one index entry per computer. Each computer's clock then seeks its
+// earliest deadline using the index for its advertised protocol.
+const pollingComputersCTE = `computers(id) AS (SELECT '' UNION ALL
+ SELECT (SELECT target_computer_id FROM thread_requests WHERE ` + remotePollingSQL + `
+  AND target_computer_id > computers.id ORDER BY target_computer_id LIMIT 1)
+ FROM computers WHERE id IS NOT NULL),
+ modes(id,capable) AS (SELECT id, id IN (SELECT value FROM json_each(?1) WHERE value IS NOT NULL)
+ FROM computers WHERE id <> '')`
+
+const earliestRemotePollSQL = `WITH RECURSIVE ` + pollingComputersCTE + `
+ SELECT MIN(CASE WHEN capable THEN (SELECT MIN(` + ownerDeadlineSQL + `) FROM thread_requests
+  WHERE target_computer_id=m.id AND ` + clockedOwnerRequestSQL + `)
+ ELSE (SELECT MIN(next_check) FROM thread_requests WHERE target_computer_id=m.id AND ` + remotePollingSQL + `) END)
+ FROM modes m`
+
+func dueRemotePollSQL(limit int) string {
+	return `WITH RECURSIVE ` + pollingComputersCTE + `,
+ due(key,at) AS (
+ SELECT token,next_check FROM modes m CROSS JOIN thread_requests WHERE target_computer_id=m.id AND NOT m.capable
+ AND ` + remotePollingSQL + ` AND next_check <= ?2
+ UNION ALL SELECT token,` + ownerDeadlineSQL + ` FROM modes m CROSS JOIN thread_requests WHERE target_computer_id=m.id AND m.capable
+ AND ` + clockedOwnerRequestSQL + ` AND ` + ownerDeadlineSQL + ` <= ?2
+ ORDER BY 2 LIMIT ` + strconv.Itoa(limit) + `)
+ SELECT ` + threadRequestColumns + ` FROM due CROSS JOIN thread_requests WHERE token=due.key ORDER BY due.at`
+}
+
 // DueThreadRequestPolls returns the remote requests the poller should visit.
 // The predicate matches idx_thread_requests_poll exactly, including the
 // `finished` state a late reply still needs polling for and the `polling`
 // gate that retires a row once there is nothing left to ask about.
-func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, error) {
+func (s *Store) DueThreadRequestPolls(now int64, limit int, owners []string) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 32
 	}
-	rows, err := s.reader().Query(
-		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE polling = 1
-		    AND target_computer_id <> ''
-		    AND state IN ('unconfirmed','accepted','running','finished')
-		    AND next_check <= ?
-		  ORDER BY next_check ASC LIMIT `+strconv.Itoa(limit), now)
+	devices, err := json.Marshal(owners)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.reader().Query(dueRemotePollSQL(limit), string(devices), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due thread request polls: %w", err)
 	}
@@ -328,12 +359,6 @@ type ThreadRequestSchedule struct {
 	Reminder ScheduledMoment
 	Poll     ScheduledMoment
 	Wake     ScheduledMoment
-	// NestedOpen is whether a settled spawn on another computer still has
-	// open work there, which the poller reads agent_rows for at its pace.
-	NestedOpen bool
-	// RestingRemote is whether a settled spawn on another computer is at
-	// rest there, which the rest pass asks about at its slower pace.
-	RestingRemote bool
 	// OwnerOp is the earliest attempt of an operation owed to a paired
 	// computer (thread_owner_ops.go).
 	OwnerOp ScheduledMoment
@@ -345,28 +370,25 @@ type ThreadRequestSchedule struct {
 //
 // One query, five indexed minima and two probes, so the answer describes
 // one snapshot.
-func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
+func (s *Store) NextThreadRequestWork(owners []string) (ThreadRequestSchedule, error) {
+	devices, err := json.Marshal(owners)
+	if err != nil {
+		return ThreadRequestSchedule{}, err
+	}
 	var reminder, poll, wake, ownerOp sql.NullInt64
-	var nestedOpen, restingRemote bool
 	if err := s.reader().QueryRow(
 		`SELECT
 		   (SELECT MIN(due_at) FROM thread_requests
 		     WHERE kind = 'remind' AND state = 'accepted'
 		       AND `+s.assistantPauseSQL("thread_requests.caller_thread_id")+`),
 		   (SELECT MIN(next_check) FROM (
-		     SELECT MIN(next_check) AS next_check FROM thread_requests
-		      WHERE polling = 1 AND target_computer_id <> ''
-		        AND state IN ('unconfirmed','accepted','running','finished')
+		     SELECT (`+earliestRemotePollSQL+`) AS next_check
 		     UNION ALL
 		     SELECT MIN(next_check) FROM thread_requests WHERE `+ackOwedSQL+`)),
 		   (SELECT MIN(wake_next_check) FROM thread_requests
 		     WHERE notify = 1 AND `+threadWakeOwedSQL+`),
-		   EXISTS (SELECT 1 FROM thread_requests
-		     WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-		       AND target_computer_id <> ''),
-		   EXISTS (SELECT 1 FROM thread_requests WHERE `+restingRemoteSpawnSQL+`),
-		   (SELECT MIN(next_at) FROM thread_owner_ops)`,
-	).Scan(&reminder, &poll, &wake, &nestedOpen, &restingRemote, &ownerOp); err != nil {
+		   (SELECT MIN(next_at) FROM thread_owner_ops)`, string(devices),
+	).Scan(&reminder, &poll, &wake, &ownerOp); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
 	moment := func(value sql.NullInt64) ScheduledMoment {
@@ -374,6 +396,6 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	}
 	return ThreadRequestSchedule{
 		Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake),
-		NestedOpen: nestedOpen, RestingRemote: restingRemote, OwnerOp: moment(ownerOp),
+		OwnerOp: moment(ownerOp),
 	}, nil
 }

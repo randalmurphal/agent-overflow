@@ -456,7 +456,7 @@ func TestAClaimKeepsWhatIsDue(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		schedule, err := s.NextThreadRequestWork()
+		schedule, err := s.NextThreadRequestWork(nil)
 		if err != nil {
 			t.Fatal(err)
 		}

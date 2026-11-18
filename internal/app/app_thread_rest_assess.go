@@ -5,6 +5,7 @@ import (
 	"maps"
 	"sync"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/store"
 )
 
@@ -259,6 +260,50 @@ func (a *App) sweepThreadRequestsBefore(floor int64) (swept int64, released []st
 			logThreadRequestSweep("read the rest of the threads of spawns past retention", err)
 		}
 		rest = decision.guard(roots...)
+	}
+	if rest == nil {
+		rest = &store.RestGuard{}
+	}
+	if !buildvariant.RemoteAccess || a.backends == nil {
+		return a.store.DeleteThreadRequestsBefore(floor, rest)
+	}
+	// There is no peer to reconcile after an explicit unpair. Its historical
+	// rows still identify the surviving worker until ordinary retention.
+	computers, err := a.store.OwnerComputers()
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, id := range computers {
+		unlock := a.lockComputerPairing(id)
+		paired, err := a.pairingSaved(id)
+		if err != nil {
+			unlock()
+			return 0, nil, err
+		}
+		if paired {
+			unlock()
+		} else {
+			defer unlock()
+			rest.ForgottenComputers = append(rest.ForgottenComputers, id)
+		}
+	}
+	o := &a.ownerUpdates
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for id, p := range o.peers {
+		if p.legacy || p.ready {
+			if !p.legacy {
+				select {
+				case <-p.disconnected:
+					continue
+				default:
+				}
+			}
+			rest.ReconciledComputers = append(rest.ReconciledComputers, id)
+			for token := range p.owed {
+				rest.OwedRemoteTokens = append(rest.OwedRemoteTokens, token)
+			}
+		}
 	}
 	return a.store.DeleteThreadRequestsBefore(floor, rest)
 }

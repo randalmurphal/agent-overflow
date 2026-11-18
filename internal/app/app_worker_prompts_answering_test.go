@@ -203,7 +203,7 @@ func TestARemotePromptWhoseAnswerFailsFollowsItsHolder(t *testing.T) {
 			p, peer := promptOwnerOpPair(t, 0)
 			testAssistant(t, p.source, p.caller.ID)
 			p.openThere(t, 1)
-			p.poll(t)
+			p.readOwnerState(t, p.source)
 			wake := p.wakesFor(t, p.caller.ID, 1)[0]
 			blocked := failRemoteAnswers(t, peer)
 			done := make(chan error, 1)
@@ -291,7 +291,7 @@ func TestOnlyASessionThatMayAnswerAPromptReadsIt(t *testing.T) {
 		t.Fatalf("the prompt is routed to %+v (open %v) after the refused calls, want the spawner", route, open)
 	}
 	// The pairing's own session reads it.
-	listing, err = p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+	listing, _, err = p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 	if err != nil || len(listing.Prompts) != 1 || listing.Prompts[0].Token != token {
 		t.Fatalf("the pairing's own listing = %+v, %v; want the prompt", listing.Prompts, err)
 	}
@@ -355,7 +355,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 		t.Parallel()
 		p, peer := promptOwnerOpPair(t, 0)
 		p.openThere(t, 1)
-		p.poll(t)
+		p.readOwnerState(t, p.source)
 		wake := p.wakesFor(t, p.caller.ID, 1)[0]
 		p.source.forgetPeerAgentRows(p.computer)
 		p.wakesFor(t, p.caller.ID, 0)
@@ -373,7 +373,7 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 		t.Parallel()
 		p, peer := promptOwnerOpPair(t, 0)
 		p.openThere(t, 1)
-		listing, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+		listing, origin, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 		if err != nil || len(listing.Prompts) != 1 {
 			t.Fatalf("the listing there: %+v, %v", listing.Prompts, err)
 		}
@@ -385,9 +385,15 @@ func TestForgettingAComputerClosesItsPrompts(t *testing.T) {
 			<-release
 		})
 		<-busy
-		p.source.noteRemotePrompts(p.spawn, listing, nil)
-		p.source.forgetPeerAgentRows(p.computer)
+		done := p.source.noteRemotePrompts(p.source.ownerReads.start(t.Context(), p.computer, nil), origin, p.spawn, listing, nil)
+		if err := p.manager.Remove(p.computer); err != nil {
+			close(release)
+			t.Fatal(err)
+		}
 		close(release)
+		if err := <-done; err == nil {
+			t.Fatal("queued prompt applied after its carrier was forgotten")
+		}
 		p.drain(t)
 		if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
 			t.Fatalf("the spawner holds %+v after its computer was forgotten", wakes)
@@ -429,6 +435,7 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 				return threadRequestSettled(pair.request(t, ack.Token))
 			})
 			pair.source.retireThreadRequestPoll(ack.Token)
+			startReconciledOwner(t, pair)
 			holder := pair.caller
 			if handoff {
 				testAssistant(t, pair.source, pair.caller.ID)
@@ -462,11 +469,6 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 				t.Fatalf("the send's state there = %+v, %v; want blocked, routed to the spawner and not to the sender", state, err)
 			}
 			waitUntil(t, 15*time.Second, func() bool {
-				pair.poll(t)
-				if err := pair.source.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
-					t.Fatal(err)
-				}
-				pair.source.waitAgentNoticeWork()
 				return len(remoteWakes(t, pair.source, holder.ID)) == 1
 			})
 			for _, other := range []string{sibling.ID, pair.caller.ID} {
@@ -474,14 +476,15 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 					t.Fatalf("%s holds %+v; want the wake on %s alone", other, wakes, holder.ID)
 				}
 			}
-			rows, err := pair.source.ListThreadAgentRows(t.Context(), sibling.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			row, found := agentRowByToken(rows.Rows, send.Token)
-			if !found || !row.BlockedRoutedHere || row.BlockedRoutedTo != holder.Title {
-				t.Fatalf("the sender's row = %+v (found %v); want it routed here to %q, which holds the wake", row, found, holder.Title)
-			}
+			// The spawner's wake and the sibling's status are separate receipts.
+			waitUntil(t, 15*time.Second, func() bool {
+				rows, err := pair.source.ListThreadAgentRows(t.Context(), sibling.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				row, found := agentRowByToken(rows.Rows, send.Token)
+				return found && row.BlockedRoutedHere && row.BlockedRoutedTo == holder.Title
+			})
 		})
 	}
 }

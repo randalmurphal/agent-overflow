@@ -185,8 +185,23 @@ type ThreadPeerRequest struct {
 // the tokens it wants the state of, and the settlements it has durably
 // stored since it last asked.
 type ThreadPeerPoll struct {
-	Tokens []string        `json:"tokens,omitempty"`
-	Ack    []ThreadPeerAck `json:"ack,omitempty"`
+	// Launch fences owner reads and acknowledgments to the serving process.
+	Launch string `json:"launch,omitempty"`
+
+	// Links requests current state for the named spawns.
+	Links []OwnerLinkRead `json:"links,omitempty"`
+
+	// Contacts proves continuing reach without retrieving a listing.
+	Contacts []OwnerLinkRead `json:"contacts,omitempty"`
+
+	// StructuralAck names the exact spawn edits the source has applied.
+	StructuralAck []store.SpawnRevisionAck `json:"structuralAck,omitempty"`
+
+	// Tokens requests the current status of each receipt.
+	Tokens []string `json:"tokens,omitempty"`
+
+	// Ack confirms receipt settlement revisions.
+	Ack []ThreadPeerAck `json:"ack,omitempty"`
 	// Held names the revision the source already holds of settled tokens it
 	// asks about, which includes the settlement: the answer about one leaves
 	// out its Answer and Cause, and its LateReply too when the source holds
@@ -206,6 +221,10 @@ type ThreadPeerAck struct {
 
 // ThreadPeerPollReply answers one poll, one entry per requested token.
 type ThreadPeerPollReply struct {
+	// Links follows the order of the requested links.
+	Links []OwnerLinkState `json:"links,omitempty"`
+
+	// Requests follows the order of the requested tokens.
 	Requests []ThreadPeerRequest `json:"requests"`
 }
 
@@ -326,6 +345,13 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 		return ThreadPeerPollReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("A request poll carries at most %d tokens.", threadPeerTokenLimit), nil)
 	}
+	var links []OwnerLinkState
+	if poll.Launch != "" || len(poll.Links)+len(poll.Contacts)+len(poll.StructuralAck) > 0 {
+		links, err = a.readOwnerWork(ctx, owner, poll)
+		if err != nil {
+			return ThreadPeerPollReply{}, err
+		}
+	}
 	for _, ack := range poll.Ack {
 		receipt, found, err := a.store.GetThreadRequestReceipt(ack.Token)
 		if err != nil {
@@ -345,7 +371,7 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 	for _, h := range poll.Held {
 		held[h.Token] = max(held[h.Token], h.Revision)
 	}
-	reply := ThreadPeerPollReply{Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
+	reply := ThreadPeerPollReply{Links: links, Requests: make([]ThreadPeerRequest, 0, len(poll.Tokens))}
 	for _, token := range poll.Tokens {
 		// Read before the receipt: a handler that is gone by now wrote any
 		// receipt it admitted before it went, so the read below finds it.

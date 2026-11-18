@@ -81,7 +81,7 @@ func TestLateReplySupersedesAnUndeliveredFirstAnswer(t *testing.T) {
 	if got := undeliveredTokens(t, s); len(got) != 0 {
 		t.Fatalf("owed wakes after the reply was delivered = %v, want none: the first answer is superseded", got)
 	}
-	schedule, err := s.NextThreadRequestWork()
+	schedule, err := s.NextThreadRequestWork(nil)
 	if err != nil {
 		t.Fatalf("NextThreadRequestWork: %v", err)
 	}

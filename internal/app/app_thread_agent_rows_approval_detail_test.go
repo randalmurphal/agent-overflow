@@ -185,7 +185,7 @@ func TestAPeerSessionWithoutApprovalsReadsNoApprovalCommand(t *testing.T) {
 			if listing.BlockedOn != c.on || strings.Contains(string(reply.Result), c.command) != withDetail {
 				t.Fatalf("the narrow session's answer = %s; want blocked on %s, its text shown %v", reply.Result, c.on, withDetail)
 			}
-			own, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
+			own, _, err := p.source.peerThreadAgentRows(t.Context(), p.spawn, 0)
 			if err != nil || own.BlockedOn != c.on || !strings.Contains(own.BlockedDetail, c.command) {
 				t.Fatalf("the pairing's own answer = %+v, %v; want what its prompt asks", own, err)
 			}

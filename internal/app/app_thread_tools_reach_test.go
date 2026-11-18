@@ -62,6 +62,7 @@ type reachPair struct {
 	sourceID string
 	// dbPath and settingsDir are the source's durable state, so a test can
 	// boot a second App over what the first one wrote.
+	destDBPath  string
 	dbPath      string
 	settingsDir string
 }
@@ -81,7 +82,8 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	t.Helper()
 	remotetest.Require(t)
 
-	dest, destBus := setupE2EApp(t)
+	destDBPath := storetest.ClonePath(t)
+	dest, destBus := setupE2EAppOn(t, destDBPath, t.TempDir())
 	dest.configDir = t.TempDir()
 	if err := dest.initIdentity("thread-tools-destination"); err != nil {
 		t.Fatal(err)
@@ -107,13 +109,13 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	publishReachIdentity(t, source, sourceID)
 
 	pair := &reachPair{
-		source: source, dest: dest, destWire: wire, destBus: destBus, sourceID: sourceID,
+		source: source, dest: dest, destDBPath: destDBPath, destWire: wire, destBus: destBus, sourceID: sourceID,
 		project: project.ID, dbPath: dbPath, settingsDir: settingsDir,
 	}
 	pair.profile = t.TempDir()
 	pair.manager = pair.pairWithIn(t, pair.profile, "source")
 	source.backends = pair.manager
-	pair.manager.SetChanged(source.backendSetChanged)
+	source.observePairedComputers(pair.manager)
 	pair.computer = pair.attachedID(t, pair.manager)
 
 	caller, err := createTestThread(t, source, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
@@ -510,6 +512,8 @@ func reachThread(t *testing.T, app *App, id, title string) store.Thread {
 // that is asleep. It embeds the App and is registered under the same
 // labels, so the source reaches it through the ordinary method ids.
 type peerFaults struct {
+	ownerWaitCalls   atomic.Int64
+	holdOwnerChanges chan struct{}
 	*App
 	// dropReplies is how many answered ThreadToolCall replies are thrown
 	// away before one is allowed back to the source. The destination has
@@ -686,6 +690,18 @@ func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPee
 		}
 	}
 	return reply, err
+}
+
+func (p *peerFaults) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
+	p.ownerWaitCalls.Add(1)
+	if c := p.holdOwnerChanges; c != nil && cursor.Launch != "" {
+		select {
+		case <-ctx.Done():
+			return OwnerChanges{}, ctx.Err()
+		case <-c:
+		}
+	}
+	return p.App.ThreadOwnerChanges(ctx, cursor)
 }
 
 // serveFaultyApp serves one destination through the fault wrapper, its

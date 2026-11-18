@@ -50,7 +50,7 @@ func TestThreadToolsAnUnreachableComputerIsRefusedAtOnce(t *testing.T) {
 		if row.State != store.ThreadRequestRefused || row.DeliveredHow != store.ThreadWakeInline || string(row.Answer) != message {
 			t.Fatalf("request = %q delivered %q answer %q, want refused with the call's text", row.State, row.DeliveredHow, row.Answer)
 		}
-		due, err := pair.source.store.DueThreadRequestPolls(time.Now().Add(24*time.Hour).UnixMilli(), 64)
+		due, err := pair.source.store.DueThreadRequestPolls(time.Now().Add(24*time.Hour).UnixMilli(), 64, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

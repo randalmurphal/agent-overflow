@@ -37,6 +37,7 @@
 // owner operations is named as such.
 // Specs: docs/specs/agent-thread-tools.md, docs/specs/standing-agents.md
 // ("Owned workers").
+import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test, expect, devices, type Page } from '@playwright/test';
@@ -51,8 +52,9 @@ import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
-import { backgroundShellSteps } from './agents-tray-helpers.js';
+import { backgroundShellSteps, openPast } from './agents-tray-helpers.js';
 import {
+  CODEX_STEER_NOT_STEERABLE,
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
   SHOW_CURSOR_PATTERN,
@@ -87,7 +89,7 @@ let homeDataDir = '';
 test.beforeAll(async () => {
   homeRoot = await mkdtemp(join(tmpdir(), 'ao-thread-tools-home-'));
   homeDataDir = join(homeRoot, 'state');
-  [home, remote] = await startTogether(launchHarness({ dataDir: homeDataDir }), launchHarness());
+  [home, remote] = await startTogether(launchHarness({ dataDir: homeDataDir }), launchHarness({ dataDir: join(homeRoot, 'remote') }));
   // Own-device enrollment: the personal pairing the thread tools require,
   // and the one that introduces the reverse connection as well.
   const pairing = await headlessPairing(remote);
@@ -1557,6 +1559,7 @@ test("a question over there wakes the spawner here, whose reply answers it there
   await setScenario(remote, there.path, threadToolsScenario({
     name: 'asks-there-worker', provider: 'claude',
     turns: [{ steps: [
+      { gate: 'before-remote-approval' },
       { approval: { toolName: 'Bash', input: { command: 'make kernel' }, onAllow: [{ gate: 'asks-there-after' }], onDeny: [] } },
     ], text: 'Built the kernel.' }],
     afterTurns: 'repeatLast',
@@ -1583,6 +1586,18 @@ test("a question over there wakes the spawner here, whose reply answers it there
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const worker = spawn.value!.thread_id;
+
+  const beforeApproval = await awaitGate(remote, 'before-remote-approval', there.path);
+  process.kill(remote.bootstrap.pid, 'SIGSTOP');
+  try {
+    await expect.poll(async () => {
+      const listing = await home.rpc<{ rows: { token: string; nestedUnavailable?: string }[] }>('ListThreadAgentRows', caller.threadIds[0]);
+      return listing.rows.find(row => row.token === spawn.value!.token)?.nestedUnavailable;
+    }, { timeout: 90_000 }).toContain('did not answer');
+  } finally {
+    process.kill(remote.bootstrap.pid, 'SIGCONT');
+  }
+  await advanceGate(remote, beforeApproval.mockId, 'before-remote-approval');
 
   // The approval goes to the spawner here as a wake, not to the person there.
   const wake = await home.waitForEvent<HarnessMockEventData>(
@@ -1695,6 +1710,98 @@ test("with the spawner's computer stopped, a question over there reaches the per
   } finally {
     if (leasedID !== '') await home.rpc('RemoveBackend', leasedID, true);
     await leased.close();
+  }
+});
+
+test('an accepted send shows the approval blocking a busy ordinary thread on the other computer', async ({ page }) => {
+  test.setTimeout(120_000);
+  const caller = await seed(home, 'send-to-busy-caller', ['Sending caller']);
+  const { projects: [target] } = await remote.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [{ name: 'busy-ordinary-target', repo: {}, threads: [{ title: 'Busy target', provider: 'codex' }] }],
+  });
+  const worker = target.threadIds[0];
+  await setScenario(remote, target.path, threadToolsScenario({
+    name: 'ordinary-target', provider: 'codex', codexResponses: CODEX_STEER_NOT_STEERABLE,
+    turns: [
+      { steps: [
+        { gate: 'before-busy-approval' },
+        { approval: { toolName: 'Bash', input: { command: 'make test' }, onAllow: [], onDeny: [] } },
+      ], text: 'First task finished.' },
+      { text: 'Queued task finished.' },
+    ],
+  }));
+  await remote.rpc('StartSession', worker);
+  await remote.rpc('SendMessage', worker, 'start the first task', null);
+  const first = await awaitGate(remote, 'before-busy-approval', target.path);
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'ordinary-sender', provider: 'claude', turns: [
+      { steps: [{ call: { tool: 'thread_send', args: {
+        computer_id: remoteID, thread_id: worker, message: 'queue the second task', notify: true, wait_seconds: 0,
+      } } }], text: 'Sent.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'queue another task', null);
+  const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', cwd: caller.path });
+  expect(sent.isError, sent.text).toBe(false);
+  await home.open(page);
+  const body = await openAgentsTray(page, caller.threadIds[0], 'desktop');
+  const row = body.locator(`[data-testid="agent-tray-row"][data-token="${sent.value!.token}"]`);
+  await expect(row).toBeVisible();
+  const db = new DatabaseSync(join(remote.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    expect(db.prepare('SELECT state FROM thread_request_receipts WHERE token = ?').get(sent.value!.token))
+      .toMatchObject({ state: 'accepted' });
+  } finally {
+    db.close();
+  }
+  await advanceGate(remote, first.mockId, 'before-busy-approval');
+  await expect(row.getByTestId('agent-tray-row-state')).toHaveText('blocked', { timeout: 30_000 });
+  await expect(row.getByTestId('agent-tray-row-blocked')).toHaveText('Waiting on a person on GPU computer');
+  const { approvals } = await remote.rpc<{ approvals: { requestId: string }[] }>('ListPendingInteractiveRequests', worker);
+  await remote.rpc('RespondToApproval', worker, { requestId: approvals[0].requestId, decision: 'allow' });
+});
+
+test('a reconnected owner sees resting worker edits and confirms only surviving workers', async ({ page }) => {
+  test.setTimeout(240_000);
+  await home.rpc('UpdateSettings', { confirmDelete: true });
+  const kept = await spawnOwnedThere('reconcile-kept', 'Recovered caller', 'Worker before rename');
+  const gone = await spawnOwnedThere('reconcile-gone', 'Recent caller', 'Worker to remove');
+  const old = await spawnOwnedThere('reconcile-old', 'Older caller', 'Older worker to remove');
+  const offered = async (caller: string) => (await home.rpc<{ remoteWorkers: boolean }>('GetDeleteDependents', [caller])).remoteWorkers;
+  await remote.rpc('SetThreadPlacement', [kept.worker], 'standalone');
+  await expect.poll(() => offered(kept.caller)).toBe(false);
+
+  expect(await home.stop()).toBe(true);
+  const db = new DatabaseSync(join(home.bootstrap.dataDir, 'agent-overflow.db'));
+  try {
+    expect(db.prepare('UPDATE thread_requests SET settled_at = ? WHERE token = ? AND settled_at IS NOT NULL')
+      .run(Date.now() - 31 * 86_400_000, old.token).changes).toBe(1);
+  } finally {
+    db.close();
+  }
+  await remote.rpc('SetThreadPlacement', [kept.worker], 'owned');
+  await remote.rpc('RenameThread', kept.worker, 'Renamed while disconnected');
+  for (const worker of [gone.worker, old.worker]) await remote.rpc('DeleteThread', worker);
+  expect(await remote.stop()).toBe(true);
+  remote = await launchHarness({ dataDir: join(homeRoot, 'remote') });
+  home = await launchHarness({ dataDir: homeDataDir });
+  await home.rpc('RepairBackendAddress', remoteID, 'https://127.0.0.1:' + remote.bootstrap.port);
+  await remote.rpc('RepairBackendAddress', homeID, 'https://127.0.0.1:' + home.bootstrap.port);
+  for (const run of [gone, old]) await expect.poll(() => offered(run.caller), { timeout: 60_000 }).toBe(false);
+  await home.open(page);
+  await openAgentsTray(page, kept.caller, 'desktop');
+  const past = await openPast(page);
+  await expect(past.getByText('Renamed while disconnected', { exact: true })).toBeVisible();
+  for (const [caller, survives] of [[kept.caller, true], [gone.caller, false], [old.caller, false]] as const) {
+    await rowMenuItem(page, 'desktop', caller, 'Delete');
+    const dialog = page.locator('[role="dialog"]:not([inert])').filter({ has: page.getByRole('button', { name: 'Cancel', exact: true }) });
+    await expect(dialog).toBeVisible();
+    const warning = dialog.getByText('Workers it spawned on other computers are deleted there too.', { exact: false });
+    await expect(warning).toHaveCount(survives ? 1 : 0);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
   }
 });
 

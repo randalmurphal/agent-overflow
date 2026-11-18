@@ -80,15 +80,15 @@ func (r SpawnReach) Open() bool {
 // call about its spawn: the receipt of the spawn token names, made by
 // deviceID for its thread sourceThreadID, the lineage the retention floor
 // kept included, so a link past the ledger's floor still answers its owner.
-// Found is false for any other token, device or source. A call that reaches
+// Found is false for any other token, device or source, or a missing named target. A call that reaches
 // a standing link is the owner's contact, whatever its thread's placement
 // (touchSpawnLinkOwner).
 func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64) (SpawnReach, bool, error) {
 	var reach SpawnReach
 	err := s.reader().QueryRow(`SELECT COALESCE(r.target_thread_id, ''), r.state, r.spawn_link,
-		    r.spawn_link = 1 AND EXISTS (SELECT 1 FROM threads WHERE threads.id = r.target_thread_id AND threads.placement = 'owned')
-		  FROM thread_request_receipts AS r
-		 WHERE r.token = ? AND r.owner_device_id = ? AND r.source_thread_id = ? AND r.kind = ?`,
+		    r.spawn_link = 1 AND COALESCE(t.placement = 'owned', 0)
+		  FROM thread_request_receipts AS r LEFT JOIN threads t ON t.id = r.target_thread_id
+		 WHERE (r.target_thread_id IS NULL OR t.id IS NOT NULL) AND r.token = ? AND r.owner_device_id = ? AND r.source_thread_id = ? AND r.kind = ?`,
 		token, deviceID, sourceThreadID, ThreadRequestSpawn).Scan(&reach.TargetThreadID, &reach.State, &reach.Linked, &reach.Owned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SpawnReach{}, false, nil

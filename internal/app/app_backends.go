@@ -175,6 +175,12 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
+	var stoppedWait <-chan struct{}
+	defer func() {
+		if stoppedWait != nil {
+			<-stoppedWait
+		}
+	}()
 	unlock := a.lockComputerPairing(id)
 	defer unlock()
 	held, other, stopped, err := a.store.PendingRemoteWatchesForComputer(id)
@@ -198,6 +204,7 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	if err := a.backends.Remove(id); err != nil {
 		return err
 	}
+	stoppedWait = a.ownerUpdates.cancelPeer(id)
 	a.releaseForgottenComputerWork(id, attachedComputerName(profile))
 	return nil
 }
@@ -331,8 +338,14 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 		if a.netReach.LoopbackOnly() {
 			manager.DisableLANDiscovery()
 		}
-		manager.SetChanged(a.backendSetChanged)
+		a.observePairedComputers(manager)
 	}
+}
+
+func (a *App) observePairedComputers(manager *attachedbackends.Manager) {
+	manager.SetPeerInvalidationObserver(a.invalidateOwnerTrees)
+	manager.SetChanged(a.backendSetChanged)
+	manager.SetContactObserver(a.ownerUpdates.contact)
 }
 
 // backendSetChanged is the attached-machine set's one observer: a removed
@@ -343,12 +356,15 @@ func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 	case attachedbackends.SetRemoved:
 		if change.Reason == attachedbackends.RemovedByComputer {
 			a.endRevokedPairing(change)
+		} else {
+			a.ownerUpdates.cancelPeer(change.ID)
+			a.forgetPeerAgentRows(change.ID)
 		}
-		a.forgetPeerAgentRows(change.ID)
 	case attachedbackends.SetMembership:
 		a.forgetUnpairedPeerAgentRows()
 	}
 	a.emit(eventchan.BackendSetChanged, change)
 	a.signalRemotePeers()
+	a.nudgeThreadRequestSweep()
 	a.emit(eventchan.AgentComputersChanged, struct{}{})
 }

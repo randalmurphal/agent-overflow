@@ -70,7 +70,7 @@ func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []
 	}
 	rows, err := tx.Query(`UPDATE thread_requests SET owner_op_seq = owner_op_seq + 1
 		 WHERE caller_thread_id IN (SELECT value FROM json_each(?1))
-		   AND kind = 'spawn' AND target_computer_id <> ''
+		   AND kind = 'spawn' AND target_computer_id <> '' AND link_end = ''
 		   AND (?2 = 'delete' OR NOT EXISTS (SELECT 1 FROM thread_owner_ops AS owed
 		         WHERE owed.token = thread_requests.token AND owed.op = 'delete'))
 		 RETURNING token, target_computer_id,
@@ -170,7 +170,7 @@ func (s *Store) ListRemoteSpawnTokens(threadIDs []string) ([]string, error) {
 // the JSON array ?1 made.
 const remoteSpawnTokensSQL = `SELECT thread_requests.token FROM json_each(?1) AS caller
 	  CROSS JOIN thread_requests ON thread_requests.caller_thread_id = caller.value
-	 WHERE thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> ''`
+	 WHERE thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> '' AND thread_requests.link_end = ''`
 
 // OwesWorkerEnd reports whether an archive or delete is owed to the worker
 // the spawn token made on a paired computer (owed): its spawner's archive
@@ -182,7 +182,7 @@ func (s *Store) OwesWorkerEnd(token string) (owed bool, archivedCaller string, e
 	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_owner_ops
 		 WHERE token = ?1 AND op IN ('archive', 'delete')),
 		 COALESCE((SELECT threads.id FROM thread_requests JOIN threads ON threads.id = thread_requests.caller_thread_id
-		 WHERE thread_requests.token = ?1 AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> ''
+		 WHERE thread_requests.token = ?1 AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id <> '' AND thread_requests.link_end = ''
 		   AND threads.archived = 1), '')`, token).Scan(&owed, &archivedCaller); err != nil {
 		return false, "", fmt.Errorf("store: probe the operation owed for spawn %s: %w", token, err)
 	}
@@ -256,7 +256,7 @@ const forgetOwnerOpsSQL = `DELETE FROM thread_owner_ops WHERE computer_id = ?`
 
 // remoteSpawnLinkToSQL reads the spawn that named thread ?2 on computer ?1.
 var remoteSpawnLinkToSQL = `SELECT ` + threadRequestColumns + ` FROM thread_requests
-	 WHERE kind = 'spawn' AND target_computer_id = ` + textParam("?1") + ` AND target_computer_id <> '' AND target_thread_id = ?2
+	 WHERE kind = 'spawn' AND target_computer_id = ` + textParam("?1") + ` AND target_computer_id <> '' AND target_thread_id = ?2 AND link_end IN ('','released')
 	 ORDER BY created_at DESC LIMIT 1`
 
 // RemoteSpawnLinkTo returns the spawn that named threadID on computerID,

@@ -96,7 +96,8 @@ type ThreadRequestReceipt struct {
 	// SpawnLink marks a paired computer's owned spawn: its thread is owned
 	// by the source thread there while the link stands (migration v158,
 	// spawn_links.go). Written at acceptance, ended by a release.
-	SpawnLink bool `json:"-"`
+	SpawnLink  bool `json:"-"`
+	TrackSpawn bool `json:"-"`
 	// OwnerSeenAt is when the source computer last reached a link; the
 	// acceptance writes the creation time (touchSpawnLinkOwner).
 	OwnerSeenAt int64 `json:"-"`
@@ -121,7 +122,7 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
     created_at, updated_at, answer_agent, answer_agent_role, own_turn,
     late_reply_agent, late_reply_agent_role, spawn_instructions,
-    spawn_link, owner_seen_at, owner_op_seq, answer_cause, answer_cause_arg`
+    spawn_link, owner_seen_at, owner_op_seq, answer_cause, answer_cause_arg, track_spawn`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
@@ -135,7 +136,7 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
 		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
 		&lateReplyAgent, &lateReplyAgentRole, &r.SpawnInstructions,
-		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq, &r.Cause, &r.CauseArg,
+		&r.SpawnLink, &r.OwnerSeenAt, &r.OwnerOpSeq, &r.Cause, &r.CauseArg, &r.TrackSpawn,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
@@ -189,6 +190,9 @@ func (s *Store) AcceptThreadRequestReceipt(r ThreadRequestReceipt) (ThreadReques
 	}
 	if err := tx.Commit(); err != nil {
 		return ThreadRequestReceipt{}, false, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	if created && stored.OwnerDeviceID != localReceiptOwner {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: stored.Token})
 	}
 	return stored, created, nil
 }
@@ -321,15 +325,16 @@ const openReceiptSQL = `state IN ('` + ThreadReceiptAccepted + `', '` + ThreadRe
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
     token, owner_device_id, source_computer_id, source_computer_name,
     source_thread_id, source_thread_title, kind, target_thread_id,
-    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at
+    message_item_id, turn_id, state, created_at, updated_at, spawn_link, owner_seen_at, track_spawn
  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-    ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15)`
+    ?14 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL), ?15,
+    ?16 AND EXISTS (SELECT 1 FROM sessions WHERE sessions.device_id = ?2 AND sessions.revoked_at IS NULL))`
 
 // insertArgs writes a link as seen by its owner when it was made.
 func (r ThreadRequestReceipt) insertArgs() []any {
 	return []any{r.Token, r.OwnerDeviceID, r.SourceComputerID, r.SourceComputerName,
 		r.SourceThreadID, r.SourceThreadTitle, r.Kind, nilIfEmpty(r.TargetThreadID),
-		r.MessageItemID, r.TurnID, r.State, r.CreatedAt, r.UpdatedAt, boolToInt(r.SpawnLink), r.CreatedAt}
+		r.MessageItemID, r.TurnID, r.State, r.CreatedAt, r.UpdatedAt, boolToInt(r.SpawnLink), r.CreatedAt, r.TrackSpawn || r.SpawnLink}
 }
 
 // validated checks a receipt about to be accepted and fills its defaults.
@@ -348,7 +353,7 @@ func (r ThreadRequestReceipt) validated(action string) (ThreadRequestReceipt, er
 	}
 	// A link names the computer and thread that own its thread, and only a
 	// paired computer's spawn makes one.
-	if r.SpawnLink && (r.Kind != ThreadRequestSpawn || r.OwnerDeviceID == localReceiptOwner ||
+	if (r.SpawnLink || r.TrackSpawn) && (r.Kind != ThreadRequestSpawn || r.OwnerDeviceID == localReceiptOwner ||
 		r.SourceComputerID == "" || r.SourceThreadID == "") {
 		return r, fmt.Errorf("%s: a spawn link is a paired computer's spawn naming its computer and thread", action)
 	}
@@ -418,6 +423,7 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string, own bool) (bool, 
 	if err := tx.Commit(); err != nil {
 		return false, ListingUnchanged, fmt.Errorf("%s: commit: %w", action, err)
 	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	return true, listingChange(listedBefore, listedAfter), nil
 }
 
@@ -529,7 +535,7 @@ func (s *Store) writeReceiptAndRunSource(action, token, query string, args ...an
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	if advanced {
+	if advanced || applied {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
 	return applied, nil
@@ -773,7 +779,7 @@ func (s *Store) SettleLocalThreadRequestAtRest(token string, from []string, sett
 	if err := tx.Commit(); err != nil {
 		return LocalSettlement{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	if out.Collected {
+	if out.Collected || receipt.OwnerDeviceID != localReceiptOwner {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
 	return out, nil
@@ -794,7 +800,11 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // whose request was made on this computer stores it with that request
 // instead (StoreLocalThreadRequestLateReply).
 func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
-	return storeThreadReceiptLateReply(s.db, token, reply, at, agent)
+	changed, err := storeThreadReceiptLateReply(s.db, token, reply, at, agent)
+	if changed {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return changed, err
 }
 
 func storeThreadReceiptLateReply(db sqlExecutor, token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
@@ -941,21 +951,20 @@ func (s *Store) ListOpenThreadRequestReceipts() ([]ThreadRequestReceipt, error) 
 // keeps answering "already ran". Returns how many answers were dropped.
 func (s *Store) ExpireThreadRequestAnswers(now int64) (int64, error) {
 	action := "store: expire thread request answers"
-	result, err := s.db.Exec(
+	tokens, err := queryIDs(s.db,
 		`UPDATE thread_request_receipts
 		    SET answer = NULL, answer_cause = '', answer_cause_arg = '', late_reply = NULL, state = 'expired', updated_at = ?
 		  WHERE settled_at IS NOT NULL
 		    AND expires_at IS NOT NULL AND expires_at <= ?
 		    AND collected_revision < revision
-		    AND state <> 'expired'`,
+		    AND state <> 'expired' RETURNING token`,
 		nowMillis(), now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", action, err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("%s: rows affected: %w", action, err)
+	for _, token := range tokens {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
-	return affected, nil
+	return int64(len(tokens)), nil
 }

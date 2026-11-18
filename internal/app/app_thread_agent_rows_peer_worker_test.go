@@ -65,7 +65,7 @@ func (p *agentPeerPair) askAgainUntilRow(t *testing.T, done func(ThreadAgentRow,
 		}
 		delete(cache.backoff, p.spawn.TargetComputerID)
 		cache.mu.Unlock()
-		p.source.refreshNestedOpenRemoteSpawns()
+		p.listRows(t)
 		p.source.threadRequestsWG.Wait()
 		view := newThreadAgentView(p.source)
 		view.since = time.Now().Add(time.Second).UnixMilli()

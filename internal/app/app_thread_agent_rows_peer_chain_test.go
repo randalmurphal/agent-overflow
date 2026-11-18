@@ -31,6 +31,7 @@ import (
 // spawned threads[0] on apps[1], threads[0] spawned threads[1] on apps[2],
 // and so on.
 type agentChain struct {
+	buses []*capturedEventBus
 	apps  []*App
 	wires []*pairedBackend
 	peers []*countedAgentsPeer
@@ -127,7 +128,8 @@ func newAgentChain(t *testing.T, n int) *agentChain {
 	remotetest.Require(t)
 	c := &agentChain{}
 	for i := range n {
-		app, _ := setupE2EApp(t)
+		app, bus := setupE2EApp(t)
+		c.buses = append(c.buses, bus)
 		app.appCtx, app.appCancel = context.WithCancel(context.Background())
 		t.Cleanup(app.appCancel)
 		app.configDir = t.TempDir()
@@ -174,7 +176,7 @@ func newAgentChain(t *testing.T, n int) *agentChain {
 			t.Fatalf("await the pairing of computer %d: %v", i, err)
 		}
 		c.apps[i].backends = manager
-		manager.SetChanged(c.apps[i].backendSetChanged)
+		c.apps[i].observePairedComputers(manager)
 		c.computers = append(c.computers, peer.ID)
 	}
 	caller, err := createTestThread(t, c.apps[0], string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
