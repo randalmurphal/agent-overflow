@@ -62,10 +62,25 @@ type fileDispositionInfo struct {
 	deleteFile byte
 }
 
+// fileAttributeTagInfo is FILE_ATTRIBUTE_TAG_INFO.
+type fileAttributeTagInfo struct {
+	fileAttributes uint32
+	reparseTag     uint32
+}
+
+// isLink reports a symbolic link or a junction. Other reparse points (a
+// cloud placeholder, a deduplicated file) are the object itself, not a name
+// for another one.
+func (t fileAttributeTagInfo) isLink() bool {
+	return t.fileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 &&
+		(t.reparseTag == windows.IO_REPARSE_TAG_SYMLINK || t.reparseTag == windows.IO_REPARSE_TAG_MOUNT_POINT)
+}
+
 // removeOwnerOnly opens the key file's name relative to the checked folder
 // without following a reparse point, inspects that handle and marks the
 // same handle for deletion, so what is checked is what is removed. A link
-// there, to a file or a folder, is removed itself; a real folder is refused.
+// there, to a file or a folder, is removed itself; a folder that is not a
+// link is refused.
 func (f File) removeOwnerOnly() (err error) {
 	folder, err := f.openFolder()
 	if errors.Is(err, ErrMissing) {
@@ -89,11 +104,12 @@ func (f File) removeOwnerOnly() (err error) {
 	}
 	// The deletion takes effect when this handle closes.
 	defer f.closeInto(&err, closeHandle(handle), "file")
-	attributes, err := handleAttributes(handle)
-	if err != nil {
+	var tag fileAttributeTagInfo
+	if err := windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo,
+		(*byte)(unsafe.Pointer(&tag)), uint32(unsafe.Sizeof(tag))); err != nil {
 		return f.failed("inspect", "file", err)
 	}
-	if attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 && attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+	if tag.fileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 && !tag.isLink() {
 		return f.refused("it is not a regular file")
 	}
 	info := fileDispositionInfo{deleteFile: 1}
