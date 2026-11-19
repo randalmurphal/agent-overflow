@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/browser/turnorder"
 	"agent-overflow/internal/paneplace"
 
 	"github.com/google/uuid"
@@ -147,9 +148,9 @@ type paneMount struct {
 	findSeq uint64
 	// focus is the mount's page focus intent (focus_intent.go).
 	focus *mountFocus
-	// selection admits the tab selections made in the mount in the user's
-	// order (selection.go).
-	selection *mountSelection
+	// order admits the numbered tab commands made in the mount in the
+	// user's order (selection.go).
+	order *turnorder.Order
 }
 
 // AttachPane registers one mounted pane surface for a thread and answers the
@@ -184,8 +185,10 @@ func (m *Manager) DetachPane(id string) {
 	var recolor []*managedPage
 	if ok {
 		delete(m.panes, id)
-		// The mount's waiting selections are passed.
-		mount.endSelectionLocked()
+		// The mount's waiting commands are passed.
+		if mount.order != nil {
+			mount.order.End()
+		}
 		// Unmounting is a focus choice: a request in flight must not land.
 		if mount.focus != nil && mount.focus.intent != nil {
 			mount.focus.intent.withdrawn.Store(true)

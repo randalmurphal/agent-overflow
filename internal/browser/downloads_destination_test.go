@@ -1032,7 +1032,7 @@ func TestForgettingBrowsingLeavesTheDownloadsFolderAlone(t *testing.T) {
 				}
 			}},
 			{"jar switch", func(t *testing.T, manager *Manager, access Access) {
-				if err := manager.SetJar(context.Background(), access, JarPrivate); err != nil {
+				if err := manager.SetJar(context.Background(), access, JarPrivate, JarSwitchConfirmed); err != nil {
 					t.Fatal(err)
 				}
 			}},

@@ -1,5 +1,5 @@
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
-import { browserCompanionAct, type BrowserActionFailure } from './browserActions';
+import { browserAction, browserCompanionAct, toDownloadId, type BrowserAction, type BrowserActionFailure } from './browserActions';
 import { browserCompanionState, browserPaneOpen, canUseNativeBrowser } from './browserCompanion.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { formatBytes } from '../utils/formatBytes';
@@ -76,30 +76,30 @@ export function downloadSourceHost(download: BrowserDownload): string {
  * Runs one download action. A refusal lands in the pane's banner, or in a
  * toast when the thread has no pane open here (an action from a toast).
  */
-async function act(threadId: string, kind: string, downloadId?: string): Promise<BrowserActionFailure | null> {
-  const failure = await browserCompanionAct(threadId, { kind, downloadId });
+async function act(threadId: string, action: BrowserAction): Promise<BrowserActionFailure | null> {
+  const failure = await browserCompanionAct(threadId, action);
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
   return failure;
 }
 
 /** Stops a running download. */
 export function cancelBrowserDownload(threadId: string, downloadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, 'download-cancel', downloadId);
+  return act(threadId, browserAction.download('download-cancel', toDownloadId(downloadId)));
 }
 
 /** Opens the OS file manager with a finished download selected. */
 export function revealBrowserDownload(threadId: string, downloadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, 'download-reveal', downloadId);
+  return act(threadId, browserAction.download('download-reveal', toDownloadId(downloadId)));
 }
 
 /** Shows a finished download in a new browser tab (download.openable). */
 export function openBrowserDownload(threadId: string, downloadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, 'download-open', downloadId);
+  return act(threadId, browserAction.download('download-open', toDownloadId(downloadId)));
 }
 
 /** Removes the finished, failed and canceled downloads from the list. */
 export function clearBrowserDownloads(threadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, 'downloads-clear');
+  return act(threadId, browserAction.clearDownloads());
 }
 
 /** Whether a companion event is one announceBrowserDownload takes. */

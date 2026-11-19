@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
 // A thread's downloads as its browser pane lists them. Each page keeps its
@@ -391,11 +393,11 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id st
 // its workspace's downloads (authorizeFile). With ctx's numbered selection
 // passed (selection.go) it opens nothing.
 func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id string) (PageInfo, error) {
-	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
-	if err != nil || turn.passed {
+	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	if err != nil || turn.Standing() == turnorder.Passed {
 		return PageInfo{}, err
 	}
-	defer m.releaseSelectionTurn(turn)
+	defer turn.Release()
 	item, err := m.finishedDownloadPath(access, id)
 	if err != nil {
 		return PageInfo{}, err

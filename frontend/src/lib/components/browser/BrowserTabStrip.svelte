@@ -11,6 +11,7 @@
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import type { BrowserPageInfo } from '../../stores/bindings';
+  import { browserAction, toPageId, type BrowserAction } from '../../stores/browserActions';
   import Icon from '../primitives/Icon.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
@@ -38,8 +39,8 @@
     activePageId: string;
     /** How many closed tabs the thread can reopen. */
     closedTabs?: number;
-    /** Runs a chrome action; an omitted pageId means the active page. */
-    onAct: (kind: string, pageId?: string, address?: string, index?: number) => Promise<void>;
+    /** Runs a chrome action. */
+    onAct: (action: BrowserAction) => Promise<void>;
     /** Opens a new tab the user asked for. */
     onNewTab: () => void;
     /** A double-click on the strip's empty space (maximize or restore the pane). */
@@ -185,7 +186,7 @@
     // The backend's move index addresses the list WITHOUT the moved tab.
     const to = from < slot ? slot - 1 : slot;
     if (to === from) return;
-    void onAct('move', pageId, '', to);
+    void onAct(browserAction.move(toPageId(pageId), to));
   }
 
   function tabDragEnd(): void {
@@ -250,7 +251,7 @@
         onauxclick={(event) => {
           if (event.button !== 1) return;
           event.preventDefault();
-          void onAct('close', page.id);
+          void onAct(browserAction.onTab('close', toPageId(page.id)));
         }}
         oncontextmenu={(event) => openMenu(event, page.id)}
       >
@@ -274,7 +275,7 @@
           class="relative flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 text-left text-[0.72rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 rounded-t-lg"
           data-testid="browser-tab"
           data-tab-state={status}
-          onclick={() => void onAct('activate', page.id)}
+          onclick={() => void onAct(browserAction.select(toPageId(page.id)))}
         >
           <span
             class="flex size-4 shrink-0 items-center justify-center"
@@ -305,7 +306,7 @@
             active ? '' : 'opacity-0 group-hover:opacity-100',
           ].join(' ')}
           data-testid="browser-tab-close"
-          onclick={() => void onAct('close', page.id)}
+          onclick={() => void onAct(browserAction.onTab('close', toPageId(page.id)))}
         ><Icon icon={X} size={12} /></button>
       </div>
     {/each}

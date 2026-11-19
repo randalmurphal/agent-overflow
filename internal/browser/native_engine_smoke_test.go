@@ -183,7 +183,7 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 						t.Errorf("close the thread's pages: %v", err)
 					}
 				})
-				if err := manager.SetJar(context.Background(), access, jar); err != nil {
+				if err := manager.SetJar(context.Background(), access, jar, JarSwitchConfirmed); err != nil {
 					t.Fatalf("choose the %s jar: %v", jar, err)
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)

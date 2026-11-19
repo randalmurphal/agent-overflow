@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
 // SelectPage pins one of the caller's tabs as the companion's. The pane
@@ -16,7 +18,7 @@ import (
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
 	pageID = strings.TrimSpace(pageID)
 	// An agent's selection keeps arrival order (selection.go).
-	if _, err := m.selectTab(ctx, access, Selection{}, pageID); err != nil {
+	if _, err := m.selectTab(access, turnorder.Unordered(), pageID); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.resolvePage(ctx, access, pageID, false)
@@ -44,12 +46,12 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 // selectTab makes one of the thread's tabs, in any state, the active one and
 // presents it before any page work: a live page is shown at once, and a tab
 // with no page yet (creating, restoring, suspended, failed) shows its state
-// until it has one. A live page counts as used. sel is the user's numbered
-// selection, admitted in the user's order (selection.go). It answers the
-// tab it selected, the only one its caller may restore, and "" when sel
-// was passed and selected nothing.
-func (m *Manager) selectTab(ctx context.Context, access Access, sel Selection, pageID string) (string, error) {
-	return m.selectTabWhere(ctx, access, sel, func(tabs []threadTab, _ string) int {
+// until it has one. A live page counts as used. turn is the selection's
+// place in the user's order (selection.go), which its hold commits. It
+// answers the tab it selected, the only one its caller may restore, and ""
+// when turn was passed and selected nothing.
+func (m *Manager) selectTab(access Access, turn *turnorder.Turn, pageID string) (string, error) {
+	return m.selectTabWhere(access, turn, func(tabs []threadTab, _ string) int {
 		for i := range tabs {
 			if tabs[i].id == pageID {
 				return i
@@ -60,18 +62,14 @@ func (m *Manager) selectTab(ctx context.Context, access Access, sel Selection, p
 }
 
 // selectTabWhere is selectTab of the tab pick chooses from the companion's
-// tabs in strip order and the active tab's id, in sel's turn and under one
-// hold of m.mu, so the choice and the selection see the same tabs. A pick
+// tabs in strip order and the active tab's id, under one hold of m.mu that
+// commits turn, so the choice and the selection see the same tabs. A pick
 // of -1 is errPageNotFound.
-func (m *Manager) selectTabWhere(ctx context.Context, access Access, sel Selection, pick func(tabs []threadTab, activePageID string) int) (string, error) {
-	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, sel)
-	if err != nil || turn.passed {
-		return "", err
-	}
-	defer m.releaseSelectionTurn(turn)
+func (m *Manager) selectTabWhere(access Access, turn *turnorder.Turn, pick func(tabs []threadTab, activePageID string) int) (string, error) {
+	defer turn.Release()
 	m.mu.Lock()
-	if !m.commitSelectionLocked(turn) {
-		// The pane it came from detached since it was admitted.
+	if turn.Commit() == turnorder.Passed {
+		// A repeat, or the pane it came from is gone.
 		m.mu.Unlock()
 		return "", nil
 	}
@@ -263,6 +261,12 @@ func (m *Manager) setActivePage(threadID, pageID string) {
 // tab, and a thread with none hides its companion.
 func (m *Manager) repairActivePage(threadID string) {
 	m.mu.Lock()
+	m.repairActivePageLocked(threadID)
+	m.mu.Unlock()
+}
+
+// repairActivePageLocked is repairActivePage's hold. The caller holds m.mu.
+func (m *Manager) repairActivePageLocked(threadID string) {
 	info := m.sessionLocked(threadID)
 	var replacement *threadTab
 	activeExists := false
@@ -285,5 +289,4 @@ func (m *Manager) repairActivePage(threadID string) {
 		info.UpdatedAt = time.Now()
 		m.sessions[threadID] = info
 	}
-	m.mu.Unlock()
 }

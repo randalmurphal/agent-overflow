@@ -9,7 +9,7 @@
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
-  import { browserCompanionAct, openBrowserTab } from '../../stores/browserActions';
+  import { browserAction, browserCompanionAct, openBrowserTab, toPageId, type BrowserAction } from '../../stores/browserActions';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
@@ -118,10 +118,9 @@
       : '',
   );
 
-  async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
+  async function act(action: BrowserAction): Promise<void> {
     const threadId = ctx.threadId;
-    if (!threadId) return;
-    await browserCompanionAct(threadId, { kind, pageId, address: nextAddress, index });
+    if (threadId) await browserCompanionAct(threadId, action);
   }
 
   // A suspended page (its session went idle, or the app restarted) has no
@@ -140,7 +139,7 @@
     restoreAsked = page.id;
     // Not a selection: the backend restores the tab only while it is the
     // active one, so this cannot undo a tab the user picked since.
-    void act('restore', page.id);
+    void act(browserAction.onTab('restore', toPageId(page.id)));
   });
 
   // A new tab the user opened takes the address bar's focus once it is ready
@@ -196,7 +195,7 @@
     const threadId = ctx.threadId;
     if (!threadId) return;
     const page = activePage;
-    if (page && !page.creating && !(page.error && !page.suspended)) void act('navigate', page.id, path);
+    if (page && !page.creating && !(page.error && !page.suspended)) void act(browserAction.navigate(toPageId(page.id), path));
     else void openBrowserTab(threadId, { address: path });
   }
 
@@ -282,7 +281,7 @@
             variant="secondary"
             size="sm"
             testId="browser-pane-crash-reload"
-            onclick={() => void act('reload', activePage.id)}
+            onclick={() => void act(browserAction.onTab('reload', toPageId(activePage.id)))}
           >Reload</Button>{/if}</div>
     {/if}
   </div>

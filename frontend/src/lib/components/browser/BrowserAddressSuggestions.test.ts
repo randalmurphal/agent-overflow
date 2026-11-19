@@ -119,7 +119,7 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(input.value).toBe('o');
     expect(key(input, { key: 'Enter' }).defaultPrevented).toBe(true);
     await tick();
-    expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'https://github.test/org/repo');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'navigate', pageId: 'a', address: 'https://github.test/org/repo' });
     expect(onLeave).toHaveBeenCalledTimes(1);
     expect(rows()).toEqual([]);
   });
@@ -134,7 +134,7 @@ describe('<BrowserAddressSuggestions>', () => {
     key(input, { key: 'ArrowDown' });
     await tick();
     key(input, { key: 'Enter' });
-    expect(onAct).toHaveBeenCalledWith('activate', 'b');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'activate', pageId: 'b' });
     expect(onLeave).not.toHaveBeenCalled();
     finish();
     await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
@@ -162,7 +162,7 @@ describe('<BrowserAddressSuggestions>', () => {
     await type(input, 'local');
     await waitFor(() => expect(rows().length).toBe(2));
     key(input, { key: 'Enter' });
-    expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'local');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'navigate', pageId: 'a', address: 'local' });
   });
 
   it('Escape closes the list first and reverts on the next press', async () => {
@@ -194,7 +194,7 @@ describe('<BrowserAddressSuggestions>', () => {
     await fireEvent.mouseMove(rows()[0]);
     expect(rows()[0].getAttribute('aria-selected')).toBe('true');
     await fireEvent.click(rows()[0]);
-    expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'https://github.test/org/repo');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'navigate', pageId: 'a', address: 'https://github.test/org/repo' });
   });
 
   // The field keeps the keyboard while the list is open, so the list is an
@@ -251,7 +251,7 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'true']);
     expect(input.getAttribute('aria-activedescendant')).toBe(rows()[1].id);
     key(input, { key: 'Enter' });
-    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'https://github.test/org/repo');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'navigate', pageId: 'a', address: 'https://github.test/org/repo' });
   });
 
   it('goes back to the typed text when the highlighted row leaves the list', async () => {
@@ -270,7 +270,7 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(rowText()).toEqual(['tab https://d.test/settings']);
     expect(rows()[0].getAttribute('aria-selected')).toBe('false');
     key(input, { key: 'Enter' });
-    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'settings');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'navigate', pageId: 'a', address: 'settings' });
   });
 
   it('reads again for the new thread when the pane changes thread under the focused field', async () => {

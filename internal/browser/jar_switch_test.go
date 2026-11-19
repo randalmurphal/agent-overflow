@@ -151,7 +151,7 @@ func TestABusyPageDoesNotHoldASwitch(t *testing.T) {
 		}
 	}
 	switched := make(chan error, 1)
-	go func() { switched <- manager.SetJar(context.Background(), access, JarThread) }()
+	go func() { switched <- manager.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed) }()
 	for _, done := range []chan error{saved, switched} {
 		select {
 		case err := <-done:
@@ -203,9 +203,11 @@ func TestTabsChangedDuringASwitchAreSavedAsTheSwitchLeftThem(t *testing.T) {
 }
 
 // A switch whose thread's pages were closed during its write (an archive)
-// commits nothing: the action bound before the close changes no jar.
+// commits nothing: the action bound before the close changes no jar, in
+// memory or in the saved copy.
 func TestASwitchOfAThreadClosedDuringItsWriteCommitsNothing(t *testing.T) {
-	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	dir := t.TempDir()
+	manager, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access("a", proj.one)
 	openPage(t, manager, access, "https://example.test/")
@@ -219,11 +221,15 @@ func TestASwitchOfAThreadClosedDuringItsWriteCommitsNothing(t *testing.T) {
 			return manager.lifeAdmitsLocked(ctx, access.ThreadID) != nil
 		})
 	}
-	if err := manager.SetJar(ctx, access, JarThread); !errors.Is(err, ErrThreadClosed) {
+	if err := manager.SetJar(ctx, access, JarThread, JarSwitchConfirmed); !errors.Is(err, ErrThreadClosed) {
 		t.Fatalf("the switch answered %v, want ErrThreadClosed", err)
 	}
 	if state := manager.CompanionState(access); state.Jar == JarThread {
 		t.Fatal("the switch of a closed thread committed its jar")
+	}
+	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	if got := restarted.CompanionState(access).Jar; got == JarThread {
+		t.Fatal("the saved copy of a closed thread names the jar its switch did not make")
 	}
 }
 
@@ -239,7 +245,7 @@ func TestASwitchThatCannotSaveKeepsTheJarAndThePages(t *testing.T) {
 	if err := os.WriteFile(manager.recordDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.SetJar(context.Background(), access, JarThread); err == nil {
+	if err := manager.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed); err == nil {
 		t.Fatal("a switch whose saved copy failed reported success")
 	}
 	state := manager.CompanionState(access)
@@ -564,7 +570,7 @@ func TestASwitchFencesPopupAdoption(t *testing.T) {
 		engine.mu.Lock()
 		engine.onAttach = nil
 		engine.mu.Unlock()
-		if err := manager.SetJar(context.Background(), access, JarThread); err != nil {
+		if err := manager.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed); err != nil {
 			t.Errorf("switch: %v", err)
 		}
 	}
@@ -596,11 +602,11 @@ func TestSettingTheJarWithNoTabsOnlyApplies(t *testing.T) {
 	if got, ok := findTab(manager, access, page.ID); !ok || got.Suspended {
 		t.Fatalf("re-setting the same jar touched the tab: %+v", got)
 	}
-	if err := manager.SetJar(context.Background(), access, "shared"); err == nil {
+	if err := manager.SetJar(context.Background(), access, "shared", JarSwitchConfirmed); err == nil {
 		t.Fatal("an unknown jar was accepted")
 	}
 	noProject := Access{ThreadID: "b", Workspace: proj.one}
-	if err := manager.SetJar(context.Background(), noProject, JarProject); err == nil {
+	if err := manager.SetJar(context.Background(), noProject, JarProject, JarSwitchConfirmed); err == nil {
 		t.Fatal("a thread with no project chose the project jar")
 	}
 }

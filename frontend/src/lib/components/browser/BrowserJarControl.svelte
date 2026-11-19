@@ -17,8 +17,10 @@
 
   // The browser's cookie jar: which threads' browsers share sign-ins and
   // site data with this one (internal/browser/jar.go). Switching with tabs
-  // open closes them and suspends their addresses into the new jar, so it asks
-  // first.
+  // open closes them and suspends their addresses into the new jar. The
+  // backend decides whether a tab is live in the hold that would switch: it
+  // refuses a switch the user has not confirmed then, and this asks and
+  // sends it again confirmed.
 
   const JARS: { kind: BrowserJar; label: string; description: string; icon: typeof Cookie }[] = [
     { kind: 'worktree', label: 'This worktree', description: 'Shared with every thread on this worktree', icon: Cookie },
@@ -31,8 +33,7 @@
   let threadId = $derived(thread());
   let browser = $derived(threadId ? browserCompanionState(threadId) : null);
   let current = $derived(JARS.find((jar) => jar.kind === browser?.jar) ?? JARS[0]);
-  // Tabs whose page state a switch drops: every tab with a page behind it or
-  // on its way.
+  // The open tabs the confirmation names; whether to ask is the backend's.
   let openTabs = $derived((browser?.pages ?? []).filter((page) => !page.suspended && !page.error).length);
 
   let anchor: HTMLSpanElement | undefined = $state(undefined);
@@ -71,14 +72,18 @@
     open = false;
     openedFrom = undefined;
     if (!threadId || jar.kind === current.kind) return;
-    if (openTabs > 0) confirming = jar;
-    else void setBrowserJar(threadId, jar.kind);
+    void switchTo(threadId, jar);
+  }
+
+  async function switchTo(thread: string, jar: (typeof JARS)[number]): Promise<void> {
+    const answer = await setBrowserJar(thread, jar.kind, false);
+    if (answer.kind === 'needs-confirmation' && thread === threadId) confirming = jar;
   }
 
   function confirm(): void {
     const jar = confirming;
     confirming = null;
-    if (threadId && jar) void setBrowserJar(threadId, jar.kind);
+    if (threadId && jar) void setBrowserJar(threadId, jar.kind, true);
   }
 </script>
 
@@ -113,7 +118,7 @@
   <ConfirmDialog
     open={confirming !== null}
     title="Switch to {confirming?.label ?? ''}?"
-    description="{openTabs === 1 ? 'The open tab closes and loads its address' : `The ${openTabs} open tabs close and load their addresses`} again in the new cookie jar when you go back to {openTabs === 1 ? 'it' : 'them'}. Page state is lost: form input, back and forward history, and sign-ins kept in the current jar."
+    description="{openTabs === 1 ? 'The open tab closes and loads its address' : openTabs > 1 ? `The ${openTabs} open tabs close and load their addresses` : 'The open tabs close and load their addresses'} again in the new cookie jar when you go back to {openTabs === 1 ? 'it' : 'them'}. Page state is lost: form input, back and forward history, and sign-ins kept in the current jar."
     confirmLabel="Switch cookie jar"
     destructive
     onConfirm={confirm}

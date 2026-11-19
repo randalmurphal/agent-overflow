@@ -76,6 +76,7 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
@@ -2975,7 +2976,7 @@ describe('compact-gated commands', () => {
 
   // Focus a browser on the desktop, then the compact list covers it: the
   // close chord is not the browser's, nor any pane's.
-  it('sends neither a tab close nor a pane close from the compact list while a browser holds focus', () => {
+  it('sends neither a tab close nor a pane close from the compact list while a browser holds focus', async () => {
     installCompanionPanes();
     setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
     const pane = readyPane();
@@ -2986,6 +2987,7 @@ describe('compact-gated commands', () => {
       kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
       pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
     });
+    await attachBrowserPaneForTest('thread-1', 'mount-1');
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
     const close = () => dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false });
     focusPane(browser.paneId);
@@ -2999,7 +3001,7 @@ describe('compact-gated commands', () => {
     // The same chord on the desktop closes the browser's tab.
     setCompactLayoutForTest(false);
     expect(close()).toBe(true);
-    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1' }));
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', pageId: '', mount: 'mount-1' }));
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();
     resetKeybindingsStore();

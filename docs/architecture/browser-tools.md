@@ -81,12 +81,21 @@ per-platform no-op.
   its target, its popup's report or its frame, then is refused. A page
   attached after its frames were made, a popup at its adoption, reads
   them from its frame tree.
-- Switching the jar with tabs open asks first in the pane. The Manager then
-  suspends every live tab into the new jar: its page closes and a suspended
-  record keeps its id, position, label and address, the active tab staying
-  active, and the records are saved before the switch takes effect, so a
+- Switching the jar with tabs open asks first in the pane. The pane sends
+  the switch unconfirmed; the Manager refuses it, changing nothing, when the
+  thread has a live tab as it captures the switch or in the hold that would
+  commit it (`SetJar` with `JarSwitchIfNoLiveTab`, code
+  `browser_jar_unconfirmed`), and the pane then asks and sends it confirmed
+  (`JarSwitchConfirmed`). A tab still being created is not live: the switch
+  creates it again in the new jar. The Manager then suspends every live tab
+  into the new jar: its page closes and a suspended record keeps its id,
+  position, label and address, the active tab staying active, and the
+  records are captured once and saved before the switch takes effect, so a
   shutdown or crash mid-switch loses no tab, and a switch whose save fails
-  changes nothing and reports the failure. The tabs come back through the
+  changes nothing and reports the failure. A switch refused after its save
+  (unconfirmed, the app shutting down, the thread closed) saves the thread
+  again as it is, so the saved copy never names a jar the thread is not in,
+  and reports when that save fails. The tabs come back through the
   ordinary restore: the pane brings back the tab it shows, and the others
   return when selected or used, with the navigation policy applied and no
   page history. A tab that cannot come back stays suspended with the error.
@@ -123,10 +132,12 @@ per-platform no-op.
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
 - `pane.close` (Mod+W) on the keyboard's browser companion closes the active tab;
-  the companion closes when its last tab does. With a tab selection or an
-  earlier Mod+W of the pane still unanswered, the close waits for those
-  answers and closes the tab active then, so it closes the tab the user just
-  picked and one tab per press. Closing the companion any other
+  the companion closes when its last tab does. The close names no tab: it
+  takes its place in the pane's order of selections at the keypress
+  (`close-active`), and the Manager closes the tab active at its turn and
+  picks the next active tab in the same lock hold, so it closes the tab the
+  user just picked and one tab per press, and a tab still opening or
+  restoring closes at once. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
 - A tab the user closes is kept on the thread's in-memory closed-tab stack
   (`internal/browser/companion_tabs.go`): its address, label and position,
@@ -153,30 +164,37 @@ per-platform no-op.
   `restoring` until its reload ends. The pane's own request to restore the
   suspended tab it shows (`restore`) selects nothing and acts only while that
   tab is still the active one.
-- A pane's tab selections take effect in the order the user made them
-  (`selection.go`), though the transport runs each call on its own
-  goroutine. Every pane action that selects a tab (`activate`, `step`, and
-  the `new`, `reopen`, `duplicate` and `download-open` that select the tab
-  they open) carries the pane's mount and a number the client takes when
-  the user acts, consecutive from 1 in each mount; a re-attach is a new
-  mount and starts again at 1. The Manager admits a mount's numbers in
-  order: the next one selects at once, a later one waits for its
-  predecessors' selection (never their restore or load), and each then
-  does what it says and restores the tab it selected. When a second passes
-  with no progress the count moves past the numbers not yet arrived: they
-  lose their place, not their effect, and one that arrives later applies
-  then, in arrival order. A mount remembers the last 256 numbers it moved
-  past; an older one arriving is refused with an error. A repeat of a
-  number already admitted, one from a mount the Manager does not have
-  (detached, or another thread's), a waiter whose mount detaches, and a
-  selection admitted before its mount detached answer success and select,
-  open and restore nothing; a reopen keeps its closed tab. More than 256
+- A pane's tab commands take effect in the order the user made them
+  (`selection.go`, `internal/browser/turnorder`), though the transport runs
+  each call on its own goroutine. Every pane action that selects a tab
+  (`activate`, `step`, and the `new`, `reopen`, `duplicate` and
+  `download-open` that select the tab they open) and every keyboard command
+  on the active tab (`close-active`, `reload-active`) carries the pane's
+  mount and a number the client takes when the user acts, consecutive from
+  1 in each mount; a re-attach is a new mount and starts again at 1. A
+  keyboard command on the active tab must carry them; a selection made with
+  no pane mounted (the chat header's new tab, a download opened from its
+  toast) carries neither, and the backend refuses an action that does not
+  match its kind (`parseCompanionAction`). The Manager admits a mount's
+  numbers in order: the next one acts at once, a later one waits for its
+  predecessors' commit (never their restore or load), and each then does
+  what it says and restores the tab it selected. When a second passes with
+  no progress the count moves past the numbers not yet arrived: they lose
+  their place, not their effect, and a selection that arrives later applies
+  then, in arrival order. A keyboard command on the active tab admitted
+  past a number that had not arrived (it waited while the count moved, or
+  it is itself late) is refused with an error in the pane's banner and acts
+  on nothing, since the tab it means is not known. The order holds across
+  late numbers, not across numbers never sent. A mount remembers the last
+  256 numbers it moved past; an older one arriving is refused with an
+  error. A repeat of a number already admitted, one from a mount the
+  Manager does not have (detached, or another thread's), a waiter whose
+  mount detaches, and a command admitted before its mount detached answer
+  success and act on nothing; a reopen keeps its closed tab. More than 256
   waiting in one mount are refused with an error, and that number, sent
-  again, is treated as never sent. A selection with no number (an older
-  client) or no mount, an
-  agent's `browser_select_page` and the chat header's show apply in
-  arrival order and never wait. Closing the active tab reselects only when
-  that tab is gone.
+  again, is treated as never sent. An agent's `browser_select_page` and the
+  chat header's show apply in arrival order and never wait. Closing a tab
+  by its id reselects only when that tab was the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
   `loading`). When a load stops, an engine with a pane reads the favicon in
@@ -482,7 +500,10 @@ behave as a desktop browser's:
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
   its own order and selection (`StepCompanionPage`), so presses faster than
-  the state push each move one tab.
+  the state push each move one tab. Reload sends `reload-active`, which
+  names no tab: the Manager reloads the tab active at its turn, after a tab
+  switch still on its way, and nothing when that tab closes first. The tab
+  menu's and the address bar's reload name their tab.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
   before the SPA sees the key. While the browser pane is focused and the
   effective keybindings run a command for `mod+r` there, the SPA asks over

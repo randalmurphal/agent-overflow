@@ -31,7 +31,11 @@ mode. Product behavior and authority are defined in
   switch (`jar_switch.go`) advances the thread's jar generation and suspends
   its live pages into durable records in one lock hold; the tabs return
   only through the restore path, and any create or restore admitted under
-  an older generation must retry, never land in the old jar.
+  an older generation must retry, never land in the old jar. `SetJar`
+  takes the caller's `JarConsent`: an unconfirmed switch is refused while
+  the thread has a live tab, in the hold that captures it and in the one
+  that would commit it, and a switch refused after its write saves the
+  thread back as it is.
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
   a pending tab, a popup being adopted reserves its page from admission to
   listing (`adoptPopup`), a closed page leaves the tab set before its engine
@@ -42,12 +46,13 @@ mode. Product behavior and authority are defined in
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab
   stack and the tab menu's actions are `companion_tabs.go`. A pane's tab
-  selections are admitted per mount in the user's order (`selection.go`):
-  each takes its turn before the lock hold that sets the active tab or adds
-  the tab, and that hold ends it through `commitSelectionLocked`, which
-  answers whether the turn's pane is still there to act for. Page work
-  never delays the next turn, and the one function that selects answers
-  the tab its caller may restore.
+  selections, and the keyboard's commands on the active tab
+  (`active_commands.go`), are admitted per mount in the user's order
+  (`selection.go` over `turnorder`, which owns the numbering): each takes
+  its turn before the lock hold that sets the active tab, adds the tab or
+  resolves the active one, and that hold ends it with `Turn.Commit`, whose
+  standing says whether to act. Page work never delays the next turn, and
+  the one function that selects answers the tab its caller may restore.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. A presentation pass decides its show in one `Manager.mu` hold after
   its hides and any layout wait (`decidePresentation`), against the

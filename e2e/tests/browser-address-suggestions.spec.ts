@@ -87,7 +87,7 @@ test('typing offers open tabs and recent addresses, by keyboard and by mouse', a
   await expect(address).toHaveValue('https://example.test/second');
 
   // A cookie jar switch forgets them.
-  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'jar', jar: 'thread' });
+  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'jar', jar: 'thread', confirmed: true });
   await address.click();
   await address.pressSequentially('first');
   await expect(address).toHaveValue('first');

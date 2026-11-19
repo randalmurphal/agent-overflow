@@ -3,6 +3,7 @@ import { flushSync } from 'svelte';
 import { clearCommandRegistry, type CommandContext } from '../stores/commandRegistry.svelte';
 import { registerBrowserCommands } from '../stores/browserCommands.svelte';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../stores/companionPanes.svelte';
 import { createPane, focusPane, resetPanesForTest } from '../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../stores/paneLayout.svelte';
@@ -126,13 +127,14 @@ describe('shell chords', () => {
     expect(routes().at(-1)).toBe('2:false');
   });
 
-  it('replays the routed chord through the keybinding dispatcher: the default reloads the page', () => {
+  it('replays the routed chord through the keybinding dispatcher: the default reloads the page', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     install();
     advertise();
     focusPane('browser-main');
     flushSync();
     routedChord();
-    expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'p1' }));
+    expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active' }));
     expect(posted).not.toContain(reloadAppMessage(1));
   });
 
@@ -158,7 +160,7 @@ describe('shell chords', () => {
     expect(routes().at(-1)).toBe('1:true');
     routedChord();
     expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
-    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload' }));
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active' }));
   });
 
   it('hands a routed chord back when nothing runs it', () => {

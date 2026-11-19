@@ -265,7 +265,7 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 		t.Fatalf("reopened %v, want the most recent", got)
 	}
 
-	if err := m.SetJar(context.Background(), access, JarPrivate); err != nil {
+	if err := m.SetJar(context.Background(), access, JarPrivate, JarSwitchConfirmed); err != nil {
 		t.Fatal(err)
 	}
 	if got := closedCount(t, m, access); got != 0 {
@@ -368,7 +368,7 @@ func TestAReopenedTabForgottenAfterItsPopOpensNothing(t *testing.T) {
 			}
 		}},
 		{"its jar switch", func(t *testing.T, m *Manager, access Access) {
-			if err := m.SetJar(context.Background(), access, JarProject); err != nil {
+			if err := m.SetJar(context.Background(), access, JarProject, JarSwitchConfirmed); err != nil {
 				t.Error(err)
 			}
 		}},

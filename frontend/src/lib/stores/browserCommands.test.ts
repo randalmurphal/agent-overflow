@@ -111,10 +111,18 @@ describe('browser commands', () => {
     ]);
   });
 
-  it('reload reloads the active tab', () => {
+  // The press names no tab and takes its number after the tab switch made
+  // before it, so the backend reloads the tab that switch selects, not the
+  // one the last state named.
+  it('reload reloads the tab active at its turn, after a tab switch still on its way', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
+    runCommand('browser.nextTab', ctx());
     runCommand('browser.reload', ctx());
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+    expect(act.mock.calls.map(([, action]) => [action.kind, action.pageId, action.mount, action.select])).toEqual([
+      ['step', '', 'mount-1', 1],
+      ['reload-active', '', 'mount-1', 2],
+    ]);
   });
 
   it('reopen asks the backend for the last closed tab, from the chord too', () => {
@@ -148,7 +156,8 @@ describe('browser commands', () => {
     expect(focus).toHaveBeenCalledTimes(1);
   });
 
-  it('dispatch the chords only for the focused browser pane', () => {
+  it('dispatch the chords only for the focused browser pane', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('main');
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true }), ctx(), { isMac: false })).toBe(false);
     expect(dispatchKey(key({ key: 't', ctrlKey: true }), ctx(), { isMac: false })).toBe(false);
@@ -161,7 +170,7 @@ describe('browser commands', () => {
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: -1 }));
     expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active', pageId: '' }));
     expect(dispatchKey(key({ key: 'r', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(dispatchKey(key({ key: 't', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
@@ -169,7 +178,8 @@ describe('browser commands', () => {
 
   // A browser focused on the desktop keeps logical focus through a switch
   // to compact and back to the list, where geometry hides its page.
-  it('take no command for a focused browser pane compact hides', () => {
+  it('take no command for a focused browser pane compact hides', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     setCompactLayoutForTest(true);
     try {
@@ -188,7 +198,7 @@ describe('browser commands', () => {
       noteCompactPaneShown('browser-main');
       expect(isBrowserPaneFocused()).toBe(true);
       expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
-      expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
+      expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active', pageId: '', mount: 'mount-1' }));
     } finally {
       setCompactLayoutForTest(false);
     }

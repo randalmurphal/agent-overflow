@@ -8,6 +8,7 @@
   import SquareCode from '@lucide/svelte/icons/square-code';
   import X from '@lucide/svelte/icons/x';
   import type { BrowserPageInfo } from '../../stores/bindings';
+  import { browserAction, toPageId, type BrowserAction, type NamedTabKind } from '../../stores/browserActions';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isLocalEnter } from '../../utils/localEnter';
@@ -46,8 +47,8 @@
     sizeLabel: string;
     /** The browser companion's layout pane id, for maximize and restore. */
     promotePaneId: string | null;
-    /** Runs a chrome action; an omitted pageId means the active page. */
-    onAct: (kind: string, pageId?: string, address?: string, index?: number) => Promise<void>;
+    /** Runs a chrome action. */
+    onAct: (action: BrowserAction) => Promise<void>;
     onRevealPageFile: () => Promise<void>;
     /** Opens the file picker. */
     onOpenFile: () => void;
@@ -154,7 +155,7 @@
       event.preventDefault();
       const target = address;
       onLeave();
-      void onAct('navigate', activePage.id, target);
+      void onAct(browserAction.navigate(toPageId(activePage.id), target));
     }
   }
 
@@ -166,14 +167,19 @@
     if (!activePage) return;
     address = pageAddress();
     if (suggestion.pageId) {
-      void onAct('activate', suggestion.pageId).then(() => {
+      void onAct(browserAction.select(toPageId(suggestion.pageId))).then(() => {
         if (document.activeElement === input) onLeave();
       });
       return;
     }
-    const pageId = activePage.id;
+    const pageId = toPageId(activePage.id);
     onLeave();
-    void onAct('navigate', pageId, suggestion.address);
+    void onAct(browserAction.navigate(pageId, suggestion.address));
+  }
+
+  // A toolbar command on the page the pane shows; nothing before it has one.
+  function onActivePage(kind: NamedTabKind): void {
+    if (activePage) void onAct(browserAction.onTab(kind, toPageId(activePage.id)));
   }
 </script>
 
@@ -185,12 +191,12 @@
      the address keeps its room. -->
 <div class="@container flex h-10 shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-0 px-1.5 compact:h-12" data-testid="browser-address-row">
   <div class="flex shrink-0 items-center gap-0.5">
-    <IconButton label="Back" size="sm" disabled={!activePage?.canGoBack} onClick={() => void onAct('back')}><Icon icon={ArrowLeft} size={15} /></IconButton>
-    <IconButton label="Forward" size="sm" disabled={!activePage?.canGoForward} onClick={() => void onAct('forward')}><Icon icon={ArrowRight} size={15} /></IconButton>
+    <IconButton label="Back" size="sm" disabled={!activePage?.canGoBack} onClick={() => onActivePage('back')}><Icon icon={ArrowLeft} size={15} /></IconButton>
+    <IconButton label="Forward" size="sm" disabled={!activePage?.canGoForward} onClick={() => onActivePage('forward')}><Icon icon={ArrowRight} size={15} /></IconButton>
     {#if loading}
-      <IconButton label="Stop" title="Stop loading" size="sm" testId="browser-stop" onClick={() => void onAct('stop')}><Icon icon={X} size={15} /></IconButton>
+      <IconButton label="Stop" title="Stop loading" size="sm" testId="browser-stop" onClick={() => onActivePage('stop')}><Icon icon={X} size={15} /></IconButton>
     {:else}
-      <IconButton label="Reload" title="Reload{chordHintSuffix('browser.reload')}" size="sm" testId="browser-reload" disabled={!activePage || addressDisabled} onClick={() => void onAct('reload')}><Icon icon={RotateCw} size={14} /></IconButton>
+      <IconButton label="Reload" title="Reload{chordHintSuffix('browser.reload')}" size="sm" testId="browser-reload" disabled={!activePage || addressDisabled} onClick={() => onActivePage('reload')}><Icon icon={RotateCw} size={14} /></IconButton>
     {/if}
   </div>
   <input
@@ -229,7 +235,7 @@
       {#if activeIsLocalFile}
         <IconButton label="Show in folder" size="sm" onClick={() => void onRevealPageFile()}><Icon icon={FolderOpen} size={14} /></IconButton>
       {/if}
-      <IconButton label="Open devtools" size="sm" onClick={() => void onAct('devtools')}><Icon icon={SquareCode} size={14} /></IconButton>
+      <IconButton label="Open devtools" size="sm" onClick={() => onActivePage('devtools')}><Icon icon={SquareCode} size={14} /></IconButton>
     </div>
     <BrowserDownloadsControl />
     <div class="hidden @max-[32rem]:flex compact:@max-[36rem]:flex" bind:this={moreAnchor}>
@@ -238,7 +244,7 @@
     {#if promotePaneId}
       <PanePromoteButton paneId={promotePaneId} testId="browser-promote" size="toolbar" />
     {/if}
-    <IconButton label="Close browser" size="sm" testId="browser-close" onClick={() => void onAct('hide', '')}><Icon icon={X} size={15} /></IconButton>
+    <IconButton label="Close browser" size="sm" testId="browser-close" onClick={() => void onAct(browserAction.hide())}><Icon icon={X} size={15} /></IconButton>
   </div>
 </div>
 
@@ -258,7 +264,7 @@
       {#if activeIsLocalFile}
         <MenuItem label="Show in folder" onSelect={() => pick(() => void onRevealPageFile())} />
       {/if}
-      <MenuItem label="Open devtools" onSelect={() => pick(() => void onAct('devtools'))} />
+      <MenuItem label="Open devtools" onSelect={() => pick(() => onActivePage('devtools'))} />
     </Menu>
   {/snippet}
 </Popover>

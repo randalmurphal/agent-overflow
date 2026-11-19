@@ -920,6 +920,14 @@ export class BrowserCompanionAction {
     "jar"?: string;
 
     /**
+     * Confirmed says the user agreed, for "jar", to lose the live tabs' page
+     * state. Unconfirmed, a switch with a live tab is refused with code
+     * browser_jar_unconfirmed and changes nothing; the pane asks and sends
+     * it again confirmed.
+     */
+    "confirmed"?: boolean;
+
+    /**
      * Mount and Intent name a page focus intent for "focus-page" and
      * "focus-page-withdraw": the pane mount and its number for the request.
      */
@@ -929,10 +937,13 @@ export class BrowserCompanionAction {
     /**
      * Select numbers a user's tab selection made in Mount ("activate",
      * "step", and the "new", "reopen", "duplicate" and "download-open" that
-     * select the tab they open), consecutive from 1 in each mount in the
-     * order the user acted. The Manager admits a mount's selections in that
-     * order (internal/browser/selection.go). Zero, from an older client,
-     * applies in arrival order.
+     * select the tab they open) and a keyboard command on the active tab
+     * ("close-active", "reload-active"), consecutive from 1 in each mount in
+     * the order the user acted. The Manager admits a mount's commands in
+     * that order (internal/browser/selection.go). A keyboard command on the
+     * active tab requires Mount and Select; a selection carries both or
+     * neither, and with neither applies in arrival order. Validated by
+     * parseCompanionAction.
      */
     "select"?: number;
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { BrowserPageInfo } from '../../stores/bindings';
+  import { browserAction, toPageId, type BrowserAction } from '../../stores/browserActions';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -32,7 +33,7 @@
     tabCount: number;
     /** How many closed tabs the thread can reopen. */
     closedTabs: number;
-    onAct: (kind: string, pageId?: string) => Promise<void>;
+    onAct: (action: BrowserAction) => Promise<void>;
     onDismiss: () => void;
   } = $props();
 
@@ -61,8 +62,8 @@
 </script>
 
 <ContextMenu {x} {y} ariaLabel="Tab actions" {onDismiss} minWidthClass="min-w-[184px]">
-  <MenuItem label="Reload" disabled={!hasPage} testId="browser-tab-menu-reload" onSelect={() => run(() => void onAct('reload', page.id))} />
-  <MenuItem label="Duplicate" disabled={!hasPage} testId="browser-tab-menu-duplicate" onSelect={() => run(() => void onAct('duplicate', page.id))} />
+  <MenuItem label="Reload" disabled={!hasPage} testId="browser-tab-menu-reload" onSelect={() => run(() => void onAct(browserAction.onTab('reload', toPageId(page.id))))} />
+  <MenuItem label="Duplicate" disabled={!hasPage} testId="browser-tab-menu-duplicate" onSelect={() => run(() => void onAct(browserAction.duplicate(toPageId(page.id))))} />
   <MenuItem label="Copy address" disabled={!address} testId="browser-tab-menu-copy" onSelect={() => run(() => void copyAddress())} />
   <MenuItem
     label="Open in system browser"
@@ -72,15 +73,15 @@
     onSelect={() => run(() => void (external && handleExternalURL(external)))}
   />
   <MenuDivider />
-  <MenuItem label="Close" kbd={chordHintForCommand('pane.close') ?? undefined} testId="browser-tab-menu-close" onSelect={() => run(() => void onAct('close', page.id))} />
-  <MenuItem label="Close other tabs" disabled={tabCount <= 1} testId="browser-tab-menu-close-others" onSelect={() => run(() => void onAct('close-others', page.id))} />
-  <MenuItem label="Close tabs to the right" disabled={index >= tabCount - 1} testId="browser-tab-menu-close-right" onSelect={() => run(() => void onAct('close-right', page.id))} />
+  <MenuItem label="Close" kbd={chordHintForCommand('pane.close') ?? undefined} testId="browser-tab-menu-close" onSelect={() => run(() => void onAct(browserAction.onTab('close', toPageId(page.id))))} />
+  <MenuItem label="Close other tabs" disabled={tabCount <= 1} testId="browser-tab-menu-close-others" onSelect={() => run(() => void onAct(browserAction.onTab('close-others', toPageId(page.id))))} />
+  <MenuItem label="Close tabs to the right" disabled={index >= tabCount - 1} testId="browser-tab-menu-close-right" onSelect={() => run(() => void onAct(browserAction.onTab('close-right', toPageId(page.id))))} />
   <MenuDivider />
   <MenuItem
     label="Reopen closed tab"
     kbd={chordHintForCommand('browser.reopenTab') ?? undefined}
     disabled={closedTabs === 0}
     testId="browser-tab-menu-reopen"
-    onSelect={() => run(() => void onAct('reopen'))}
+    onSelect={() => run(() => void onAct(browserAction.reopen()))}
   />
 </ContextMenu>

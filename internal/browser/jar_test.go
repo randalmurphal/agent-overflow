@@ -363,7 +363,7 @@ func openPage(t *testing.T, m *Manager, access Access, rawURL string) PageInfo {
 
 func setJar(t *testing.T, m *Manager, access Access, kind string) {
 	t.Helper()
-	if err := m.SetJar(context.Background(), access, kind); err != nil {
+	if err := m.SetJar(context.Background(), access, kind, JarSwitchConfirmed); err != nil {
 		t.Fatalf("set jar %s for %s: %v", kind, access.ThreadID, err)
 	}
 }

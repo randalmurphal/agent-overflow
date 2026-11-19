@@ -85,19 +85,19 @@ describe('<BrowserTabStrip>', () => {
     expect(tabOf(view, 'b').dataset.active).toBe('true');
     expect(view.getAllByRole('tab').map((tab) => tab.getAttribute('aria-selected'))).toEqual(['false', 'true']);
     close('a').click();
-    expect(onAct).toHaveBeenCalledWith('close', 'a');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'close', pageId: 'a' });
   });
 
   it('closes a tab on a middle click', async () => {
     const { view, onAct } = mount([page('a'), page('b')]);
     await fireEvent(tabOf(view, 'b'), new MouseEvent('auxclick', { button: 1, bubbles: true }));
-    expect(onAct).toHaveBeenCalledWith('close', 'b');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'close', pageId: 'b' });
   });
 
   it('activates a tab on click', () => {
     const { view, onAct } = mount([page('a'), page('b')]);
     tabOf(view, 'b').querySelector<HTMLElement>('[data-testid="browser-tab"]')!.click();
-    expect(onAct).toHaveBeenCalledWith('activate', 'b');
+    expect(onAct).toHaveBeenCalledWith({ kind: 'activate', pageId: 'b' });
   });
 
   it('toggles on a double-click of the strip\'s empty space, never of a tab or a button', async () => {
@@ -149,7 +149,7 @@ describe('<BrowserTabStrip>', () => {
         await tick();
         item(testId).click();
         await tick();
-        expect(onAct).toHaveBeenLastCalledWith(kind, 'b');
+        expect(onAct).toHaveBeenLastCalledWith({ kind, pageId: 'b' });
         expect(document.querySelector('[data-testid="browser-tab-menu-reload"]')).toBeNull();
       }
     });
@@ -178,7 +178,7 @@ describe('<BrowserTabStrip>', () => {
       await tick();
       expect(disabled('browser-tab-menu-reopen')).toBe(false);
       item('browser-tab-menu-reopen').click();
-      expect(onAct).toHaveBeenLastCalledWith('reopen');
+      expect(onAct).toHaveBeenLastCalledWith({ kind: 'reopen' });
     });
 
     it('copies the address and opens it in the system browser', async () => {
@@ -222,7 +222,7 @@ describe('<BrowserTabStrip>', () => {
     expect(indicators).toHaveLength(1);
     expect(target.contains(indicators[0])).toBe(true);
     await fireEvent.drop(target, { dataTransfer: transfer });
-    expect(onAct).toHaveBeenCalledWith('move', 'a', '', 2);
+    expect(onAct).toHaveBeenCalledWith({ kind: 'move', pageId: 'a', index: 2 });
     expect(view.queryByTestId('browser-tab-drop-indicator')).toBeNull();
   });
 });

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
 // gapClock replaces the Manager's selection gap timer: a wait for a missing
@@ -74,9 +76,29 @@ func newSelectionManager(t *testing.T) (*Manager, Access, []string, string) {
 	return m, access, ids, mount.ID
 }
 
+// place is the seq-th numbered command made in mount.
+func place(mount string, seq uint64) Numbered {
+	n, err := NewNumbered(MountID(mount), seq)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
 // numbered is ctx carrying the user's selection seq made in mount.
 func numbered(ctx context.Context, mount string, seq uint64) context.Context {
-	return WithSelection(ctx, Selection{Mount: mount, Seq: seq})
+	return WithSelection(ctx, place(mount, seq))
+}
+
+// orderStats is what mount's order holds; zero when it has none.
+func orderStats(m *Manager, mount string) turnorder.Stats {
+	m.mu.Lock()
+	order := m.panes[mount].order
+	m.mu.Unlock()
+	if order == nil {
+		return turnorder.Stats{}
+	}
+	return order.Stats()
 }
 
 func activeTab(m *Manager, access Access) string {
@@ -85,12 +107,7 @@ func activeTab(m *Manager, access Access) string {
 
 // waiting is the number of selections waiting for their turn in mount.
 func waiting(m *Manager, mount string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if order := m.panes[mount].selection; order != nil {
-		return len(order.waiting)
-	}
-	return 0
+	return orderStats(m, mount).Waiting
 }
 
 func awaitWaiting(t *testing.T, m *Manager, mount string, n int) {
@@ -108,10 +125,14 @@ func awaitWaiting(t *testing.T, m *Manager, mount string, n int) {
 func assertSelectionsSettled(t *testing.T, m *Manager) {
 	t.Helper()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, pane := range m.panes {
-		if order := pane.selection; order != nil && (len(order.waiting) > 0 || order.taken) {
-			t.Errorf("mount %s left %d waiting, turn taken %v", id, len(order.waiting), order.taken)
+	var mounts []string
+	for id := range m.panes {
+		mounts = append(mounts, id)
+	}
+	m.mu.Unlock()
+	for _, id := range mounts {
+		if stats := orderStats(m, id); stats.Waiting > 0 || stats.Taken {
+			t.Errorf("mount %s left %d waiting, turn taken %v", id, stats.Waiting, stats.Taken)
 		}
 	}
 }
@@ -327,10 +348,10 @@ func TestEveryPairOfSelectionsDeliveredReversed(t *testing.T) {
 
 // pauseAdmissions holds every selection from mount right after its
 // admission, before its commit, until the test resumes it.
-func pauseAdmissions(m *Manager, mount string) (admitted chan Selection, resume chan struct{}) {
-	admitted, resume = make(chan Selection, 1), make(chan struct{})
-	m.selectionAdmitted = func(sel Selection) {
-		if sel.Mount == mount {
+func pauseAdmissions(m *Manager, mount string) (admitted chan Numbered, resume chan struct{}) {
+	admitted, resume = make(chan Numbered, 1), make(chan struct{})
+	m.selectionAdmitted = func(sel Numbered) {
+		if sel.Mount() == MountID(mount) {
 			admitted <- sel
 			<-resume
 		}
@@ -361,7 +382,7 @@ func TestADetachBetweenAdmissionAndCommit(t *testing.T) {
 		t.Run(kind.name, func(t *testing.T) {
 			m, access, fixture, mount := newPairManager(t)
 			m.mu.Lock()
-			order := m.panes[mount].selection
+			order := m.panes[mount].order
 			m.mu.Unlock()
 			admitted, resume := pauseAdmissions(m, mount)
 			done := deliver(func() error {
@@ -381,13 +402,12 @@ func TestADetachBetweenAdmissionAndCommit(t *testing.T) {
 			if got := m.CompanionState(access).ClosedTabs; got != closed {
 				t.Fatalf("%d closed tabs, want %d", got, closed)
 			}
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if order == nil {
-				order = &mountSelection{}
+			var stats turnorder.Stats
+			if order != nil {
+				stats = order.Stats()
 			}
-			if len(order.waiting) > 0 || order.taken || len(order.skipped) > 0 {
-				t.Fatalf("the detached mount kept %d waiting, taken %v, %d skipped", len(order.waiting), order.taken, len(order.skipped))
+			if stats.Waiting > 0 || stats.Taken || stats.Skipped > 0 {
+				t.Fatalf("the detached mount kept %d waiting, taken %v, %d skipped", stats.Waiting, stats.Taken, stats.Skipped)
 			}
 		})
 	}
@@ -448,16 +468,14 @@ func TestADetachDropsTheSkippedRecord(t *testing.T) {
 	clock.expire(t)
 	mustDeliver(t, third, "number 3")
 	m.mu.Lock()
-	order := m.panes[mount].selection
-	skipped := len(order.skipped)
+	order := m.panes[mount].order
 	m.mu.Unlock()
+	skipped := order.Stats().Skipped
 	if skipped != 2 {
 		t.Fatalf("%d numbers skipped, want 2", skipped)
 	}
 	m.DetachPane(mount)
-	m.mu.Lock()
-	skipped = len(order.skipped)
-	m.mu.Unlock()
+	skipped = order.Stats().Skipped
 	if skipped != 0 {
 		t.Fatalf("the detached mount kept %d skipped numbers", skipped)
 	}
@@ -591,7 +609,7 @@ func TestALateNumberStillActs(t *testing.T) {
 func TestSkippedNumbersAreBounded(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
-	far := uint64(maxSkippedSelections + 44)
+	far := uint64(turnorder.MaxSkipped + 44)
 	waiter := deliver(func() error {
 		return m.ActivateCompanionPage(numbered(context.Background(), mount, far), access, ids[2])
 	})
@@ -599,7 +617,7 @@ func TestSkippedNumbersAreBounded(t *testing.T) {
 	clock.expire(t)
 	mustDeliver(t, waiter, "the far number")
 	// 1 to 43 fell past the bound; 44 to far-1 are held.
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 10), access, ids[0]); !errors.Is(err, errSelectionLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 10), access, ids[0]); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("a dropped number answered %v", err)
 	}
 	// With the record full, one more skipped number drops the lowest held
@@ -610,7 +628,7 @@ func TestSkippedNumbersAreBounded(t *testing.T) {
 	awaitWaiting(t, m, mount, 1)
 	clock.expire(t)
 	mustDeliver(t, next, "far+2")
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 44), access, ids[0]); !errors.Is(err, errSelectionLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 44), access, ids[0]); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("the dropped 44 answered %v", err)
 	}
 	for seq, id := range map[uint64]string{45: ids[1], far - 1: ids[2], far + 1: ids[0]} {
@@ -628,8 +646,8 @@ func TestSkippedNumbersAreBounded(t *testing.T) {
 func TestAGapWaitDoesNotPassATakenTurn(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
-	first, err := m.awaitSelectionTurn(t.Context(), access.ThreadID, Selection{Mount: mount, Seq: 1})
-	if err != nil || first.passed {
+	first, err := m.awaitTurn(t.Context(), access.ThreadID, place(mount, 1))
+	if err != nil || first.Standing() == turnorder.Passed {
 		t.Fatalf("turn 1: %+v, %v", first, err)
 	}
 	third := deliver(func() error {
@@ -640,7 +658,7 @@ func TestAGapWaitDoesNotPassATakenTurn(t *testing.T) {
 	clock.expire(t)
 	// The expired wait was handled with turn 1 still taken: 3 waits again.
 	clock.awaitTimers(t, 2)
-	m.releaseSelectionTurn(first)
+	first.Release()
 	// 2 is now the missing one.
 	clock.expire(t)
 	mustDeliver(t, third, "number 3")
@@ -720,7 +738,6 @@ func TestUnorderedSelectionsDoNotWait(t *testing.T) {
 		act  func() error
 	}{
 		{"unnumbered", ids[0], func() error { return m.ActivateCompanionPage(t.Context(), access, ids[0]) }},
-		{"no mount", ids[1], func() error { return m.ActivateCompanionPage(numbered(t.Context(), "", 7), access, ids[1]) }},
 		{"agent", ids[2], func() error { _, err := m.SelectPage(t.Context(), access, ids[2]); return err }},
 		{"header show", ids[0], func() error {
 			_, err := m.Visibility(t.Context(), access, &visible, ids[0])
@@ -819,14 +836,14 @@ func TestARepeatOfAWaitingNumberDoesNothing(t *testing.T) {
 func TestWaitingSelectionsAreBounded(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	var held []<-chan error
-	for seq := uint64(2); seq < 2+maxSelectionWaiters; seq++ {
+	for seq := uint64(2); seq < 2+turnorder.MaxWaiters; seq++ {
 		held = append(held, deliver(func() error {
 			return m.StepCompanionPage(numbered(context.Background(), mount, seq), access, 1)
 		}))
 	}
-	awaitWaiting(t, m, mount, maxSelectionWaiters)
+	awaitWaiting(t, m, mount, turnorder.MaxWaiters)
 	excess := deliver(func() error {
-		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2+maxSelectionWaiters), access, ids[0])
+		return m.ActivateCompanionPage(numbered(context.Background(), mount, 2+turnorder.MaxWaiters), access, ids[0])
 	})
 	select {
 	case err := <-excess:
@@ -844,7 +861,7 @@ func TestWaitingSelectionsAreBounded(t *testing.T) {
 	}
 	// The refused number was never admitted: sent again before the count
 	// passes it, it takes its turn.
-	refused := uint64(2 + maxSelectionWaiters)
+	refused := uint64(2 + turnorder.MaxWaiters)
 	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err != nil {
 		t.Fatal(err)
 	}
@@ -865,7 +882,7 @@ func TestAWideGapIsSkippedInBoundedWork(t *testing.T) {
 	awaitWaiting(t, m, mount, 1)
 	clock.expire(t)
 	mustDeliver(t, waiter, "the far number")
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); !errors.Is(err, errSelectionLost) {
+	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, ids[0]); !errors.Is(err, turnorder.ErrLost) {
 		t.Fatalf("a number below the record answered %v", err)
 	}
 	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, far-1), access, ids[1]); err != nil {
@@ -882,13 +899,13 @@ func TestARefusedNumberRetriedLateStillActs(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	clock := installGapClock(m)
 	var held []<-chan error
-	for seq := uint64(2); seq < 2+maxSelectionWaiters; seq++ {
+	for seq := uint64(2); seq < 2+turnorder.MaxWaiters; seq++ {
 		held = append(held, deliver(func() error {
 			return m.StepCompanionPage(numbered(context.Background(), mount, seq), access, 1)
 		}))
 	}
-	awaitWaiting(t, m, mount, maxSelectionWaiters)
-	refused := uint64(2 + maxSelectionWaiters)
+	awaitWaiting(t, m, mount, turnorder.MaxWaiters)
+	refused := uint64(2 + turnorder.MaxWaiters)
 	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, refused), access, ids[1]); err == nil {
 		t.Fatal("a selection past the bound was admitted")
 	}

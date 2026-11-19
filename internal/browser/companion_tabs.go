@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
 // The tab strip's actions on whole tabs: close one or several, reopen the
-// last closed, duplicate, reload.
+// last closed, duplicate, reload. The keyboard's commands on the active tab
+// are active_commands.go.
 //
 // The Manager keeps, per thread and in memory only, the last maxClosedTabs
 // tabs the user closed (address, label, position). A tab an agent closes is
@@ -112,14 +115,14 @@ func (s *closedTabs) push(tab closedTab) {
 // numbered selection passed or its pane detached (selection.go), or a tab
 // refused, it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
-	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
-	if err != nil || turn.passed {
+	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
 	}
-	defer m.releaseSelectionTurn(turn)
+	defer turn.Release()
 	m.mu.Lock()
 	stack := m.closedTabs[access.ThreadID]
-	if stack == nil || len(stack.tabs) == 0 || !liveSelectionLocked(turn) {
+	if stack == nil || len(stack.tabs) == 0 || turn.Standing() == turnorder.Passed {
 		m.mu.Unlock()
 		return nil
 	}
@@ -141,11 +144,11 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 // nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
-	turn, err := m.awaitSelectionTurn(ctx, access.ThreadID, selectionOf(ctx))
-	if err != nil || turn.passed {
+	turn, err := m.selectionTurn(ctx, access.ThreadID)
+	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
 	}
-	defer m.releaseSelectionTurn(turn)
+	defer turn.Release()
 	m.mu.Lock()
 	index, address := -1, ""
 	for i, tab := range m.companionTabsLocked(access.ThreadID) {

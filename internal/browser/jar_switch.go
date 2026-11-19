@@ -26,8 +26,17 @@ import (
 // restore path (resolvePage): the active one when the pane presents it or a
 // tool uses it, the others when selected or used. A restore fails as any
 // restore does, leaving its tab suspended with the error. Page state (forms,
-// history, sign-ins kept in the old jar) does not come along; the pane asks
-// before it switches.
+// history, sign-ins kept in the old jar) does not come along, so the caller
+// says whether the user agreed to lose it (JarConsent): a switch with
+// JarSwitchIfNoLiveTab is refused with ErrJarSwitchUnconfirmed while the
+// thread has a live tab, checked in the hold that captures it, before any
+// write, and again in the hold that would commit it.
+//
+// A switch refused after its write (the consent, the Manager's close, a
+// forget, the thread's close) writes the thread's saved copy back as the
+// thread is before it answers, so the copy never names a jar the thread is
+// not in; when that write fails, the answer says the copy still names the
+// new jar.
 //
 // The switch's teardown barrier belongs to the thread's jar generation
 // (SessionInfo.jarTeardown): every page the thread has closing, this
@@ -43,7 +52,10 @@ import (
 // that began in the old jar lands in the new one or nowhere
 // (jarCurrentLocked), and a popup needs a live opener, which the switch has
 // closed.
-func (m *Manager) SetJar(ctx context.Context, access Access, kind string) error {
+func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consent JarConsent) error {
+	if err := consent.valid(); err != nil {
+		return err
+	}
 	kind = strings.TrimSpace(kind)
 	if !validJarKind(kind) {
 		return fmt.Errorf("browser: unknown cookie jar %q", truncateUTF8(kind, 32))
@@ -71,6 +83,10 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string) error 
 		m.mu.Unlock()
 		return nil
 	}
+	if err := consent.admitsLocked(m, threadID); err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	sw := m.captureJarSwitchLocked(threadID, kind)
 	m.mu.Unlock()
 	if err := m.writeRecordFile(sw.file); err != nil {
@@ -81,6 +97,9 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string) error 
 	}
 	m.mu.Lock()
 	err := m.switchAdmitsLocked(ctx, threadID)
+	if err == nil {
+		err = consent.admitsLocked(m, threadID)
+	}
 	var closes []switchClose
 	moved := false
 	if err == nil {
@@ -88,7 +107,11 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string) error 
 	}
 	m.mu.Unlock()
 	if err != nil {
-		// Its copy on disk is replaced by the close's or the forget's own.
+		// The copy on disk is the switch's: write the thread back as it is,
+		// before a close or a forget waiting on persistMu writes its own.
+		if werr := m.writeRecordFilesLocked([]string{threadID}); werr != nil {
+			return errors.Join(err, fmt.Errorf("browser: the saved tabs still name the %s cookie jar the switch did not make: %w", kind, werr))
+		}
 		return err
 	}
 	for _, c := range closes {
@@ -119,6 +142,68 @@ func (m *Manager) switchAdmitsLocked(ctx context.Context, threadID string) error
 		return errForgetting
 	}
 	return m.lifeAdmitsLocked(ctx, threadID)
+}
+
+// JarConsent says whether the user agreed that a jar switch drops the page
+// state of the thread's live tabs. Its zero value is no answer, which
+// SetJar refuses, so every caller names one.
+type JarConsent int
+
+const (
+	jarConsentUnset JarConsent = iota
+	// JarSwitchConfirmed is a switch the user confirmed: it closes the
+	// live tabs into suspended records in the new jar.
+	JarSwitchConfirmed
+	// JarSwitchIfNoLiveTab is a switch the user has not confirmed: it is
+	// refused with ErrJarSwitchUnconfirmed, changing nothing, while the
+	// thread has a live tab.
+	JarSwitchIfNoLiveTab
+)
+
+// ErrJarSwitchUnconfirmed refuses a JarSwitchIfNoLiveTab switch of a thread
+// with a live tab, whose page state the switch would drop.
+var ErrJarSwitchUnconfirmed = errors.New("browser: switching the cookie jar closes the open tabs")
+
+// valid refuses a consent no constant names.
+func (c JarConsent) valid() error {
+	switch c {
+	case JarSwitchConfirmed, JarSwitchIfNoLiveTab:
+		return nil
+	case jarConsentUnset:
+		return errors.New("browser: a cookie jar switch names no consent")
+	default:
+		return fmt.Errorf("browser: unknown cookie jar switch consent %d", int(c))
+	}
+}
+
+// admitsLocked refuses the switch of the thread when the consent does not
+// cover it as the thread is now. The caller holds m.mu.
+func (c JarConsent) admitsLocked(m *Manager, threadID string) error {
+	switch c {
+	case JarSwitchConfirmed:
+		return nil
+	case JarSwitchIfNoLiveTab:
+		if m.hasLiveTabLocked(threadID) {
+			return ErrJarSwitchUnconfirmed
+		}
+		return nil
+	case jarConsentUnset:
+		return c.valid()
+	default:
+		return c.valid()
+	}
+}
+
+// hasLiveTabLocked reports whether the thread has a tab with a live page,
+// the tabs a switch closes (commitLocked). A tab still being created is not
+// live: the switch creates it again in the new jar. The caller holds m.mu.
+func (m *Manager) hasLiveTabLocked(threadID string) bool {
+	for _, tab := range m.threadTabsLocked(threadID) {
+		if tab.live != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // jarSwitch is one switch of a thread's jar, captured once: the saved copy

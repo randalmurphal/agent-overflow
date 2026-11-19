@@ -98,7 +98,7 @@ describe('<BrowserAddressBar>', () => {
     expect(press({ isComposing: true })).toBe(false);
     expect(onAct).not.toHaveBeenCalled();
     expect(press({})).toBe(true);
-    expect(onAct).toHaveBeenLastCalledWith('navigate', 'a', 'example.org');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'navigate', pageId: 'a', address: 'example.org' });
     expect(press({ shiftKey: true })).toBe(true);
     expect(onAct).toHaveBeenCalledTimes(2);
     expect(onLeave).toHaveBeenCalledTimes(2);
@@ -135,11 +135,11 @@ describe('<BrowserAddressBar>', () => {
     const { view, onAct } = mount(page({ loading: true }));
     expect(view.queryByRole('button', { name: 'Reload' })).toBeNull();
     view.getByRole('button', { name: 'Stop' }).click();
-    expect(onAct).toHaveBeenLastCalledWith('stop');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'stop', pageId: 'a' });
     await view.rerender({ activePage: page() as never });
     expect(view.queryByRole('button', { name: 'Stop' })).toBeNull();
     view.getByRole('button', { name: 'Reload' }).click();
-    expect(onAct).toHaveBeenLastCalledWith('reload');
+    expect(onAct).toHaveBeenLastCalledWith({ kind: 'reload', pageId: 'a' });
   });
 
   it('takes no reload for a tab with no page yet', () => {

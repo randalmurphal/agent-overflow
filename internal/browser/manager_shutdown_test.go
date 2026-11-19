@@ -69,7 +69,7 @@ func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 		return manager.forgettingLocked()
 	})
 	// The switch keeps its tabs live for the clear to close, or is refused.
-	_ = manager.SetJar(context.Background(), access, JarThread)
+	_ = manager.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed)
 	// The reaper's suspension and a crash record nothing either.
 	if err := manager.SuspendThread(context.Background(), access.ThreadID); err != nil {
 		t.Fatal(err)
