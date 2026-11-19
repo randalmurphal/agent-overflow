@@ -79,17 +79,18 @@ func (h *Host) withPage(pageID string, fn func(*hostPage)) {
 }
 
 // applyPendingFocus moves keyboard focus into the page for the focus intent
-// delivered for it, while the host shows the page, the launcher window is
-// the foreground window and the intent still stands (focusDecision). A page
-// not shown or a window in the background leaves the intent pending, and the
-// page's next show applies it (present). Runs on the UI thread, so the view
-// it checks is the one on screen.
+// delivered for it in the mount it is presented in, while the host shows
+// the page, the launcher window is the foreground window and the intent
+// still stands (focusDecision). A page not shown or a window in the
+// background leaves the intent pending, and the page's next show applies it
+// (present). Runs on the UI thread, so the view and mount it checks are the
+// ones on screen.
 func (h *Host) applyPendingFocus(page *hostPage) {
-	var mount string
+	mount := page.pres.mount
 	var intent uint64
 	take := func() bool {
 		var ok bool
-		mount, intent, ok = h.config.Focus.Take(page.id)
+		intent, ok = h.config.Focus.Take(mount, page.id)
 		return ok
 	}
 	if focusDecision(page.shown, h.foreground(h.config.HostWindow()), take) != focusMove {
@@ -125,12 +126,14 @@ func (h *Host) ApplyGeometry(reports []PaneGeometry) {
 
 // present brings one page to the view its presentation calls for
 // (presenter.go): moved before it is shown, never moved while hidden. raise
-// re-raises a page already shown. Runs on the UI thread.
+// re-raises a page already shown. A move the controller refused leaves the
+// bounds last applied as the page's, so the next present moves it again.
+// Runs on the UI thread.
 func (h *Host) present(page *hostPage, raise bool) {
 	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
 	step, next := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
-	if step.move {
-		h.applyBounds(page, step.bounds)
+	if step.move && !h.applyBounds(page, step.bounds) {
+		next.bounds, next.hasBounds = page.shown.bounds, page.shown.hasBounds
 	}
 	if step.show && !h.showPage(page) {
 		next.visible = page.shown.visible
@@ -178,13 +181,14 @@ func (h *Host) hidePage(page *hostPage) {
 	h.releaseFocus(page, held)
 }
 
-// applyBounds positions one page. Runs on the UI thread.
+// applyBounds positions one page and reports whether the controller took
+// its bounds. Runs on the UI thread.
 //
 // The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
 // it was measured under (deviceScale). BOTH rects are scaled by that one
 // factor pair: a clip scaled differently from the rect it crops would slide
 // across the page as the window resized.
-func (h *Host) applyBounds(page *hostPage, b paneBounds) {
+func (h *Host) applyBounds(page *hostPage, b paneBounds) bool {
 	cw, ch, hasClient := clientSize(h.config.HostWindow())
 	sx, sy := deviceScale(b, cw, ch, hasClient)
 	layout := resolvePaneLayout(b, sx, sy)
@@ -209,7 +213,9 @@ func (h *Host) applyBounds(page *hostPage, b paneBounds) {
 	}
 	if err := page.controller.putBounds(bounds); err != nil {
 		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
+		return false
 	}
+	return true
 }
 
 // applyBackground sets the controller's default background colour (an

@@ -417,6 +417,104 @@ func TestARefusedCancelReachesTheUserAndTheDownloadRuns(t *testing.T) {
 	}
 }
 
+// An engine that takes the cancel and refuses it later (the hosted engine's
+// launcher) withdraws it: the download runs on, listed with the refusal,
+// its end reads as the engine's own, and the user can cancel again. The
+// refusal does not outlive the download's end.
+func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	manager.engine = &cancelRefusingEngine{fakeEngine: manager.engine.(*fakeEngine)}
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := paneHandle(manager, access, page.ID)
+	const refusal = "the browser refused to cancel the download: Unspecified error"
+	refuse := func(engineID string) {
+		t.Helper()
+		row := func() ThreadDownload {
+			for _, d := range threadDownloads(manager, access) {
+				if item, err := manager.threadDownload(access.ThreadID, d.ID); err == nil && item.engineID == engineID {
+					return d
+				}
+			}
+			t.Fatalf("no row for %s", engineID)
+			return ThreadDownload{}
+		}
+		if err := manager.CancelThreadDownload(access, row().ID); err != nil {
+			t.Fatal(err)
+		}
+		manager.downloadProgress(downloadProgress{ID: engineID, State: downloadInProgress, Error: refusal, CancelRefused: true})
+		manager.downloadProgress(downloadProgress{ID: engineID, State: downloadInProgress, Received: 10})
+		if got := row(); got.State != downloadStateRunning || got.Error != refusal {
+			t.Fatalf("after a refused cancel the download lists as %+v, want running with the refusal", got)
+		}
+	}
+
+	manager.downloadStarted(downloadStart{Frame: frame, ID: "G1", SuggestedName: "a.bin"})
+	refuse("G1")
+	manager.downloadProgress(downloadProgress{ID: "G1", State: downloadCanceled})
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed || got.Error != "the download stopped before it finished" {
+		t.Fatalf("an end after a refused cancel lists as %+v, want failed", got)
+	}
+
+	manager.downloadStarted(downloadStart{Frame: frame, ID: "G2", SuggestedName: "b.bin"})
+	refuse("G2")
+	id := threadDownloads(manager, access)[0].ID
+	if err := manager.CancelThreadDownload(access, id); err != nil {
+		t.Fatal(err)
+	}
+	manager.downloadProgress(downloadProgress{ID: "G2", State: downloadCanceled})
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
+		t.Fatalf("a second cancel that won lists as %+v, want canceled", got)
+	}
+
+	manager.downloadStarted(downloadStart{Frame: frame, ID: "G3", SuggestedName: "c.bin"})
+	refuse("G3")
+	manager.downloadProgress(downloadProgress{ID: "G3", State: downloadCanceled, Error: "the network failed"})
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed || got.Error != "the network failed" {
+		t.Fatalf("a failure after a refused cancel lists as %+v", got)
+	}
+
+	manager.downloadStarted(downloadStart{Frame: frame, ID: "G4", SuggestedName: "d.bin"})
+	refuse("G4")
+	manager.downloadProgress(downloadProgress{ID: "G4", State: downloadCanceled, PageGone: true})
+	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
+		t.Fatalf("an end with no reason of its own after a refused cancel lists as %+v", got)
+	}
+}
+
+// A download that finishes after a refused cancel lists no error.
+func TestAFinishAfterARefusedCancelListsNoRefusal(t *testing.T) {
+	for _, mode := range downloadModes {
+		t.Run(mode.name, func(t *testing.T) {
+			manager, _, access, page := newDownloadManagerFor(t, mode.saving)
+			startDownload(t, manager, access, page, "late.bin", 4096, "hold")
+			listed := threadDownloads(manager, access)
+			item, err := manager.threadDownload(access.ThreadID, listed[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager.downloadProgress(downloadProgress{ID: item.engineID, State: downloadInProgress, Error: "refused", CancelRefused: true})
+			if got := threadDownloads(manager, access)[0]; got.Error != "refused" {
+				t.Fatalf("the refusal lists as %+v", got)
+			}
+			if err := fakeProfileOf(t, manager).finishHeld(item.engineID); err != nil {
+				t.Fatal(err)
+			}
+			if got := threadDownloads(manager, access)[0]; got.State != downloadStateCompleted || got.Error != "" {
+				t.Fatalf("the finish lists as %+v", got)
+			}
+		})
+	}
+}
+
 // A download refused for quota, and one stopped by its page closing, are
 // listed with the reason and announced.
 func TestDownloadsAOStoppedAreListedWithTheirReason(t *testing.T) {

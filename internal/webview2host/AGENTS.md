@@ -60,7 +60,8 @@ has not withdrawn the directive's focus intent (`focusDecision`,
 The SPA posts each intent's arm and withdrawal to the launcher directly, so
 a withdrawal wins over a directive still crossing WSL. Delivery is not
 application: a directive for a page the launcher's own presentation hides
-stays pending, and the page's next show applies it once (`present`).
+stays pending, and the page's next show in the directive's mount applies
+it once (`present`); an applied intent delivered again moves nothing.
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize
@@ -69,7 +70,7 @@ thread alone owns the page registry: membership, admission (`admit`, one
 check whose `MaxHostPages` counts every page) and teardown (`closeTaken`)
 run in `Config.OnMain` turns, which run inline on the UI thread; work for a
 later turn goes through `Config.Post`. A close a page asks for itself is
-posted and rereads the page's downloads when it runs. A page whose
+posted and rereads the page's downloads and their states when it runs. A page whose
 required handlers (downloads, the download dialog, new windows) cannot be
 subscribed, or whose dialog state cannot be read, is not created.
 Creation is `host_create_windows.go`, close and teardown
@@ -118,12 +119,16 @@ each `DownloadStarting`, so WebView2's dialog does not open for it, keeps the
 snapshot (`ReportDownload`, `download.go`), progress throttled, each
 numbered (`Seq`) in the order taken so the backend applies only newer
 ones. A directive naming a download (`OpCancelDownload`,
-`OpDownloadStatus`) is answered with a snapshot marked `Answer`, which the
+`OpDownloadStatus`) reads the download's state first, so one whose state
+change never arrived ends then, and is answered with a snapshot marked
+`Answer`, which the
 backend never creates a row from: a running one's, an ended one's kept
 terminal snapshot under its own number (up to `MaxEndedDownloads` per page
-while the page lives), or `DownloadUnknown` for an id with no record. A
-report is bounded: the address is shortened, then the path left out,
-never the start or end. WebView2 resumes a dropped download as a new
+while the page lives), or `DownloadUnknown` for an id with no record. The
+launcher keeps a copy of at most `MaxDownloadURIBytes` of a download's
+address, taken as it starts, and a digest of the whole address that a
+resume is matched by (`downloadAddress`). A report is bounded: the
+address is shortened, then the path left out, never the start or end. WebView2 resumes a dropped download as a new
 `DownloadStarting` whose operation carries the
 interruption's reason, while the dropped operation stays in progress with
 that reason and never ends. The resume is adopted only when exactly one
@@ -133,7 +138,9 @@ detached, until the download ends, because releasing them stops the new
 one's reports. Otherwise it is a row of its own and nothing running is
 touched. The held snapshot cap applies only to new downloads. A cancel
 settles through WebView2's report or after `downloadCancelBound`
-(`settleCancel`). A download
+(`settleCancel`), which reads the state before ending the download
+canceled. A cancel WebView2 refuses is withdrawn, starts no bound, and is
+answered with the refusal (`DownloadCancelRefusedReason`). A download
 ends, its handlers detached and every operation released, at its terminal
 state (an interrupted operation canceled first) or when its page goes
 (`retireDownloads`), which cancels it and reports nothing. What the real

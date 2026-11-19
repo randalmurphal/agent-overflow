@@ -287,36 +287,40 @@ func advertisePaneGeometry(window *application.WebviewWindow) {
 // must not be a bare `go` either — the backend would then be free to see
 // `closed` before the `created` that carries the page's CDP target id. A
 // serial queue is both: submission returns at once, delivery stays in
-// order.
-//
-// Delivery itself is best effort, with no retry. A report that did not go
-// through is handed back to the host (Host.ReportUndelivered), which closes
-// a popup the backend may never adopt; any other lost report costs the
-// backend one page handle it re-derives on the next round trip.
+// order, and a download's waiting progress is replaced by its newer
+// progress (webview2host.ReportQueue), so a stalled bridge does not queue
+// a popup's report behind obsolete byte counts.
 func (a *launcherApp) reportBrowserHost(pageID string, kind webview2host.ReportKind, detail string) {
-	a.browserReports.Go(func() {
-		a.mu.Lock()
-		client := a.notificationClient
-		ctx := a.notificationContext
-		host := a.browserHost
-		a.mu.Unlock()
-		var err error
-		if client == nil {
-			err = errors.New("bridge is down")
-		} else {
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			err = client.ReportBrowserHost(ctx, pageID, kind, detail)
+	a.browserReports.Submit(pageID, kind, detail)
+}
+
+// deliverBrowserReport sends one queued report. Delivery is best effort,
+// with no retry. A report that did not go through is handed back to the
+// host (Host.ReportUndelivered), which closes a popup the backend may never
+// adopt; any other lost report costs the backend one page handle it
+// re-derives on the next round trip.
+func (a *launcherApp) deliverBrowserReport(pageID string, kind webview2host.ReportKind, detail string) {
+	a.mu.Lock()
+	client := a.notificationClient
+	ctx := a.notificationContext
+	host := a.browserHost
+	a.mu.Unlock()
+	var err error
+	if client == nil {
+		err = errors.New("bridge is down")
+	} else {
+		if ctx == nil {
+			ctx = context.Background()
 		}
-		if err == nil {
-			return
-		}
-		log.Printf("browser host: report %s for page %s: %v", kind, pageID, err)
-		if host != nil {
-			host.ReportUndelivered(pageID, kind)
-		}
-	})
+		err = client.ReportBrowserHost(ctx, pageID, kind, detail)
+	}
+	if err == nil {
+		return
+	}
+	log.Printf("browser host: report %s for page %s: %v", kind, pageID, err)
+	if host != nil {
+		host.ReportUndelivered(pageID, kind)
+	}
 }
 
 // closeBrowserHost tears every pane controller down. Called on shutdown,

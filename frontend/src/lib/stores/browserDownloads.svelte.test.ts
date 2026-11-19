@@ -46,6 +46,8 @@ describe('browser downloads', () => {
   it('describes each state', () => {
     expect(downloadStatus(download({ receivedBytes: 1500, totalBytes: 3_000_000 }))).toBe('2 KB of 3.0 MB');
     expect(downloadStatus(download({ receivedBytes: 1500 }))).toBe('2 KB');
+    expect(downloadStatus(download({ receivedBytes: 1500, totalBytes: 3_000_000, error: 'the browser refused to cancel the download' })))
+      .toBe('2 KB of 3.0 MB · the browser refused to cancel the download');
     expect(downloadStatus(download({ state: 'completed', receivedBytes: 912 }))).toBe('912 B');
     expect(downloadStatus(download({ state: 'completed', receivedBytes: 912, error: 'the saved file is a link' }))).toBe('912 B · the saved file is a link');
     expect(downloadStatus(download({ state: 'failed', error: 'net::ERR_FAILED' }))).toBe('Failed: net::ERR_FAILED');

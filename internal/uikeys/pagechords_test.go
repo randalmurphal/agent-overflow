@@ -19,13 +19,15 @@ func TestPageChordsRoutesReloadToTheFocusedBrowserPane(t *testing.T) {
 	bindings := c.Bindings(Browser())
 	reload := bindings["CmdOrCtrl+r"]
 	w := &scriptWindow{}
+	c.DocumentLoaded(w)
+	w.scripts = nil
 
 	reload(w)
 	if w.reloadCount != 1 || len(w.scripts) != 0 {
 		t.Fatalf("unfocused: reloads=%d scripts=%d, want the app reload", w.reloadCount, len(w.scripts))
 	}
 
-	if !c.HandleMessage(w, RouteMessage(true)) {
+	if !c.HandleMessage(w, RouteMessage(1, 1, true)) {
 		t.Fatal("focus message not taken")
 	}
 	reload(w)
@@ -39,7 +41,7 @@ func TestPageChordsRoutesReloadToTheFocusedBrowserPane(t *testing.T) {
 		t.Fatalf("force reloads = %d, want 1", w.forceReloadCount)
 	}
 
-	c.HandleMessage(w, RouteMessage(false))
+	c.HandleMessage(w, RouteMessage(1, 2, false))
 	reload(w)
 	if w.reloadCount != 2 || len(w.scripts) != 1 {
 		t.Fatalf("unfocused again: reloads=%d scripts=%d", w.reloadCount, len(w.scripts))
@@ -50,9 +52,16 @@ func TestPageChordsReloadAppMessageReloadsAndClearsFocus(t *testing.T) {
 	c := NewPageChords()
 	bindings := c.Bindings(Browser())
 	w := &scriptWindow{}
-	c.HandleMessage(w, RouteMessage(true))
+	c.DocumentLoaded(w)
+	w.scripts = nil
+	c.HandleMessage(w, RouteMessage(1, 1, true))
 
-	c.HandleMessage(w, ReloadAppMessage)
+	// A request from a document the window no longer shows reloads nothing.
+	c.HandleMessage(w, ReloadAppMessage(0))
+	if w.reloadCount != 0 || !c.Routing() {
+		t.Fatalf("another document's reload request: reloads=%d focused=%v", w.reloadCount, c.Routing())
+	}
+	c.HandleMessage(w, ReloadAppMessage(1))
 	if w.reloadCount != 1 || c.Routing() {
 		t.Fatalf("reloads=%d focused=%v, want the app reload and focus cleared", w.reloadCount, c.Routing())
 	}
@@ -69,14 +78,52 @@ func TestPageChordsDocumentLoadedForgetsFocusAndAdvertises(t *testing.T) {
 	c := NewPageChords()
 	c.Bindings(Browser())
 	w := &scriptWindow{}
-	c.HandleMessage(w, RouteMessage(true))
+	c.DocumentLoaded(w)
+	c.HandleMessage(w, RouteMessage(1, 1, true))
 
 	c.DocumentLoaded(w)
 	if c.Routing() {
 		t.Fatal("a new document inherited the previous one's focus")
 	}
-	if len(w.scripts) != 1 || w.scripts[0] != CapabilityScript {
-		t.Fatalf("scripts = %v, want the capability", w.scripts)
+	if len(w.scripts) != 2 || w.scripts[0] != CapabilityScript(1) || w.scripts[1] != CapabilityScript(2) {
+		t.Fatalf("scripts = %v, want each document's capability", w.scripts)
+	}
+	// The previous document's report, arriving late, counts for nothing.
+	c.HandleMessage(w, RouteMessage(1, 2, true))
+	if c.Routing() {
+		t.Fatal("the previous document's late report routed the chord")
+	}
+}
+
+// Raw messages are handled on a goroutine each, so reports arrive in any
+// order: the newest of the document wins, whichever lands last.
+func TestPageChordsAppliesOnlyTheNewestReport(t *testing.T) {
+	c := NewPageChords()
+	c.Bindings(Browser())
+	w := &scriptWindow{}
+	c.DocumentLoaded(w)
+	// Left and refocused the browser pane: false (2), then true (3), applied
+	// in the opposite order.
+	c.HandleMessage(w, RouteMessage(1, 1, true))
+	c.HandleMessage(w, RouteMessage(1, 3, true))
+	c.HandleMessage(w, RouteMessage(1, 2, false))
+	if !c.Routing() {
+		t.Fatal("an older report overrode the newest")
+	}
+	c.HandleMessage(w, RouteMessage(1, 3, false))
+	if !c.Routing() {
+		t.Fatal("a repeated number applied")
+	}
+	for _, garbled := range []string{
+		MessagePrefix + "route-reload:1",
+		MessagePrefix + "route-reload:1:9:2",
+		MessagePrefix + "route-reload:x:9:0",
+		MessagePrefix + "route-reload:1:9:0:0",
+		MessagePrefix + "reload-app:x",
+	} {
+		if !c.HandleMessage(w, garbled) || !c.Routing() || w.reloadCount != 0 {
+			t.Fatalf("%q changed the routing or reloaded", garbled)
+		}
 	}
 }
 

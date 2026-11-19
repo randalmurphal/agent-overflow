@@ -25,7 +25,9 @@ import (
 // OpDownloadStatus, so a lost end settles with no one acting. Both are
 // answered with a snapshot marked as an answer, which settles or advances a
 // row and never creates one; DownloadUnknown, the answer for an id the
-// launcher has no record of, ends only a row still running. Nothing about
+// launcher has no record of, ends only a row still running, and a running
+// answer with a reason is a cancel WebView2 refused, which withdraws the
+// Manager's cancel (downloadProgress.CancelRefused). Nothing about
 // downloads crosses CDP. A popup is a pane page too: a download it starts
 // before the Manager lists its tab names it and its openers, for the
 // Manager to list (popup_adoption.go), and one still running when such a
@@ -156,6 +158,11 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		e.downloads.noteEnded(pageID, report.ID)
 		e.mu.Unlock()
 		return
+	}
+	if admitted && report.CancelRefused() {
+		// Whatever its number: a newer snapshot that overtook it carries no
+		// refusal.
+		e.events.DownloadProgress(downloadProgress{ID: report.ID, State: downloadInProgress, Error: report.Reason, CancelRefused: true})
 	}
 	if report.Seq <= known.applied {
 		return

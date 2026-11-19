@@ -269,6 +269,35 @@ func TestHostedEngineCancelOfADownloadWhoseEndWasLostSettlesIt(t *testing.T) {
 	sink.expectOps(t, webview2host.OpCancelDownload)
 }
 
+// A cancel the launcher could not make is answered with the refusal, which
+// reaches the Manager as such even when a newer snapshot overtook it; its
+// bytes count only when it is the newest.
+func TestHostedEngineDeliversARefusedCancel(t *testing.T) {
+	engine, sink, recorder := newDownloadHostedEngine(t)
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	reportDownload(t, engine, "page1", snapshot("dl-a-1", webview2host.DownloadRunning, 10))
+	recorder.take()
+	if err := engine.cancelDownload("dl-a-1"); err != nil {
+		t.Fatal(err)
+	}
+	sink.expectOps(t, webview2host.OpCancelDownload)
+	refusal := webview2host.DownloadCancelRefusedReason + ": Unspecified error"
+	refused := snapshot("dl-a-1", webview2host.DownloadRunning, 20)
+	refused.Seq, refused.Answer, refused.Reason = 3, true, refusal
+	newer := snapshot("dl-a-1", webview2host.DownloadRunning, 30)
+	newer.Seq = 4
+	reportDownload(t, engine, "page1", newer)
+	reportDownload(t, engine, "page1", refused)
+	_, progress := recorder.take()
+	want := []downloadProgress{
+		{ID: "dl-a-1", Received: 30, Total: 100, State: downloadInProgress},
+		{ID: "dl-a-1", State: downloadInProgress, Error: refusal, CancelRefused: true},
+	}
+	if !reflect.DeepEqual(progress, want) {
+		t.Fatalf("progress %+v, want %+v", progress, want)
+	}
+}
+
 // A cancel of a download the engine has seen end, or never saw, sends
 // nothing. A download the launcher has no record of (its answer says so)
 // ends canceled with that reason.

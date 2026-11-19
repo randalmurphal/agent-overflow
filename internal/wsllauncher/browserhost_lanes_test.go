@@ -3,6 +3,7 @@ package wsllauncher
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -119,6 +120,69 @@ func TestDirectiveLanesCollapseOnlyAdjacentBounds(t *testing.T) {
 			t.Fatalf("%d lanes left after draining", n)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// A jar closed and reopened at once reuses its profile id: the replacement's
+// create waits for the close-profile that arrived before it, so the close
+// cannot take the replacement page. A create for another profile does not
+// wait.
+func TestACreateWaitsForItsProfilesEarlierClose(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	pages := map[string]string{"old": "jar"} // page id -> profile id
+	finished := make(chan string, 16)
+	lanes := newDirectiveLanes(func(d webview2host.Directive) {
+		if d.Op == webview2host.OpCloseProfile {
+			<-release
+		}
+		mu.Lock()
+		switch d.Op {
+		case webview2host.OpCreate:
+			pages[d.PageID] = d.ProfileID
+		case webview2host.OpCloseProfile:
+			for id, profile := range pages {
+				if profile == d.ProfileID {
+					delete(pages, id)
+				}
+			}
+		}
+		mu.Unlock()
+		finished <- string(d.Op) + ":" + d.PageID + d.ProfileID
+	})
+	lanes.submit(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: "jar"})
+	lanes.submit(webview2host.Directive{Op: webview2host.OpCreate, PageID: "new", ProfileID: "jar"})
+	lanes.submit(webview2host.Directive{Op: webview2host.OpCreate, PageID: "other", ProfileID: "elsewhere"})
+	select {
+	case got := <-finished:
+		if got != "create:otherelsewhere" {
+			t.Fatalf("ran %s before the held close-profile", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("another profile's create waited on the close")
+	}
+	select {
+	case got := <-finished:
+		t.Fatalf("ran %s while the close-profile was held", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	for range 2 {
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Fatal("lane stalled")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := map[string]string{"new": "jar", "other": "elsewhere"}; !maps.Equal(pages, want) {
+		t.Fatalf("pages = %v, want %v", pages, want)
+	}
+	lanes.mu.Lock()
+	defer lanes.mu.Unlock()
+	if len(lanes.closing) != 0 {
+		t.Fatalf("closing still holds %v after the close ran", lanes.closing)
 	}
 }
 

@@ -142,7 +142,9 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 		}
 	}
 
-	host.Apply(Directive{Op: OpBounds, PageID: "page-1", X: 0, Y: 0, W: 640, H: 480})
+	// The backend binds the page to its mount with its bounds, as it does
+	// before any focus (hostedEngine.SetPageBounds).
+	host.Apply(Directive{Op: OpBounds, PageID: "page-1", Mount: "mount-1", X: 0, Y: 0, W: 640, H: 480})
 	toApp("the app holds the keyboard")
 
 	// Hidden: not focused, and the intent waits for the page's next show.

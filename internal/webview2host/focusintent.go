@@ -117,8 +117,10 @@ func ParseFocusReport(detail string) (FocusReport, error) {
 // Delivery is not application. A directive whose page the launcher does not
 // show (a promote, a demote, another geometry transition hid it locally)
 // stays pending, and the launcher applies it once when its own presentation
-// next shows that page (Take), while it is still the mount's newest,
-// unwithdrawn and not older than FocusIntentMaxAge.
+// next shows that page in the directive's mount (Take), while it is still
+// the mount's newest, unwithdrawn and not older than FocusIntentMaxAge. An
+// intent applied is consumed: a directive delivered for it again waits for
+// nothing.
 type FocusIntents struct {
 	mu      sync.Mutex
 	entries map[string]*focusIntentEntry
@@ -130,8 +132,10 @@ type focusIntentEntry struct {
 	intent    uint64
 	withdrawn bool
 	armed     time.Time
-	// pending is the page a delivered directive for intent waits to focus.
+	// pending is the page a delivered directive for intent waits to focus;
+	// taken is set once Take consumed intent.
 	pending string
+	taken   bool
 	touched uint64
 }
 
@@ -174,7 +178,7 @@ func (f *FocusIntents) Deliver(mount string, intent uint64, pageID string) {
 		entry = f.addLocked(mount)
 	}
 	switch {
-	case intent < entry.intent, intent == entry.intent && entry.withdrawn:
+	case intent < entry.intent, intent == entry.intent && (entry.withdrawn || entry.taken):
 		return
 	case intent > entry.intent:
 		f.tick++
@@ -183,23 +187,23 @@ func (f *FocusIntents) Deliver(mount string, intent uint64, pageID string) {
 	entry.pending = pageID
 }
 
-// Take answers the intent pending for pageID, if one still stands, and
-// consumes it, so it is applied at most once. A withdrawal or a newer arm
-// has already ended it (Note); one older than FocusIntentMaxAge is dropped.
-func (f *FocusIntents) Take(pageID string) (mount string, intent uint64, ok bool) {
+// Take answers the intent of mount pending for pageID, the mount the page is
+// presented in, if one still stands, and consumes it, so it is applied at
+// most once. Another mount's intent for the same page waits for that
+// mount. A withdrawal or a newer arm has already ended it (Note); one older
+// than FocusIntentMaxAge is dropped.
+func (f *FocusIntents) Take(mount, pageID string) (intent uint64, ok bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for id, entry := range f.entries {
-		if entry.pending == "" || entry.pending != pageID {
-			continue
-		}
-		entry.pending = ""
-		if f.now().Sub(entry.armed) > FocusIntentMaxAge {
-			return "", 0, false
-		}
-		return id, entry.intent, true
+	entry := f.entries[mount]
+	if mount == "" || entry == nil || entry.pending == "" || entry.pending != pageID {
+		return 0, false
 	}
-	return "", 0, false
+	entry.pending, entry.taken = "", true
+	if f.now().Sub(entry.armed) > FocusIntentMaxAge {
+		return 0, false
+	}
+	return entry.intent, true
 }
 
 // addLocked adds a mount's entry, evicting the least recently updated mount

@@ -448,11 +448,15 @@ func (h *Host) windowCloseRequested(page *hostPage) {
 // after the caller's event, since a controller must not be closed inside
 // its own event. The turn decides on the page as it is then: one already
 // gone, its downloads retired, is not in the registry to take, and one
-// with a download running stays open until its last download ends
-// (endDownload), as WebView2 also asks to close a popup whose navigation
+// with a download running, its state read again, stays open until its
+// last download ends (endDownload), as WebView2 also asks to close a popup
+// whose navigation
 // became a download and closing the page would cancel it.
 func (h *Host) closeAsked(page *hostPage) {
 	h.config.Post(func() {
+		for _, d := range page.downloads {
+			h.downloadStateChanged(d)
+		}
 		if len(page.downloads) > 0 {
 			h.config.Logf("browser host: page %s asked to close while it downloads; it closes when its downloads end", page.id)
 			page.closeAfterDownloads = true

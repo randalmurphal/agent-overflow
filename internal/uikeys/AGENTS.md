@@ -14,5 +14,9 @@ window's bindings.
 `PageChords` routes the reload chord to the SPA while the SPA asks for it
 (its browser pane is focused and its effective bindings run the chord). A
 window that hosts the native browser pane wraps its bindings
-with it, feeds it raw messages only from its own page's origin
-(`TrustedPage`), and calls `DocumentLoaded` on each runtime-ready event.
+with it, feeds it raw messages only from the origin of the page it last
+navigated to (`TrustedPage`), taken at navigation rather than per message,
+and calls `DocumentLoaded` on each runtime-ready event.
+Raw messages arrive on a goroutine each, so each report names its
+document's number and its own; only the current document's newest
+report counts.

@@ -14,6 +14,11 @@ import (
 // backend showed or at a place it already left. Lanes of different pages stay
 // independent, so one page's slow create delays only that page.
 //
+// A close-profile runs on a lane of its own but closes every page of its
+// profile, so a create for that profile that arrived after it waits until it
+// has run: a jar closed and reopened at once reuses its profile id, and the
+// replacement page must not be taken by the close that preceded it.
+//
 // A bounds directive queued behind another bounds of the same page replaces
 // it: only the newest place matters, and a wedged UI thread cannot grow a
 // lane by one directive per frame.
@@ -23,11 +28,27 @@ type directiveLanes struct {
 	mu sync.Mutex
 	// lanes holds each busy lane's waiting directives. A key is present
 	// while its drain runs, even with nothing left waiting.
-	lanes map[string][]webview2host.Directive
+	lanes map[string][]laneItem
+	// closing holds, per profile id, the done channel of the newest
+	// close-profile that has not finished running.
+	closing map[string]chan struct{}
+}
+
+type laneItem struct {
+	directive webview2host.Directive
+	// after, on a create, is closed once the close-profile of its profile
+	// that arrived before it has run.
+	after <-chan struct{}
+	// done, on a close-profile, is closed once it has run.
+	done chan struct{}
 }
 
 func newDirectiveLanes(run func(webview2host.Directive)) *directiveLanes {
-	return &directiveLanes{run: run, lanes: make(map[string][]webview2host.Directive)}
+	return &directiveLanes{
+		run:     run,
+		lanes:   make(map[string][]laneItem),
+		closing: make(map[string]chan struct{}),
+	}
 }
 
 // laneKey is the page a directive addresses; directives that address none
@@ -47,12 +68,20 @@ func laneKey(d webview2host.Directive) string {
 // is idle. It never blocks on a handler.
 func (l *directiveLanes) submit(d webview2host.Directive) {
 	key := laneKey(d)
+	item := laneItem{directive: d}
 	l.mu.Lock()
+	switch d.Op {
+	case webview2host.OpCloseProfile:
+		item.done = make(chan struct{})
+		l.closing[d.ProfileID] = item.done
+	case webview2host.OpCreate:
+		item.after = l.closing[d.ProfileID]
+	}
 	waiting, busy := l.lanes[key]
-	if n := len(waiting); n > 0 && d.Op == webview2host.OpBounds && waiting[n-1].Op == webview2host.OpBounds {
-		waiting[n-1] = d
+	if n := len(waiting); n > 0 && d.Op == webview2host.OpBounds && waiting[n-1].directive.Op == webview2host.OpBounds {
+		waiting[n-1] = item
 	} else {
-		waiting = append(waiting, d)
+		waiting = append(waiting, item)
 	}
 	l.lanes[key] = waiting
 	l.mu.Unlock()
@@ -73,6 +102,17 @@ func (l *directiveLanes) drain(key string) {
 		next := waiting[0]
 		l.lanes[key] = waiting[1:]
 		l.mu.Unlock()
-		l.run(next)
+		if next.after != nil {
+			<-next.after
+		}
+		l.run(next.directive)
+		if next.done != nil {
+			l.mu.Lock()
+			if l.closing[next.directive.ProfileID] == next.done {
+				delete(l.closing, next.directive.ProfileID)
+			}
+			l.mu.Unlock()
+			close(next.done)
+		}
 	}
 }

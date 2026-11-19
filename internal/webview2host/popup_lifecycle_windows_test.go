@@ -25,7 +25,7 @@ func answerTarget(t *testing.T, controller *fakeController, target string) {
 // startDownload starts a download of page as WebView2 would report it.
 func (r *popupRig) startDownload(page *hostPage, id string) *hostDownload {
 	r.t.Helper()
-	d := &hostDownload{id: id, page: page, uri: "https://example.test/" + id, path: `C:\Downloads\` + id}
+	d := &hostDownload{id: id, page: page, uri: newDownloadAddress("https://example.test/" + id), path: `C:\Downloads\` + id}
 	if page.downloads == nil {
 		page.downloads = map[string]*hostDownload{}
 	}
