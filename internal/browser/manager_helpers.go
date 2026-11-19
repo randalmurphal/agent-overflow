@@ -122,7 +122,7 @@ func scopeLoadLocked(scope *jarScope) int {
 
 // countPagesLocked counts the engine pages of every scope, the quantity the
 // process cap bounds. The caller holds m.mu.
-func countPagesLocked(scopes map[string]*jarScope) int {
+func countPagesLocked(scopes map[jarKey]*jarScope) int {
 	count := 0
 	for _, scope := range scopes {
 		count += scopeLoadLocked(scope)

@@ -202,7 +202,7 @@ type profileOptions struct {
 	// Jar is the identity of the jar the profile isolates (jarIdentity.key).
 	// An engine derives its profile directory or id from it and nothing
 	// else, so one jar is one profile across restarts.
-	Jar string
+	Jar jarKey
 	// DownloadDir is the AO artifact directory downloads must land in, for
 	// an engine that keeps them there (downloadsAsArtifacts); empty
 	// otherwise.

@@ -92,7 +92,7 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	if engine == nil {
 		return
 	}
-	if _, err := engine.NewProfile(context.Background(), profileOptions{Jar: t.TempDir(), Ephemeral: true}); err == nil {
+	if _, err := engine.NewProfile(context.Background(), profileOptions{Jar: jarKey(t.TempDir()), Ephemeral: true}); err == nil {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
 	}
 }

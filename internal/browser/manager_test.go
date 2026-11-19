@@ -576,7 +576,7 @@ func TestAuthorizeFileStaysWithinGrantedRoots(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{config: Config{}, scopes: make(map[string]*jarScope), engine: newFakeEngine()}
+	manager := &Manager{config: Config{}, scopes: make(map[jarKey]*jarScope), engine: newFakeEngine()}
 	access := manager.Bind(Caller{ThreadID: "t", Workspace: root})
 	wantInside, _ := filepath.EvalSymlinks(inside)
 	if got, err := manager.authorizeFile(access.Caller(), inside); err != nil || got != wantInside {

@@ -91,7 +91,7 @@ type Manager struct {
 	closed  bool
 
 	// scopes holds the open cookie jars by jarIdentity.key (jar.go).
-	scopes map[string]*jarScope
+	scopes map[jarKey]*jarScope
 	// authorities holds, per canonical workspace with a page in any jar, what
 	// the workspace owns: its download directory and quota (jar.go).
 	// Guarded by mu.
@@ -115,7 +115,7 @@ type Manager struct {
 	// disposing holds, per jar key, the disposal in flight of a profile
 	// releaseScopeLocked unregistered; the channel closes when it ends.
 	// Guarded by mu.
-	disposing map[string]chan struct{}
+	disposing map[jarKey]chan struct{}
 	// lifeWork joins the page closes and profile disposals that run after
 	// their caller returned (goLife). Each is admitted under lifeGate unless
 	// lifeClosed, which Close sets under it before it waits.
@@ -437,12 +437,12 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		workspacePools: quota.NewRegistry("workspace downloads", maxWorkspaceDownloadBytes),
 		config:         config,
 		profileDir:     filepath.Join(configDir, browserProfileDir),
-		scopes:         make(map[string]*jarScope),
+		scopes:         make(map[jarKey]*jarScope),
 		suspended:      make(map[string]*suspendedPage),
 		pending:        make(map[string]*pendingPage),
 		heldInfo:       newBoundedMap[ids.PageHandle, heldInfo](orderSlack),
 		admissions:     popupadmit.New(orderSlack),
-		disposing:      make(map[string]chan struct{}),
+		disposing:      make(map[jarKey]chan struct{}),
 		recordDir:      filepath.Join(configDir, browserPageRecordDir),
 		panes:          make(map[string]paneMount),
 		threads:        make(map[string]*threadBrowser),

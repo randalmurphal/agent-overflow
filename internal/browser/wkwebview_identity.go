@@ -18,7 +18,7 @@ import (
 // anything WebKit writes. The RFC 4122 version
 // and variant bits are set because WebKit takes an NSUUID, and the all-zero
 // UUID is documented as invalid.
-func wkStoreIdentifier(jar string) string {
+func wkStoreIdentifier(jar jarKey) string {
 	digest := sha256.Sum256([]byte(jar))
 	var raw [16]byte
 	copy(raw[:], digest[:16])

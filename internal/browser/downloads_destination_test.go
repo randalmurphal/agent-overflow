@@ -341,7 +341,7 @@ func TestAnEarlierReleasesDownloadFileIsNotOpenable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := filepath.Join(manager.artifactRoot, "downloads", jarDirName(workspace))
+	old := filepath.Join(manager.artifactRoot, "downloads", jarDirName(jarKey(workspace)))
 	if err := os.MkdirAll(old, 0o700); err != nil {
 		t.Fatal(err)
 	}

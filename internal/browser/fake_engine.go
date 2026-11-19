@@ -103,7 +103,7 @@ type fakeProfile struct {
 	handle string
 	// jar, ephemeral, allow, downloadDir and stage are what the profile
 	// was created with.
-	jar         string
+	jar         jarKey
 	ephemeral   bool
 	allow       func(owners []frameID, rawURL string) (allowed, resolved bool)
 	downloadDir string

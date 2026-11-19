@@ -556,5 +556,6 @@ const workspaceDownloadsDir = "finished"
 // are kept in (workspaceAuthority.downloadDir), for the canonical
 // workspace.
 func (m *Manager) workspaceDownloadDir(workspace string) string {
-	return filepath.Join(m.artifactRoot, workspaceDownloadsDir, jarDirName(workspace))
+	// A workspace is its worktree jar's key; its directory takes that digest.
+	return filepath.Join(m.artifactRoot, workspaceDownloadsDir, jarDirName(jarKey(workspace)))
 }

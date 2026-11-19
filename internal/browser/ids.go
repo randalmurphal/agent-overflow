@@ -10,3 +10,8 @@ package browser
 // target id; a WebKit or fake page's handle, its only frame; or, on the
 // hosted engine, the launcher page id a download report names.
 type frameID string
+
+// jarKey identifies a cookie jar (jarIdentity.key): the Manager's key for
+// its open scope and the identity an engine derives its profile from
+// (profileOptions.Jar). A worktree jar's key is its canonical workspace.
+type jarKey string

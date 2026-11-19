@@ -230,7 +230,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 			ended = append(ended, m.pageLeftLocked(scope, p, "the browser closed"))
 		}
 	}
-	m.scopes = make(map[string]*jarScope)
+	m.scopes = make(map[jarKey]*jarScope)
 	m.forgetAuthoritiesLocked()
 	// A failed creation's tab names a page that never existed in the
 	// browser being closed.

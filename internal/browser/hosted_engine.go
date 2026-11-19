@@ -361,8 +361,8 @@ func (e *hostedEngine) NewProfile(ctx context.Context, opts profileOptions) (eng
 // hostedProfileID is the WebView2 profile name of a jar. A worktree jar's
 // identity is its workspace path, so its name is the one every earlier build
 // derived.
-func hostedProfileID(jar string) (string, error) {
-	trimmed := strings.TrimSpace(jar)
+func hostedProfileID(jar jarKey) (string, error) {
+	trimmed := strings.TrimSpace(string(jar))
 	if trimmed == "" {
 		return "", errors.New("browser: a cookie jar is required for a pane profile")
 	}

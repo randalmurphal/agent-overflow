@@ -119,7 +119,7 @@ func (e *jarEngine) created() []string {
 	defer e.mu.Unlock()
 	out := make([]string, 0, len(e.profiles))
 	for _, p := range e.profiles {
-		out = append(out, p.jar)
+		out = append(out, string(p.jar))
 	}
 	return out
 }
@@ -128,7 +128,7 @@ func (e *jarEngine) profile(jar string) *jarProfile {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for i := len(e.profiles) - 1; i >= 0; i-- {
-		if e.profiles[i].jar == jar {
+		if e.profiles[i].jar == jarKey(jar) {
 			return e.profiles[i]
 		}
 	}
@@ -319,7 +319,7 @@ func pageJar(t *testing.T, m *Manager, pageID string) string {
 	if scope == nil {
 		t.Fatalf("page %s is not live", pageID)
 	}
-	return scope.jar.key
+	return string(scope.jar.key)
 }
 
 // project is a project root with two linked worktrees beside it, and a
@@ -390,11 +390,11 @@ func TestWorktreeJarIsTodaysWorkspaceProfile(t *testing.T) {
 		t.Fatal("the default jar is ephemeral with site data persisted")
 	}
 	digest := sha256.Sum256([]byte(workspace))
-	if got, want := jarDirName(workspace), fmt.Sprintf("%x", digest[:12]); got != want {
+	if got, want := jarDirName(jarKey(workspace)), fmt.Sprintf("%x", digest[:12]); got != want {
 		t.Fatalf("profile directory name = %q, want today's %q", got, want)
 	}
 	manager.mu.Lock()
-	scope := manager.scopes[workspace]
+	scope := manager.scopes[jarKey(workspace)]
 	manager.mu.Unlock()
 	if want := filepath.Join(dir, "browser-artifacts", "downloading", fmt.Sprintf("%x", digest[:12])); scope.downloadDir != want {
 		t.Fatalf("download directory = %q, want %q", scope.downloadDir, want)
@@ -854,7 +854,7 @@ func TestEnginesDeriveTodaysIdentityForAWorktreeJar(t *testing.T) {
 
 	seen := map[string]string{hosted: workspace}
 	for _, jar := range []string{"project:P", "thread:a", "private:a:token"} {
-		id, err := hostedProfileID(jar)
+		id, err := hostedProfileID(jarKey(jar))
 		if err != nil {
 			t.Fatalf("WebView2 profile for %s: %v", jar, err)
 		}
@@ -862,10 +862,10 @@ func TestEnginesDeriveTodaysIdentityForAWorktreeJar(t *testing.T) {
 			t.Fatalf("%s and %s share WebView2 profile %q", jar, other, id)
 		}
 		seen[id] = jar
-		if !uuidPattern.MatchString(wkStoreIdentifier(jar)) {
+		if !uuidPattern.MatchString(wkStoreIdentifier(jarKey(jar))) {
 			t.Fatalf("WebKit store for %s is not a valid identifier", jar)
 		}
-		if wkStoreIdentifier(jar) == wkStoreIdentifier(workspace) || jarDirName(jar) == jarDirName(workspace) {
+		if wkStoreIdentifier(jarKey(jar)) == wkStoreIdentifier(workspace) || jarDirName(jarKey(jar)) == jarDirName(workspace) {
 			t.Fatalf("%s shares the worktree jar's store or directory", jar)
 		}
 	}

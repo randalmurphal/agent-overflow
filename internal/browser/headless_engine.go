@@ -223,7 +223,7 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if !e.Running() {
 		return nil, errors.New("browser: engine unavailable")
 	}
-	if strings.TrimSpace(opts.Jar) == "" {
+	if strings.TrimSpace(string(opts.Jar)) == "" {
 		return nil, errors.New("browser: a cookie jar is required for a browser profile")
 	}
 	if opts.Allow == nil {

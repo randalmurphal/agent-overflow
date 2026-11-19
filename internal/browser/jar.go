@@ -66,7 +66,7 @@ type jarIdentity struct {
 	// key identifies the jar: the scope map's key and the engine's profile
 	// identity (profileOptions.Jar). A worktree jar's key is the canonical
 	// workspace; every other kind has a prefix no absolute path starts with.
-	key       string
+	key       jarKey
 	kind      string
 	ephemeral bool
 	// thread is the owner of a thread or private jar, "" otherwise.
@@ -104,19 +104,19 @@ func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (j
 	jar := jarIdentity{kind: kind, ephemeral: !m.config.PersistSiteData}
 	switch kind {
 	case JarWorktree:
-		jar.key = access.Workspace
+		jar.key = jarKey(access.Workspace)
 	case JarProject:
 		if strings.TrimSpace(access.ProjectID) == "" {
 			return jarIdentity{}, fmt.Errorf("browser: this thread has no project to share a cookie jar with")
 		}
-		jar.key = "project:" + access.ProjectID
+		jar.key = jarKey("project:" + access.ProjectID)
 	case JarThread:
-		jar.key, jar.thread = "thread:"+access.ThreadID, access.ThreadID
+		jar.key, jar.thread = jarKey("thread:"+access.ThreadID), access.ThreadID
 	case JarPrivate:
 		if tb.session.privateJar == "" {
 			tb.session.privateJar = uuid.NewString()
 		}
-		jar.key = "private:" + access.ThreadID + ":" + tb.session.privateJar
+		jar.key = jarKey("private:" + access.ThreadID + ":" + tb.session.privateJar)
 		jar.thread, jar.private, jar.owner, jar.ephemeral = access.ThreadID, tb.session.privateJar, tb, true
 	default:
 		return jarIdentity{}, fmt.Errorf("browser: unknown cookie jar %q", kind)
@@ -128,7 +128,7 @@ func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (j
 // the jar's download directory: a digest, because a jar key can be long, can
 // hold characters a directory name cannot, and must not be readable from a
 // listing.
-func jarDirName(jar string) string {
+func jarDirName(jar jarKey) string {
 	digest := sha256.Sum256([]byte(jar))
 	return fmt.Sprintf("%x", digest[:12])
 }

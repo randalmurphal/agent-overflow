@@ -364,7 +364,7 @@ func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
 	}
 	delete(m.scopes, scope.jar.key)
 	if m.disposing == nil {
-		m.disposing = make(map[string]chan struct{})
+		m.disposing = make(map[jarKey]chan struct{})
 	}
 	m.disposing[scope.jar.key] = make(chan struct{})
 	return true

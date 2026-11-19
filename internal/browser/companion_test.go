@@ -19,7 +19,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 		pages[id] = p
 	}
 	m := &Manager{
-		scopes:  map[string]*jarScope{"/repo": {pages: pages}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: pages}},
 		threads: threads,
 	}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
@@ -66,7 +66,7 @@ func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
 func TestCompanionStateSnapshotsAreNumberedInReadOrder(t *testing.T) {
 	threads := testThreads(map[string]SessionInfo{"a": {}, "b": {}})
 	m := &Manager{
-		scopes:  map[string]*jarScope{"/repo": {pages: map[string]*managedPage{}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{}}},
 		threads: threads,
 	}
 	first := m.threadState("a")
@@ -105,7 +105,7 @@ func TestCompanionStateKeepsTabOrderAndUsesExplicitActivePage(t *testing.T) {
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: second.id, URL: "file:///tmp/second.html", Title: "Second"}
 	second.lastUse.Store(time.Now().UnixNano())
-	m := &Manager{scopes: map[string]*jarScope{
+	m := &Manager{scopes: map[jarKey]*jarScope{
 		"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}},
 	}, threads: threads}
 
@@ -130,7 +130,7 @@ func TestBackgroundPageActivityDoesNotStealCompanionSelection(t *testing.T) {
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: second.id, URL: "https://second.test"}
 	m := &Manager{
-		scopes:  map[string]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
 
@@ -149,7 +149,7 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: second.id, Label: "docs", URL: "https://second.test"}
 	m := &Manager{
-		scopes:  map[string]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
@@ -175,7 +175,7 @@ func TestImplicitPageResolutionIsConvenientOnlyWhenUnambiguous(t *testing.T) {
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: second.id, Label: "docs"}
-	m := &Manager{threads: threads, scopes: map[string]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first}}}}
+	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first}}}}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	resolved, _, err := m.lookupOrSelectPage(context.Background(), access, "")
 	if err != nil || resolved != first {
@@ -195,7 +195,7 @@ func TestPageLabelsAreThreadUniqueAndEditable(t *testing.T) {
 	second := &managedPage{id: "second", owner: threads["thread"], createdAt: 2}
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: second.id}
-	m := &Manager{threads: threads, scopes: map[string]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}}}
+	m := &Manager{threads: threads, scopes: map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}}}
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	info, err := m.LabelPage(context.Background(), access, first.id, " app-preview ")
 	if err != nil || info.Label != "app-preview" {
@@ -219,7 +219,7 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 	second.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	second.info = PageInfo{ID: second.id}
 	m := &Manager{
-		scopes:  map[string]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
 		threads: threads,
 	}
 	show := true

@@ -1049,7 +1049,7 @@ func TestAPopupBeingAdoptedKeepsNoPrivateJarForANewTab(t *testing.T) {
 	first := openPage(t, manager, access, "https://example.test/private")
 	old := pageJar(t, manager, first.ID)
 	manager.mu.Lock()
-	oldScope := manager.scopes[old]
+	oldScope := manager.scopes[jarKey(old)]
 	manager.mu.Unlock()
 	release := engine.gate("popup")
 	defer release()

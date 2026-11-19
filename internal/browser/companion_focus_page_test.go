@@ -532,12 +532,12 @@ func TestTheLaunchersFocusReportsReachTheIntentsPane(t *testing.T) {
 	m.mu.Unlock()
 	page := &managedPage{id: "page1", owner: access.tb, driver: &fakePage{handle: "handle1"}}
 	m.mu.Lock()
-	m.scopes = map[string]*jarScope{"scope": {pages: map[string]*managedPage{"page1": page}}}
+	m.scopes = map[jarKey]*jarScope{"scope": {pages: map[string]*managedPage{"page1": page}}}
 	m.mu.Unlock()
 	// The stand-in page has no engine page behind it for Close to close.
 	t.Cleanup(func() {
 		m.mu.Lock()
-		m.scopes = map[string]*jarScope{}
+		m.scopes = map[jarKey]*jarScope{}
 		m.mu.Unlock()
 	})
 	events := watchFocusEvents(m)

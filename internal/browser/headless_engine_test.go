@@ -249,7 +249,7 @@ func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
 func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string, persist bool) *headlessProfile {
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
+		Jar: jarKey(workspace), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
 		Allow: func([]frameID, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
@@ -1997,7 +1997,7 @@ setTimeout(() => { document.title = typeof __aoDocumentTitle + " by script" }, 3
 	}))
 	defer server.Close()
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]frameID, string) (bool, bool) { return true, true },
+		Jar: jarKey(t.TempDir()), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func([]frameID, string) (bool, bool) { return true, true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
@@ -2071,7 +2071,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []frameID, url string) (bool, bool) { return inWorkspace(url), true },
+		Jar: jarKey(workspace), DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []frameID, url string) (bool, bool) { return inWorkspace(url), true },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
