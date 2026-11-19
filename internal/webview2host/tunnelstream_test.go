@@ -12,7 +12,11 @@ import (
 // it is written, and data after the close is refused.
 func TestATunnelStreamEndsAfterItsQueuedData(t *testing.T) {
 	local, remote := net.Pipe()
-	defer remote.Close()
+	defer func() {
+		if err := remote.Close(); err != nil {
+			t.Errorf("close the peer's end: %v", err)
+		}
+	}()
 	failed := make(chan error, 1)
 	w := NewTunnelStreamWriter(local, DefaultTunnelStreamBounds, func(err error) { failed <- err })
 	ran := make(chan struct{})

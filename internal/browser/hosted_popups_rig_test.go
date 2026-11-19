@@ -129,6 +129,11 @@ func (l *popupLauncher) send(directive webview2host.Directive) {
 		l.closes = append(l.closes, directive.PageID)
 		l.mu.Unlock()
 		go l.report(directive.PageID, webview2host.ReportClosed, "")
+	case webview2host.OpBounds, webview2host.OpShow, webview2host.OpHide, webview2host.OpBackground,
+		webview2host.OpDevTools, webview2host.OpCloseProfile, webview2host.OpClearData, webview2host.OpAccelerators,
+		webview2host.OpFind, webview2host.OpFindStop, webview2host.OpFocus, webview2host.OpCancelDownload,
+		webview2host.OpDownloadStatus:
+		// Answered by nothing: the tests that send them read the sink.
 	}
 }
 

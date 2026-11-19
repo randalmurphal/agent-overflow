@@ -146,6 +146,10 @@ func TestACreateWaitsForItsProfilesEarlierClose(t *testing.T) {
 					delete(pages, id)
 				}
 			}
+		case webview2host.OpBounds, webview2host.OpShow, webview2host.OpHide, webview2host.OpBackground,
+			webview2host.OpClose, webview2host.OpDevTools, webview2host.OpClearData, webview2host.OpAccelerators,
+			webview2host.OpFind, webview2host.OpFindStop, webview2host.OpFocus, webview2host.OpCancelDownload,
+			webview2host.OpDownloadStatus:
 		}
 		mu.Unlock()
 		finished <- string(d.Op) + ":" + d.PageID + d.ProfileID

@@ -82,6 +82,9 @@ func kinds(t *testing.T, reports []rigReport) []string {
 				t.Fatal(err)
 			}
 			entry += "(" + parsed.ID + "," + parsed.State + ")"
+		case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed, ReportCleared,
+			ReportClearFailed, ReportAccelerator, ReportFindUnavailable, ReportFocused, ReportFocusFailed:
+			// The kind alone.
 		}
 		out = append(out, entry)
 	}

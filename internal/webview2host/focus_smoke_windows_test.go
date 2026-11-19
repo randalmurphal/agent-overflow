@@ -80,6 +80,9 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 			case ReportCreated:
 				created = true
 			case ReportFindUnavailable:
+			case ReportCreateFailed, ReportClosed, ReportProcessFailed, ReportCleared, ReportClearFailed,
+				ReportAccelerator, ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup:
+				t.Fatalf("create answered %+v", report)
 			default:
 				t.Fatalf("create answered %+v", report)
 			}

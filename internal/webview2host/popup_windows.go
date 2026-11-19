@@ -397,9 +397,11 @@ func (h *Host) holdReport(page *hostPage, kind ReportKind, detail string) bool {
 		default:
 			h.config.Logf("browser host: page %s: drop a %s failure past %d kinds held", page.id, detail, maxHeldProcessFailures)
 		}
-	default:
-		// A key chord is the only other: a popup is hidden until the
-		// backend shows it, and a chord is not worth keeping.
+	case ReportAccelerator, ReportCreated, ReportCreateFailed, ReportClosed, ReportCleared,
+		ReportClearFailed, ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup:
+		// A key chord is the only other a popup makes before its report
+		// (downloads are held apart, holdDownload): a popup is hidden until
+		// the backend shows it, and a chord is not worth keeping.
 		h.config.Logf("browser host: page %s: drop a %s report made before the page was reported", page.id, kind)
 	}
 	return true

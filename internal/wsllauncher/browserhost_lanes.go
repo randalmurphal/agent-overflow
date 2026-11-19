@@ -76,6 +76,11 @@ func (l *directiveLanes) submit(d webview2host.Directive) {
 		l.closing[d.ProfileID] = item.done
 	case webview2host.OpCreate:
 		item.after = l.closing[d.ProfileID]
+	case webview2host.OpBounds, webview2host.OpShow, webview2host.OpHide, webview2host.OpBackground,
+		webview2host.OpClose, webview2host.OpDevTools, webview2host.OpClearData, webview2host.OpAccelerators,
+		webview2host.OpFind, webview2host.OpFindStop, webview2host.OpFocus, webview2host.OpCancelDownload,
+		webview2host.OpDownloadStatus:
+		// Ordered by their lane alone.
 	}
 	waiting, busy := l.lanes[key]
 	if n := len(waiting); n > 0 && d.Op == webview2host.OpBounds && waiting[n-1].directive.Op == webview2host.OpBounds {

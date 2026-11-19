@@ -30,11 +30,11 @@ var (
 	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
 )
 
-const (
-	// gwlStyle is GWL_STYLE and wsVisible WS_VISIBLE.
-	gwlStyle  int32 = -16
-	wsVisible       = 0x10000000
-)
+// gwlStyle is GWL_STYLE.
+const gwlStyle int32 = -16
+
+// wsVisible is WS_VISIBLE.
+const wsVisible = 0x10000000
 
 // guiThreadInfo is GUITHREADINFO.
 type guiThreadInfo struct {
