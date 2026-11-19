@@ -196,6 +196,22 @@ type workspaceAuthority struct {
 	downloadBytes atomic.Int64
 }
 
+// reserveDownload adds bytes to the workspace's download reservation when
+// that stays within maxWorkspaceDownloadBytes, answering whether it did. A
+// refused reservation never touches the counter, which other jars of the
+// workspace change concurrently.
+func (a *workspaceAuthority) reserveDownload(bytes int64) bool {
+	for {
+		current := a.downloadBytes.Load()
+		if current > maxWorkspaceDownloadBytes-bytes {
+			return false
+		}
+		if a.downloadBytes.CompareAndSwap(current, current+bytes) {
+			return true
+		}
+	}
+}
+
 // authorityLocked answers the workspace's authority, creating it. The caller
 // holds m.mu.
 func (m *Manager) authorityLocked(workspace, downloadDir string) *workspaceAuthority {

@@ -74,12 +74,10 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart) bool {
 // workspace's quota and the artifact root's, or settles entry as canceled
 // over quota. The caller holds the page's downloadMu.
 func (m *Manager) reserveDownloadLocked(authority *workspaceAuthority, entry *DownloadInfo) {
-	scopeReserved := authority != nil && authority.downloadBytes.Add(maxDownloadBytes) <= maxWorkspaceDownloadBytes
+	scopeReserved := authority != nil && authority.reserveDownload(maxDownloadBytes)
 	globalReserved := scopeReserved && m.reserveArtifacts(maxDownloadBytes)
-	if !scopeReserved || !globalReserved {
+	if !globalReserved {
 		if scopeReserved {
-			authority.downloadBytes.Add(-maxDownloadBytes)
-		} else if authority != nil && authority.downloadBytes.Load() > maxWorkspaceDownloadBytes {
 			authority.downloadBytes.Add(-maxDownloadBytes)
 		}
 		entry.State, entry.Error, entry.reservedBytes = downloadStateCanceled, fmt.Sprintf("workspace downloads exceed %d bytes", maxWorkspaceDownloadBytes), 0

@@ -519,6 +519,34 @@ func TestADownloadPastABoundOfRunningOnesIsListed(t *testing.T) {
 	}
 }
 
+// A reservation the workspace quota refuses leaves the quota as it was,
+// however the other jars of the workspace reserve and release meanwhile.
+func TestARefusedReservationNeverKeepsWorkspaceBytes(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	t.Cleanup(func() { _ = manager.Close() })
+	authority := &workspaceAuthority{}
+	// One reservation's room left.
+	start := int64(maxWorkspaceDownloadBytes - maxDownloadBytes)
+	authority.downloadBytes.Store(start)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 5000 {
+				entry := DownloadInfo{reservedBytes: maxDownloadBytes}
+				manager.reserveDownloadLocked(authority, &entry)
+				if entry.reservedBytes > 0 {
+					authority.downloadBytes.Add(-entry.reservedBytes)
+					manager.settleArtifactReservation(entry.reservedBytes, 0)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := authority.downloadBytes.Load(); got != start {
+		t.Fatalf("after every reservation ended the workspace holds %d bytes, want %d", got, start)
+	}
+}
+
 // A page's own log drops its oldest settled entries past maxPageDownloads,
 // never a running one, whose progress must still find it.
 func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {
