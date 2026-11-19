@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +28,20 @@ import (
 // lines on stdout, the last one the result. The steps live in
 // internal/supervise; this file owns argv, the lock, signals and the exit
 // code.
+
+// processStarted is when this process started, as near as Go code can
+// tell: package variables initialize before main.
+var processStarted = time.Now()
+
+// logUpdateFirstBoot logs, once a boot that finishes the update to `to` is
+// ready for clients, how long it took from its process's start. It is the
+// update's last phase: the new version's real boot, until it is usable.
+func logUpdateFirstBoot(logf func(string, ...any), to string) {
+	if to == "" {
+		return
+	}
+	supervise.NewPhaseLog(logf, "updater: update to "+to, nil).BeginAt("first-boot", processStarted).End(nil)
+}
 
 func isUpdateCommand(name string) bool {
 	switch name {
@@ -123,6 +138,9 @@ func runUpdateCommand(name string, args []string) int {
 		},
 		Log: log.Printf,
 	}
+	// The command's own duration: the launcher's wait for it, in its
+	// summary, also counts starting it through wsl.exe.
+	running := supervise.NewPhaseLog(log.Printf, "update: "+name+" "+flags.id, nil).Begin("command")
 	if err := supervise.WriteUpdateEvent(out, command.Started()); err != nil {
 		log.Printf("update: %s: report start: %v", name, err)
 	}
@@ -130,12 +148,16 @@ func runUpdateCommand(name string, args []string) int {
 	if err := supervise.WriteUpdateEvent(out, result); err != nil {
 		log.Printf("update: %s: report the result: %v", name, err)
 	}
-	log.Printf("update: %s %s: %s %s", name, flags.id, result.Outcome, result.Reason)
+	code := 1
+	var failure error
 	switch result.Outcome {
 	case supervise.UpdateOutcomeOK, supervise.UpdateOutcomePrepared:
-		return 0
+		code = 0
+	default:
+		failure = errors.New(result.Reason)
 	}
-	return 1
+	running.End(failure, "outcome", result.Outcome)
+	return code
 }
 
 func runUpdateStep(ctx context.Context, name string, flags updateCommandFlags, command supervise.UpdateCommand) supervise.UpdateEvent {
@@ -287,6 +309,13 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 		return conn.Send(supervise.Message{Type: supervise.MsgProgress, Progress: &p})
 	})
 	backend := newBackend(progress.Report)
+	// The shutdown closes the store, whose close-time WAL checkpoint the
+	// trial's parent waits on (trial.stop).
+	shutdown := func() {
+		stopping := supervise.NewPhaseLog(log.Printf, "update trial", nil).Begin("shutdown")
+		backend.shutdown()
+		stopping.End(nil)
+	}
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
 	cancelBootOnShutdownRequest(bootCtx, bootCancel, stopRequested)
@@ -300,7 +329,7 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 			reason = "the trial was stopped before it finished starting"
 		}
 		code := fail(reason)
-		backend.shutdown()
+		shutdown()
 		return code
 	}
 	if err := conn.Send(supervise.Message{Type: supervise.MsgPrepared, UpdateID: opening.UpdateID}); err != nil {
@@ -308,7 +337,7 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 	}
 	log.Printf("update trial: prepared; waiting to be stopped")
 	<-stopRequested
-	backend.shutdown()
+	shutdown()
 	return 0
 }
 

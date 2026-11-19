@@ -51,8 +51,9 @@ var errLegacyTarget = errors.New("the new launcher predates trial updates")
 // beginTrialUpdate is steps 2 and 3 of the Windows sequence: stage the new
 // launcher, have it stage and check its payload, record the update durably,
 // start the new launcher and quit. It returns errLegacyTarget when the target
-// cannot run the trial, and nil only once the app is quitting.
-func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, staged string, digest []byte) error {
+// cannot run the trial, and nil only once the app is quitting. The handoff
+// is the update's first timed phase; this launcher's shutdown follows it.
+func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, staged string, digest []byte) (err error) {
 	// The same version has the same schema: nothing for a trial to prove.
 	if directive.Version == payloadVersion {
 		return errLegacyTarget
@@ -75,6 +76,8 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 	if err != nil {
 		return err
 	}
+	handing := supervise.NewPhaseLog(log.Printf, "updater: update "+id, nil).Begin("handoff")
+	defer func() { handing.End(err) }()
 	launcherPath := wsllauncher.StagedLauncherPath(dir, id)
 	// StageCopy verifies the digest of the bytes it writes, so the file the
 	// new launcher runs from is the one the backend verified.
@@ -206,9 +209,13 @@ func (preflightHost) InstallEmbeddedPayload(ctx context.Context, distro, staged 
 // waitForParentLauncher waits for the launcher that started this one to
 // exit, so this one can claim the single-instance identity. The wait holds
 // a handle to the process whose creation time matches, so a reused process
-// id is never waited on.
+// id is never waited on. The wait is the previous launcher's shutdown, an
+// update's phase, so it is timed.
 func waitForParentLauncher(parent supervise.ProcessRef) error {
-	if err := supervise.WaitForExit(context.Background(), parent, updateParentExitTimeout); err != nil {
+	waiting := supervise.NewPhaseLog(log.Printf, "launcher", nil).Begin("wait-previous")
+	err := supervise.WaitForExit(context.Background(), parent, updateParentExitTimeout)
+	waiting.End(err, "pid", parent.PID)
+	if err != nil {
 		return fmt.Errorf("the previous launcher (pid %d): %w", parent.PID, err)
 	}
 	return nil

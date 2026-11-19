@@ -86,8 +86,9 @@ func (h DesktopHandoff) Check(ctx context.Context, downloaded, version string) (
 // unless the staged target answers as version and the snapshot fits; a
 // helper that cannot start settles the update failed, and its error is the
 // caller's to show. This app holds the data root's backend lock throughout,
-// which a write of the record needs (SettleDesktopUpdate).
-func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string) error {
+// which a write of the record needs (SettleDesktopUpdate). The handoff is
+// the update's first timed phase; this app's shutdown follows it.
+func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string) (err error) {
 	install, err := DesktopInstallPath(h.Executable, h.GOOS)
 	if err != nil {
 		return err
@@ -107,6 +108,8 @@ func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string)
 	if err != nil {
 		return err
 	}
+	handing := NewPhaseLog(h.logf, "updater: update "+id, h.now).Begin("handoff")
+	defer func() { handing.End(err) }()
 	staged := DesktopStagedPath(install, id)
 	if !isBundle(downloaded) {
 		// The download is written without the executable bit; the publish

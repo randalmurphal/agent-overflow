@@ -330,9 +330,13 @@ func nativeWindowPointer(getWindow func() *application.WebviewWindow) func() uns
 // identity and the backend lock until it exits.
 func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 	if helper.PID != 0 {
-		if err := supervise.WaitForExit(context.Background(), helper, desktopWaitTimeout); err != nil {
-			log.Printf("updater: the update helper (pid %d) has not exited: %v", helper.PID, err)
+		logf := log.Printf
+		if path, err := desktopUpdateLogPath(); err != nil {
+			log.Printf("updater: locate the update log: %v", err)
+		} else {
+			logf = desktopUpdateLogf(path)
 		}
+		waitForUpdateHelper(helper, desktopWaitTimeout, logf)
 	}
 	if runExistingDesktop() {
 		return
@@ -424,6 +428,7 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 			appservice.SetStartDone(appService.App, func(err error) {
 				if err == nil {
 					srv.MarkReady()
+					logUpdateFirstBoot(gate.updateLogf(), plan.updatingTo)
 					appservice.NotifyPendingUpdateApplyFailure(appService.App)
 					return
 				}

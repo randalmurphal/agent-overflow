@@ -258,6 +258,10 @@ type TrialConfig struct {
 	OnStopping func()
 	// Log receives one line per transition. nil is silent.
 	Log func(format string, args ...any)
+	// Phases receives the trial's phases: trial.start from the exec to the
+	// child's hello, trial.boot from the hello to prepared or the failure,
+	// and trial.stop while the child is stopped. nil logs none.
+	Phases *PhaseLog
 }
 
 // TrialFailedError is a trial that did not reach prepared. Reason is the
@@ -302,6 +306,7 @@ func RunTrial(ctx context.Context, cfg TrialConfig) error {
 		extraFiles = []*os.File{cfg.Lock}
 		env = append(append([]string(nil), env...), EnvInheritedLock+"="+strconv.Itoa(InheritedLockFD))
 	}
+	starting := cfg.Phases.Begin("trial.start")
 	c, err := startChild(childSpec{
 		binary:     cfg.Binary,
 		args:       cfg.Args,
@@ -318,9 +323,11 @@ func RunTrial(ctx context.Context, cfg TrialConfig) error {
 		log:     cfg.Log,
 	})
 	if err != nil {
-		return &TrialFailedError{Reason: "the new version did not start: " + err.Error()}
+		failed := &TrialFailedError{Reason: "the new version did not start: " + err.Error()}
+		starting.End(failed)
+		return failed
 	}
-	t := &trialRun{cfg: cfg, child: c, judge: newTrialJudge(cfg.Rule, cfg.LegacyBudget)}
+	t := &trialRun{cfg: cfg, child: c, judge: newTrialJudge(cfg.Rule, cfg.LegacyBudget), phase: starting}
 	defer t.judge.stop()
 	return t.run(ctx)
 }
@@ -331,6 +338,9 @@ type trialRun struct {
 	judge *trialJudge
 	// step is the last Detail the trial reported (TrialFailedError.Step).
 	step string
+	// phase is trial.start until the hello, then trial.boot.
+	phase   Phase
+	helloed bool
 }
 
 // fail is the trial's failure with reason, naming its last step.
@@ -343,28 +353,25 @@ func (t *trialRun) run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			t.stop()
-			return ctx.Err()
+			return t.end(ctx.Err(), true)
 
 		case <-c.exited:
-			if outcome, decided := t.drainAfterExit(); decided {
-				c.conn.Close()
-				return outcome
-			}
+			outcome, decided := t.drainAfterExit()
 			c.conn.Close()
-			return t.fail(exitReason(c.exitErr))
+			if !decided {
+				outcome = t.fail(exitReason(c.exitErr))
+			}
+			return t.end(outcome, false)
 
 		case <-t.judge.stalled():
 			reason, failed := t.judge.stall()
 			if !failed {
 				continue
 			}
-			t.stop()
-			return t.fail(reason)
+			return t.end(t.fail(reason), true)
 
 		case <-t.judge.expired():
-			t.stop()
-			return t.fail(t.judge.ceilingReason())
+			return t.end(t.fail(t.judge.ceilingReason()), true)
 
 		case msg, ok := <-c.messages:
 			if !ok {
@@ -374,13 +381,20 @@ func (t *trialRun) run(ctx context.Context) error {
 				continue
 			}
 			if outcome, decided := t.handle(msg); decided {
-				if outcome == nil || isTrialFailure(outcome) {
-					t.stop()
-				}
-				return outcome
+				return t.end(outcome, outcome == nil || isTrialFailure(outcome))
 			}
 		}
 	}
+}
+
+// end ends the open phase with outcome, stops the child when stop is set,
+// and returns outcome.
+func (t *trialRun) end(outcome error, stop bool) error {
+	t.phase.End(outcome)
+	if stop {
+		t.stop()
+	}
+	return outcome
 }
 
 // handle applies one frame. decided is true when the frame ends the trial.
@@ -390,6 +404,11 @@ func (t *trialRun) handle(msg Message) (outcome error, decided bool) {
 		t.cfg.Log("supervise: trial of %s is version %s speaking update protocol %d (progress=%t)",
 			t.cfg.TargetVersion, msg.Version, msg.ProtocolVersion, msg.ReportsProgress)
 		t.judge.hello(msg)
+		if !t.helloed {
+			t.helloed = true
+			t.phase.End(nil)
+			t.phase = t.cfg.Phases.Begin("trial.boot")
+		}
 	case MsgProgress:
 		if msg.Progress == nil {
 			return nil, false
@@ -443,7 +462,9 @@ func (t *trialRun) stop() {
 	if t.cfg.OnStopping != nil {
 		t.cfg.OnStopping()
 	}
-	stopChildProcess(t.child, t.cfg.StopTimeout, t.cfg.Log)
+	stopping := t.cfg.Phases.Begin("trial.stop")
+	killed := stopChildProcess(t.child, t.cfg.StopTimeout, t.cfg.Log)
+	stopping.End(nil, "killed", killed)
 }
 
 func isTrialFailure(err error) bool {

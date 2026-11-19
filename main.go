@@ -858,6 +858,7 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	phaseStarted = time.Now()
 	srv.MarkReady()
 	logBootPhase("headless.mark_ready", phaseStarted)
+	logUpdateFirstBoot(log.Printf, updatingTo)
 
 	waitForHeadlessShutdown(appService, srv, shutdownRequested)
 }

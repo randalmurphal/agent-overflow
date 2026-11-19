@@ -32,6 +32,9 @@ type PrepareOptions struct {
 	OwnsAppLayout bool
 	// Progress receives the copy progress of a restore being finished.
 	Progress CopyProgress
+	// Phases receives the phases of a restore being finished. nil logs
+	// none.
+	Phases *PhaseLog
 	// Log receives one line per restore finished. nil is silent.
 	Log func(format string, args ...any)
 }
@@ -67,7 +70,7 @@ func PrepareDataRoot(dataDir string, opts PrepareOptions) error {
 		}{serveLayout, "`agent-overflow supervise`", false})
 	}
 	for _, entry := range layouts {
-		marker, resumed, err := ResumeRestore(entry.layout, opts.Progress)
+		marker, resumed, err := ResumeRestore(entry.layout, RestoreOptions{Progress: opts.Progress, Phases: opts.Phases})
 		if err != nil {
 			return err
 		}

@@ -202,8 +202,9 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	// structurally free, since the read pool is not open yet and no RPC has
 	// been served. Failure is logged, never fatal: an oversized WAL is a
 	// disk-space problem, not a reason to refuse to start.
+	checkpointed := time.Now()
 	bootCheckpoint, bootErr := s.TruncateCheckpoint()
-	s.logCheckpoint("boot", bootCheckpoint, bootErr)
+	s.logCheckpoint("boot", checkpointed, bootCheckpoint, bootErr)
 
 	if read, err := openReadPool(db, dbPath, gate); err != nil {
 		db.Close()
@@ -405,8 +406,9 @@ func (s *Store) Close() error {
 			errs = append(errs, fmt.Errorf("store: close read pool: %w", err))
 		}
 	}
+	checkpointed := time.Now()
 	closeCheckpoint, checkpointErr := s.TruncateCheckpoint()
-	s.logCheckpoint("close", closeCheckpoint, checkpointErr)
+	s.logCheckpoint("close", checkpointed, closeCheckpoint, checkpointErr)
 	if err := s.db.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("store: close writer: %w", err))
 	}
@@ -461,16 +463,20 @@ func (s *Store) TruncateCheckpoint() (CheckpointResult, error) {
 	return res, nil
 }
 
-// logCheckpoint reports a TruncateCheckpoint outcome at a lifecycle
-// moment where the caller has decided not to fail on it. Both failure
-// shapes are visible: an error, and the silent one where SQLite answered
-// with busy=1 and reclaimed nothing.
-func (s *Store) logCheckpoint(moment string, res CheckpointResult, err error) {
+// logCheckpoint reports a TruncateCheckpoint that began at started, at a
+// lifecycle moment where the caller has decided not to fail on it. Both
+// failure shapes are visible: an error, and the silent one where SQLite
+// answered with busy=1 and reclaimed nothing. Every outcome says how long
+// it took: an update's trial waits on both.
+func (s *Store) logCheckpoint(moment string, started time.Time, res CheckpointResult, err error) {
+	took := time.Since(started).Round(time.Millisecond)
 	switch {
 	case err != nil:
-		log.Printf("store: %s WAL checkpoint: %v", moment, err)
+		log.Printf("store: %s WAL checkpoint failed duration=%s: %v", moment, took, err)
 	case res.Busy:
-		log.Printf("store: %s WAL checkpoint blocked by an open read; %d frames left in the WAL", moment, res.WALFrames)
+		log.Printf("store: %s WAL checkpoint blocked by an open read duration=%s; %d frames left in the WAL", moment, took, res.WALFrames)
+	default:
+		log.Printf("store: %s WAL checkpoint duration=%s frames=%d", moment, took, res.Checkpointed)
 	}
 }
 

@@ -90,14 +90,21 @@ type SnapshotOptions struct {
 	// CloneFile clones a file copy-on-write, as copyFile describes. nil
 	// means the platform's clone.
 	CloneFile func(in *os.File, destination string) (bool, error)
+	// Phases, when set, receives the snapshot's phases: clearing the
+	// previous snapshot, the space check, each file's copy and the final
+	// sync.
+	Phases *PhaseLog
 }
 
-// RestoreOptions tunes RestoreSnapshot.
+// RestoreOptions tunes RestoreSnapshot and ResumeRestore.
 type RestoreOptions struct {
 	// Progress, when set, receives copy progress.
 	Progress CopyProgress
 	// CloneFile is as for SnapshotOptions.
 	CloneFile func(in *os.File, destination string) (bool, error)
+	// Phases, when set, receives the restore's phases: removing the live
+	// files, each file's copy and the sync.
+	Phases *PhaseLog
 }
 
 const snapshotManifest = "snapshot.json"
@@ -115,21 +122,26 @@ var (
 // is checked after that, so a leftover does not count against this one.
 func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOptions) (Snapshot, error) {
 	dir := layout.SnapshotDir()
-	if err := os.RemoveAll(dir); err != nil {
+	clearing := opts.Phases.Begin("snapshot.clear")
+	err := os.RemoveAll(dir)
+	clearing.End(err)
+	if err != nil {
 		return Snapshot{}, fmt.Errorf("supervise: clear snapshot dir: %w", err)
 	}
+	space := opts.Phases.Begin("snapshot.space")
 	live, total, err := identifyDatabase(dataDir)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if !anyPresent(live) {
+	if err == nil && !anyPresent(live) {
 		// A serve host with no database has nothing to roll back, and a
 		// snapshot of nothing would restore an empty directory over a database
 		// the trial legitimately created. Refuse instead: the caller records a
 		// failed update rather than one it cannot undo.
-		return Snapshot{}, fmt.Errorf("%w in %s", errNoDatabase, dataDir)
+		err = fmt.Errorf("%w in %s", errNoDatabase, dataDir)
 	}
-	if err := (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.Host, opts.ReadSpace); err != nil {
+	if err == nil {
+		err = (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.Host, opts.ReadSpace)
+	}
+	space.End(err, "bytes", total)
+	if err != nil {
 		return Snapshot{}, err
 	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -142,11 +154,14 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOpt
 			continue
 		}
 		source := filepath.Join(dataDir, before.Name)
-		if err := copyFile(source, filepath.Join(dir, before.Name), opts.CloneFile, func(n int64) {
+		copyPhase := opts.Phases.Begin("snapshot.copy")
+		cloned, synced, err := copyFile(source, filepath.Join(dir, before.Name), opts.CloneFile, func(n int64) {
 			if opts.Progress != nil {
 				opts.Progress(copied+n, total)
 			}
-		}); err != nil {
+		})
+		copyPhase.End(err, "file", before.Name, "bytes", before.Size, "cloned", cloned, "fsync", roundPhase(synced))
+		if err != nil {
 			return Snapshot{}, err
 		}
 		copied += before.Size
@@ -162,10 +177,15 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOpt
 		}
 		snapshot.Files = append(snapshot.Files, before.Name)
 	}
-	if err := atomicfile.WriteJSON(filepath.Join(dir, snapshotManifest), snapshot); err != nil {
-		return Snapshot{}, fmt.Errorf("supervise: write snapshot manifest: %w", err)
+	syncing := opts.Phases.Begin("snapshot.sync")
+	err = atomicfile.WriteJSON(filepath.Join(dir, snapshotManifest), snapshot)
+	if err != nil {
+		err = fmt.Errorf("supervise: write snapshot manifest: %w", err)
+	} else {
+		err = atomicfile.SyncDir(dir)
 	}
-	if err := atomicfile.SyncDir(dir); err != nil {
+	syncing.End(err)
+	if err != nil {
 		return Snapshot{}, err
 	}
 	return snapshot, nil
@@ -438,12 +458,12 @@ func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.T
 // Runs before the state file is even read: a supervisor that selected a
 // version and spawned it while the database was half-restored would hand a
 // live backend a file nothing can vouch for.
-func ResumeRestore(layout Layout, progress CopyProgress) (RestoreMarker, bool, error) {
+func ResumeRestore(layout Layout, opts RestoreOptions) (RestoreMarker, bool, error) {
 	marker, found, err := ReadRestoreMarker(layout)
 	if err != nil || !found {
 		return marker, false, err
 	}
-	if err := applyRestore(layout, marker.DataDir, RestoreOptions{Progress: progress}); err != nil {
+	if err := applyRestore(layout, marker.DataDir, opts); err != nil {
 		return marker, true, err
 	}
 	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -486,26 +506,36 @@ func applyRestore(layout Layout, dataDir string, opts RestoreOptions) error {
 		sizes[name] = info.Size()
 		total += info.Size()
 	}
+	removing := opts.Phases.Begin("restore.remove")
 	for _, name := range DatabaseFiles() {
 		if err := os.Remove(filepath.Join(dataDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("supervise: remove %s before restore: %w", name, err)
+			err = fmt.Errorf("supervise: remove %s before restore: %w", name, err)
+			removing.End(err)
+			return err
 		}
 	}
+	removing.End(nil)
 	copied := int64(0)
 	for _, name := range snapshot.Files {
-		if err := copyFile(filepath.Join(dir, name), filepath.Join(dataDir, name), opts.CloneFile, func(n int64) {
+		copyPhase := opts.Phases.Begin("restore.copy")
+		cloned, synced, err := copyFile(filepath.Join(dir, name), filepath.Join(dataDir, name), opts.CloneFile, func(n int64) {
 			if opts.Progress != nil {
 				opts.Progress(copied+n, total)
 			}
-		}); err != nil {
+		})
+		copyPhase.End(err, "file", name, "bytes", sizes[name], "cloned", cloned, "fsync", roundPhase(synced))
+		if err != nil {
 			return err
 		}
 		copied += sizes[name]
 	}
-	if err := atomicfile.SyncDir(dataDir); err != nil {
-		return err
+	syncing := opts.Phases.Begin("restore.sync")
+	err = atomicfile.SyncDir(dataDir)
+	if err == nil {
+		err = endAttemptAtRestore(layout, dataDir, snapshot)
 	}
-	return endAttemptAtRestore(layout, dataDir, snapshot)
+	syncing.End(err)
+	return err
 }
 
 // endAttemptAtRestore records that the update's last trial attempt, if one
@@ -541,31 +571,32 @@ const copyChunk = 8 << 20
 // the copy-on-write clone, nil for the platform's; it reports false with a
 // nil error when the filesystem cannot clone, which sends copyFile to an
 // ordinary copy. progress receives the bytes of THIS file copied so far.
-func copyFile(source, destination string, clone func(*os.File, string) (bool, error), progress func(int64)) error {
+// cloned reports a clone, and synced how long the copy's fsync took.
+func copyFile(source, destination string, clone func(*os.File, string) (bool, error), progress func(int64)) (cloned bool, synced time.Duration, err error) {
 	if clone == nil {
 		clone = platformCloneFile
 	}
 	in, err := os.Open(source)
 	if err != nil {
-		return fmt.Errorf("supervise: open %s: %w", source, err)
+		return false, 0, fmt.Errorf("supervise: open %s: %w", source, err)
 	}
 	defer in.Close()
 	info, err := in.Stat()
 	if err != nil {
-		return fmt.Errorf("supervise: stat %s: %w", source, err)
+		return false, 0, fmt.Errorf("supervise: stat %s: %w", source, err)
 	}
-	cloned, err := clone(in, destination)
+	cloned, err = clone(in, destination)
 	if err != nil {
-		return fmt.Errorf("supervise: clone %s -> %s: %w", source, destination, err)
+		return false, 0, fmt.Errorf("supervise: clone %s -> %s: %w", source, destination, err)
 	}
 	if cloned {
 		progress(info.Size())
-		return nil
+		return true, 0, nil
 	}
 
 	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
-		return fmt.Errorf("supervise: create %s: %w", destination, err)
+		return false, 0, fmt.Errorf("supervise: create %s: %w", destination, err)
 	}
 	var written int64
 	for {
@@ -581,15 +612,18 @@ func copyFile(source, destination string, clone func(*os.File, string) (bool, er
 		}
 		if err != nil {
 			out.Close()
-			return fmt.Errorf("supervise: copy %s -> %s: %w", source, destination, err)
+			return false, 0, fmt.Errorf("supervise: copy %s -> %s: %w", source, destination, err)
 		}
 	}
-	if err := out.Sync(); err != nil {
+	syncStarted := time.Now()
+	err = out.Sync()
+	synced = time.Since(syncStarted)
+	if err != nil {
 		out.Close()
-		return fmt.Errorf("supervise: sync %s: %w", destination, err)
+		return false, synced, fmt.Errorf("supervise: sync %s: %w", destination, err)
 	}
 	if err := out.Close(); err != nil {
-		return fmt.Errorf("supervise: close %s: %w", destination, err)
+		return false, synced, fmt.Errorf("supervise: close %s: %w", destination, err)
 	}
-	return nil
+	return false, synced, nil
 }

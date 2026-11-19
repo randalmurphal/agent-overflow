@@ -194,13 +194,15 @@ func (s *Supervisor) stopChild(c *child) {
 // kill is the fallback for a process that did not finish in time, and there
 // it must be the group, or a provider CLI keeps the database open past the
 // snapshot.
-func stopChildProcess(c *child, timeout time.Duration, logf func(string, ...any)) {
+//
+// killed reports that the child did not stop within timeout.
+func stopChildProcess(c *child, timeout time.Duration, logf func(string, ...any)) (killed bool) {
 	if c == nil {
-		return
+		return false
 	}
 	defer c.conn.Close()
 	if c.cmd.Process == nil {
-		return
+		return false
 	}
 	if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		logf("supervise: asking version %s to stop: %v", c.version, err)
@@ -212,7 +214,7 @@ func stopChildProcess(c *child, timeout time.Duration, logf func(string, ...any)
 		if c.exitErr != nil {
 			logf("supervise: version %s stopped: %v", c.version, c.exitErr)
 		}
-		return
+		return false
 	case <-timer.C:
 	}
 	logf("supervise: version %s did not stop within %s; killing its process group",
@@ -221,6 +223,7 @@ func stopChildProcess(c *child, timeout time.Duration, logf func(string, ...any)
 		logf("supervise: killing version %s: %v", c.version, err)
 	}
 	<-c.exited
+	return true
 }
 
 func (s *Supervisor) childEnv() []string {
