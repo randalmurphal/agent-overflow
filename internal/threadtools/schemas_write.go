@@ -50,7 +50,7 @@ func spawnSchema(shape Shape) map[string]any {
 		"group": map[string]any{
 			"type":        "string",
 			"maxLength":   MaxTitleRunes,
-			"description": "Sidebar group to put the new thread in, by name inside the thread's own project, created when it does not exist. The same name in another project is a different group. Put your own thread there with thread_update to keep a sweep of threads together. Implies placement grouped.",
+			"description": "Gives the new thread a row in the user's sidebar, inside this group: only for a thread the user will open and work in themselves. A worker whose answer comes back to you, such as a reviewer, a researcher or a helper, takes no group: your workers are already listed together under your thread's Agents. The group is named inside the thread's own project and created when it does not exist; the same name in another project is a different group. Implies placement grouped.",
 		},
 		"placement": placementProperty("Whether the user sees the new thread in the sidebar. owned, the default: it is your worker, with no sidebar row; the user reaches it from your thread. standalone gives it a plain row in its own project, and grouped, which group implies, a row in that group. Give it a row when the thread is for the user to read or continue themselves. On another computer it applies there."),
 		"provider": map[string]any{

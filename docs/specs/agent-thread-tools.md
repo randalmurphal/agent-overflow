@@ -992,7 +992,7 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > is when the branch exists here or on a remote, detached at the tag when
 > the name is no branch but a tag, and otherwise created from `base` (a
 > branch or tag; origin's head of a branch unless `base_local`),
-> `group` files it in a sidebar group beside the threads of one sweep,
+> `group` gives it a sidebar row in that group,
 > and `instructions` adds a one-off role to its system prompt for its
 > whole life. `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
@@ -1010,7 +1010,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > with its context kept, or when the user should be able to open, steer
 > or take it over. A thread meant for the user to read
 > or continue themselves gets a sidebar row: pass `placement` `standalone`
-> or a `group`. You
+> or a `group`. A worker whose answer comes back to you, such as a
+> reviewer, a researcher or a helper, takes neither: your workers are
+> already listed together under your thread's Agents. You
 > cannot send to or ask your own thread. An assistant lives outside
 > every project: its `thread_spawn` without `project_id` makes a helper
 > for its own work in its home, and with one names a project it serves;

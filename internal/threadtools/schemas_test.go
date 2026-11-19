@@ -199,6 +199,21 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 		if !strings.Contains(guide, "your worker, with no sidebar row unless you give it one") || !strings.Contains(guide, rowRule) {
 			t.Errorf("paired=%v: the guide does not say a spawn is a worker with a row only for the user's threads", shape.Paired())
 		}
+		// A group is a sidebar row, so the choice is the same one: the text
+		// says who a group is for where the group is chosen, and never
+		// offers it as the way to keep a batch of workers together.
+		const workerRule = "A worker whose answer comes back to you, such as a reviewer, a researcher or a helper, takes "
+		if group := texts["group"]; !strings.Contains(group, "a row in the user's sidebar") || !strings.Contains(group, workerRule+"no group") {
+			t.Errorf("paired=%v: group does not say it is a sidebar row and not for a worker: %s", shape.Paired(), group)
+		}
+		if !strings.Contains(guide, workerRule+"neither") {
+			t.Errorf("paired=%v: the guide does not say a worker takes no placement or group", shape.Paired())
+		}
+		for name, text := range map[string]string{"group": texts["group"], "guide": guide} {
+			if strings.Contains(text, "sweep of threads") || strings.Contains(text, "threads of one sweep") {
+				t.Errorf("paired=%v: %s offers a group for a batch of threads: %s", shape.Paired(), name, text)
+			}
+		}
 	}
 }
 
