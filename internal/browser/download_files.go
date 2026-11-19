@@ -50,10 +50,12 @@ func engineSavedDownload(path string, size int64) (string, os.FileInfo, error) {
 	return path, file, nil
 }
 
-// listedDownloadAllows reports whether path, links resolved, is the file of
-// a finished download of the canonical workspace that the Manager still
-// lists, and is still that file.
-func (m *Manager) listedDownloadAllows(workspace, path string) bool {
+// listedDownloadFile answers the file of the finished download of the
+// canonical workspace, still listed by the Manager, that path, links
+// resolved, still is, as it was when it finished; nil for none. Whoever
+// opens the file by path afterwards checks it is still that file
+// (sameDownloadedFile) where it opens it.
+func (m *Manager) listedDownloadFile(workspace, path string) os.FileInfo {
 	var listed []os.FileInfo
 	m.downloadsMu.Lock()
 	for _, list := range m.threadDownloads {
@@ -70,16 +72,16 @@ func (m *Manager) listedDownloadAllows(workspace, path string) bool {
 	}
 	m.mu.Unlock()
 	if len(listed) == 0 {
-		return false
+		return nil
 	}
 	current, err := os.Stat(path)
 	if err != nil {
-		return false
+		return nil
 	}
 	for _, file := range listed {
 		if sameDownloadedFile(file, current) {
-			return true
+			return file
 		}
 	}
-	return false
+	return nil
 }

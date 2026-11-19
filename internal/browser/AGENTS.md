@@ -189,7 +189,9 @@ profile directory. Unsupported platform capabilities return a clear refusal.
 thread workspace or project root, or the workspace's own finished downloads
 (`authorizeFile`), unless the explicit outside-workspace setting widens
 access. The download rows the Manager still lists are the one record of
-which files in the Downloads folder are openable (`listedDownloadAllows`);
+which files in the Downloads folder are openable (`listedDownloadFile`), and a file opened on a row's grant is
+opened only while it is still that row's file, checked in the page's
+operation after any tab creation (`openFile`);
 keep no second one. Use direct `file://` navigation.
 
 Where a download goes is the engine's `DownloadSaving`; the rule is

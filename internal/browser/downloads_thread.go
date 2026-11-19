@@ -64,7 +64,7 @@ type threadDownload struct {
 	ThreadDownload
 	// engineID is the engine's id for the download; workspace the canonical
 	// workspace of the page it began in, whose pages may open its file
-	// (listedDownloadAllows); path the finished file and file what it was
+	// (listedDownloadFile); path the finished file and file what it was
 	// when the download finished, nil for a file AO does not open.
 	engineID  string
 	workspace string
@@ -493,11 +493,23 @@ func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id stri
 	if !downloadOpensInPage(item.path) {
 		return PageInfo{}, fmt.Errorf("browser: a browser tab does not show %s; use Show in folder", item.Name)
 	}
-	info, err := m.openUserTab(ctx, access, turn, item.path, "", -1, nil)
-	if errors.Is(err, errSelectionPassed) {
+	// The tab is made first, then the file opened in it only while it is
+	// still the file the download wrote.
+	info, err := m.openUserTab(ctx, access, turn, "", "", -1, nil)
+	if errors.Is(err, errSelectionPassed) || (err == nil && info.ID == "") {
 		return PageInfo{}, nil
 	}
-	return info, err
+	if err != nil {
+		return info, err
+	}
+	if m.downloadOpening != nil {
+		m.downloadOpening()
+	}
+	opened, err := m.openFile(ctx, access, item.path, item.file, OpenOptions{PageID: info.ID})
+	if err != nil {
+		return info, err
+	}
+	return opened, nil
 }
 
 // downloadOpensInPage is whether every engine shows a file of this name in a

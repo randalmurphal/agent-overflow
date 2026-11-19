@@ -1,8 +1,11 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +32,41 @@ func wantCharged(t *testing.T, m *Manager, access Access, workspace, artifacts i
 	}
 	if got := m.artifactBytes.Used(); got != artifacts {
 		t.Errorf("the artifact quota holds %d bytes, want %d", got, artifacts)
+	}
+}
+
+// A finished download's file replaced while the tab it opens in is made is
+// not opened: the open refuses with the reason, and the new tab never
+// navigates to the replacement.
+func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
+	for _, saving := range []downloadSaving{downloadsAsArtifacts, downloadsStaged} {
+		t.Run(fmt.Sprint(saving), func(t *testing.T) {
+			manager, _, access, page := newDownloadManagerFor(t, saving)
+			startDownload(t, manager, access, page, "chart.png", 10)
+			row := threadDownloads(manager, access)[0]
+			item, err := manager.threadDownload(access.ThreadID, row.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager.downloadOpening = func() {
+				replacement := item.path + ".new"
+				if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
+					t.Error(err)
+				}
+				if err := os.Rename(replacement, item.path); err != nil {
+					t.Error(err)
+				}
+			}
+			_, err = manager.OpenThreadDownload(t.Context(), access, row.ID)
+			if !errors.Is(err, errDownloadReplaced) {
+				t.Fatalf("opening a replaced download answered %v", err)
+			}
+			for _, tab := range manager.CompanionState(access).Pages {
+				if strings.HasSuffix(tab.URL, filepath.ToSlash(item.path)) {
+					t.Fatalf("a tab shows the replacement at %s", tab.URL)
+				}
+			}
+		})
 	}
 }
 

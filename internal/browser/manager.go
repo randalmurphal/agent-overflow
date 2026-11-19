@@ -265,6 +265,10 @@ type Manager struct {
 	// downloadAdmitting is a test seam run between a download start's page
 	// lookup and its admission. Production leaves it nil.
 	downloadAdmitting func()
+	// downloadOpening is a test seam run between the tab a finished
+	// download opens in and its file's open (OpenThreadDownload).
+	// Production leaves it nil.
+	downloadOpening func()
 }
 
 type ManagerOptions struct {
