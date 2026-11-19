@@ -183,6 +183,11 @@ void ao_wk_free(void *pointer);
 
 // ---- downloads -----------------------------------------------------------
 
+// ao_wk_download_decide completes the destination decision
+// ao_download_destination left open: the download is written to path, or
+// with none canceled. It answers 0, deciding nothing, for a download that
+// failed meanwhile.
+int ao_wk_download_decide(void *download, const char *path);
 void ao_wk_download_cancel(void *download);
 void ao_wk_download_unref(void *download);
 

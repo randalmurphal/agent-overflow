@@ -827,3 +827,99 @@ func pageInfoOf(m *Manager, access Access, handle string) PageInfo {
 	}
 	return PageInfo{}
 }
+
+// A popup being adopted holds its jar's profile: its opener's close, the
+// jar's last listed page, leaves the profile running until the adoption
+// ends, which then disposes it.
+func TestAPopupBeingAdoptedHoldsItsProfile(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	manager.mu.Lock()
+	var profile *adoptionProfile
+	for _, scope := range manager.scopes {
+		profile = scope.profile.(*adoptionProfile)
+	}
+	manager.mu.Unlock()
+	disposed := func() bool {
+		profile.mu.Lock()
+		defer profile.mu.Unlock()
+		return profile.disposed
+	}
+	release := engine.gate("popup")
+	defer release()
+	done := make(chan struct{})
+	go func() { manager.adoptPopup(engine.popup(opener, "popup")); close(done) }()
+	engine.awaitAttach(t, "popup")
+	tabs := manager.CompanionState(access).Pages
+	if len(tabs) != 1 {
+		t.Fatalf("the thread has %d tabs, want the opener", len(tabs))
+	}
+	if err := manager.ClosePage(t.Context(), access, tabs[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if disposed() {
+		t.Fatal("the opener's close disposed the profile the popup is being attached in")
+	}
+	release()
+	<-done
+	if listed(manager, "popup") {
+		t.Fatal("a popup whose opener closed was listed")
+	}
+	deadline := time.Now().Add(hostedTestDeadline)
+	for !disposed() {
+		if time.Now().After(deadline) {
+			t.Fatal("the profile was never disposed once the adoption ended")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	manager.mu.Lock()
+	scopes := len(manager.scopes)
+	manager.mu.Unlock()
+	if scopes != 0 {
+		t.Fatalf("%d jars are still registered", scopes)
+	}
+}
+
+// Popups being adopted count against the caps from their admission: a
+// burst of them past the thread's cap is refused at once rather than
+// attached and dropped at its listing.
+func TestPopupsBeingAdoptedCountAgainstTheCaps(t *testing.T) {
+	manager, engine, access, opener := newAdoptionManager(t)
+	var releases []func()
+	var dones []chan struct{}
+	for i := range maxPagesPerThread {
+		handle := fmt.Sprintf("popup-%d", i)
+		releases = append(releases, engine.gate(handle))
+		done := make(chan struct{})
+		dones = append(dones, done)
+		go func() { manager.adoptPopup(engine.popup(opener, handle)); close(done) }()
+	}
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
+	// The opener is one page, so all but one popup is admitted.
+	for range maxPagesPerThread - 1 {
+		select {
+		case <-engine.reached:
+		case <-time.After(hostedTestDeadline):
+			t.Fatal("an admitted popup was never attached")
+		}
+	}
+	deadline := time.Now().Add(hostedTestDeadline)
+	for len(engine.discards()) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("discarded %v while the others are attached, want the one past the cap", engine.discards())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for _, release := range releases {
+		release()
+	}
+	for _, done := range dones {
+		<-done
+	}
+	if got := len(manager.CompanionState(access).Pages); got != maxPagesPerThread {
+		t.Fatalf("the thread has %d tabs, want its cap of %d", got, maxPagesPerThread)
+	}
+}

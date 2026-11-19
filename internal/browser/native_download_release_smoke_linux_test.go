@@ -1,0 +1,112 @@
+//go:build linux && cgo && !gtk3 && !android && !server && !nogui
+
+package browser
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestNativeEngineRealDownloadCancelMeetsItsRelease cancels a real
+// WebKitGTK download while its release waits on the GTK thread: the cancel
+// resolves the download there, in order with the release, so it answers
+// that the download ended instead of reaching a reference the release
+// drops.
+func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
+	window := smokeWindow(t)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/slow.bin" {
+			_, _ = fmt.Fprint(w, "<!doctype html><title>files</title><p>files</p>")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="slow.bin"`)
+		w.Header().Set("Content-Length", "10000000")
+		_, _ = w.Write([]byte(strings.Repeat("a", 65536)))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	access := Access{ThreadID: "native-smoke-download-release", Workspace: resolvedTempDir(t)}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.Open(ctx, access, server.URL+"/", OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatalf("look the page up: %v", err)
+	}
+	view, ok := p.driver.(*webkitPage)
+	if !ok {
+		t.Fatalf("the page's driver is %T, want the WebKitGTK page", p.driver)
+	}
+	profile := view.profile
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, fmt.Sprintf(`location.href = %q; true`, server.URL+"/slow.bin"), nil); err != nil {
+		t.Fatalf("start the download: %v", err)
+	}
+	var id string
+	for id == "" {
+		profile.mu.Lock()
+		for handle := range profile.downloads {
+			id = handle
+		}
+		profile.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			t.Fatal("the download never started")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// The GTK thread is held while the cancel is asked and the release
+	// begins, so both wait there, the cancel first.
+	entered, gate := make(chan struct{}), make(chan struct{})
+	go gtkDo(func() {
+		close(entered)
+		<-gate
+	})
+	<-entered
+	canceled := make(chan error, 1)
+	go func() { canceled <- profile.CancelDownload(id) }()
+	// Long enough for the cancel to reach the GTK thread's queue.
+	time.Sleep(200 * time.Millisecond)
+	released := make(chan struct{})
+	go func() {
+		profile.releaseDownload(id)
+		close(released)
+	}()
+	for profile.heldDownload(id) != nil {
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+	if err := <-canceled; !errors.Is(err, errDownloadEnded) {
+		t.Fatalf("a cancel that met the download's release answered %v, want that it ended", err)
+	}
+	<-released
+}

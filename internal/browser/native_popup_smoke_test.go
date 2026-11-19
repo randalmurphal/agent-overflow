@@ -112,3 +112,56 @@ func TestNativeEngineRealPopupOpensAChildWhileHeld(t *testing.T) {
 		}
 	}
 }
+
+// TestNativeEngineRealPopupThatClosesItselfIsNoTab has a popup close
+// itself in its first script, while the Manager still holds it from its
+// adoption: the close reaches the engine by the popup's own number, and
+// the popup never becomes a tab.
+func TestNativeEngineRealPopupThatClosesItselfIsNoTab(t *testing.T) {
+	window := smokeWindow(t)
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	holdPopupAdoption(manager, time.Second)
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-popup-closes", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	opener, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "opener.html",
+		`<!doctype html><title>opener</title>`), OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the opener: %v", err)
+	}
+	popupFile := writeSmokeFile(t, workspace, "closing.html",
+		`<!doctype html><title>closing</title><script>window.close()</script>`)
+	if _, _, err := manager.Evaluate(ctx, access, opener.ID,
+		fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(popupFile))), nil); err != nil {
+		t.Fatalf("open the popup: %v", err)
+	}
+	// Past the held adoption, once no adoption runs.
+	settled := time.Now().Add(3 * time.Second)
+	for {
+		manager.mu.Lock()
+		adopting := len(manager.adopting)
+		manager.mu.Unlock()
+		if time.Now().After(settled) && adopting == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("the popup's adoption never ended")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if tabs := manager.CompanionState(access).Pages; len(tabs) != 1 || tabs[0].ID != opener.ID {
+		t.Fatalf("the thread's tabs are %+v, want only the opener", tabs)
+	}
+}

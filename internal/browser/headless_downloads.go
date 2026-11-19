@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"sync"
+	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 )
@@ -24,6 +25,11 @@ import (
 // nothing is kept. The start and the forward of held progress happen under
 // one lock with the progress handler, so no progress slips between them.
 //
+// A start whose frame resolves to no popup and that the Manager refuses may
+// be a popup's whose creation is not handled yet: with a lifetime, it is
+// offered again, on a goroutine of its own, once popup names its frame,
+// for up to ownerWait, and refused after. Its progress is held meanwhile.
+//
 // Both states are bounded by orderSlack; the oldest GUID is dropped first.
 // A dropped started download's later progress is held as if early, which
 // the bound then drops in turn. The Manager's own page cancellation still
@@ -35,6 +41,11 @@ type downloadTracker struct {
 	// main frame of, as downloadStart's Popup, Openers and Profile, or an
 	// empty start. Nil names none.
 	popup func(frame string) downloadStart
+	// lifetime is the connection's, which ends a start's wait for its
+	// popup; nil waits for none. ownerWait bounds the wait, requestOwnerWait
+	// when zero.
+	lifetime  context.Context
+	ownerWait time.Duration
 
 	mu        sync.Mutex
 	downloads *boundedMap[string, downloadLifecycle]
@@ -62,22 +73,72 @@ func refusedDownloadCanceler(cancel func(id string) error, logf func(string, ...
 func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	lifecycle, _ := t.downloads.take(event.GUID)
+	start := t.startLocked(event)
+	admitted := t.events.DownloadStarted(start)
+	if !admitted && start.Popup == "" && t.lifetime != nil {
+		go t.awaitPopup(event)
+		return
+	}
+	t.beganLocked(event.GUID, admitted)
+}
+
+// startLocked is the start event names. The caller holds t.mu.
+func (t *downloadTracker) startLocked(event cdpbrowser.EventDownloadWillBegin) downloadStart {
 	var start downloadStart
 	if t.popup != nil {
 		start = t.popup(string(event.FrameID))
 	}
 	start.Frame, start.ID, start.URL, start.SuggestedName = string(event.FrameID), event.GUID, event.URL, event.SuggestedFilename
-	if !t.events.DownloadStarted(start) {
-		go t.cancel(event.GUID)
+	return start
+}
+
+// beganLocked settles a start the Manager answered: a refused one is
+// cancelled, and the progress held for it is forwarded. The caller holds
+// t.mu.
+func (t *downloadTracker) beganLocked(guid string, admitted bool) {
+	if !admitted {
+		go t.cancel(guid)
 	}
+	lifecycle, _ := t.downloads.take(guid)
 	if held := lifecycle.held; held != nil {
 		t.events.DownloadProgress(*held)
 		if downloadSettled(held.State) {
 			return
 		}
 	}
-	t.downloads.put(event.GUID, downloadLifecycle{started: true})
+	t.downloads.put(guid, downloadLifecycle{started: true})
+}
+
+// awaitPopup offers a refused start again once popup names its frame, and
+// refuses it when ownerWait passes first or the connection ends.
+func (t *downloadTracker) awaitPopup(event cdpbrowser.EventDownloadWillBegin) {
+	wait := t.ownerWait
+	if wait <= 0 {
+		wait = requestOwnerWait
+	}
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	poll := time.NewTicker(requestOwnerPoll)
+	defer poll.Stop()
+	for {
+		select {
+		case <-poll.C:
+		case <-deadline.C:
+			t.mu.Lock()
+			t.beganLocked(event.GUID, false)
+			t.mu.Unlock()
+			return
+		case <-t.lifetime.Done():
+			return
+		}
+		t.mu.Lock()
+		if start := t.startLocked(event); start.Popup != "" {
+			t.beganLocked(event.GUID, t.events.DownloadStarted(start))
+			t.mu.Unlock()
+			return
+		}
+		t.mu.Unlock()
+	}
 }
 
 func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {

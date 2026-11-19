@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,8 @@ type popupLauncher struct {
 
 	// adopted hears each adoption the Manager finishes (pageAdopted).
 	adopted chan struct{}
+	// stallFrameTree leaves every Page.getFrameTree unanswered.
+	stallFrameTree atomic.Bool
 
 	mu      sync.Mutex
 	closes  []string
@@ -86,6 +89,9 @@ func (l *popupLauncher) respond(call fakeCDPCall) any {
 	case "Runtime.evaluate":
 		return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
 	case "Page.getFrameTree":
+		if l.stallFrameTree.Load() {
+			return fakeCDPNoReply{}
+		}
 		return map[string]any{"frameTree": map[string]any{"frame": map[string]any{
 			"id": strings.TrimPrefix(call.SessionID, "S-"), "loaderId": "L-1", "url": "about:blank",
 			"securityOrigin": "://", "mimeType": "text/html",

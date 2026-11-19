@@ -58,6 +58,8 @@ type webkitEngine struct {
 	pane      map[uint64]webkitPaneState
 	stopped   bool
 	pageCount int
+	// popupEnds is what ended a popup's view before its adoption.
+	popupEnds heldPopupEnds
 
 	// downloadEvents carries every download report to the Manager off the
 	// GTK thread, one at a time in the order they were made, so a fast
@@ -106,6 +108,7 @@ func (e *webkitEngine) Stop() {
 		orphans = append(orphans, held.view)
 		delete(e.popups, handle)
 	}
+	e.popupEnds = heldPopupEnds{}
 	e.stopped = true
 	e.mu.Unlock()
 	// The window and its overlay stay: the SPA lives in it, and re-attaching
@@ -129,12 +132,40 @@ func (e *webkitEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, st
 	return n, handle
 }
 
-func (e *webkitEngine) takePopup(handle string) heldPopupView {
+// takePopup takes the held popup handle, for its attach when attach is
+// set (popupEnds), and otherwise for its discard.
+func (e *webkitEngine) takePopup(handle string, attach bool) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	held := e.popups[handle]
+	held, ok := e.popups[handle]
 	delete(e.popups, handle)
+	if ok && attach {
+		e.popupEnds.attachLocked(handle)
+	} else {
+		e.popupEnds.forgetLocked(handle)
+	}
 	return held
+}
+
+// popupEnded keeps what ended the view of the popup handle before its
+// adoption named the view's page (heldPopupEnds). A close also reaches the
+// Manager at once (pageEnds).
+func (e *webkitEngine) popupEnded(handle string, end pageEnd) {
+	e.mu.Lock()
+	_, held := e.popups[handle]
+	kept := e.popupEnds.recordLocked(handle, held, end)
+	e.mu.Unlock()
+	if kept && end.closed {
+		go e.events.PageClosed(handle)
+	}
+}
+
+// endAttach ends the attach of the popup handle and answers what ended its
+// view before its adoption.
+func (e *webkitEngine) endAttach(handle string) pageEnd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.popupEnds.takeLocked(handle)
 }
 
 // heldOpener answers the opener of the held popup handle, "" for none.
@@ -174,7 +205,7 @@ func (p *webkitProfile) downloadStart(page *webkitPage, popup uint64) downloadSt
 func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
 func (e *webkitEngine) DiscardPage(handle string) {
-	if held := e.takePopup(handle); held.view != nil {
+	if held := e.takePopup(handle, false); held.view != nil {
 		webkitCloseView(held.view)
 	}
 }
@@ -208,7 +239,6 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	profile := &webkitProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session, stage: opts.StageDownload,
 		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
-		stageFailures: make(map[string]error),
 	}
 	webkitProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -237,9 +267,6 @@ type webkitProfile struct {
 	disposed  bool
 	pages     map[*webkitPage]struct{}
 	downloads map[string]unsafe.Pointer
-	// stageFailures holds why a download got no staged file, from its
-	// destination to its start report.
-	stageFailures map[string]error
 }
 
 func (p *webkitProfile) Handle() string { return p.handle }
@@ -264,11 +291,14 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver,
 	}
 	page.view = view
 	p.parkNew(page)
+	if err := p.publish(page); err != nil {
+		return nil, err
+	}
 	return page, nil
 }
 
 func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
-	held := p.engine.takePopup(handle)
+	held := p.engine.takePopup(handle, true)
 	view := held.view
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
@@ -276,28 +306,44 @@ func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageH
 	script := webkitUserScript()
 	page, err := p.newPageShell(hooks, held.n)
 	if err != nil {
+		p.engine.endAttach(handle)
 		webkitCloseView(view)
 		return nil, err
 	}
 	page.view = view
 	page.popup, page.opener = handle, held.opener
+	page.ends.popup = true
 	// The popup already exists and may already be loading, so its document
 	// start is gone: the injected script applies from its next document on.
 	// That is the same trade CDP's addScriptToEvaluateOnNewDocument makes for
 	// an adopted target.
 	if err := webkitAdoptView(view, page.id, script, webkitConsoleHandler); err != nil {
+		p.engine.endAttach(handle)
 		page.discard()
 		webkitCloseView(view)
 		return nil, err
 	}
+	// The view answers to the page from its adoption on, so what ended it
+	// before has reached the engine by now.
+	end := p.engine.endAttach(handle)
+	if end.closed {
+		page.Close()
+		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
+	}
+	page.ends.hold(end)
 	p.parkNew(page)
+	if err := p.publish(page); err != nil {
+		return nil, err
+	}
 	return page, nil
 }
 
-// newPageShell allocates the Go half of a page and registers it BEFORE the view
-// exists, so a delegate that fires during construction resolves to a real page
-// instead of being dropped. A popup's page takes the number it was held
-// under (holdPopup); zero numbers a new one.
+// newPageShell allocates the Go half of a page and registers it with the
+// callbacks BEFORE the view exists, so a delegate that fires during
+// construction resolves to a real page instead of being dropped. The
+// profile lists it for Dispose only once its view is in place (publish). A
+// popup's page takes the number it was held under (holdPopup); zero numbers
+// a new one.
 func (p *webkitProfile) newPageShell(hooks pageHooks, id uint64) (*webkitPage, error) {
 	p.mu.Lock()
 	if p.disposed {
@@ -315,10 +361,24 @@ func (p *webkitProfile) newPageShell(hooks pageHooks, id uint64) (*webkitPage, e
 	}
 	page.handle = pageHandle(page.id)
 	webkitPageByID.Store(page.id, page)
-	p.mu.Lock()
-	p.pages[page] = struct{}{}
-	p.mu.Unlock()
 	return page, nil
+}
+
+// publish lists a page whose view is built, adopted and parked in the
+// profile, where Dispose finds it. A profile disposed meanwhile never saw
+// the page, so the page is closed here, its view with it.
+func (p *webkitProfile) publish(page *webkitPage) error {
+	p.mu.Lock()
+	disposed := p.disposed
+	if !disposed {
+		p.pages[page] = struct{}{}
+	}
+	p.mu.Unlock()
+	if disposed {
+		page.Close()
+		return fmt.Errorf("browser: workspace profile is closed")
+	}
+	return nil
 }
 
 // parkNew parks a new page's view. Parked is MAPPED: the view has a real
@@ -328,11 +388,23 @@ func (p *webkitProfile) parkNew(page *webkitPage) {
 	webkitParkView(page.view)
 }
 
-func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) {
+// registerDownload keeps download under handle, unless the profile was
+// disposed, and reports whether it did.
+func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.disposed {
+		return false
+	}
 	p.downloads[handle] = download
-	p.mu.Unlock()
 	webkitDownloadOwners.Store(handle, p)
+	return true
+}
+
+func (p *webkitProfile) isDisposed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.disposed
 }
 
 func (p *webkitProfile) releaseDownload(handle string) {
@@ -346,17 +418,26 @@ func (p *webkitProfile) releaseDownload(handle string) {
 	}
 }
 
-func (p *webkitProfile) CancelDownload(id string) error {
+// heldDownload answers the download registered under id, nil once it is
+// released.
+func (p *webkitProfile) heldDownload(id string) unsafe.Pointer {
 	p.mu.Lock()
-	download := p.downloads[id]
-	p.mu.Unlock()
-	if download == nil {
+	defer p.mu.Unlock()
+	return p.downloads[id]
+}
+
+// CancelDownload looks the download up on the GTK thread, where a released
+// download's reference is dropped after it leaves downloads
+// (releaseDownload), so the one it finds is still held through the cancel.
+func (p *webkitProfile) CancelDownload(id string) error {
+	found, ran := webkitCancelDownload(func() unsafe.Pointer { return p.heldDownload(id) })
+	if !ran {
+		return errGTKUnavailable
+	}
+	if !found {
 		// Released: WebKit finished or failed it, and that report is on its
 		// way (aoWebKitDownloadProgress releases before it reports).
 		return errDownloadEnded
-	}
-	if !webkitCancelDownload(download) {
-		return errGTKUnavailable
 	}
 	return nil
 }

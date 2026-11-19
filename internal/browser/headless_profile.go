@@ -58,13 +58,15 @@ func (p *headlessProfile) closeBrowser(b *launchedBrowser) error {
 
 func (p *headlessProfile) Handle() string { return p.handle }
 
-func (p *headlessProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
+func (p *headlessProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
 	browserCtx, err := p.ensureBrowser()
 	if err != nil {
 		return nil, err
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx)
-	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
+	setup, release := p.engine.beginAttach(ctx)
+	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
+	release()
 	if err != nil {
 		return nil, err
 	}
@@ -78,13 +80,15 @@ func (p *headlessProfile) NewPage(_ context.Context, hooks pageHooks) (pageDrive
 // AttachPage adopts a page Chromium opened by itself: a popup, reported by
 // its target events and already bound to this profile. Unlike the launcher-hosted
 // engine, this one CAN report popups, because CDP surfaces every target.
-func (p *headlessProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
+func (p *headlessProfile) AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error) {
 	browserCtx, ok := p.browser()
 	if !ok {
 		return nil, errors.New("browser: the profile's browser is no longer running")
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(handle)))
-	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
+	setup, release := p.engine.beginAttach(ctx)
+	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
+	release()
 	if err != nil {
 		return nil, err
 	}

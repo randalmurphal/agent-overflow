@@ -47,7 +47,21 @@ type cdpPage struct {
 	metricsSent bool
 }
 
-func startCDPPage(controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks) (pageDriver, error) {
+// startCDPPage attaches chromedp to the page of pageCtx and installs its
+// handlers. setup bounds the attach: its end cancels the page until the
+// driver is returned, so a browser that leaves a command of the attach
+// unanswered fails the page rather than holding its caller.
+func startCDPPage(setup, controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks) (pageDriver, error) {
+	stop := context.AfterFunc(setup, pageCancel)
+	driver, err := attachCDPPage(controller, pageCtx, pageCancel, hooks)
+	if !stop() {
+		// The setup ended first, and its cancel ended the page.
+		return nil, fmt.Errorf("browser: attach the page: %w", context.Cause(setup))
+	}
+	return driver, err
+}
+
+func attachCDPPage(controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks) (pageDriver, error) {
 	if err := chromedp.Do(pageCtx); err != nil {
 		pageCancel()
 		// A dead controller is the usual reason a target never attaches, and
@@ -65,6 +79,50 @@ func startCDPPage(controller, pageCtx context.Context, pageCancel context.Cancel
 		return nil, err
 	}
 	return p, nil
+}
+
+// cdpPageSetups is the page attaches under way on one CDP engine (the
+// setup of startCDPPage). Each is bounded, and the engine's Interrupt ends
+// them all, so a shutdown never waits behind a browser that stopped
+// answering a page's attach.
+type cdpPageSetups struct {
+	mu      sync.Mutex
+	next    uint64
+	cancels map[uint64]context.CancelFunc
+}
+
+// begin answers the setup context of one attach, ctx bounded by timeout and
+// ended by interrupt, and its release, which the caller calls once the
+// attach returned.
+func (s *cdpPageSetups) begin(ctx context.Context, timeout time.Duration) (context.Context, func()) {
+	setup, cancel := context.WithTimeout(ctx, timeout)
+	s.mu.Lock()
+	if s.cancels == nil {
+		s.cancels = make(map[uint64]context.CancelFunc)
+	}
+	s.next++
+	id := s.next
+	s.cancels[id] = cancel
+	s.mu.Unlock()
+	return setup, func() {
+		s.mu.Lock()
+		delete(s.cancels, id)
+		s.mu.Unlock()
+		cancel()
+	}
+}
+
+// interrupt ends every attach under way.
+func (s *cdpPageSetups) interrupt() {
+	s.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.cancels))
+	for _, cancel := range s.cancels {
+		cancels = append(cancels, cancel)
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 // dialCDPBrowser connects the browser-level CDP session on browserCtx
@@ -294,12 +352,12 @@ func (p *cdpPage) installHandlers() error {
 	// The main frame's id is the target's.
 	onTargetEvent(ctx, page.FrameStartedLoading, logf, func(event page.EventFrameStartedLoading) {
 		if string(event.FrameID) == p.handle {
-			p.reportLoading(p.loads.started())
+			p.reportLoading(p.loads.started(time.Now()))
 		}
 	})
 	onTargetEvent(ctx, page.FrameStoppedLoading, logf, func(event page.EventFrameStoppedLoading) {
 		if string(event.FrameID) == p.handle {
-			p.reportLoading(p.loads.stopped())
+			p.reportLoading(p.loads.stopped(time.Now()))
 		}
 	})
 	// chromedp.Console is the one ordered join of several event methods that

@@ -57,6 +57,9 @@ const (
 	// about a tenth of a second; one that takes this long is wedged, and it
 	// is killed.
 	chromiumCloseTimeout = 5 * time.Second
+	// headlessAttachTimeout bounds one page's attach to its target: the
+	// attach, its domains and its frame tree (startCDPPage).
+	headlessAttachTimeout = 30 * time.Second
 )
 
 // HeadlessChromiumOptions selects this engine. It is an explicit POSITIVE
@@ -83,6 +86,10 @@ type headlessEngine struct {
 	logf   func(string, ...any)
 	// closeTimeout is chromiumCloseTimeout, shorter in a unit test.
 	closeTimeout time.Duration
+	// attachTimeout bounds a page's attach; zero is headlessAttachTimeout.
+	attachTimeout time.Duration
+	// setups are the page attaches under way, which Interrupt ends.
+	setups cdpPageSetups
 
 	// tempRoot is where an ephemeral profile's directory is created and
 	// the only directory Start sweeps. Empty in a unit test's engine,
@@ -161,6 +168,17 @@ func (e *headlessEngine) Interrupt() {
 	for _, p := range e.liveProfiles() {
 		p.interrupt()
 	}
+	e.setups.interrupt()
+}
+
+// beginAttach answers the setup context of one page's attach
+// (cdpPageSetups.begin).
+func (e *headlessEngine) beginAttach(ctx context.Context) (context.Context, func()) {
+	timeout := e.attachTimeout
+	if timeout <= 0 {
+		timeout = headlessAttachTimeout
+	}
+	return e.setups.begin(ctx, timeout)
 }
 
 // Stop disposes every profile, which is what kills every process: this

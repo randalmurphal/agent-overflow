@@ -74,6 +74,9 @@ type hostedDownload struct {
 	// known to the Manager, to cancel or to ask about. gone is set as it
 	// leaves running (ended, refused, or its page or the engine went).
 	admitted, gone bool
+	// canceled is a cancel the Manager made while it admitted the download,
+	// its row already listed: it goes to the launcher once admitted is set.
+	canceled bool
 	// apply is held while one snapshot is applied, across the Manager's
 	// callbacks, so the download's snapshots reach the Manager one at a time.
 	apply sync.Mutex
@@ -129,7 +132,7 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			return
 		}
 		_, live := e.targetByPage[pageID]
-		if _, pending := e.popups[pageID]; !live && !pending {
+		if popup := e.popups[pageID]; !live && (popup == nil || popup.downloadsEnded) {
 			// No page of the Manager's started it, or that page is leaving;
 			// the launcher cancels a closed page's downloads itself.
 			e.mu.Unlock()
@@ -188,7 +191,14 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		}
 		e.mu.Lock()
 		known.admitted = true
+		canceled := known.canceled
 		e.mu.Unlock()
+		if canceled {
+			// No caller waits on this cancel any more.
+			if err := e.sendDownloadCancel(pageID, report.ID); err != nil {
+				e.logf("%v", err)
+			}
+		}
 	}
 	known.applied = report.Seq
 	progress := downloadProgress{ID: report.ID, Received: float64(report.Received), Total: float64(report.Total), State: downloadInProgress}
@@ -229,20 +239,29 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 
 // cancelDownload asks the launcher to cancel a running download; its answer
 // settles it. One the engine no longer tracks has ended, and its terminal
-// report is out.
+// report is out. The Manager lists a download's row before its admission
+// answers, so a cancel can come while it is in flight: it is kept, and sent
+// as the admission ends (downloadReport).
 func (e *hostedEngine) cancelDownload(id string) error {
 	e.mu.Lock()
 	known := e.downloads.running[id]
-	page, admitted := "", false
-	if known != nil {
-		page, admitted = known.page, known.admitted
+	if known == nil {
+		e.mu.Unlock()
+		return errDownloadEnded
+	}
+	page, admitted := known.page, known.admitted
+	if !admitted {
+		known.canceled = true
 	}
 	e.mu.Unlock()
 	if !admitted {
-		// A download whose admission is in flight is not the Manager's yet,
-		// so its cancel cannot come from there.
-		return errDownloadEnded
+		return nil
 	}
+	return e.sendDownloadCancel(page, id)
+}
+
+// sendDownloadCancel sends the launcher the cancel of download id of page.
+func (e *hostedEngine) sendDownloadCancel(page, id string) error {
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCancelDownload, PageID: page, Download: id}) {
 		return fmt.Errorf("browser: the pane host refused to cancel download %s", id)
 	}
@@ -322,9 +341,14 @@ func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
 // Manager never listed, and its downloads still running then end as
 // canceled for why: the launcher cancels a going page's downloads and
 // reports nothing, and only a listed page's leaving settles them in the
-// Manager. Each ends in its apply section.
+// Manager. The popup admits no new download from the hold that takes its
+// running ones, so none starts after them unended. Each ends in its apply
+// section; one whose admission had not begun ends unreported.
 func (e *hostedEngine) joinDownloadReports(pageID, why string) {
 	e.mu.Lock()
+	if popup := e.popups[pageID]; popup != nil && why != "" {
+		popup.downloadsEnded = true
+	}
 	running := make(map[string]*hostedDownload)
 	for id, d := range e.downloads.running {
 		if d.page == pageID {
@@ -335,12 +359,13 @@ func (e *hostedEngine) joinDownloadReports(pageID, why string) {
 	for id, d := range running {
 		d.apply.Lock()
 		e.mu.Lock()
-		end := why != "" && d.admitted && !d.gone
+		end := why != "" && !d.gone
+		report := end && d.admitted
 		if end {
 			e.downloads.noteEnded(pageID, id)
 		}
 		e.mu.Unlock()
-		if end {
+		if report {
 			e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCanceled, Error: why, PageGone: true})
 		}
 		d.apply.Unlock()

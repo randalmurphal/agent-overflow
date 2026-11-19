@@ -191,11 +191,12 @@ type Manager struct {
 	// publishDecided is a test seam: publishPages calls it once it has
 	// decided to push, before the push.
 	publishDecided func()
-	// adopting is each popup whose adoption runs, by handle, unlisted the
-	// newest handles that will not be listed again, and listingChanged,
-	// when set, closes as the next page joins or leaves the tabs or an
-	// adoption ends (listingChangedLocked). Guarded by mu.
-	adopting       map[string]struct{}
+	// adopting is each popup whose adoption runs, by handle, with the page
+	// that reserves its jar once its opener is found (nil before), unlisted
+	// the newest handles that will not be listed again, and
+	// listingChanged, when set, closes as the next page joins or leaves the
+	// tabs or an adoption ends (listingChangedLocked). Guarded by mu.
+	adopting       map[string]*managedPage
 	unlisted       *boundedMap[string, struct{}]
 	listingChanged chan struct{}
 	// parked holds the downloads of popups not listed yet, by popup

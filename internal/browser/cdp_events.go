@@ -208,29 +208,55 @@ func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 // exactly when more starts than stops were handled, in whatever order. Each
 // handled event answers that with the number of events handled, which only
 // grows, and the Manager keeps the answer with the highest number
-// (pageHooks.Loading), so the last answer it keeps is the settled one. A load
-// already running when the page subscribed shows its stop alone, which leaves
-// the count one stop ahead for the page's life: its loads then never read as
-// loading, which shows no spinner rather than one that never stops. Only a
-// page attached mid-load can be in that state (a popup); a created page
-// subscribes before its first navigation. Two counters are all it keeps.
+// (pageHooks.Loading), so the last answer it keeps is the settled one.
+//
+// A load already running when the page subscribed (a popup attached
+// mid-load) shows its stop alone. A stop that leaves more stops than starts
+// is held as unmatched from when it was handled: a start handled within
+// loadReorderWindow of it is its own start handled late, and one handled
+// after belongs to a new load, so the unmatched stops are dropped first.
+// The two readers drift apart by microseconds, the window by a second, so
+// a load the page starts within a second of such a stop reads as idle,
+// and the next one reads right again. Three counters and a time are all it
+// keeps.
 type cdpLoadTracker struct {
 	mu            sync.Mutex
 	starts, stops uint64
+	// handled numbers the answers; dropped stops do not lower it.
+	handled uint64
+	// unmatchedAt is when stops last came to exceed starts.
+	unmatchedAt time.Time
 }
 
-func (t *cdpLoadTracker) started() (bool, uint64) {
+// loadReorderWindow is how long after an unmatched stop a start is taken
+// as that stop's own (cdpLoadTracker).
+const loadReorderWindow = time.Second
+
+func (t *cdpLoadTracker) started(now time.Time) (bool, uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.stops > t.starts && now.Sub(t.unmatchedAt) >= loadReorderWindow {
+		t.stops = t.starts
+	}
 	t.starts++
-	return t.starts > t.stops, t.starts + t.stops
+	return t.answerLocked()
 }
 
-func (t *cdpLoadTracker) stopped() (bool, uint64) {
+func (t *cdpLoadTracker) stopped(now time.Time) (bool, uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.stops <= t.starts {
+		t.unmatchedAt = now
+	}
 	t.stops++
-	return t.starts > t.stops, t.starts + t.stops
+	return t.answerLocked()
+}
+
+// answerLocked is whether the frame is loading and the answer's number.
+// The caller holds t.mu.
+func (t *cdpLoadTracker) answerLocked() (bool, uint64) {
+	t.handled++
+	return t.starts > t.stops, t.handled
 }
 
 // frameTracker is the set of frames a page has reported, which downloads are
@@ -242,7 +268,14 @@ func (t *cdpLoadTracker) stopped() (bool, uint64) {
 // to another process and back is attached twice), so once every event is
 // handled the frame is live exactly when it has more attaches than
 // detaches, in whatever order they were handled. A navigation stands in for
-// the attach of a frame that attached before the page subscribed.
+// the attach of a frame that attached before the page subscribed until an
+// attach is handled. The frame tree read once the page subscribed (seed)
+// counts as that unseen attach for every frame it names, alongside the
+// frame's own attaches handled before or after it, so a frame that was
+// there before the page subscribed and is swapped out and back stays live.
+// A frame attached between the subscriptions and the tree read has its
+// attach counted twice and stays live after it detaches; its id names no
+// other frame, and only the frames of that one round trip are kept so.
 //
 // A live frame is kept until it detaches; the page's own frames bound that.
 // A frame that is not live keeps its counts in gone to absorb its late
@@ -258,11 +291,16 @@ type frameTracker struct {
 type frameEvents struct {
 	attaches, detaches int
 	navigated          bool
+	// seeded says the frame tree named it (frameTracker.seed).
+	seeded bool
 }
 
 func (f frameEvents) live() bool {
 	attaches := f.attaches
-	if attaches == 0 && f.navigated {
+	switch {
+	case f.seeded:
+		attaches++
+	case attaches == 0 && f.navigated:
 		attaches = 1
 	}
 	return attaches > f.detaches
@@ -285,14 +323,13 @@ func (t *frameTracker) detached(id cdp.FrameID) {
 }
 
 // seed records the frames of tree, read after the page subscribed, as
-// navigated: that stands in for an attach no handler saw, and a frame's
-// own attach or detach handled before or after counts as it would.
+// attached before it subscribed (frameTracker).
 func (t *frameTracker) seed(tree *page.FrameTree) {
 	if tree == nil {
 		return
 	}
 	if tree.Frame != nil {
-		t.navigated(tree.Frame.ID)
+		t.record(tree.Frame.ID, func(f *frameEvents) { f.seeded = true })
 	}
 	for _, child := range tree.ChildFrames {
 		t.seed(child)

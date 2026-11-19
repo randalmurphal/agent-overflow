@@ -33,9 +33,11 @@ mode. Product behavior and authority are defined in
   only through the restore path, and any create or restore admitted under
   an older generation must retry, never land in the old jar.
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
-  a pending tab, a closed page leaves the tab set before its engine teardown
-  runs, and both keep counting toward caps and holding the jar's
-  profile until the engine is done. A teardown that runs after its tab left
+  a pending tab, a popup being adopted reserves its page from admission to
+  listing (`adoptPopup`), a closed page leaves the tab set before its engine
+  teardown runs, and each keeps counting toward caps and holding the jar's
+  profile until the engine is done. A native engine lists a page in its
+  profile, where `Dispose` finds it, only once its view is in place. A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab
@@ -113,7 +115,10 @@ with no gesture is a popup there as on WebView2. On the hosted engine a
 popup is the launcher's report (`hosted_popups.go`), attached only on its
 opener's connection, within the attach timeout, and canceled by its close;
 until the Manager lists its tab, the engine holds its crash and close and
-delivers them at the listing (`adoptedPage`). The CDP engines answer the
+delivers them at the listing (`adoptedPage`). The WebKit engines do the
+same (`pageEnds`): a popup view's close and crash handlers are installed
+at its creation, and until its adoption it names itself by its popup
+number. The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per
 request, so a popup's requests before its adoption have its opener chain's
 authority, the launcher's popup report counting as an opener edge on the
@@ -122,6 +127,9 @@ once with what a page with no workspace's authority may open (`jarAllows`);
 only one that needs an owner's authority waits up to `requestOwnerWait`
 for it, then is refused (`awaitRequestOwner`). A CDP page seeds its frames
 from its frame tree at attach and installs no interception of its own.
+Every CDP page attach, a created page's or a popup's, is bounded by the
+engine's attach timeout, ends with its caller's cancel, and ends at the
+engine's `Interrupt` (`startCDPPage`).
 Each CDP connection keeps one bounded record of its targets
 (`cdp_targets.go`), which goes with the connection.
 
@@ -186,8 +194,9 @@ page's `downloadMu`, ends its admission of new ones. The hosted engine's
 downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 which it applies one at a time per download, held across the Manager's
 callbacks, and only when newer than the last applied; an answer never
-creates a row, and a download is the Manager's to cancel or ask about only
-once admitted. A hosted page ends at the launcher's close, which follows
+creates a row, and a download is asked about only once admitted; a cancel
+made while its admission is in flight is kept and sent as it is admitted.
+A hosted page ends at the launcher's close, which follows
 its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot, so a
 lost report never leaves a row running; headless Chromium's arrive over

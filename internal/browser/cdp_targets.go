@@ -23,7 +23,8 @@ const maxKnownTargets = 4 * orderSlack
 // kept). A created or an info change for a gone target is dropped, so a
 // target destroyed before its creation is handled leaves nothing behind.
 // A gone popup keeps its opener edge, for a download start Chromium sends
-// after the destroy was handled (downloadOwners).
+// after the destroy was handled (downloadOwners), also when its creation is
+// handled after its destroy.
 //
 // known and openers hold live targets, and a target whose destroy was
 // handled before its creation once its tombstone left gone; both are
@@ -85,7 +86,10 @@ func newCDPTargets(next func() uint64) *cdpTargets {
 func (t *cdpTargets) created(info *target.Info, then func(newest *target.Info, held bool, order uint64)) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, gone := t.gone.get(info.TargetID); gone {
+	if opener, gone := t.gone.get(info.TargetID); gone {
+		if opener == "" && info.Type == "page" && info.OpenerID != "" {
+			t.gone.put(info.TargetID, info.OpenerID)
+		}
 		return false
 	}
 	t.known.put(info.TargetID, struct{}{})

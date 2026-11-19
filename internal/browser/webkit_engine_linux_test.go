@@ -171,7 +171,7 @@ func TestWebKitDownloadsNameTheirPopup(t *testing.T) {
 		t.Errorf("a held popup's download started as %+v, want %+v", got, want)
 	}
 	// Taken for adoption: the number still names it.
-	engine.takePopup(handle)
+	engine.takePopup(handle, true)
 	if got := profile.downloadStart(nil, n); got.Popup != handle || got.Profile != "profile-1" {
 		t.Errorf("a popup being adopted's download started as %+v", got)
 	}

@@ -11,7 +11,11 @@ import (
 //
 // A popup opened by a popup still being adopted waits for that adoption
 // (awaitOpener), and what the popup downloads before its fate is listed at
-// its end (finishAdoption).
+// its end (finishAdoption). From the hold that admits it to its listing,
+// the popup's page reserves its jar's profile, as a page being created
+// does (scope.creating), and counts against every cap, so a close of its
+// opener cannot dispose the profile it is attached in and a burst of
+// popups cannot pass the caps before any of them is listed.
 func (m *Manager) adoptPopup(popup enginePopup) {
 	if !m.startAdoption(popup.Handle) {
 		log.Printf("browser: popup %s reported twice", popup.Handle)
@@ -40,9 +44,17 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	p := newManagedPage(opener.access)
 	p.jarGen, p.authority = opener.jarGen, opener.authority
-	m.mu.Unlock()
-
 	p.info = PageInfo{ID: p.id, URL: truncateUTF8(popup.URL, maxBrowserURLBytes), Title: truncateUTF8(popup.Title, maxBrowserTitleBytes)}
+	scope.creating[p] = struct{}{}
+	m.adopting[popup.Handle] = p
+	m.mu.Unlock()
+	reserved := true
+	defer func() {
+		if reserved {
+			m.endPopupReservation(scope, p, popup.Handle)
+		}
+	}()
+
 	p.touch()
 	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p))
 	if err != nil {
@@ -50,7 +62,13 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		m.engine.DiscardPage(popup.Handle)
 		return
 	}
+	// Under m.mu: the jar's policy resolves a request to the reserved page
+	// (jarAllows) while it loads, before it is listed.
+	m.mu.Lock()
 	p.attach(driver)
+	held, hasHeld := m.takeHeldInfoLocked(popup.Handle)
+	m.mu.Unlock()
+	m.applyHeldInfo(p, held, hasHeld)
 	if err := m.applyViewport(p); err != nil {
 		log.Printf("browser: size popup %s: %v", popup.Handle, err)
 		driver.Close()
@@ -68,13 +86,17 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	// The opener may have closed meanwhile, with its thread's other pages. A
 	// jar switch is one such close: it moves every live page of the thread
 	// to closing in the hold that advances the generation, so a live opener
-	// is always in its thread's current jar and the popup is too.
-	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil || m.popupRefusedLocked(scope, p) {
+	// is always in its thread's current jar and the popup is too. The caps
+	// were taken at admission by the reservation the listing ends.
+	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil {
 		m.mu.Unlock()
 		m.parkMu.Unlock()
 		driver.Close()
 		return
 	}
+	delete(scope.creating, p)
+	m.adopting[popup.Handle] = nil
+	reserved = false
 	m.listPageLocked(scope, p)
 	listed = p
 	// A report made while the popup was adopted joins the listing, whose
@@ -95,6 +117,25 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	if m.pageAdopted != nil {
 		m.pageAdopted()
+	}
+}
+
+// endPopupReservation ends the reservation of a popup's page that will not
+// be listed, its engine page already closed or discarded, and disposes the
+// jar's profile if that was the last thing holding it.
+func (m *Manager) endPopupReservation(scope *jarScope, p *managedPage, handle string) {
+	m.mu.Lock()
+	delete(scope.creating, p)
+	if m.adopting[handle] == p {
+		m.adopting[handle] = nil
+	}
+	release := m.releaseScopeLocked(scope)
+	m.mu.Unlock()
+	if !release {
+		return
+	}
+	if err := m.disposeScope(context.Background(), scope); err != nil {
+		m.reportTeardown(p.owner, p.id, err)
 	}
 }
 
