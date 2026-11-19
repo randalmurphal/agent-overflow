@@ -512,11 +512,17 @@ type downloadStart struct {
 }
 
 // downloadAdmission is the Manager's answer to a download's start
-// (engineEvents.DownloadStarted). Only downloadAdmitted lets it continue;
-// the engine cancels any other at once. downloadUnowned is a frame no
-// listed page owns and no popup names: headless Chromium alone, which
-// can learn a popup's frame after its download starts, offers such a
-// start again (headless_downloads.go).
+// (engineEvents.DownloadStarted). Only downloadAdmitted lets it continue.
+// downloadRefused is a known owner's refusal (its page left, its
+// workspace is full, a bound), which is final. downloadUnowned is a start
+// whose owner is not known yet: a frame no listed page owns and no popup
+// names, or a popup's whose opener chain gives it no open jar, workspace
+// or listed tab yet (parkDownload). Nobody refused it, and an engine never
+// treats it as admitted: headless Chromium, which can learn a popup's
+// frame or its opener's listing after the download starts, offers such a
+// start again for a bounded time and then cancels it and removes its file
+// (headless_downloads.go); every other engine cancels it at once, as a
+// refusal.
 type downloadAdmission int
 
 const (

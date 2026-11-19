@@ -37,10 +37,12 @@ import (
 // download the popup starts after it goes the same way at once. The tab
 // and its downloads are listed in one m.parkMu hold, which a page's close
 // also takes (removeClosedPage), so a close never takes the tab before the
-// downloads, with their newest progress, are in it. A download no listed
-// page takes, or its workspace refuses, is refused: its engine cancels it
-// and the file AO keeps for it (staged or an artifact) goes; WebView2's
-// finished file stays in the Downloads folder, where it saved it itself.
+// downloads, with their newest progress, are in it. A download whose
+// workspace or a bound refuses it is refused, and one no listed page, open
+// jar or workspace can own yet is unowned (parkDownload): either way its
+// engine ends it (downloadAdmission), the file AO keeps for it (staged or
+// an artifact) goes, and nothing is parked for it; WebView2's finished
+// file stays in the Downloads folder, where it saved it itself.
 // On an engine whose downloads are AO's, a parked download holds what a
 // listed one does from its start: maxDownloadBytes of its workspace's
 // allowance, the workspace of the nearest page that opened it, and of the
@@ -204,38 +206,35 @@ func (m *Manager) listedPageLocked(handle string) *managedPage {
 }
 
 // parkDownload keeps a download of a popup not listed yet, or lists it at
-// once when the popup's fate is known, and answers false past the bounds
-// or when no listed page takes it.
-func (m *Manager) parkDownload(event downloadStart) bool {
+// once when the popup's fate is known (admitTo answers then). Nobody has
+// refused a download whose owner is not known yet, which it answers
+// downloadUnowned: the popup's fate names no listed page, or, on an engine
+// whose downloads are AO's, its jar is not open or no page of its opener
+// chain gives it a workspace. It answers downloadRefused past the bounds
+// and when the workspace has no room for it. A download it does not admit
+// leaves nothing parked.
+func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
 	if fate, known := m.fates().get(event.Popup); known {
 		fate.openers = mergeOpeners(fate.openers, event.Openers)
 		target := m.fateTarget(event.Popup, fate)
-		return target != nil && m.admitTo(target, event, nil)
-	}
-	if m.parked == nil {
-		m.parked = make(map[string]*parkedPopup)
-		m.parkedIDs = make(map[string]string)
+		if target == nil {
+			return downloadUnowned
+		}
+		return m.admitTo(target, event, nil)
 	}
 	popup := m.parked[event.Popup]
-	if popup == nil {
-		if len(m.parked) >= maxParkedPopups {
-			return false
-		}
-		popup = &parkedPopup{}
-		handle := event.Popup
-		timeout := popupParkTimeout
-		if m.parkTimeout > 0 {
-			timeout = m.parkTimeout
-		}
-		popup.timer = time.AfterFunc(timeout, func() { m.resolveParked(handle, nil) })
-		m.parked[handle] = popup
+	var openers []string
+	switch {
+	case popup == nil && len(m.parked) >= maxParkedPopups:
+		return downloadRefused
+	case popup != nil && len(popup.downloads) >= maxParkedDownloads:
+		return downloadRefused
+	case popup != nil:
+		openers = popup.openers
 	}
-	if len(popup.downloads) >= maxParkedDownloads {
-		return false
-	}
-	openers := mergeOpeners(popup.openers, event.Openers)
+	openers = mergeOpeners(openers, event.Openers)
 	m.mu.Lock()
 	d := &parkedDownload{start: event, scope: m.profileScopeLocked(event.Profile)}
 	authority := m.openerAuthorityLocked(append([]string{event.Popup}, openers...))
@@ -243,19 +242,39 @@ func (m *Manager) parkDownload(event downloadStart) bool {
 	if m.downloadsToArtifacts() {
 		// Its workspace's allowance and the artifact quota, as a listed
 		// download's, before the engine writes a byte of it.
-		if d.scope == nil {
-			return false
+		if d.scope == nil || authority == nil {
+			return downloadUnowned
 		}
 		reservation, err := m.reserveDownload(authority)
 		if err != nil {
-			return false
+			return downloadRefused
 		}
 		d.reservation = reservation
+	}
+	if popup == nil {
+		popup = m.parkPopupLocked(event.Popup)
 	}
 	popup.openers = openers
 	popup.downloads = append(popup.downloads, d)
 	m.parkedIDs[event.ID] = event.Popup
-	return true
+	return downloadAdmitted
+}
+
+// parkPopupLocked starts holding downloads for popup handle until its fate,
+// or popupParkTimeout. The caller holds m.parkMu.
+func (m *Manager) parkPopupLocked(handle string) *parkedPopup {
+	if m.parked == nil {
+		m.parked = make(map[string]*parkedPopup)
+		m.parkedIDs = make(map[string]string)
+	}
+	timeout := popupParkTimeout
+	if m.parkTimeout > 0 {
+		timeout = m.parkTimeout
+	}
+	popup := &parkedPopup{}
+	popup.timer = time.AfterFunc(timeout, func() { m.resolveParked(handle, nil) })
+	m.parked[handle] = popup
+	return popup
 }
 
 // parkProgressLocked keeps the newest progress of a parked download, and
@@ -346,9 +365,15 @@ func (m *Manager) resolveParkedLocked(handle string, p *managedPage, openers ...
 	}
 	target := m.fateTarget(handle, fate)
 	for _, d := range popup.downloads {
-		// Its listing takes its reservation over (admitTo).
-		if target == nil || !m.admitTo(target, d.start, d) {
+		if target == nil {
 			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
+			m.refuseParked(d)
+			continue
+		}
+		// Its listing takes its reservation over (admitTo), which only a
+		// tab that left meanwhile refuses.
+		if m.admitTo(target, d.start, d) != downloadAdmitted {
+			log.Printf("browser: download %s of popup %s is listed in no tab: its tab closed as it was listed", d.start.ID, handle)
 			m.refuseParked(d)
 			continue
 		}

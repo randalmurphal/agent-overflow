@@ -35,24 +35,20 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 	p, _ := m.pageForFrame(event.Frame)
 	switch {
 	case p != nil:
-		return admission(m.admitTo(p, event, nil))
+		return m.admitTo(p, event, nil)
 	case event.Popup != "":
 		// A popup not listed yet: its fate lists it (popup_adoption.go).
-		return admission(m.parkDownload(event))
+		return m.parkDownload(event)
 	}
 	return downloadUnowned
 }
 
-func admission(admitted bool) downloadAdmission {
-	if admitted {
-		return downloadAdmitted
-	}
-	return downloadRefused
-}
-
-// admitTo lists a starting download in p. A parked download's listing
-// (parked set) takes its reservation over.
-func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDownload) bool {
+// admitTo lists a starting download in p, its owner. It answers
+// downloadRefused when p left (downloadsEnded) or, on an engine whose
+// downloads are AO's, p's workspace refuses the reservation, which the
+// row then says. A parked download's listing (parked set) takes its
+// reservation over.
+func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDownload) downloadAdmission {
 	authority := p.authority
 	source := p.cachedInfo().URL
 	if source == "" || source == "about:blank" {
@@ -65,7 +61,7 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDow
 	if p.downloadsEnded {
 		// The page left after it was looked up; nothing would settle this.
 		p.downloadMu.Unlock()
-		return false
+		return downloadRefused
 	}
 	p.downloadSeq++
 	entry := DownloadInfo{
@@ -91,7 +87,10 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDow
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
 	m.publishDownloads(note)
-	return entry.State != downloadStateCanceled
+	if entry.State == downloadStateCanceled {
+		return downloadRefused
+	}
+	return downloadAdmitted
 }
 
 // errNoWorkspace refuses a download AO would keep that no workspace owns.

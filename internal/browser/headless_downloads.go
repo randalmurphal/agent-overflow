@@ -26,12 +26,14 @@ import (
 // nothing is kept. The start and the forward of held progress happen under
 // one lock with the progress handler, so no progress slips between them.
 //
-// A start whose frame no listed page owns and that names no popup
-// (downloadUnowned) may be a popup's whose creation is not handled yet, or
-// a frame of a page the Manager has not listed yet: with a lifetime, it is
-// offered again, on a goroutine of its own, until it is answered as other
-// than unowned, for up to ownerWait, and refused after. Its progress is
-// held meanwhile. Any other refusal is cancelled at once.
+// A start the Manager answers downloadUnowned may be a popup's whose
+// creation is not handled yet, a frame of a page the Manager has not
+// listed yet, or a popup's whose opener is not listed yet: with a
+// lifetime, it is offered again, on a goroutine of its own, until it is
+// answered as other than unowned, for up to ownerWait or until the
+// connection ends, and refused after, which cancels it and removes its
+// file (cancelRefusedDownload). Its progress is held meanwhile. Any other
+// refusal is cancelled at once.
 //
 // Both states are bounded by orderSlack; the oldest GUID is dropped first.
 // A dropped started download's later progress is held as if early, which
@@ -114,7 +116,9 @@ func (t *downloadTracker) beganLocked(guid string, admitted bool) {
 
 // awaitOwner offers an unowned start again until the Manager answers it
 // otherwise, once popup names its frame or a listed page owns it, and
-// refuses it when ownerWait passes first or the connection ends.
+// refuses it when ownerWait passes first or the connection ends: its
+// cancel removes the file Chromium wrote for it either way, since no row
+// will ever own that file.
 func (t *downloadTracker) awaitOwner(event cdpbrowser.EventDownloadWillBegin) {
 	wait := t.ownerWait
 	if wait <= 0 {
@@ -133,6 +137,9 @@ func (t *downloadTracker) awaitOwner(event cdpbrowser.EventDownloadWillBegin) {
 			t.mu.Unlock()
 			return
 		case <-t.lifetime.Done():
+			t.mu.Lock()
+			t.beganLocked(event.GUID, false)
+			t.mu.Unlock()
 			return
 		}
 		t.mu.Lock()
