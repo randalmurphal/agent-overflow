@@ -151,11 +151,14 @@ The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes
 only the title path; never observe a document's whole subtree from it.
 
-Outside `cdporder`, chromedp delivers each event method on its own
-subscription, so handlers run in no fixed order across methods. State fed
-there by several methods, such as a connection's targets, must settle the
-same way under any interleaving and bound what it keeps for unmatched
-events (`cdp_targets.go`).
+A headless browser's target and download events come from one input in
+the browser's order too (`cdporder.WatchBrowser`, `headlessProfile.subscribe`),
+so a popup's creation is handled before its crash, its destroy and its
+downloads. Outside `cdporder`, chromedp delivers each event method on its
+own subscription, so handlers run in no fixed order across methods. State
+fed there by several methods, such as the hosted connection's targets,
+must settle the same way under any interleaving and bound what it keeps
+for unmatched events (`cdp_targets.go`).
 
 All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
 `wkDo`. Do not call either while holding a lock reachable from a native
@@ -227,7 +230,9 @@ its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a
 lost report or cancel never leaves a row running; headless Chromium's arrive over
-CDP (`headless_downloads.go`). Preserve the denial of sensitive website
+CDP (`headless_downloads.go`), which keeps each download from its start to
+its end, and the file of one the Manager did not take until its end
+arrives or the browser has stopped, then removes it. Preserve the denial of sensitive website
 permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and

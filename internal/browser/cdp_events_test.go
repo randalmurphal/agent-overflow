@@ -180,85 +180,6 @@ func (r *downloadRecorder) outcome(id string) (string, float64) {
 	return r.state[id], r.bytes[id]
 }
 
-// A download reaches the Manager started and then settled, whichever of
-// downloadWillBegin and downloadProgress is handled first. A small download
-// can be complete before its start is handled.
-func TestDownloadTrackerReportsInAnyOrder(t *testing.T) {
-	const guid = "G1"
-	willBegin := func(tr *downloadTracker) eventStep {
-		return eventStep{"willBegin", func() {
-			tr.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: guid, FrameID: "F1", URL: "https://example.test/a.zip", SuggestedFilename: "a.zip"})
-		}}
-	}
-	progress := func(tr *downloadTracker, state cdpbrowser.DownloadProgressState, received float64) eventStep {
-		return eventStep{fmt.Sprintf("%s %.0f", state, received), func() {
-			tr.progress(cdpbrowser.EventDownloadProgress{GUID: guid, ReceivedBytes: received, State: state})
-		}}
-	}
-	cases := []struct {
-		name       string
-		allow      bool
-		progress   func(tr *downloadTracker) []eventStep
-		wantState  string
-		wantBytes  float64
-		wantCancel int
-		wantKept   int
-	}{
-		{"a completed download", true, func(tr *downloadTracker) []eventStep {
-			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateInProgress, 10), progress(tr, cdpbrowser.DownloadProgressStateCompleted, 20)}
-		}, downloadCompleted, 20, 0, 0},
-		{"a canceled download", true, func(tr *downloadTracker) []eventStep {
-			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateInProgress, 10), progress(tr, cdpbrowser.DownloadProgressStateCanceled, 10)}
-		}, downloadCanceled, 10, 0, 0},
-		{"a download still running", true, func(tr *downloadTracker) []eventStep {
-			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateInProgress, 10), progress(tr, cdpbrowser.DownloadProgressStateInProgress, 15)}
-		}, downloadInProgress, 15, 0, 1},
-		{"a refused download", false, func(tr *downloadTracker) []eventStep {
-			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateCompleted, 20)}
-		}, "refused", 0, 1, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			streams := func(tr *downloadTracker) [][]eventStep {
-				return [][]eventStep{{willBegin(tr)}, tc.progress(tr)}
-			}
-			count := len(interleavings(streams(newDownloadTracker(engineEvents{}, nil))))
-			for i := range count {
-				recorder := newDownloadRecorder(tc.allow)
-				canceled := make(chan struct{}, 4)
-				tr := newDownloadTracker(recorder.events(), func(id string) {
-					recorder.cancel(id)
-					canceled <- struct{}{}
-				})
-				order := interleavings(streams(tr))[i]
-				for _, step := range order {
-					step.run()
-				}
-				for range tc.wantCancel {
-					select {
-					case <-canceled:
-					case <-time.After(5 * time.Second):
-						t.Fatalf("handled as [%s]: the refused download was never cancelled", stepNames(order))
-					}
-				}
-				state, bytes := recorder.outcome(guid)
-				if state != tc.wantState || bytes != tc.wantBytes {
-					t.Errorf("handled as [%s]: the Manager saw %q with %.0f bytes, want %q with %.0f", stepNames(order), state, bytes, tc.wantState, tc.wantBytes)
-				}
-				recorder.mu.Lock()
-				got := recorder.canceled[guid]
-				recorder.mu.Unlock()
-				if got != tc.wantCancel {
-					t.Errorf("handled as [%s]: cancelled %d times, want %d", stepNames(order), got, tc.wantCancel)
-				}
-				if got := tr.retained(); got != tc.wantKept {
-					t.Errorf("handled as [%s]: kept %d downloads, want %d", stepNames(order), got, tc.wantKept)
-				}
-			}
-		})
-	}
-}
-
 // popupRecorder stands in for the Manager's page events. Popups and closes
 // are reported on goroutines of their own, so it is synchronized and waited
 // on.
@@ -538,9 +459,6 @@ func TestHeadlessDownloadWaitsForItsFramesPage(t *testing.T) {
 	}
 }
 
-// An info change held until its page's targetCreated is numbered before any
-// info change handled after that created, even when the newer one is
-// delivered while the held one still is: the Manager, which keeps the
 // A download a popup starts reaches the Manager naming the popup and its
 // opener, whichever of downloadWillBegin, targetCreated and
 // targetDestroyed is handled first, and is never cancelled for the order.
@@ -622,6 +540,9 @@ func TestHeadlessPopupDownloadSettlesInAnyOrder(t *testing.T) {
 	})
 }
 
+// An info change held until its page's targetCreated is numbered before any
+// info change handled after that created, even when the newer one is
+// delivered while the held one still is: the Manager, which keeps the
 // highest order, ends with the newest info.
 func TestHeadlessTargetsNumberHeldInfoFirst(t *testing.T) {
 	const page = "T-own"
@@ -685,18 +606,6 @@ func TestNetworkTrackerBoundsUnmatchedEnds(t *testing.T) {
 	tr.ended("live", now)
 	if !tr.idle(now.Add(time.Hour), 0) {
 		t.Fatal("the newest early end no longer settles its late start")
-	}
-}
-
-// Progress for downloads that never begin is kept only up to orderSlack.
-func TestDownloadTrackerBoundsUnmatchedProgress(t *testing.T) {
-	recorder := newDownloadRecorder(true)
-	tr := newDownloadTracker(recorder.events(), recorder.cancel)
-	for i := range orderSlack + 50 {
-		tr.progress(cdpbrowser.EventDownloadProgress{GUID: fmt.Sprintf("G%d", i), State: cdpbrowser.DownloadProgressStateCompleted})
-	}
-	if got := tr.retained(); got != orderSlack {
-		t.Fatalf("kept %d downloads, want %d", got, orderSlack)
 	}
 }
 

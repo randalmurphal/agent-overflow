@@ -22,20 +22,28 @@ type launchedBrowser struct {
 	cancel      context.CancelFunc
 	allocCancel context.CancelFunc
 	process     *chromiumProcess
+	// downloads is the connection's download tracker, whose claims on
+	// files no page took close settles once the process has stopped.
+	downloads *downloadTracker
 }
 
 // close ends the connection, then kills the browser and returns once nothing
-// it started can still write. An error means some of it may still be
-// running.
+// it started can still write, then removes the files of the downloads no
+// page took. An error means some of it may still be running; the files go
+// anyway, since a writer still running writes to an unlinked file.
 func (b *launchedBrowser) close() error {
 	b.cancel()
 	b.allocCancel()
-	if b.process == nil {
+	var err error
+	if b.process != nil {
 		// A browser without a process of its own, as the lifetime tests
 		// build, has nothing to stop.
-		return nil
+		err = b.process.stop()
 	}
-	return b.process.stop()
+	if b.downloads != nil {
+		b.downloads.stop()
+	}
+	return err
 }
 
 func (p *headlessProfile) browser() (context.Context, bool) {
@@ -100,13 +108,17 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
 		p.engine.logf("browser: chromedp: "+format, args...)
 	}))
-	launched := &launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: allocCancel, process: process}
+	targets := newHeadlessTargets(p)
+	launched := &launchedBrowser{
+		ctx: browserCtx, cancel: browserCancel, allocCancel: allocCancel, process: process,
+		downloads: p.downloadTracker(browserCtx, targets),
+	}
 
 	// chromedp bounds the handshake with nothing but the dial's own
 	// timeout, so the wait is ours: a Chromium that starts and never
 	// answers is an error, never a hang.
 	connected := make(chan error, 1)
-	go func() { connected <- p.connect(browserCtx) }()
+	go func() { connected <- p.connect(browserCtx, targets, launched.downloads) }()
 	select {
 	case err = <-connected:
 	case <-launchCtx.Done():
@@ -120,8 +132,8 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 
 // connect dials the launched browser with this profile's event handlers,
 // pins its downloads and installs the workspace's navigation policy.
-func (p *headlessProfile) connect(browserCtx context.Context) error {
-	if err := dialCDPBrowser(browserCtx, func() error { return p.subscribe(browserCtx) }); err != nil {
+func (p *headlessProfile) connect(browserCtx context.Context, targets *headlessTargets, downloads *downloadTracker) error {
+	if err := dialCDPBrowser(browserCtx, func() error { return p.subscribe(browserCtx, targets, downloads) }); err != nil {
 		return p.launchFailed(err)
 	}
 	// Downloads land ONLY in the AO artifact directory, never the operator's

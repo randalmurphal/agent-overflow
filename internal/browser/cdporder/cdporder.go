@@ -155,6 +155,36 @@ func Watch(ctx context.Context, methods []string, handle func(Message)) error {
 	return nil
 }
 
+// WatchBrowser is Watch for the browser-level session of the browser ctx
+// is connected to (its first subscription or call connects it), whose
+// target events and download events need the browser's order as much as a
+// page's frame events do.
+func WatchBrowser(ctx context.Context, methods []string, handle func(Message)) error {
+	c := chromedp.FromContext(ctx)
+	if c == nil {
+		return chromedp.ErrInvalidContext
+	}
+	if c.Browser == nil {
+		return ErrNotConnected
+	}
+	a, ok := c.Allocator.(*Allocator)
+	if !ok {
+		return ErrUnordered
+	}
+	tap := a.tap(c.Browser)
+	if tap == nil {
+		return ErrUnordered
+	}
+	// The browser-level session sends its messages with no session id.
+	stop := tap.Watch("", methods, handle)
+	context.AfterFunc(ctx, stop)
+	return nil
+}
+
+// ErrNotConnected is WatchBrowser's answer for a context whose browser is
+// not connected yet.
+var ErrNotConnected = errors.New("cdporder: the context's browser is not connected yet")
+
 // Tap is a chromedp.Transport that copies the watched messages it reads to
 // their sessions' queues before chromedp sees them.
 type Tap struct {

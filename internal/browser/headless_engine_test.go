@@ -953,7 +953,8 @@ func downloadWillBegin(guid, frame string) map[string]any {
 
 // A download the Manager refuses outright, over quota, is cancelled by the
 // engine at once, with no wait for a popup to own it, and the file Chromium
-// finished for it before the cancel goes; one it keeps is left running.
+// finished for it before the cancel goes at its end; one it keeps is left
+// running.
 func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
@@ -999,9 +1000,95 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	if got := browserCallParams[cancel](t, browser.calls(), "Browser.cancelDownload"); len(got) != 1 || got[0].GUID != "G-refused" {
 		t.Fatalf("cancelled %+v, want only G-refused", got)
 	}
+	browser.send(downloadProgressEvent("G-refused", "completed"))
 	eventually(t, "the refused download's file to go", func() bool {
 		_, err := os.Stat(finished)
 		return errors.Is(err, fs.ErrNotExist)
+	})
+}
+
+// downloadProgressEvent is the event Chromium sends as download guid
+// advances or ends in state.
+func downloadProgressEvent(guid, state string) map[string]any {
+	return map[string]any{"method": "Browser.downloadProgress", "params": map[string]any{
+		"guid": guid, "totalBytes": 5, "receivedBytes": 5, "state": state,
+	}}
+}
+
+// The file Chromium writes for a download no page took outlives neither the
+// download nor its browser: a refused download whose cancel Chromium never
+// answers, and whose file appears only as it completes, loses the file at
+// its completion; one still waiting for its frame's owner when the profile
+// is disposed loses it once the browser has stopped.
+func TestHeadlessProfileRemovesTheFilesOfDownloadsNoPageTook(t *testing.T) {
+	t.Run("a refused download whose cancel is unanswered", func(t *testing.T) {
+		browser := writeFakeChromium(t, "chromium")
+		engine := newTestHeadlessEngine(t, browser.path)
+		engine.closeTimeout = 50 * time.Millisecond
+		engine.events.DownloadStarted = func(downloadStart) downloadAdmission { return downloadRefused }
+		engine.events.DownloadProgress = func(downloadProgress) {}
+		profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+		if _, err := profile.ensureBrowser(); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if err := os.MkdirAll(profile.downloadDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		browser.stallBrowserCalls.Store(true)
+		browser.send(downloadWillBegin("G-late", "F-1"))
+		eventually(t, "the refused download's cancel to be sent", func() bool {
+			return slices.Contains(browser.methods(), "Browser.cancelDownload")
+		})
+		// The cancel goes unanswered past its bound; Chromium finishes the
+		// file meanwhile and reports the completion.
+		time.Sleep(4 * engine.closeTimeout)
+		finished := filepath.Join(profile.downloadDir, "G-late")
+		if err := os.WriteFile(finished, []byte("whole"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		browser.send(downloadProgressEvent("G-late", "completed"))
+		eventually(t, "the refused download's file to go at its completion", func() bool {
+			_, err := os.Stat(finished)
+			return errors.Is(err, fs.ErrNotExist)
+		})
+	})
+	t.Run("an unowned download when the profile is disposed", func(t *testing.T) {
+		browser := writeFakeChromium(t, "chromium")
+		engine := newTestHeadlessEngine(t, browser.path)
+		offered := make(chan struct{}, 1)
+		engine.events.DownloadStarted = func(downloadStart) downloadAdmission {
+			select {
+			case offered <- struct{}{}:
+			default:
+			}
+			return downloadUnowned
+		}
+		engine.events.DownloadProgress = func(downloadProgress) {}
+		engine.ownerWait = time.Hour
+		profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+		if _, err := profile.ensureBrowser(); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if err := os.MkdirAll(profile.downloadDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		finished := filepath.Join(profile.downloadDir, "G-unowned")
+		if err := os.WriteFile(finished, []byte("whole"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		browser.send(downloadWillBegin("G-unowned", "F-elsewhere"))
+		select {
+		case <-offered:
+		case <-time.After(headlessTestDeadline):
+			t.Fatal("the download was never offered")
+		}
+		browser.send(downloadProgressEvent("G-unowned", "completed"))
+		if err := profile.Dispose(context.Background()); err != nil {
+			t.Fatalf("dispose: %v", err)
+		}
+		if _, err := os.Stat(finished); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the unowned download's file is still there after the profile was disposed: %v", err)
+		}
 	})
 }
 
@@ -1146,6 +1233,53 @@ func TestHeadlessProfileNamesAGonePopupADownloadBeganIn(t *testing.T) {
 		}
 	case <-time.After(headlessTestDeadline):
 		t.Fatal("the download was never reported")
+	}
+}
+
+// A popup's crash reaches the Manager after its report, in the order
+// Chromium sent them, however long the handling of an earlier target event
+// takes: the crash is never handled before the creation that binds the
+// popup, and so never dropped as a target nobody owns.
+func TestHeadlessReportsAPopupsCrashAfterItsCreation(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var heard []string
+	engine.events.PopupOpened = func(popup enginePopup) {
+		if popup.Handle == "P-slow" {
+			<-release
+		}
+		mu.Lock()
+		heard = append(heard, "opened "+popup.Handle)
+		mu.Unlock()
+	}
+	engine.events.PageCrashed = func(handle, reason string) {
+		mu.Lock()
+		heard = append(heard, "crashed "+handle)
+		mu.Unlock()
+	}
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	browser.send(popupCreated("P-slow", "T-1"))
+	browser.send(popupCreated("P-1", "T-1"))
+	browser.send(map[string]any{"method": "Target.targetCrashed", "params": map[string]any{"targetId": "P-1", "status": "crashed", "errorCode": 1}})
+	// Long enough for a crash handled on a consumer of its own to have
+	// been handled and dropped.
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	want := []string{"opened P-slow", "opened P-1", "crashed P-1"}
+	eventually(t, "the popups and the crash to be reported", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(heard) == len(want)
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(heard, want) {
+		t.Fatalf("the Manager heard %q, want %q", heard, want)
 	}
 }
 

@@ -3,13 +3,18 @@ package browser
 import (
 	"context"
 
+	"agent-overflow/internal/browser/cdporder"
+
+	"github.com/chromedp/cdproto"
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
-// A headless profile's browser-level target events: popups, crashes and
-// closes, each reported to the Manager as it is handled (engineEvents).
+// A headless profile's browser-level events: popups, crashes and closes,
+// each reported to the Manager as it is handled (engineEvents), and
+// downloads.
 
 // subscribe connects the CDP events of the browser connected on browserCtx
 // to the seam, and answers the requests the workspace's navigation policy
@@ -19,15 +24,18 @@ import (
 // re-key onto, unlike the launcher-hosted engine), so the engine's whole
 // bookkeeping is which profile owns which target. A target this engine never
 // bound is dropped rather than reported under a handle nobody owns.
-func (p *headlessProfile) subscribe(browserCtx context.Context) error {
+//
+// The target and download events are read from one input in the order
+// Chromium sent them (cdporder.WatchBrowser): a target's creation, which
+// binds a popup, is handled before its crash or destroy, and a popup's
+// creation before a download it starts, so neither is reported before the
+// page it names exists.
+func (p *headlessProfile) subscribe(browserCtx context.Context, targets *headlessTargets, downloads *downloadTracker) error {
 	logf := p.engine.logf
-	targets := newHeadlessTargets(p)
-	downloads := p.downloadTracker(browserCtx, targets)
-	if err := downloads.subscribe(browserCtx, logf); err != nil {
-		return err
-	}
-	session := chromedp.FromContext(browserCtx).Browser
+	// The first subscription connects the browser, which the ordered
+	// input needs.
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
+		session := chromedp.FromContext(browserCtx).Browser
 		// A page's main frame id is its target id, so a top-level request
 		// names its page, and a popup's is followed by the openers whose
 		// authority it has until adoption gives it its own. The Manager
@@ -40,30 +48,74 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	if err := onBrowserEvent(browserCtx, target.TargetCreated, logf, targets.created); err != nil {
-		return err
+	return cdporder.WatchBrowser(browserCtx, browserMethods, func(m cdporder.Message) {
+		p.browserEvent(m, targets, downloads)
+	})
+}
+
+// browserMethods are what a headless browser's ordered input carries
+// (browserEvent).
+var browserMethods = []string{
+	string(cdproto.EventTargetTargetCreated), string(cdproto.EventTargetTargetInfoChanged),
+	string(cdproto.EventTargetTargetCrashed), string(cdproto.EventTargetTargetDestroyed),
+	string(cdproto.EventBrowserDownloadWillBegin), string(cdproto.EventBrowserDownloadProgress),
+}
+
+// browserEvent hands one message of the browser's ordered input to its
+// handler, on the input's goroutine. One that does not decode is logged.
+func (p *headlessProfile) browserEvent(m cdporder.Message, targets *headlessTargets, downloads *downloadTracker) {
+	decode := func(out any) bool {
+		if err := m.Decode(out); err != nil {
+			p.engine.logf("browser: profile %s: %s: %v", p.handle, m.Method, err)
+			return false
+		}
+		return true
 	}
-	if err := onBrowserEvent(browserCtx, target.TargetInfoChanged, logf, targets.infoChanged); err != nil {
-		return err
+	switch cdproto.MethodType(m.Method) {
+	case cdproto.EventTargetTargetCreated:
+		var event target.EventTargetCreated
+		if decode(&event) {
+			targets.created(event)
+		}
+	case cdproto.EventTargetTargetInfoChanged:
+		var event target.EventTargetInfoChanged
+		if decode(&event) {
+			targets.infoChanged(event)
+		}
+	case cdproto.EventTargetTargetCrashed:
+		var event target.EventTargetCrashed
+		if decode(&event) {
+			p.targetCrashed(event)
+		}
+	case cdproto.EventTargetTargetDestroyed:
+		var event target.EventTargetDestroyed
+		if decode(&event) {
+			targets.destroyed(event)
+		}
+	case cdproto.EventBrowserDownloadWillBegin:
+		var event cdpbrowser.EventDownloadWillBegin
+		if decode(&event) {
+			downloads.willBegin(event)
+		}
+	case cdproto.EventBrowserDownloadProgress:
+		var event cdpbrowser.EventDownloadProgress
+		if decode(&event) {
+			downloads.progress(event)
+		}
 	}
-	if err := onBrowserEvent(browserCtx, target.TargetCrashed, logf, p.targetCrashed); err != nil {
-		return err
-	}
-	return onBrowserEvent(browserCtx, target.TargetDestroyed, logf, targets.destroyed)
 }
 
 // downloadTracker is the tracker of the downloads of the browser connected
 // on browserCtx. A popup's main frame id is its target id, which is its
-// handle. Chromium sends a popup's creation before the navigation that
-// downloads, but the start can be handled first: a start whose frame no
-// page owns and that names no popup is offered again until the record
-// names the frame's opener or a listed page owns the frame (a popup's
-// subframe, once the popup is listed), for up to ownerWait, and refused
-// after (awaitOwner). One whose
-// popup's destroy the record handled first still names it
-// (downloadOwners).
+// handle, and its creation is handled before a download it starts. A start
+// whose frame no page owns and that names no popup (a popup's subframe
+// before the popup is listed) is offered again until a listed page owns
+// the frame, for up to ownerWait, and refused after (awaitOwner). One
+// whose popup's destroy was handled first still names it (downloadOwners).
+// A refused download's file in the profile's download directory is
+// removed once its end arrives or the browser has stopped.
 func (p *headlessProfile) downloadTracker(browserCtx context.Context, targets *headlessTargets) *downloadTracker {
-	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.cancelRefusedDownload, p.engine.logf))
+	downloads := newDownloadTracker(p.engine.events, refusedDownloadCanceler(p.CancelDownload, p.engine.logf), p.removeDownloadFile)
 	downloads.popup = func(frame string) downloadStart {
 		owners := targets.downloadOwners(frame)
 		if len(owners) < 2 {
