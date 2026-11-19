@@ -26,10 +26,11 @@ import (
 // one lock with the progress handler, so no progress slips between them.
 //
 // A start whose frame no listed page owns and that names no popup
-// (downloadUnowned) may be a popup's whose creation is not handled yet:
-// with a lifetime, it is offered again, on a goroutine of its own, once
-// popup names its frame, for up to ownerWait, and refused after. Its
-// progress is held meanwhile. Any other refusal is cancelled at once.
+// (downloadUnowned) may be a popup's whose creation is not handled yet, or
+// a frame of a page the Manager has not listed yet: with a lifetime, it is
+// offered again, on a goroutine of its own, until it is answered as other
+// than unowned, for up to ownerWait, and refused after. Its progress is
+// held meanwhile. Any other refusal is cancelled at once.
 //
 // Both states are bounded by orderSlack; the oldest GUID is dropped first.
 // A dropped started download's later progress is held as if early, which
@@ -77,7 +78,7 @@ func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
 	defer t.mu.Unlock()
 	admission := t.events.DownloadStarted(t.startLocked(event))
 	if admission == downloadUnowned && t.lifetime != nil {
-		go t.awaitPopup(event)
+		go t.awaitOwner(event)
 		return
 	}
 	t.beganLocked(event.GUID, admission == downloadAdmitted)
@@ -110,9 +111,10 @@ func (t *downloadTracker) beganLocked(guid string, admitted bool) {
 	t.downloads.put(guid, downloadLifecycle{started: true})
 }
 
-// awaitPopup offers a refused start again once popup names its frame, and
+// awaitOwner offers an unowned start again until the Manager answers it
+// otherwise, once popup names its frame or a listed page owns it, and
 // refuses it when ownerWait passes first or the connection ends.
-func (t *downloadTracker) awaitPopup(event cdpbrowser.EventDownloadWillBegin) {
+func (t *downloadTracker) awaitOwner(event cdpbrowser.EventDownloadWillBegin) {
 	wait := t.ownerWait
 	if wait <= 0 {
 		wait = requestOwnerWait
@@ -133,8 +135,8 @@ func (t *downloadTracker) awaitPopup(event cdpbrowser.EventDownloadWillBegin) {
 			return
 		}
 		t.mu.Lock()
-		if start := t.startLocked(event); start.Popup != "" {
-			t.beganLocked(event.GUID, t.events.DownloadStarted(start) == downloadAdmitted)
+		if admission := t.events.DownloadStarted(t.startLocked(event)); admission != downloadUnowned {
+			t.beganLocked(event.GUID, admission == downloadAdmitted)
 			t.mu.Unlock()
 			return
 		}

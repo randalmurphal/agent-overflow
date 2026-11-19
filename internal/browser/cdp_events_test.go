@@ -531,6 +531,52 @@ func TestHeadlessTargetsSettleInAnyOrder(t *testing.T) {
 	})
 }
 
+// A download in a frame no page owns yet and no popup names, a popup's
+// subframe before the popup is listed, is admitted once a listed page owns
+// the frame within ownerWait, and never cancelled for the wait.
+func TestHeadlessDownloadWaitsForItsFramesPage(t *testing.T) {
+	const guid, frame = "G1", "F-popup-iframe"
+	var mu sync.Mutex
+	listed, admitted, canceled := false, 0, 0
+	p := newTargetTestProfile(t, engineEvents{
+		DownloadStarted: func(start downloadStart) downloadAdmission {
+			mu.Lock()
+			defer mu.Unlock()
+			if start.Frame != frame || !listed {
+				return downloadUnowned
+			}
+			admitted++
+			return downloadAdmitted
+		},
+		DownloadProgress: func(downloadProgress) {},
+	})
+	p.engine.ownerWait = 5 * time.Second
+	d := p.downloadTracker(t.Context(), newHeadlessTargets(p))
+	d.cancel = func(string) {
+		mu.Lock()
+		canceled++
+		mu.Unlock()
+	}
+	d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: guid, FrameID: frame})
+	time.Sleep(20 * requestOwnerPoll)
+	mu.Lock()
+	listed = true
+	mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		gotAdmitted, gotCanceled := admitted, canceled
+		mu.Unlock()
+		if gotAdmitted > 0 || gotCanceled > 0 || time.Now().After(deadline) {
+			if gotAdmitted != 1 || gotCanceled != 0 {
+				t.Fatalf("admitted %d times, cancelled %d times; want admitted once and never cancelled", gotAdmitted, gotCanceled)
+			}
+			return
+		}
+		time.Sleep(requestOwnerPoll)
+	}
+}
+
 // An info change held until its page's targetCreated is numbered before any
 // info change handled after that created, even when the newer one is
 // delivered while the held one still is: the Manager, which keeps the
