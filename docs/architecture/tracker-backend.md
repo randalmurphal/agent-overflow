@@ -52,16 +52,19 @@ a field that is empty for the other.
 - **A status belongs to one group**: backlog, to do, in progress, done or
   canceled. The provider maps the tracker's category or state type; project
   setup may override a status's group or leave it out of counts.
-- **Order is one text key per issue that sorts bytewise within a board.**
-  Jira's rank field value is used as it is. Linear's sort order is a
-  float; its provider encodes it so that text order equals numeric order.
-  The pane and the mirror compare keys and never interpret them.
-- **An estimate is a number with the board's unit**: points, time or none.
-  A board with no estimate counts issues.
-- **An issue as a card** carries what a board or backlog row draws: type,
-  key, title, status, assignee, priority, estimate, labels, parent, the
-  sprints it is or was in, order key, created, updated and resolved times
-  and when it entered its status. **An issue's detail** adds the
+- **Order and estimate belong to an issue on a board, not to the issue.**
+  A Jira board names its own rank field and its own estimate field, so one
+  issue on two boards can have two of each. The order is one text key that
+  sorts bytewise within the board: Jira's rank value as it is, and Linear's
+  float sort order encoded so that text order equals numeric order. The
+  pane and the mirror compare keys and never interpret them. The estimate
+  is a number with the board's unit: points, time or none. A board with no
+  estimate counts issues.
+- **An issue as a card** carries what a board or backlog row draws and
+  does not depend on the board: type, key, title, status, assignee,
+  priority, labels, parent, the sprints it is or was in, created, updated
+  and resolved times and when it entered its status. A board row is a card
+  with that board's order key and estimate. **An issue's detail** adds the
   description as Markdown, every other field with its metadata, comments,
   links, attachments, history, the moves its workflow allows and worklogs.
   Detail is read when a ticket is opened.
@@ -77,15 +80,16 @@ a field that is empty for the other.
 ### Provider
 
 A `Provider` is one connection's tracker. Its calls take neutral inputs and
-return neutral values or the transport's typed errors unchanged, so
-`trackerapi.WriteNotApplied` still decides whether a write happened.
+return neutral values. A read fails with the transport's typed errors
+unchanged.
 
 - Identity: who the credential belongs to.
 - Structure: projects, boards, one board's columns, statuses, estimate and
   sprints.
-- Sync: a page of the issues of a scope changed since a cursor, oldest
-  first; the IDs currently in a scope; status, sprint, estimate and
-  assignee changes for a set of issues.
+- Sync: a page of a scope's changed issues from a cursor; the complete set
+  of IDs in a scope, or a statement that the set is incomplete; cards for a
+  set of IDs; status, sprint, estimate and assignee changes for a set of
+  issues.
 - Detail: one issue's detail; pages of its comments.
 - Writes: create, edit fields, move to a status (with the fields the move
   requires), rank before or after a neighbor, move to a sprint or the
@@ -94,8 +98,20 @@ return neutral values or the transport's typed errors unchanged, so
 - People and values: users who can be assigned, and the allowed values of a
   field.
 
-A write returns the issue as the tracker holds it afterwards when the
-tracker's answer carries it, and otherwise the IDs to read again.
+**A sync cursor is the provider's own bytes.** `trackerapp` stores what a
+page returns and hands it back; it never builds or adjusts one. A page's
+cursor is the place to resume after that page, including inside a run of
+issues that share an update time, and overlap for a tracker's time
+resolution is the provider's business at the end of a walk.
+
+**A write returns an outcome for each thing it touched, not one error.** One
+operation can be several requests: a create followed by an image upload, a
+rank of 120 issues in three groups. Each issue or step is applied, refused,
+unknown or not sent, and the result names every issue the operation may
+have changed and any it created. `trackerapi.WriteNotApplied` judges one
+request inside a provider; it never judges an operation. A write does not
+return a card: an answer that carries an issue carries only the fields the
+tracker chose to send.
 
 ## Connections and key files
 
@@ -125,6 +141,13 @@ rows in `tracker_connections`.
 - Removing a connection deletes its row, its key file and, through the
   schema, its mirror. Turning a connection off keeps the row and the key
   file, stops its pumps, closes its clients and clears its mirror.
+- Work in flight cannot write into a mirror that was cleared. A mirror is
+  one `tracker_cache_roots` row with its own ID, and every mirror row
+  references that ID. Each read or write captures the root ID when it
+  starts and every row it stores names it. Clearing deletes the root, and
+  turning the connection on again makes a new one, so a result that
+  arrives late names a root that no longer exists and the schema refuses
+  it. No caller checks a flag.
 
 ## Tables
 
@@ -138,18 +161,24 @@ Durable records, restored and kept like other application records:
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, verification and expiry times. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project and connection; both cascade. |
-| `project_tracker_setup` | One JSON document per app project: status groups, pinned fields and sections, card marks, Start work defaults, draft settings, what agents may do. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
+
+The rest of a project's tracker setup (status groups, pinned fields and
+sections, card marks, Start work defaults, draft settings, what agents may
+do) is one file in the app's directory for that project
+(`project.ConfigDir`), beside its workflow profile. `trackerapp` reads and
+replaces it whole. Anything a query needs from it is copied into the
+mirror, never the other way.
 
 The mirror is every table named `tracker_cache_*`. The name is the
 classification:
 
 - Each row belongs, directly or through its parents, to a
-  `tracker_cache_roots` row keyed by connection, with `ON DELETE CASCADE`
-  all the way down. Clearing a connection's mirror deletes its rows in
-  bounded batches and then its root. A test walks the schema and fails for
-  a `tracker_cache_*` table that does not reach the root this way, and for
-  any other table that references one.
+  `tracker_cache_roots` row, with `ON DELETE CASCADE` all the way down. A
+  connection has at most one root. Clearing a connection's mirror deletes
+  its rows in bounded batches and then its root. A test walks the schema
+  and fails for a `tracker_cache_*` table that does not reach the root this
+  way, and for any other table that references one.
 - A restore recreates these tables empty, as it does the search tables.
 - Their shape changes by dropping and recreating them in a migration; the
   next sync fills them. They are never altered in place.
@@ -158,17 +187,17 @@ classification:
 
 | Table | Holds |
 |---|---|
-| `tracker_cache_roots` | One row per connection with a mirror. |
+| `tracker_cache_roots` | One row per mirror, with its own ID and its connection. |
 | `tracker_cache_projects`, `_users`, `_statuses` | Structure shared by a connection's boards. |
 | `tracker_cache_boards` | A board's name, kind, estimate and columns. |
 | `tracker_cache_sprints` | Sprints of a board: state and dates. |
-| `tracker_cache_issues` | Cards, one per issue per connection. |
-| `tracker_cache_board_issues` | Which issues are on which board. |
+| `tracker_cache_issues` | Cards, one per issue per mirror. |
+| `tracker_cache_board_issues` | Which issues are on which board, each with that board's order key and estimate. |
 | `tracker_cache_issue_sprints` | Which sprints an issue is or was in. |
 | `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. |
 | `tracker_cache_issue_details` | The detail of recently opened issues, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. |
-| `tracker_cache_sync` | Per scope: cursor, last read, last sweep, last failure. |
+| `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. |
 
 Metric queries read versioned views over these tables, never the tables.
 
@@ -181,7 +210,10 @@ For each board some app project lists:
   history window (180 days);
 - its issues that are not done, those done inside the window, and those in
   a kept sprint;
-- the changes of those issues inside the window.
+- every status, sprint, estimate and assignee change of those issues, back
+  to their creation. What a sprint started with is rebuilt from changes
+  made before it started, so changes are not cut at the window; they go
+  when their issue does.
 
 Plus, per connection: the issues linked to threads, and the detail of the
 200 most recently opened issues. An issue outside every listed board is
@@ -193,20 +225,21 @@ it.
 Sync is polling, per scope. A scope is one board, or a connection's linked
 issues.
 
-- **Delta.** Each tick reads the issues changed since the scope's cursor,
-  oldest first, and upserts them in batches inside bounded transactions. A
-  row is replaced only by a version with a later update time. The cursor
-  advances to the last update time read, less an overlap that covers the
-  tracker's time resolution.
-- **Sweep.** A change that takes an issue out of a scope (a move to
-  another project, a filter that no longer matches, a deletion) does not
-  appear in a delta. A sweep lists the IDs in scope and removes the
-  memberships no longer there. It runs when a board is subscribed, on a
-  slower cadence, and on request.
+- **Delta.** Each tick reads pages of the scope's changed issues from its
+  cursor. One transaction stores a page's rows and the cursor that page
+  returned, so a restart resumes exactly after the last stored page. A
+  card is never replaced by a version with an earlier update time.
+- **Reconcile.** A delta sees only issues whose update time moved. An
+  issue enters or leaves a scope without that: a board's filter is edited,
+  an issue is deleted, a sprint is reassigned. A reconcile lists the IDs in
+  scope, reads the cards of those the mirror lacks, and removes the
+  memberships no longer listed. A listing the provider reports as
+  incomplete adds and never removes. It runs when a board is subscribed, on
+  a slower cadence, and on request.
 - **Structure** is read when a board is subscribed, on a slower cadence,
   and whenever a delta names a status, sprint or user the mirror lacks.
-- **History** is read for issues whose update time moved, limited to the
-  four change kinds.
+- **History** is read whole for an issue new to the mirror and again for
+  an issue whose update time moved, limited to the four change kinds.
 - **Cadence.** A board polls every 45 seconds while a client shows it and
   not at all otherwise. A failed read retries on the doubling delay the
   pull request pumps use; a rate limit waits for its release. Linked issues
@@ -230,13 +263,15 @@ there, so there is one implementation.
 
 Every edit goes to the tracker first.
 
-1. `trackerapp` calls the provider.
-2. Applied: the returned issue, or a fresh read of the IDs the write
-   named, is upserted, and subscribers get the change.
-3. Refused (`trackerapi.WriteNotApplied`): the caller gets the tracker's
-   refusal. Nothing changes locally.
-4. Unknown: the caller is told the outcome is unknown, and the issues the
-   write named are read again at once.
+1. `trackerapp` calls the provider and gets the operation's outcomes.
+2. Every issue whose outcome is applied or unknown, and every issue the
+   operation created, is read again through the same card read sync uses,
+   and stored. There is one way a card is built.
+3. The caller gets the outcomes as they are: all applied, all refused with
+   the tracker's reason, or a mix that names which issues and steps
+   landed. An operation that created an issue and then failed a later step
+   reports the issue as created.
+4. Subscribers get the stored changes.
 
 The mirror is never written ahead of the tracker. A client that shows a
 drop before the answer owns that preview and replaces it with the event.
@@ -266,8 +301,14 @@ remaining cards are read by page.
 ## Agent tools
 
 The tools read, search, create, edit, move, comment, move between sprints
-and list and add worklogs, through `trackerapp`. Three mechanisms they need
-do not exist for any built-in tool server yet and are part of that work:
+and list and add worklogs, through `trackerapp`. A worklog an agent adds is
+an entry in a time draft. Only the posting path in `trackerapp` sends time
+to a tracker, and it sends a draft's day when the user approved it or when
+the project's setting posts days with no open question. No tool reaches
+the provider's worklog write.
+
+Three mechanisms the tools need do not exist for any built-in tool server
+yet and are part of that work:
 
 - **Read-only threads.** The handler refuses a writing tool when the
   calling thread's live runtime mode is read-only. The provider cannot
@@ -284,9 +325,11 @@ guide and each read tool say so.
 ## Tests
 
 - `tracker` providers are tested against the clients' fake servers.
-- `trackerapp` is tested with fake providers: sync cursors and overlap,
-  sweeps, cascades, the write outcomes, pump lifetimes, repeated subscribe
-  and release, turning a connection off during a read.
+- `trackerapp` is tested with fake providers: a restart between pages of
+  issues that share an update time, reconciles that add and remove, an
+  incomplete listing, cascades, each mix of write outcomes, pump lifetimes,
+  repeated subscribe and release, and a connection turned off, and off then
+  on, while a read and a write are in flight.
 - `trackerfake` answers the requests the clients send and fails a request
   it does not handle. The clients' own tests run against it as well, so
   the fake and the clients cannot drift apart.
