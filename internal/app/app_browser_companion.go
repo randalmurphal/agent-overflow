@@ -144,7 +144,7 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	flight := a.beginCompanionAction(threadID)
+	flight, ctx := a.beginCompanionAction(ctx, threadID)
 	access, err := a.browserAccess(threadID)
 	if err == nil {
 		err = a.browser.manager.RevealPageFile(ctx, access, pageID)
@@ -178,7 +178,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
 	}
-	flight := a.beginCompanionAction(threadID)
+	flight, ctx := a.beginCompanionAction(ctx, threadID)
 	access, err := a.browserAccess(threadID)
 	if err != nil {
 		return appbrowser.CompanionEvent{}, errors.Join(err, a.endCompanionAction(flight))
@@ -260,8 +260,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}
-	// An action on a thread with no page opens one, and a failed action can
-	// still have opened it.
+	// A failed action can still have opened a page, which a delete meanwhile
+	// leaves to this end.
 	if endErr := a.endCompanionAction(flight); endErr != nil {
 		return appbrowser.CompanionEvent{}, endErr
 	}
@@ -299,7 +299,7 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if a.browser.manager == nil {
 		return appbrowser.FindState{}, fmt.Errorf("browser manager unavailable")
 	}
-	flight := a.beginCompanionAction(threadID)
+	flight, ctx := a.beginCompanionAction(ctx, threadID)
 	access, err := a.browserAccess(threadID)
 	if err != nil {
 		return appbrowser.FindState{}, errors.Join(err, a.endCompanionAction(flight))
@@ -327,14 +327,17 @@ type companionAction struct {
 	closes   uint64
 }
 
-// errCompanionThreadClosed answers a companion action whose thread's pages
-// were closed (a delete, an archive, a handoff) while it ran.
+// errCompanionThreadClosed answers a companion action that would open a page
+// after its thread's pages were closed (a delete, an archive, a handoff)
+// while it ran.
 var errCompanionThreadClosed = errors.New("browser: the thread's pages were closed while the action ran")
 
 // beginCompanionAction counts a companion action on the thread from before
-// it reads the thread's row, so a close of the thread's pages that runs
-// before the action reaches the Manager is one the action sees at its end.
-func (a *App) beginCompanionAction(threadID string) companionAction {
+// it reads the thread's row, and answers ctx carrying the action's page
+// admission (appbrowser.WithPageAdmission): the Manager opens no page for
+// the action once a close of the thread's pages (closeThreadBrowserPages)
+// began after it, and that close takes any page admitted before.
+func (a *App) beginCompanionAction(ctx context.Context, threadID string) (companionAction, context.Context) {
 	threadID = strings.TrimSpace(threadID)
 	b := &a.browser
 	b.companionMu.Lock()
@@ -348,28 +351,34 @@ func (a *App) beginCompanionAction(threadID string) companionAction {
 		b.companionFlights[threadID] = flight
 	}
 	flight.running++
-	return companionAction{threadID: threadID, flight: flight, closes: flight.closes}
+	action := companionAction{threadID: threadID, flight: flight, closes: flight.closes}
+	return action, appbrowser.WithPageAdmission(ctx, func() error { return a.companionActionAdmits(action) })
 }
 
-// endCompanionAction ends a companion action. A page it opened or restored
-// after its thread's pages were closed, or after its row went, is closed
-// again: the close that retired the thread already ran.
+// companionActionAdmits answers errCompanionThreadClosed once the thread's
+// pages were closed after the action began.
+func (a *App) companionActionAdmits(action companionAction) error {
+	b := &a.browser
+	b.companionMu.Lock()
+	defer b.companionMu.Unlock()
+	if action.flight.closes != action.closes {
+		return errCompanionThreadClosed
+	}
+	return nil
+}
+
+// endCompanionAction ends a companion action. A page it opened after its
+// row went is closed again (closeBrowserPagesIfThreadDeleted).
 func (a *App) endCompanionAction(action companionAction) error {
 	b := &a.browser
 	b.companionMu.Lock()
 	action.flight.running--
-	retired := action.flight.closes != action.closes
 	if action.flight.running == 0 {
 		delete(b.companionFlights, action.threadID)
 	}
 	b.companionMu.Unlock()
 	// A deleted thread answers its missing row, its pages closed.
-	if err := a.closeBrowserPagesIfThreadDeleted(action.threadID); err != nil || !retired {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return errors.Join(errCompanionThreadClosed, a.browser.manager.CloseThread(ctx, action.threadID))
+	return a.closeBrowserPagesIfThreadDeleted(action.threadID)
 }
 
 // retireCompanionActions marks the companion actions running on the thread

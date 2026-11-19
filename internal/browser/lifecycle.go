@@ -126,6 +126,25 @@ func (m *Manager) goLife(fn func()) bool {
 	return true
 }
 
+type pageAdmissionKey struct{}
+
+// WithPageAdmission returns ctx carrying the caller's own condition for a
+// page it opens: a page creation under ctx runs admit in the m.mu hold that
+// adds its tab and opens nothing when admit fails, answering its error. A
+// CloseThread that runs after admit starts failing closes every tab added
+// before, so a caller whose admit fails once the thread's pages are closed
+// leaves no page behind. admit must not call the Manager.
+func WithPageAdmission(ctx context.Context, admit func() error) context.Context {
+	return context.WithValue(ctx, pageAdmissionKey{}, admit)
+}
+
+func pageAdmissionOf(ctx context.Context) func() error {
+	if admit, ok := ctx.Value(pageAdmissionKey{}).(func() error); ok {
+		return admit
+	}
+	return func() error { return nil }
+}
+
 // createPage creates a page for access's thread. Its tab appears at once,
 // creating, and the call returns once the engine page exists. A tab closed
 // meanwhile answers errClosedWhileCreating. This is an agent's tab, opened
@@ -152,6 +171,10 @@ func (m *Manager) createPageAt(ctx context.Context, access Access, turn *selecti
 	owner := access.ThreadID
 
 	m.mu.Lock()
+	if err := pageAdmissionOf(ctx)(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	if user && !m.commitSelectionLocked(turn) {
 		m.mu.Unlock()
 		return nil, errSelectionPassed

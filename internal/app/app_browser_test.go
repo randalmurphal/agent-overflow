@@ -598,37 +598,35 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 }
 
 // A companion action that began before an archive or a handoff closed the
-// thread's pages closes the page it opens after that close, though the
-// thread's row is still there; an action begun after the close keeps its
-// page.
+// thread's pages opens no page after that close, though the thread's row is
+// still there, and its end leaves alone the tab an action begun after the
+// close opened.
 func TestACompanionActionOverlappingAPageCloseLeavesNoPage(t *testing.T) {
 	t.Parallel()
 	app, manager := newBrowserTestApp(t)
 	thread, access := browserTestThread(t, app, "thread-companion-retired")
 
-	stale := app.beginCompanionAction(thread.ID)
+	stale, staleCtx := app.beginCompanionAction(context.Background(), thread.ID)
 	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
+	later, laterCtx := app.beginCompanionAction(context.Background(), thread.ID)
+	fresh, err := manager.NewCompanionPage(laterCtx, access, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.endCompanionAction(stale); !errors.Is(err, errCompanionThreadClosed) {
-		t.Fatalf("the stale action ended with %v, want errCompanionThreadClosed", err)
+	if _, err := manager.NewCompanionPage(staleCtx, access, ""); !errors.Is(err, errCompanionThreadClosed) {
+		t.Fatalf("the stale action's new tab answered %v, want errCompanionThreadClosed", err)
 	}
-	if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
-		t.Fatalf("the closed thread owns %d browser pages", len(pages))
-	}
-
-	later := app.beginCompanionAction(thread.ID)
-	if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
-		t.Fatal(err)
+	if err := app.endCompanionAction(stale); err != nil {
+		t.Fatalf("the stale action ended with %v", err)
 	}
 	if err := app.endCompanionAction(later); err != nil {
 		t.Fatalf("an action begun after the close ended with %v", err)
 	}
-	if pages := manager.CompanionState(access).Pages; len(pages) != 1 {
-		t.Fatalf("an action begun after the close left %d pages, want its own", len(pages))
+	pages := manager.CompanionState(access).Pages
+	if len(pages) != 1 || pages[0].ID != fresh.ID {
+		t.Fatalf("the thread has tabs %+v, want only the one the later action opened", pages)
 	}
 }
 
