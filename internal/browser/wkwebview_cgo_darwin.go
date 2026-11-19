@@ -853,15 +853,18 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 
 // wkCancelDownload cancels the download lookup answers on the main thread,
 // nil for none. It reports whether lookup found one, and ran false when the
-// main thread could not run it.
+// main thread could not run it, the cancel then withdrawn (runOrWithdraw).
 func wkCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
-	ran = wkDo(func() {
+	canceled := false
+	if !runOrWithdraw(wkDo, func() {
 		if download := lookup(); download != nil {
-			found = true
+			canceled = true
 			C.ao_wkv_download_cancel(download)
 		}
-	})
-	return found, ran
+	}) {
+		return false, false
+	}
+	return canceled, true
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
@@ -877,17 +880,17 @@ func wkReleaseDownload(download unsafe.Pointer) {
 // before the whole file is on disk.
 func wkDownloadProgress(lookup func() unsafe.Pointer) (received, total float64, held, ran bool) {
 	var r, t C.double
-	ran = wkDo(func() {
+	found := false
+	if !runOrWithdraw(wkDo, func() {
 		download := lookup()
 		if download == nil {
 			return
 		}
-		held = true
+		found = true
 		r = C.ao_wkv_download_received(download)
 		t = C.ao_wkv_download_total(download)
-	})
-	if !ran {
+	}) {
 		return 0, 0, false, false
 	}
-	return float64(r), float64(t), held, true
+	return float64(r), float64(t), found, true
 }
