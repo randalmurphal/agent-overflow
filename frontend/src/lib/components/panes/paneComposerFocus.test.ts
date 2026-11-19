@@ -46,7 +46,6 @@ describe('paneComposerFocus', () => {
   it('carries the caret to the composer, else to the pane section, without scrolling', () => {
     const target = mountPaneComposer('right');
     const section = target.parentElement!;
-    section.tabIndex = -1;
     const left = mountPaneComposer('left');
     left.focus();
     expect(isEditingFocused()).toBe(true);
@@ -62,6 +61,25 @@ describe('paneComposerFocus', () => {
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(document.activeElement).toBe(section);
     expect(isEditingFocused()).toBe(false);
+    // Focusable only while it holds this focus: a click never lands on it.
+    left.focus();
+    expect(section.hasAttribute('tabindex')).toBe(false);
+  });
+
+  // The browser starts a keyboard scroll at the focused element, so a pane
+  // with no composer that takes input gets the caret in its scroller.
+  it('carries the caret to the pane\'s primary scroller before its section', () => {
+    const target = mountPaneComposer('right');
+    target.disabled = true;
+    const section = target.parentElement!;
+    const scroller = document.createElement('div');
+    scroller.tabIndex = -1;
+    scroller.setAttribute('data-pane-scroller', '');
+    section.appendChild(scroller);
+    mountPaneComposer('left').focus();
+    carryCaretIntoPane('right');
+    expect(document.activeElement).toBe(scroller);
+    expect(section.hasAttribute('tabindex')).toBe(false);
   });
 
   // A terminal asked for focus mounts a frame later; by then the user may

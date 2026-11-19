@@ -297,6 +297,9 @@ describe('PaneHost', () => {
     ]);
     const rendered = render(PaneHost);
     const section = rendered.getByTestId('side-chat-preparing').closest('section');
+    // A click never focuses a pane section: a keyboard scroll starts where
+    // the browser would start it without one.
+    expect(section).not.toHaveAttribute('tabindex');
     const input = document.createElement('textarea');
     document.body.appendChild(input);
     try {
@@ -306,6 +309,8 @@ describe('PaneHost', () => {
       expect(document.activeElement).toBe(section);
       expect(section).toHaveAttribute('data-pane-id', 'side-chat-source');
       expect(getFocusedPaneId()).toBe('side-chat-source');
+      input.focus();
+      expect(section).not.toHaveAttribute('tabindex');
     } finally {
       input.remove();
     }

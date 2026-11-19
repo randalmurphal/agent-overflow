@@ -157,10 +157,9 @@ function mountComposerForPane(paneId: string): {
   textarea: HTMLTextAreaElement;
   cleanup: () => void;
 } {
-  // PaneHost's section, focusable by script.
+  // PaneHost's section.
   const root = document.createElement('section');
   root.setAttribute('data-pane-id', paneId);
-  root.tabIndex = -1;
   const textarea = document.createElement('textarea');
   textarea.setAttribute('aria-label', 'Message Input');
   root.appendChild(textarea);

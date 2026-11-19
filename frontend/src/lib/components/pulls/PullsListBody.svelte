@@ -176,6 +176,7 @@
   class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle focus:outline-none"
   style:overflow-anchor="none"
   tabindex="-1"
+  data-pane-scroller
   data-testid={testid}
 >
   <!-- Takes no height, so the rows' offsets are the scroller's. -->
