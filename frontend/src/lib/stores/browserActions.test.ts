@@ -13,6 +13,10 @@ import { createPane, focusPane, resetPanesForTest } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { getToasts, resetToastsForTest } from './toast.svelte';
+import { canPresentNativeBrowser, canUseNativeBrowser } from './browserCompanion.svelte';
+import { forgetBackendEntities, forgetThread, noteThread } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -205,6 +209,61 @@ describe('pane.close on a browser companion', () => {
     });
     expect(await browserCompanionAct('thread-browser', { kind: 'close', pageId: 'page-1' }))
       .toEqual({ error: 'page is gone', cause: failure });
+  });
+});
+
+// Two computers claiming one ownership epoch leave the owner unknown, even
+// when the home computer's claim arrived first: the runtime refuses the
+// thread's companion pushes then, and no action goes to the home browser.
+describe('a thread whose ownership two computers claim', () => {
+  const THREAD = 'thread-contested';
+  const contest = (): void => {
+    noteThread(THREAD, 'remote', 4);
+  };
+
+  beforeEach(() => {
+    resetBrowserCompanionForTest();
+    resetToastsForTest();
+    resetCompanionPanesForTest();
+    resetPaneLayoutForTest();
+    resetPanesForTest();
+    installCompanionPanes();
+    stageBackend({ id: 'remote', backendId: 'remote' });
+    noteThread(THREAD, HOME_BACKEND, 4);
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    createPane('main').replaceThread(makeThread({ id: THREAD }));
+  });
+  afterEach(() => {
+    forgetThread(THREAD);
+    forgetBackendEntities('remote');
+    resetStagedBackends();
+    resetBrowserCompanionForTest();
+    resetToastsForTest();
+  });
+
+  it('offers no browser and sends no action, even with the home claim first', async () => {
+    expect(canUseNativeBrowser(THREAD)).toBe(true);
+    contest();
+    expect(canUseNativeBrowser(THREAD)).toBe(false);
+    expect(canPresentNativeBrowser(THREAD)).toBe(false);
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: THREAD, pages: [] })));
+    const failure = await browserCompanionAct(THREAD, { kind: 'reload', pageId: 'page-1' });
+    expect(failure?.error).toContain('Two computers claim this conversation');
+    expect(await openBrowserTab(THREAD, { address: 'https://example.com/' })).not.toBeNull();
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for a header press whose read answers after the claim was contested', async () => {
+    let answer: (state: unknown) => void = () => {};
+    setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: THREAD, pages: [] })));
+    const toggled = toggleBrowserFromHeader(THREAD);
+    await Promise.resolve();
+    contest();
+    answer({ kind: 'state', threadId: THREAD, pages: [], seq: 1 });
+    await toggled;
+    expect(act).not.toHaveBeenCalled();
+    expect(getToasts().map((toast) => toast.message).join('\n')).toContain('Two computers claim this conversation');
   });
 });
 

@@ -559,6 +559,9 @@ so AO's chords have to be taken back at the engine:
   mount, go through `openBrowserCompanion`, which asks
   `canUseNativeBrowser`; a mod-clicked link asks it before minting a
   page, and no layout restore or companion stash reopens a browser pane.
+  It holds only while the thread's owner is the home computer and no
+  other computer claims the same ownership epoch (`resolveThreadBackend`),
+  and a user action asks it again as it is sent, after any wait.
   A thread's pages are presented in one mount, its earliest attached live
   one (`presenterLocked`), until that mount detaches; the presentation,
   the pages' size, and the routed chord and Escape all name it.

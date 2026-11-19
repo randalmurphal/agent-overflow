@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { threadBackend } from '../transport/entityIndex';
+import { resolveThreadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { requireEntityBackend } from '../transport/backends';
 import { isFrontendOnly } from '../transport/runMode';
@@ -101,11 +101,25 @@ function admitState(state: BrowserCompanionEvent): boolean {
  * one question, so nothing offers or opens a pane the source would refuse.
  */
 export function canUseNativeBrowser(threadId: string): boolean {
-  if (!hasScope('host') || !isHostWindow() || isFrontendOnly()) return false;
+  return nativeBrowserRefusal(threadId) === null;
+}
+
+/**
+ * Why this page cannot host the thread's native browser pane, or null when
+ * it can (canUseNativeBrowser). Ownership two computers claim is not the
+ * home backend's (resolveThreadBackend), whichever claim arrived first.
+ * An action asks this again when it is sent, after any wait, so an owner
+ * that moved or became contested meanwhile is refused here.
+ */
+export function nativeBrowserRefusal(threadId: string): Error | null {
+  if (!hasScope('host') || !isHostWindow() || isFrontendOnly()) {
+    return new Error('A native browser pane is unavailable for this conversation on this device.');
+  }
   try {
-    return requireEntityBackend(threadBackend(threadId)) === HOME_BACKEND;
-  } catch {
-    return false;
+    if (requireEntityBackend(resolveThreadBackend(threadId)) === HOME_BACKEND) return null;
+    return new Error("This conversation is on another computer, whose browser this window cannot show.");
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -160,7 +174,8 @@ const store = createEntityStore<BrowserCompanionView, void>({
   backendForKey: () => HOME_BACKEND,
   rawValue: true,
   source: async ({ key, apply, signal }) => {
-    if (!canUseNativeBrowser(key)) throw new Error('A native browser pane is unavailable for this conversation on this device.');
+    const refusal = nativeBrowserRefusal(key);
+    if (refusal) throw refusal;
     const result = await BrowserCompanionPaneAttach(key);
     // An attach superseded while it was in flight (the pane closed, or
     // closed and opened again) owns nothing here: the mount the thread has

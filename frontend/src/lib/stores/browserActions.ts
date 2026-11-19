@@ -4,6 +4,7 @@ import {
   browserCompanionState,
   browserPaneMountId,
   browserPaneOpen,
+  nativeBrowserRefusal,
   noteBrowserActionError,
   observeBrowserCompanion,
   readBrowserCompanionState,
@@ -52,7 +53,20 @@ export async function browserCompanionAct(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number; downloadId?: string },
 ): Promise<BrowserActionFailure | null> {
-  return (await runBrowserAction(threadId, action)).failure;
+  return refuseUnhosted(threadId) ?? (await runBrowserAction(threadId, action)).failure;
+}
+
+/**
+ * The refusal of an action on a browser this page cannot host now
+ * (nativeBrowserRefusal), in the banner and returned; null when it can.
+ * Asked as the action is sent, since one sent after a wait (a state read,
+ * an earlier selection) may find the thread's owner moved or contested.
+ */
+function refuseUnhosted(threadId: string): BrowserActionFailure | null {
+  const refusal = nativeBrowserRefusal(threadId);
+  if (!refusal) return null;
+  noteBrowserActionError(threadId, refusal.message);
+  return { error: refusal.message, cause: refusal };
 }
 
 /** The cookie jars a thread's browser can use (internal/browser/jar.go). */
@@ -162,7 +176,10 @@ export async function openBrowserTab(
   options: { address?: string; focusAddress?: boolean } = {},
 ): Promise<BrowserActionFailure | null> {
   const request = options.focusAddress ? armAddressFocus(threadId) : 0;
-  const { failure, state } = await runBrowserAction(threadId, { kind: 'new', address: options.address });
+  const refused = refuseUnhosted(threadId);
+  const { failure, state } = refused
+    ? { failure: refused, state: null }
+    : await runBrowserAction(threadId, { kind: 'new', address: options.address });
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
