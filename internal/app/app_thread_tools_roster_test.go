@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -319,27 +320,41 @@ func TestTheCatalogOffersOnlyInstalledEnabledProviders(t *testing.T) {
 	}
 }
 
-// A session's spawn shape never waits on the Codex model probe: while the
-// first probe is out, Codex is offered and its profiles are named without
-// the model check; once the probe answers, a profile whose model it lacks
-// is left out and the others stay.
-func TestTheSpawnShapeDoesNotWaitOnTheCodexModelProbe(t *testing.T) {
+// lookupBy marks the context of a Codex model read a test makes, so its
+// lister can tell that read's lookup from one something else started.
+type lookupBy struct{}
+
+// A session's spawn shape reads the Codex model list already known and
+// starts no lookup of its own, cold or expired, so a session's start or
+// handshake never launches Codex. Until a lookup the app makes on purpose
+// answers, Codex is offered and its profiles are named without the model
+// check; after one answers without a profile's model that profile is left
+// out, and it stays out on that last good catalog after it expires and a
+// later lookup fails.
+func TestTheSpawnShapeStartsNoCodexModelLookup(t *testing.T) {
 	t.Parallel()
 	f := newThreadToolsFixture(t)
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
-	started := make(chan struct{}, 4)
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseProbe)
-	var calls atomic.Int32
-	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
-		calls.Add(1)
-		started <- struct{}{}
-		<-release
+	var offset atomic.Int64
+	now := func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	var failing atomic.Bool
+	// Each lookup reports who started it, then blocks until the test asks
+	// for answers, so a shape that waited on one would not return.
+	entered := make(chan string, 8)
+	asked := make(chan struct{})
+	var askOnce sync.Once
+	ask := func() { askOnce.Do(func() { close(asked) }) }
+	t.Cleanup(ask)
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(ctx context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+		by, _ := ctx.Value(lookupBy{}).(string)
+		entered <- by
+		<-asked
+		if failing.Load() {
+			return nil, errors.New("initialize for model/list: context deadline exceeded")
+		}
 		// The shipped catalog has no gpt-6-astra, Astra's model.
 		return provider.CodexModels, nil
-	}, time.Now)
+	}, now)
 	if _, err := f.app.settings.Update(map[string]any{
 		"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"),
 		"codexBinaryPath":  createMockBinary(t, "codex-cli 0.160.0"),
@@ -350,7 +365,7 @@ func TestTheSpawnShapeDoesNotWaitOnTheCodexModelProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shapeNow := func() threadtools.SpawnShape {
+	shapeNow := func(when string) threadtools.SpawnShape {
 		t.Helper()
 		done := make(chan threadtools.SpawnShape, 1)
 		go func() { done <- f.app.threadToolsShape(caller.ID, subThreadPlace{}).Spawn }()
@@ -358,43 +373,66 @@ func TestTheSpawnShapeDoesNotWaitOnTheCodexModelProbe(t *testing.T) {
 		case shape := <-done:
 			return shape
 		case <-time.After(10 * time.Second):
-			releaseProbe()
+			ask()
 			<-done
-			t.Fatal("the spawn shape waited on the Codex model probe")
+			t.Fatalf("%s: the spawn shape waited on a Codex model lookup", when)
 			return threadtools.SpawnShape{}
 		}
 	}
-
-	cold := shapeNow()
-	if !slices.Contains(cold.Providers, string(provider.Codex)) {
-		t.Errorf("while the probe is out the shape offers %v, want codex among them", cold.Providers)
+	// readOnPurpose makes a marked read that does not wait: it starts a
+	// lookup only when none is cached or in flight. The next lookup to start
+	// must be its own, so a shape before it started none.
+	readOnPurpose := func(by string) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.WithValue(t.Context(), lookupBy{}, by))
+		cancel()
+		_, _ = f.app.codexModelsForBinary(ctx, f.app.providerBinaryPath(string(provider.Codex)))
+		select {
+		case got := <-entered:
+			if got != by {
+				t.Fatalf("%s: a Codex model lookup was started by the spawn shape (marked %q), want none before the read on purpose", by, got)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: no Codex model lookup started", by)
+		}
 	}
-	for _, name := range []string{"Luna", "Terra", "Sol", "Astra", "Opus"} {
-		if !slices.Contains(cold.Profiles, name) {
-			t.Errorf("while the probe is out the shape names %v, want %s among them", cold.Profiles, name)
+	requireNamed := func(when string, shape threadtools.SpawnShape, astra bool) {
+		t.Helper()
+		if !slices.Contains(shape.Providers, string(provider.Codex)) {
+			t.Errorf("%s: the shape offers %v, want codex among them", when, shape.Providers)
+		}
+		for _, name := range []string{"Luna", "Terra", "Sol", "Opus"} {
+			if !slices.Contains(shape.Profiles, name) {
+				t.Errorf("%s: the shape names %v, want %s among them", when, shape.Profiles, name)
+			}
+		}
+		if got := slices.Contains(shape.Profiles, "Astra"); got != astra {
+			t.Errorf("%s: the shape names %v; Astra named = %v, want %v", when, shape.Profiles, got, astra)
 		}
 	}
 
-	<-started
-	releaseProbe()
-	// Joining the probe returns once the cache holds its answer.
-	if _, err := f.app.codexModelsForBinary(t.Context(), f.app.providerBinaryPath(string(provider.Codex))); err != nil {
+	requireNamed("cold", shapeNow("cold"), true)
+	readOnPurpose("cold")
+	ask()
+	// The model picker's read joins that lookup and returns once the cache
+	// holds its answer.
+	if _, err := f.app.GetModelsForProvider(string(provider.Codex)); err != nil {
 		t.Fatal(err)
 	}
-	warm := shapeNow()
-	if slices.Contains(warm.Profiles, "Astra") {
-		t.Errorf("after the probe answered without gpt-6-astra the shape names %v", warm.Profiles)
+	requireNamed("after a lookup answered", shapeNow("after a lookup answered"), false)
+
+	offset.Store(int64(2 * time.Minute))
+	requireNamed("expired", shapeNow("expired"), false)
+	failing.Store(true)
+	readOnPurpose("expired")
+	if _, err := f.app.GetModelsForProvider(string(provider.Codex)); err == nil {
+		t.Fatal("the picker's read after the failing lookup succeeded")
 	}
-	for _, name := range []string{"Luna", "Terra", "Sol", "Opus"} {
-		if !slices.Contains(warm.Profiles, name) {
-			t.Errorf("after the probe answered the shape names %v, want %s among them", warm.Profiles, name)
-		}
-	}
-	if !slices.Contains(warm.Providers, string(provider.Codex)) {
-		t.Errorf("after the probe answered the shape offers %v", warm.Providers)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("model probes = %d, want 1", got)
+	requireNamed("after a later lookup failed", shapeNow("after a later lookup failed"), false)
+	select {
+	case by := <-entered:
+		t.Errorf("an unasked Codex model lookup started (marked %q)", by)
+	default:
 	}
 }
 

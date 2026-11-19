@@ -364,14 +364,22 @@ func TestModelsForProviderReportsCodexLive(t *testing.T) {
 	}
 }
 
-// LatestModelsForProvider never waits on `model/list`: a cold Codex answer
-// is not known and starts the lookup for the provider's binary, and a later
-// read has its catalog. Claude's catalog never spawns and is always known.
-func TestLatestModelsForProviderDoesNotWaitOnCodex(t *testing.T) {
+// lookupBy marks the context of a Codex model read a test makes, so its
+// lister can tell that read's lookup from one something else started.
+type lookupBy struct{}
+
+// LatestModelsForProvider never starts or waits on `model/list`: a cold
+// Codex answer is not known and starts no lookup, and once a read made on
+// purpose fetched the provider's binary's catalog it has that catalog.
+// Claude's catalog never spawns and is always known.
+func TestLatestModelsForProviderDoesNotStartCodex(t *testing.T) {
 	caches := testCaches()
+	entered := make(chan string, 4)
+	binaries := make(chan string, 4)
 	release := make(chan struct{})
-	binaries := make(chan string, 1)
-	caches.CodexModels = codexmodels.NewWith(time.Minute, func(_ context.Context, binary string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+	caches.CodexModels = codexmodels.NewWith(time.Minute, func(ctx context.Context, binary string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+		by, _ := ctx.Value(lookupBy{}).(string)
+		entered <- by
 		binaries <- binary
 		<-release
 		return []provider.ModelInfo{{Slug: "gpt-5.5", Name: "GPT-5.5", Provider: "codex"}}, nil
@@ -386,6 +394,15 @@ func TestLatestModelsForProviderDoesNotWaitOnCodex(t *testing.T) {
 	cold, known := service.LatestModelsForProvider(context.Background(), string(provider.Codex))
 	if known || len(cold.Models) != 0 || cold.Provenance != provider.CatalogLive {
 		t.Fatalf("cold Codex answer = %+v, %v, want an unknown live catalog", cold, known)
+	}
+	// A read on purpose that does not wait starts a lookup only when none is
+	// in flight, so the next lookup to start is its own unless the cold
+	// read above started one.
+	purpose, cancel := context.WithCancel(context.WithValue(context.Background(), lookupBy{}, "on purpose"))
+	cancel()
+	_, _ = service.CodexModelsForBinary(purpose, "/mock/codex")
+	if by := <-entered; by != "on purpose" {
+		t.Fatalf("the cold read started a Codex lookup (marked %q)", by)
 	}
 	if binary := <-binaries; binary != "/mock/codex" {
 		t.Errorf("lookup ran %q, want the provider's binary", binary)
@@ -402,6 +419,11 @@ func TestLatestModelsForProviderDoesNotWaitOnCodex(t *testing.T) {
 	claudeAnswer, known := service.LatestModelsForProvider(context.Background(), string(provider.Claude))
 	if !known || len(claudeAnswer.Models) == 0 {
 		t.Errorf("Claude answer = %+v, %v, want its catalog, known", claudeAnswer, known)
+	}
+	select {
+	case by := <-entered:
+		t.Errorf("an unasked Codex lookup started (marked %q)", by)
+	default:
 	}
 }
 

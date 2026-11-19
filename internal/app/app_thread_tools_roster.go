@@ -149,10 +149,11 @@ func (a *App) subThreadPlaceOf(threadID string) (subThreadPlace, error) {
 // spawnShape is what a session's guide and tool list say about spawning:
 // its place, fixed at its start, and the providers and profiles this
 // computer offers now. It is built at every session start and handshake,
-// so it never waits on a provider probe: it reads the model lists already
-// known, and a provider whose list is not known yet has its profiles named
-// unchecked (threadtools.GuideProfileNames). A roster that cannot be read
-// leaves the names out rather than the guide.
+// so it never starts or waits on a provider probe: it reads the model
+// lists already known, and a provider whose list is not known yet has its
+// profiles named unchecked (threadtools.GuideProfileNames) until a read
+// made on purpose, such as the model picker's, fetches it. A roster that
+// cannot be read leaves the names out rather than the guide.
 func (a *App) spawnShape(threadID string, place subThreadPlace, defaults threadtools.SpawnDefaults) threadtools.SpawnShape {
 	shape := threadtools.SpawnShape{Level: place.level, Limit: place.limit}
 	var options []threadtools.ProviderOption

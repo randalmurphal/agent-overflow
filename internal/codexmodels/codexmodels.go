@@ -106,18 +106,12 @@ func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) 
 		c.mu.Unlock()
 		return models, e.err
 	}
-	if existing, ok := c.inflight[binary]; ok {
-		done := existing.done
-		c.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-done:
-			return provider.CloneModels(existing.models), existing.err
-		}
+	l, joined := c.inflight[binary]
+	if !joined {
+		l = &load{done: make(chan struct{})}
+		c.inflight[binary] = l
+		go c.run(context.WithoutCancel(ctx), binary, reaper, l)
 	}
-
-	l := c.startLocked(ctx, binary, reaper)
 	c.mu.Unlock()
 	select {
 	case <-ctx.Done():
@@ -127,29 +121,14 @@ func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) 
 	}
 }
 
-// startLocked starts the shared lookup for binary. The caller holds c.mu
-// and has checked that none is in flight.
-func (c *Cache) startLocked(ctx context.Context, binary string, reaper procutil.Reaper) *load {
-	l := &load{done: make(chan struct{})}
-	c.inflight[binary] = l
-	go c.run(context.WithoutCancel(ctx), binary, reaper, l)
-	return l
-}
-
-// Latest returns the most recent successful catalog for the binary without
-// waiting, and whether one exists. Expiry and later failed lookups keep it;
-// Reset clears it. When the cached answer, success or failure, is absent or
-// expired and no lookup is in flight, Latest starts one in the background,
-// which the caller's cancellation does not end, so a later read sees its
-// answer.
-func (c *Cache) Latest(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, bool) {
-	binary = strings.TrimSpace(binary)
+// Latest returns the most recent catalog a lookup for the binary answered,
+// and whether one has. It never starts, joins or waits on a lookup: the
+// catalog becomes known only through Get. Expiry and later failed lookups
+// keep it; Reset clears it.
+func (c *Cache) Latest(binary string) ([]provider.ModelInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, cached := c.entries[binary]
-	if _, running := c.inflight[binary]; !running && (!cached || !c.now().Before(e.expiresAt)) {
-		c.startLocked(ctx, binary, reaper)
-	}
+	e := c.entries[strings.TrimSpace(binary)]
 	if !e.hasLatest {
 		return nil, false
 	}
