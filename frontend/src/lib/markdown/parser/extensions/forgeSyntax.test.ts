@@ -59,6 +59,40 @@ describe('GFM strikethrough', () => {
 		expect(rawSum(tokens)).toBe('~a `b~ c` d');
 	});
 
+	/** The run with each `del` as `<del>…</del>` around its text. */
+	const struck = (tokens: Tok[]): string =>
+		tokens.map((token) => (token.type === 'del' ? `<del>${struck(token.tokens ?? [])}</del>` : token.tokens ? struck(token.tokens) : token.raw)).join('');
+
+	// Pairings both forges render (cmark-gfm on GitHub, comrak on GitLab).
+	it.each([
+		// GitLab label references are prose: two openers and no closer.
+		['~bug ~feature', '~bug ~feature'],
+		// Each closer takes the nearest opener; the openers between are text.
+		[
+			'Label: ~1, ~bug, ~"feature request", ~"priority::high", group/project~bug, /group/project~bug',
+			'Label: ~1, ~bug, <del>"feature request", <del>"priority::high", group/project</del>bug, /group/project</del>bug'
+		],
+		['~a ~b~ c', '~a <del>b</del> c'],
+		// An opener must be left-flanking: punctuation after it needs space or
+		// punctuation before it. A closer must be right-flanking.
+		['a~"b"~c', 'a~"b"~c'],
+		['~"b"~', '<del>"b"</del>'],
+		['~a ~ b~', '<del>a ~ b</del>'],
+		// Unequal runs pair and both stay text.
+		['~~a~ b', '~~a~ b'],
+		['~a ~~b~ c~~', '~a ~~b~ c~~'],
+		// The rule of 3: a closer that may also open passes over an opener
+		// whose length makes three with its own.
+		['~~a~b~~', '<del>a~b</del>'],
+		// A link, a code span and an escape hide their tildes.
+		['~a [x~](https://example.invalid) b~', '<del>a x~ b</del>'],
+		['~a \\~ b~', '<del>a \\~ b</del>']
+	])('pairs %s as the forges do', (source, shown) => {
+		const tokens = inline(source, ext);
+		expect(struck(tokens)).toBe(shown);
+		expect(rawSum(tokens)).toBe(source);
+	});
+
 	it('runs ahead of subscript; agent chat keeps subscript and `~~`-only strikethrough', () => {
 		expect(inline('~sub~ and ~~del~~', []).map((token) => token.type)).toEqual(['sub', 'text', 'del']);
 		expect(inline('~sub~ and ~~del~~', ext).map((token) => token.type)).toEqual(['del', 'text', 'del']);

@@ -35,7 +35,7 @@
 // any image.
 
 import type { ColorScheme, ColorSchemeSources, EmbeddedImageToken, Token, Tokens, TokensList } from '../markdown';
-import { colorSchemeOnly, markedEmbeddedInlineHtml } from '../markdown';
+import { colorSchemeOnly, embeddedHtmlFor } from '../markdown';
 import { fileSaveAction } from './fileSaveAction';
 import {
   buildForgeAttachmentHref,
@@ -130,11 +130,11 @@ function attrOf(attrs: string, name: string): string | null {
  * before.
  *
  * Two of them, because a forge writes an embed in two positions. Inline is
- * the general case. The BLOCK one exists for the single most common shape
- * GitHub produces — a bare `<img …>` or `<video …></video>` alone on its
- * line — which marked classifies as an html BLOCK before any inline
- * tokenizer runs, and which the sanitizer would otherwise render as an
- * `<img>` pointing at a URL this page cannot read.
+ * the general case. The BLOCK one claims a `<video …></video>` alone on its
+ * line, which the sanitizer, having no `<video>` element, would drop. A
+ * lone `<img>` line is the surface's (embeddedHtml.ts `imageLines`): a
+ * paragraph whose inline lex reaches the inline extension on GitHub, an
+ * HTML block whose image the sanitizer's `claimMedia` hands back on GitLab.
  */
 export function buildForgeAttachmentExtension(
   opts: ForgeAttachmentSource & { embeddedHtml: boolean },
@@ -219,10 +219,7 @@ export function buildForgeAttachmentExtension(
     level: 'block',
     tokenizer(this: unknown, src) {
       if (src.charCodeAt(0) !== 60 /* < */) return undefined;
-      const ctx = this as ForgeTokenizerContext;
-      let embed: GenericImageToken | undefined;
-      if (IMG_OPEN.test(src)) embed = embeddedImageToken(src, ctx, false);
-      else if (VIDEO_OPEN.test(src)) embed = videoToken(src);
+      const embed = VIDEO_OPEN.test(src) ? videoToken(src) : undefined;
       if (!embed) return undefined;
       // Only a LONE tag is a block. Anything else on the line makes it a
       // paragraph, and the inline tokenizer owns that case.
@@ -261,9 +258,10 @@ export function buildForgeAttachmentExtension(
     ctx: ForgeTokenizerContext,
     inLink: boolean,
   ): GenericImageToken | undefined {
-    // Delegate to the embedded-HTML inline tokenizer so `<img>` attribute
-    // parsing has one implementation. It answers an image token or nothing.
-    const token = markedEmbeddedInlineHtml.tokenizer!.call(
+    // Delegate to the forge's embedded-HTML inline tokenizer so `<img>`
+    // attribute parsing has one implementation and reads the forge's
+    // policy. It answers an image token or nothing.
+    const token = embeddedHtmlFor(forge).inline.tokenizer!.call(
       ctx as never,
       src,
       [],

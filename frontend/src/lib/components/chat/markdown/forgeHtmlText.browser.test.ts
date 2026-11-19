@@ -87,6 +87,21 @@ describe('find over text in forge HTML', () => {
   });
 });
 
+describe('a task list in an HTML table cell', () => {
+  // The island's checkbox is checked by property, so serialized HTML shows
+  // no `checked` attribute; Chromium paints the property.
+  const TABLE = '<table><tr><td>\n\n- [ ] Task one\n- [x] Task two\n\n</td></tr></table>\n\nend\n';
+
+  it.each([['GitHub', GITHUB], ['GitLab', GITLAB]] as const)('paints its checked task as checked on %s', async (_name, forge) => {
+    const root = await mounted(TABLE, forge);
+    const boxes = [...root.querySelectorAll<HTMLInputElement>('td input[type="checkbox"]')];
+    expect(boxes.map((box) => [box.checked, box.matches(':checked'), box.closest('li')?.textContent?.trim()])).toEqual([
+      [false, false, 'Task one'],
+      [true, true, 'Task two'],
+    ]);
+  });
+});
+
 describe('jumps across the Markdown and HTML boundary', () => {
   const filler = Array.from({ length: 30 }, (_, index) => `Filler line ${index}.`).join('\n\n');
   const BODY = [

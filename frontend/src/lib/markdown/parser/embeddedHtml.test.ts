@@ -196,7 +196,7 @@ describe('markedDetails', () => {
 	});
 });
 
-describe('markedEmbeddedInlineHtml', () => {
+describe('the embedded inline tokenizer', () => {
 	const inlineOf = (src: string): GenericToken[] => {
 		const [paragraph] = lexEmbedded(src);
 		return ((paragraph as GenericToken).tokens ?? []) as GenericToken[];
@@ -239,7 +239,7 @@ describe('markedEmbeddedInlineHtml', () => {
 		expect((link.tokens as GenericToken[])[0].text).toBe('the docs');
 	});
 
-	it.each(['ins', 'mark', 'u', 'small', 'abbr', 'q', 'var', 'cite', 'dfn', 'kbd', 'ruby', 'rt', 'rp'])(
+	it.each(['ins', 'mark', 'small', 'abbr', 'q', 'var', 'cite', 'dfn', 'kbd', 'ruby', 'rt', 'rp', 'time', 'bdo'])(
 		'renders <%s> as itself around its inline content',
 		(tag) => {
 			const tokens = inlineOf(`before <${tag}>has *stars*</${tag}> after`);
@@ -250,15 +250,29 @@ describe('markedEmbeddedInlineHtml', () => {
 		}
 	);
 
-	it('keeps a title and no other attribute', () => {
+	it('keeps the attributes the HTML policy lists and no other', () => {
 		const tokens = inlineOf('the <abbr title="Merge Request" onclick="x()">MR</abbr> is open');
 		const abbr = tokens.find((token) => token.type === 'htmlInline') as GenericToken;
-		expect(abbr.title).toBe('Merge Request');
-		expect(Object.keys(abbr).sort()).toEqual(['raw', 'tag', 'text', 'title', 'tokens', 'type']);
-		const mark = inlineOf('a <mark title="tip" style="x">b</mark>').find((token) => token.type === 'htmlInline') as GenericToken;
-		expect(mark.title).toBe('tip');
+		expect(abbr.attrs).toEqual({ title: 'Merge Request' });
+		expect(Object.keys(abbr).sort()).toEqual(['attrs', 'raw', 'tag', 'text', 'tokens', 'type']);
+		const span = inlineOf('a <span dir="rtl" lang="ar" style="x">b</span>').find((token) => token.type === 'htmlInline') as GenericToken;
+		expect(span.attrs).toEqual({ dir: 'rtl', lang: 'ar' });
 		const plain = inlineOf('a <mark>b</mark>').find((token) => token.type === 'htmlInline') as GenericToken;
-		expect(plain.title).toBeNull();
+		expect(plain.attrs).toEqual({});
+	});
+
+	it('keeps a native element as its token unless it carries an attribute the policy keeps', () => {
+		expect(inlineOf('a <b class="x">b</b>').map((token) => token.type)).toEqual(['text', 'strong']);
+		const bold = inlineOf('a <b dir="rtl">b</b>').find((token) => token.type === 'htmlInline') as GenericToken;
+		expect(bold).toMatchObject({ tag: 'b', attrs: { dir: 'rtl' } });
+		// A code span carries none, so the policy keeps none on `<code>`.
+		expect(inlineOf('a <code dir="rtl">c</code>').map((token) => token.type)).toEqual(['text', 'codespan']);
+	});
+
+	it('leaves an element the policy strips to the engine, which shows its text', () => {
+		const tokens = inlineOf('a <u>under *line*</u> b');
+		expect(tokens.some((token) => token.type === 'htmlInline')).toBe(false);
+		expect(tokens.map((token) => token.type)).toContain('em');
 	});
 
 	it('nests <kbd> inside <kbd>, as the forges draw a key combination', () => {
@@ -280,7 +294,7 @@ describe('markedEmbeddedInlineHtml', () => {
 		expect(tokens.map((token) => token.type)).toEqual(['text', 'htmlInline', 'text']);
 		const [, holder, after] = tokens;
 		expect(holder.tag).toBe('span');
-		expect(holder.title).toBeNull();
+		expect(holder.attrs).toEqual({});
 		expect(holder.text).toContain(word);
 		expect((holder.tokens as GenericToken[]).map((token) => token.type)).toContain('em');
 		expect(after.text).toBe(' b');

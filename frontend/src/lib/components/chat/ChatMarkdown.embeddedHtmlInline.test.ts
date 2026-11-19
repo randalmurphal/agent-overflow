@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it, vi, type MockedFunction } from 'vitest
 // settled block. The harness mounts one source through both, so each case
 // holds the element to its contract and the two paths to each other.
 
-const TAGS = ['ins', 'mark', 'u', 'small', 'abbr', 'q', 'var', 'cite', 'dfn', 'kbd', 'ruby', 'rt', 'rp'] as const;
+const TAGS = ['ins', 'mark', 'small', 'abbr', 'q', 'var', 'cite', 'dfn', 'kbd', 'ruby', 'rt', 'rp', 'time', 'bdo'] as const;
 
 // The compact path's serializer, observed, so a case fails when that path
 // hands its block back to the component path. The test setup already loads

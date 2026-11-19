@@ -138,6 +138,16 @@ describe("GitLab's table of contents", () => {
     expect(container.textContent).not.toContain('TOC');
   });
 
+  it('links a marker in a sentence as a relative path, as GitLab does', async () => {
+    const source = `Inline [[_TOC_]] after.\n\n${SECTIONS}`;
+    const { container } = render(ForgeAttachmentChatHarness, { props: { source, forgeSource: GITLAB } });
+    await waitFor(() => expect(container.querySelector('ul')).not.toBeNull());
+    const paragraph = container.querySelector('p')!;
+    expect(paragraph.textContent).toBe('Inline _TOC_ after.');
+    expect(hrefs(paragraph)).toEqual(['https://gitlab.com/group/widget/-/blob/HEAD/_TOC_']);
+    expect(container.querySelector('ul')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Intro Usage Usage');
+  });
+
   it.each([['GitHub', GITHUB], ['agent chat', null]] as const)('stays text on %s', async (_name, forgeSource) => {
     const { container } = render(ForgeAttachmentChatHarness, { props: { source: SECTIONS, forgeSource, embeddedHtml: forgeSource !== null } });
     await waitFor(() => expect(container.textContent).toContain('jump'));

@@ -86,7 +86,8 @@ describe('the forge text hook', () => {
     expect(text(':tada:', true)).toMatchObject([{ type: 'escape', text: '🎉' }]);
   });
 
-  it('builds nothing for agent chat', () => {
-    expect(chatMarkdownForgeOptions(null, true).html).toBeUndefined();
+  it('builds nothing without a forge', () => {
+    expect(chatMarkdownForgeOptions(null, false).html).toBeUndefined();
+    expect(chatMarkdownForgeOptions(null, true).html?.text).toBeUndefined();
   });
 });

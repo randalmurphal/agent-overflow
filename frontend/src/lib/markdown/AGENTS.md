@@ -51,7 +51,10 @@ anchor, untagged reference, or tagged blocked span; both renderers call it.
 
 Embedded forge HTML is opt-in. The extension maps supported structural and
 inline forms onto native tokens, then `render/htmlSanitize.ts` handles the
-remaining allowlisted elements and attributes. Its output holds only
+remaining allowlisted elements and attributes. One per-forge table,
+`parser/extensions/htmlPolicy.ts`, is the allowlist both read;
+`embeddedHtmlFor(forge)` hands a surface its extensions and that policy
+together. The sanitizer's output holds only
 allowlisted elements, allowlisted attributes and text. HTML off the allowlist
 renders as a forge renders it: the element's text shows without the element,
 and a script, style or svg shows nothing. On a GitHub surface GFM's disallowed
@@ -61,8 +64,8 @@ tracked container open until a later HTML block is one `htmlRegion` token
 (`parser/extensions/htmlRegion.ts`). Its HTML is sanitized and parsed once
 around a nonce-marked placeholder per Markdown island, as a forge sanitizes a
 whole document; `HtmlRegion.svelte` renders island-free HTML through the same
-`html` snippet as an html token. `markedEmbeddedInlineHtml` is
-exported on its own so an app extension that must claim an `<img>` first
+`html` snippet as an html token. `embeddedHtmlFor(forge).inline` is
+exposed on its own so an app extension that must claim an `<img>` first
 reuses this attribute parsing instead of re-implementing it. Media inside a
 wrapper the extension does not claim reaches the sanitizer's `claimMedia`
 option: a host returning a claim gets the element without its `src`, marked
@@ -98,13 +101,18 @@ backed tokens such as Mermaid, including when highlight caches are warm.
   and popup and pays the whole-document definition lex when opening it.
 - A `DocumentContext` (`parser/documentContext.ts`) folds per-block facts
   (reference definitions; on a forge, footnote numbers, heading anchors and
-  GitLab's table of contents) and hands each block a `DocumentScope`. A
+  GitLab's table of contents; which block opens the document) and hands
+  each block a `DocumentScope`. A
   block's lex records the keys it read; a renderer rebuilds kept output only
   when one resolves differently. Forge anchors are `data-md-anchor` and
   same-document links `data-md-fragment`, never `id` or a navigating href;
   chat resolves them inside the clicked `.markdown-body`.
 - Mermaid and math elements publish parser-owned source values. Code source
   remains the code element's text content.
+- A math or Mermaid island whose renderer rejects its source shows that
+  source (`render/elements/SourceText.svelte`, as with no renderer) and marks
+  its root `data-render-failed`; a chat host's pending fallback settles on
+  either outcome through `watchIslandSettled`.
 
 Do not replace these seams with document-wide observers or structural CSS
 selectors. Scope Markdown styles to Markdown-owned markup.
@@ -119,7 +127,13 @@ selectors. Scope Markdown styles to Markdown-owned markup.
   produce there.
 - Link text holds no link: a tokenizer that builds a link checks
   `lexer.state.inLinkText`, and one that lexes link text sets it. A raw
-  `<a>` tag changes `inLink` only.
+  `<a>` tag changes `inLink` only. CommonMark's innermost link wins: a
+  bracket link met in link text sets `linkInText`, and the link around it,
+  Markdown or `<a href>`, is then text. An image label lexes its links,
+  which show as its alt text.
+- A forge surface's extensions hold `markedForgeGrammar`: every lex and
+  block split under them, alignment included, leaves agent chat's own
+  grammar (`CHAT_GRAMMAR` in `parser/lexer.ts`) out.
 - A destination or title is resolved by the engine's `linkText` option, which
   an extension sets. Build link tokens from `tokenizer.link` so every host
   claim reads a destination the same way.
@@ -135,6 +149,12 @@ selectors. Scope Markdown styles to Markdown-owned markup.
 - Keep exact live source windows for append paths. Reclassification of omitted
   HTML or definitions may require the canonical source and move a boundary
   backward.
+- A code token's `lang` is the whole info string; its language is
+  `fenceLanguage(lang)`, the first word, for every check of which language a
+  fence is.
+- A delimiter rule reads runs in `Lexer.maskInline`, where code spans, links,
+  HTML and escapes hide their delimiters; the forge strikethrough pairs
+  tildes by CommonMark's delimiter-run rules there.
 
 ## Validation
 

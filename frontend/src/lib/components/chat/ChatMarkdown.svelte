@@ -314,10 +314,9 @@
 
   const extensions = $derived.by(() => {
     const list = chatMarkdownExtensions({
-      forge: forgeOptions.extensions,
+      forge: forgeOptions,
       preview: previewLinkExtension,
       pathLink: pathLinkExtension,
-      embeddedHtml,
     });
     return list.length > 0 ? list : undefined;
   });

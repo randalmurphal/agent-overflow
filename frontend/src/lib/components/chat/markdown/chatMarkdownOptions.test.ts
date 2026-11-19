@@ -36,8 +36,7 @@ describe('chatMarkdownForgeOptions', () => {
   });
 
   it('puts the soft-break extension ahead of the embedded HTML pair in ChatMarkdown order', () => {
-    const forge = chatMarkdownForgeOptions(source('github'), true).extensions;
-    const list = chatMarkdownExtensions({ forge, embeddedHtml: true });
+    const list = chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(source('github'), true) });
     const order = names(list)!;
     expect(order.slice(0, 4)).toEqual(['forgeAttachment', 'forgeAttachmentBlock', 'forgeReference', 'softBreak']);
     expect(order.indexOf('details')).toBeGreaterThan(order.indexOf('forgeEmoji'));

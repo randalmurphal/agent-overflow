@@ -20,7 +20,7 @@ const SHA = '0123456789abcdef0123456789abcdef01234567';
 
 /** ChatMarkdown's extension list for a review surface on `source`'s forge. */
 function extensionsFor(source: ForgeAttachmentSource | null): Extension[] {
-  return chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(source, true).extensions, embeddedHtml: true });
+  return chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(source, true) });
 }
 
 interface Shown {
@@ -228,11 +228,12 @@ describe('forge references on a GitLab surface', () => {
     expect(link.href.startsWith('agent-overflow:forge?')).toBe(true);
   });
 
-  it('links wiki pages, but not the table of contents marker', () => {
+  it('links wiki pages, and a table of contents marker in a sentence as a relative path', () => {
     expect(links('[[Home]] [[Two Words]] [[Read me|read-me]] [[_TOC_]]', GITLAB)).toEqual([
       { text: 'Home', href: `${GL}/-/wikis/Home` },
       { text: 'Two Words', href: `${GL}/-/wikis/Two-Words` },
       { text: 'Read me', href: `${GL}/-/wikis/read-me` },
+      { text: '_TOC_', href: `${GL}/-/blob/HEAD/_TOC_` },
     ]);
     expect(links('[[Home]]', GITHUB)).toEqual([]);
   });

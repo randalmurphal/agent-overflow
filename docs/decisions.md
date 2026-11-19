@@ -941,12 +941,20 @@ and anti-changes that live only here:
   `#gh-*-mode-only` image follows the app's light or dark theme. GitLab:
   the `{width=… height=…}` list, playable video and audio images,
   inline diff, `>>>` quotes, front matter, `[~]` and table-cell tasks,
-  description lists, JSON tables, titled alerts and `[[_TOC_]]`. HTML
-  off the allowlist shows its text without the element, and scripts,
-  styles, svg and iframes show nothing. Agent chat renders no HTML and
-  keeps its own grammar (typed list numbers, `~` subscript, italic
-  quotes, footnote popovers); reference-style links resolve across the
-  whole message on every surface. Mechanism:
+  description lists, JSON tables, titled alerts and `[[_TOC_]]`. One
+  allowlist per forge decides which HTML elements and attributes
+  survive, in a paragraph and in an HTML block alike: an element off it
+  shows its text without the element, and scripts, styles, svg and
+  iframes show nothing. Text inside an HTML block gets the same emoji,
+  references, relative links and jump anchors as a paragraph. Agent
+  chat's own constructs (`:term:` lists, `^sup^`, `[center]`,
+  citations, MDX) are text on a forge surface. Agent chat renders no
+  HTML and keeps its own grammar (typed list numbers, `~` subscript,
+  italic quotes, footnote popovers). On every surface: reference-style
+  links resolve across the whole message, a link inside a link leaves
+  only the inner one linked, a fence's language is the first word of
+  its info string, a table column takes its authored alignment, and a
+  formula or diagram that cannot be drawn shows its source. Mechanism:
   `frontend/src/lib/markdown/AGENTS.md`.
 - Forge reads and writes go directly over HTTPS with the token of the
   user's `gh`/`glab` login, read from the CLI at runtime and held in memory

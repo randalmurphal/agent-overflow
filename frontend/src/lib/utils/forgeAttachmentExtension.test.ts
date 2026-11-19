@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EMBEDDED_HTML_EXTENSIONS, Lexer, markedImageAttributes, type Token } from '../markdown';
+import { embeddedHtmlFor, Lexer, markedImageAttributes, type Token } from '../markdown';
 import { buildForgeAttachmentExtension } from './forgeAttachmentExtension';
 import { parseForgeAttachmentHref } from './forgeAttachments';
 import { buildPathLinkExtension } from './pathLinkExtension';
@@ -51,7 +51,7 @@ function fullStack(pr: PRRef, webBase = '', embeddedHtml = true): Ext[] {
   const list: Ext[] = [...forgeExtensions(pr, webBase, embeddedHtml)];
   const pathLink = buildPathLinkExtension([], '/repo', 'editor');
   if (pathLink) list.push(pathLink as unknown as Ext);
-  if (embeddedHtml) list.push(...(EMBEDDED_HTML_EXTENSIONS as unknown as Ext[]));
+  if (embeddedHtml) list.push(...(embeddedHtmlFor(pr.forge).extensions as unknown as Ext[]));
   return list;
 }
 
@@ -225,17 +225,24 @@ describe('embedded HTML', () => {
     ]);
   });
 
-  // The shape GitHub actually writes into a PR body. Marked classifies a
-  // lone tag line as an html BLOCK before any inline tokenizer runs, so
-  // without the block half the sanitizer would render an <img> pointing at
-  // a URL this page cannot read.
+  // The shape GitHub actually writes into a PR body. A lone `<video>` line
+  // would be an html block the sanitizer drops; a lone `<img>` line is
+  // GitHub's paragraph (embeddedHtml.ts `imageLines`), claimed inline.
   it.each([
-    `<img src="/uploads/${HEX}/shot.png">`,
-    `<video src="/uploads/${HEX}/clip.mp4" controls></video>`,
-  ])('claims a lone embed line: %s', (source) => {
-    const tokens = lex(`${source}\n`, fullStack(GITLAB_MR));
+    [GITHUB_PR, '<img src="https://github.com/user-attachments/assets/abc">'],
+    [GITHUB_PR, '<video src="https://github.com/user-attachments/assets/abc" controls></video>'],
+    [GITLAB_MR, `<video src="/uploads/${HEX}/clip.mp4" controls></video>`],
+  ])('claims a lone embed line: %s %s', (pr, source) => {
+    const tokens = lex(`${source}\n`, fullStack(pr));
     expect(tokens.map((t) => t.type)).toEqual(['paragraph']);
     expect(claimed(tokens).map((t) => t.raw)).toEqual([source]);
+  });
+
+  // GitLab keeps a lone `<img>` line an HTML block; the sanitizer's
+  // `claimMedia` hands its upload back (ChatMarkdown.forgeAttachmentsHtml).
+  it('leaves a lone GitLab upload image line to the HTML block', () => {
+    const tokens = lex(`<img src="/uploads/${HEX}/shot.png">\n`, fullStack(GITLAB_MR));
+    expect(tokens.map((t) => t.type)).toEqual(['html']);
   });
 
   it('leaves a lone embed line the forge does not serve as html', () => {

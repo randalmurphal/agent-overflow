@@ -78,7 +78,7 @@
 	{:else if painted.url}
 		<Slot
 			props={{
-				src: painted.url,
+				src: painted?.url ?? '',
 				alt,
 				children,
 				token: shown

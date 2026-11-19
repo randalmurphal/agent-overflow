@@ -4,6 +4,7 @@ import { alignedTokens } from '../parser/extensions/align';
 import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
 import { headingAnchor, htmlAnchorName } from '../parser/documentScope';
+import { fenceLanguage } from '../parser/fenceLanguage';
 import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText, tableCellRenders } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
@@ -79,7 +80,7 @@ export function renderStaticTokenHtml(
 					// DIAGRAM as a plain code block — silently, only in the real
 					// app, because test environments have no backend to warm the
 					// cache. Caught by e2e/tests/markdown-render.spec.ts.
-					if (token.lang === 'mermaid') return false;
+					if (fenceLanguage(token.lang) === 'mermaid') return false;
 					const html = streamdown.staticRenderers?.code?.(token, id, streamdown);
 					if (html === null || html === undefined) return false;
 					output.push(html);
@@ -381,7 +382,8 @@ export function renderStaticTokenHtml(
 					output.push(
 						`<${token.tag} data-streamdown-html-inline="${dataId}"` +
 						attribute('data-md-anchor', htmlAnchorName(token.raw, streamdown.document?.forge)) +
-						`${attribute('title', token.title)}>`,
+						attributes(token.attrs) +
+						'>',
 					);
 					if (!render(children)) return false;
 					output.push(`</${token.tag}>`);

@@ -391,10 +391,12 @@ export class Lexer {
   }
 
   /**
-   * Lexing/Compiling
+   * `src` as the delimiter rules read it, one character for each: reference
+   * links, escaped characters, links, code spans and HTML tags masked, so a
+   * delimiter inside one is not seen. `emStrong` and the forge
+   * strikethrough (extensions/strikethrough.ts) read delimiter runs here.
    */
-  inlineTokens(src: string, tokens: Token[] = []): Token[] {
-    // String with links masked to avoid interference with em and strong
+  maskInline(src: string): string {
     let maskedSrc = src;
 
     // PORTED from marked 18.0.7 (#4017) and 18.0.11 (#4040): all three masks
@@ -425,6 +427,15 @@ export class Lexer {
       const offset = context ? context.length : 0;
       return match0.slice(0, offset) + '[' + 'a'.repeat(match0.length - offset - 2) + ']';
     });
+    return maskedSrc;
+  }
+
+  /**
+   * Lexing/Compiling
+   */
+  inlineTokens(src: string, tokens: Token[] = []): Token[] {
+    // String with links masked to avoid interference with em and strong
+    const maskedSrc = this.maskInline(src);
 
     const inlineExtensions = this.options.extensions?.inline;
     const startInline = this.options.extensions?.startInline;

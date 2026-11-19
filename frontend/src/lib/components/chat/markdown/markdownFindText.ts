@@ -30,8 +30,8 @@
 //
 // `[center]`/`[right]` markers show nothing and the blocks between them
 // show as they would unaligned; a block string is lexed alone, so markers
-// are recognized here with the alignment in force, as Streamdown does. A
-// forge's grammar has no markers.
+// are the ones the block parse found, as Streamdown reads them. A forge's
+// grammar has no markers.
 //
 // Not shown, so not searched: markup, image alt text, link targets and
 // titles, a table cell merged into the one above, and the body of a
@@ -44,11 +44,11 @@
 // (findHighlights.ts).
 
 import {
-  alignmentAfter,
+  blockAlignment,
   createDocumentContextCache,
   createParseBlocksCache,
   documentContextOf,
-  isAlignmentMarkerBlock,
+  fenceLanguage,
   lex,
   linkTagText,
   MEDIA_CLAIM_ATTR,
@@ -56,10 +56,9 @@ import {
   parseHtmlRegion,
   sanitizeEmbeddedHtmlToken,
   tableCellRenders,
-  type Alignment,
   type DocumentContext,
+  type ParseBlocksCache,
   type StreamdownToken,
-  usesChatGrammar,
 } from '../../../markdown';
 import { CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
 import { chatMarkdownExtensions, chatMarkdownForgeOptions, chatMarkdownOptionsGeneration } from './chatMarkdownOptions';
@@ -131,7 +130,7 @@ export const SHOWS: Record<StreamdownToken['type'], Shows> = {
 export function markdownFindText(source: string, options: MarkdownFindTextOptions, open?: readonly boolean[]): MarkdownFindText {
   const shown = new MarkdownFenceUnwrapper().render(source, false);
   const forge = chatMarkdownForgeOptions(options.forgeSource, options.embeddedHtml);
-  const extensions = chatMarkdownExtensions({ forge: forge.extensions, embeddedHtml: options.embeddedHtml });
+  const extensions = chatMarkdownExtensions({ forge });
   let all: FindRun[] = [];
   const details: boolean[] = [];
   let run = '';
@@ -232,7 +231,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
         return;
       case 'code':
         flush();
-        if (token.lang !== 'mermaid' && !options.claimsCode?.(token.lang ?? '')) push(token.text ?? '');
+        if (fenceLanguage(token.lang) !== 'mermaid' && !options.claimsCode?.(token.lang ?? '')) push(token.text ?? '');
         return;
       case 'html':
         html(token);
@@ -292,24 +291,24 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
   };
   // Each block lexes under its document scope, and a forge's footnotes
   // section follows the body, as ChatMarkdown renders them.
-  const blocksCache = createParseBlocksCache();
-  const blocks = parseBlocks(shown, extensions, blocksCache);
+  // Alignment markers are the parse's, as Streamdown reads them.
+  const blocksOf = (source: string): { blocks: readonly string[]; cache: ParseBlocksCache } => {
+    const cache = createParseBlocksCache();
+    return { blocks: parseBlocks(source, extensions, cache), cache };
+  };
+  const body = blocksOf(shown);
   const forgeName = options.forgeSource?.pr.forge;
   const documentForge = forgeName === 'github' || forgeName === 'gitlab' ? forgeName : null;
-  const document = documentContextOf(blocksCache, extensions, createDocumentContextCache(), documentForge);
-  const aligns = usesChatGrammar(extensions);
-  const walkBlocks = (blocks: readonly string[], context: DocumentContext | null) => {
-    let align: Alignment = null;
+  const document = documentContextOf(body.cache, extensions, createDocumentContextCache(), documentForge);
+  const walkBlocks = ({ blocks, cache }: ReturnType<typeof blocksOf>, context: DocumentContext | null) => {
     for (const [index, block] of blocks.entries()) {
-      const marker = aligns && isAlignmentMarkerBlock(block, align);
-      if (aligns) align = alignmentAfter(block, align);
-      if (marker) continue;
+      if (blockAlignment(cache, index) === 'marker') continue;
       walk(lex(block, extensions, context?.scope(index) ?? null) as unknown as TokenLike[]);
       flush();
     }
   };
-  walkBlocks(blocks, document);
-  if (document?.footnoteSection) walkBlocks(parseBlocks(document.footnoteSection, extensions), document.after);
+  walkBlocks(body, document);
+  if (document?.footnoteSection) walkBlocks(blocksOf(document.footnoteSection), document.after);
   return { runs: all.filter((each) => each.shown).map((each) => each.text), all, details };
 }
 

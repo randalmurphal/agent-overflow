@@ -1,8 +1,9 @@
-// In real Chromium: a forge attachment that resolves to a video or audio
-// player ends find's run, as an image does, however the author wrote it
-// (a Markdown image, an inline `<video>`, a `<video>` in an HTML block) and
-// on both render paths, and markdownFindText projects the same runs. The
-// text on either side of a player never joins into one match.
+// In real Chromium: a forge attachment ends find's run in every state it
+// shows (loading, a picture, a video or audio player, a file chip, a
+// failure), however the author wrote it (a Markdown image, an inline
+// `<video>`, a `<video>` in an HTML block) and on both render paths, and
+// markdownFindText projects the same runs. The text on either side of an
+// attachment never joins into one match.
 
 import { render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,26 +31,51 @@ const ASSETS: Record<'github' | 'gitlab', string> = {
   gitlab: '/uploads/0123456789abcdef0123456789abcdef/clip.mp4',
 };
 
-type Kind = 'video' | 'audio';
+type Outcome = 'loading' | 'failed' | 'image' | 'video' | 'audio' | 'file';
 
-// The forge answers every attachment as `kind`.
-function stage(kind: Kind): void {
-  const mimeType = kind === 'video' ? 'video/mp4' : 'audio/mpeg';
+// What the attachment shows in each outcome.
+const SHOWN: Record<Outcome, string> = {
+  loading: '[data-forge-attachment-loading]',
+  failed: '[data-forge-attachment-error]',
+  image: '[data-streamdown-image] img',
+  video: '[data-forge-attachment-video] video',
+  audio: '[data-forge-attachment-audio] audio',
+  file: '[data-forge-attachment-file]',
+};
+
+const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="20"><rect width="80" height="20" fill="green"/></svg>';
+
+// The forge answers every attachment with `outcome`.
+function stage(outcome: Outcome): void {
+  if (outcome === 'loading') {
+    setBindingMock('FetchForgeAttachment', () => new Promise(() => {}));
+    return;
+  }
+  if (outcome === 'failed') {
+    setBindingMock('FetchForgeAttachment', async () => {
+      throw new Error('forge refused the attachment');
+    });
+    return;
+  }
+  const mimeType = { image: 'image/svg+xml', video: 'video/mp4', audio: 'audio/mpeg', file: 'application/pdf' }[outcome];
+  const body = outcome === 'image' ? svg : 'media bytes';
   const fetch = globalThis.fetch;
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
     String(input instanceof Request ? input.url : input).includes('/attachments/forge/')
-      ? Promise.resolve(new Response('media bytes', { status: 200, headers: { 'Content-Type': mimeType } }))
+      ? Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': mimeType } }))
       : fetch(input, init),
   );
   let ticket = 0;
   setBindingMock('FetchForgeAttachment', async () => ({
     url: `/attachments/forge/tok${++ticket}?ticket=t`,
     mimeType,
-    kind,
-    sizeBytes: 11,
-    filename: kind === 'video' ? 'clip.mp4' : 'clip.mp3',
+    kind: outcome,
+    sizeBytes: body.length,
+    filename: `clip.${{ image: 'svg', video: 'mp4', audio: 'mp3', file: 'pdf' }[outcome]}`,
+    ...(outcome === 'image' ? { width: 80, height: 20, originalWidth: 80, originalHeight: 20, derived: false } : {}),
   }));
 }
+const OUTCOMES: Outcome[] = ['loading', 'failed', 'image', 'video', 'audio', 'file'];
 
 let host: HTMLElement;
 
@@ -81,18 +107,13 @@ const SHAPES: [string, (asset: string) => string][] = [
 describe.each([
   ['GitHub', GITHUB],
   ['GitLab', GITLAB],
-] as const)('a %s attachment player', (_forge, forgeSource) => {
+] as const)('a %s attachment', (_forge, forgeSource) => {
   describe.each(SHAPES)('written as %s', (_shape, write) => {
-    it.each([
-      ['video', false],
-      ['video', true],
-      ['audio', false],
-      ['audio', true],
-    ] as const)('ends the find run as a %s player (streaming %s)', async (kind, streaming) => {
-      stage(kind);
+    it.each(OUTCOMES.flatMap((outcome) => [[outcome, false], [outcome, true]] as const))('ends the find run when it shows %s (streaming %s)', async (outcome, streaming) => {
+      stage(outcome);
       const source = `${write(ASSETS[forgeSource.pr.forge as 'github' | 'gitlab'])}\n\nlast line`;
       render(ForgeAttachmentChatHarness, { target: host, props: { source, forgeSource, streaming } });
-      await waitFor(() => expect(host.querySelector(`[data-forge-attachment-${kind}] ${kind}`)).toBeTruthy());
+      await waitFor(() => expect(host.querySelector(SHOWN[outcome])).toBeTruthy());
       const dom = findTextSegments(host.querySelector('.markdown-body')!);
       const projected = markdownFindText(source, { embeddedHtml: true, forgeSource }).runs;
       expect(dom.filter((run) => run.trim() !== '')).toEqual(projected.map(foldFindText).filter((run) => run.trim() !== ''));

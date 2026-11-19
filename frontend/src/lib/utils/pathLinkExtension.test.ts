@@ -410,14 +410,22 @@ describe('buildPathLinkExtension', () => {
 
   it('claims a local image inside a link label, and nothing after it in the label', () => {
     const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '/workspace');
-    const tokens = lex('[![shot](shots/a.png) src/foo.ts [b](src/foo.ts)](https://example.com/x)', ext);
+    const tokens = lex('[![shot](shots/a.png) src/foo.ts](https://example.com/x)', ext);
     expect(findImages(tokens).map(image => parseLocalImageHref(image.href)?.path)).toEqual(['shots/a.png']);
-    // The label holds no path link: not its prose, not a link inside it.
+    // The label's prose is not a path link.
     expect(findLinks(tokens).filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX))).toEqual([]);
     // The claim says it is in a link, so the host keeps the link the
     // picture's one control; outside a link it says nothing.
     expect(findImages(tokens).map(image => image.inLink)).toEqual([true]);
     expect(findImages(lex('see ![shot](shots/a.png)', ext)).map(image => image.inLink)).toEqual([undefined]);
+  });
+
+  it('claims nothing as in a link when the label holds a link, which leaves the outer brackets text', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '/workspace');
+    const tokens = lex('[![shot](shots/a.png) [b](src/foo.ts)](https://example.com/x)', ext);
+    // The inner link is the link (CommonMark), so the picture is in none.
+    expect(findImages(tokens).map(image => image.inLink)).toEqual([undefined]);
+    expect(findLinks(tokens).filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX)).map(link => link.raw)).toEqual(['[b](src/foo.ts)']);
   });
 
   it('rewrites a path-shaped markdown link even when the href is not allowlisted', () => {

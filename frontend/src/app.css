@@ -959,13 +959,20 @@ input[type="search"]::-webkit-search-cancel-button {
   font-size: 0.8125rem;
   table-layout: auto;
 }
+/* A cell without a column alignment starts at the left, header cells
+   included. An authored `align` (`:---:`, `<td align>`) is a presentational
+   hint, which any rule here would override, so the default names only the
+   cells that have none. */
+.markdown-body th:not([align]),
+.markdown-body td:not([align]) {
+  text-align: left;
+}
 .markdown-body th,
 .markdown-body td {
   border-width: 1px;
   border-style: solid;
   border-color: var(--border);
   padding: 0.35rem 0.625rem;
-  text-align: left;
   vertical-align: top;
   /* break-word, not anywhere: with table-layout:auto the browser sizes each
      column from its cell's min-content width, and `anywhere` collapses that
@@ -1021,6 +1028,12 @@ input[type="search"]::-webkit-search-cancel-button {
   vertical-align: baseline;
   accent-color: var(--accent);
 }
+/* A loose task item's text is a paragraph; it runs on from the box, so the
+   box sits beside the first line as in a tight item. A later paragraph or
+   nested list is a block and starts its own line. */
+.markdown-body li.md-task-list-item > p:first-of-type {
+  display: inline;
+}
 
 /* GFM strikethrough — <del> browser default is fine; tone the color to match. */
 .markdown-body del {
@@ -1034,7 +1047,9 @@ input[type="search"]::-webkit-search-cancel-button {
   width: 0.65em;
   height: 0.65em;
   margin-left: 0.3em;
-  border: 1px solid var(--border-subtle);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
   border-radius: 9999px;
   vertical-align: middle;
 }
@@ -1144,6 +1159,15 @@ svg[data-mermaid-svg] .labelBox {
 .markdown-body.review-prose p {
   white-space: normal;
 }
+/* Text direction as a forge's `dir="auto"`: each paragraph, heading, list
+   item and table cell takes its base direction from its first strong
+   character, so Arabic or Hebrew text and the punctuation beside it read
+   right to left. The inherited `text-align: start` resolves against that
+   direction, so such a block aligns right; an authored `align` or a
+   centered wrapper still wins, and table cells keep the base rule's left. */
+.markdown-body.review-prose :is(p, h1, h2, h3, h4, h5, h6, li, td, th) {
+  unicode-bidi: plaintext;
+}
 .markdown-body.review-prose details {
   border-width: 0;
   border-style: none;
@@ -1200,7 +1224,9 @@ svg[data-mermaid-svg] .labelBox {
   line-height: 1.2;
   vertical-align: middle;
   background: var(--surface-1);
-  border: 1px solid var(--border);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border);
   border-radius: 0.25rem;
   box-shadow: inset 0 -1px 0 var(--border);
 }

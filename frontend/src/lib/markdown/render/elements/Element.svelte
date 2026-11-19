@@ -4,6 +4,7 @@
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
 	import HtmlRegion from './HtmlRegion.svelte';
+	import SourceText from './SourceText.svelte';
 	import type { GenericToken, ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte';
@@ -11,6 +12,7 @@
 	import FootnoteRef from './FootnoteRef.svelte';
 	import { tableCellRenders } from './url';
 	import { headingAnchor, htmlAnchorName } from '../../parser/documentScope';
+	import { fenceLanguage } from '../../parser/fenceLanguage';
 	let {
 		token,
 		children,
@@ -37,10 +39,6 @@
 		return token;
 	}
 </script>
-
-{#snippet sourceText(text: string)}
-	<pre class={streamdown.theme.code.pre}><code>{text}</code></pre>
-{/snippet}
 
 {#if token.type === 'heading'}
 	<Slot
@@ -93,12 +91,12 @@
 			{@render children()}
 		</blockquote>
 	</Slot>
-{:else if token.type === 'code' && token.lang === 'mermaid'}
+{:else if token.type === 'code' && fenceLanguage(token.lang) === 'mermaid'}
 	<Slot props={{ children, token }} render={streamdown.snippets.code}>
 		{#if MermaidComponent}
 			<MermaidComponent {id} {token} />
 		{:else}
-			<div data-streamdown-mermaid={id}>{@render sourceText(token.text)}</div>
+			<div data-streamdown-mermaid={id}><SourceText text={token.text} /></div>
 		{/if}
 	</Slot>
 {:else if token.type === 'code'}
@@ -107,7 +105,7 @@
 			<CodeComponent {id} {token} textAppend={codeTextAppend} />
 		{:else}
 			<div data-streamdown-code={id} class={streamdown.theme.code.base}>
-				{@render sourceText(token.text)}
+				<SourceText text={token.text} />
 			</div>
 		{/if}
 	</Slot>
@@ -292,10 +290,10 @@
 			<MathComponent {id} {token} />
 		{:else if token.isInline}
 			<span data-streamdown-inline-math={id} class={streamdown.theme.math.inline}
-				><code>{token.text}</code></span
+				><SourceText text={token.text} inline /></span
 			>
 		{:else}
-			<div data-streamdown-block-math={id}>{@render sourceText(token.text)}</div>
+			<div data-streamdown-block-math={id}><SourceText text={token.text} /></div>
 		{/if}
 	</Slot>
 {:else if token.type === 'alert'}
@@ -360,7 +358,8 @@
 	</summary>
 {:else if token.type === 'htmlInline'}
 	<!-- The tag is one of the parser's fixed names, never authored text. -->
-	<svelte:element this={token.tag} data-streamdown-html-inline={id} data-md-anchor={htmlAnchorName(token.raw, streamdown.document?.forge)} title={token.title}>
+	<!-- Its attributes are the ones the HTML policy keeps (htmlPolicy.ts). -->
+	<svelte:element this={token.tag} {...token.attrs} data-streamdown-html-inline={id} data-md-anchor={htmlAnchorName(token.raw, streamdown.document?.forge)}>
 		{@render children()}
 	</svelte:element>
 {:else if token.type === 'html'}

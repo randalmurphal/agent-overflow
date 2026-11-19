@@ -123,7 +123,13 @@ describe('thread find text', () => {
     expect(rows.filter((row) => !row.runs.length && !row.name.startsWith('combination') && !row.name.startsWith(AGENT_MESSAGE_ROW)).map((row) => row.name)).toEqual([
       'generic tool path', 'thinking collapsed', 'notification',
       // Chat drops embedded HTML: these show none of it.
-      'assistant 17', 'assistant 18', 'assistant 26',
+      'assistant 17', 'assistant 18', 'assistant 26', 'assistant 103',
+      // A lone image, whose alt is not find text.
+      'assistant 105', 'assistant 136',
+      // Chat drops embedded HTML.
+      'assistant 139', 'assistant 141',
+      // A lone diagram.
+      'assistant 146',
     ]);
     await expect(`${JSON.stringify({ rows }, null, 2)}\n`).toMatchFileSnapshot('../../../test/fixtures/findCandidateVectors.json');
   });

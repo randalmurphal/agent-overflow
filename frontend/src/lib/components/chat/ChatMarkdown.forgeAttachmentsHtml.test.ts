@@ -148,6 +148,28 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     expect(rpc).toHaveBeenCalledTimes(1);
   });
 
+  // GitLab's float class places a claimed upload as `align` does, on all
+  // three claim paths; GitHub has no such class.
+  it.each([
+    ['alone on its line', (src: string) => `<img class="glfm-float-right" alt="a shot" src="${src}">\n\nlast`],
+    ['in a sentence', (src: string) => `See <img class="glfm-float-right" alt="a shot" src="${src}"> here.`],
+    ['inside a wrapper', (src: string) => `<div><img class="glfm-float-right" alt="a shot" src="${src}"></div>`],
+  ])("floats an upload by GitLab's float class on GitLab only, %s", async (_position, source) => {
+    const floatOf = async (forgeSource: ForgeAttachmentSource, src: string) => {
+      const { container } = render(ForgeAttachmentChatHarness, { props: { source: source(src), forgeSource, streaming } });
+      await waitFor(() => {
+        measure();
+        expect(container.querySelector(`img[src^="blob:"]`)).not.toBeNull();
+      });
+      let box: HTMLElement | null = container.querySelector<HTMLImageElement>(`img[src^="blob:"]`);
+      while (box && box !== container && box.style.float === '') box = box.parentElement;
+      return box === container ? '' : box?.style.float;
+    };
+    stageAttachment();
+    expect(await floatOf(GITLAB, GITLAB_UPLOAD)).toBe('right');
+    expect(await floatOf(GITHUB, GITHUB_ASSET)).toBe('');
+  });
+
   it('renders a GitLab upload inside a table cell', async () => {
     const rpc = stageAttachment();
     const { container } = render(ForgeAttachmentChatHarness, {

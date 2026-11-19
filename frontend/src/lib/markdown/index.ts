@@ -22,10 +22,10 @@ export {
   createProvenAppend,
   createMaterializedProvenAppend,
   matchesProvenAppend,
-  alignmentAfter,
   alignmentAtEnd,
-  isAlignmentMarkerBlock,
+  blockAlignment,
   topLevelShape,
+  fenceLanguage,
 } from './parser/index';
 export type {
   Alignment,
@@ -41,11 +41,8 @@ export type {
   ProvenAppend,
 } from './parser/index';
 export { parseIncompleteMarkdown } from './parser/incompleteMarkdown';
-export { EMBEDDED_HTML_EXTENSIONS } from './parser/extensions/embeddedHtml';
-// The inline half on its own, so an app extension that must claim an
-// `<img>` before this set sees it can reuse the same attribute parsing
-// rather than re-implementing it (utils/forgeAttachmentExtension.ts).
-export { markedEmbeddedInlineHtml } from './parser/extensions/embeddedHtml';
+export { EMBEDDED_HTML_EXTENSIONS, embeddedHtmlFor, type EmbeddedHtml } from './parser/extensions/embeddedHtml';
+export type { HtmlPolicy } from './parser/extensions/htmlPolicy';
 export type { EmbeddedImageToken } from './parser/extensions/embeddedHtml';
 // GitHub's soft-break-as-<br> rendering, for a surface showing GitHub content.
 export { markedSoftBreak } from './parser/extensions/softBreak';
@@ -55,7 +52,7 @@ export { markedSoftBreak } from './parser/extensions/softBreak';
 export { markedImageAttributes } from './parser/extensions/imageAttributes';
 // A forge surface leaves agent chat's own grammar out (`[center]`,
 // citations, MDX, `~sub~`/`^sup^`, `:term:` lists, chat's inline math).
-export { markedForgeGrammar, usesChatGrammar } from './parser/index';
+export { markedForgeGrammar } from './parser/index';
 // Forge syntax: GFM's `~text~` strikethrough; color chips in code spans
 // (GitHub's forms, then GitLab's CSS forms); and GitLab's inline diff,
 // `>>>` quotes, front matter, `[~]` and bare task boxes, task boxes in

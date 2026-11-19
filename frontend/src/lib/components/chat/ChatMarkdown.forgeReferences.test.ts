@@ -71,7 +71,7 @@ describe('forge references in ChatMarkdown', () => {
     ['GitHub', GITHUB, GITHUB_ANCHORS],
     ['GitLab', GITLAB, GITLAB_ANCHORS],
   ] as const)('render the same anchors on the component and compact static paths (%s)', async (_name, forgeSource, expected) => {
-    const extensions = chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(forgeSource, false).extensions, embeddedHtml: false });
+    const extensions = chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(forgeSource, false) });
     const { container } = render(CompactStaticMarkdownHarness, { source: SOURCE, extensions });
     const componentPath = container.querySelector('[data-full-token-tree]')!;
     const staticPath = container.querySelector('[data-compact-static]')!;

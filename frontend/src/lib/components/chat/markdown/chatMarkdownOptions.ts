@@ -7,7 +7,7 @@
 // sanitizer's `claimMedia`, which drops a claimed video's children.
 
 import type { ClaimEmbeddedMedia, ColorScheme, Extension, SanitizeEmbeddedHtmlOptions } from '../../../markdown';
-import { EMBEDDED_HTML_EXTENSIONS, markedImageAttributes, markedMediaImages, markedSoftBreak } from '../../../markdown';
+import { embeddedHtmlFor, markedImageAttributes, markedMediaImages, markedSoftBreak } from '../../../markdown';
 import {
   markedColorChips,
   markedCommonmarkList,
@@ -64,6 +64,10 @@ export interface ChatMarkdownForgeOptions {
    * GitLab's image attribute lists, then the forge's syntax (FORGE_SYNTAX),
    * then the forge's emoji shortcodes. */
   readonly extensions: readonly Extension[] | undefined;
+  /** The embedded-HTML extensions, last in the list; none without
+   * `embeddedHtml`. Their inline tokenizer keeps the elements the
+   * sanitizer's `html.policy` keeps (`embeddedHtmlFor`). */
+  readonly htmlExtensions: readonly Extension[] | undefined;
   /** What the embedded HTML sanitizer runs with. */
   readonly html: SanitizeEmbeddedHtmlOptions | undefined;
   /** The reader's color scheme, which GitHub's theme-specific images
@@ -76,8 +80,12 @@ export interface ChatMarkdownForgeOptions {
  * without a GitHub or GitLab source. ChatMarkdown keys this on the
  * source's scalars, so the extension identities hold across renders. */
 export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | undefined, embeddedHtml: boolean): ChatMarkdownForgeOptions {
-  if (!source || (source.pr.forge !== 'github' && source.pr.forge !== 'gitlab')) return { extensions: undefined, html: undefined, colorScheme: undefined };
+  if (!source || (source.pr.forge !== 'github' && source.pr.forge !== 'gitlab')) {
+    const any = embeddedHtml ? embeddedHtmlFor(null) : undefined;
+    return { extensions: undefined, htmlExtensions: any?.extensions, html: any && { policy: any.policy }, colorScheme: undefined };
+  }
   const { pr, backend, webBase } = source;
+  const embedded = embeddedHtmlFor(pr.forge);
   const claimMedia: ClaimEmbeddedMedia = (_tag, src) =>
     isForgeAttachmentHref(pr.forge, src) ? buildForgeAttachmentHref({ href: src, pr, backend, webBase }) : null;
   // References after attachments, which claim a relative `/uploads/` link
@@ -102,8 +110,8 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
   // `chatMarkdownExtensions` resolves once the name table has loaded.
   return {
     extensions: [...attachments, ...forgeOwn, ...FORGE_SYNTAX[pr.forge], emoji],
-    // GitHub shows a `<textarea>` or `<iframe>` as its source (htmlSanitize.ts `tagFilter`).
-    html: pr.forge === 'github' ? { claimMedia, colorScheme, tagFilter: true, ...htmlText } : { claimMedia, ...htmlText },
+    htmlExtensions: embeddedHtml ? embedded.extensions : undefined,
+    html: { policy: embedded.policy, claimMedia, colorScheme, ...htmlText },
     colorScheme,
   };
 }
@@ -115,18 +123,17 @@ export function chatMarkdownForgeOptions(source: ForgeAttachmentSource | null | 
  * nothing behind it loses a token. Preview then precedes path links, which
  * claim every remaining `[…](…)`. */
 export function chatMarkdownExtensions(parts: {
-  forge: readonly Extension[] | undefined;
+  forge: ChatMarkdownForgeOptions;
   preview?: Extension;
   pathLink?: Extension;
-  embeddedHtml: boolean;
 }): Extension[] {
   const list: Extension[] = [];
   // A forge emoji slot becomes the loaded extension when its table arrives;
   // reading it here makes that a reactive change of this list alone.
-  if (parts.forge) for (const extension of parts.forge) list.push(resolveForgeEmoji(extension));
+  if (parts.forge.extensions) for (const extension of parts.forge.extensions) list.push(resolveForgeEmoji(extension));
   if (parts.preview) list.push(parts.preview);
   if (parts.pathLink) list.push(parts.pathLink);
-  if (parts.embeddedHtml) list.push(...EMBEDDED_HTML_EXTENSIONS);
+  if (parts.forge.htmlExtensions) list.push(...parts.forge.htmlExtensions);
   return list;
 }
 

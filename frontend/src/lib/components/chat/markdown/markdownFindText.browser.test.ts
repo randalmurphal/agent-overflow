@@ -7,8 +7,8 @@ import { EMPTY_PATH_REFS } from '../../../utils/pathLinkify';
 import { countFindMatches, findNeedle, foldFindText } from '../../../utils/findMatch';
 import { findTextRuns, findTextSegments } from '../../../utils/findHighlights';
 import { markdownFindText, SHOWS } from './markdownFindText';
-import { EMBEDDED_HTML_EXTENSIONS, lex, parseBlocks } from '../../../markdown';
-import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
+import { lex, parseBlocks } from '../../../markdown';
+import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './chatMarkdownOptions';
 import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from './forgeAttachmentContext';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { resetCodeSpanCacheForTest } from './codeSpanCache';
@@ -109,9 +109,13 @@ function mismatches(source: string, dom: readonly string[], projected: readonly 
     .filter((row) => row.dom !== row.projected);
 }
 
-// Every token kind the projection has a rule for, as the corpus lexes.
+// Every token kind the projection has a rule for, as the corpus lexes on
+// each surface: agent chat, and a GitHub and a GitLab review with the
+// options ChatMarkdown builds for them.
 function corpusKinds(): Set<string> {
-  const extensions = [...buildForgeAttachmentExtension({ ...FORGE, embeddedHtml: true }), ...EMBEDDED_HTML_EXTENSIONS];
+  const surfaces = ([[null, false], [GITHUB_FORGE, true], [FORGE, true]] as const).map(([source, embeddedHtml]) =>
+    chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(source, embeddedHtml) }),
+  );
   const seen = new Set<string>();
   const visit = (tokens: readonly { type: string; tokens?: unknown[]; items?: unknown[] }[] | undefined) => {
     for (const token of tokens ?? []) {
@@ -120,8 +124,10 @@ function corpusKinds(): Set<string> {
       visit(token.items as typeof tokens);
     }
   };
-  for (const source of CORPUS) {
-    for (const block of parseBlocks(source, extensions)) visit(lex(block, extensions) as never);
+  for (const extensions of surfaces) {
+    for (const source of CORPUS) {
+      for (const block of parseBlocks(source, extensions)) visit(lex(block, extensions) as never);
+    }
   }
   return seen;
 }

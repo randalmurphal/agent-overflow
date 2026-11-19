@@ -52,6 +52,7 @@ export namespace Tokens {
     type: 'code';
     raw: string;
     codeBlockStyle?: 'indented';
+    /** The whole info string; its language is `fenceLanguage(lang)`. */
     lang?: string;
     text: string;
     escaped?: boolean;

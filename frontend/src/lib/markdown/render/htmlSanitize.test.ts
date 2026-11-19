@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SHORT_CODESPAN_CLASS, SHORT_CODESPAN_MAX_LENGTH } from './codespan';
 import { htmlRegionNodes, parseHtmlRegion, sanitizeEmbeddedHtmlToken } from './htmlSanitize';
+import { htmlPolicyOf } from '../parser/extensions/htmlPolicy';
 
 // The allowlist sanitizer behind `renderHtml` on embedded-HTML surfaces.
 // Contract: sanitized fragment for complete blocks, built from allowlisted
@@ -38,8 +39,8 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 
 	it('renders an element off the allowlist as its children, as a forge strips it', () => {
 		expect(block('<blink>still <b>here</b></blink>')).toBe('still <b>here</b>');
-		expect(block('<p><big>big</big> <font color="red">font</font> <marquee>m</marquee> <time>t</time></p>')).toBe(
-			'<p>big font m t</p>'
+		expect(block('<p><big>big</big> <font color="red">font</font> <marquee>m</marquee> <u>u</u> <center>c</center></p>')).toBe(
+			'<p>big font m u c</p>'
 		);
 		expect(block('<h7>h7</h7><h8>h8</h8>')).toBe('h7h8');
 		expect(block('<form action="https://example.invalid/"><input type="text" value="typed"> box<button>Go</button><select><option>opt</option></select><textarea>area</textarea></form>')).toBe(
@@ -47,11 +48,11 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 		);
 		expect(block('<math><mi>x</mi><mo>=</mo><mn>1</mn></math>')).toBe('x=1');
 		expect(block('<noscript>ns</noscript> <template><p>tpl</p></template> <slot>sl</slot>')).toBe('ns <p>tpl</p> sl');
-		expect(block('<object data="https://example.invalid/x"></object><embed src="https://example.invalid/x"><wbr><link rel="x"><colgroup><col></colgroup>')).toBe('');
+		expect(block('<object data="https://example.invalid/x"></object><embed src="https://example.invalid/x"><link rel="x"><colgroup><col></colgroup>')).toBe('');
 	});
 
 	it('shows a tag-filtered tag as its source text, as GitHub does', () => {
-		const filtered = (raw: string, isBlock = true) => sanitizeEmbeddedHtmlToken({ raw, block: isBlock }, { tagFilter: true });
+		const filtered = (raw: string, isBlock = true) => sanitizeEmbeddedHtmlToken({ raw, block: isBlock }, { policy: htmlPolicyOf('github') });
 		expect(filtered('<textarea>area</textarea>')).toBe('&lt;textarea&gt;area&lt;/textarea&gt;');
 		expect(filtered('<TITLE>t</TITLE> <xmp>x</xmp>')).toBe('&lt;TITLE&gt;t&lt;/TITLE&gt; &lt;xmp&gt;x&lt;/xmp&gt;');
 		expect(filtered('<iframe src="https://example.invalid/f"></iframe>')).toBe(
@@ -198,8 +199,20 @@ describe('sanitizeEmbeddedHtmlToken', () => {
 		expect(block('<h3 align="center" id="x">Title</h3>')).toBe('<h3 align="center">Title</h3>');
 	});
 
-	it.each(['mark', 'small', 'q', 'var', 'cite', 'dfn', 'ins', 'u'])('keeps <%s> as itself, without attributes', (tag) => {
+	it.each(['mark', 'small', 'q', 'var', 'cite', 'dfn', 'ins'])('keeps <%s> as itself, without attributes', (tag) => {
 		expect(block(`<p><${tag} class="x">t</${tag}></p>`)).toBe(`<p><${tag}>t</${tag}></p>`);
+	});
+
+	it('keeps what each forge keeps, by the one HTML policy', () => {
+		const github = (raw: string) => sanitizeEmbeddedHtmlToken({ raw, block: true }, { policy: htmlPolicyOf('github') });
+		const gitlab = (raw: string) => sanitizeEmbeddedHtmlToken({ raw, block: true }, { policy: htmlPolicyOf('gitlab') });
+		const raw = '<p><small>s</small><abbr title="t">a</abbr><dfn>d</dfn><cite>c</cite><time>t</time><bdo dir="rtl">b</bdo>w<wbr>w</p>';
+		expect(github(raw)).toBe('<p>sadctbww</p>');
+		expect(gitlab(raw)).toBe('<p><small>s</small><abbr title="t">a</abbr><dfn>d</dfn><cite>c</cite><time>t</time><bdo dir="rtl">b</bdo>w<wbr>w</p>');
+		// GitHub shows a caption's and a figure's text without the element.
+		expect(github('<table><caption>C</caption><tr><td>x</td></tr></table>')).toBe('<table>C<tbody><tr><td>x</td></tr></tbody></table>');
+		expect(github('<figure><figcaption>F</figcaption></figure>')).toBe('F');
+		expect(gitlab('<figure><figcaption>F</figcaption></figure>')).toBe('<figure><figcaption>F</figcaption></figure>');
 	});
 
 	it('keeps an abbr title', () => {

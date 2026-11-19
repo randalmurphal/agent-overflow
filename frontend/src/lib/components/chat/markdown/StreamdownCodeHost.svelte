@@ -99,6 +99,7 @@
 <script lang="ts">
   import {
     acquireDocumentInteraction,
+    fenceLanguage,
     matchesProvenAppend,
     useStreamdown,
     type DocumentInteraction,
@@ -122,7 +123,6 @@
   } from './codeSpanCache';
   import {
     clearCompletedCodeBlockRenderer,
-    codeFenceInfoWord,
     codeWrapLabel,
     publishCompletedCodeBlockRenderer,
     renderStaticCodeBlockHtml,
@@ -152,10 +152,10 @@
 
   const streamdown = useStreamdown();
 
-  // Highlight identity for this block (see infoWord above). Everything
+  // Highlight identity for this block: the fence's language. Everything
   // span-related — cache keys, pushed-span matching, RPC lang — uses this;
   // only the data-code-lang stamp keeps the full info string.
-  let highlightLang = $derived(codeFenceInfoWord(token.lang ?? ''));
+  let highlightLang = $derived(fenceLanguage(token.lang));
 
   // Resolved spans plus the exact (lang, source) they were computed
   // for. Language is part of the identity: the same text under a new
@@ -189,7 +189,7 @@
   // the start of a command, and running that is running something else.
   let runnable = $derived(
     streamdown.parseIncompleteMarkdown === false
-      && isRunnableShellLang(codeFenceInfoWord(token.lang ?? '')),
+      && isRunnableShellLang(fenceLanguage(token.lang)),
   );
 
   function runFromHost(event: MouseEvent): void {

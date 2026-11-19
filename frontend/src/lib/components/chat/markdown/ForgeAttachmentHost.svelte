@@ -169,106 +169,102 @@
   }
 </script>
 
-{#if error || decodeFailed}
-  <span
-    data-forge-attachment-error
-    data-find-skip
-    class="inline-block rounded border border-error/40 bg-error/10 px-2 py-1 text-xs text-error"
-    title={error}
-  >
-    [Attachment unavailable: {name}]
-  </span>
-  {#if browserUrl && !linked}
-    <a
-      class="ml-1 text-xs underline"
-      href={browserUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      data-forge-attachment-fallback
-      data-find-skip
+<!-- Whatever the bytes are, the attachment is no text find reads: the root
+     ends the run it sits in (`markdownFindText` skips every claim alike). -->
+<span data-forge-attachment-host data-find-skip class="contents">
+  {#if error || decodeFailed}
+    <span
+      data-forge-attachment-error
+      class="inline-block rounded border border-error/40 bg-error/10 px-2 py-1 text-xs text-error"
+      title={error}
     >
-      open on {parsed?.pr.forge === 'gitlab' ? 'GitLab' : 'GitHub'}
-    </a>
+      [Attachment unavailable: {name}]
+    </span>
+    {#if browserUrl && !linked}
+      <a
+        class="ml-1 text-xs underline"
+        href={browserUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-forge-attachment-fallback
+      >
+        open on {parsed?.pr.forge === 'gitlab' ? 'GitLab' : 'GitHub'}
+      </a>
+    {/if}
+  {:else if loading || !resolved}
+    <span
+      data-forge-attachment-loading
+      class="inline-block rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg-hint"
+      {@attach measureFirst}
+    >
+      Loading {name}…
+    </span>
+  {:else if resolved.kind === 'image' && imageSource}
+    <MarkdownImage
+      source={imageSource}
+      {alt}
+      title={browserUrl ?? undefined}
+      markdownImageSrc={parsed?.href}
+      {size}
+      {linked}
+      initial={held ?? undefined}
+      ondecodeerror={handleDecodeError}
+    />
+  {:else if linked}
+    <span
+      data-forge-attachment-linked={resolved.kind}
+      class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs"
+      title={browserUrl ?? undefined}
+    >
+      <Icon icon={resolved.kind === 'video' ? Film : resolved.kind === 'audio' ? Music : Paperclip} size={12} />
+      <span class="truncate">{resolved.filename || name}</span>
+      <span class="text-fg-hint">{formatAttachmentSize(resolved.sizeBytes)}</span>
+    </span>
+  {:else if resolved.kind === 'video'}
+    <span
+      data-forge-attachment-video
+      class="my-4 mx-auto block w-fit max-w-full"
+      style:width={size.wrapper}
+      style:float={size.float}
+      style:vertical-align={size.verticalAlign}
+      style:margin-inline={size.marginInline}
+    >
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video
+        class="max-w-full rounded-lg"
+        style:width={size.width}
+        style:height={size.height}
+        style:aspect-ratio={size.aspectRatio}
+        src={resolved.url}
+        title={browserUrl ?? undefined}
+        controls
+        playsinline
+        preload="metadata"
+        onerror={handleDecodeError}
+      ></video>
+    </span>
+  {:else if resolved.kind === 'audio'}
+    <span data-forge-attachment-audio class="my-2 block w-fit max-w-full">
+      <audio
+        class="max-w-full"
+        src={resolved.url}
+        title={browserUrl ?? undefined}
+        controls
+        preload="metadata"
+        onerror={handleDecodeError}
+      ></audio>
+    </span>
+  {:else}
+    <button
+      type="button"
+      data-forge-attachment-file
+      class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs hover:bg-surface-2"
+      title={browserUrl ?? undefined}
+      onclick={activate}
+    >
+      <Icon icon={Paperclip} size={12} />
+      <span class="truncate">{resolved.filename || name}</span>
+      <span class="text-fg-hint">{formatAttachmentSize(resolved.sizeBytes)}</span>
+    </button>
   {/if}
-{:else if loading || !resolved}
-  <span
-    data-forge-attachment-loading
-    data-find-skip
-    class="inline-block rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg-hint"
-    {@attach measureFirst}
-  >
-    Loading {name}…
-  </span>
-{:else if resolved.kind === 'image' && imageSource}
-  <MarkdownImage
-    source={imageSource}
-    {alt}
-    title={browserUrl ?? undefined}
-    markdownImageSrc={parsed?.href}
-    {size}
-    {linked}
-    initial={held ?? undefined}
-    ondecodeerror={handleDecodeError}
-  />
-{:else if linked}
-  <span
-    data-forge-attachment-linked={resolved.kind}
-    data-find-skip
-    class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs"
-    title={browserUrl ?? undefined}
-  >
-    <Icon icon={resolved.kind === 'video' ? Film : resolved.kind === 'audio' ? Music : Paperclip} size={12} />
-    <span class="truncate">{resolved.filename || name}</span>
-    <span class="text-fg-hint">{formatAttachmentSize(resolved.sizeBytes)}</span>
-  </span>
-{:else if resolved.kind === 'video'}
-  <!-- A player has no text: `data-find-skip` makes it end find's run, as
-       the image or tag it was written as does. -->
-  <span
-    data-forge-attachment-video
-    data-find-skip
-    class="my-4 mx-auto block w-fit max-w-full"
-    style:width={size.wrapper}
-    style:float={size.float}
-    style:vertical-align={size.verticalAlign}
-    style:margin-inline={size.marginInline}
-  >
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video
-      class="max-w-full rounded-lg"
-      style:width={size.width}
-      style:height={size.height}
-      style:aspect-ratio={size.aspectRatio}
-      src={resolved.url}
-      title={browserUrl ?? undefined}
-      controls
-      playsinline
-      preload="metadata"
-      onerror={handleDecodeError}
-    ></video>
-  </span>
-{:else if resolved.kind === 'audio'}
-  <span data-forge-attachment-audio data-find-skip class="my-2 block w-fit max-w-full">
-    <audio
-      class="max-w-full"
-      src={resolved.url}
-      title={browserUrl ?? undefined}
-      controls
-      preload="metadata"
-      onerror={handleDecodeError}
-    ></audio>
-  </span>
-{:else}
-  <button
-    type="button"
-    data-forge-attachment-file
-    data-find-skip
-    class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs hover:bg-surface-2"
-    title={browserUrl ?? undefined}
-    onclick={activate}
-  >
-    <Icon icon={Paperclip} size={12} />
-    <span class="truncate">{resolved.filename || name}</span>
-    <span class="text-fg-hint">{formatAttachmentSize(resolved.sizeBytes)}</span>
-  </button>
-{/if}
+</span>

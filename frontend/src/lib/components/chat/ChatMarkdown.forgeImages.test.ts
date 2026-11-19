@@ -62,8 +62,9 @@ describe('theme-specific images', () => {
     await waitFor(() => expect(srcs(container)).toEqual(['inline.png', 'block-light.png', 'md-light.png#gh-light-mode-only', 'html-light.png#gh-light-mode-only']));
     // The authored size is the chosen source's.
     expect(container.querySelector<HTMLImageElement>('img[src$="block-light.png"]')!.style.width).toBe('300px');
-    // A hidden image still ends find's run where it stood.
-    expect(container.querySelectorAll('[data-streamdown-image-hidden][data-find-skip]')).toHaveLength(1);
+    // A hidden image still ends find's run where it stood: the Markdown
+    // one and the HTML one, each line of which is its own paragraph.
+    expect(container.querySelectorAll('[data-streamdown-image-hidden][data-find-skip]')).toHaveLength(2);
 
     void setAppearance({ mode: 'dark' });
     await waitFor(() => expect(srcs(container)).toEqual(['inline-dark.png', 'block-dark.png', 'md-dark.png#gh-dark-mode-only', 'html-dark.png#gh-dark-mode-only']));
@@ -198,7 +199,32 @@ describe('image placement', () => {
     const [inline, block] = container.querySelectorAll('img');
     const wrapper = inline.closest<HTMLElement>('[data-streamdown-image]')!;
     expect([wrapper.style.float, wrapper.style.marginInline]).toEqual(['right', '8px']);
-    expect(block.style.float).toBe('left');
+    // A lone image line is GitHub's paragraph; the image token's wrapper floats.
+    expect(block.closest<HTMLElement>('[data-streamdown-image]')!.style.float).toBe('left');
+  });
+
+  it.each([false, true])("floats a raw HTML image by GitLab's float class, on GitLab only (streaming %s)", async (streaming) => {
+    const source = [
+      'Text <img src="https://example.invalid/a.png" class="glfm-float-right" alt="a"> wraps.',
+      '',
+      '<img src="https://example.invalid/b.png" class="glfm-float-left" align="right" alt="b">',
+      '',
+      '<img src="https://example.invalid/c.png" class="custom glfm-float-right" alt="c">',
+      '',
+      'last line',
+    ].join('\n');
+    // The box a placement lands on: the inline image's wrapper, else the image.
+    const floats = (root: Element) =>
+      [...root.querySelectorAll('img')].map((img) => (img.closest<HTMLElement>('[data-streamdown-image]') ?? img).style.float);
+    const gitlab = mount(source, GITLAB, streaming).container;
+    await waitFor(() => expect(gitlab.querySelectorAll('img')).toHaveLength(3));
+    // The class beats `align`, as GitLab's stylesheet beats a presentational
+    // attribute; a class value holding anything else is dropped whole.
+    expect(floats(gitlab)).toEqual(['right', 'left', '']);
+    const github = mount(source, GITHUB, streaming).container;
+    await waitFor(() => expect(github.querySelectorAll('img')).toHaveLength(3));
+    expect(floats(github)).toEqual(['', 'right', '']);
+    for (const root of [gitlab, github]) expect(root.querySelector('[class*="glfm"]')).toBeNull();
   });
 
   it("floats an image by GitLab's float class", async () => {
@@ -206,5 +232,33 @@ describe('image placement', () => {
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
     expect(container.querySelector<HTMLElement>('[data-streamdown-image]')!.style.float).toBe('right');
     expect(container.textContent).not.toContain('float');
+  });
+});
+
+describe('lone image lines', () => {
+  const SOURCE = [
+    '<img src="https://example.invalid/a.png" alt="a">',
+    '<img src="https://example.invalid/b.png" alt="b">',
+    '',
+    'Text',
+    '<img src="https://example.invalid/c.png" alt="c">',
+    '',
+    'last line',
+  ].join('\n');
+  // The alts of the images sharing each image's paragraph.
+  const paragraphs = (root: Element) =>
+    [...root.querySelectorAll('img')].map((img) => [...(img.closest('p')?.querySelectorAll('img') ?? [])].map((each) => each.alt).join());
+
+  it.each([false, true])('stack on GitHub, each line its own paragraph, and flow on GitLab (streaming %s)', async (streaming) => {
+    const github = mount(SOURCE, GITHUB, streaming).container;
+    await waitFor(() => expect(github.querySelectorAll('img')).toHaveLength(3));
+    // An image line after text stays in that paragraph, as an HTML block
+    // cannot interrupt one.
+    expect(paragraphs(github)).toEqual(['a', 'b', 'c']);
+    expect(github.querySelector('img[alt="c"]')!.closest('p')!.textContent).toContain('Text');
+
+    const gitlab = mount(SOURCE, GITLAB, streaming).container;
+    await waitFor(() => expect(gitlab.querySelectorAll('img')).toHaveLength(3));
+    expect(paragraphs(gitlab)).toEqual(['', '', 'c']);
   });
 });

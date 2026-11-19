@@ -1,4 +1,4 @@
-import type { Tokens } from '../../../markdown';
+import { fenceLanguage, type Tokens } from '../../../markdown';
 import { addToast } from '../../../stores/toast.svelte';
 import { copyToClipboard, reportCopyFailure } from '../../../utils/clipboard';
 import { reportFrontendDiagnostic } from '../../../utils/frontendErrorCapture';
@@ -67,14 +67,6 @@ export function clearCompletedCodeBlockRenderer(owner: object): void {
 export function resetCompletedCodeBlockRenderersForTest(): void {
   completedCodeBlockRenderers.clear();
   completedRendererIdentities = new WeakMap();
-}
-
-export function codeFenceInfoWord(lang: string): string {
-  for (let index = 0; index < lang.length; index += 1) {
-    const ch = lang[index];
-    if (ch === ' ' || ch === '\t') return lang.slice(0, index);
-  }
-  return lang;
 }
 
 /** Overlay toggle label: the action it performs from the current state. */
@@ -220,7 +212,7 @@ export function renderStaticCodeBlockHtml(
       code.join('') +
     '</code></pre></div></div>' +
     '<div' + attribute('class', CODE_OVERLAY_CLASS) + '>' +
-      (isRunnableShellLang(codeFenceInfoWord(token.lang ?? '')) ? runButtonHtml() : '') +
+      (isRunnableShellLang(fenceLanguage(token.lang)) ? runButtonHtml() : '') +
       '<button type="button"' +
         attribute('aria-label', wrapLabel) + attribute('title', wrapLabel) +
         attribute('class', COPY_BUTTON_CLASS) +
@@ -247,7 +239,7 @@ export function renderCachedStaticCodeBlockHtml(
   id: string,
   streamdown: StreamdownContext,
 ): string | null {
-  const lang = codeFenceInfoWord(token.lang ?? '');
+  const lang = fenceLanguage(token.lang);
   const completed = completedCodeBlockRenderers
     .get(streamdown)
     ?.get(lang)
@@ -364,7 +356,7 @@ function handleStaticCodeWrap(event: MouseEvent): void {
   button.setAttribute('aria-label', label);
   button.title = label;
   setCodeBlockUnwrapped(
-    codeFenceInfoWord(host.dataset.codeLang ?? ''),
+    fenceLanguage(host.dataset.codeLang),
     code.textContent ?? '',
     next,
   );

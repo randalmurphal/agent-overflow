@@ -18,6 +18,7 @@
 import type { Token, Tokens } from '../engine';
 import type { Extension } from '../lexer';
 import type { TableSection, TableToken, TD, TH } from './table';
+import { fenceLanguage } from '../fenceLanguage';
 
 type Field = { key: string; label: string };
 type JsonTable = { fields: Field[]; items: unknown[]; markdown: boolean; caption: string | null };
@@ -73,7 +74,7 @@ export const markedJsonTable: Extension = {
 		const first = src.charCodeAt(lead);
 		if (first !== 96 /* ` */ && first !== 126 /* ~ */) return undefined;
 		const fence = this.lexer.tokenizer.fences(src);
-		if (!fence || fence.lang?.split(/\s/, 1)[0] !== 'json:table') return undefined;
+		if (!fence || fenceLanguage(fence.lang) !== 'json:table') return undefined;
 		const table = readTable(fence.text);
 		if (!table) return undefined;
 		const inline = (text: string): Token[] => (table.markdown ? this.lexer.inline(text, []) : plain(text));

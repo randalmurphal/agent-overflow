@@ -17,7 +17,7 @@
  * | `incrementalLex.merge.ts` | list/table tail splicing + token reuse       |
  * | `incompleteMarkdown.ts`   | the streaming-tail completers                |
  */
-export { lex, lexCapture, lexFootnoteDefinitions, markedForgeGrammar, usesChatGrammar } from './lexer';
+export { lex, lexCapture, lexFootnoteDefinitions, markedForgeGrammar } from './lexer';
 export type { Extension, GenericToken, StreamdownToken } from './lexer';
 export { Lexer } from './engine';
 export type { LexerOptions, Token, Tokens, TokensList } from './engine';
@@ -57,7 +57,8 @@ export {
   createParseBlocksCache,
   updateParseBlockStringMaterialization
 } from './parseBlocks.cache';
-export { alignmentAfter, isAlignmentMarkerBlock, topLevelShape } from './extensions/align';
+export { topLevelShape } from './extensions/align';
+export { fenceLanguage } from './fenceLanguage';
 export type { Alignment } from './extensions/align';
 export type {
   ParseBlocksCache,

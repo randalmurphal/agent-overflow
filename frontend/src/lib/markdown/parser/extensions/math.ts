@@ -1,4 +1,5 @@
 import type { Extension } from '../index';
+import { fenceLanguage } from '../fenceLanguage';
 // Math parsing rules
 // Block math: three alternatives, tried left-to-right (lazy quantifiers + leftmost-first).
 //   Alt 1 (group 2): $$\nCONTENT\n$$  — canonical multiline form.
@@ -253,7 +254,7 @@ const markedMathFence: Extension = {
         if (first !== 96 /* ` */ && first !== 126 /* ~ */)
             return undefined;
         const code = this.lexer.tokenizer.fences(src);
-        if (!code || code.lang?.split(/\s/, 1)[0] !== 'math')
+        if (!code || fenceLanguage(code.lang) !== 'math')
             return undefined;
         return { type: 'math', raw: code.raw, text: code.text, isInline: false, displayMode: true } satisfies MathToken;
     }

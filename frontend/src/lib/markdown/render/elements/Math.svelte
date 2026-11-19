@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 	import { useStreamdown } from '../context.svelte';
+	import SourceText, { RENDER_FAILED_ATTR } from './SourceText.svelte';
 	import type { MathToken } from '../../parser/index';
 	import type { KatexOptions } from 'katex';
 	import 'katex/dist/katex.min.css';
@@ -42,8 +43,9 @@
 			.finally(() => resolveAsync?.());
 	});
 
-	let inner = $state<HTMLElement | null>(null);
-	const html = $derived.by(() => {
+	// KaTeX's HTML; empty until KaTeX loads, null when it rejects the
+	// source, which then shows as written.
+	const html = $derived.by((): string | null => {
 		if (!katexInstance) {
 			return '';
 		}
@@ -76,32 +78,27 @@
 				_katexHtmlCache.delete(firstKey);
 			}
 			return result;
-		} catch (error) {
-			return untrack(() => {
-				return inner?.innerHTML || '';
-			});
+		} catch {
+			return null;
 		}
 	});
+	const failed = $derived(html === null ? { [RENDER_FAILED_ATTR]: '' } : {});
 </script>
 
 {#if token.isInline}
-	<span
-		data-streamdown-inline-math={id}
-		bind:this={inner}
-		class={streamdown.theme.math.inline}
-	>
-		{@html html}
+	<span data-streamdown-inline-math={id} class={streamdown.theme.math.inline} {...failed}>
+		{#if html === null}<SourceText text={token.text} inline />{:else}{@html html}{/if}
 	</span>
 {:else}
-	<div
-		data-streamdown-block-math={id}
-		style:height="fit-content"
-		style:width="100%"
-	>
-		<div class="overflow-x-auto">
-			<div bind:this={inner} class={streamdown.theme.math.block}>
-				{@html html}
+	<div data-streamdown-block-math={id} style:height="fit-content" style:width="100%" {...failed}>
+		{#if html === null}
+			<SourceText text={token.text} />
+		{:else}
+			<div class="overflow-x-auto">
+				<div class={streamdown.theme.math.block}>
+					{@html html}
+				</div>
 			</div>
-		</div>
+		{/if}
 	</div>
 {/if}

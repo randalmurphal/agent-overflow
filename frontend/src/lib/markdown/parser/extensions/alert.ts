@@ -79,8 +79,8 @@ const gitlabMarker: ReadMarker = (_lexer, measured) => {
 
 /**
  * Every block quote, as an alert when `readMarker` finds one. A forge
- * variant precedes the defaults, so a quote it leaves plain is not an
- * alert under chat's rule either.
+ * variant runs ahead of the default rules, and a forge surface leaves
+ * chat's variant out (`markedForgeGrammar`).
  */
 const alertExtension = (readMarker: ReadMarker, precedesDefaults: boolean): Extension => ({
     name: 'alert',
@@ -117,17 +117,27 @@ const alertExtension = (readMarker: ReadMarker, precedesDefaults: boolean): Exte
         const body = active.blockquote(lead + rest.slice(skip));
         if (!body)
             return undefined;
-        const alert: AlertToken & { tokens: Tokens.Blockquote['tokens'] } = {
-            type: 'alert',
-            variant: marker.variant,
-            ...(marker.title === undefined ? {} : { title: marker.title }),
-            raw: src.slice(0, marker.end + skip + body.raw.length - lead.length),
-            text: body.text.trim(),
-            // An alert's children are its blocks alone.
-            tokens: body.tokens.filter((token) => token.type !== 'space')
-        };
-        return alert;
+        return alertToken(marker, src.slice(0, marker.end + skip + body.raw.length - lead.length), body.text, body.tokens);
     }
+});
+
+/**
+ * The alert a quote whose marker is `marker` makes, whichever quote form
+ * (`>` lines, GitLab's `>>>` fence): `raw` its source, `text` and `blocks`
+ * its body without the marker. An alert's children are its blocks alone.
+ */
+export const alertToken = (
+    marker: { variant: variantType; title?: string },
+    raw: string,
+    text: string,
+    blocks: Tokens.Blockquote['tokens']
+): AlertToken & { tokens: Tokens.Blockquote['tokens'] } => ({
+    type: 'alert',
+    variant: marker.variant,
+    ...(marker.title === undefined ? {} : { title: marker.title }),
+    raw,
+    text: text.trim(),
+    tokens: blocks.filter((token) => token.type !== 'space')
 });
 
 /** Agent chat's alerts. */

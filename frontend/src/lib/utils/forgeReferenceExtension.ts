@@ -371,8 +371,11 @@ export function buildForgeReferences(source: ForgeAttachmentSource): ForgeRefere
           const wiki = WIKI.exec(src);
           if (wiki) {
             const target = (wiki[2] ?? wiki[1]).trim();
-            if (/^_toc_$/i.test(target)) return undefined;
-            return link(wiki[0], `${projectUrl}/-/wikis/${encodeURI(target.replace(/ /g, '-'))}`, [textToken(wiki[1])]);
+            // A marker alone in its paragraph is the table of contents
+            // (documentScope.ts); in a sentence GitLab links it as a
+            // relative path, not a wiki page.
+            const href = /^_toc_$/i.test(target) ? resolveRelative(target) : `${projectUrl}/-/wikis/${encodeURI(target.replace(/ /g, '-'))}`;
+            return href === null ? undefined : link(wiki[0], href, [textToken(wiki[1])]);
           }
         }
         if (html) return undefined;

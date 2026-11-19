@@ -182,3 +182,35 @@ describe('forge syntax in agent chat', () => {
     expect(container.textContent).toContain('[~] skipped');
   });
 });
+
+describe('forge strikethrough pairs tildes by delimiter runs', () => {
+  const LABELS = 'Label: ~1, ~bug, ~"feature request", ~"priority::high", group/project~bug, /group/project~bug\n\nlast line';
+  const STRUCK = '<p>Label: ~1, ~bug, <del>"feature request", <del>"priority::high", group/project</del>bug, /group/project</del>bug</p>';
+
+  it('renders the same DOM on both render paths', async () => {
+    const { container } = render(CompactStaticMarkdownHarness, { source: LABELS, extensions: [markedStrikethrough] });
+    const componentPath = container.querySelector<HTMLElement>('[data-full-token-tree]')!;
+    const staticPath = container.querySelector<HTMLElement>('[data-compact-static]')!;
+    await settled(componentPath);
+    await settled(staticPath);
+    expect(shape(staticPath)).toContain(STRUCK);
+    expect(shape(componentPath)).toBe(shape(staticPath));
+  });
+
+  it.each([
+    ['GitHub', false, GITHUB],
+    ['GitHub', true, GITHUB],
+    ['GitLab', false, GITLAB],
+    ['GitLab', true, GITLAB],
+  ] as const)('on %s (streaming %s)', async (_name, streaming, forgeSource) => {
+    const { container } = render(ForgeAttachmentChatHarness, { props: { source: LABELS, forgeSource, streaming } });
+    await settled(container);
+    expect(shape(container.querySelector('p')!)).toBe(STRUCK);
+  });
+
+  it('leaves agent chat without strikethrough', async () => {
+    const { container } = render(ChatMarkdown, { props: { source: LABELS } });
+    await settled(container);
+    expect(container.querySelector('del')).toBeNull();
+  });
+});

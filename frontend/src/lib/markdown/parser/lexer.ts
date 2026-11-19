@@ -150,8 +150,10 @@ export const sameExtensionSequence = (left: Extension[] | null, right: Extension
 };
 // Agent chat's own grammar, which neither forge has and both show as text:
 // `~sub~` and `^sup^`, `:term: detail` lists, `[center]` alignment,
-// citations, MDX components, and chat's reading of inline `$` math.
+// citations, MDX components, and chat's readings of inline `$` math and of
+// alert markers (each forge brings its own alert and math rules).
 const CHAT_GRAMMAR: ReadonlySet<Extension> = new Set([
+    markedAlert,
     markedSub,
     markedSup,
     markedDl,

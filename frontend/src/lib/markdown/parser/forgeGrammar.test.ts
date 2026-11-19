@@ -30,7 +30,8 @@ describe('agent chat grammar on a forge surface', () => {
 		['Cited [1] here.', 'inline-citations'],
 		['<Note kind="x">inside</Note>', 'mdx'],
 		['Price a $ x$ b', 'math'],
-		['[center]\nCentered\n[/center]', 'align']
+		['[center]\nCentered\n[/center]', 'align'],
+		['> **[!NOTE]**\n> body', 'alert']
 	])('reads %j as text, where chat reads a %s', (source, chatType) => {
 		expect(types(lexed(source, CHAT))).toContain(chatType);
 		const forge = lexed(source, FORGE);

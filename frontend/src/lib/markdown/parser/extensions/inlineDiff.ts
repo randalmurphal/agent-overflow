@@ -82,7 +82,7 @@ export const markedInlineDiff: Extension = {
 			const del: Tokens.Del = { type: 'del', raw, text, tokens };
 			return del;
 		}
-		const ins: HtmlInlineToken = { type: 'htmlInline', raw, tag: 'ins', title: null, text, tokens };
+		const ins: HtmlInlineToken = { type: 'htmlInline', raw, tag: 'ins', attrs: {}, text, tokens };
 		return ins;
 	}
 };

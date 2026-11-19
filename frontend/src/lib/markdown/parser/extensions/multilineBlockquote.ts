@@ -18,7 +18,7 @@
  */
 import type { Tokens } from '../engine';
 import type { Extension } from '../lexer';
-import { gitlabAlertMarker, type AlertToken } from './alert';
+import { alertToken, gitlabAlertMarker } from './alert';
 
 const FENCE = /^ {0,3}(>{3,})[ \t]*$/;
 const OPENER = /^ {0,3}(>{3,})/;
@@ -77,18 +77,7 @@ export const markedMultilineBlockquote: Extension = {
 		const tokens = this.lexer.blockTokens(text, []);
 		this.lexer.state.top = top;
 		const raw = src.slice(0, rawEnd);
-		if (alert) {
-			const token: AlertToken & { tokens: Tokens.Generic[] } = {
-				type: 'alert',
-				variant: alert.variant,
-				...(alert.title === undefined ? {} : { title: alert.title }),
-				raw,
-				text: text.trim(),
-				// An alert's children are its blocks alone.
-				tokens: tokens.filter((token) => token.type !== 'space')
-			};
-			return token;
-		}
+		if (alert) return alertToken(alert, raw, text, tokens);
 		const quote: Tokens.Blockquote = { type: 'blockquote', raw, text, tokens };
 		return quote;
 	}

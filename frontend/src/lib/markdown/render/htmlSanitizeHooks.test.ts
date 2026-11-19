@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Token } from '../parser/engine';
 import { htmlRegionNodes, parseHtmlRegion, sanitizeEmbeddedHtmlToken, type SanitizeEmbeddedHtmlOptions } from './htmlSanitize';
+import { htmlPolicyOf } from '../parser/extensions/htmlPolicy';
 
 // The sanitizer's host hooks: `text` turns a text run into inline tokens,
 // `href` resolves a relative link, `anchors` draws same-document jumps.
@@ -38,7 +39,7 @@ describe('the text hook', () => {
     expect(block('<div>one<br>two</div>', { text: hook })).toBe('<div>one<br>two</div>');
     expect(hook.mock.calls.map(([run]) => run)).toEqual(['one', 'two']);
     hook.mockClear();
-    sanitizeEmbeddedHtmlToken({ raw: '<textarea>', block: false }, { text: hook, tagFilter: true });
+    sanitizeEmbeddedHtmlToken({ raw: '<textarea>', block: false }, { text: hook, policy: htmlPolicyOf('github') });
     expect(hook).not.toHaveBeenCalled();
   });
 

@@ -165,7 +165,7 @@ export const chatMarkdownTheme: Theme = {
   // cells push them past the column bounds.
   td: { base: 'px-3 py-1.5 text-[0.8125rem] min-w-0 max-w-none break-words text-fg' },
   th: {
-    base: 'px-3 py-1.5 text-[0.8125rem] font-medium min-w-0 max-w-none break-words text-fg-muted text-left',
+    base: 'px-3 py-1.5 text-[0.8125rem] font-medium min-w-0 max-w-none break-words text-fg-muted',
   },
   // Stacked text. The size is `em`, not a rem step: `<sup>`/`<sub>` appear in
   // prose (0.875rem), in table cells (0.8125rem) and inside headings, and a

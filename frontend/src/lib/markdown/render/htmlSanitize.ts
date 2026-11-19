@@ -6,19 +6,21 @@
  * HTML tables and badge rows, wrapper `<p align>` / `<div>` runs, HTML
  * comments, and whatever else a forge comment carries. The contract:
  *
- *  - The output is built from an allowlist: allowlisted elements with
- *    allowlisted attributes, and text. As a forge sanitizer does, any
- *    other element contributes its children (`<big>`, `<font>`, form
- *    controls), except `REMOVED` ones, which contribute nothing (a
- *    script's or style's source is never shown). Comments render nothing.
+ *  - The output is built from the surface's `policy`
+ *    (parser/extensions/htmlPolicy.ts), the table the inline tokenizer
+ *    reads too: kept elements with the attributes it lists, and text. As
+ *    a forge sanitizer does, any other element contributes its children
+ *    (`<big>`, `<font>`, form controls), except removed ones, which
+ *    contribute nothing (a script's or style's source is never shown).
+ *    Comments render nothing.
  *  - BLOCK tokens are complete runs (the engine's html block rule
  *    consumes to a blank line), so they parse into a balanced tree.
  *  - INLINE tag tokens are single tags the inline extension did not pair
  *    (it claims every element pair it renders), so only an allowlisted
  *    void element (`<hr>`, `<img>` without a src) shows; a start or end
  *    tag shows nothing.
- *  - `tagFilter` is GFM's disallowed raw HTML rule, which GitHub applies:
- *    `TAG_FILTERED` tags show as their source text.
+ *  - The policy's `tagFilter` is GFM's disallowed raw HTML rule, which
+ *    GitHub applies: `TAG_FILTERED` tags show as their source text.
  *  - `href` / `src` accept absolute http(s) only, mirroring the
  *    security boundary in AGENTS.md, and are written as the URL parser
  *    read them: no value reaches an anchor or img attribute that the
@@ -53,72 +55,7 @@ import type { MarkedToken, Token, Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
 import { imageSizeOf } from './imageSize';
 import { colorSchemeOnly, pictureSources, type ColorScheme } from '../parser/extensions/themedImages';
-
-// Allowlisted tag → allowlisted attributes, besides `GLOBAL_ATTRS`. Presence
-// means the element renders as itself; any other element contributes its
-// children or, when `REMOVED`, nothing. A Map, so an element named after an
-// Object.prototype member is not found.
-const ALLOWED_ATTRS: ReadonlyMap<string, readonly string[]> = new Map(Object.entries({
-	a: ['href', 'title'],
-	img: ['src', 'alt', 'title', 'width', 'height'],
-	table: ['width'],
-	caption: [],
-	thead: [],
-	tbody: [],
-	tfoot: [],
-	tr: [],
-	td: ['align', 'colspan', 'rowspan', 'width', 'valign', 'nowrap'],
-	th: ['align', 'colspan', 'rowspan', 'width', 'valign', 'nowrap'],
-	p: ['align'],
-	div: ['align'],
-	center: [],
-	span: [],
-	b: [],
-	strong: [],
-	i: [],
-	em: [],
-	code: [],
-	pre: [],
-	sub: [],
-	sup: [],
-	kbd: [],
-	samp: [],
-	tt: [],
-	del: [],
-	s: [],
-	strike: [],
-	ins: [],
-	u: [],
-	mark: [],
-	small: [],
-	abbr: ['title'],
-	q: [],
-	var: [],
-	cite: [],
-	dfn: [],
-	ruby: [],
-	rt: [],
-	rp: [],
-	br: [],
-	hr: [],
-	ul: [],
-	ol: ['start'],
-	li: ['value'],
-	blockquote: [],
-	dl: [],
-	dt: [],
-	dd: [],
-	h1: ['align'],
-	h2: ['align'],
-	h3: ['align'],
-	h4: ['align'],
-	h5: ['align'],
-	h6: ['align'],
-	details: ['open'],
-	summary: [],
-	figure: [],
-	figcaption: []
-}));
+import { ANY_FORGE_HTML_POLICY, imageAlign, ruleAttributes, type HtmlPolicy } from '../parser/extensions/htmlPolicy';
 
 /**
  * The canonical form of an absolute http(s) URL, or null. Parsed with no
@@ -136,21 +73,10 @@ const absoluteHttpUrl = (value: string): string | null => {
 	return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
 };
 
-/** Attributes both forges keep on every allowlisted element. */
-const GLOBAL_ATTRS = ['title', 'dir', 'lang'] as const;
-
 /**
- * Elements both forges drop with their content, and the ones this policy
- * drops so a script's or style's source never shows (GitHub shows them as
- * text, GitLab drops a script and shows a style's text). `iframe` is
- * GitLab's answer; GitHub's `tagFilter` shows it as text first.
- */
-const REMOVED: ReadonlySet<string> = new Set(['script', 'style', 'svg', 'iframe']);
-
-/**
- * GFM's disallowed raw HTML tags, less the `REMOVED` ones. With `tagFilter`
- * such a tag is text before the HTML is parsed, as GitHub's renderer makes
- * its `<` text. Its `>` is escaped too, which reads the same.
+ * GFM's disallowed raw HTML tags. With the policy's `tagFilter` such a tag
+ * is text before the HTML is parsed, as GitHub's renderer makes its `<`
+ * text. Its `>` is escaped too, which reads the same.
  */
 const TAG_FILTERED = /<(\/?(?:title|textarea|xmp|iframe|noembed|noframes|plaintext)(?=[\s/>])[^>]*)(>?)/gi;
 const filterTags = (raw: string): string =>
@@ -179,9 +105,9 @@ const anchorOf = (element: Element, anchors: { readonly ids: boolean }): string 
 	(element.localName === 'a' ? element.getAttribute('name') : null) || (anchors.ids ? element.getAttribute('id') : null) || null;
 
 /**
- * The attributes of `element` that `allowed` and `GLOBAL_ATTRS` keep, a URL
- * in its canonical form, and with `options` its jump markers and an href
- * resolved by the `href` hook.
+ * The attributes of `element` its policy rule keeps, a URL in its canonical
+ * form, and with `options` its jump markers and an href resolved by the
+ * `href` hook.
  */
 const keptAttributes = (
 	element: Element,
@@ -189,15 +115,9 @@ const keptAttributes = (
 	options?: SanitizeEmbeddedHtmlOptions
 ): [name: string, value: string][] => {
 	const kept: [string, string][] = [];
-	for (const name of GLOBAL_ATTRS) {
-		const value = allowed.includes(name) ? null : element.getAttribute(name);
-		if (value !== null) kept.push([name, value]);
-	}
 	const listStyle = element.localName === 'ol' || element.localName === 'ul' ? listStyleOf(element) : undefined;
 	if (listStyle !== undefined) kept.push(['style', `list-style-type: ${listStyle}`]);
-	for (const name of allowed) {
-		const authored = element.getAttribute(name);
-		if (authored === null) continue;
+	for (const [name, authored] of ruleAttributes(element, allowed)) {
 		if (name === 'href' && options?.anchors && authored.startsWith('#')) {
 			kept.push([FRAGMENT_ATTR, ''], [name, authored]);
 			continue;
@@ -238,8 +158,10 @@ export interface SanitizeEmbeddedHtmlOptions {
 	 * changes. Absent: every image is its own src.
 	 */
 	colorScheme?: () => ColorScheme;
-	/** GitHub's GFM tag filter: `TAG_FILTERED` tags show as source text. */
-	tagFilter?: boolean;
+	/** What the surface's forge keeps (parser/extensions/htmlPolicy.ts); the
+	 * inline tokenizer of the same surface reads the same one. Absent:
+	 * `ANY_FORGE_HTML_POLICY`. */
+	policy?: HtmlPolicy;
 	/**
 	 * An `<a>`'s href the policy refuses as written (a relative path) as
 	 * the URL the surface sends it to, or null to drop it. The answer
@@ -395,7 +317,7 @@ const sanitizeInto = (
 					const clean = parent.ownerDocument.createElement('img');
 					clean.setAttribute(MEDIA_CLAIM_ATTR, claim);
 					for (const name of CLAIMED_IMG_ATTRS) {
-						const value = element.getAttribute(name);
+						const value = name === 'align' ? imageAlign(options?.policy ?? ANY_FORGE_HTML_POLICY, element) : element.getAttribute(name);
 						if (value !== null) clean.setAttribute(name, value);
 					}
 					parent.append(clean);
@@ -430,10 +352,11 @@ const sanitizeInto = (
 			}
 			continue;
 		}
-		const allowedAttrs = ALLOWED_ATTRS.get(tag);
+		const allowedAttrs = (options?.policy ?? ANY_FORGE_HTML_POLICY).elements.get(tag);
+		if (allowedAttrs === 'remove') continue;
 		if (allowedAttrs === undefined) {
 			// A template's children are its content fragment.
-			if (!REMOVED.has(tag)) sanitizeInto(tag === 'template' ? (element as HTMLTemplateElement).content : element, parent, options, islands, scope);
+			sanitizeInto(tag === 'template' ? (element as HTMLTemplateElement).content : element, parent, options, islands, scope);
 			continue;
 		}
 		const clean = parent.ownerDocument.createElement(tag);
@@ -444,7 +367,7 @@ const sanitizeInto = (
 				{
 					width: element.getAttribute('width'),
 					height: element.getAttribute('height'),
-					align: element.getAttribute('align'),
+					align: imageAlign(options?.policy ?? ANY_FORGE_HTML_POLICY, element),
 					hspace: element.getAttribute('hspace')
 				},
 				false
@@ -476,13 +399,13 @@ export const sanitizeEmbeddedHtmlToken = (
 ): string => {
 	const raw = token.raw;
 	if (raw.replace(COMMENTS_AND_SPACE, '') === '') return '';
-	const html = options?.tagFilter ? filterTags(raw) : raw;
+	const html = (options?.policy ?? ANY_FORGE_HTML_POLICY).tagFilter ? filterTags(raw) : raw;
 	const doc = new DOMParser().parseFromString(html, 'text/html');
 	const out = doc.createElement('div');
 	// Only a block's text is asked: an inline tag token's is its own source.
 	sanitizeInto(doc.body, out, options, token.islands, token.block ? 'linkable' : 'literal');
 	// A start tag alone is an empty element, which shows nothing.
-	if (!token.block && out.textContent === '' && out.querySelector('br, hr, img') === null) return '';
+	if (!token.block && out.textContent === '' && out.querySelector('br, hr, img, wbr') === null) return '';
 	return out.innerHTML;
 };
 
@@ -588,7 +511,9 @@ export const htmlRegionNodes = ({ root, islands }: ParsedHtmlRegion): HtmlRegion
 			flush();
 			const element = child as Element;
 			const tag = element.localName;
-			const allowed = ALLOWED_ATTRS.get(tag);
+			// The most any policy keeps: this element is already sanitized.
+			const rule = ANY_FORGE_HTML_POLICY.elements.get(tag);
+			const allowed = rule === 'remove' ? undefined : rule;
 			// Only `renderHtml === true` keeps an unlisted element; its
 			// children render in its place.
 			if (allowed === undefined) {

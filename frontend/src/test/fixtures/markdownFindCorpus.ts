@@ -152,6 +152,30 @@ export const CORPUS = [
   'Press <kbd><kbd>Ctrl</kbd>+<kbd>P</kbd></kbd>',
   '<a href="https://example.invalid/">\n\n## H\n\n</a>',
   '| a | b |\n| - | - |\n| x | ` |',
+  // Agent chat's own constructs, which a forge surface shows as text.
+  ':+1: nice work',
+  '- [ ] :construction: task',
+  'Power x^2^ here and H~2~O',
+  '[center]\n# Centered\n[/center]',
+  '>>> [!note] Things to consider\nYou should consider this\n>>>',
+  'Intro\n\n+++\nkey = 1\n+++',
+  // A link inside a link, an image label or an HTML anchor.
+  '[outer [inner](https://example.invalid/i) text](https://example.invalid/o)',
+  '![alt with [link](https://example.invalid/x)](https://example.invalid/y.png)',
+  'a <a href="https://example.invalid/out">[md](https://example.invalid/in)</a> z',
+  '<https://example.invalid/a\\b>',
+  // Forge text, anchors and the element policy inside raw HTML.
+  '<table><tr><td>:x: See #12 and @octo</td></tr></table>',
+  '<p><a href="#later">to heading</a></p>\n\n## Later',
+  '<div><a name="named"></a>Named</div>',
+  'a <span dir="rtl" lang="ar">r</span> <small>s</small> b',
+  'image lines\n\n<img src="https://example.invalid/a.png" alt="a">\n<img src="https://example.invalid/b.png" alt="b">\n\nafter lines',
+  'floated\n\n<img src="https://example.invalid/a.png" class="glfm-float-right" alt="a">\n\nafter float',
+  // Islands that fail to draw, tilde runs, and a fence's first word.
+  'Inline [[_TOC_]] after.',
+  '```mermaid title="flow"\ngraph TD\n  A --> B\n```',
+  'Invalid: $\\frac{1}{$ and $`\\undefinedmacro`$',
+  'Label: ~1, ~bug, ~"feature request", ~"priority::high", group/project~bug, /group/project~bug',
 ];
 
 // Markdown pieces whose reading depends on what is around them, for the
