@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"regexp"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -537,31 +539,82 @@ const (
 var errDownloadEnded = errors.New("browser: the download already ended")
 
 // downloadProgress is an engine download advancing. Total is the size the
-// response announced, zero when unknown. Error is the engine's reason for a
-// download it stopped on its own (a network failure), when it reports one.
-// PageGone marks a cancel the engine made because the page the download
-// began in went before the Manager listed it; the Manager lists it as
-// canceled, with Error, as it does a download of a listed page that goes.
-// CancelRefused marks a running download whose engine refused the cancel
-// the Manager asked for after CancelDownload returned, Error its reason:
-// the download runs on and its cancel is withdrawn.
+// response announced, zero when unknown. State is what the engine observed
+// of the download, its end's cause included; Error is the engine's text
+// for it, display only.
 type downloadProgress struct {
-	ID            string
-	Received      float64
-	Total         float64
-	State         string
-	FilePath      string
-	Error         string
-	PageGone      bool
-	CancelRefused bool
+	ID       string
+	Received float64
+	Total    float64
+	State    downloadState
+	FilePath string
+	Error    string
 }
 
-// The states downloadProgress.State may carry.
+// downloadState is what an engine observed of a download. The zero value is
+// no state; every engine names one. Only the engine that saw a download end
+// says why: the Manager reads the cause from here, never from whether it
+// had asked for a cancel.
+type downloadState int
+
 const (
-	downloadInProgress = "inProgress"
-	downloadCompleted  = "completed"
-	downloadCanceled   = "canceled"
+	// downloadInProgress: it runs.
+	downloadInProgress downloadState = iota + 1
+	// downloadCancelRefused: it runs on, because the engine refused the
+	// cancel the Manager asked for after CancelDownload returned; Error is
+	// why, and the cancel is withdrawn.
+	downloadCancelRefused
+	// downloadCompleted: the file is whole.
+	downloadCompleted
+	// downloadCanceled: the engine ended it as canceled, by the cancel the
+	// Manager asked for.
+	downloadCanceled
+	// downloadFailed: the engine, the network, the server or the disk ended
+	// it, a cancel pending or not; Error is why.
+	downloadFailed
+	// downloadUntracked: the engine stopped following it, so how it ends is
+	// unknown; Error is why.
+	downloadUntracked
+	// downloadPageGone: the engine ended it because the page it began in
+	// went before the Manager listed it; Error is why.
+	downloadPageGone
 )
+
+func (s downloadState) String() string {
+	switch s {
+	case downloadInProgress:
+		return "inProgress"
+	case downloadCancelRefused:
+		return "cancelRefused"
+	case downloadCompleted:
+		return "completed"
+	case downloadCanceled:
+		return "canceled"
+	case downloadFailed:
+		return "failed"
+	case downloadUntracked:
+		return "untracked"
+	case downloadPageGone:
+		return "pageGone"
+	}
+	return fmt.Sprintf("downloadState(%d)", int(s))
+}
+
+// valid reports one of the states above; the Manager drops a report of
+// any other.
+func (s downloadState) valid() bool {
+	return s >= downloadInProgress && s <= downloadPageGone
+}
+
+// running reports a state of a download still running.
+func (s downloadState) running() bool {
+	return s == downloadInProgress || s == downloadCancelRefused
+}
+
+// stopped reports an end that left no whole file.
+func (s downloadState) stopped() bool {
+	return s.valid() && !s.running() && s != downloadCompleted
+}
 
 // engineEvents are the engine-originated notifications the Manager subscribes
 // to. The engine reports; the Manager alone routes and decides.
@@ -583,6 +636,11 @@ type engineEvents struct {
 	// ended while the page was open; reason is the engine's name for how.
 	// The engine page still exists and the Manager closes it (crash.go).
 	PageCrashed func(handle, reason string)
+	// PageEndReceived records, at once, a close or crash an engine received
+	// for a page and reports through PageClosed or PageCrashed only once it
+	// has processed what it received before (the hosted engine's report
+	// lanes), so a popup's listing that commits meanwhile reads it.
+	PageEndReceived func(handle string, end popupadmit.Observation)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
 	// native engine reports through the page's own hook (pageHooks.Info).

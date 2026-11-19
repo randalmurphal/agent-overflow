@@ -72,6 +72,10 @@ type Host struct {
 	// stands in a refusal of a live window, which SetWindowPos does not
 	// give on demand.
 	moveClipFunc func(hwnd uintptr, r rect) error
+	// showClipFunc shows or hides a page's clip container; nil is
+	// showWindow. A test stands in a refusal, which ShowWindow does not
+	// give on demand.
+	showClipFunc func(hwnd uintptr, visible bool) error
 }
 
 // Config wires the host to the launcher without importing Wails here.
@@ -194,6 +198,14 @@ func (h *Host) moveClip(hwnd uintptr, r rect) error {
 		return h.moveClipFunc(hwnd, r)
 	}
 	return moveWindow(hwnd, r)
+}
+
+// showClip shows or hides a page's clip container (showWindow).
+func (h *Host) showClip(hwnd uintptr, visible bool) error {
+	if h.showClipFunc != nil {
+		return h.showClipFunc(hwnd, visible)
+	}
+	return showWindow(hwnd, visible)
 }
 
 // raiseTarget is the window that must sit on top of the host's child

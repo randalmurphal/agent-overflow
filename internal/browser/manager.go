@@ -468,6 +468,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		PopupOpened:       m.popupOpened,
 		PageClosed:        m.pageClosed,
 		PageCrashed:       m.pageCrashedReport,
+		PageEndReceived:   m.pageEndReceived,
 		PageInfoChanged:   m.updatePageInfo,
 		DownloadStarted:   m.downloadStarted,
 		DownloadProgress:  m.downloadProgress,

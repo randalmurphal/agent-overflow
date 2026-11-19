@@ -48,9 +48,13 @@ report with `paneplace.Fit` and shows only while the backend shows it and
 the report is visible, unless the directive's `Seq` (the SPA's number for
 the report the backend placed from) is newer than the report's; then, and
 without a local report, the directive's rect stands. A page is at a
-known place only once both its clip container and its controller moved
-(`commitPlacement`); a move that fails hides it, its focus intent
-pending, until a later move succeeds. Only backend
+known place only once its controller, and its clip container where it has
+one, moved: `commitPlacement` takes each write's result (`writeNative`),
+never a placement without them. A move that fails hides it, its focus
+intent pending, until a later move succeeds. Shown or hidden is the host's
+view only once the native show or hide succeeded, on the clipped and the
+directly parented path alike, so a refused hide is retried by the next
+present. Only backend
 directives bind a page to a mount. Raw reports have their own validation:
 an empty clip on either axis is a hidden pane, not an error. The mailbox
 keeps the newest report per mount, drops older sequences, and has at most
@@ -145,7 +149,8 @@ settles through WebView2's report or after `downloadCancelBound`
 (`settleCancel`), where a download still running stops being followed
 and one whose state cannot be read waits another bound. Every read of a
 download's operation goes through `reconcileDownload`, and its typed
-verdict (`downloadoutcome.go`) alone makes a terminal snapshot: WebView2's
+verdict (`downloadoutcome.go`) alone makes a terminal snapshot, an
+interrupted one naming its cause (`DownloadEnd`): WebView2's
 end only from a read that found one, and the launcher's own end of a
 download only for an explicit cause (the cancel bound, an unannounced
 popup's going). The backend numbers its cancel attempts

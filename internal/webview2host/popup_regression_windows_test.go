@@ -48,7 +48,7 @@ func TestDepartingChildMergesTerminalSnapshotsWithinOpenerBound(t *testing.T) {
 	held := parent.popup.held.downloads
 	if len(held) != maxHeldPopupDownloads {
 		t.Errorf("parent holds %d downloads, want %d", len(held), maxHeldPopupDownloads)
-	} else if kept := held[len(held)-1]; kept.ID != "dl-running" || kept.State != DownloadInterrupted || kept.Reason != PopupGoneReason {
+	} else if kept := held[len(held)-1]; kept.ID != "dl-running" || kept.State != DownloadInterrupted || kept.Reason != PopupGoneReason || kept.End != DownloadEndPageGone {
 		t.Errorf("last held snapshot = %+v, want the first child's interrupted download", kept)
 	}
 	r.done()

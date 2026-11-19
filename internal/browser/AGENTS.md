@@ -126,9 +126,13 @@ commit decides the tab (a close refuses it, a crash alone lists it
 crashed); a listed page's close and crash run in report order
 (`engine_pages.go`). A WebKit popup view's close and crash handlers are
 installed at its creation, and until its adoption it names itself by its
-popup number. A hosted page admits downloads from its bind or popup
-report until it goes, which ends those still running
-(`hostedDownloads.open`, `endPageDownloads`). The CDP engines answer the
+popup number. A hosted page is one record with one state
+(`hosted_pages.go`): it admits downloads from its bind or popup report
+until its close or discard is received, and its lane retires it after
+the reports received before that, ending the downloads still running
+(`retirePage`). An engine that processes a page's end after receiving it
+records the end at receipt (`PageEndReceived`), and the Manager tells a
+listed popup's driver it is listed (`listingDriver`). The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per
 request, so a popup's requests before its adoption have its opener chain's
 authority, the launcher's popup report counting as an opener edge on the
@@ -214,21 +218,29 @@ entry is made in a hold of its log and goes through
 (`downloads_thread.go`), which keep the thread's list the pane shows and
 coalesce byte progress; an engine reports one terminal event per
 download, after its start, and that report alone settles the user's
-cancel. Every removal of a live page goes through `pageLeftLocked`, which
-settles the page's running downloads, except one whose file is being
-published, which its publish settles, and, in the same hold of its log,
-ends its admission of new ones. The hosted engine's
+cancel. The engine that saw the end names its cause (`downloadState`:
+canceled, failed, untracked, page gone); the Manager lists it from that,
+never from whether a cancel was pending. Every removal of a live page
+goes through `pageLeftLocked`, which settles the page's running
+downloads, except one whose file is being published, which its publish
+settles, and, in the same hold of its log, ends its admission of new
+ones. The hosted engine's
 downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
-which it applies one at a time per download, held across the Manager's
-callbacks, and only when newer than the last applied; an answer never
+each a download of one page, keyed by page and id, so a report naming
+another page's download is refused; its page's lane applies them in
+order, each only when newer than the last applied; an answer never
 creates a row, and a download is asked about only once admitted; a cancel
 made while its admission is in flight is kept and sent as it is admitted.
 Cancels are numbered, and the refusal of the last one sent withdraws the
 Manager's cancel from whichever snapshot first carries it. A launcher
-report is acknowledged once accepted, never after its processing
-(`hosted_report_lanes.go`): a snapshot, close or crash runs afterwards on
-its page's lane, in order, with a pending popup's on its opener's, so no
-path conversion holds another page's report. A hosted page ends at the launcher's close, which follows
+report is acknowledged at receipt, never after its processing
+(`hosted_pages.go`, `hosted_report_lanes.go`): receipt changes only the
+page's record, and a snapshot, close, discard or crash runs afterwards on
+its page's lane, in order, with an unlisted popup's on its opener's, so no
+path conversion holds another page's report and a discard settles after
+the work received before it. `DiscardPage` waits for that within its
+context, then answers that the discard is pending while the lane still
+finishes it. A hosted page ends at the launcher's close, which follows
 its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a

@@ -36,6 +36,9 @@ type CDPTunnel struct {
 	minWait time.Duration
 	maxWait time.Duration
 	dialTO  time.Duration
+	// streamBounds bound each stream's writes to its CDP socket
+	// (DefaultTunnelStreamBounds); a test changes them.
+	streamBounds TunnelStreamBounds
 	// dialCDP is the one seam the race tests need: a directive-paced fake
 	// dial. nil everywhere but tests; the production path is dialStream.
 	dialCDP func(ctx context.Context, addr string) (net.Conn, error)
@@ -121,6 +124,8 @@ func NewCDPTunnel(config CDPTunnelConfig) (*CDPTunnel, error) {
 		minWait: minWait,
 		maxWait: maxWait,
 		dialTO:  dialTO,
+
+		streamBounds: DefaultTunnelStreamBounds,
 	}, nil
 }
 
@@ -221,14 +226,21 @@ type tunnelSession struct {
 	pumps sync.WaitGroup
 }
 
+// tunnelStream is one stream: a reservation while its dial runs (conn and
+// writer nil), then its CDP socket and the writer of the data the backend
+// sends it (TunnelStreamWriter).
 type tunnelStream struct {
-	id   uint32
-	conn net.Conn
-	once sync.Once
+	id     uint32
+	conn   net.Conn
+	writer *TunnelStreamWriter
+	once   sync.Once
 }
 
 func (s *tunnelStream) close() {
 	s.once.Do(func() {
+		if s.writer != nil {
+			s.writer.Stop()
+		}
 		if s.conn != nil {
 			_ = s.conn.Close()
 		}
@@ -308,6 +320,11 @@ func (s *tunnelSession) finishOpen(ctx context.Context, id uint32, placeholder *
 	}
 
 	stream := &tunnelStream{id: id, conn: conn}
+	stream.writer = NewTunnelStreamWriter(conn, s.tunnel.streamBounds, func(err error) {
+		// The pump reports the close as the socket ends.
+		s.tunnel.logf("browser cdp tunnel: close stream %d: %v", id, err)
+		stream.close()
+	})
 	s.mu.Lock()
 	if s.closed || s.streams[id] != placeholder {
 		s.mu.Unlock()
@@ -317,8 +334,12 @@ func (s *tunnelSession) finishOpen(ctx context.Context, id uint32, placeholder *
 	s.streams[id] = stream
 	s.mu.Unlock()
 
+	s.pumps.Add(2)
+	go func() {
+		defer s.pumps.Done()
+		stream.writer.Run()
+	}()
 	s.sendControl(ctx, TunnelControl{Op: TunnelOpened, StreamID: id})
-	s.pumps.Add(1)
 	go s.pump(ctx, stream)
 }
 
@@ -366,18 +387,18 @@ func (s *tunnelSession) handleData(payload []byte) {
 	s.mu.Lock()
 	stream := s.streams[id]
 	s.mu.Unlock()
-	if stream == nil || stream.conn == nil {
+	if stream == nil || stream.writer == nil {
 		// A late frame for a stream that just died is normal, not an
 		// error: the close raced the backend's last write. A frame while
-		// the dial is still in flight (conn == nil) is a backend that did
+		// the dial is still in flight (no writer yet) is a backend that did
 		// not wait for opened; those bytes have nowhere to go either.
 		return
 	}
-	if _, err := stream.conn.Write(data); err != nil {
-		// Let the pump goroutine report the close: it owns the stream's
-		// lifecycle and would otherwise send a second close frame.
-		stream.close()
-	}
+	// Queued, never written here: this is the connection's one reader, and
+	// each Read answers a message of its own to keep. A
+	// failed or stalled write closes the stream (TunnelStreamWriter), and
+	// its pump reports the close.
+	_ = stream.writer.Write(data)
 }
 
 func (s *tunnelSession) closeStream(id uint32) {
@@ -385,8 +406,14 @@ func (s *tunnelSession) closeStream(id uint32) {
 	stream := s.streams[id]
 	delete(s.streams, id)
 	s.mu.Unlock()
-	if stream != nil {
+	switch {
+	case stream == nil:
+	case stream.writer == nil:
+		// Its dial is under way, and its end sees the reservation gone.
 		stream.close()
+	default:
+		// After the data the backend sent before its close.
+		stream.writer.End(stream.close)
 	}
 }
 

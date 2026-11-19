@@ -114,6 +114,9 @@ type fakeController struct {
 	put    []rect
 	// putErr fails PutBounds.
 	putErr uintptr
+	// visible is the last IsVisible put, which visibleErr fails.
+	visible    bool
+	visibleErr uintptr
 	// focused counts MoveFocus calls.
 	focused int
 	closed  int
@@ -126,7 +129,13 @@ var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
 		AddRef:         newComProc(func(this *fakeController) uintptr { this.refs++; return uintptr(this.refs) }),
 		Release:        newComProc(func(this *fakeController) uintptr { this.refs--; return uintptr(this.refs) }),
 	},
-	PutIsVisible: newComProc(func(*fakeController, uintptr) uintptr { return 0 }),
+	PutIsVisible: newComProc(func(this *fakeController, visible uintptr) uintptr {
+		if this.visibleErr != 0 {
+			return this.visibleErr
+		}
+		this.visible = visible != 0
+		return 0
+	}),
 	GetBounds: newComProc(func(this *fakeController, out *rect) uintptr {
 		*out = this.bounds
 		return 0

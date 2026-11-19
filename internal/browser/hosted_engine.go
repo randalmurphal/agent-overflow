@@ -170,11 +170,11 @@ type hostedEngine struct {
 	// the target that opened each popup target, as the browser reports it.
 	// Each connection has its own, which goes with it.
 	targets *cdpTargets
-	// downloads is the record of the launcher's downloads
-	// (hosted_downloads.go).
-	downloads hostedDownloads
-	// lanes run the launcher's accepted reports (hosted_report_lanes.go).
-	lanes *reportLanes
+	// pages is the record of each page's lifecycle and downloads as the
+	// launcher reports them, and the lanes those reports run on
+	// (hosted_pages.go). It has its own lock, which may be taken under
+	// e.mu, never the reverse.
+	pages *hostedPages
 	// downloadQuiet overrides hostedDownloadQuiet when set (tests).
 	downloadQuiet time.Duration
 
@@ -213,8 +213,6 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		ratios:       make(map[string]pageRatio),
 		scales:       make(map[string]*viewScaleState),
 		noFind:       make(map[string]bool),
-		downloads:    newHostedDownloads(),
-		lanes:        newReportLanes(),
 
 		pageProfile:   make(map[string]string),
 		policies:      make(map[string]func([]string, string) (bool, bool)),
@@ -228,6 +226,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
 	e.targets = e.newTargets()
+	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) })
 	return e
 }
 
@@ -323,8 +322,7 @@ func (e *hostedEngine) Stop() {
 		e.endCloseFallbackLocked(pageID)
 	}
 	e.targets = e.newTargets()
-	e.stopDownloadsLocked()
-	joinLanes := e.stopLanesLocked()
+	joinLanes := e.pages.stopAll()
 	e.mu.Unlock()
 	for _, cancel := range cancelAttaches {
 		cancel()

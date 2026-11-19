@@ -186,7 +186,7 @@ func popupDownload(m *Manager, e *adoptionEngine, popup, id string, openers ...s
 	}) == downloadAdmitted
 }
 
-func progressOf(id, state string, received float64) downloadProgress {
+func progressOf(id string, state downloadState, received float64) downloadProgress {
 	progress := downloadProgress{ID: id, Received: received, Total: 100, State: state}
 	if state == downloadCompleted {
 		// Saved where the engine could not name it: completed with no file.
@@ -598,8 +598,8 @@ func TestParkedDownloadsStopAtTheArtifactQuota(t *testing.T) {
 // goes with it, and its reservation: nothing keeps it, so it would sit
 // outside every quota.
 func TestAParkedDownloadRefusedAtItsFateLeavesNoFile(t *testing.T) {
-	for _, state := range []string{downloadCompleted, downloadInProgress} {
-		t.Run(state, func(t *testing.T) {
+	for _, state := range []downloadState{downloadCompleted, downloadInProgress} {
+		t.Run(state.String(), func(t *testing.T) {
 			manager, engine, access, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 			// Another tab keeps the jar open.
 			openPage(t, manager, access, "https://example.test/other")
@@ -849,8 +849,8 @@ func TestTheBrowsersCloseDropsParkedDownloads(t *testing.T) {
 // the jar's download directory with it, finished or not, and its
 // reservation: no row lists it, and nothing else would remove it.
 func TestTheBrowsersCloseRemovesParkedArtifacts(t *testing.T) {
-	for _, state := range []string{downloadCompleted, downloadInProgress} {
-		t.Run(state, func(t *testing.T) {
+	for _, state := range []downloadState{downloadCompleted, downloadInProgress} {
+		t.Run(state.String(), func(t *testing.T) {
 			manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
 			before := manager.artifactBytes.Used()
 			file := engineArtifact(t, manager, "dl-1")

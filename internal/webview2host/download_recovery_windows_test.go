@@ -136,7 +136,7 @@ func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 	r.timers[2]()
 	stuck.stateErr = false
 	r.timers[3]()
-	if got := r.take(); states(got) != "dl-t-2:interrupted" || got[0].Reason != downloadCancelBoundReason {
+	if got := r.take(); states(got) != "dl-t-2:interrupted" || got[0].Reason != downloadCancelBoundReason || got[0].End != DownloadEndUntracked {
 		t.Fatalf("a download still running at the next bound ended %+v", got)
 	}
 	r.done(t, op, stuck)

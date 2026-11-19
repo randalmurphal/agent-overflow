@@ -2,8 +2,6 @@
 
 package webview2host
 
-import "fmt"
-
 // Directive application: geometry, presentation and focus.
 
 // Apply validates and executes one directive. It is safe to call from any
@@ -130,7 +128,10 @@ func (h *Host) ApplyGeometry(reports []PaneGeometry) {
 // move's first write until both writes succeeded (place). A move that
 // failed, of the clip container or the controller, may leave the two apart,
 // so the page is hidden there and stays hidden, its focus intent pending,
-// until a later present places it. Runs on the UI thread.
+// until a later present places it. Visibility is committed the same way:
+// the host's view of it changes only once the native show or hide
+// succeeded, so a failed hide stays due and the next present retries it.
+// Runs on the UI thread.
 func (h *Host) present(page *hostPage, raise bool) {
 	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
 	step := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
@@ -141,23 +142,21 @@ func (h *Host) present(page *hostPage, raise bool) {
 			h.config.Logf("browser host: page %s: %v", page.id, err)
 			if page.shown.visible {
 				h.hidePage(page)
-				page.shown.visible = false
 			}
 			return
 		}
 		page.shown.placement = placed
 	}
 	if step.show && h.showPage(page) {
-		page.shown.visible = true
 		h.applyPendingFocus(page)
 	}
 	if step.hide {
 		h.hidePage(page)
-		page.shown.visible = false
 	}
 }
 
-// showPage shows the page's clip container and raises it.
+// showPage shows the page's clip container and raises it, and answers
+// whether it is shown: only then does the host's view say so.
 func (h *Host) showPage(page *hostPage) bool {
 	if err := page.controller.putIsVisible(true); err != nil {
 		h.config.Logf("browser host: page %s show: %v", page.id, err)
@@ -167,11 +166,17 @@ func (h *Host) showPage(page *hostPage) bool {
 	// container with nothing in it is an invisible window swallowing every
 	// click over its rectangle, which is exactly what a hidden pane must not
 	// do.
-	showWindow(page.container, true)
+	if page.container != 0 {
+		if err := h.showClip(page.container, true); err != nil {
+			h.config.Logf("browser host: page %s show: %v", page.id, err)
+			return false
+		}
+	}
 	// Every backend show re-raises: Wails' own recovery path can recreate
 	// the SPA controller, which would land it above the pane again, and a
 	// raise is cheap.
 	raiseChild(page.raiseTarget())
+	page.shown.visible = true
 	return true
 }
 
@@ -181,13 +186,22 @@ func (h *Host) showPage(page *hostPage) bool {
 // all of that and evicts the surface, so a hidden page's first capture would
 // wait for a frame that never comes (spike 2026-09-14). Only the unclipped
 // fallback, with no container to hide, has to hide the controller itself.
+// The host's view says hidden, and the keyboard focus the page held goes
+// back to the app, only once the hide succeeded; a failed one leaves the
+// page shown in the host's view, so the next present hides it again.
 func (h *Host) hidePage(page *hostPage) {
 	held := focusWithin(page.raiseTarget())
+	var err error
 	if page.container != 0 {
-		showWindow(page.container, false)
-	} else if err := page.controller.putIsVisible(false); err != nil {
-		h.config.Logf("browser host: page %s hide: %v", page.id, err)
+		err = h.showClip(page.container, false)
+	} else {
+		err = page.controller.putIsVisible(false)
 	}
+	if err != nil {
+		h.config.Logf("browser host: page %s hide: %v", page.id, err)
+		return
+	}
+	page.shown.visible = false
 	h.releaseFocus(page, held)
 }
 
@@ -204,20 +218,15 @@ func (h *Host) place(page *hostPage, b paneBounds) (appliedPlacement, error) {
 	sx, sy := deviceScale(b, cw, ch, hasClient)
 	layout := resolvePaneLayout(b, sx, sy)
 
-	moveController := func(bounds rect) func() error {
-		return func() error {
-			if err := page.controller.putBounds(bounds); err != nil {
-				return fmt.Errorf("controller bounds: %w", err)
-			}
-			return nil
-		}
+	moveController := func(bounds rect) nativeWrite {
+		return writeNative(func() error { return page.controller.putBounds(bounds) })
 	}
 	if page.container == 0 {
 		// No container: the controller is still a direct child of the host,
 		// so its bounds are host-relative and there is nothing to clip
 		// against. Position the full rect and let it overhang, which is the
 		// behaviour that shipped before clipping existed.
-		return commitPlacement(b, moveController(rect{
+		return commitPlacement(b, directlyParented(), moveController(rect{
 			Left:   layout.Container.Left + layout.Controller.Left,
 			Top:    layout.Container.Top + layout.Controller.Top,
 			Right:  layout.Container.Left + layout.Controller.Right,
@@ -226,14 +235,13 @@ func (h *Host) place(page *hostPage, b paneBounds) (appliedPlacement, error) {
 	}
 	// Container first, then the controller inside it: moving the crop
 	// before its content means a growing pane never shows a frame of content
-	// outside the new clip.
-	moveClip := func() error {
-		if err := h.moveClip(page.container, layout.Container); err != nil {
-			return fmt.Errorf("clip bounds: %w", err)
-		}
-		return nil
+	// outside the new clip. A clip that did not move leaves the controller
+	// unwritten.
+	clip := clippedBy(writeNative(func() error { return h.moveClip(page.container, layout.Container) }))
+	if clip.write.err != nil {
+		return commitPlacement(b, clip, nativeWrite{})
 	}
-	return commitPlacement(b, moveClip, moveController(layout.Controller))
+	return commitPlacement(b, clip, moveController(layout.Controller))
 }
 
 // applyBackground sets the controller's default background colour (an

@@ -109,12 +109,7 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("page-b's lane waits on %v, want its progress as one snapshot, then its close", waiting)
 		}
-		waiting = nil
-		engine.mu.Lock()
-		for _, w := range engine.lanes.pages["page-b"].jobs {
-			waiting = append(waiting, fmt.Sprintf("%d %s %d", w.kind, w.snapshot.ID, w.snapshot.Received))
-		}
-		engine.mu.Unlock()
+		waiting = engine.pages.waiting("page-b")
 	}
 	if got := took(); slices.ContainsFunc(got, func(s string) bool { return strings.HasPrefix(s, "dl-1 completed") || s == "closed page-b" }) {
 		t.Fatalf("page-b's completion or close reached the Manager before its path was converted: %v", got)
@@ -135,10 +130,10 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 			progress = append(progress, s)
 		}
 	}
-	if !slices.Equal(progress, []string{"dl-2 inProgress 1", "dl-2 inProgress 50", "dl-2 canceled 0"}) {
+	if !slices.Equal(progress, []string{"dl-2 inProgress 1", "dl-2 inProgress 50", "dl-2 pageGone 0"}) {
 		t.Fatalf("dl-2's progress reached the Manager as %v, want its first, its newest, and its end with its page", progress)
 	}
-	if ended := slices.Index(got, "dl-2 canceled 0"); ended > closed {
+	if ended := slices.Index(got, "dl-2 pageGone 0"); ended > closed {
 		t.Fatalf("the Manager heard %v, want page-b's running download ended before its close", got)
 	}
 }

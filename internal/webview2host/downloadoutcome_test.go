@@ -14,7 +14,7 @@ func TestACancelOutcomeRidesEverySnapshot(t *testing.T) {
 	for _, report := range []DownloadReport{
 		{ID: "dl-1", Seq: 2, State: DownloadRunning, Answer: true, Cancel: refusal},
 		{ID: "dl-1", Seq: 3, State: DownloadRunning, Cancel: refusal},
-		{ID: "dl-1", Seq: 4, State: DownloadInterrupted, Reason: "the network failed", Cancel: refusal},
+		{ID: "dl-1", Seq: 4, State: DownloadInterrupted, End: DownloadEndFailed, Reason: "the network failed", Cancel: refusal},
 		{ID: "dl-1", Seq: 5, State: DownloadRunning, Cancel: CancelTaken(2)},
 		{ID: "dl-1", Seq: 6, State: DownloadRunning},
 	} {
@@ -37,6 +37,9 @@ func TestACancelOutcomeRidesEverySnapshot(t *testing.T) {
 		`{"id":"dl-1","seq":2,"state":"running","answer":true,"reason":"the browser refused to cancel the download"}`,
 		`{"id":"dl-1","seq":2,"state":"running","cancel":{"refusal":"the browser refused to cancel the download"}}`,
 		`{"id":"dl-1","seq":2,"state":"running","cancel":{"attempt":0}}`,
+		`{"id":"dl-1","seq":2,"state":"interrupted","reason":"the network failed"}`,
+		`{"id":"dl-1","seq":2,"state":"interrupted","end":"stopped","reason":"the network failed"}`,
+		`{"id":"dl-1","seq":2,"state":"completed","end":"failed","path":"C:\\x.bin"}`,
 	} {
 		if _, err := ParseDownloadReport(malformed); err == nil {
 			t.Fatalf("%s parsed", malformed)
@@ -58,10 +61,10 @@ func TestACancelOutcomeRidesEverySnapshot(t *testing.T) {
 func TestADownloadVerdictFollowsTheReadAndItsCause(t *testing.T) {
 	keep := downloadVerdict{kind: verdictKeep}
 	completed := downloadVerdict{kind: verdictEnd, state: DownloadCompleted, path: `C:\D\f.bin`}
-	failed := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: downloadInterruptReason(12), cancelFirst: true}
-	canceled := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: downloadInterruptReason(downloadUserCanceled)}
-	atBound := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: downloadCancelBoundReason}
-	gone := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: PopupGoneReason, cancelFirst: true}
+	failed := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, end: DownloadEndFailed, reason: downloadInterruptReason(12), cancelFirst: true}
+	canceled := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, end: DownloadEndCanceled, reason: downloadInterruptReason(downloadUserCanceled)}
+	atBound := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, end: DownloadEndUntracked, reason: downloadCancelBoundReason}
+	gone := downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, end: DownloadEndPageGone, reason: PopupGoneReason, cancelFirst: true}
 	another := downloadVerdict{kind: verdictWaitAnotherBound}
 	unread := observeUnread(errors.New("E_FAIL"))
 	for _, tc := range []struct {

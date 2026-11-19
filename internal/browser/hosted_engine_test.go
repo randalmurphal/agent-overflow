@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -114,6 +115,10 @@ func (r stubRelay) BrowserWebSocketURL(context.Context) (string, error) {
 func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*hostedEngine, *directiveSink) {
 	t.Helper()
 	sink := newDirectiveSink()
+	if events.PageEndReceived == nil {
+		// The Manager's popup admission, which these engines have none of.
+		events.PageEndReceived = func(string, popupadmit.Observation) {}
+	}
 	engine := newHostedEngine(relay, sink.send, nil, events)
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
 	engine.createTimeout = 150 * time.Millisecond
@@ -301,6 +306,27 @@ func TestHostedEngineClosesTheControllerWhenTheAttachFails(t *testing.T) {
 	// A real controller exists on the far side; leaving it would be a
 	// window the user cannot close.
 	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
+}
+
+// A created report naming a target another page has, bound or a popup's,
+// is refused before the attach, whose end would close that page's target,
+// and the target stays its page's.
+func TestHostedEngineRefusesACreatedReportNamingAnotherPagesTarget(t *testing.T) {
+	for _, tc := range []struct{ target, owner string }{{"TARGET-1", "page1"}, {"TARGET-2", "popup"}} {
+		engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("no browser host tunnel is connected")}, engineEvents{})
+		profile := testProfile(t, engine)
+		bindTestPage(t, engine, "page1", "TARGET-1")
+		pendingTestPopup(engine, "popup", "TARGET-2", "page1")
+		answerCreate(t, engine, sink, webview2host.ReportCreated, tc.target)
+		_, err := profile.NewPage(context.Background(), pageHooks{})
+		if err == nil || !strings.Contains(err.Error(), "which page "+tc.owner+" has") {
+			t.Fatalf("a create naming %s's target: %v, want it refused", tc.owner, err)
+		}
+		sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
+		if owner, _ := engine.pageForTarget(tc.target); owner != tc.owner {
+			t.Fatalf("target %s is page %q's after the refusal, want %s's", tc.target, owner, tc.owner)
+		}
+	}
 }
 
 func TestHostedEngineClosesAnOrphanCreatedReport(t *testing.T) {
@@ -520,10 +546,14 @@ func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
 	profile := testProfile(t, engine)
 	engine.mu.Lock()
 	engine.popups["popup-other"] = &hostedPopup{target: "T-other", profile: "another-profile"}
-	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id}
-	engine.pageProfile["popup-closed"] = profile.id
 	engine.mu.Unlock()
-	engine.retirePage("popup-closed")
+	bindTestPage(t, engine, "opener", "T-opener")
+	engine.mu.Lock()
+	engine.pageProfile["opener"] = profile.id
+	engine.mu.Unlock()
+	pendingTestPopup(engine, "popup-closed", "T-closed", "opener")
+	engine.Report("popup-closed", webview2host.ReportClosed, "")
+	settleReports(t, engine, "")
 
 	for handle, why := range map[string]string{
 		"TARGET-1":     "reported no popup",
@@ -1111,7 +1141,7 @@ func pendingTestPopup(engine *hostedEngine, popup, targetID, opener string) {
 	engine.popups[popup] = &hostedPopup{target: targetID, profile: profile, opener: opener}
 	engine.popupByTarget[targetID] = popup
 	engine.pageProfile[popup] = profile
-	engine.downloads.openLocked(popup)
+	engine.pages.addPopup(hostedPageID(popup), hostedPageID(opener), profile)
 }
 
 // A browser connection that ends on its own takes the sessions of the pages

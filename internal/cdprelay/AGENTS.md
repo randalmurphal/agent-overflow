@@ -18,6 +18,13 @@ owns the frame protocol in `internal/webview2host`; the browser manager consumes
   replacement. Local connections are closed immediately when no tunnel exists.
 - Preserve the bounded stream-open, write, and discovery timeouts. Discovery
   response bodies remain bounded.
+- The tunnel's reader never writes a stream's socket. Each stream's data goes
+  through its `webview2host.TunnelStreamWriter`, on both ends: a bounded
+  queue with its own writer, which closes the stream when the queue passes
+  its bound or a write its timeout, so one stalled stream never holds
+  another's frames or the tunnel's teardown. A peer's close or error runs
+  after the data the peer sent before it (`End`), and teardown closes every
+  stream socket, so a parked write returns.
 
 Tests use loopback HTTP and WebSocket fixtures and do not start a launcher or
 WebView2. Transport admission for `/browser-cdp` remains in

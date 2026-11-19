@@ -35,10 +35,13 @@ extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, 
                          int composing);
 extern void aoWKVFindDone(uint64_t call_id, int found);
 
-// The download state vocabulary the Go seam uses (driver.go).
+// The download states aoWKVDownloadFinished maps onto the Go seam's
+// (driver.go): canceled is the completion of AO's cancel, and failed
+// didFailWithError, which WebKit never sends for a cancel it was asked for.
 #define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1
 #define AO_DL_CANCELED 2
+#define AO_DL_FAILED 3
 
 // Association keys. The address is the key, so each needs storage of its own.
 static const char kAOPageIDKey;
@@ -1074,7 +1077,7 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
           resumeData:(NSData *)resumeData {
   objc_setAssociatedObject(download, &kAODownloadFailedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   aoWKVDownloadFinished(ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
-                        (double)[[download progress] completedUnitCount], AO_DL_CANCELED, NULL,
+                        (double)[[download progress] completedUnitCount], AO_DL_FAILED, NULL,
                         error ? ao_dup([error localizedDescription]) : NULL);
 }
 

@@ -134,7 +134,7 @@ func TestAParkedDownloadWhoseJarWentIsRemovedAtItsFate(t *testing.T) {
 // of AO's and holds nothing of either quota.
 func TestAFailedArtifactDownloadLeavesNoFile(t *testing.T) {
 	manager, access, file, workspace, artifacts := settleRig(t)
-	manager.downloadProgress(downloadProgress{ID: "dl-1", Received: 3, State: downloadCanceled, Error: "the network went away"})
+	manager.downloadProgress(downloadProgress{ID: "dl-1", Received: 3, State: downloadFailed, Error: "the network went away"})
 	awaitRemoved(t, file)
 	wantCharged(t, manager, access, workspace, artifacts)
 	if listed := threadDownloads(manager, access); len(listed) != 1 || listed[0].State != downloadStateFailed {

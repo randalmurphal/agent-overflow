@@ -31,10 +31,13 @@ extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int met
                             int alt, int shift, int held, int composing);
 extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
-// The download state vocabulary the Go seam uses (driver.go).
+// The download states aoWebKitDownloadProgress maps onto the Go seam's
+// (driver.go): canceled is WebKit's cancel, which only AO's makes, and
+// failed any other error.
 #define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1
 #define AO_DL_CANCELED 2
+#define AO_DL_FAILED 3
 
 #define AO_PAGE_KEY "ao-page-id"
 #define AO_OPENER_KEY "ao-opener-page-id"
@@ -526,8 +529,11 @@ static void ao_download_failed(WebKitDownload *download, GError *error, gpointer
   (void)data;
   g_object_set_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY, GINT_TO_POINTER(1));
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
+  int state = g_error_matches(error, WEBKIT_DOWNLOAD_ERROR, WEBKIT_DOWNLOAD_ERROR_CANCELLED_BY_USER)
+                  ? AO_DL_CANCELED
+                  : AO_DL_FAILED;
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           ao_download_total(download), AO_DL_CANCELED, NULL,
+                           ao_download_total(download), state, NULL,
                            error && error->message ? g_strdup(error->message) : NULL);
 }
 

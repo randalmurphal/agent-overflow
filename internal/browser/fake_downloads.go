@@ -99,7 +99,7 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 		return discard()
 	}
 	fail := func(err error) error {
-		events.DownloadProgress(downloadProgress{ID: id, State: downloadCanceled, Error: err.Error()})
+		events.DownloadProgress(downloadProgress{ID: id, State: downloadFailed, Error: err.Error()})
 		return discard()
 	}
 	if destinationErr != nil {
@@ -123,7 +123,7 @@ func (p *fakeProfile) download(frame string, request fakeDownloadRequest) error 
 		if err := os.Remove(file); err != nil {
 			return fmt.Errorf("browser: remove the failed fake download: %w", err)
 		}
-		events.DownloadProgress(downloadProgress{ID: id, Received: float64(half), Total: float64(request.bytes), State: downloadCanceled, Error: "the server closed the connection"})
+		events.DownloadProgress(downloadProgress{ID: id, Received: float64(half), Total: float64(request.bytes), State: downloadFailed, Error: "the server closed the connection"})
 		return nil
 	}
 	if err := os.WriteFile(file, make([]byte, request.bytes), 0o600); err != nil {

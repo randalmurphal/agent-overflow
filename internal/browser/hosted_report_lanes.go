@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -13,14 +14,16 @@ import (
 // last (webview2host.ReportQueue), so a report whose processing is slow (a
 // finished download's path conversion, the Manager's publication of it)
 // would hold every later report of every page, a popup's announcement
-// among them, which the navigation policy waits for. So Report accepts a
-// page's download snapshot, close or process failure in one e.mu hold
-// (acceptedWork), which is the receipt the RPC answers, and the work runs
-// afterwards on its page's lane (reportLane), one at a time, in the order
-// accepted. A pending popup's work runs on its nearest listed opener's
-// lane, so a popup's download ends land before its opener's close, as the
-// launcher sent them. A popup's announcement is processed at receipt
-// (popupReported), so it never waits behind a lane.
+// among them, which the navigation policy waits for. So Report receives a
+// page's download snapshot, close, discard or process failure in one
+// hostedPages hold (hosted_pages.go), which is the receipt the RPC
+// answers, and the work runs afterwards on its page's lane (reportLane),
+// one at a time, in the order received. A popup the Manager has not listed
+// has its work on its nearest listed opener's lane, so its download ends
+// land before its opener's close, as the launcher sent them; once listed,
+// its later work runs on its own lane after what it already has drains. A
+// popup's announcement is processed at receipt (popupReported), so it
+// never waits behind a lane.
 
 // hostedPageID is a launcher page id: a hosted page's, or a popup's the
 // launcher reported. The report path converts it once, at Report.
@@ -32,15 +35,20 @@ type acceptedKind int
 const (
 	// acceptedSnapshot is a download snapshot, recorded under its download.
 	acceptedSnapshot acceptedKind = iota + 1
-	// acceptedClose is the launcher's close of a page.
+	// acceptedClose is the launcher's close of a page, which the Manager
+	// hears after the page's downloads settle.
 	acceptedClose
+	// acceptedDiscard is the engine's own close of a page (the Manager's
+	// close or discard, a failed create), which settles the page's
+	// downloads and is not reported.
+	acceptedDiscard
 	// acceptedCrash is a page's process failure that ended it.
 	acceptedCrash
 )
 
-// acceptedWork is one launcher report the engine accepted and has not
-// processed yet. Only acceptSnapshotLocked, acceptClose and acceptCrash make
-// one, so a snapshot's work always has its download's record.
+// acceptedWork is one report the engine received and has not processed
+// yet. Only hostedPages makes one (acceptSnapshot, acceptEnd), so a
+// snapshot's work always has its download's record.
 type acceptedWork struct {
 	kind     acceptedKind
 	page     hostedPageID
@@ -53,30 +61,30 @@ type acceptedWork struct {
 // the one kind of work a newer snapshot of its download replaces while it
 // waits. The download applies only its newest snapshot (Seq), so the
 // replaced one carries nothing the newer does not.
-func (w *acceptedWork) progressOf() (string, bool) {
+func (w *acceptedWork) progressOf() (hostedDownloadKey, bool) {
 	if w.kind != acceptedSnapshot || w.snapshot.State != webview2host.DownloadRunning || w.snapshot.Answer {
-		return "", false
+		return hostedDownloadKey{}, false
 	}
-	return w.snapshot.ID, true
+	return w.download.key, true
 }
 
-// reportLane runs one page tree's accepted work, one at a time, in the
-// order accepted, on a goroutine that exists only while work waits. Guarded
-// by hostedEngine.mu.
+// reportLane runs one page tree's received work, one at a time, in the
+// order received, on a goroutine that exists only while work waits.
+// Guarded by hostedPages.mu.
 type reportLane struct {
 	key  hostedPageID
 	jobs []*acceptedWork
 	// progress is each waiting running snapshot a newer one replaces in its
-	// place, by download id.
-	progress map[string]*acceptedWork
+	// place, by download.
+	progress map[hostedDownloadKey]*acceptedWork
 	// pages are the pages whose work the lane holds; each keeps the lane
 	// until it goes idle.
 	pages []hostedPageID
 	busy  bool
 }
 
-// reportLanes are the engine's lanes of one run, until Stop. Guarded by
-// hostedEngine.mu.
+// reportLanes are the lanes of one run, until Stop. Guarded by
+// hostedPages.mu.
 type reportLanes struct {
 	byKey map[hostedPageID]*reportLane
 	// pages is the lane each page's work runs on while that lane is busy, so
@@ -102,10 +110,11 @@ func newReportLanes() *reportLanes {
 }
 
 // laneLocked answers the lane page's work runs on: the busy lane the page
-// already has work on, else the lane of its nearest opener that has one or
-// is no pending popup. The caller holds e.mu.
-func (e *hostedEngine) laneLocked(page hostedPageID) *reportLane {
-	lanes := e.lanes
+// already has work on, else, for a popup the Manager has not listed, the
+// lane of its nearest opener that has one or is no such popup, else its
+// own. The caller holds p.mu.
+func (p *hostedPages) laneLocked(page hostedPageID) *reportLane {
+	lanes := p.lanes
 	if lane := lanes.pages[page]; lane != nil {
 		return lane
 	}
@@ -113,12 +122,12 @@ func (e *hostedEngine) laneLocked(page hostedPageID) *reportLane {
 	var lane *reportLane
 	// Each opener is reported before its popups, so the chain ends; the
 	// bound stops a cycle all the same.
-	for range len(e.popups) + 1 {
-		popup := e.popups[string(key)]
-		if popup == nil || popup.opener == "" {
+	for range len(p.records) + 1 {
+		r := p.records[key]
+		if r == nil || !r.state.pendingPopup() || r.opener == "" {
 			break
 		}
-		key = hostedPageID(popup.opener)
+		key = r.opener
 		if lane = lanes.pages[key]; lane != nil {
 			break
 		}
@@ -127,7 +136,7 @@ func (e *hostedEngine) laneLocked(page hostedPageID) *reportLane {
 		lane = lanes.byKey[key]
 	}
 	if lane == nil {
-		lane = &reportLane{key: key, progress: make(map[string]*acceptedWork)}
+		lane = &reportLane{key: key, progress: make(map[hostedDownloadKey]*acceptedWork)}
 		lanes.byKey[key] = lane
 	}
 	lanes.pages[page] = lane
@@ -135,20 +144,20 @@ func (e *hostedEngine) laneLocked(page hostedPageID) *reportLane {
 	return lane
 }
 
-// submitLocked queues accepted work on its page's lane and starts the
+// submitLocked queues received work on its page's lane and starts the
 // lane's goroutine if it is idle. A running snapshot sent unasked replaces
-// the same download's still waiting in its place. The caller holds e.mu.
-func (e *hostedEngine) submitLocked(w *acceptedWork) {
-	lanes := e.lanes
-	lane := e.laneLocked(w.page)
-	if id, ok := w.progressOf(); ok {
-		if waiting := lane.progress[id]; waiting != nil {
+// the same download's still waiting in its place. The caller holds p.mu.
+func (p *hostedPages) submitLocked(w *acceptedWork) {
+	lanes := p.lanes
+	lane := p.laneLocked(w.page)
+	if key, ok := w.progressOf(); ok {
+		if waiting := lane.progress[key]; waiting != nil {
 			if w.snapshot.Seq > waiting.snapshot.Seq {
 				waiting.snapshot = w.snapshot
 			}
 			return
 		}
-		lane.progress[id] = w
+		lane.progress[key] = w
 	}
 	lane.jobs = append(lane.jobs, w)
 	if lane.busy {
@@ -156,15 +165,15 @@ func (e *hostedEngine) submitLocked(w *acceptedWork) {
 	}
 	lane.busy = true
 	lanes.workers.Add(1)
-	go e.runLane(lanes, lane)
+	go p.runLane(lanes, lane)
 }
 
 // runLane processes lane's work in order until none waits, or until Stop
 // ends the lanes it belongs to, then releases the lane and its pages.
-func (e *hostedEngine) runLane(lanes *reportLanes, lane *reportLane) {
+func (p *hostedPages) runLane(lanes *reportLanes, lane *reportLane) {
 	defer lanes.workers.Done()
 	for {
-		e.mu.Lock()
+		p.mu.Lock()
 		if len(lane.jobs) == 0 || lanes.stopped {
 			lane.busy = false
 			lane.jobs = nil
@@ -174,27 +183,41 @@ func (e *hostedEngine) runLane(lanes *reportLanes, lane *reportLane) {
 					delete(lanes.pages, page)
 				}
 			}
-			e.mu.Unlock()
+			p.mu.Unlock()
 			return
 		}
 		w := lane.jobs[0]
 		lane.jobs[0] = nil
 		lane.jobs = lane.jobs[1:]
-		if id, ok := w.progressOf(); ok && lane.progress[id] == w {
-			delete(lane.progress, id)
+		if key, ok := w.progressOf(); ok && lane.progress[key] == w {
+			delete(lane.progress, key)
 		}
-		e.mu.Unlock()
-		e.process(lanes.ctx, w)
+		p.mu.Unlock()
+		p.process(lanes.ctx, w)
 	}
 }
 
-// process runs one accepted report.
+// stopLanesLocked ends the lanes of this run: work still waiting is
+// dropped, a path conversion under way ends, and the next report starts
+// new lanes. It answers the wait for the lanes' goroutines. The caller
+// holds p.mu.
+func (p *hostedPages) stopLanesLocked() func() {
+	lanes := p.lanes
+	lanes.stopped = true
+	lanes.cancel()
+	p.lanes = newReportLanes()
+	return lanes.workers.Wait
+}
+
+// process runs one received report on its lane.
 func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	switch w.kind {
 	case acceptedSnapshot:
-		e.applySnapshot(ctx, w.page, w.snapshot, w.download)
+		e.applySnapshot(ctx, w.snapshot, w.download)
 	case acceptedClose:
-		e.retirePage(string(w.page))
+		e.retirePage(w.page, pageClosedReason, true)
+	case acceptedDiscard:
+		e.retirePage(w.page, popupDiscardedReason, false)
 	case acceptedCrash:
 		e.events.PageCrashed(string(w.page), w.crash)
 	default:
@@ -202,31 +225,44 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	}
 }
 
-// acceptClose accepts the launcher's close of page, which runs after the
-// page's work already accepted (retirePage), and ends every download of the
-// page before any snapshot accepted after it runs.
+// acceptClose receives the launcher's close of page: its admission seals
+// now, and a popup the Manager has not listed is recorded closed in the
+// Manager's admission, so its listing is refused; the page retires on its
+// lane after its work already received (retirePage). Its attach and its
+// wait for the close end now.
 func (e *hostedEngine) acceptClose(page hostedPageID) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.submitLocked(&acceptedWork{kind: acceptedClose, page: page})
+	receipt := e.pages.acceptEnd(page, acceptedClose, "")
+	if !receipt.accepted {
+		return
+	}
+	e.endPageWaits(page)
+	if receipt.pendingPopup {
+		e.events.PageEndReceived(string(page), popupadmit.Closed())
+	}
 }
 
-// acceptCrash accepts the process failure that ended page, which runs
-// after the page's work already accepted (engineEvents.PageCrashed).
+// acceptCrash receives the process failure that ended page, which the
+// Manager hears after the page's work already received
+// (engineEvents.PageCrashed); a popup the Manager has not listed is
+// recorded crashed in its admission now.
 func (e *hostedEngine) acceptCrash(page hostedPageID, reason string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.submitLocked(&acceptedWork{kind: acceptedCrash, page: page, crash: reason})
+	receipt := e.pages.acceptEnd(page, acceptedCrash, reason)
+	if receipt.accepted && receipt.pendingPopup {
+		e.events.PageEndReceived(string(page), popupadmit.Crashed(reason))
+	}
 }
 
-// stopLanesLocked ends the lanes of this run: work still waiting is
-// dropped, a path conversion under way ends, and the next report starts
-// new lanes. It answers the wait for the lanes' goroutines, which the
-// caller makes once it releases e.mu. The caller holds e.mu.
-func (e *hostedEngine) stopLanesLocked() func() {
-	lanes := e.lanes
-	lanes.stopped = true
-	lanes.cancel()
-	e.lanes = newReportLanes()
-	return lanes.workers.Wait
+// endPageWaits ends what page waits for as it goes: its popup attach and
+// its wait for the launcher's close (awaitLauncherClose).
+func (e *hostedEngine) endPageWaits(page hostedPageID) {
+	e.mu.Lock()
+	e.endCloseFallbackLocked(string(page))
+	var cancelAttach func()
+	if popup := e.popups[string(page)]; popup != nil {
+		cancelAttach = popup.takeAttachCancelLocked()
+	}
+	e.mu.Unlock()
+	if cancelAttach != nil {
+		cancelAttach()
+	}
 }

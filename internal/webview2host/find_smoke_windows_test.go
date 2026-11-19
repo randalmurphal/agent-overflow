@@ -190,7 +190,6 @@ var (
 const (
 	smokeClassName       = "AOFindSmokeWindow"
 	wsOverlappedWindow   = 0x00CF0000
-	wsVisible            = 0x10000000
 	pmRemove             = 0x0001
 	smokeMessageWords    = 8
 	smokeWindowDimension = 800

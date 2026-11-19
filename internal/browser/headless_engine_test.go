@@ -1005,6 +1005,58 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 	})
 }
 
+// Chromium names a cancel and a failure alike ("canceled"): the profile's
+// own cancel of a download makes its end the user's cancel, and the same
+// end of a download nobody canceled is a failure.
+func TestHeadlessProfileTellsItsCancelFromAFailure(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	ends := make(chan downloadProgress, 4)
+	// Sent while the tracker holds the start, which it marks started
+	// before it lets a cancel in.
+	started := make(chan string, 4)
+	engine.events.DownloadStarted = func(start downloadStart) downloadAdmission {
+		started <- start.ID
+		return downloadAdmitted
+	}
+	engine.events.DownloadProgress = func(progress downloadProgress) { ends <- progress }
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	if _, err := profile.ensureBrowser(); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	stopped := func(guid string) map[string]any {
+		return map[string]any{"method": "Browser.downloadProgress", "params": map[string]any{
+			"guid": guid, "totalBytes": 10, "receivedBytes": 4, "state": "canceled",
+		}}
+	}
+	for _, tc := range []struct {
+		guid   string
+		cancel bool
+		want   downloadState
+	}{{"G-canceled", true, downloadCanceled}, {"G-failed", false, downloadFailed}} {
+		browser.send(downloadWillBegin(tc.guid, "F-1"))
+		select {
+		case <-started:
+		case <-time.After(headlessTestDeadline):
+			t.Fatalf("%s never started", tc.guid)
+		}
+		if tc.cancel {
+			if err := profile.CancelDownload(tc.guid); err != nil {
+				t.Fatal(err)
+			}
+		}
+		browser.send(stopped(tc.guid))
+		select {
+		case got := <-ends:
+			if got.ID != tc.guid || got.State != tc.want {
+				t.Fatalf("Chromium's cancel of %s reached the Manager as %+v, want %v", tc.guid, got, tc.want)
+			}
+		case <-time.After(headlessTestDeadline):
+			t.Fatalf("%s's end never reached the Manager", tc.guid)
+		}
+	}
+}
+
 // A discarded popup's close and a download's cancel end when a connected
 // Chromium stops answering them: the discard within its caller's deadline,
 // the cancel within the close timeout. Meanwhile another page opens, the

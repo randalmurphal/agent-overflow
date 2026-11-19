@@ -39,6 +39,20 @@ func (m *Manager) pageClosed(handle string) {
 	}, func() { m.removeClosedPage(handle) })
 }
 
+// pageEndReceived is engineEvents.PageEndReceived: the close or crash is
+// recorded in the popup's admission now; its PageClosed or PageCrashed
+// follows and acts.
+func (m *Manager) pageEndReceived(handle string, end popupadmit.Observation) {
+	m.admissions.Observe(popupadmit.Handle(handle), end)
+}
+
+// listingDriver is a page driver whose engine schedules a popup's work by
+// whether the Manager listed it (the hosted engine's report lanes): the
+// listing tells it, after its commit.
+type listingDriver interface {
+	Listed()
+}
+
 // pageCrashedReport is engineEvents.PageCrashed. A popup not listed yet
 // keeps the crash for its listing, which lists it crashed unless it also
 // closed; any other page is handled as a crashed tab (pageCrashed).
@@ -217,6 +231,9 @@ func (m *Manager) runAdoption(popup enginePopup) {
 	// push carries it.
 	m.commitHeldInfoLocked(p, popup.Handle)
 	m.mu.Unlock()
+	if listing, ok := driver.(listingDriver); ok {
+		listing.Listed()
+	}
 	if m.popupListing != nil {
 		m.popupListing()
 	}

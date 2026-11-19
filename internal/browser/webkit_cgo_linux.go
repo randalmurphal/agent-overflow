@@ -449,7 +449,7 @@ func (p *webkitProfile) decideDownload(download webkitPendingDownload, path stri
 		// Canceled before a byte was written; the row says why.
 		p.engine.downloadEvents.Go(func() {
 			if p.engine.events.DownloadStarted(start) == downloadAdmitted {
-				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
+				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadFailed, Error: stageErr.Error()})
 			}
 			webkitReleaseDownload(download.ptr)
 		})
@@ -481,6 +481,8 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received, total C.double, s
 		progress.State = downloadCompleted
 	case 2:
 		progress.State = downloadCanceled
+	case 3:
+		progress.State = downloadFailed
 	}
 	// Off the GTK thread, after the start and in the order WebKit reported
 	// them (downloadEvents).

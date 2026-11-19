@@ -51,6 +51,11 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		e.closePage(pageID)
 		return nil, errors.New("browser: pane host reported a page with no CDP target")
 	}
+	// Claimed before the attach, whose end would close the target.
+	if err := e.claimTarget(pageID, targetID); err != nil {
+		e.closePage(pageID)
+		return nil, err
+	}
 
 	browserCtx, err := e.ensureBrowser()
 	if err != nil {
@@ -87,16 +92,25 @@ func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedBy
 
 // DiscardPage closes a controller the Manager declined to adopt. The handle
 // is this engine's page id, because that is what pageDriver.Handle answers.
-func (e *hostedEngine) DiscardPage(_ context.Context, handle string) error {
-	e.closePage(handle)
-	return nil
+// The discard is received at once (closePage) and retires the page on its
+// lane, after the reports received before it; DiscardPage waits for that
+// within ctx, and past it answers errDiscardPending while the lane still
+// finishes the discard. A second discard of the page joins the first.
+func (e *hostedEngine) DiscardPage(ctx context.Context, handle string) error {
+	retired := e.closePage(handle)
+	select {
+	case <-retired:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("browser: discard pane page %s: %w: %w", handle, errDiscardPending, ctx.Err())
+	}
 }
 
 // Report routes one launcher answer. Called from the App's
 // BrowserHostReport binding, which is the backend end of the RPC the
 // launcher posts over the notification bridge, so its return acknowledges
-// the report: a download snapshot, a close or a crash is accepted here and
-// processed on the page's lane (hosted_report_lanes.go).
+// the report: a download snapshot, a close or a crash is received here and
+// processed on the page's lane (hosted_pages.go, hosted_report_lanes.go).
 func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detail string) {
 	switch kind {
 	case webview2host.ReportCreated:
@@ -171,33 +185,8 @@ func processFailureCrashes(detail string) bool {
 	return detail == "render-process-exited" || detail == "browser-process-exited"
 }
 
-// retirePage drops the engine's bookkeeping of a page that closed by
-// itself, ends its downloads, and tells the Manager the page is gone. The
-// Manager alone decides what that means for its registry, a popup's
-// admission among it (engineEvents). It runs only on the page's report
-// lane (acceptClose); a target's destroy, read from CDP events, is accepted
-// as a close only past closeFallback (awaitLauncherClose).
-func (e *hostedEngine) retirePage(pageID string) {
-	e.mu.Lock()
-	e.endCloseFallbackLocked(pageID)
-	_, bound := e.targetByPage[pageID]
-	_, profiled := e.pageProfile[pageID]
-	cancelAttach := e.forgetPopupLocked(pageID)
-	e.forgetPageLocked(pageID)
-	e.mu.Unlock()
-	cancelAttach()
-	if !bound && !profiled {
-		return
-	}
-	// A snapshot being applied reaches the Manager before the close does:
-	// the launcher sends a download's end before its page's close, and a
-	// report whose call timed out there may still be applied here.
-	e.endPageDownloads(pageID, pageClosedReason)
-	e.events.PageClosed(pageID)
-}
-
 // forgetPageLocked drops pageID from the engine's page bookkeeping, its
-// downloads aside (endPageDownloads). The caller holds e.mu.
+// record and downloads aside (retirePage). The caller holds e.mu.
 func (e *hostedEngine) forgetPageLocked(pageID string) {
 	targetID := e.targetByPage[pageID]
 	delete(e.targetByPage, pageID)
@@ -246,10 +235,25 @@ func (e *hostedEngine) deliver(pageID string, report hostReport) bool {
 	return true
 }
 
-// bind pairs a page with its CDP target and with conn, the browser
-// connection its session runs on. It refuses a connection that has ended:
-// that connection's retirement may already have claimed its pages, and a
-// later one would never report this page.
+// claimTarget pairs a page the engine is creating with the CDP target the
+// launcher reported for it, unless another page, bound or a popup, has
+// that target. Its close forgets the pair (forgetPageLocked).
+func (e *hostedEngine) claimTarget(pageID, targetID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if owner, claimed := e.targetPageLocked(targetID); claimed {
+		return fmt.Errorf("browser: pane host reported page %s with target %s, which page %s has", pageID, targetID, owner)
+	}
+	e.targetByPage[pageID] = targetID
+	e.pageByTarget[targetID] = pageID
+	return nil
+}
+
+// bind pairs a page the engine created with its CDP target and with conn,
+// the browser connection its session runs on, and records it open, from
+// which it admits downloads. It refuses a connection that has ended: that
+// connection's retirement may already have claimed its pages, and a later
+// one would never report this page.
 func (e *hostedEngine) bind(pageID, targetID string, conn context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -257,16 +261,17 @@ func (e *hostedEngine) bind(pageID, targetID string, conn context.Context) error
 		return errors.New("browser: the connection to the pane browser was lost")
 	}
 	e.bindLocked(pageID, targetID, conn)
+	e.pages.addOpen(hostedPageID(pageID))
 	return nil
 }
 
-// bindLocked is bind for a caller that holds e.mu and has checked conn.
-// A bound page admits downloads; a popup's admission opened at its report.
+// bindLocked is bind's pairing for a caller that holds e.mu and has
+// checked conn. It changes no page's record: a popup's opened at its
+// report.
 func (e *hostedEngine) bindLocked(pageID, targetID string, conn context.Context) {
 	e.targetByPage[pageID] = targetID
 	e.pageByTarget[targetID] = pageID
 	e.pageConn[pageID] = conn
-	e.downloads.openLocked(pageID)
 }
 
 func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
@@ -285,22 +290,37 @@ func (e *hostedEngine) targetPageLocked(targetID string) (string, bool) {
 	return pageID, ok
 }
 
-// closePage retires the bookkeeping and asks the launcher to destroy the
-// controller, for the Manager's close or discard or a create that failed.
-// The launcher cancels the page's downloads with it and reports nothing,
-// so they end here (endPageDownloads); a listed page's the Manager ended
-// as it closed it. The launcher answers `closed`, which is a no-op by then:
-// the close a page's own Close already accounted for must not be reported
-// to the Manager twice.
-func (e *hostedEngine) closePage(pageID string) {
-	e.endPageDownloads(pageID, popupDiscardedReason)
-	e.mu.Lock()
-	e.forgetPageLocked(pageID)
-	cancelAttach := e.forgetPopupLocked(pageID)
-	e.endCloseFallbackLocked(pageID)
-	e.mu.Unlock()
-	cancelAttach()
-	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
+// closePage receives the engine's own close of a page, for the Manager's
+// close or discard or a create that failed, and asks the launcher to
+// destroy the controller. A page with a record seals now and retires on its
+// lane after the reports received before it (retirePage), which ends its
+// downloads still running: the launcher cancels them with the page and
+// reports nothing. A listed page's the Manager ended as it closed it. The
+// launcher answers `closed`, which is a no-op by then: the close a page's
+// own Close already accounted for must not be reported to the Manager
+// twice. A page with no record (a create that failed before its bind, a
+// popup refused at its report) is forgotten at once. It answers what
+// closes once the page is retired; a page already closing retires once,
+// and its answer is its first close's. The launcher is asked to close the
+// page every time: a close of a page it closed already changes nothing.
+func (e *hostedEngine) closePage(pageID string) <-chan struct{} {
+	defer e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
+	receipt := e.pages.acceptEnd(hostedPageID(pageID), acceptedDiscard, "")
+	if receipt.retired == nil {
+		e.mu.Lock()
+		e.endCloseFallbackLocked(pageID)
+		cancelAttach := e.forgetPopupLocked(pageID)
+		e.forgetPageLocked(pageID)
+		e.mu.Unlock()
+		cancelAttach()
+		retired := make(chan struct{})
+		close(retired)
+		return retired
+	}
+	if receipt.accepted {
+		e.endPageWaits(hostedPageID(pageID))
+	}
+	return receipt.retired
 }
 
 // awaitHostReport waits for one report, the caller's cancellation, or the
@@ -351,3 +371,9 @@ func (p *hostedPage) Close() {
 	p.pageDriver.Close()
 	p.closeOnce.Do(func() { p.engine.closePage(p.id) })
 }
+
+// Listed is the Manager's listing of an adopted popup (listingDriver): its
+// later reports run on its own lane.
+func (p *hostedPage) Listed() { p.engine.pages.listed(hostedPageID(p.id)) }
+
+var _ listingDriver = (*hostedPage)(nil)

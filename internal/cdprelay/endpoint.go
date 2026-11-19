@@ -42,6 +42,9 @@ type Endpoint struct {
 	// than the constant directly so tests can drive the timeout path
 	// without spending it.
 	openTimeout time.Duration
+	// streamBounds bound each stream's writes to its local connection
+	// (webview2host.DefaultTunnelStreamBounds); a test changes them.
+	streamBounds webview2host.TunnelStreamBounds
 
 	mu      sync.Mutex
 	session *session
@@ -98,11 +101,12 @@ func New(config Config) (*Endpoint, error) {
 		return nil, fmt.Errorf("cdprelay: listen on loopback: %w", err)
 	}
 	e := &Endpoint{
-		logf:        logf,
-		listener:    listener,
-		addr:        listener.Addr().String(),
-		openTimeout: streamOpenTimeout,
-		ready:       make(chan struct{}),
+		logf:         logf,
+		listener:     listener,
+		addr:         listener.Addr().String(),
+		openTimeout:  streamOpenTimeout,
+		streamBounds: webview2host.DefaultTunnelStreamBounds,
+		ready:        make(chan struct{}),
 	}
 	e.wg.Add(1)
 	go e.accept()
@@ -364,10 +368,13 @@ type session struct {
 	closed  bool
 }
 
-// stream is one loopback connection bound to one tunnel stream id.
+// stream is one loopback connection bound to one tunnel stream id, and the
+// writer of the data the launcher sends it (TunnelStreamWriter), which runs
+// until the stream finishes.
 type stream struct {
-	id    uint32
-	local net.Conn
+	id     uint32
+	local  net.Conn
+	writer *webview2host.TunnelStreamWriter
 
 	openOnce sync.Once
 	opened   chan struct{}
@@ -380,13 +387,15 @@ type stream struct {
 
 func (st *stream) markOpened() { st.openOnce.Do(func() { close(st.opened) }) }
 
-// finish closes the local socket, which is what unblocks the pump's Read.
+// finish closes the local socket, which is what unblocks the pump's Read
+// and a write under way, and ends the stream's writer.
 func (st *stream) finish(detail string) {
 	st.doneOnce.Do(func() {
 		st.failMu.Lock()
 		st.fail = detail
 		st.failMu.Unlock()
 		close(st.done)
+		st.writer.Stop()
 		_ = st.local.Close()
 	})
 }
@@ -413,12 +422,26 @@ func (s *session) openStream(local net.Conn) (*stream, error) {
 	}
 	s.nextID++
 	st := &stream{id: s.nextID, local: local, opened: make(chan struct{}), done: make(chan struct{})}
+	st.writer = webview2host.NewTunnelStreamWriter(local, s.endpoint.streamBounds, func(err error) {
+		// The pump sends the launcher the close as the socket ends.
+		s.endpoint.logf("cdprelay: close stream %d: %v", st.id, err)
+		st.finish("local write failed")
+	})
 	s.streams[st.id] = st
+	s.endpoint.wg.Add(1)
 	s.mu.Unlock()
+	go func() {
+		defer s.endpoint.wg.Done()
+		st.writer.Run()
+	}()
 
-	if err := s.sendControl(webview2host.TunnelControl{Op: webview2host.TunnelOpen, StreamID: st.id}); err != nil {
+	fail := func(err error) (*stream, error) {
+		st.finish(err.Error())
 		s.retire(st)
 		return nil, err
+	}
+	if err := s.sendControl(webview2host.TunnelControl{Op: webview2host.TunnelOpen, StreamID: st.id}); err != nil {
+		return fail(err)
 	}
 
 	timer := time.NewTimer(s.endpoint.openTimeout)
@@ -431,15 +454,13 @@ func (s *session) openStream(local net.Conn) (*stream, error) {
 		if detail == "" {
 			detail = "tunnel closed the stream"
 		}
-		s.retire(st)
-		return nil, fmt.Errorf("cdprelay: stream %d: %s", st.id, detail)
+		return fail(fmt.Errorf("cdprelay: stream %d: %s", st.id, detail))
 	case <-s.ctx.Done():
-		s.retire(st)
-		return nil, ErrTunnelDown
+		return fail(ErrTunnelDown)
 	case <-timer.C:
-		s.retire(st)
+		_, err := fail(fmt.Errorf("cdprelay: stream %d: launcher did not answer open within %s", st.id, s.endpoint.openTimeout))
 		s.closeRemote(st.id)
-		return nil, fmt.Errorf("cdprelay: stream %d: launcher did not answer open within %s", st.id, s.endpoint.openTimeout)
+		return nil, err
 	}
 }
 
@@ -500,13 +521,16 @@ func (s *session) handleControl(payload []byte) {
 		if st := s.lookup(control.StreamID); st != nil {
 			st.markOpened()
 		}
+	// The launcher's end of a stream finishes it once the data the
+	// launcher sent before it is written (TunnelStreamWriter.End).
 	case webview2host.TunnelError:
 		if st := s.lookup(control.StreamID); st != nil {
-			st.finish(webview2host.TruncateDetail(control.Detail))
+			detail := webview2host.TruncateDetail(control.Detail)
+			st.writer.End(func() { st.finish(detail) })
 		}
 	case webview2host.TunnelClose:
 		if st := s.lookup(control.StreamID); st != nil {
-			st.finish("launcher closed the stream")
+			st.writer.End(func() { st.finish("launcher closed the stream") })
 		}
 	default:
 		// `open` is the backend's own verb and anything else is version
@@ -529,11 +553,11 @@ func (s *session) handleData(payload []byte) {
 		// raced the launcher's last write.
 		return
 	}
-	if _, err := st.local.Write(data); err != nil {
-		// The pump owns the stream's lifecycle and will send the close;
-		// closing the socket here is what wakes it.
-		st.finish("local write failed")
-	}
+	// Queued, never written here: this is the connection's one reader, and
+	// each Read answers a message of its own to keep. A failed or stalled
+	// write finishes the stream (TunnelStreamWriter), which wakes the pump,
+	// and the pump sends the close.
+	_ = st.writer.Write(data)
 }
 
 func (s *session) sendControl(control webview2host.TunnelControl) error {

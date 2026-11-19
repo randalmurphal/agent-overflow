@@ -50,6 +50,36 @@ const (
 	DownloadUnknown     = "unknown"
 )
 
+// DownloadEnd is why an interrupted download ended, which the backend
+// lists by kind; the report's Reason is its text for the user only.
+type DownloadEnd string
+
+const (
+	// DownloadEndCanceled: WebView2 ended it as the user canceled it, which
+	// only the backend's cancel does, since the launcher takes every
+	// download from WebView2's own UI.
+	DownloadEndCanceled DownloadEnd = "canceled"
+	// DownloadEndFailed: WebView2 ended it for any other cause (the
+	// network, the server, the disk, a policy), a cancel pending or not.
+	DownloadEndFailed DownloadEnd = "failed"
+	// DownloadEndUntracked: WebView2 still read it as running at the
+	// bound of the backend's cancel, so the launcher stopped following it
+	// and how it ends is unknown.
+	DownloadEndUntracked DownloadEnd = "untracked"
+	// DownloadEndPageGone: its popup went before the backend listed it, and
+	// the launcher canceled it.
+	DownloadEndPageGone DownloadEnd = "pageGone"
+)
+
+// valid reports one of the ends above.
+func (e DownloadEnd) valid() bool {
+	switch e {
+	case DownloadEndCanceled, DownloadEndFailed, DownloadEndUntracked, DownloadEndPageGone:
+		return true
+	}
+	return false
+}
+
 // DownloadProgressInterval is the most often the launcher reports one
 // download's bytes. WebView2 raises BytesReceivedChanged per chunk; the
 // backend coalesces what reaches the UI further.
@@ -79,15 +109,17 @@ const DownloadPathTooLongReason = "the saved file's path is too long to report, 
 // launcher took them (0 for DownloadUnknown, which is no snapshot); Answer
 // marks one sent in answer to a directive; Name the saved file's name and
 // Path the file as Windows names it, from the first snapshot on; URI its
-// address, shortened or left out so the report fits; Reason an interrupted
-// download's cause, why a completed one's file is not reported
-// (DownloadPathTooLongReason), or DownloadUnknownReason; Cancel what came
-// of the backend's last cancel attempt the launcher took.
+// address, shortened or left out so the report fits; End an interrupted
+// download's cause, and only its; Reason the text of that cause, why a
+// completed one's file is not reported (DownloadPathTooLongReason), or
+// DownloadUnknownReason; Cancel what came of the backend's last cancel
+// attempt the launcher took.
 type DownloadReport struct {
 	ID       string        `json:"id"`
 	Seq      uint64        `json:"seq,omitempty"`
 	Answer   bool          `json:"answer,omitempty"`
 	State    string        `json:"state"`
+	End      DownloadEnd   `json:"end,omitempty"`
 	URI      string        `json:"uri,omitempty"`
 	Name     string        `json:"name,omitempty"`
 	Path     string        `json:"path,omitempty"`
@@ -216,6 +248,12 @@ func ParseDownloadReport(detail string) (DownloadReport, error) {
 	}
 	if r.State == DownloadRunning && r.Reason != "" {
 		return DownloadReport{}, errors.New("a running download report carries no reason")
+	}
+	if r.State == DownloadInterrupted && !r.End.valid() {
+		return DownloadReport{}, fmt.Errorf("an interrupted download report's end %q is unknown", r.End)
+	}
+	if r.State != DownloadInterrupted && r.End != "" {
+		return DownloadReport{}, errors.New("only an interrupted download report has an end")
 	}
 	if r.State == DownloadCompleted && r.Path == "" && r.Reason == "" {
 		return DownloadReport{}, errors.New("a completed download report names no file and says no reason")

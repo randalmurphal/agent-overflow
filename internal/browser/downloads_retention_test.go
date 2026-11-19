@@ -135,7 +135,7 @@ func TestADownloadWithNoAddressOnABlankPageIsListed(t *testing.T) {
 	if len(listed) != 1 || listed[0].Name != "data.bin" || listed[0].State != downloadStateRunning || listed[0].Source != "" {
 		t.Fatalf("the thread lists %+v, want the running data.bin with no source", listed)
 	}
-	manager.downloadProgress(downloadProgress{ID: "no-address", State: downloadCanceled, Error: "stopped"})
+	manager.downloadProgress(downloadProgress{ID: "no-address", State: downloadFailed, Error: "stopped"})
 	if listed := threadDownloads(manager, access); len(listed) != 1 || listed[0].State != downloadStateFailed {
 		t.Fatalf("after its end the thread lists %+v, want it failed", listed)
 	}

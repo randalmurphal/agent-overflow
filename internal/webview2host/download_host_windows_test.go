@@ -742,7 +742,7 @@ func TestACanceledDownloadWebView2DoesNotEndSettlesAtTheBound(t *testing.T) {
 	}
 	r.timers[0]()
 	end := r.take()
-	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadCancelBoundReason || end[0].Answer {
+	if states(end) != "dl-t-1:interrupted" || end[0].Reason != downloadCancelBoundReason || end[0].End != DownloadEndUntracked || end[0].Answer {
 		t.Fatalf("at the bound the download ended %+v", end)
 	}
 	if op.refs != 1 || len(op.subs) != 0 {

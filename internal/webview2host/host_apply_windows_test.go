@@ -8,8 +8,6 @@ import (
 	"unsafe"
 )
 
-var procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
-
 // windowRect is a window's rect in screen coordinates.
 func windowRect(t *testing.T, hwnd uintptr) rect {
 	t.Helper()
@@ -22,11 +20,7 @@ func windowRect(t *testing.T, hwnd uintptr) rect {
 
 // shownWindow reports whether a window's own style is shown, whatever its
 // parent's: the rig's parent is a message-only window, never visible.
-func shownWindow(hwnd uintptr) bool {
-	gwlStyle := int32(-16)
-	style, _, _ := procGetWindowLongPtr.Call(hwnd, uintptr(gwlStyle))
-	return style&wsVisible != 0
-}
+func shownWindow(hwnd uintptr) bool { return styleVisible(hwnd) }
 
 // A bounds the controller refused is not the page's: the same geometry
 // again moves it, where it would otherwise be taken as already applied and
@@ -60,6 +54,80 @@ func TestARefusedBoundsIsAppliedAgain(t *testing.T) {
 	r.host.Apply(Directive{Op: OpClose, PageID: "page-1"})
 	r.pump()
 	closed(t, controller)
+}
+
+// A hide the native call refused leaves the page shown in the host's view,
+// so the same hide again hides it, on the clipped path (the container's
+// ShowWindow) and the directly parented fallback (the controller's
+// IsVisible) alike; so does the hide of a page whose move failed.
+func TestARefusedHideIsAppliedAgain(t *testing.T) {
+	for _, path := range []string{"clipped", "parented"} {
+		t.Run(path, func(t *testing.T) {
+			r := newPopupRig(t)
+			defer r.done()
+			page, controller := r.createPage("page-1", "jar", false)
+			if path == "parented" {
+				destroyWindow(page.container)
+				page.container = 0
+			}
+			hidden := func() bool {
+				if path == "clipped" {
+					return !shownWindow(page.container)
+				}
+				return !controller.visible
+			}
+			refuse := func(refused bool) {
+				switch path {
+				case "clipped":
+					r.host.showClipFunc = nil
+					if refused {
+						r.host.showClipFunc = func(uintptr, bool) error { return errors.New("ShowWindow refused") }
+					}
+				case "parented":
+					controller.visibleErr = 0
+					if refused {
+						controller.visibleErr = 0x80004005 // E_FAIL
+					}
+				}
+			}
+			a := Directive{Op: OpBounds, PageID: "page-1", X: 10, Y: 20, W: 300, H: 200, DPR: 1, VW: 1000, VH: 800}
+			r.host.Apply(a)
+			r.host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+			if !page.shown.visible || hidden() {
+				t.Fatalf("the show: host view %+v, hidden %v", page.shown, hidden())
+			}
+
+			refuse(true)
+			r.host.Apply(Directive{Op: OpHide, PageID: "page-1"})
+			if !page.shown.visible || hidden() {
+				t.Fatalf("a refused hide: host view %+v, hidden %v, want shown in both", page.shown, hidden())
+			}
+			refuse(false)
+			r.host.Apply(Directive{Op: OpHide, PageID: "page-1"})
+			if page.shown.visible || !hidden() {
+				t.Fatalf("the hide again: host view %+v, hidden %v, want hidden in both", page.shown, hidden())
+			}
+
+			r.host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+			b := a
+			b.X = 200
+			controller.putErr = 0x80004005 // E_FAIL
+			refuse(true)
+			r.host.Apply(b)
+			if !page.shown.visible || hidden() {
+				t.Fatalf("a failed move whose hide was refused: host view %+v, hidden %v, want shown in both", page.shown, hidden())
+			}
+			refuse(false)
+			r.host.Apply(b)
+			if page.shown.visible || !hidden() {
+				t.Fatalf("the failed move again: host view %+v, hidden %v, want hidden in both", page.shown, hidden())
+			}
+			controller.putErr = 0
+			r.host.Apply(Directive{Op: OpClose, PageID: "page-1"})
+			r.pump()
+			closed(t, controller)
+		})
+	}
 }
 
 // A, then B with one native write refused, then A, for each write in turn:

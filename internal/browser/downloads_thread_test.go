@@ -242,7 +242,7 @@ func TestDownloadProgressCoalescesIntoOneStatePush(t *testing.T) {
 	// A finish pushes at once and withdraws a pending progress push.
 	manager.downloadPushInterval = time.Hour
 	manager.downloadProgress(downloadProgress{ID: "G", Received: 300_000, Total: 400_000, State: downloadInProgress})
-	manager.downloadProgress(downloadProgress{ID: "G", Received: 300_000, Total: 400_000, State: downloadCanceled, Error: "net::ERR_FAILED"})
+	manager.downloadProgress(downloadProgress{ID: "G", Received: 300_000, Total: 400_000, State: downloadFailed, Error: "net::ERR_FAILED"})
 	events := log.take()
 	if countKind(events, "state") != 1 || countKind(events, "download") != 1 {
 		t.Fatalf("a failure emitted %+v, want one state and one announcement", events)
@@ -411,7 +411,7 @@ func TestARefusedCancelReachesTheUserAndTheDownloadRuns(t *testing.T) {
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateRunning {
 		t.Fatalf("after a refused cancel the download lists as %+v, want running", got)
 	}
-	manager.downloadProgress(downloadProgress{ID: "G", State: downloadCanceled})
+	manager.downloadProgress(downloadProgress{ID: "G", State: downloadFailed})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed {
 		t.Fatalf("an end after a refused cancel lists as %+v, want failed", got)
 	}
@@ -450,7 +450,7 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 		if err := manager.CancelThreadDownload(access, row().ID); err != nil {
 			t.Fatal(err)
 		}
-		manager.downloadProgress(downloadProgress{ID: engineID, State: downloadInProgress, Error: refusal, CancelRefused: true})
+		manager.downloadProgress(downloadProgress{ID: engineID, State: downloadCancelRefused, Error: refusal})
 		manager.downloadProgress(downloadProgress{ID: engineID, State: downloadInProgress, Received: 10})
 		if got := row(); got.State != downloadStateRunning || got.Error != refusal {
 			t.Fatalf("after a refused cancel the download lists as %+v, want running with the refusal", got)
@@ -459,7 +459,7 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 
 	manager.downloadStarted(downloadStart{Frame: frame, ID: "G1", SuggestedName: "a.bin"})
 	refuse("G1")
-	manager.downloadProgress(downloadProgress{ID: "G1", State: downloadCanceled})
+	manager.downloadProgress(downloadProgress{ID: "G1", State: downloadFailed})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed || got.Error != "the download stopped before it finished" {
 		t.Fatalf("an end after a refused cancel lists as %+v, want failed", got)
 	}
@@ -477,14 +477,14 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 
 	manager.downloadStarted(downloadStart{Frame: frame, ID: "G3", SuggestedName: "c.bin"})
 	refuse("G3")
-	manager.downloadProgress(downloadProgress{ID: "G3", State: downloadCanceled, Error: "the network failed"})
+	manager.downloadProgress(downloadProgress{ID: "G3", State: downloadFailed, Error: "the network failed"})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateFailed || got.Error != "the network failed" {
 		t.Fatalf("a failure after a refused cancel lists as %+v", got)
 	}
 
 	manager.downloadStarted(downloadStart{Frame: frame, ID: "G4", SuggestedName: "d.bin"})
 	refuse("G4")
-	manager.downloadProgress(downloadProgress{ID: "G4", State: downloadCanceled, PageGone: true})
+	manager.downloadProgress(downloadProgress{ID: "G4", State: downloadPageGone})
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
 		t.Fatalf("an end with no reason of its own after a refused cancel lists as %+v", got)
 	}
@@ -501,7 +501,7 @@ func TestAFinishAfterARefusedCancelListsNoRefusal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			manager.downloadProgress(downloadProgress{ID: item.engineID, State: downloadInProgress, Error: "refused", CancelRefused: true})
+			manager.downloadProgress(downloadProgress{ID: item.engineID, State: downloadCancelRefused, Error: "refused"})
 			if got := threadDownloads(manager, access)[0]; got.Error != "refused" {
 				t.Fatalf("the refusal lists as %+v", got)
 			}
@@ -611,7 +611,7 @@ func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	}
 	start("newest")
 	log.take()
-	manager.downloadProgress(downloadProgress{ID: "newest", State: downloadCanceled, Error: "the server closed the connection"})
+	manager.downloadProgress(downloadProgress{ID: "newest", State: downloadFailed, Error: "the server closed the connection"})
 	if len(threadDownloads(manager, access)) != maxThreadDownloads+1 {
 		t.Fatalf("the list holds %d downloads, want every one", len(threadDownloads(manager, access)))
 	}
@@ -629,7 +629,7 @@ func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	}
 
 	for i := 1; i <= maxThreadDownloads; i++ {
-		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadCanceled, Error: "stopped"})
+		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadFailed, Error: "stopped"})
 	}
 	listed := threadDownloads(manager, access)
 	if len(listed) != maxThreadDownloads {
@@ -656,7 +656,7 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	}
 	// The first to start settles last.
 	for i := total - 1; i >= 0; i-- {
-		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadCanceled, Error: "stopped"})
+		manager.downloadProgress(downloadProgress{ID: fmt.Sprintf("dl-%d", i), State: downloadFailed, Error: "stopped"})
 	}
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
