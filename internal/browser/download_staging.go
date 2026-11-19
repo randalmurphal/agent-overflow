@@ -121,10 +121,10 @@ func stagingDirOf(staged string) (string, error) {
 }
 
 // releaseStaged ends a download's claim on its staged file: the file and
-// its companions go if they are still there (a canceled, failed or
-// unpublished download's), and the staging directory goes once no download
-// of this process stages in it and it is empty. Only names inside the app's
-// staging directory are ever removed.
+// its sidecars (stagedSidecars) go if they are still there (a canceled,
+// failed or unpublished download's), and the staging directory goes once no
+// download of this process stages in it and it is empty. Only those exact
+// names inside the app's staging directory are ever removed.
 func releaseStaged(path string) {
 	staging.mu.Lock()
 	defer staging.mu.Unlock()
@@ -137,33 +137,42 @@ func releaseStaged(path string) {
 		log.Printf("browser: leave the staged download %s: %v", path, err)
 		return
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		log.Printf("browser: remove the staged download %s: %v", path, err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		log.Printf("browser: read the download staging folder %s: %v", dir, err)
-	}
-	for _, entry := range entries {
-		if companion := filepath.Join(dir, entry.Name()); stagedFileOf(companion) == path && companion != path {
-			if err := os.Remove(companion); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				log.Printf("browser: remove the staged download %s: %v", companion, err)
-			}
+	for _, name := range stagedNames(path) {
+		if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("browser: remove the staged download %s: %v", name, err)
 		}
 	}
 	removeStagingDirIfDoneLocked(dir)
 }
 
-// stagedFileOf answers the staged file a name in the staging directory
-// belongs to: itself, or for a companion the engine writes beside it
-// (WebKitGTK writes "<staged>.wkdownload" until the download finishes) the
-// staged name before the first dot, as staged names have none.
-func stagedFileOf(path string) string {
-	base := filepath.Base(path)
-	if i := strings.IndexByte(base, '.'); i > 0 {
-		base = base[:i]
+// stagedSidecars are the suffixes of the files an engine writes beside a
+// staged file while it downloads into it: WebKitGTK's "<staged>.wkdownload".
+var stagedSidecars = []string{".wkdownload"}
+
+// stagedNames answers a staged file's path and its sidecars' paths.
+func stagedNames(staged string) []string {
+	names := []string{staged}
+	for _, suffix := range stagedSidecars {
+		names = append(names, staged+suffix)
 	}
-	return filepath.Join(filepath.Dir(path), base)
+	return names
+}
+
+// stagedFileOf answers the staged file a name in the staging directory
+// belongs to, itself or the file a sidecar of it is beside, with whether it
+// is either: only a staged name, exactly, or one with exactly a sidecar's
+// suffix.
+func stagedFileOf(path string) (string, bool) {
+	base := filepath.Base(path)
+	if stagedNamePattern.MatchString(base) {
+		return path, true
+	}
+	for _, suffix := range stagedSidecars {
+		if staged, ok := strings.CutSuffix(base, suffix); ok && stagedNamePattern.MatchString(staged) {
+			return filepath.Join(filepath.Dir(path), staged), true
+		}
+	}
+	return "", false
 }
 
 // removeStagingDirIfDoneLocked removes dir when no download of this process
@@ -185,17 +194,11 @@ func removeStagingDirIfDoneLocked(dir string) {
 // the "dl-<n>" an earlier build gave before names carried a process token.
 var stagedNamePattern = regexp.MustCompile(`^dl-(?:(?:[0-9a-f]{12}|p[0-9]+)-)?[0-9]+$`)
 
-// isStagedName reports whether path is a staged file's name or a companion
-// of one (stagedFileOf): the only names the prune removes, so a file that
-// is not AO's stays whatever its age.
-func isStagedName(path string) bool {
-	return stagedNamePattern.MatchString(filepath.Base(stagedFileOf(path)))
-}
-
 // pruneStagingLocked removes the regular files in the staging directory dir
-// with a staged name (isStagedName), older than stagedLeftoverAge, that no
-// running download of this process owns, as its staged file or a companion
-// of it. The caller holds staging.mu.
+// with a staged name or a sidecar's (stagedFileOf), older than
+// stagedLeftoverAge, that no running download of this process owns, as its
+// staged file or a sidecar of it; a file that is not AO's stays whatever its
+// age. The caller holds staging.mu.
 func pruneStagingLocked(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -204,7 +207,8 @@ func pruneStagingLocked(dir string, now time.Time) {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
-		if staging.owned[stagedFileOf(path)] || !entry.Type().IsRegular() || !isStagedName(path) {
+		staged, ok := stagedFileOf(path)
+		if !ok || staging.owned[staged] || !entry.Type().IsRegular() {
 			continue
 		}
 		info, err := entry.Info()

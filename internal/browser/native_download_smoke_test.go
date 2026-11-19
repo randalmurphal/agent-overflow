@@ -278,7 +278,9 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		// until the download finishes.
 		names := smokeStagedNames(t)
 		if len(names) == 0 || slices.ContainsFunc(names, func(name string) bool {
-			return stagedFileOf(name) != stagedFileOf(names[0]) || !strings.HasPrefix(name, "dl-")
+			staged, ok := stagedFileOf(name)
+			first, _ := stagedFileOf(names[0])
+			return !ok || staged != first
 		}) {
 			t.Fatalf("while the download runs the staging folder holds %q", names)
 		}

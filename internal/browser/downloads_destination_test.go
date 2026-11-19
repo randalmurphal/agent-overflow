@@ -613,15 +613,16 @@ func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	}
 }
 
-// The prune removes only names AO stages under, and their companions: an
-// old file of the user's or another program's in the staging folder stays.
+// The prune removes only names AO stages under, exactly, and their engine's
+// sidecars: an old file of the user's or another program's in the staging
+// folder stays, a name that merely starts like a staged one included.
 func TestTheStagingPruneLeavesFilesAONeverStaged(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), stagingDirName)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-2 * stagedLeftoverAge)
-	names := []string{"notes.txt", "dl-report", "dl-2", "dl-0123456789ab-7", "dl-0123456789ab-8.wkdownload", "dl-p42-3"}
+	names := []string{"notes.txt", "dl-report", "dl-2", "dl-0123456789ab-7", "dl-0123456789ab-8.wkdownload", "dl-p42-3", "dl-2.user-notes.txt", "dl-3.wkdownload.bak"}
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -632,8 +633,27 @@ func TestTheStagingPruneLeavesFilesAONeverStaged(t *testing.T) {
 		}
 	}
 	stagingPrune(t, dir)
-	if got := folderNames(t, dir); !slices.Equal(got, []string{"dl-report", "notes.txt"}) {
+	if got := folderNames(t, dir); !slices.Equal(got, []string{"dl-2.user-notes.txt", "dl-3.wkdownload.bak", "dl-report", "notes.txt"}) {
 		t.Fatalf("after the prune the staging folder holds %q, want only the files AO never staged", got)
+	}
+}
+
+// Releasing a staged file removes it and its engine's sidecar, and nothing
+// else beside it that starts with its name.
+func TestReleasingAStagedFileRemovesOnlyItAndItsSidecar(t *testing.T) {
+	downloads := testDownloadsFolder(t)
+	staged, err := stageDownload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{staged, staged + ".wkdownload", staged + ".user-notes.txt"} {
+		if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releaseStaged(staged)
+	if got := folderNames(t, filepath.Join(downloads, stagingDirName)); !slices.Equal(got, []string{filepath.Base(staged) + ".user-notes.txt"}) {
+		t.Fatalf("after the release the staging folder holds %q, want only the file AO never staged", got)
 	}
 }
 
