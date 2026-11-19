@@ -1,22 +1,31 @@
-import { BrowserCompanionAction, BrowserCompanionDo, type BrowserCompanionEvent } from './bindings';
+import { type BrowserCompanionEvent } from './bindings';
 import {
-  admitBrowserState,
   browserCompanionState,
-  browserPaneMountId,
+  browserPaneAttachment,
   browserPaneOpen,
   browserPaneShown,
   browserSourcePaneShown,
-  browserStateGeneration,
   browserThreadSnapshot,
   canPresentNativeBrowser,
   canUseNativeBrowser,
   nativeBrowserRefusal,
-  noteBrowserActionError,
+  noteBrowserPaneError,
   observeBrowserCompanion,
   presentWantedBrowser,
   readBrowserCompanionState,
-  type BrowserMountId,
+  type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
+import {
+  browserAction,
+  pageIdOf,
+  sendForThread,
+  sendFromPane,
+  type ActiveTabOperation,
+  type BrowserAction,
+  type BrowserActionAnswer,
+  type BrowserJar,
+  type ThreadAction,
+} from './browserActionWire';
 import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelte';
 import { getCompanionPane } from './companionPanes.svelte';
 import { getPane, paneCommandTarget } from './panes.svelte';
@@ -24,20 +33,17 @@ import { TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
 import { addErrorToast } from './toast.svelte';
 
-// The user's actions on a thread's browser: the pane's chrome, the chat
-// header's button, the keyboard's commands on the active tab and the page
-// focus requests. Each is a BrowserAction; its answer is a state and lands
-// through admitBrowserState, and a refusal lands in the pane's banner
-// (noteBrowserActionError). The per-mount numbers of the ordered actions
-// are kept here and follow the pane mount through observeBrowserCompanion.
+// What the user's gestures on a thread's browser mean: the pane's chrome,
+// the chat header's button, the keyboard's commands on the active tab. Each
+// is a BrowserAction sent through browserActionWire.ts, which checks the
+// thread's owner and the sending pane as it sends. A pane's action is sent
+// from its attachment (actInPane), and its refusal lands in that pane's
+// banner and no other; an action with no pane in hand (browserCompanionAct)
+// carries the banner of the pane attached when it is sent, if any.
 
 // Chrome actions started per thread, so a focus refusal that arrives after a
 // newer action knows it is older than that action's banner.
 const browserActionCounts = new Map<string, number>();
-
-function noteBrowserActionStarted(threadId: string): void {
-  browserActionCounts.set(threadId, (browserActionCounts.get(threadId) ?? 0) + 1);
-}
 
 /** How many chrome actions have started for the thread. */
 export function browserActionsStarted(threadId: string): number {
@@ -50,167 +56,64 @@ export interface BrowserActionFailure {
   cause: unknown;
 }
 
-/**
- * One action against the thread's pages. The backend answers with the next
- * state, which lands like any push; a refusal lands in `actionError` (the
- * mounted pane's banner) and is also returned, for a caller whose pane may
- * not be mounted (the chat header's show/hide chip). Null on success.
- */
-export async function browserCompanionAct(threadId: string, action: BrowserAction): Promise<BrowserActionFailure | null> {
-  return refuseUnhosted(threadId) ?? (await runBrowserAction(threadId, action)).failure;
+/** A sent action's failure and the state it answered, one of them null. */
+interface ActionResult {
+  readonly failure: BrowserActionFailure | null;
+  readonly state: BrowserCompanionEvent | null;
 }
 
 /**
- * The refusal of an action on a browser this page cannot host now
- * (nativeBrowserRefusal), in the banner and returned; null when it can.
- * Asked as the action is sent, since one sent after a wait (a state read,
- * an earlier selection) may find the thread's owner moved or contested.
+ * Runs one chrome action: counts it, clears the banner of `sink`, sends,
+ * and puts a refusal in that banner unless `question` says it is a question
+ * for the user, which the caller asks instead.
  */
-function refuseUnhosted(threadId: string): BrowserActionFailure | null {
-  const refusal = nativeBrowserRefusal(threadId);
-  if (!refusal) return null;
-  noteBrowserActionError(threadId, refusal.message);
-  return { error: refusal.message, cause: refusal };
-}
-
-/** The cookie jars a thread's browser can use (internal/browser/jar.go). */
-export type BrowserJar = 'worktree' | 'project' | 'thread' | 'private';
-
-/** A tab's page id, minted where it enters from a binding or a component. */
-export type PageId = string & { readonly __brand: 'PageId' };
-/** One of the thread's downloads (ThreadDownload.id). */
-export type DownloadId = string & { readonly __brand: 'DownloadId' };
-
-export const toPageId = (raw: string): PageId => raw as PageId;
-export const toDownloadId = (raw: string): DownloadId => raw as DownloadId;
-
-/** What a keyboard command does to the tab active at its turn. */
-export type ActiveTabOperation = 'close' | 'reload';
-
-/** The commands that act on the tab they name and select nothing. */
-export type NamedTabKind = 'back' | 'forward' | 'reload' | 'stop' | 'restore' | 'close' | 'close-others' | 'close-right' | 'devtools';
-
-/** The download rows' commands. */
-export type DownloadKind = 'download-cancel' | 'download-reveal' | 'download-open';
-
-/**
- * One user action on a thread's browser. A command on the active tab names
- * no tab and carries its pane mount, so the backend resolves the tab in the
- * user's order (internal/browser/active_commands.go); every other command
- * that acts on a tab names it. Built by the constructors in `browserAction`.
- */
-export type BrowserAction =
-  | { readonly kind: 'active'; readonly operation: ActiveTabOperation; readonly mount: BrowserMountId }
-  | { readonly kind: NamedTabKind; readonly pageId: PageId }
-  | { readonly kind: 'navigate'; readonly pageId: PageId; readonly address: string }
-  | { readonly kind: 'move'; readonly pageId: PageId; readonly index: number }
-  | { readonly kind: 'activate' | 'duplicate'; readonly pageId: PageId }
-  | { readonly kind: 'step'; readonly step: 1 | -1 }
-  | { readonly kind: 'new'; readonly address: string }
-  | { readonly kind: 'reopen' }
-  | { readonly kind: 'show'; readonly pageId: PageId | null }
-  | { readonly kind: 'hide' }
-  | { readonly kind: 'jar'; readonly jar: BrowserJar; readonly confirmed: boolean }
-  | { readonly kind: DownloadKind; readonly downloadId: DownloadId }
-  | { readonly kind: 'downloads-clear' };
-
-/** One constructor per kind of BrowserAction. */
-export const browserAction = {
-  onActiveTab: (operation: ActiveTabOperation, mount: BrowserMountId): BrowserAction => ({ kind: 'active', operation, mount }),
-  onTab: (kind: NamedTabKind, pageId: PageId): BrowserAction => ({ kind, pageId }),
-  navigate: (pageId: PageId, address: string): BrowserAction => ({ kind: 'navigate', pageId, address }),
-  move: (pageId: PageId, index: number): BrowserAction => ({ kind: 'move', pageId, index }),
-  select: (pageId: PageId): BrowserAction => ({ kind: 'activate', pageId }),
-  duplicate: (pageId: PageId): BrowserAction => ({ kind: 'duplicate', pageId }),
-  step: (step: 1 | -1): BrowserAction => ({ kind: 'step', step }),
-  newTab: (address = ''): BrowserAction => ({ kind: 'new', address }),
-  reopen: (): BrowserAction => ({ kind: 'reopen' }),
-  show: (pageId: PageId | null): BrowserAction => ({ kind: 'show', pageId }),
-  hide: (): BrowserAction => ({ kind: 'hide' }),
-  jar: (jar: BrowserJar, confirmed: boolean): BrowserAction => ({ kind: 'jar', jar, confirmed }),
-  download: (kind: DownloadKind, downloadId: DownloadId): BrowserAction => ({ kind, downloadId }),
-  clearDownloads: (): BrowserAction => ({ kind: 'downloads-clear' }),
-};
-
-/** Whether action takes a number in its pane mount's order. */
-function ordered(action: BrowserAction): boolean {
-  switch (action.kind) {
-    case 'active':
-    case 'activate':
-    case 'step':
-    case 'new':
-    case 'reopen':
-    case 'duplicate':
-    case 'download-open':
-      return true;
-    case 'download-cancel':
-    case 'download-reveal':
-    case 'back':
-    case 'forward':
-    case 'reload':
-    case 'stop':
-    case 'restore':
-    case 'close':
-    case 'close-others':
-    case 'close-right':
-    case 'devtools':
-    case 'navigate':
-    case 'move':
-    case 'show':
-    case 'hide':
-    case 'jar':
-    case 'downloads-clear':
-      return false;
+async function runAction(
+  threadId: string,
+  sink: BrowserPaneAttachment | null,
+  send: () => Promise<BrowserActionAnswer>,
+  question: (err: unknown) => boolean = () => false,
+): Promise<ActionResult> {
+  browserActionCounts.set(threadId, browserActionsStarted(threadId) + 1);
+  if (sink) noteBrowserPaneError(sink, '');
+  const answer = await send();
+  switch (answer.kind) {
+    case 'answered':
+      return { failure: null, state: answer.state };
+    case 'refused':
+      if (sink && !question(answer.cause)) noteBrowserPaneError(sink, answer.error);
+      return { failure: { error: answer.error, cause: answer.cause }, state: null };
+    case 'pane-gone': {
+      const gone = new Error('The browser pane closed before this action was sent.');
+      return { failure: { error: gone.message, cause: gone }, state: null };
+    }
     default:
-      return unhandled(action);
+      return unhandledAnswer(answer);
   }
 }
 
-function unhandled(action: never): never {
-  throw new Error(`browser action ${JSON.stringify(action)} has no wire form`);
+function unhandledAnswer(answer: never): never {
+  throw new Error(`Unhandled browser action answer: ${JSON.stringify(answer)}`);
 }
 
-/** The wire form of action, with its place in the mount's order. */
-function wireAction(action: BrowserAction, order: TakenPlace['place'] | null): BrowserCompanionAction {
-  const base = { kind: '', pageId: '', address: '', index: 0, ...order };
-  switch (action.kind) {
-    case 'active':
-      return new BrowserCompanionAction({ ...base, kind: action.operation === 'close' ? 'close-active' : 'reload-active' });
-    case 'back':
-    case 'forward':
-    case 'reload':
-    case 'stop':
-    case 'restore':
-    case 'close':
-    case 'close-others':
-    case 'close-right':
-    case 'devtools':
-    case 'activate':
-    case 'duplicate':
-      return new BrowserCompanionAction({ ...base, kind: action.kind, pageId: action.pageId });
-    case 'navigate':
-      return new BrowserCompanionAction({ ...base, kind: 'navigate', pageId: action.pageId, address: action.address });
-    case 'move':
-      return new BrowserCompanionAction({ ...base, kind: 'move', pageId: action.pageId, index: action.index });
-    case 'step':
-      return new BrowserCompanionAction({ ...base, kind: 'step', index: action.step });
-    case 'new':
-      return new BrowserCompanionAction({ ...base, kind: 'new', address: action.address });
-    case 'reopen':
-    case 'hide':
-    case 'downloads-clear':
-      return new BrowserCompanionAction({ ...base, kind: action.kind });
-    case 'show':
-      return new BrowserCompanionAction({ ...base, kind: 'show', pageId: action.pageId ?? '' });
-    case 'jar':
-      return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed });
-    case 'download-cancel':
-    case 'download-reveal':
-    case 'download-open':
-      return new BrowserCompanionAction({ ...base, kind: action.kind, downloadId: action.downloadId });
-    default:
-      return unhandled(action);
-  }
+/**
+ * One action from the pane `pane`, the attachment of the pane the user
+ * acted in: numbered in its mount's order when its kind selects or acts on
+ * the active tab, sent only while it is the thread's attached mount, and its
+ * refusal in its banner. Null on success.
+ */
+export async function actInPane(pane: BrowserPaneAttachment, action: BrowserAction): Promise<BrowserActionFailure | null> {
+  return (await runAction(pane.threadId, pane, () => sendFromPane(pane, action))).failure;
+}
+
+/**
+ * One action on the thread's browser with no pane in hand (the chat
+ * header's chip, a download toast). The backend answers with the next
+ * state, which lands like any push; a refusal lands in the banner of the
+ * pane attached now, if any, and is also returned for the caller to show.
+ * Null on success.
+ */
+export async function browserCompanionAct(threadId: string, action: ThreadAction): Promise<BrowserActionFailure | null> {
+  return (await runAction(threadId, browserPaneAttachment(threadId), () => sendForThread(threadId, action))).failure;
 }
 
 /** What a cookie jar switch answered. */
@@ -227,141 +130,57 @@ function jarUnconfirmed(err: unknown): boolean {
 }
 
 /**
- * Sets the cookie jar the thread's browser uses. The backend closes the
- * live tabs and reopens their addresses in the new jar. Unless the user
- * confirmed losing the live tabs' page state, the backend refuses while a tab
- * is live and the answer is 'needs-confirmation': the caller asks and sends
- * again confirmed. Any other refusal lands in the pane's banner.
+ * Sets the cookie jar the thread's browser uses, from its pane. The backend
+ * closes the live tabs and reopens their addresses in the new jar. Unless
+ * the user confirmed losing the live tabs' page state, the backend refuses
+ * while a tab is live and the answer is 'needs-confirmation': the caller
+ * asks and sends again confirmed. Any other refusal lands in the pane's
+ * banner.
  */
-export async function setBrowserJar(threadId: string, jar: BrowserJar, confirmed: boolean): Promise<JarSwitchAnswer> {
-  const { failure } = await runBrowserAction(threadId, browserAction.jar(jar, confirmed), jarUnconfirmed);
+export async function setBrowserJar(pane: BrowserPaneAttachment, jar: BrowserJar, confirmed: boolean): Promise<JarSwitchAnswer> {
+  const { failure } = await runAction(pane.threadId, pane, () => sendFromPane(pane, browserAction.jar(jar, confirmed)), jarUnconfirmed);
   if (!failure) return { kind: 'switched' };
   return jarUnconfirmed(failure.cause) ? { kind: 'needs-confirmation' } : { kind: 'failed', failure };
 }
 
-/**
- * Sends a page focus intent's arm ('focus-page') or withdrawal
- * ('focus-page-withdraw') for browserPageFocus.ts, answering the state
- * after it. Unlike a chrome action it neither counts as one nor touches the
- * banner.
- */
-export function sendBrowserPageFocus(
-  threadId: string,
-  kind: 'focus-page' | 'focus-page-withdraw',
-  pageId: string,
-  mount: string,
-  intent: number,
-): Promise<BrowserCompanionEvent> {
-  return BrowserCompanionDo(threadId, new BrowserCompanionAction({ kind, pageId, address: '', index: 0, mount, intent }));
-}
-
-// Each live mount's numbering (internal/browser/turnorder). The backend
-// admits a mount's numbers in order within an epoch and refuses what
-// arrives of an older epoch, so a mount starts its next epoch only with
-// the first action it sends while none of its own is unanswered: then
-// nothing of the older epoch is still meant to act, and a gap the backend
-// recorded there (a number lost or overtaken) no longer holds its keyboard
-// commands. A new mount (a re-attach) starts again.
-interface MountNumbering {
-  epoch: number;
-  seq: number;
-  unanswered: number;
-}
-
-const mountNumberings = new Map<BrowserMountId, MountNumbering>();
-
-/** An ordered action's place in its mount's order, and the end of its wait for an answer. */
-interface TakenPlace {
-  readonly place: { readonly mount: BrowserMountId; readonly epoch: number; readonly select: number };
-  /** The action answered or failed; safe to call more than once. */
-  readonly answered: () => void;
-}
-
-function takePlace(mount: BrowserMountId): TakenPlace {
-  let numbering = mountNumberings.get(mount);
-  if (!numbering) {
-    numbering = { epoch: 0, seq: 0, unanswered: 0 };
-    mountNumberings.set(mount, numbering);
-  }
-  if (numbering.unanswered === 0) {
-    numbering.epoch += 1;
-    numbering.seq = 0;
-  }
-  numbering.seq += 1;
-  numbering.unanswered += 1;
-  const taken = numbering;
-  let waiting = true;
-  return {
-    place: { mount, epoch: taken.epoch, select: taken.seq },
-    answered: () => {
-      if (!waiting) return;
-      waiting = false;
-      taken.unanswered -= 1;
-    },
-  };
-}
-
-/**
- * The place of an ordered action in its mount's order, taken when the user
- * acted: actions run concurrently on the backend, which admits a mount's
- * ordered actions in this order. A command on the active tab carries its
- * own mount; a selection made with no pane mounted carries none and applies
- * in arrival order.
- */
-function orderOf(threadId: string, action: BrowserAction): TakenPlace | null {
-  if (action.kind === 'active') return takePlace(action.mount);
-  const mount = browserPaneMountId(threadId);
-  return mount && ordered(action) ? takePlace(mount) : null;
-}
-
-// question says whether a refusal is a question for the user, which the
-// caller asks instead of the banner showing it.
-function runBrowserAction(
-  threadId: string,
-  action: BrowserAction,
-  question: (err: unknown) => boolean = () => false,
-): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
-  const taken = orderOf(threadId, action);
-  return sendBrowserAction(threadId, wireAction(action, taken?.place ?? null), question).finally(() => taken?.answered());
-}
-
-async function sendBrowserAction(
-  threadId: string,
-  wire: BrowserCompanionAction,
-  question: (err: unknown) => boolean,
-): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
-  noteBrowserActionStarted(threadId);
-  noteBrowserActionError(threadId, '');
-  const generation = browserStateGeneration();
-  try {
-    const state = await BrowserCompanionDo(threadId, wire);
-    admitBrowserState(state, generation);
-    return { failure: null, state };
-  } catch (err) {
-    const message = errString(err);
-    if (!question(err)) noteBrowserActionError(threadId, message);
-    return { failure: { error: message, cause: err }, state: null };
-  }
+/** Options of a new tab the user opens. */
+export interface NewTabOptions {
+  /** Loaded in the new tab (a mod-clicked link, a picked file). */
+  readonly address?: string;
+  /**
+   * The new-tab button's, shortcut's and header button's: the address bar
+   * takes focus, its text selected, once the tab is ready, unless the user
+   * did anything else first (addressFocusIntent).
+   */
+  readonly focusAddress?: boolean;
 }
 
 /**
  * Opens a new tab in the thread's browser for the user, showing the pane
  * even when the thread had no tab: the backend selects the tab and shows the
  * companion before the engine page exists, so the creating tab arrives with
- * the pane. `address`, when set, is loaded in it (a mod-clicked link).
- * `focusAddress` is the new-tab button's, shortcut's and header button's: the
- * address bar takes focus, its text selected, once the tab is ready, unless
- * the user did anything else first (addressFocusIntent).
+ * the pane. From the chat header or a link, with no pane in hand, it applies
+ * in arrival order; from a pane, openBrowserTabInPane numbers it.
  */
-export async function openBrowserTab(
+export function openBrowserTab(threadId: string, options: NewTabOptions = {}): Promise<BrowserActionFailure | null> {
+  const action = browserAction.newTab(options.address);
+  return openTab(threadId, options, browserPaneAttachment(threadId), () => sendForThread(threadId, action));
+}
+
+/** openBrowserTab from the pane `pane`, in its mount's order. */
+export function openBrowserTabInPane(pane: BrowserPaneAttachment, options: NewTabOptions = {}): Promise<BrowserActionFailure | null> {
+  const action = browserAction.newTab(options.address);
+  return openTab(pane.threadId, options, pane, () => sendFromPane(pane, action));
+}
+
+async function openTab(
   threadId: string,
-  options: { address?: string; focusAddress?: boolean } = {},
+  options: NewTabOptions,
+  sink: BrowserPaneAttachment | null,
+  send: () => Promise<BrowserActionAnswer>,
 ): Promise<BrowserActionFailure | null> {
   const request = options.focusAddress ? armAddressFocus(threadId) : 0;
-  const refused = refuseUnhosted(threadId);
-  const { failure, state } = refused
-    ? { failure: refused, state: null }
-    : await runBrowserAction(threadId, browserAction.newTab(options.address));
+  const { failure, state } = await runAction(threadId, sink, send);
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
@@ -372,16 +191,14 @@ export async function openBrowserTab(
 }
 
 /**
- * A keyboard command on the keyboard's browser pane's active tab. It names
- * no tab: it takes its number in the pane mount's order at the keypress, and
- * the backend acts on the tab active at its turn, after the user's earlier
- * selections and commands and never after their page work. A pane not yet
- * attached has no mount and shows no page, and the command does nothing.
+ * A keyboard command on the active tab of the keyboard's browser pane. It
+ * names no tab: it takes its number in the pane mount's order at the
+ * keypress, and the backend acts on the tab active at its turn, after the
+ * user's earlier selections and commands and never after their page work.
  * The tab menu's and the address bar's commands name their tab.
  */
-export function actOnActiveTab(threadId: string, operation: ActiveTabOperation): void {
-  const mount = browserPaneMountId(threadId);
-  if (mount) void browserCompanionAct(threadId, browserAction.onActiveTab(operation, mount));
+export function actOnActiveTab(pane: BrowserPaneAttachment, operation: ActiveTabOperation): void {
+  void actInPane(pane, browserAction.onActiveTab(operation));
 }
 
 /**
@@ -392,29 +209,47 @@ export function actOnActiveTab(threadId: string, operation: ActiveTabOperation):
  * moves no DOM focus, so a pane-scoped handler missed the chord and the
  * window-level `pane.close` destroyed the whole pane instead. Returns false
  * when the keyboard's pane is no browser, or it shows no tab, and the
- * command falls through to its pane close.
+ * command falls through to its pane close. A browser pane not attached yet
+ * has nothing to send, and `pane.close` is not offered for it
+ * (browserPaneUnattached).
  */
 export function closeFocusedBrowserTab(): boolean {
   const focused = focusedBrowser();
-  if (!focused || (focused.state?.pages?.length ?? 0) === 0) return false;
-  actOnActiveTab(focused.threadId, 'close');
+  if (!focused?.pane || (focused.state?.pages?.length ?? 0) === 0) return false;
+  actOnActiveTab(focused.pane, 'close');
   return true;
 }
 
+/** The keyboard's browser pane: its thread, last state (null before any) and attachment (null before the attach answers). */
+export interface FocusedBrowser {
+  readonly threadId: string;
+  readonly state: Readonly<BrowserCompanionEvent> | null;
+  readonly pane: BrowserPaneAttachment | null;
+}
+
 /**
- * The thread of the keyboard's target pane (paneCommandTarget) when it is
- * a browser companion, with its last state (null before any). Null when
- * the target is another pane or none, so a browser the screen does not
- * show never takes the keyboard's commands. Reactive.
+ * The keyboard's target pane (paneCommandTarget) when it is a browser
+ * companion. Null when the target is another pane or none, so a browser the
+ * screen does not show never takes the keyboard's commands. Reactive.
  */
-export function focusedBrowser(): { threadId: string; state: Readonly<BrowserCompanionEvent> | null } | null {
+export function focusedBrowser(): FocusedBrowser | null {
   const targetId = paneCommandTarget();
   if (!targetId) return null;
   const companion = getCompanionPane(targetId);
   if (companion?.kind !== 'browser') return null;
   const threadId = getPane(companion.sourcePaneId)?.threadId;
   if (!threadId) return null;
-  return { threadId, state: browserCompanionState(threadId) };
+  return { threadId, state: browserCompanionState(threadId), pane: browserPaneAttachment(threadId) };
+}
+
+/**
+ * Whether the keyboard's target is a browser pane with no attachment yet:
+ * its tabs may show, but nothing it would send has a place in the order, so
+ * its chrome is unavailable and `pane.close` is not offered. Reactive.
+ */
+export function isBrowserPaneUnattached(): boolean {
+  const focused = focusedBrowser();
+  return focused !== null && focused.pane === null;
 }
 
 /**
@@ -540,7 +375,7 @@ async function showBrowserFromHeader(threadId: string): Promise<void> {
         return;
       }
       const active = snapshot.snapshot.activePageId;
-      const failure = await browserCompanionAct(threadId, browserAction.show(active ? toPageId(active) : null));
+      const failure = await browserCompanionAct(threadId, browserAction.show(pageIdOf(active)));
       if (failure) addErrorToast(failure.error, failure.cause);
       return;
     }
@@ -554,13 +389,8 @@ function unhandledSnapshot(snapshot: never): never {
 }
 
 observeBrowserCompanion({
-  // A new mount (a re-attach) numbers its selections from 1 again.
-  mountEnded: (mount) => {
-    mountNumberings.delete(mount);
-  },
   resetForTest: () => {
     browserActionCounts.clear();
-    mountNumberings.clear();
     headerShows.clear();
   },
 });

@@ -1,9 +1,9 @@
 import { BrowserCompanionPaneRect, BrowserPaneRect } from './bindings';
 import {
   browserPaneMountId,
-  noteBrowserActionError,
+  browserPaneOfMount,
+  noteBrowserPaneError,
   observeBrowserCompanion,
-  threadForBrowserPaneMount,
 } from './browserCompanion.svelte';
 import { browserPaneRectKey, createBrowserPaneRectSender, type BrowserPaneRectReport } from './browserPaneRectSender';
 import { paneGeometryBridgeAvailable, postPaneGeometry } from '../native/paneGeometryBridge';
@@ -24,8 +24,10 @@ const rectSender = createBrowserPaneRectSender({
   send: (mount, rect) => BrowserCompanionPaneRect(mount, new BrowserPaneRect(rect)),
   isMountGone: (error) => errString(error).includes(MOUNT_GONE),
   onFailure: (mount, error) => {
-    const threadId = threadForBrowserPaneMount(mount);
-    if (threadId) noteBrowserActionError(threadId, `The browser view could not follow the pane: ${errString(error)}`);
+    const message = `The browser view could not follow the pane: ${errString(error)}`;
+    const pane = browserPaneOfMount(mount);
+    if (pane) noteBrowserPaneError(pane, message);
+    else reportFrontendDiagnostic('A closed browser pane could not report its place', message);
   },
 });
 

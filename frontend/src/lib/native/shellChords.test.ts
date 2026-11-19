@@ -151,7 +151,8 @@ describe('shell chords', () => {
     expect(posted.at(-1)).toBe(reloadAppMessage(1));
   });
 
-  it('runs the command the chord is rebound to there', () => {
+  it('runs the command the chord is rebound to there', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     setKeybindingsForTest(withReloadChord({ key: 'mod+r', command: 'browser.newTab', when: 'browserPaneFocused' }));
     install();
     advertise();

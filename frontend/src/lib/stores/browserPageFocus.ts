@@ -1,13 +1,13 @@
 import type { BrowserCompanionEvent } from './bindings';
-import { browserActionsStarted, sendBrowserPageFocus, type BrowserActionFailure } from './browserActions';
+import { browserActionsStarted, type BrowserActionFailure } from './browserActions';
+import { pageIdOf, sendFromPane, type PageId } from './browserActionWire';
 import {
-  admitBrowserState,
   browserActionError,
-  browserPaneMountId,
-  browserStateGeneration,
+  browserPaneAttachment,
   canUseNativeBrowser,
-  noteBrowserActionError,
+  noteBrowserPaneError,
   observeBrowserCompanion,
+  type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
 import { postPaneFocusIntent } from '../native/paneGeometryBridge';
 import { errString } from '../utils/errors';
@@ -27,9 +27,10 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 // is its age known.
 interface PageFocusIntent {
   threadId: string;
-  mount: string;
+  /** The attached pane the request is sent from, whose banner its refusal takes. */
+  pane: BrowserPaneAttachment;
   intent: number;
-  pageId: string;
+  pageId: PageId;
   /** The page area: a focus or press inside it is no other choice. */
   area: HTMLElement;
   /** browserActionsStarted for the thread when it was armed. */
@@ -56,17 +57,19 @@ export async function focusBrowserPage(
   area: HTMLElement,
 ): Promise<BrowserActionFailure | null> {
   if (!canUseNativeBrowser(threadId)) return null;
-  const mount = browserPaneMountId(threadId);
-  if (!mount || !pageId) return null;
+  const pane = browserPaneAttachment(threadId);
+  const page = pageIdOf(pageId);
+  if (!pane || !page) return null;
+  const mount = pane.mount;
   // A newer request supersedes the thread's last one wherever it is.
   retirePageFocus(threadId);
   const intent = (pageFocusSeqs.get(mount) ?? 0) + 1;
   pageFocusSeqs.set(mount, intent);
   const record: PageFocusIntent = {
     threadId,
-    mount,
+    pane,
     intent,
-    pageId,
+    pageId: page,
     area,
     actionsAtArm: browserActionsStarted(threadId),
   };
@@ -82,18 +85,23 @@ export async function focusBrowserPage(
     // withdrawal still reaches it, and the backend.
     reportFrontendDiagnostic('Browser page focus post to the window host failed', errString(err));
   }
-  try {
-    const generation = browserStateGeneration();
-    const state = await sendBrowserPageFocus(threadId, 'focus-page', pageId, mount, intent);
-    admitBrowserState(state, generation);
-    return null;
-  } catch (err) {
-    // The arm may still have landed: the request stays watched, and the
-    // user's next choice withdraws it.
-    const message = errString(err);
-    if (pageFocusIntents.get(threadId) === record && bannerable(record)) noteBrowserActionError(threadId, message);
-    return { error: message, cause: err };
+  const answer = await sendFromPane(pane, { kind: 'focus-page', pageId: page, intent });
+  switch (answer.kind) {
+    case 'answered':
+    case 'pane-gone':
+      return null;
+    case 'refused':
+      // The arm may still have landed: the request stays watched, and the
+      // user's next choice withdraws it.
+      if (pageFocusIntents.get(threadId) === record && bannerable(record)) noteBrowserPaneError(pane, answer.error);
+      return { error: answer.error, cause: answer.cause };
+    default:
+      return unhandledAnswer(answer);
   }
+}
+
+function unhandledAnswer(answer: never): never {
+  throw new Error(`Unhandled page focus answer: ${JSON.stringify(answer)}`);
 }
 
 /**
@@ -126,19 +134,17 @@ function retirePageFocus(threadId: string): PageFocusIntent | null {
 function withdrawPageFocus(threadId: string): void {
   const record = retirePageFocus(threadId);
   if (!record) return;
-  const { mount, intent } = record;
+  const { pane, intent } = record;
   try {
-    postPaneFocusIntent({ mount, intent, withdrawn: true });
+    postPaneFocusIntent({ mount: pane.mount, intent, withdrawn: true });
   } catch (err) {
-    noteBrowserActionError(threadId, `The browser page may still take the keyboard: ${errString(err)}`);
+    noteBrowserPaneError(pane, `The browser page may still take the keyboard: ${errString(err)}`);
   }
-  void (async () => {
-    try {
-      await sendBrowserPageFocus(threadId, 'focus-page-withdraw', '', mount, intent);
-    } catch (err) {
-      noteBrowserActionError(threadId, `The browser page may still take the keyboard: ${errString(err)}`);
-    }
-  })();
+  // A pane that detached is withdrawn at the backend by its detach; nothing
+  // is sent from it.
+  void sendFromPane(pane, { kind: 'focus-page-withdraw', intent }).then((answer) => {
+    if (answer.kind === 'refused') noteBrowserPaneError(pane, `The browser page may still take the keyboard: ${answer.error}`);
+  });
 }
 
 function onUserFocusChoice(event: Event): void {
@@ -156,9 +162,9 @@ function onUserFocusChoice(event: Event): void {
  */
 function settlePageFocus(event: BrowserCompanionEvent): void {
   const record = pageFocusIntents.get(event.threadId);
-  if (!record || record.mount !== event.mount || record.intent !== event.focusIntent) return;
+  if (!record || record.pane.mount !== event.mount || record.intent !== event.focusIntent) return;
   retirePageFocus(event.threadId);
-  if (event.error && bannerable(record)) noteBrowserActionError(event.threadId, event.error);
+  if (event.error && bannerable(record)) noteBrowserPaneError(record.pane, event.error);
 }
 
 observeBrowserCompanion({
@@ -172,7 +178,7 @@ observeBrowserCompanion({
   // Unmounting is a focus choice; the detach withdraws at the backend too.
   mountEnded: (mount) => {
     for (const [threadId, record] of pageFocusIntents) {
-      if (record.mount === mount) withdrawPageFocus(threadId);
+      if (record.pane.mount === mount) withdrawPageFocus(threadId);
     }
     pageFocusSeqs.delete(mount);
   },

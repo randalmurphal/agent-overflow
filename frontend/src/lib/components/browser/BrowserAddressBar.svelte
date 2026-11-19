@@ -8,7 +8,7 @@
   import SquareCode from '@lucide/svelte/icons/square-code';
   import X from '@lucide/svelte/icons/x';
   import type { BrowserPageInfo } from '../../stores/bindings';
-  import { browserAction, toPageId, type BrowserAction, type NamedTabKind } from '../../stores/browserActions';
+  import { browserAction, pageIdOf, type BrowserAction, type NamedTabKind } from '../../stores/browserActionWire';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isLocalEnter } from '../../utils/localEnter';
@@ -151,11 +151,12 @@
     // Until the pane knows the page it shows there is none to name, and a
     // navigation naming none opens a new page. Enter with Alt, Ctrl or Meta
     // is an app chord (alt+shift+enter maximizes the pane).
-    if (isLocalEnter(event) && activePage) {
+    const pageId = pageIdOf(activePage?.id);
+    if (isLocalEnter(event) && pageId) {
       event.preventDefault();
       const target = address;
       onLeave();
-      void onAct(browserAction.navigate(toPageId(activePage.id), target));
+      void onAct(browserAction.navigate(pageId, target));
     }
   }
 
@@ -164,22 +165,24 @@
   // on meanwhile.
   let suggestions: ReturnType<typeof BrowserAddressSuggestions> | undefined = $state(undefined);
   function takeSuggestion(suggestion: AddressSuggestion): void {
-    if (!activePage) return;
+    const pageId = pageIdOf(activePage?.id);
+    if (!pageId) return;
     address = pageAddress();
-    if (suggestion.pageId) {
-      void onAct(browserAction.select(toPageId(suggestion.pageId))).then(() => {
+    const suggested = pageIdOf(suggestion.pageId);
+    if (suggested) {
+      void onAct(browserAction.select(suggested)).then(() => {
         if (document.activeElement === input) onLeave();
       });
       return;
     }
-    const pageId = toPageId(activePage.id);
     onLeave();
     void onAct(browserAction.navigate(pageId, suggestion.address));
   }
 
   // A toolbar command on the page the pane shows; nothing before it has one.
   function onActivePage(kind: NamedTabKind): void {
-    if (activePage) void onAct(browserAction.onTab(kind, toPageId(activePage.id)));
+    const pageId = pageIdOf(activePage?.id);
+    if (pageId) void onAct(browserAction.onTab(kind, pageId));
   }
 </script>
 

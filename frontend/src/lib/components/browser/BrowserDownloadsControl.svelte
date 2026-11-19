@@ -13,8 +13,10 @@
     downloadStatus,
     openBrowserDownload,
     revealBrowserDownload,
+    type DownloadActionSource,
   } from '../../stores/browserDownloads.svelte';
   import { getSettings } from '../../stores/settings.svelte';
+  import { browserPaneAttachment } from '../../stores/browserCompanion.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import Button from '../primitives/Button.svelte';
@@ -31,6 +33,10 @@
   const thread = browserPaneThread();
   let threadId = $derived(thread());
   let downloads = $derived(threadId ? browserDownloads(threadId) : []);
+  // The pane's attachment the list's actions are sent from; none before the
+  // attach answers, when the chrome is unavailable.
+  let pane = $derived(threadId ? browserPaneAttachment(threadId) : null);
+  let source = $derived<DownloadActionSource | null>(pane ? { kind: 'pane', pane } : null);
   let running = $derived(downloads.filter(downloadRunning).length);
   let step = $derived(downloadProgressStep(downloads));
   let settled = $derived(downloads.length - running);
@@ -89,21 +95,21 @@
               >{downloadStatus(download)}{#if downloadSourceHost(download)}{` · ${downloadSourceHost(download)}`}{/if}</div>
             </div>
             {#if downloadRunning(download)}
-              <IconButton label="Cancel download of {download.name}" title="Cancel" size="sm" testId="browser-download-cancel" onClick={() => void cancelBrowserDownload(threadId, download.id)}><Icon icon={X} size={14} /></IconButton>
+              <IconButton label="Cancel download of {download.name}" title="Cancel" size="sm" testId="browser-download-cancel" onClick={() => { if (source) void cancelBrowserDownload(source, download.id); }}><Icon icon={X} size={14} /></IconButton>
             {:else if download.state === 'completed' && !download.error}
               <!-- A completed download with an error saved a file AO does
                    not open or show; its status says why. -->
               {#if download.openable}
-                <IconButton label="Open {download.name} in a tab" title="Open in a tab" size="sm" testId="browser-download-open" onClick={() => { open = false; void openBrowserDownload(threadId, download.id); }}><Icon icon={SquareArrowOutUpRight} size={14} /></IconButton>
+                <IconButton label="Open {download.name} in a tab" title="Open in a tab" size="sm" testId="browser-download-open" onClick={() => { open = false; if (source) void openBrowserDownload(source, download.id); }}><Icon icon={SquareArrowOutUpRight} size={14} /></IconButton>
               {/if}
-              <IconButton label="Show {download.name} in folder" title="Show in folder" size="sm" testId="browser-download-reveal" onClick={() => void revealBrowserDownload(threadId, download.id)}><Icon icon={FolderOpen} size={14} /></IconButton>
+              <IconButton label="Show {download.name} in folder" title="Show in folder" size="sm" testId="browser-download-reveal" onClick={() => { if (source) void revealBrowserDownload(source, download.id); }}><Icon icon={FolderOpen} size={14} /></IconButton>
             {/if}
           </li>
         {/each}
       </ul>
       {#if settled > 0}
         <div class="flex justify-end border-t border-border-subtle px-2 pt-1">
-          <Button variant="ghost" size="xs" testId="browser-downloads-clear" title="Remove finished downloads from this list; the files stay" onclick={() => void clearBrowserDownloads(threadId)}>Clear list</Button>
+          <Button variant="ghost" size="xs" testId="browser-downloads-clear" title="Remove finished downloads from this list; the files stay" onclick={() => { if (source) void clearBrowserDownloads(source); }}>Clear list</Button>
         </div>
       {/if}
     </div>

@@ -164,6 +164,8 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "close", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "close"}, false},
 		{BrowserCompanionAction{Kind: "reload"}, false},
+		{BrowserCompanionAction{Kind: "navigate", PageID: "p", Address: "https://example.test/"}, true},
+		{BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/"}, false},
 		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "reload-active", Mount: "m", Select: 4, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "close-active"}, false},

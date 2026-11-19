@@ -442,17 +442,17 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 			return err
 		},
 	}
-	for _, action := range []BrowserCompanionAction{
-		{Kind: "new"},
-		{Kind: "navigate", Address: "https://example.test/"},
+	for name, action := range map[string]BrowserCompanionAction{
+		"new":         {Kind: "new"},
+		"new-address": {Kind: "new", Address: "https://example.test/"},
 	} {
 		for deleteName, deleteThread := range deletes {
-			t.Run(action.Kind+"/"+deleteName, func(t *testing.T) {
+			t.Run(name+"/"+deleteName, func(t *testing.T) {
 				app := newTestAppWithStore(t)
 				manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
 				app.browser.manager = manager
 				t.Cleanup(func() { _ = manager.Close() })
-				thread := makeWorkspaceThread(t, app, "thread-companion-"+action.Kind+"-"+deleteName)
+				thread := makeWorkspaceThread(t, app, "thread-companion-"+name+"-"+deleteName)
 				access, err := app.browserAccess(thread.ID)
 				if err != nil {
 					t.Fatal(err)
@@ -500,12 +500,12 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 	}
 }
 
-// A companion action that opens a page for a thread that has none (a
-// navigate naming no tab, a new tab, the pane's reveal), with a thread
+// A companion action that opens a page for a thread that has none (a new
+// tab, with an address or not, the pane's reveal), with a thread
 // deleted between the action's row read and the page's registration, gets
-// that page closed by the delete, and the action answers the close. Back,
-// forward and reload name their tab (parseCompanionAction), so they open
-// none.
+// that page closed by the delete, and the action answers the close.
+// Navigate, back, forward and reload name their tab (parseCompanionAction),
+// so they open none.
 func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 	t.Parallel()
 	calls := map[string]func(ctx context.Context, app *App, threadID string) error{
@@ -513,11 +513,11 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 			return app.BrowserCompanionRevealPageFile(ctx, threadID, "")
 		},
 	}
-	for _, action := range []BrowserCompanionAction{
-		{Kind: "navigate", Address: "https://example.test/"},
-		{Kind: "new"},
+	for name, action := range map[string]BrowserCompanionAction{
+		"new-address": {Kind: "new", Address: "https://example.test/"},
+		"new":         {Kind: "new"},
 	} {
-		calls[action.Kind] = func(ctx context.Context, app *App, threadID string) error {
+		calls[name] = func(ctx context.Context, app *App, threadID string) error {
 			_, err := app.BrowserCompanionDo(ctx, threadID, action)
 			return err
 		}
@@ -893,7 +893,7 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 	thread := makeWorkspaceThread(t, app, "thread-companion-find")
 	other := makeWorkspaceThread(t, app, "thread-companion-find-other")
 	ctx := t.Context()
-	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/alpha-beta-alpha"}); err != nil {
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/alpha-beta-alpha"}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := app.BrowserCompanionThreadState(thread.ID)
@@ -944,7 +944,7 @@ func TestBrowserFindRunAfterItsConnectionClosedIsEndedByTheCleanup(t *testing.T)
 	app.browser.manager = manager
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-find-closed")
-	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/alpha"}); err != nil {
+	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/alpha"}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := app.BrowserCompanionThreadState(thread.ID)

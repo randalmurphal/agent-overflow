@@ -1,6 +1,7 @@
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
-import { browserAction, browserCompanionAct, toDownloadId, type BrowserAction, type BrowserActionFailure } from './browserActions';
-import { browserCompanionState, browserPaneOpen, canUseNativeBrowser } from './browserCompanion.svelte';
+import { actInPane, browserCompanionAct, type BrowserActionFailure } from './browserActions';
+import { browserAction, downloadIdOf, type DownloadKind, type ThreadAction } from './browserActionWire';
+import { browserCompanionState, browserPaneOpen, canUseNativeBrowser, type BrowserPaneAttachment } from './browserCompanion.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { formatBytes } from '../utils/formatBytes';
 
@@ -73,33 +74,49 @@ export function downloadSourceHost(download: BrowserDownload): string {
 }
 
 /**
+ * Where a download action comes from: the attached pane the user acted in
+ * (its downloads list), whose order an opening takes its place in, or the
+ * thread alone (a toast).
+ */
+export type DownloadActionSource =
+  | { readonly kind: 'pane'; readonly pane: BrowserPaneAttachment }
+  | { readonly kind: 'thread'; readonly threadId: string };
+
+/**
  * Runs one download action. A refusal lands in the pane's banner, or in a
  * toast when the thread has no pane open here (an action from a toast).
  */
-async function act(threadId: string, action: BrowserAction): Promise<BrowserActionFailure | null> {
-  const failure = await browserCompanionAct(threadId, action);
+async function act(from: DownloadActionSource, action: ThreadAction): Promise<BrowserActionFailure | null> {
+  const threadId = from.kind === 'pane' ? from.pane.threadId : from.threadId;
+  const failure = from.kind === 'pane' ? await actInPane(from.pane, action) : await browserCompanionAct(threadId, action);
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
   return failure;
 }
 
+/** One download's action; a blank id names no download and sends nothing. */
+function actOnDownload(from: DownloadActionSource, kind: DownloadKind, raw: string): Promise<BrowserActionFailure | null> {
+  const downloadId = downloadIdOf(raw);
+  return downloadId ? act(from, browserAction.download(kind, downloadId)) : Promise.resolve(null);
+}
+
 /** Stops a running download. */
-export function cancelBrowserDownload(threadId: string, downloadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, browserAction.download('download-cancel', toDownloadId(downloadId)));
+export function cancelBrowserDownload(from: DownloadActionSource, downloadId: string): Promise<BrowserActionFailure | null> {
+  return actOnDownload(from, 'download-cancel', downloadId);
 }
 
 /** Opens the OS file manager with a finished download selected. */
-export function revealBrowserDownload(threadId: string, downloadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, browserAction.download('download-reveal', toDownloadId(downloadId)));
+export function revealBrowserDownload(from: DownloadActionSource, downloadId: string): Promise<BrowserActionFailure | null> {
+  return actOnDownload(from, 'download-reveal', downloadId);
 }
 
 /** Shows a finished download in a new browser tab (download.openable). */
-export function openBrowserDownload(threadId: string, downloadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, browserAction.download('download-open', toDownloadId(downloadId)));
+export function openBrowserDownload(from: DownloadActionSource, downloadId: string): Promise<BrowserActionFailure | null> {
+  return actOnDownload(from, 'download-open', downloadId);
 }
 
 /** Removes the finished, failed and canceled downloads from the list. */
-export function clearBrowserDownloads(threadId: string): Promise<BrowserActionFailure | null> {
-  return act(threadId, browserAction.clearDownloads());
+export function clearBrowserDownloads(from: DownloadActionSource): Promise<BrowserActionFailure | null> {
+  return act(from, browserAction.clearDownloads());
 }
 
 /** Whether a companion event is one announceBrowserDownload takes. */
@@ -126,7 +143,7 @@ export function announceBrowserDownload(event: BrowserCompanionEvent): void {
   if (download.state === 'completed') {
     addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {
       label: 'Show in folder',
-      run: () => void revealBrowserDownload(threadId, download.id),
+      run: () => void revealBrowserDownload({ kind: 'thread', threadId }, download.id),
     });
     return;
   }

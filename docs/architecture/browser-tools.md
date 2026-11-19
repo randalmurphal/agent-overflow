@@ -164,6 +164,14 @@ per-platform no-op.
   `restoring` until its reload ends. The pane's own request to restore the
   suspended tab it shows (`restore`) selects nothing and acts only while that
   tab is still the active one.
+- The client sends a pane's action only from the pane's attached mount
+  (`browserActionWire.ts`): until the attach answers the pane's tab strip and
+  address bar are unavailable and its keyboard commands send nothing, and an
+  action whose pane detached before it was sent is not sent. Its refusal
+  goes to the banner of the mount that sent it; once that mount detached it
+  is logged instead. Every send first checks that this window hosts the
+  thread's browser. An action that names a tab (`navigate` among them) must
+  name one.
 - A pane's tab commands take effect in the order the user made them
   (`selection.go`, `internal/browser/turnorder`), though the transport runs
   each call on its own goroutine. Every pane action that selects a tab

@@ -70,7 +70,7 @@ type companionSpec struct {
 }
 
 var companionSpecs = map[string]companionSpec{
-	"navigate":            {kind: kindNavigate, target: targetOptional},
+	"navigate":            {kind: kindNavigate, target: targetNamed},
 	"back":                {kind: kindBack, target: targetNamed},
 	"forward":             {kind: kindForward, target: targetNamed},
 	"reload":              {kind: kindReload, target: targetNamed},

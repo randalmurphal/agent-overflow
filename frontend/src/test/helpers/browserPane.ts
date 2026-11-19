@@ -5,10 +5,13 @@
 import { onTestFinished, vi } from 'vitest';
 import {
   attachBrowserCompanion,
+  browserPaneAttachment,
   browserPaneMountId,
   browserThreadState,
+  type BrowserPaneAttachment,
   type BrowserPaneMount,
 } from '../../lib/stores/browserCompanion.svelte';
+import { pageIdOf, type PageId } from '../../lib/stores/browserActionWire';
 import type { EntityAttachment } from '../../lib/stores/entityStore.svelte';
 import { setBindingMock } from '../mocks/bindings-app';
 
@@ -24,4 +27,18 @@ export async function attachBrowserPaneForTest(threadId: string, mount: string):
     if (browserPaneMountId(threadId) !== mount) throw new Error(`the pane mount ${mount} is not attached yet`);
   });
   return attachment;
+}
+
+/** The thread's attached pane; fails the test when it has none. */
+export function paneForTest(threadId: string): BrowserPaneAttachment {
+  const pane = browserPaneAttachment(threadId);
+  if (!pane) throw new Error(`thread ${threadId} has no attached browser pane`);
+  return pane;
+}
+
+/** A page id for a test's literal; fails the test for a blank one. */
+export function pageIdForTest(raw: string): PageId {
+  const pageId = pageIdOf(raw);
+  if (!pageId) throw new Error('a blank page id');
+  return pageId;
 }

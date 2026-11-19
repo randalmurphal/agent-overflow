@@ -3,8 +3,9 @@
   import Cookie from '@lucide/svelte/icons/cookie';
   import SquareUser from '@lucide/svelte/icons/square-user';
   import VenetianMask from '@lucide/svelte/icons/venetian-mask';
-  import { setBrowserJar, type BrowserJar } from '../../stores/browserActions';
-  import { browserCompanionState } from '../../stores/browserCompanion.svelte';
+  import { setBrowserJar } from '../../stores/browserActions';
+  import type { BrowserJar } from '../../stores/browserActionWire';
+  import { browserCompanionState, browserPaneAttachment, isCurrentBrowserPane, type BrowserPaneAttachment } from '../../stores/browserCompanion.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import Icon from '../primitives/Icon.svelte';
@@ -75,15 +76,26 @@
     void switchTo(threadId, jar);
   }
 
+  // The pane the confirmation was asked from: the confirmed switch is sent
+  // from it, and from nowhere once it detached.
+  let confirmingFrom: BrowserPaneAttachment | null = null;
+
   async function switchTo(thread: string, jar: (typeof JARS)[number]): Promise<void> {
-    const answer = await setBrowserJar(thread, jar.kind, false);
-    if (answer.kind === 'needs-confirmation' && thread === threadId) confirming = jar;
+    const pane = browserPaneAttachment(thread);
+    if (!pane) return;
+    const answer = await setBrowserJar(pane, jar.kind, false);
+    if (answer.kind === 'needs-confirmation' && thread === threadId && isCurrentBrowserPane(pane)) {
+      confirmingFrom = pane;
+      confirming = jar;
+    }
   }
 
   function confirm(): void {
     const jar = confirming;
+    const pane = confirmingFrom;
     confirming = null;
-    if (threadId && jar) void setBrowserJar(threadId, jar.kind, true);
+    confirmingFrom = null;
+    if (pane && jar) void setBrowserJar(pane, jar.kind, true);
   }
 </script>
 
@@ -122,6 +134,6 @@
     confirmLabel="Switch cookie jar"
     destructive
     onConfirm={confirm}
-    onCancel={() => (confirming = null)}
+    onCancel={() => { confirming = null; confirmingFrom = null; }}
   />
 {/if}

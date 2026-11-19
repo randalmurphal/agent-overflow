@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  browserAction,
+  actInPane,
   browserCompanionAct,
   browserHeaderIntent,
   closeFocusedBrowserTab,
+  isBrowserPaneUnattached,
   openBrowserTab,
+  openBrowserTabInPane,
   runBrowserHeaderIntent,
-  toDownloadId,
-  toPageId,
 } from './browserActions';
+import { browserAction, downloadIdOf, pageIdOf } from './browserActionWire';
+import { frontendErrorCaptureStateForTest, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
@@ -21,7 +23,7 @@ import { closeCompanion, companionForSource, installCompanionPanes, resetCompani
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, resetPanesForTest } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
-import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
+import { attachBrowserPaneForTest, pageIdForTest, paneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { canPresentNativeBrowser, canUseNativeBrowser } from './browserCompanion.svelte';
@@ -299,9 +301,9 @@ describe('pane.close on a browser companion', () => {
     });
 
     it('sends the close at once, numbered after the selection the user made first', () => {
-      void browserCompanionAct('thread-browser', browserAction.select(toPageId('b')));
+      void actInPane(paneForTest('thread-browser'), browserAction.select(pageIdForTest('b')));
       expect(closeFocusedBrowserTab()).toBe(true);
-      void browserCompanionAct('thread-browser', browserAction.select(toPageId('c')));
+      void actInPane(paneForTest('thread-browser'), browserAction.select(pageIdForTest('c')));
       expect(sent).toEqual([
         { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
         { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
@@ -332,7 +334,7 @@ describe('pane.close on a browser companion', () => {
         return { kind: 'state', threadId, activePageId: 'a', visible: true, seq: 1, pages: ['a', 'b', 'c'].map(tab) };
       }));
       failNext.push(false, true);
-      const first = browserCompanionAct('thread-browser', browserAction.select(toPageId('b')));
+      const first = actInPane(paneForTest('thread-browser'), browserAction.select(pageIdForTest('b')));
       expect(closeFocusedBrowserTab()).toBe(true);
       answers.shift()?.();
       await first;
@@ -349,8 +351,8 @@ describe('pane.close on a browser companion', () => {
     });
 
     it('leaves a close from the tab menu on the tab it names, unnumbered', () => {
-      void browserCompanionAct('thread-browser', browserAction.select(toPageId('b')));
-      void browserCompanionAct('thread-browser', browserAction.onTab('close', toPageId('c')));
+      void actInPane(paneForTest('thread-browser'), browserAction.select(pageIdForTest('b')));
+      void actInPane(paneForTest('thread-browser'), browserAction.onTab('close', pageIdForTest('c')));
       expect(sent).toEqual([
         { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
         { kind: 'close', pageId: 'c', mount: undefined, select: undefined },
@@ -359,12 +361,45 @@ describe('pane.close on a browser companion', () => {
   });
 
   // A pane not attached yet has no mount, and its close is not one the
-  // backend can order: it is taken and nothing is sent.
-  it('sends nothing while the pane has no mount', () => {
+  // backend can order: pane.close is not offered (the chord is not taken),
+  // closes no tab and sends nothing.
+  it('offers no close while the pane has no mount, and sends nothing', () => {
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-browser', pages: [] })));
     focusPane('browser-main');
-    expect(closeFocusedBrowserTab()).toBe(true);
+    expect(isBrowserPaneUnattached()).toBe(true);
+    expect(closeFocusedBrowserTab()).toBe(false);
     expect(act).not.toHaveBeenCalled();
+  });
+
+  // The banner is the pane's that sent: a refusal that answers after its
+  // pane closed is logged, and never shown in the pane that replaced it.
+  it('puts a refusal in the banner of the pane that sent it, and logs it once that pane closed', async () => {
+    resetFrontendErrorCaptureForTest();
+    const refusals: Array<(err: Error) => void> = [];
+    setBindingMock('BrowserCompanionDo', () => new Promise((_resolve, reject) => refusals.push(reject)));
+    const first = await attachBrowserPaneForTest('thread-browser', 'mount-1');
+    const reload = actInPane(paneForTest('thread-browser'), browserAction.onTab('reload', pageIdForTest('page-1')));
+    first.release();
+    await attachBrowserPaneForTest('thread-browser', 'mount-2');
+    refusals[0](new Error('reload refused'));
+    expect(await reload).toEqual(expect.objectContaining({ error: 'reload refused' }));
+    expect(browserActionError('thread-browser')).toBe('');
+    expect(frontendErrorCaptureStateForTest().pendingCount).toBe(1);
+
+    // The pane attached now shows its own.
+    const next = actInPane(paneForTest('thread-browser'), browserAction.onTab('reload', pageIdForTest('page-1')));
+    refusals[1](new Error('second refused'));
+    await next;
+    expect(browserActionError('thread-browser')).toBe('second refused');
+    resetFrontendErrorCaptureForTest();
+  });
+
+  // A page id is minted only from a nonblank string, so no page-naming
+  // action can be built for an empty page.
+  it('mints no page id from a blank string', () => {
+    expect(pageIdOf('')).toBeNull();
+    expect(pageIdOf('a')).toBe('a');
+    expect(downloadIdOf('')).toBeNull();
   });
 
   it('falls through when the focused pane is not a browser companion', () => {
@@ -377,7 +412,7 @@ describe('pane.close on a browser companion', () => {
     setBindingMock('BrowserCompanionDo', async () => {
       throw failure;
     });
-    expect(await browserCompanionAct('thread-browser', browserAction.onTab('close', toPageId('page-1'))))
+    expect(await browserCompanionAct('thread-browser', browserAction.hide()))
       .toEqual({ error: 'page is gone', cause: failure });
   });
 });
@@ -417,7 +452,7 @@ describe('a thread whose ownership two computers claim', () => {
     expect(canUseNativeBrowser(THREAD)).toBe(false);
     expect(canPresentNativeBrowser(THREAD)).toBe(false);
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: THREAD, pages: [] })));
-    const failure = await browserCompanionAct(THREAD, browserAction.onTab('reload', toPageId('page-1')));
+    const failure = await browserCompanionAct(THREAD, browserAction.hide());
     expect(failure?.error).toContain('Two computers claim this conversation');
     expect(await openBrowserTab(THREAD, { address: 'https://example.com/' })).not.toBeNull();
     expect(act).not.toHaveBeenCalled();
@@ -581,15 +616,15 @@ describe('numbering the user\'s tab selections', () => {
 
   it('numbers selections consecutively per mount when the user acts, from 1 again after a reconnect', async () => {
     let pane = attachBrowserCompanion(THREAD);
-    await vi.waitFor(() => expect(pane.current).not.toBeNull());
-    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
-    void browserCompanionAct(THREAD, browserAction.step(1));
-    void browserCompanionAct(THREAD, browserAction.onTab('close', toPageId('a')));
-    void openBrowserTab(THREAD);
-    void browserCompanionAct(THREAD, browserAction.reopen());
-    void browserCompanionAct(THREAD, browserAction.duplicate(toPageId('a')));
-    void browserCompanionAct(THREAD, browserAction.download('download-open', toDownloadId('d')));
-    void browserCompanionAct(THREAD, browserAction.onTab('restore', toPageId('a')));
+    await vi.waitFor(() => expect(pane.current?.pane).toBeTruthy());
+    void actInPane(paneForTest(THREAD), browserAction.select(pageIdForTest('a')));
+    void actInPane(paneForTest(THREAD), browserAction.step(1));
+    void actInPane(paneForTest(THREAD), browserAction.onTab('close', pageIdForTest('a')));
+    void openBrowserTabInPane(paneForTest(THREAD));
+    void actInPane(paneForTest(THREAD), browserAction.reopen());
+    void actInPane(paneForTest(THREAD), browserAction.duplicate(pageIdForTest('a')));
+    void actInPane(paneForTest(THREAD), browserAction.download('download-open', downloadIdOf('d') ?? fail()));
+    void actInPane(paneForTest(THREAD), browserAction.onTab('restore', pageIdForTest('a')));
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-1', select: 1 },
       { kind: 'step', mount: 'mount-1', select: 2 },
@@ -605,10 +640,10 @@ describe('numbering the user\'s tab selections', () => {
     // the backend counts from 1.
     pane.release();
     pane = attachBrowserCompanion(THREAD);
-    await vi.waitFor(() => expect(pane.current).not.toBeNull());
+    await vi.waitFor(() => expect(pane.current?.pane).toBeTruthy());
     sent = [];
-    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
-    void browserCompanionAct(THREAD, browserAction.step(-1));
+    void actInPane(paneForTest(THREAD), browserAction.select(pageIdForTest('a')));
+    void actInPane(paneForTest(THREAD), browserAction.step(-1));
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-2', select: 1 },
       { kind: 'step', mount: 'mount-2', select: 2 },
@@ -621,12 +656,12 @@ describe('numbering the user\'s tab selections', () => {
   it('forgets a mount\'s numbers when the mount ends', async () => {
     mounts = ['mount-1', 'mount-1'];
     let pane = attachBrowserCompanion(THREAD);
-    await vi.waitFor(() => expect(pane.current).not.toBeNull());
-    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
+    await vi.waitFor(() => expect(pane.current?.pane).toBeTruthy());
+    void actInPane(paneForTest(THREAD), browserAction.select(pageIdForTest('a')));
     pane.release();
     pane = attachBrowserCompanion(THREAD);
-    await vi.waitFor(() => expect(pane.current).not.toBeNull());
-    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
+    await vi.waitFor(() => expect(pane.current?.pane).toBeTruthy());
+    void actInPane(paneForTest(THREAD), browserAction.select(pageIdForTest('a')));
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-1', select: 1 },
       { kind: 'activate', mount: 'mount-1', select: 1 },
@@ -634,8 +669,14 @@ describe('numbering the user\'s tab selections', () => {
     pane.release();
   });
 
-  it('sends a selection made with no pane mounted unnumbered', () => {
-    void browserCompanionAct(THREAD, browserAction.select(toPageId('a')));
-    expect(sent.map(order)).toEqual([{ kind: 'activate', mount: '', select: 0 }]);
+  // With no pane mounted there is no attachment to send a selection from;
+  // a new tab from the header or a link applies in arrival order.
+  it('sends a new tab opened with no pane mounted unnumbered', () => {
+    void openBrowserTab(THREAD);
+    expect(sent.map(order)).toEqual([{ kind: 'new', mount: '', select: 0 }]);
   });
 });
+
+function fail(): never {
+  throw new Error('a blank id');
+}

@@ -91,7 +91,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
   BrowserCompanionPaneDetach: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
   BrowserCompanionPaneRect: owned('lib/stores/browserPaneRectReports.ts', 'reportBrowserPaneRect()'),
-  BrowserCompanionDo: owned('lib/stores/browserActions.ts', 'browserCompanionAct() / sendBrowserPageFocus()'),
+  BrowserCompanionDo: owned('lib/stores/browserActionWire.ts', 'sendFromPane() / sendForThread()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
   BrowserCompanionFind: owned(BROWSER_FIND_STORE, 'createBrowserFind()'),
   // The read marker is the one thread-row field where the newest value is

@@ -21,6 +21,7 @@ import { createSequenceGate } from './snapshotStream';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { resetBrowserAddressFocusForTest } from './browserAddressFocus.svelte';
 import { getSettings } from './settings.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { addErrorToast } from './toast.svelte';
 
 // The browser pane's state store. The pane surface itself is an empty host
@@ -44,14 +45,31 @@ import { addErrorToast } from './toast.svelte';
 /** The backend's id of one pane mount, minted from BrowserCompanionPaneAttach's answer. */
 export type BrowserMountId = string & { readonly __brand: 'BrowserMountId' };
 
-function mintMountId(id: string): BrowserMountId {
-  return id as BrowserMountId;
+function isMountId(id: string): id is BrowserMountId {
+  return id.trim() !== '';
 }
 
-/** A mounted pane's attachment value: the backend's id of its mount. */
+// The brand only this module can write: a BrowserPaneAttachment exists only
+// for a mount this store attached.
+const attachedPane: unique symbol = Symbol('BrowserPaneAttachment');
+
+/**
+ * One attached pane mount of a thread. Only this store makes one, from the
+ * attach's answer, so a value of this type names a mount the backend
+ * attached; whether it is still the thread's is isCurrentBrowserPane. The
+ * pane's commands are built from it (browserActions.ts#actInPane), and its
+ * refusals go to its banner and to no other (noteBrowserPaneError).
+ */
+export interface BrowserPaneAttachment {
+  readonly [attachedPane]: true;
+  readonly threadId: string;
+  readonly mount: BrowserMountId;
+}
+
+/** A mounted pane's attachment value. */
 export interface BrowserPaneMount {
-  /** Null once the mount detached while the attachment re-acquires one. */
-  readonly mount: BrowserMountId | null;
+  /** Null until the attach answers, and once the mount detached while the attachment re-acquires one. */
+  readonly pane: BrowserPaneAttachment | null;
 }
 
 /**
@@ -219,20 +237,22 @@ const store = createEntityStore<BrowserPaneMount, void>({
     if (refusal) throw refusal;
     const generation = connectionGeneration;
     const result = await BrowserCompanionPaneAttach(key);
-    const mount = mintMountId(result.id);
     // An attach superseded while it was in flight (the pane closed, or
     // closed and opened again) owns nothing here: the mount the thread has
     // now is a later attach's, so this one only detaches its own.
     if (signal.aborted) return () => BrowserCompanionPaneDetach(result.id);
+    const mount = result.id;
+    if (!isMountId(mount)) throw new Error('The browser answered the pane with no mount.');
+    const pane: BrowserPaneAttachment = { [attachedPane]: true, threadId: key, mount };
     // The answer's state is admitted like any other; a newer one that
     // already landed (a push during the attach) wins.
     admitBrowserState(result.state, generation);
-    apply({ mount });
+    apply({ pane });
     return async () => {
       // The entity store keeps the value through a re-acquire; a detached
       // mount is no longer one to address.
-      if (store.snapshot(key)?.mount === mount) store.apply(key, { mount: null }, { preserveError: true });
-      actionErrors.drop(key);
+      if (store.snapshot(key)?.pane === pane) store.apply(key, { pane: null }, { preserveError: true });
+      actionErrors.drop(mount);
       for (const observer of observers) observer.mountEnded?.(mount);
       await BrowserCompanionPaneDetach(result.id);
     };
@@ -243,15 +263,26 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
-/** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
-export function browserPaneMountId(threadId: string): BrowserMountId | null {
-  return store.peek(threadId)?.mount ?? null;
+/** The thread's attached pane mount, null while it has none. Reactive. */
+export function browserPaneAttachment(threadId: string): BrowserPaneAttachment | null {
+  return store.peek(threadId)?.pane ?? null;
 }
 
-/** The thread whose pane holds `mount`, null for none. */
-export function threadForBrowserPaneMount(mount: string): string | null {
+/** Whether `pane` is still the thread's attached mount. Not reactive: asked as something is sent or shown. */
+export function isCurrentBrowserPane(pane: BrowserPaneAttachment): boolean {
+  return store.snapshot(pane.threadId)?.pane === pane;
+}
+
+/** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
+export function browserPaneMountId(threadId: string): BrowserMountId | null {
+  return browserPaneAttachment(threadId)?.mount ?? null;
+}
+
+/** The attached pane whose mount is `mount`, null when no thread has it attached. */
+export function browserPaneOfMount(mount: string): BrowserPaneAttachment | null {
   for (const threadId of store.keys()) {
-    if (store.snapshot(threadId)?.mount === mount) return threadId;
+    const pane = store.snapshot(threadId)?.pane;
+    if (pane?.mount === mount) return pane;
   }
   return null;
 }
@@ -347,8 +378,9 @@ function presentBrowserState(threadId: string, state: BrowserCompanionEvent): vo
  */
 function reportBrowserTeardown(event: BrowserCompanionEvent): void {
   const message = `A closed browser tab did not shut down cleanly: ${event.error || 'unknown error'}`;
-  if (browserPaneOpen(event.threadId)) {
-    noteBrowserActionError(event.threadId, message);
+  const pane = browserPaneAttachment(event.threadId);
+  if (pane && browserPaneShown(event.threadId)) {
+    noteBrowserPaneError(pane, message);
     return;
   }
   addErrorToast(message, new Error(event.error || message), 0);
@@ -437,19 +469,30 @@ export function browserFindCleanupError(threadId: string): string {
   return findCleanupErrors.get(threadId);
 }
 
-// The mounted pane's banner: the last refused chrome action. It lives as
-// long as the pane's mount; with no pane mounted there is no banner to write.
+// Each attached mount's banner: the last refused chrome action, keyed by the
+// mount, so it lives as long as that mount and no other mount's pane shows
+// it.
 const actionErrors = createKeyedSignalRegistry<string>('');
 
-export function noteBrowserActionError(threadId: string, message: string): void {
-  if (!store.snapshot(threadId)) return;
-  if (message) actionErrors.set(threadId, message);
-  else actionErrors.drop(threadId);
+/**
+ * Writes, or with '' clears, the banner of `pane`, the attachment the
+ * action that failed was sent from. A pane that detached since shows
+ * nothing more: its refusal is logged, never shown in the pane that
+ * replaced it.
+ */
+export function noteBrowserPaneError(pane: BrowserPaneAttachment, message: string): void {
+  if (!isCurrentBrowserPane(pane)) {
+    if (message) reportFrontendDiagnostic('A browser action failed after its pane closed', message);
+    return;
+  }
+  if (message) actionErrors.set(pane.mount, message);
+  else actionErrors.drop(pane.mount);
 }
 
-/** The thread's banner text, '' for none. Reactive. */
+/** The banner text of the thread's attached pane, '' for none. Reactive. */
 export function browserActionError(threadId: string): string {
-  return actionErrors.get(threadId);
+  const mount = browserPaneMountId(threadId);
+  return mount ? actionErrors.get(mount) : '';
 }
 
 // The `browser:companion-state` channel is ephemeral (no replay), so a
@@ -548,6 +591,8 @@ export function presentWantedBrowser(threadId: string): void {
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
 export function resetBrowserCompanionForTest(): void {
+  // An answer to a call a test started before the reset is not admitted after it.
+  connectionGeneration += 1;
   for (const observer of observers) observer.resetForTest?.();
   stateOrder.reset();
   snapshots.reset();

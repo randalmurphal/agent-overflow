@@ -11,7 +11,7 @@
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import type { BrowserPageInfo } from '../../stores/bindings';
-  import { browserAction, toPageId, type BrowserAction } from '../../stores/browserActions';
+  import { browserAction, pageIdOf, type BrowserAction, type PageId } from '../../stores/browserActionWire';
   import Icon from '../primitives/Icon.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
@@ -186,7 +186,13 @@
     // The backend's move index addresses the list WITHOUT the moved tab.
     const to = from < slot ? slot - 1 : slot;
     if (to === from) return;
-    void onAct(browserAction.move(toPageId(pageId), to));
+    actOnPage(pageId, (id) => browserAction.move(id, to));
+  }
+
+  // An action on the tab `raw` names; a blank id names none, and nothing is sent.
+  function actOnPage(raw: string, build: (pageId: PageId) => BrowserAction): void {
+    const pageId = pageIdOf(raw);
+    if (pageId) void onAct(build(pageId));
   }
 
   function tabDragEnd(): void {
@@ -251,7 +257,7 @@
         onauxclick={(event) => {
           if (event.button !== 1) return;
           event.preventDefault();
-          void onAct(browserAction.onTab('close', toPageId(page.id)));
+          actOnPage(page.id, (id) => browserAction.onTab('close', id));
         }}
         oncontextmenu={(event) => openMenu(event, page.id)}
       >
@@ -275,7 +281,7 @@
           class="relative flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 text-left text-[0.72rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 rounded-t-lg"
           data-testid="browser-tab"
           data-tab-state={status}
-          onclick={() => void onAct(browserAction.select(toPageId(page.id)))}
+          onclick={() => actOnPage(page.id, browserAction.select)}
         >
           <span
             class="flex size-4 shrink-0 items-center justify-center"
@@ -306,7 +312,7 @@
             active ? '' : 'opacity-0 group-hover:opacity-100',
           ].join(' ')}
           data-testid="browser-tab-close"
-          onclick={() => void onAct(browserAction.onTab('close', toPageId(page.id)))}
+          onclick={() => actOnPage(page.id, (id) => browserAction.onTab('close', id))}
         ><Icon icon={X} size={12} /></button>
       </div>
     {/each}

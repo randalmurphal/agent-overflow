@@ -2987,7 +2987,7 @@ describe('compact-gated commands', () => {
       kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
       pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
     });
-    await attachBrowserPaneForTest('thread-1', 'mount-1');
+    const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
     const close = () => dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false });
     focusPane(browser.paneId);
@@ -3002,6 +3002,38 @@ describe('compact-gated commands', () => {
     setCompactLayoutForTest(false);
     expect(close()).toBe(true);
     expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', pageId: '', mount: 'mount-1' }));
+    attached.release();
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetKeybindingsStore();
+  });
+
+  // Before its attach answers a browser pane shows its tabs but has no
+  // place in its mount's order: Mod+W is not taken, closing neither a tab
+  // nor the pane, and is the browser's once the attach answers.
+  it('leaves Mod+W untaken on a browser pane whose attach has not answered', async () => {
+    installCompanionPanes();
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const browser = openCompanion('a', 'browser')!;
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
+      pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
+    });
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
+    focusPane(browser.paneId);
+    const chord = new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true });
+    expect(dispatchKey(chord, makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(false);
+    expect(chord.defaultPrevented).toBe(false);
+    expect(act).not.toHaveBeenCalled();
+    expect(isCompanionOpen('a', 'browser')).toBe(true);
+
+    const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
+    expect(dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(true);
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', mount: 'mount-1' }));
+    attached.release();
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();
     resetKeybindingsStore();
