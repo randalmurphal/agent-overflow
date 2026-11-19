@@ -428,52 +428,55 @@ func TestALinkThatEndsHandsItsPromptsBack(t *testing.T) {
 }
 
 // A linked Codex worker's async questions are one prompt held for its
-// spawner there, routed again when this computer restarts and its lease
-// counted from the boot; the spawner's answer, written through the
-// binding, is the worker's message from the lead on that computer.
-func TestALinkedWorkersAsyncQuestionIsHeldForItsSpawnerAcrossARestart(t *testing.T) {
+// spawner there, and the spawner's answer, written through the binding, is
+// the worker's message from the lead on that computer. A question asked
+// before this computer restarted is the person's: the link holds nothing
+// for it.
+func TestALinkedWorkersAsyncQuestionIsHeldForItsSpawner(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 1)
 	worker := f.workers[0].ID
-	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
-		ID: "question:ask", ThreadID: worker, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: twoAsyncQuestions,
-	}); err != nil {
-		t.Fatal(err)
+	record := func(itemID string) {
+		t.Helper()
+		if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+			ID: itemID, ThreadID: worker, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: twoAsyncQuestions,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": worker})
+		f.drain(t)
 	}
-	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": worker})
+	record("question:old")
+	if listed := f.list(t, 0); len(listed) != 1 {
+		t.Fatalf("before the restart the link lists %+v, want the question", listed)
+	}
+	forgetPromptsAtRestart(f.app)
+	f.app.restoreDurableFlushQueueAtBoot()
+	f.app.syncAsyncQuestionPrompts(worker)
 	f.drain(t)
+	if listed := f.list(t, 0); len(listed) != 0 {
+		t.Fatalf("after the restart the link lists %+v, want nothing", listed)
+	}
+	if _, route, open := f.app.asyncQuestionBlocked(worker); open {
+		t.Fatalf("after the restart the question is routed to %+v, want it the person's", route)
+	}
+
+	record("question:ask")
 	listed := f.list(t, 0)
 	if len(listed) != 1 || len(listed[0].Questions) != 2 || listed[0].Questions[0].Question != "Which scope?" {
 		t.Fatalf("the link lists %+v, want the two questions as one prompt", listed)
-	}
-	old := listed[0].Token
-	// The restart: memory goes, the queue is restored and the questions
-	// seeded as the boot does.
-	f.app.workerPrompts.mu.Lock()
-	f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-	f.app.workerPrompts.mu.Unlock()
-	f.app.workerPrompts.async.mu.Lock()
-	f.app.workerPrompts.async.open = nil
-	f.app.workerPrompts.async.mu.Unlock()
-	booted := time.Now()
-	f.app.restoreDurableFlushQueueAtBoot()
-	f.app.seedAsyncQuestionPrompts()
-	f.drain(t)
-	held := f.app.workerPrompts.heldFor(f.spawns[0], worker)
-	if len(held) != 1 || held[0].token == old || !held[0].async || held[0].remote.registeredAt.Before(booted) {
-		t.Fatalf("after the restart the link holds %+v, want the questions again under a new token, leased from the boot", held)
 	}
 	if detail, route, open := f.app.asyncQuestionBlocked(worker); !open || route == nil || route.ComputerID != linkedLeadComputer || detail != "Which scope?" {
 		t.Fatalf("the questions are routed to %+v (open %v), want the lead on Desk", route, open)
 	}
 	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReply, threadPromptPeerArgs{
-		Spawn: f.spawns[0], Token: held[0].token, Answers: []string{"One", "tonight"},
+		Spawn: f.spawns[0], Token: listed[0].Token, Answers: []string{"One", "tonight"},
 	}); err != nil {
 		t.Fatalf("the spawner's answer: %v", err)
 	}
 	var payload flushQueuePayload
 	for _, row := range durableQueueRows(t, f.app, worker) {
-		if row.SendID == workerAnswerSendIDRoot+held[0].token {
+		if row.SendID == workerAnswerSendIDRoot+listed[0].Token {
 			if err := json.Unmarshal(row.Payload, &payload); err != nil {
 				t.Fatal(err)
 			}

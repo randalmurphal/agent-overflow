@@ -112,7 +112,7 @@ func openWorkerRegistrations(a *App, workerID string) []string {
 func TestAnArchiveDuringTheFirstReconcileClosesWhatItOpened(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-archive-race", store.PlacementOwned)
-	// Recorded with nothing in memory, as a restart leaves it.
+	// Recorded without its change frame, so the reconcile below is its first.
 	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
 		ID: "question:ask", ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
 		Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`,
@@ -129,7 +129,7 @@ func TestAnArchiveDuringTheFirstReconcileClosesWhatItOpened(t *testing.T) {
 			})
 		}
 	}
-	f.app.seedAsyncQuestionPrompts()
+	f.app.syncAsyncQuestionPrompts(f.worker.ID)
 	<-read
 	if _, err := f.app.ArchiveThread(f.worker.ID); err != nil {
 		close(resume)

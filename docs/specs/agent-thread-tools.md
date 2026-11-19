@@ -145,8 +145,9 @@ whole page, pinned to each thread's latest turn row. State is the UI's
 enum (idle / running / awaiting-input / pending-approval / plan-ready /
 error / interrupted), reachable because the handler runs inside the
 app that owns the thread. A Codex thread with an async question not yet
-answered or dismissed reads awaiting-input while no turn runs and
-nothing is queued, as its Agents row reads it blocked
+answered or dismissed, asked since the app started
+([`thread_reply`](#thread_reply-q25)), reads awaiting-input while no turn
+runs and nothing is queued, as its Agents row reads it blocked
 (`threadWaitingOn`).
 
 `query` is FTS5 match syntax: words are ANDed, `"quoted phrases"`
@@ -668,18 +669,27 @@ is written to the worker as one message attributed to the spawner, and
 any change to its parts (the user answering, dismissing or reopening
 one in the worker) refuses the token, a reply already on its way
 included, and puts the parts left to the spawner under a new one. It
-outlives the worker's session, is put to the spawner again under a new
-token after a restart, and is dismissed by a Stop of the worker; an
+outlives the worker's session and is dismissed by a Stop of the worker; an
 archived worker's question waits for its unarchive, and a conversation
 copied or moved to another computer takes it there, where it waits on
 the user from the moment it lands and no longer on the spawner here. A reply the worker
-never takes in (its session ends or refuses it, a queue drop, an archive,
-a restart) puts its parts back unanswered, to the spawner under a new
+never takes in (its session ends or refuses it, a queue drop, an archive)
+puts its parts back unanswered, to the spawner under a new
 token; one the worker took in stays answered, its echo's own write failed
 or not; one
 the user withdraws from the worker's Incoming rows puts them to the
 user. It never becomes text in the worker's composer. `decision` and
 `answers` on any other token are refused.
+
+A question asked before the app last started is the user's, as every
+question was before a spawner could answer one: it goes to no agent on
+any computer, raises no notification and is not what its thread waits on
+(`threadWaitingOn`), though as an unanswered question it still keeps the
+thread from rest. The boot reads none. The time it was asked never
+changes, so parts a later change leaves open (the user answering one, a
+reply the restart returned) stay the user's. The user answers it in the
+worker as any question. A wake still queued for it when the app quit is
+discarded at the boot.
 
 ### `thread_status`
 

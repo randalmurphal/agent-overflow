@@ -222,10 +222,10 @@ func TestNoHeldSpawnSettlesBeforeTheBootRecoveredItsWorkers(t *testing.T) {
 }
 
 // A held spawn whose worker's turn ended asking an async question does not
-// settle at the boot before the question is routed again: the boot's
-// passes wait for its recovery, and the recovery reads the stored question,
-// not the routes the reconciliation fills later. Once the question is
-// dismissed the worker is at rest and the spawn settles finished.
+// settle at the boot: the boot's passes wait for its recovery, and the
+// recovery reads the stored question, which after the restart is the
+// person's and has no route. Once the question is dismissed the worker is
+// at rest and the spawn settles finished.
 func TestNoHeldSpawnSettlesBeforeTheBootRestoredItsWorkersQuestion(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -261,8 +261,7 @@ func TestNoHeldSpawnSettlesBeforeTheBootRestoredItsWorkersQuestion(t *testing.T)
 	if row := after.request(t, ack.Token); row.State != store.ThreadRequestRunning {
 		t.Fatalf("request after a pass before the recovery %+v; want it running", row)
 	}
-	// The recovery runs before the questions are routed again
-	// (seedAsyncQuestionPrompts): only the stored question says it asks.
+	// No route says the worker asks: only the stored question does.
 	after.app.recoverRestAtBoot()
 	after.app.threadRequestsWG.Wait()
 	if row := after.request(t, ack.Token); row.State != store.ThreadRequestRunning {

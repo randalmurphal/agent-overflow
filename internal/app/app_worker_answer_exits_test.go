@@ -191,28 +191,24 @@ func TestAFailedResendReturnsASpawnerAnswer(t *testing.T) {
 }
 
 // An answer the app quit with written to the worker's session and never
-// confirmed is the question's again at the boot, as a queued one is.
+// confirmed is the question's again at the boot, as a queued one is, and
+// the person's.
 func TestASpawnerAnswerUnconfirmedAtQuitIsReturnedAtBoot(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-answer-unconfirmed-boot", store.PlacementOwned)
 	sendID := f.answered(t)
 	f.dispatchAnswer(t)
 	f.app.sessionManager().take(f.worker.ID)
-	f.app.workerPrompts.mu.Lock()
-	f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-	f.app.workerPrompts.mu.Unlock()
-	f.app.workerPrompts.async.mu.Lock()
-	f.app.workerPrompts.async.open = nil
-	f.app.workerPrompts.async.mu.Unlock()
+	forgetPromptsAtRestart(f.app)
 	f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
 	f.app.configureTriageQueueCallbacks()
 	f.app.restoreDurableFlushQueueAtBoot()
 	f.app.giveBackUnconfirmedAtBoot()
 	f.drain(t)
 	f.requireReturned(t, sendID)
-	f.app.seedAsyncQuestionPrompts()
+	f.app.syncAsyncQuestionPrompts(f.worker.ID)
 	f.drain(t)
-	f.requireRoutedAgain(t, sendID)
+	f.requireThePersons(t)
 }
 
 // A worker holding the spawner's answer queued does not move to another

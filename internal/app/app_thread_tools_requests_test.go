@@ -2134,7 +2134,7 @@ func TestThreadSendStartsAnIdleThread(t *testing.T) {
 func (f *requestFixture) restart(t *testing.T) *requestFixture {
 	t.Helper()
 	bus := newCapturedEventBus()
-	app := &App{store: f.app.store, settings: f.app.settings}
+	app := &App{store: f.app.store, settings: f.app.settings, startedAtMillis: time.Now().UnixMilli()}
 	app.triage = triage.NewRouter(app.store, bus.emitChannel)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.providerDiscoveryCaches = f.app.providerDiscoveryCaches

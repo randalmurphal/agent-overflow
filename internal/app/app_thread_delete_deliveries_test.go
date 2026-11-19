@@ -737,12 +737,7 @@ func TestAWorkerAnswerForAClaimedWorkerIsQueuedAndWaitsForTheDecision(t *testing
 				f.drain(t)
 				// What a restart is to the worker's prompts: the registry and
 				// the in-memory queue are gone, the durable rows stay.
-				f.app.workerPrompts.mu.Lock()
-				f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-				f.app.workerPrompts.mu.Unlock()
-				f.app.workerPrompts.async.mu.Lock()
-				f.app.workerPrompts.async.open = nil
-				f.app.workerPrompts.async.mu.Unlock()
+				forgetPromptsAtRestart(f.app)
 				f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
 				f.app.configureTriageQueueCallbacks()
 				f.app.releaseUndecidedDeletes()
@@ -750,9 +745,7 @@ func TestAWorkerAnswerForAClaimedWorkerIsQueuedAndWaitsForTheDecision(t *testing
 				f.app.restoreDurableFlushQueueAtBoot()
 				f.drain(t)
 				f.requireReturned(t, sendID)
-				f.app.seedAsyncQuestionPrompts()
-				f.drain(t)
-				f.requireRoutedAgain(t, sendID)
+				f.requireThePersons(t)
 			}
 		})
 	}
