@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/browser/quota"
@@ -27,6 +28,9 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 }
 
 func (m *Manager) admitDownload(event downloadStart) bool {
+	// The address is display data from here, bounded once as it enters, in
+	// a copy of its own, before anything parks or lists it.
+	event.URL = strings.Clone(truncateUTF8(event.URL, maxBrowserURLBytes))
 	p, _ := m.pageForFrame(event.Frame)
 	if p == nil {
 		if event.Popup != "" {

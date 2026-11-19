@@ -1104,3 +1104,41 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 		})
 	}
 }
+
+// A download's address is bounded as it starts, before its row or a parked
+// popup download keeps it, and so is the source a blank page lists in its
+// place.
+func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
+	manager, _, access, _ := newDownloadManager(t)
+	blank, err := manager.NewCompanionPage(t.Context(), access, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := paneHandle(manager, access, blank.ID)
+	long := "data:text/plain," + strings.Repeat("a", 1<<20)
+	if !manager.downloadStarted(downloadStart{Frame: frame, ID: "listed", URL: long, SuggestedName: "a.txt"}) {
+		t.Fatal("the download was refused")
+	}
+	p, _, err := manager.lookupOwnedPage(access, blank.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.downloadMu.Lock()
+	logged := len(p.downloads[0].URL)
+	p.downloadMu.Unlock()
+	if logged > maxBrowserURLBytes {
+		t.Fatalf("the page's log keeps a %d-byte address", logged)
+	}
+	if source := len(threadDownloads(manager, access)[0].Source); source > maxBrowserURLBytes {
+		t.Fatalf("the thread's list keeps a %d-byte source", source)
+	}
+	if !manager.downloadStarted(downloadStart{Frame: "popup", Popup: "popup", ID: "parked", URL: long, SuggestedName: "b.txt", Openers: []string{frame}}) {
+		t.Fatal("the popup's download was refused")
+	}
+	manager.parkMu.Lock()
+	parked := len(manager.parked["popup"].downloads[0].start.URL)
+	manager.parkMu.Unlock()
+	if parked > maxBrowserURLBytes {
+		t.Fatalf("a parked download keeps a %d-byte address", parked)
+	}
+}
