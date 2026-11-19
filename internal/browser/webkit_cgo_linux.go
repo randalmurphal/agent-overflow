@@ -956,3 +956,7 @@ func webkitCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
 func webkitReleaseDownload(download unsafe.Pointer) {
 	gtkDo(func() { C.ao_wk_download_unref(download) })
 }
+
+// webkitDownloadsAlive is how many downloads WebKit made are not finalized
+// yet: one the engine still holds, or WebKit does.
+func webkitDownloadsAlive() int { return int(C.ao_wk_downloads_alive()) }

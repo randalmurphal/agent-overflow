@@ -759,9 +759,6 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(download, &kAODownloadProfileKey, @(ao_view_profile_id(view)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  // Held until the Go side releases it, so a cancel arriving after the page
-  // closed cannot reach a freed object.
-  [download retain];
   [download setDelegate:ao_download_delegate()];
 }
 
@@ -1052,6 +1049,11 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // later turn of this thread (ao_wkv_download_decide).
   objc_setAssociatedObject(download, &kAODownloadDecisionKey, completionHandler,
                            OBJC_ASSOCIATION_COPY_NONATOMIC);
+  // The Go side owns the download from here until it releases it
+  // (ao_wkv_download_release), so a cancel arriving after the page closed
+  // cannot reach a freed object. A download that fails before this is never
+  // the Go side's, and WebKit frees it.
+  [download retain];
   NSURL *url = [[download originalRequest] URL];
   aoWKVDownloadDestination(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
                            ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
