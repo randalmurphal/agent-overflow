@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -126,6 +127,44 @@ func TestASwitchSavesItsTabsBeforeTheOldPagesClose(t *testing.T) {
 		t.Fatalf("saved copy during the switch: jar %q, tabs %q", state.Jar, tabURLs(restarted, access))
 	}
 	release()
+}
+
+// A switch whose saved copy cannot be written changes nothing: the jar stays,
+// the pages stay live, and a retry writes and switches.
+func TestASwitchThatCannotSaveKeepsTheJarAndThePages(t *testing.T) {
+	dir := t.TempDir()
+	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	openPage(t, manager, access, "https://example.test/one")
+	openPage(t, manager, access, "https://example.test/two")
+	if err := os.WriteFile(manager.recordDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetJar(access, JarThread); err == nil {
+		t.Fatal("a switch whose saved copy failed reported success")
+	}
+	state := manager.CompanionState(access)
+	if state.Jar != JarWorktree {
+		t.Fatalf("a failed switch left jar %q, want the worktree jar", state.Jar)
+	}
+	for _, page := range state.Pages {
+		if page.Suspended {
+			t.Fatalf("a failed switch suspended tab %+v", page)
+		}
+	}
+	if profile := engine.profile(canonical(t, proj.one)); profile.disposed.Load() {
+		t.Fatal("a failed switch closed the old jar's pages")
+	}
+
+	if err := os.Remove(manager.recordDir); err != nil {
+		t.Fatal(err)
+	}
+	setJar(t, manager, access, JarThread)
+	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	if got := restarted.CompanionState(access); got.Jar != JarThread || len(got.Pages) != 2 {
+		t.Fatalf("the retried switch saved jar %q with %d tabs, want thread with 2", got.Jar, len(got.Pages))
+	}
 }
 
 // A tab that cannot come back in the new jar stays suspended, with the

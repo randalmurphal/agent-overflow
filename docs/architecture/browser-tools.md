@@ -84,8 +84,9 @@ per-platform no-op.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying
-  active, and the records are saved before any teardown starts, so a
-  shutdown or crash mid-switch loses no tab. The tabs come back through the
+  active, and the records are saved before the switch takes effect, so a
+  shutdown or crash mid-switch loses no tab, and a switch whose save fails
+  changes nothing and reports the failure. The tabs come back through the
   ordinary restore: the pane brings back the tab it shows, and the others
   return when selected or used, with the navigation policy applied and no
   page history. A tab that cannot come back stays suspended with the error.
