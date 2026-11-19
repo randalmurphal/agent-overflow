@@ -9,7 +9,7 @@ import {
   type PaneBoundaryDrag,
 } from '../utils/paneWidths';
 import { getPaneHostWidth } from './layoutMetrics.svelte';
-import { isCompactLayout } from './layoutMode.svelte';
+import { compactShownPaneId, getCompactScreen, isCompactLayout } from './layoutMode.svelte';
 import type { AgentPaneScopeSnapshot } from '../types/settings';
 
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
@@ -149,6 +149,24 @@ export function promotePane(paneId: string): boolean {
 
 export function demotePane(): void {
   promotedPaneId = null;
+}
+
+/**
+ * Reactive: whether the person can see the mounted pane `paneId` now.
+ * The one answer for work that should run only while its pane is seen.
+ * - Desktop: true for every mounted pane (the strip shows them side by
+ *   side; scrolled partly out of view still counts), except while another
+ *   pane is promoted over the strip: then only the promoted pane.
+ * - Compact: true only on the thread screen, and only for the one pane the
+ *   strip shows (its section holds the strip's centre). During a reveal's
+ *   glide that changes once the glide passes halfway, not at the reveal.
+ * False for a pane id that is not mounted on compact. Re-evaluates when
+ * the mode, the compact screen, the shown pane or the promotion changes;
+ * read it inside an effect or `$derived` to follow it.
+ */
+export function isPaneOnScreen(paneId: string): boolean {
+  if (isCompactLayout()) return getCompactScreen() === 'thread' && compactShownPaneId() === paneId;
+  return promotedPaneId === null || promotedPaneId === paneId;
 }
 
 function replaceLayoutItems(next: PaneLayoutItem[]): void {

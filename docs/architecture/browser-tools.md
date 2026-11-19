@@ -122,7 +122,10 @@ per-platform no-op.
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
-  the companion closes when its last tab does. Closing the companion any other
+  the companion closes when its last tab does. With a tab selection or an
+  earlier Mod+W of the pane still unanswered, the close waits for those
+  answers and closes the tab active then, so it closes the tab the user just
+  picked and one tab per press. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
 - A tab the user closes is kept on the thread's in-memory closed-tab stack
   (`internal/browser/companion_tabs.go`): its address, label and position,
@@ -231,7 +234,14 @@ per-platform no-op.
   switch suspends in one lock hold.
 - The chat header's browser button is present wherever the native browser is
   usable for the thread, tabs or not. With no tab it opens the pane on a new
-  tab, as a mod-clicked link does on a tab at the link. A new tab the user
+  tab, as a mod-clicked link does on a tab at the link. Both ask one
+  question (`canPresentNativeBrowser`): the window hosts the thread's view,
+  the home backend has an engine, the browser is on, and the layout is not
+  compact. A mod-click that fails it opens the link the ordinary way. The
+  state channel has no replay, so the client reads the state of each thread
+  it shows once per connection of the home backend, and the button decides
+  between showing the pane and opening a tab only from a state read or
+  pushed on the current connection, reading one first when it has none. A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted
@@ -328,7 +338,9 @@ behave as a desktop browser's:
   the typed text, Enter or a click takes a row, Enter with none highlighted
   navigates the text, and Escape closes the list before it reverts the
   field. Nothing is fetched from the network while typing. The list is a
-  `Popover`, so the native view yields while it is open. Focusing the field
+  `Popover`, so the native view yields while it is open; it registers as an
+  airspace layer, not an overlay, since the field keeps the keyboard, so the
+  pane's commands (reload, tab switching) stay live under it. Focusing the field
   reads the recent addresses (`BrowserCompanionRecentAddresses`) and
   rescans the dev servers, so neither rides the state push.
 - The recent addresses are the Manager's, per thread, in memory only

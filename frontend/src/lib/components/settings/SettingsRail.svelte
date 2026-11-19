@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // The Settings nav rail: a search box over the grouped page tabs.
   //
   // With a query, the tabs give way to a result list over the field index
@@ -84,7 +85,7 @@
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       highlighted = (highlighted - 1 + hits.length) % Math.max(hits.length, 1);
-    } else if (e.key === 'Enter') {
+    } else if (isLocalEnter(e)) {
       e.preventDefault();
       const hit = hits[highlighted];
       if (hit) pick(hit);

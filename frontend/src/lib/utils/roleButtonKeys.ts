@@ -3,7 +3,11 @@
 // the page scroll on keydown and activates once on keyup; the element's
 // blur disarms it, so moving focus away while Space is held cancels. A key
 // aimed at a control inside the element is that control's: the helper acts
-// only on events targeted at the element itself.
+// only on events targeted at the element itself. Ctrl or Cmd with Enter
+// reaches `activate`, which reads them (open in a new pane) as a link does;
+// Alt with Enter is an app chord (alt+shift+enter) and is left to it.
+
+import { isEnterKey } from './localEnter';
 
 export interface RoleButtonKeys {
   /** Returns whether the key was the button's own. */
@@ -21,7 +25,7 @@ export function roleButtonKeys(activate: (event: KeyboardEvent) => void): RoleBu
   return {
     keydown(event) {
       if (!ownKey(event)) return false;
-      if (event.key === 'Enter') {
+      if (isEnterKey(event) && !event.altKey) {
         event.preventDefault();
         if (!event.repeat) activate(event);
         return true;

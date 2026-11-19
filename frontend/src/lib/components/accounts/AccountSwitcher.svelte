@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import ComputerSelect from '../primitives/ComputerSelect.svelte';
   import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
@@ -179,7 +180,7 @@
     } else if (key === 'ArrowUp' || (plain && key === 'k')) {
       event.preventDefault();
       activeIndex = (activeIndex - 1 + rows.length) % rows.length;
-    } else if (key === 'Enter') {
+    } else if (isLocalEnter(event)) {
       if (isImeComposingEvent(event)) return;
       event.preventDefault();
       const row = rows[activeIndex];

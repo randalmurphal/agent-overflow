@@ -159,7 +159,7 @@
   function handleKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing a CJK title; committing
     // the rename here would save the pre-composition text and exit edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
     if (isLocalEnter(e)) {
       e.preventDefault();
       void commitRename();

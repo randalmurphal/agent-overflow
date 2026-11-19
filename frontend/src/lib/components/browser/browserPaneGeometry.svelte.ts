@@ -1,8 +1,9 @@
 import { reportBrowserPaneRect } from '../../stores/browserPaneRectReports';
-import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
+import { airspaceIntersects, airspaceRevision } from '../../utils/paneAirspace.svelte';
 import { promotedLayerClip, promotedLayerFrame } from '../../utils/panePromotion.svelte';
 import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
 import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
+import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
 import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
 import { getAppliedTheme } from '../../theme/themeApply.svelte';
 
@@ -15,8 +16,10 @@ export interface BrowserPaneGeometryOptions {
   /** The host rect element the native view is positioned over. */
   surface: () => HTMLElement | undefined;
   threadId: () => string | null;
-  /** Whether the pane holds a companion view; a re-attach re-sends the rect. */
-  attached: () => boolean;
+  /** The pane's mount (reactive), null while it has none. Reports before it
+   *  are dropped, so its arrival, and a re-attach's new mount, re-send the
+   *  rect. */
+  mount: () => string | null;
 }
 
 export interface BrowserPaneGeometry {
@@ -96,6 +99,13 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
 
   const round2 = (value: number): number => Math.round(value * 100) / 100;
 
+  // Compact keeps the pane strip mounted, with its bounds, while the thread
+  // list screen is shown in its place (app.css), so neither the clip nor the
+  // registry sees the strip hidden.
+  function onCompactListScreen(): boolean {
+    return isCompactLayout() && getCompactScreen() !== 'thread';
+  }
+
   function flushRect(): void {
     const el = options.surface();
     const threadId = options.threadId();
@@ -109,6 +119,7 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
     // Obscurity is judged against the VISIBLE part: an overlay above a
     // clipped-away strip does not hide the pane.
     const visible =
+      !onCompactListScreen() &&
       rect.width >= 1 &&
       rect.height >= 1 &&
       clipWidth >= 1 &&
@@ -163,11 +174,12 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
     };
   });
 
-  // Overlay open/close re-evaluates obscurity; the mount acquiring its pane
-  // id re-sends the rect a too-early report dropped.
+  // A surface over the window appearing, going or changing size re-evaluates
+  // obscurity; the mount acquiring its pane id re-sends the rect a too-early
+  // report dropped.
   $effect(() => {
-    airspaceSurfaces();
-    options.attached();
+    airspaceRevision();
+    options.mount();
     scheduleRect();
   });
 
@@ -188,6 +200,12 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
     for (const item of getPaneLayoutItems()) void item.widthPx;
     void getSidebarWidth();
     void isSidebarCollapsed();
+    scheduleRect();
+  });
+
+  // Entering or leaving compact, or its list screen, shows or hides the strip.
+  $effect(() => {
+    onCompactListScreen();
     scheduleRect();
   });
 

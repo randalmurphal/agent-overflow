@@ -6,6 +6,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
 import { resetDevServersForTest } from '../../stores/devServers.svelte';
 import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
+import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 
 const THREAD = 'thread-1';
 
@@ -196,18 +197,19 @@ describe('<BrowserAddressSuggestions>', () => {
     expect(onAct).toHaveBeenCalledWith('navigate', 'a', 'https://github.test/org/repo');
   });
 
-  it('paints as an overlay the native view yields to, only while open', async () => {
+  // The field keeps the keyboard while the list is open, so the list is an
+  // airspace layer the native view yields to, never an open overlay that
+  // would turn the browser pane's commands off.
+  it('paints as a layer while open, never as an open overlay', async () => {
     const { input } = mount();
     input.focus();
-    expect(airspaceSurfaces().length).toBe(0);
     await type(input, 'local');
     await waitFor(() => expect(rows().length).toBe(2));
-    expect(airspaceSurfaces().length).toBe(1);
-    expect(airspaceSurfaces()[0].contains(rows()[0])).toBe(true);
+    expect(airspaceSurfaces()).toEqual([]);
+    expect(makeCommandContext(null, {}).overlayOpen).toBe(false);
     input.blur();
     await tick();
     expect(rows()).toEqual([]);
-    expect(airspaceSurfaces().length).toBe(0);
   });
 
   it('closes when another tab becomes active', async () => {

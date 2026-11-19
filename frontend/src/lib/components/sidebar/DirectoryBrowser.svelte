@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // DirectoryBrowser: path input + listbox + keyboard nav.
   //
   // The browse / debounce / typeahead browser lives in
@@ -63,8 +64,8 @@
   function handlePathKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing a CJK path segment;
     // navigating here would use the pre-composition path.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       browser.handlePathEnter();
     }
@@ -122,6 +123,7 @@
         scrollHighlightIntoView();
         return;
       case 'Enter': {
+        if (!isLocalEnter(e)) return;
         const entry = entries[browser.highlight];
         if (entry) {
           e.preventDefault();

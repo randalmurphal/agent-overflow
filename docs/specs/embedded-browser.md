@@ -368,7 +368,10 @@ positioned over.
   hide/clip native view (a static snapshot of the last frame may be
   shown in the host rect to avoid a blank hole — implementation
   choice, decided by feel). This is the one place the embed is
-  visibly not-a-DOM-element; every native embed has it.
+  visibly not-a-DOM-element; every native embed has it. The toast stack
+  registers as a layer (`utils/paneAirspace.svelte.ts`): the view hides
+  while a toast covers it, and the pane's keyboard commands stay live,
+  since a toast is not an overlay that takes the keyboard.
 - Pane hidden / thread switched / layout drag in progress → view
   hidden. A drag that places a pane (a sidebar thread row or tool, a pane
   title) hides every view in the strip from its `dragstart` to its end,

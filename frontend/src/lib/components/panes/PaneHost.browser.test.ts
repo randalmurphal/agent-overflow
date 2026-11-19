@@ -17,11 +17,10 @@ import { focusPane, registerPaneForTest, resetPanesForTest, revealPane } from '.
 import {
   compactShownPaneId,
   installLayoutMode,
-  isPaneOnScreen,
   onScreenCompactPaneId,
   setCompactLayoutForTest,
 } from '../../stores/layoutMode.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { isPaneOnScreen, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 
 let host: HTMLDivElement;

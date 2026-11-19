@@ -10,6 +10,8 @@
 // caller preventDefault()s exactly when this returns non-null. Returning
 // null means "leave it to the platform" — never "do nothing".
 
+import { isLocalEnter } from '../../utils/localEnter';
+
 export type ImportKeyAction =
   | 'select-all'
   | 'cursor-down'
@@ -22,6 +24,7 @@ export interface ImportKeyEvent {
   key: string;
   metaKey: boolean;
   ctrlKey: boolean;
+  altKey: boolean;
   target: EventTarget | null;
 }
 
@@ -50,7 +53,7 @@ export function resolveImportKeyAction(event: ImportKeyEvent): ImportKeyAction |
     case ' ':
       return nativeKeyControl ? null : 'toggle-active';
     case 'Enter':
-      return tag === 'SELECT' || tag === 'BUTTON' ? null : 'run-import';
+      return !isLocalEnter(event) || tag === 'SELECT' || tag === 'BUTTON' ? null : 'run-import';
     default:
       return null;
   }

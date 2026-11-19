@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ThreadGroup } from '../../types/models';
   import { toggleGroup } from '../../stores/sidebar.svelte';
@@ -115,8 +116,8 @@
   function handleRenameKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing; committing here
     // would save the pre-composition text and leave edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       void saveRename();
     } else if (e.key === 'Escape') {
@@ -144,7 +145,7 @@
 
   function handleKeydown(e: KeyboardEvent): void {
     if (editing || e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (isLocalEnter(e) || e.key === ' ') {
       e.preventDefault();
       toggleExpansion();
       return;

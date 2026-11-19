@@ -3,13 +3,16 @@ import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
   browserCompanionAct,
+  browserPaneMountId,
   openBrowserTab,
   canUseNativeBrowser,
   hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
+  refreshBrowserCompanionStates,
   resetBrowserCompanionForTest,
   setBrowserPaneMountForTest,
+  toggleBrowserFromHeader,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, takeAddressFocus } from './browserAddressFocus.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
@@ -28,6 +31,7 @@ import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { getToasts, resetToastsForTest } from './toast.svelte';
+import { browserCompanionState } from './browserCompanion.svelte';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -327,6 +331,27 @@ describe('browser companion state routing', () => {
       attachment.release();
     });
 
+    it('keeps the current mount when a superseded attach answers last', async () => {
+      const replies: Array<(mount: string) => void> = [];
+      setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
+        replies.push((mount) => resolve({ id: mount, state: open(6) }));
+      }));
+      const detach = setBindingMock('BrowserCompanionPaneDetach', vi.fn(async () => {}));
+      // The pane closes and opens again while its first attach is pending.
+      attachBrowserCompanion('thread-browser').release();
+      const second = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(replies).toHaveLength(2));
+      replies[1]('mount-2');
+      await vi.waitFor(() => expect(second.current).not.toBeNull());
+      replies[0]('mount-1');
+      await vi.waitFor(() => expect(detach).toHaveBeenCalledWith('mount-1'));
+      expect(browserPaneMountId('thread-browser')).toBe('mount-2');
+      expect(detach).toHaveBeenCalledTimes(1);
+      second.release();
+      await vi.waitFor(() => expect(detach).toHaveBeenLastCalledWith('mount-2'));
+      expect(browserPaneMountId('thread-browser')).toBeNull();
+    });
+
     it('takes the attach answer when no newer frame arrived', async () => {
       setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: open(6) }));
       setBindingMock('BrowserCompanionPaneDetach', async () => {});
@@ -336,6 +361,59 @@ describe('browser companion state routing', () => {
       applyBrowserCompanionState(closed(8));
       expect(attachment.current?.state.pages).toEqual([]);
       attachment.release();
+    });
+  });
+
+  // The state channel has no replay: tabs opened while this window was
+  // away are known only from a read on the new connection.
+  describe('across a connection edge', () => {
+    const tab = { id: 'page-1', url: 'https://example.com/', title: 'Example', canGoBack: false, canGoForward: false };
+    const none = (seq: number) => ({ kind: 'state', threadId: 'thread-browser', pages: [], seq });
+    const hidden = (seq: number) => ({ kind: 'state', threadId: 'thread-browser', activePageId: 'page-1', visible: false, pages: [tab], seq });
+
+    it('reads a thread with a pane again, and finds the tab an agent opened meanwhile', async () => {
+      const answers = [none(1), hidden(2)];
+      const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => answers.shift()));
+      hydrateBrowserCompanionState('thread-browser');
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+      hydrateBrowserCompanionState('thread-browser');
+      expect(read).toHaveBeenCalledTimes(1);
+
+      refreshBrowserCompanionStates();
+      await vi.waitFor(() => expect(browserCompanionState('thread-browser')?.pages).toHaveLength(1));
+      expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    it('the header button reads a state it does not know before it opens a tab', async () => {
+      let answer: (state: unknown) => void = () => {};
+      setBindingMock('BrowserCompanionThreadState', () => new Promise((resolve) => { answer = resolve; }));
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string }) => (
+        action.kind === 'show' ? { ...hidden(3), visible: true } : none(3)
+      )));
+      const toggled = toggleBrowserFromHeader('thread-browser');
+      await Promise.resolve();
+      expect(act).not.toHaveBeenCalled();
+      answer(hidden(2));
+      await toggled;
+      expect(act).toHaveBeenCalledTimes(1);
+      expect(act.mock.calls[0][1]).toMatchObject({ kind: 'show', pageId: 'page-1' });
+    });
+
+    it('the header button opens a tab once the state is known to have none', async () => {
+      setBindingMock('BrowserCompanionThreadState', async () => none(1));
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
+      await toggleBrowserFromHeader('thread-browser');
+      expect(act).toHaveBeenCalledTimes(1);
+      expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
+    });
+
+    it('the header button opens nothing when the state cannot be read, and says so', async () => {
+      resetToastsForTest();
+      setBindingMock('BrowserCompanionThreadState', async () => { throw new Error('backend restarting'); });
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => hidden(2)));
+      await toggleBrowserFromHeader('thread-browser');
+      expect(act).not.toHaveBeenCalled();
+      expect(getToasts().map((toast) => toast.message)).toContain("The browser's tabs could not be read: backend restarting");
     });
   });
 
@@ -387,6 +465,100 @@ describe('pane.close on a browser companion', () => {
     // Still open: the pane follows the backend's answer, not the keystroke.
     expect(companionForSource('main', 'browser')).not.toBeNull();
     await vi.waitFor(() => expect(companionForSource('main', 'browser')).toBeNull());
+  });
+
+  // The backend moved to another tab while this client was away: the
+  // reattach's answer is what the pane shows and what the chord closes.
+  it('closes the tab the reattached pane shows after the backend changed tabs', async () => {
+    const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-browser', activePageId: 'page-1', visible: true, seq: 1,
+      pages: [tab('page-1'), tab('page-2')],
+    });
+    setBindingMock('BrowserCompanionPaneAttach', async () => ({
+      id: 'mount-1',
+      state: {
+        kind: 'state', threadId: 'thread-browser', activePageId: 'page-2', visible: true, seq: 2,
+        pages: [tab('page-1'), tab('page-2')],
+      },
+    }));
+    setBindingMock('BrowserCompanionPaneDetach', async () => {});
+    const closes: string[] = [];
+    setBindingMock('BrowserCompanionDo', async (threadId: string, action: { kind: string; pageId: string }) => {
+      closes.push(action.pageId);
+      return { kind: 'state', threadId, activePageId: 'page-1', visible: true, seq: 3, pages: [tab('page-1')] };
+    });
+    const attachment = attachBrowserCompanion('thread-browser');
+    await vi.waitFor(() => expect(attachment.current?.state.activePageId).toBe('page-2'));
+    focusPane('browser-main');
+    expect(closeFocusedBrowserTab()).toBe(true);
+    await vi.waitFor(() => expect(closes).toEqual(['page-2']));
+    attachment.release();
+  });
+
+  describe('right after a tab selection or another close', () => {
+    const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
+    const state = (active: string, ids: string[], seq: number) => ({
+      kind: 'state', threadId: 'thread-browser', activePageId: active, visible: true, seq, pages: ids.map(tab),
+    });
+    let sent: Array<{ kind: string; pageId: string }>;
+    let answers: Array<() => void>;
+
+    beforeEach(() => {
+      applyBrowserCompanionState(state('a', ['a', 'b', 'c'], 1));
+      setBrowserPaneMountForTest('thread-browser', 'mount-1');
+      sent = [];
+      answers = [];
+      // The backend applies each action as it arrives and answers when the
+      // test lets it.
+      let current = state('a', ['a', 'b', 'c'], 1);
+      setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string; pageId: string }) => {
+        sent.push({ kind: action.kind, pageId: action.pageId });
+        const ids = current.pages.map((page) => page.id);
+        if (action.kind === 'activate') current = state(action.pageId, ids, current.seq + 1);
+        if (action.kind === 'close') {
+          const left = ids.filter((id) => id !== action.pageId);
+          current = state(current.activePageId === action.pageId ? left[0] ?? '' : current.activePageId, left, current.seq + 1);
+        }
+        const answer = current;
+        await new Promise<void>((resolve) => answers.push(resolve));
+        return answer;
+      }));
+      focusPane('browser-main');
+    });
+    afterEach(() => {
+      for (const answer of answers.splice(0)) answer();
+    });
+
+    const answerAll = async (): Promise<void> => {
+      while (answers.length > 0) {
+        for (const answer of answers.splice(0)) answer();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+
+    it('closes the tab the user just selected, not the one the last state named', async () => {
+      void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'b' });
+      expect(closeFocusedBrowserTab()).toBe(true);
+      // Nothing is closed before the selection has answered.
+      expect(sent).toEqual([{ kind: 'activate', pageId: 'b' }]);
+      await answerAll();
+      expect(sent).toEqual([{ kind: 'activate', pageId: 'b' }, { kind: 'close', pageId: 'b' }]);
+    });
+
+    it('closes one tab per press when presses come faster than the answers', async () => {
+      expect(closeFocusedBrowserTab()).toBe(true);
+      expect(closeFocusedBrowserTab()).toBe(true);
+      await answerAll();
+      expect(sent).toEqual([{ kind: 'close', pageId: 'a' }, { kind: 'close', pageId: 'b' }]);
+    });
+
+    it('leaves a close from the tab menu on the tab it names, at once', async () => {
+      void browserCompanionAct('thread-browser', { kind: 'activate', pageId: 'b' });
+      void browserCompanionAct('thread-browser', { kind: 'close', pageId: 'c' });
+      expect(sent).toEqual([{ kind: 'activate', pageId: 'b' }, { kind: 'close', pageId: 'c' }]);
+      await answerAll();
+    });
   });
 
   it('falls through when the focused pane is not a browser companion', () => {

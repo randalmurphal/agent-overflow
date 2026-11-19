@@ -12,6 +12,7 @@
 </script>
 
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Command palette. Routes backdrop + focus-trap + Escape + role=dialog
   // through the Modal primitive (top-aligned, no body padding, no
   // default header) so we don't reimplement any of that here. The
@@ -135,7 +136,7 @@
       scrollActiveIntoView();
       return true;
     }
-    if (ev.key === 'Enter') {
+    if (isLocalEnter(ev)) {
       // Mid-IME-composition Enter confirms the candidate in the filter input;
       // running the highlighted command would act on a half-typed query.
       if (isImeComposingEvent(ev)) return false;

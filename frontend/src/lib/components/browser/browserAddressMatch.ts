@@ -98,11 +98,22 @@ interface Candidate {
   order: number;
 }
 
+/**
+ * The best `limit` candidates, one per destination: the best-ranked
+ * candidate for a destination stands for it, so one that does not match
+ * never hides another that does.
+ */
 function ranked(candidates: Candidate[], limit: number): AddressSuggestion[] {
-  return candidates
-    .sort((a, b) => a.rank - b.rank || a.order - b.order)
-    .slice(0, limit)
-    .map((candidate) => candidate.suggestion);
+  const seen = new Set<string>();
+  const out: AddressSuggestion[] = [];
+  for (const candidate of candidates.sort((a, b) => a.rank - b.rank || a.order - b.order)) {
+    const id = destination(candidate.suggestion.address);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(candidate.suggestion);
+    if (out.length === limit) break;
+  }
+  return out;
 }
 
 /** The suggestions for `typed`, in source order; empty for blank text. */
@@ -117,11 +128,8 @@ export function addressSuggestions(typed: string, sources: AddressSuggestionSour
     entries: readonly { address: string; title: string; pageId?: string }[],
   ): AddressSuggestion[] => {
     const candidates: Candidate[] = [];
-    const seen = new Set<string>();
     entries.forEach((entry, order) => {
-      const id = destination(entry.address);
-      if (offered.has(id) || seen.has(id)) return;
-      seen.add(id);
+      if (offered.has(destination(entry.address))) return;
       const rank = matchRank(query, words, entry.address, entry.title);
       if (rank === null) return;
       candidates.push({

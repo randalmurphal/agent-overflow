@@ -52,12 +52,11 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
-    browserCompanionAct,
     browserCompanionState,
-    canOpenNativeBrowser,
+    canPresentNativeBrowser,
     canUseNativeBrowser,
     hydrateBrowserCompanionState,
-    openBrowserTab,
+    toggleBrowserFromHeader,
   } from '../../stores/browserCompanion.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
@@ -169,13 +168,15 @@
   }
 
   // The browser chip renders wherever this page can open the thread's
-  // browser (canOpenNativeBrowser), tabs or not. With tabs it shows and
-  // hides the companion, which closing never strands; with none it opens the
-  // pane on a new tab with its address bar focused. The state read is
+  // browser and show it (canPresentNativeBrowser), tabs or not, and for a
+  // thread with tabs. With tabs it shows and hides the companion, which
+  // closing never strands; with none it opens the pane on a new tab with
+  // its address bar focused (toggleBrowserFromHeader, which reads a state
+  // this connection has not seen before deciding). The state read is
   // per-key reactive, and the hydration read fills in what the ephemeral
   // `browser:companion-state` channel cannot replay to a fresh UI.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserAvailable = $derived(threadIdForBrowser !== '' && canOpenNativeBrowser(threadIdForBrowser));
+  let browserAvailable = $derived(threadIdForBrowser !== '' && canPresentNativeBrowser(threadIdForBrowser));
   let browserState = $derived(
     threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser) ? browserCompanionState(threadIdForBrowser) : null,
   );
@@ -185,22 +186,8 @@
     if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
   });
 
-  async function toggleBrowserCompanion(): Promise<void> {
-    const threadId = threadIdForBrowser;
-    const state = browserState;
-    if (!threadId) return;
-    if (!state) {
-      // A refusal reaches a toast there (openBrowserTab).
-      await openBrowserTab(threadId, { focusAddress: true });
-      return;
-    }
-    // A hidden companion has no pane to carry the banner, so the refusal
-    // comes back here and goes to a toast.
-    const failure = await browserCompanionAct(threadId, {
-      kind: browserVisible ? 'hide' : 'show',
-      pageId: browserVisible ? '' : (state.activePageId ?? ''),
-    });
-    if (failure) addErrorToast(failure.error, failure.cause);
+  function toggleBrowserCompanion(): void {
+    if (threadIdForBrowser) void toggleBrowserFromHeader(threadIdForBrowser);
   }
 
   // Plain click on the PR badge opens the companion review pane on the PR
@@ -430,7 +417,7 @@
     </Button>
   {/if}
 
-  {#if browserState || (browserAvailable && !compact)}
+  {#if browserState || browserAvailable}
     <!-- Browser companion toggle. With tabs it shows and hides the pane
          (closing the pane never closes the pages); with none it opens the
          pane on a new tab, which a compact screen never shows, so there it
@@ -441,7 +428,7 @@
       pressed={browserVisible}
       ariaLabel={browserState ? 'Toggle browser pane' : 'Open browser'}
       title={browserState ? 'Toggle browser pane' : 'Open browser'}
-      onclick={() => void toggleBrowserCompanion()}
+      onclick={toggleBrowserCompanion}
       testId="browser-companion-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
     >

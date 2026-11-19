@@ -777,6 +777,44 @@ describe('architecture', () => {
     );
   });
 
+  // A local Enter handler owns plain Enter and Shift+Enter only
+  // (utils/localEnter.ts): the global dispatcher declines a prevented event,
+  // so a menu item, row or field that takes every Enter swallows the app's
+  // Enter chords (alt+shift+enter, pane.togglePromoted). An Enter key is
+  // read through `isLocalEnter`, or `isEnterKey` where the handler checks
+  // the modifiers itself; a `case 'Enter':` applies `isLocalEnter` on its
+  // first line.
+  it('reads the Enter key only through the local Enter rule', () => {
+    const offenders = new Map<string, string[]>();
+    let enterReads = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      if (repoPath(file) === 'lib/utils/localEnter.ts') continue;
+      const lines = readFileSync(file, 'utf8').split('\n');
+      if (lines.some((line) => /\bis(?:Local)?Enter(?:Key)?\(/.test(line))) enterReads += 1;
+      const findings: string[] = [];
+      lines.forEach((line, index) => {
+        if (/\bkey\s*[!=]==?\s*['"]Enter['"]/.test(line)) {
+          findings.push(`line ${index + 1}: compares the key with 'Enter'`);
+        } else if (/\bcase\s+['"]Enter['"]\s*:/.test(line)) {
+          const next = lines.slice(index + 1).find((candidate) => candidate.trim() !== '' && !/^\s*case\b/.test(candidate)) ?? '';
+          if (!next.includes('isLocalEnter(')) findings.push(`line ${index + 1}: a case 'Enter' that does not apply isLocalEnter first`);
+        }
+      });
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(enterReads, 'the scan found no Enter handlers; it would pass vacuously').toBeGreaterThan(20);
+    expectAllowlistExact(
+      offenders,
+      {
+        'lib/components/composer/composerKeyboard.ts':
+          'popoverNav reduces key names; popoverYieldsKey applies the rule before any caller consults it.',
+      },
+      'New violations.',
+      'Read the key with isLocalEnter(event) from utils/localEnter.ts, or isEnterKey(event) where the handler'
+      + ' checks the modifiers itself (a ctrl/meta+Enter chord).',
+    );
+  });
+
   // A workspace lets the parser claim `![x](/abs/path.png)`, and the bytes
   // are read from the THREAD's computer (StreamdownImageHost's `backend`,
   // from ChatMarkdown's `threadId`). A call site that names a workspace

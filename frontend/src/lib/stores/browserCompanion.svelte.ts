@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 import { threadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { requireEntityBackend } from '../transport/backends';
@@ -50,8 +51,10 @@ export interface BrowserCompanionView {
 }
 
 // paneIds maps a thread to its live pane mount, acquired by the entity
-// store's source and addressed by every rect report.
-const paneIds = new Map<string, string>();
+// store's source and addressed by every rect report. Reactive, so the pane's
+// geometry sends its first rect when the mount appears, which can be after
+// its state did (a push during the attach).
+const paneIds = new SvelteMap<string, string>();
 
 /**
  * A part of the browser pane that keeps its own state beside this store and
@@ -78,7 +81,12 @@ export function observeBrowserCompanion(observer: BrowserCompanionObserver): voi
 // Last state event per thread with live pages, reactive per key so the chat
 // header's browser chip re-evaluates only when ITS thread's pages change.
 const liveStates = createKeyedSignalRegistry<BrowserCompanionEvent | null>(null);
-const hydratedThreads = new Set<string>();
+// The threads whose state this connection has seen, by a push or a read:
+// for one of them, no live state means no tab. A connection edge forgets
+// them all (refreshBrowserCompanionStates). The reads in flight, one per
+// thread.
+const knownThreads = new Set<string>();
+const stateReads = new Map<string, Promise<void>>();
 
 // A thread's state arrives as pushes and as the answers of attach, action
 // and hydrate calls, and the transport can write a push published after a
@@ -121,6 +129,17 @@ export function canOpenNativeBrowser(threadId: string): boolean {
 }
 
 /**
+ * Whether a gesture here can open a tab of the thread's browser and show
+ * it: the browser can be opened (canOpenNativeBrowser) and the layout shows
+ * a browser pane, which compact never does (openBrowserCompanion). The
+ * header's open button and a mod-clicked link ask this, so neither makes a
+ * tab nobody sees; a link falls back to the ordinary opener.
+ */
+export function canPresentNativeBrowser(threadId: string): boolean {
+  return !isCompactLayout() && canOpenNativeBrowser(threadId);
+}
+
+/**
  * The only opener of a browser companion. The state push and the pane
  * reconcile on a thread mount call it, and through the push so do the
  * chip's show, a mod-clicked link and startup hydration. Browser
@@ -147,13 +166,20 @@ const store = createEntityStore<BrowserCompanionView, void>({
   // Native views and their mounts belong to this window's local execution host.
   backendForKey: () => HOME_BACKEND,
   rawValue: true,
-  source: async ({ key, apply }) => {
+  source: async ({ key, apply, signal }) => {
     if (!canUseNativeBrowser(key)) throw new Error('A native browser pane is unavailable for this conversation on this device.');
     const result = await BrowserCompanionPaneAttach(key);
+    // An attach superseded while it was in flight (the pane closed, or
+    // closed and opened again) owns nothing here: the mount the thread has
+    // now is a later attach's, so this one only detaches its own.
+    if (signal.aborted) return () => BrowserCompanionPaneDetach(result.id);
     paneIds.set(key, result.id);
-    // A push that landed during the attach is newer than its answer.
-    const held = store.snapshot(key)?.state;
-    apply(emptyView(admitState(result.state) || !held ? result.state : held));
+    // The answer is a state like a push and lands as one, so the keyboard
+    // commands (liveStates), the companion's open and close and this pane
+    // all see the same revision. A newer state that already landed (a push
+    // during the attach) wins; the pane then shows the newest it has.
+    applyBrowserCompanionState(result.state);
+    if (!store.snapshot(key)) apply(emptyView(liveStates.get(key) ?? result.state));
     return async () => {
       if (paneIds.get(key) === result.id) paneIds.delete(key);
       selectionSeqs.delete(result.id);
@@ -167,7 +193,7 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
-/** The backend's id of the thread's mounted pane, null while it has none. */
+/** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
 export function browserPaneMountId(threadId: string): string | null {
   return paneIds.get(threadId) ?? null;
 }
@@ -213,7 +239,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
   if (event.kind !== 'state') return;
   if (!admitState(event)) return;
   for (const observer of observers) observer.stateAdmitted?.(event);
-  hydratedThreads.add(event.threadId);
+  knownThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
   else liveStates.drop(event.threadId);
   // Closing runs on every client: a companion opened on the desktop survives
@@ -427,11 +453,23 @@ function selectionOrder(threadId: string, kind: string): { mount: string; select
   return { mount, select };
 }
 
-async function runBrowserAction(
+function runBrowserAction(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar; downloadId?: string },
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   const order = selectionOrder(threadId, action.kind);
+  if (SELECTING_KINDS.has(action.kind)) {
+    // A keyboard close made meanwhile waits for this selection's answer.
+    return trackOrdered(threadId, sendBrowserAction(threadId, action, order));
+  }
+  return sendBrowserAction(threadId, action, order);
+}
+
+async function sendBrowserAction(
+  threadId: string,
+  action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar; downloadId?: string },
+  order: { mount: string; select: number } | null,
+): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   noteBrowserActionStarted(threadId);
   noteBrowserActionError(threadId, '');
   try {
@@ -480,6 +518,30 @@ export async function openBrowserTab(
   return failure;
 }
 
+// The user's tab selections in flight per thread, with the keyboard closes
+// queued behind them (closeFocusedBrowserTab).
+const orderedActions = new Map<string, Set<Promise<unknown>>>();
+
+function trackOrdered<T>(threadId: string, action: Promise<T>): Promise<T> {
+  let set = orderedActions.get(threadId);
+  if (!set) {
+    set = new Set();
+    orderedActions.set(threadId, set);
+  }
+  set.add(action);
+  const settle = (): void => {
+    const current = orderedActions.get(threadId);
+    current?.delete(action);
+    if (current?.size === 0) orderedActions.delete(threadId);
+  };
+  action.then(settle, settle);
+  return action;
+}
+
+function activeTabOf(state: BrowserCompanionEvent | null): string {
+  return state?.activePageId || state?.pages?.[0]?.id || '';
+}
+
 /**
  * `pane.close` on a focused browser companion closes its ACTIVE TAB; the pane
  * goes only with its last tab (the zero-page state push closes the companion
@@ -488,12 +550,29 @@ export async function openBrowserTab(
  * so a pane-scoped handler missed the chord and the window-level `pane.close`
  * destroyed the whole pane instead. Returns false when nothing browser-shaped
  * holds focus, and the command falls through to its pane close.
+ *
+ * The active tab is the one the user's earlier actions leave active: with a
+ * selection (or an earlier keyboard close) still on its way, the close waits
+ * for their answers and then closes the tab active by then, so selecting B
+ * and pressing Mod+W at once closes B, not the A the last state named. A
+ * close from the tab menu names its own tab and does not wait.
  */
 export function closeFocusedBrowserTab(): boolean {
   const focused = focusedBrowser();
-  const pageId = focused?.state?.activePageId || focused?.state?.pages?.[0]?.id;
-  if (!focused || !pageId) return false;
-  void browserCompanionAct(focused.threadId, { kind: 'close', pageId });
+  if (!focused) return false;
+  const threadId = focused.threadId;
+  const before = [...(orderedActions.get(threadId) ?? [])];
+  if (before.length === 0) {
+    const pageId = activeTabOf(focused.state);
+    if (!pageId) return false;
+    void trackOrdered(threadId, browserCompanionAct(threadId, { kind: 'close', pageId }));
+    return true;
+  }
+  void trackOrdered(threadId, (async () => {
+    await Promise.allSettled(before);
+    const pageId = activeTabOf(liveStates.get(threadId));
+    if (pageId) await browserCompanionAct(threadId, { kind: 'close', pageId });
+  })());
   return true;
 }
 
@@ -511,34 +590,87 @@ export function focusedBrowser(): { threadId: string; state: BrowserCompanionEve
 }
 
 // The `browser:companion-state` channel is ephemeral (no replay), so a
-// freshly loaded UI cannot know a thread already has live pages. One
-// backend read per thread fills that in; every later change arrives as a
-// push. A push newer than the read's answer, whenever it landed, wins by
-// its number (`admitState`).
-export function hydrateBrowserCompanionState(threadId: string): void {
-  if (!threadId || hydratedThreads.has(threadId)) return;
+// freshly loaded UI cannot know a thread already has live pages, and a
+// reconnected one cannot know what changed while it was away. One backend
+// read per thread per connection fills that in; every later change arrives
+// as a push. A push newer than the read's answer, whenever it landed, wins
+// by its number (`admitState`).
+function readThreadState(threadId: string): Promise<void> {
   // The read rides `host`, and it runs on every pane thread mount, so a
   // session off the host would spend one refusal per thread open on a
   // surface it cannot use anyway: the pane is a NATIVE view this machine
   // paints, which no remote client renders, and no grant can ever open
-  // it. The scope read comes BEFORE the thread is marked hydrated: the
+  // it. The scope read comes BEFORE the thread is marked known: the
   // caller is an $effect, host presence lands with the bootstrap manifest
   // after the first pane mounts, and pinning the thread on the placeholder
-  // answer would leave it unhydrated for the life of the page.
-  if (!canUseNativeBrowser(threadId)) return;
-  hydratedThreads.add(threadId);
-  void (async () => {
-    // The async wrapper folds a SYNCHRONOUS throw from the binding into the
-    // same failure path as a rejection: callers run this from $effect bodies,
-    // where an escaping throw tears down the component's effects.
-    try {
-      applyBrowserCompanionState(await BrowserCompanionThreadState(threadId));
-    } catch {
-      // A failed read (backend restarting, thread gone) must not pin the
-      // thread as hydrated forever; the next mount retries.
-      hydratedThreads.delete(threadId);
-    }
-  })();
+  // answer would leave it unread for the life of the page.
+  if (knownThreads.has(threadId) || !canUseNativeBrowser(threadId)) return Promise.resolve();
+  const pending = stateReads.get(threadId);
+  if (pending) return pending;
+  // The async wrapper folds a SYNCHRONOUS throw from the binding into the
+  // same failure path as a rejection.
+  const read = (async () => {
+    applyBrowserCompanionState(await BrowserCompanionThreadState(threadId));
+    // Not admitted, the answer is older than a state already applied.
+    knownThreads.add(threadId);
+  })().finally(() => {
+    // A failed read (backend restarting, thread gone) leaves the thread
+    // unknown; the next mount or click reads again.
+    if (stateReads.get(threadId) === read) stateReads.delete(threadId);
+  });
+  stateReads.set(threadId, read);
+  return read;
+}
+
+/** Reads the thread's state unless this connection has seen it; never throws. */
+export function hydrateBrowserCompanionState(threadId: string): void {
+  if (!threadId) return;
+  // Callers run this from $effect bodies, where an escaping throw tears
+  // down the component's effects; a failure is retried by the next caller.
+  readThreadState(threadId).catch(() => {});
+}
+
+/**
+ * A connection edge of the home backend: pushes made while this window was
+ * away are lost, so no thread's state is known any more. The threads with a
+ * pane are read again now (the chat header's button reads their state);
+ * any other is read when a pane shows it.
+ */
+export function refreshBrowserCompanionStates(): void {
+  knownThreads.clear();
+  stateReads.clear();
+  for (const [, pane] of getAllPanes()) {
+    if (pane.threadId) hydrateBrowserCompanionState(pane.threadId);
+  }
+}
+
+/**
+ * The chat header's browser button. With tabs it shows or hides the pane;
+ * with none it opens the pane on a new tab with its address focused. Which
+ * it is comes from a state this connection has seen: an unknown one is read
+ * first, so a thread whose tabs opened while this window was away is shown
+ * rather than given another tab. A refusal, or a read that fails, reaches a
+ * toast, since a hidden pane has no banner.
+ */
+export async function toggleBrowserFromHeader(threadId: string): Promise<void> {
+  try {
+    await readThreadState(threadId);
+  } catch (err) {
+    addErrorToast(`The browser's tabs could not be read: ${errString(err)}`, err);
+    return;
+  }
+  const state = liveStates.get(threadId);
+  if (!state) {
+    // A refusal reaches a toast there (openBrowserTab).
+    await openBrowserTab(threadId, { focusAddress: true });
+    return;
+  }
+  const visible = state.visible === true;
+  const failure = await browserCompanionAct(threadId, {
+    kind: visible ? 'hide' : 'show',
+    pageId: visible ? '' : (state.activePageId ?? ''),
+  });
+  if (failure) addErrorToast(failure.error, failure.cause);
 }
 
 export function reconcileBrowserCompanionForPane(paneId: string, threadId: string): void {
@@ -553,12 +685,14 @@ export function resetBrowserCompanionForTest(): void {
   for (const observer of observers) observer.resetForTest?.();
   browserActionCounts.clear();
   selectionSeqs.clear();
+  orderedActions.clear();
   paneIds.clear();
   stateOrder.reset();
   liveStates.reset();
   findCleanupErrors.reset();
   resetBrowserAddressFocusForTest();
-  hydratedThreads.clear();
+  knownThreads.clear();
+  stateReads.clear();
   store.suspend();
   store.resetAll();
 }

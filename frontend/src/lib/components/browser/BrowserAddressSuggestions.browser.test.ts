@@ -1,7 +1,8 @@
 // The address suggestions in real Chromium with the real pane strip: the
 // list hangs under the address field, paints over the page area, and the
 // pane reports its native view hidden while the list is open and shown once
-// it closes. The engines hide the view from exactly these reports.
+// it closes, while the browser pane's commands stay live under it (the field
+// keeps the keyboard). The engines hide the view from exactly these reports.
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
@@ -15,7 +16,10 @@ vi.mock('../chat/ChatView.svelte', async () => ({
 import PaneHost from '../panes/PaneHost.svelte';
 // Loaded up front, so the companion's lazy import of it resolves at once.
 import './BrowserPane.svelte';
-import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { createPane, focusPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { clearCommandRegistry, isCommandEnabled } from '../../stores/commandRegistry.svelte';
+import { registerBrowserCommands } from '../../stores/browserCommands.svelte';
+import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
@@ -104,6 +108,15 @@ it('hangs under the address field and hides the native view while open', async (
     'https://recent.test/',
   ]);
   await waitFor(() => reports.at(-1)?.visible === false, 'the native view yields to the list');
+  // Reload and tab switching stay the browser's, so Mod+R never falls
+  // through to reloading the app.
+  clearCommandRegistry();
+  registerBrowserCommands();
+  focusPane('browser-main');
+  for (const id of ['browser.reload', 'browser.nextTab', 'browser.prevTab']) {
+    expect(isCommandEnabled(id, makeCommandContext(null, {})), id).toBe(true);
+  }
+  clearCommandRegistry();
 
   await userEvent.keyboard('{Escape}');
   await waitFor(() => list() === null, 'the list closed');

@@ -2420,6 +2420,36 @@ describe('pane navigation into a terminal pane', () => {
     expect(right.consumeTerminalFocusRequest()).toBe(true);
   });
 
+  // A side chat and an agent thread host a conversation under the companion
+  // pane's own id, with their own composer: typing after the move goes there.
+  for (const kind of ['agent-thread', 'side-chat'] as const) {
+    it(`carries the caret to the composer of the ${kind} pane focusRight lands on`, () => {
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      const hosted = createThreadPane({ paneId: `${kind}-main` });
+      hosted.replaceThread(makeThread({ id: 'hosted', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      registerPaneForTest(`${kind}-main`, hosted);
+      setPaneLayoutItemsForTest([
+        { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+        { id: `i-${kind}`, paneId: `${kind}-main`, kind, sourcePaneId: 'main', widthPx: 1 },
+      ]);
+      focusPane('main');
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      const hostedComposer = mountComposerForPane(`${kind}-main`);
+      try {
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).toBe(hostedComposer.textarea);
+      } finally {
+        leftComposer.cleanup();
+        hostedComposer.cleanup();
+      }
+    });
+  }
+
   it('does not latch terminal focus when focusRight lands on a chat pane', () => {
     const { left, right } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
     runCommand('pane.focusRight', makeCommandContext(left, {}));

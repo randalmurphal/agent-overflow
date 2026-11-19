@@ -1,5 +1,5 @@
 import { OpenExternalURL } from '../stores/bindings';
-import { canUseNativeBrowser, openBrowserTab } from '../stores/browserCompanion.svelte';
+import { canPresentNativeBrowser, openBrowserTab } from '../stores/browserCompanion.svelte';
 import { addErrorToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import type { BackendKey } from '../transport/backendKey';
@@ -227,10 +227,11 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // Mod+click opens the link in the thread's companion browser, which is a
   // NATIVE view of ONE host process — the thread's, since that is where
   // `browserCompanionAct` routes. So the gesture needs more than `host` in
-  // hand: with the thread on another machine, or in a browser tab on the
-  // host, it would mint a page this window has no way to show, and the
-  // person would see nothing happen. `canUseNativeBrowser` is the pane's
-  // one question, and off it the click falls back to the plain behaviour.
+  // hand: with the thread on another machine, in a browser tab on the
+  // host, with no browser engine or the browser turned off, or under
+  // compact, which shows no browser pane, it would mint a page nobody sees
+  // or nothing at all. `canPresentNativeBrowser` answers all of it, and
+  // off it the click falls back to the plain behaviour.
   // Middle-click is deliberately not in this branch: it means "somewhere
   // other than here" in every browser, and the system browser is that
   // somewhere.
@@ -238,7 +239,7 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // handler scheme (mailto:, vscode://) falls through to the OS opener.
   if (event.button === 0 && isModClick(event) && safeExternalURL(safeURL) !== null) {
     const threadId = threadIdForTarget(event.target);
-    if (threadId && canUseNativeBrowser(threadId)) {
+    if (threadId && canPresentNativeBrowser(threadId)) {
       void openInCompanionBrowser(threadId, safeURL);
       return;
     }

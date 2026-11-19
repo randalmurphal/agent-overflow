@@ -43,7 +43,7 @@ import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab, isReplayingBrowserPageChord } from './browserCompanion.svelte';
-import type { PaneLayoutItem } from './paneLayout.svelte';
+import { isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
@@ -308,12 +308,14 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
-  // Landing on a thread pane moves DOM focus with the logical focus: latch
-  // a terminal-mode thread's xterm, otherwise carry an editing caret to the
-  // pane's composer. Companion / take-control stops keep logical focus only —
-  // they have no composer, and yanking the caret out of one would surprise.
+  // Landing on a pane that hosts a conversation (a thread pane, a side chat,
+  // an agent thread) moves DOM focus with the logical focus: latch a
+  // terminal-mode thread's xterm, otherwise carry an editing caret to the
+  // pane's composer, so typing goes to the conversation now focused. Other
+  // companion and take-control stops keep logical focus only: they have no
+  // composer, and yanking the caret out of one would surprise.
   function followPaneNavDomFocus(item: PaneLayoutItem): void {
-    if (item.kind !== 'thread') return;
+    if (item.kind !== 'thread' && !isThreadHostingPaneKind(item.kind)) return;
     const nextPane = getPane(item.paneId);
     if (!nextPane) return;
     if (nextPane.thread?.mode === 'terminal') nextPane.requestTerminalFocus();

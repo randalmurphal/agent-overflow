@@ -96,12 +96,14 @@
 
   // The field follows the page, except while the user edits it. Another tab
   // becoming active replaces it even then: what was typed was for the tab
-  // that left.
+  // that left. Focus is read on every run, so leaving the field always puts
+  // the page's address back.
   let shownPageId = '';
   $effect(() => {
     const url = pageAddress();
     const pageId = activePage?.id ?? '';
-    if (pageId !== shownPageId || !addressFocused) address = url;
+    const editing = addressFocused;
+    if (pageId !== shownPageId || !editing) address = url;
     shownPageId = pageId;
   });
 

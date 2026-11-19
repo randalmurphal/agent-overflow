@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEnterKey } from '../../utils/localEnter';
   import type { Component } from 'svelte';
   import type { LucideProps } from '@lucide/svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -66,7 +67,7 @@
   onkeydown={(event) => {
     // A held key's repeat is not another press: it would toggle shut the
     // picker or menu the first press opened.
-    if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+    if (event.repeat && (isEnterKey(event) || event.key === ' ')) event.preventDefault();
   }}
 >
   {#if pending}

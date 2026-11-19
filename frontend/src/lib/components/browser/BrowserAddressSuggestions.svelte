@@ -18,7 +18,9 @@
   // The address field's suggestion list (browserAddressMatch.ts). The
   // field forwards its focus, input and keys here. The list opens on typing
   // and paints over the page, so it is a Popover, which registers in the
-  // airspace registry and makes the native view yield while it is open.
+  // airspace registry and makes the native view yield while it is open. It
+  // registers as a layer, not an overlay: the field keeps the keyboard, so
+  // the browser pane's commands (Mod+R, Ctrl+Tab) stay live under it.
   // Arrows move the highlight, Enter takes it, Escape closes the list (the
   // field's own Escape then reverts on the next press), and the typed text is
   // never changed by the list.
@@ -182,7 +184,7 @@
   const ICONS = { tab: AppWindow, 'dev-server': Server, recent: Clock } as const;
 </script>
 
-<Popover {anchor} open={shown} onClose={() => close()} placement="bottom-start" matchAnchorWidth>
+<Popover {anchor} open={shown} onClose={() => close()} placement="bottom-start" matchAnchorWidth takesKeyboard={false}>
   {#snippet children()}
     <!-- The rows keep focus in the field (mousedown), so the field's keys
          and its blur go on describing the list. -->

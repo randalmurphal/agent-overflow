@@ -145,6 +145,17 @@ describe('addressSuggestions', () => {
     const found = addressSuggestions('same', from);
     expect(found.map((s) => s.key)).toEqual(['tab:x']);
   });
+
+  it('offers the tab whose title matches when another tab at its address does not', () => {
+    const from = sources({
+      tabs: [
+        { id: 'a', url: 'https://example.test/active', title: 'Active page' },
+        { id: 'x', url: 'https://same.test/', title: 'Inbox' },
+        { id: 'y', url: 'https://same.test/', title: 'Calendar' },
+      ],
+    });
+    expect(addressSuggestions('calendar', from).map((s) => s.key)).toEqual(['tab:y']);
+  });
 });
 
 describe('threadDevServers', () => {
