@@ -370,8 +370,13 @@ func (h *Host) departPopup(page *hostPage, announce bool) bool {
 }
 
 // finishHeldDownloads records terminal snapshots before teardown cancels
-// the popup's running downloads.
+// the popup's running downloads. Each one's state is read first, so one
+// that ended with no state change raised is held as it ended; those still
+// running, or whose state cannot be read, end with PopupGoneReason.
 func (h *Host) finishHeldDownloads(page *hostPage) {
+	for _, d := range page.downloads {
+		h.downloadStateChanged(d)
+	}
 	for _, d := range page.downloads {
 		h.holdDownload(page, d.snapshot(DownloadInterrupted, PopupGoneReason))
 	}

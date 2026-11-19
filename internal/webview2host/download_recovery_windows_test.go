@@ -2,10 +2,15 @@
 
 package webview2host
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
-// What the launcher does with a download it could not read in full: an
-// address the runtime did not answer.
+// What the launcher does with a download it could not read in full or
+// whose state change never arrived: an address the runtime did not
+// answer, a state it did not answer at the cancel bound, and an end it
+// never raised before a popup goes.
 
 // A resume whose address cannot be read is never matched to a dropped
 // download whose address could not be read either: both read "", and a
@@ -70,4 +75,47 @@ func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 		t.Fatalf("a download still running at the next bound ended %+v", got)
 	}
 	r.done(t, op, stuck)
+}
+
+// An unannounced popup that goes with its opener reads each download's
+// state before it ends the rest as gone: one WebView2 finished without its
+// state change is reported completed, with its file, and only the one
+// still running is ended by the popup's going.
+func TestAPopupGoneWithItsOpenerReadsItsDownloadsFirst(t *testing.T) {
+	r := newPopupRig(t)
+	openerPage, opener := r.createPage("opener", "prof", false)
+	popup, controller := r.openPopup(opener, newFakeWindowArgs(popupURL))
+	popup.popup.held.findUnavailable = false
+	finished, running := newFakeOp(`C:\D\done.bin`), newFakeOp(`C:\D\running.bin`)
+	finished.refuseStateSub = true
+	popup.downloads = map[string]*hostDownload{}
+	for i, op := range []*fakeOp{finished, running} {
+		d := &hostDownload{id: fmt.Sprintf("dl-%d", i+1), page: popup, path: op.path, uri: newDownloadAddress(op.uri)}
+		op.refs++ // the reference DownloadStarting hands over
+		r.host.attachOperation(d, op.com())
+		popup.downloads[d.id] = d
+		r.host.report(popup, d.snapshot(DownloadRunning, ""))
+	}
+	finished.received, finished.st = 100, downloadStateCompleted
+	r.host.Apply(Directive{Op: OpClose, PageID: openerPage.id})
+	got := r.awaitReports(5)
+	sameReports(t, "an opener closing with a popup whose download finished unseen", kinds(t, got),
+		popup.id+":popup(opener,)", popup.id+":download(dl-1,completed)", popup.id+":download(dl-2,interrupted)", popup.id+":closed", "opener:closed")
+	if done, _ := ParseDownloadReport(got[1].detail); done.Path != `C:\D\done.bin` || done.Received != 100 {
+		t.Errorf("the finished download was reported %+v", done)
+	}
+	if gone, _ := ParseDownloadReport(got[2].detail); gone.Reason != PopupGoneReason {
+		t.Errorf("the running download ended with %q", gone.Reason)
+	}
+	for _, op := range []*fakeOp{finished, running} {
+		if op.refs != 1 || len(op.subs) != 0 {
+			t.Errorf("an operation kept %d references beyond WebView2's and %d subscriptions", op.refs-1, len(op.subs))
+		}
+	}
+	if finished.canceled != 0 || running.canceled != 1 {
+		t.Errorf("cancels: finished %d, running %d", finished.canceled, running.canceled)
+	}
+	closed(t, controller)
+	closed(t, opener)
+	r.done()
 }

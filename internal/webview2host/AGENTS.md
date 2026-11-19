@@ -104,8 +104,8 @@ including after the window request was answered. A `ReportPopup` the
 launcher could not deliver closes the popup (`ReportUndelivered`), and
 with it its unannounced descendants. A middle, Ctrl or Shift click opens
 a popup whose target names no opener. A departing popup answers any open
-request. A departing unannounced popup ends its held running downloads
-with `PopupGoneReason`. If its opener is a live unannounced popup, held
+request. A departing unannounced popup reads its downloads' states, then
+ends those still running with `PopupGoneReason`. If its opener is a live unannounced popup, held
 snapshots pass to that opener, up to `maxHeldPopupDownloads`.
 Otherwise an unannounced popup with downloads is announced and closed
 with its held reports, after any departing opener it needs. A popup with
