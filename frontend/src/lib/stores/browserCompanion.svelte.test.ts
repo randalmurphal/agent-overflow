@@ -411,6 +411,35 @@ describe('pane.close on a browser companion', () => {
     await vi.waitFor(() => expect(companionForSource('main', 'browser')).toBeNull());
   });
 
+  // The backend moved to another tab while this client was away: the
+  // reattach's answer is what the pane shows and what the chord closes.
+  it('closes the tab the reattached pane shows after the backend changed tabs', async () => {
+    const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-browser', activePageId: 'page-1', visible: true, seq: 1,
+      pages: [tab('page-1'), tab('page-2')],
+    });
+    setBindingMock('BrowserCompanionPaneAttach', async () => ({
+      id: 'mount-1',
+      state: {
+        kind: 'state', threadId: 'thread-browser', activePageId: 'page-2', visible: true, seq: 2,
+        pages: [tab('page-1'), tab('page-2')],
+      },
+    }));
+    setBindingMock('BrowserCompanionPaneDetach', async () => {});
+    const closes: string[] = [];
+    setBindingMock('BrowserCompanionDo', async (threadId: string, action: { kind: string; pageId: string }) => {
+      closes.push(action.pageId);
+      return { kind: 'state', threadId, activePageId: 'page-1', visible: true, seq: 3, pages: [tab('page-1')] };
+    });
+    const attachment = attachBrowserCompanion('thread-browser');
+    await vi.waitFor(() => expect(attachment.current?.state.activePageId).toBe('page-2'));
+    focusPane('browser-main');
+    expect(closeFocusedBrowserTab()).toBe(true);
+    await vi.waitFor(() => expect(closes).toEqual(['page-2']));
+    attachment.release();
+  });
+
   it('falls through when the focused pane is not a browser companion', () => {
     focusPane('main');
     expect(closeFocusedBrowserTab()).toBe(false);

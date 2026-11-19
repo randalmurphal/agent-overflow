@@ -155,9 +155,12 @@ const store = createEntityStore<BrowserCompanionView, void>({
     // now is a later attach's, so this one only detaches its own.
     if (signal.aborted) return () => BrowserCompanionPaneDetach(result.id);
     paneIds.set(key, result.id);
-    // A push that landed during the attach is newer than its answer.
-    const held = store.snapshot(key)?.state;
-    apply(emptyView(admitState(result.state) || !held ? result.state : held));
+    // The answer is a state like a push and lands as one, so the keyboard
+    // commands (liveStates), the companion's open and close and this pane
+    // all see the same revision. A newer state that already landed (a push
+    // during the attach) wins; the pane then shows the newest it has.
+    applyBrowserCompanionState(result.state);
+    if (!store.snapshot(key)) apply(emptyView(liveStates.get(key) ?? result.state));
     return async () => {
       if (paneIds.get(key) === result.id) paneIds.delete(key);
       selectionSeqs.delete(result.id);
