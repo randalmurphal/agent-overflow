@@ -427,7 +427,8 @@ behave as a desktop browser's:
   workspace file search. The chosen absolute path navigates the active tab,
   or a new tab when none can take an address, under the file
   authorization; a refusal is the pane's banner.
-- Downloads (`internal/browser/downloads_thread.go`). Once the thread has a
+- Downloads (`internal/browser/downloads_thread.go`, the row actions in
+  `downloads_actions.go`). Once the thread has a
   download the address row shows a downloads button, never moved into the
   More menu. While downloads run it shows how far they are in eighths, or a
   stepped spinner when no running download announced its size. It opens the
