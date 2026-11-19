@@ -79,7 +79,11 @@ func TestTheStagingPruneTakesOnlyEndedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	if locked, err := lockRun(lock); err != nil || !locked {
 		t.Fatalf("lock the live run: %v, %v", locked, err)
 	}

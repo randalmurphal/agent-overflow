@@ -146,7 +146,6 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			if event.PageGone {
 				entry.Error = event.Error
 			}
-			removePartial = true
 		} else {
 			entry.State, entry.Error = downloadStateFailed, event.Error
 			if entry.Error == "" {
