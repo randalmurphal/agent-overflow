@@ -39,6 +39,13 @@ export interface LexerOptions {
   /** Log an infinite-loop bailout instead of throwing it. */
   silent?: boolean;
 
+  /**
+   * Resolves a link or image destination or title as written, inline and in
+   * a reference definition. Replaces the default, which resolves backslash
+   * escapes only.
+   */
+  linkText?: (written: string) => string;
+
   /** Registered extension tokenizers, pre-sorted by level. */
   extensions?: null | {
     inline?: TokenizerExtensionFunction[];

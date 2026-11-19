@@ -404,7 +404,7 @@ describe('<MarkdownImage>', () => {
     try {
       const { container } = render(MarkdownImage, {
         target: link,
-        props: { source: fake.source, alt: 'diagram' },
+        props: { source: fake.source, alt: 'diagram', linked: true },
       });
       // The inline link has no width of its own: the paragraph bounds it.
       __reportImageBoxForTest(700, paragraph);

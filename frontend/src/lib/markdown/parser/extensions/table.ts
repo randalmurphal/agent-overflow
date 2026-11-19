@@ -46,7 +46,12 @@ export interface TFoot {
     type: 'tfoot';
     tokens: TRow[];
 }
-export type TableSection = THead | TBody | TFoot;
+/** A table's caption, first among its sections (jsonTable.ts builds one). */
+export interface TCaption {
+    type: 'caption';
+    tokens: Token[];
+}
+export type TableSection = TCaption | THead | TBody | TFoot;
 export interface TableToken {
     type: 'table';
     tokens: TableSection[];
@@ -80,12 +85,28 @@ export const getTableCell = (
         `${align ? ` align=${align}` : ''}>`;
     return `${tag + text}</${type}>\n`;
 };
+/** The start of the last backtick run of each length in `src`. */
+function lastBacktickRuns(src: string): Map<number, number> {
+    const last = new Map<number, number>();
+    for (let i = src.indexOf('`'); i !== -1; i = src.indexOf('`', i)) {
+        let run = 1;
+        while (src[i + run] === '`')
+            run++;
+        last.set(run, i);
+        i += run;
+    }
+    return last;
+}
+// A pipe inside a code span stays in its cell. A backtick run opens a code
+// span only when a run of the same length closes it later in the row, as
+// CommonMark reads one; an unmatched run (a lone backtick cell) is text.
 function splitRow(src: string): string[] {
     const out: string[] = [];
     let buf = '';
     let esc = false;
     let inCode = false;
     let fence = 0;
+    let runs: Map<number, number> | undefined;
     for (let i = 0; i < src.length; i++) {
         const ch = src[i];
         if (esc) {
@@ -103,10 +124,13 @@ function splitRow(src: string): string[] {
             while (i + run < src.length && src[i + run] === '`')
                 run++;
             if (!inCode) {
-                inCode = true;
-                fence = run;
+                runs ??= lastBacktickRuns(src);
+                if ((runs.get(run) ?? -1) > i) {
+                    inCode = true;
+                    fence = run;
+                }
             }
-            else if (run >= fence) {
+            else if (run === fence) {
                 inCode = false;
                 fence = 0;
             }
@@ -362,6 +386,11 @@ function splitTableRows(
     }
     return processed;
 }
+// The token list of every table cell's inline run, so an inline extension
+// can tell a run that is a whole cell (`isTableCellRun`).
+const tableCellRuns = new WeakSet<Token[]>();
+/** Whether `tokens` is the inline token list of a table cell. */
+export const isTableCellRun = (tokens: Token[]): boolean => tableCellRuns.has(tokens);
 function tableRowTokens<Header extends boolean>(
     rows: WorkingRow[],
     alignment: TableAlignment[],
@@ -379,9 +408,11 @@ function tableRowTokens<Header extends boolean>(
             const cell = header
                 ? workingCellToTH(working, cellAlignment)
                 : workingCellToTD(working, cellAlignment);
+            const run: Token[] = cell.tokens ?? [];
+            tableCellRuns.add(run);
             cell.tokens = eager
-                ? lexer.inlineTokens(cell.text, cell.tokens)
-                : lexer.inline(cell.text, cell.tokens);
+                ? lexer.inlineTokens(cell.text, run)
+                : lexer.inline(cell.text, run);
             cells[cellIndex] = cell;
         }
         result[rowIndex] = { type: 'tr', tokens: cells };

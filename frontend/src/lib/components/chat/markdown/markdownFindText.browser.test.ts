@@ -51,6 +51,7 @@ const CONTAINERS: Record<string, (inner: string) => string> = {
   'footnote definition': (inner) => `Ref[^n].\n\n${indent(inner, '    ', '[^n]: ')}`,
   'alignment block': (inner) => `[center]\n${inner}\n[/center]`,
   mdx: (inner) => `<Note kind="x">\n${inner}\n</Note>`,
+  'html wrapper': (inner) => `<table><tr><td>\n\n${inner}\n\n</td></tr></table>`,
 };
 const INNER: Record<string, string> = {
   details: '<details><summary>inner summary</summary>\n\ninner needle words\n\n</details>',
@@ -169,6 +170,52 @@ describe('markdownFindText', () => {
     expect(mismatches(source, dom, projected)).toEqual([]);
   });
 
+  it.each([
+    ['GitHub', GITHUB_FORGE],
+    ['GitLab', FORGE],
+  ] as const)('counts a soft line break and an entity reference as the %s comment shows them', async (_name, forge) => {
+    const source = 'line one\nline two &amp; &copy; &#35;\n\n> quoted one\n> quoted two\n\n- item one\n  item more';
+    const root = await mounted(source, forge);
+    expect(root.querySelectorAll('br').length > 0).toBe(forge === GITHUB_FORGE);
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: forge });
+    expect(mismatches(source, dom, projected.runs), JSON.stringify({ dom, projected })).toEqual([]);
+    const text = (run: string) => foldFindText(run).replace(/\s+/g, ' ').trim();
+    expect(projected.runs.map(text).filter(Boolean)).toEqual(dom.map(text).filter(Boolean));
+  });
+
+  // A line break puts what follows on another line, so no match spans it.
+  // Fixed counts, not the scanner and the projection agreeing.
+  it.each([
+    ['a GitHub soft break', 'alpha\nbeta', GITHUB_FORGE],
+    ['a hard break on GitHub', 'alpha  \nbeta', GITHUB_FORGE],
+    ['a hard break on GitLab', 'alpha  \nbeta', FORGE],
+    ['a backslash break', 'alpha\\\nbeta', FORGE],
+    ['an inline <br>', 'alpha<br>beta', FORGE],
+    ['a <br> in an html block', '<p>alpha<br>beta</p>', FORGE],
+    ['a <br> in an html region', '<div>\n<p>alpha<br>beta</p>\n\nafter\n\n</div>', FORGE],
+  ] as const)('finds no match across %s', async (_name, source, forge) => {
+    const root = await mounted(source, forge);
+    expect(root.querySelector('br'), 'renders a line break').not.toBeNull();
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: forge }).runs;
+    for (const [query, want] of [['alphabeta', 0], ['alpha beta', 0], ['alpha', 1], ['beta', 1]] as const) {
+      expect(count(dom, query), `${query} painted`).toBe(want);
+      expect(count(projected, query), `${query} counted`).toBe(want);
+    }
+  });
+
+  it('counts an html region island once, whatever the HTML around it spells', async () => {
+    // `&#1;0&#1;` decodes to the control characters a text marker for
+    // island 0 would be.
+    const source = '<div>\n<p>&#1;0&#1;</p>\n\nneedle paragraph\n\n</div>';
+    const root = await mounted(source);
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }).runs;
+    expect(count(dom, 'needle'), 'painted').toBe(1);
+    expect(count(projected, 'needle'), 'counted').toBe(1);
+  });
+
   it.each(NESTED)('finds every <details> and counts what shows, as written and with each toggled: %s', async (_name, source) => {
     const root = await mounted(source);
     const elements = [...root.querySelectorAll('details')];
@@ -272,6 +319,18 @@ describe('markdownFindText under the chat options', () => {
     const root = await chatMounted(source);
     const projected = markdownFindText(source, { embeddedHtml: false }).runs;
     expect(projected.map(text).filter(Boolean), raw).toEqual(findTextSegments(root).map(text).filter(Boolean));
+  });
+
+  it('finds no match across a hard line break', async () => {
+    const source = 'line one  \nline two\\\nline three';
+    const root = await chatMounted(source);
+    expect(root.querySelectorAll('br')).toHaveLength(2);
+    const dom = findTextSegments(root);
+    const projected = markdownFindText(source, { embeddedHtml: false }).runs;
+    for (const [query, want] of [['oneline', 0], ['twoline', 0], ['line', 3], ['line one', 1]] as const) {
+      expect(count(dom, query), `${query} painted`).toBe(want);
+      expect(count(projected, query), `${query} counted`).toBe(want);
+    }
   });
 
   it('counts none of a link target, a diagram, math or a blocked link tag, and the text markup joins', async () => {

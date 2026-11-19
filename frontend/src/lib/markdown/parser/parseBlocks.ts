@@ -15,7 +15,8 @@ import {
     blockExtensionsOf,
     getBlockOptions,
     isKeptType,
-    sameExtensionSequence
+    sameExtensionSequence,
+    usesChatGrammar
 } from './lexer';
 import type { Extension } from './lexer';
 import type { Alignment } from './extensions/align';
@@ -131,6 +132,10 @@ const parseBlocksCached = (
         }
     }
     const blockExtensions = blockExtensionsOf(extensions);
+    // The marker that turns alignment off is a block extension, so a change
+    // here changes `extKey` too and the blocks are parsed afresh.
+    if (cache)
+        cache.aligns = usesChatGrammar(extensions);
     const extKey = cache && sameExtensionSequence(cache.extKey, blockExtensions)
         ? cache.extKey
         : blockExtensions;
@@ -144,7 +149,9 @@ const parseBlocksCached = (
         cache.lastPath = 'unchanged';
         return cache.blocks;
     }
-    const appendDelta = cache && cache.extKey === extKey
+    // No sealed boundary holds while an extension that reopens sealed blocks
+    // takes part: every update is a full parse.
+    const appendDelta = cache && cache.extKey === extKey && !blockExtensions?.some(({ reopensSealedBlocks }) => reopensSealedBlocks)
         ? cache.source.update(markdown, provenAppend)
         : null;
     if (cache && cache.extKey !== extKey) cache.source.reset(markdown);

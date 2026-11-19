@@ -27,6 +27,7 @@ const HEX = '0123456789abcdef0123456789abcdef';
 const UUID = '4f0b0b1e-1111-2222-3333-444455556666';
 const GITHUB_ASSET = `https://github.com/user-attachments/assets/${UUID}`;
 const GITLAB_UPLOAD = `/uploads/${HEX}/a.png`;
+const PRIVATE_ASSET = 'https://private-user-images.githubusercontent.com/123/asset.png?jwt=example';
 
 const GITHUB: ForgeAttachmentSource = {
   pr: { forge: 'github', host: 'github.com', namespace: 'octo', repo: 'widget', number: 7 },
@@ -103,6 +104,48 @@ describe.each(paths)('forge media inside an html block, on %s', (_name, streamin
     expect(container.querySelector(`img[src="${GITHUB_ASSET}"]`)).toBeNull();
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(rpc.mock.calls[0]?.[1]).toBe(GITHUB_ASSET);
+  });
+
+  // GitHub's uploader writes `<img width height src>`, and an author narrows
+  // a screenshot by editing the width. Three positions, three claim paths:
+  // alone on its line (the block extension), in a sentence (the inline
+  // extension) and inside a wrapper (the sanitizer and EmbeddedHtmlHost).
+  it.each([
+    ['alone on its line', `<img width="300" alt="a shot" src="${GITHUB_ASSET}">`],
+    ['in a sentence', `See <img width="300" alt="a shot" src="${GITHUB_ASSET}"> here.`],
+    ['inside a wrapper', `<p align="center"><img width="300" alt="a shot" src="${GITHUB_ASSET}"></p>`],
+    ['as a picture fallback', `See <picture><source srcset="https://example.com/dark.png"><img width="300" alt="a shot" src="${GITHUB_ASSET}"></picture> here.`],
+  ])('paints a claimed image at its authored width, %s', async (_position, source) => {
+    const rpc = stageAttachment();
+    const { container } = render(ForgeAttachmentChatHarness, { props: { source, forgeSource: GITHUB, streaming } });
+
+    await waitFor(() => {
+      measure();
+      expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull();
+    });
+    const image = container.querySelector<HTMLImageElement>(`${root} img[src^="blob:"]`)!;
+    expect(image.style.width).toBe('300px');
+    expect(image.style.height).toBe('');
+    expect(container.querySelector(`img[src="${GITHUB_ASSET}"]`)).toBeNull();
+    expect(container.textContent).not.toContain('picture');
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  // GitLab's rich text editor writes `{width=…}` after an image it resized.
+  it('paints a GitLab upload at the width of its attribute list, which shows nothing', async () => {
+    const rpc = stageAttachment();
+    const { container } = render(ForgeAttachmentChatHarness, {
+      props: { source: `See ![a shot](${GITLAB_UPLOAD}){width=300} here.`, forgeSource: GITLAB, streaming },
+    });
+
+    await waitFor(() => {
+      measure();
+      expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull();
+    });
+    const image = container.querySelector<HTMLImageElement>(`${root} img[src^="blob:"]`)!;
+    expect(image.style.width).toBe('300px');
+    expect(container.textContent).not.toContain('{');
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 
   it('renders a GitLab upload inside a table cell', async () => {
@@ -234,6 +277,9 @@ describe.each(paths)('the image menu on forge media, on %s', (_name, streaming, 
   it.each([
     ['a markdown image', `![a shot](${GITHUB_ASSET})`],
     ['an image inside an HTML wrapper', `<p align="center"><img src="${GITHUB_ASSET}" alt="a shot"></p>`],
+    ['a linked <picture>', `[<picture><img src="${PRIVATE_ASSET}"></picture>](https://example.com)`],
+    ['a linked <img>', `[<img src="${PRIVATE_ASSET}" alt="a shot">](https://example.com)`],
+    ['a linked markdown image', `[![a shot](${PRIVATE_ASSET})](https://example.com)`],
   ])('opens on %s', async (_shape, source) => {
     stageAttachment();
     render(ImageMenuHost);
@@ -244,8 +290,21 @@ describe.each(paths)('the image menu on forge media, on %s', (_name, streaming, 
       measure();
       expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull();
     });
+    // The page never points an element at the forge URL it cannot read.
+    expect(container.querySelector(`img[src*="githubusercontent"], img[src*="user-attachments"]`)).toBeNull();
     await rightClick(container.querySelector(`${root} img[src^="blob:"]`)!);
     expect(imageMenu()).not.toBeNull();
+  });
+
+  it('keeps a linked image inside its link', async () => {
+    stageAttachment();
+    const { container } = render(ForgeAttachmentChatHarness, {
+      props: { source: `[<picture><img src="${PRIVATE_ASSET}"></picture>](https://example.com)`, forgeSource: GITHUB, streaming },
+    });
+    await waitFor(() => {
+      measure();
+      expect(container.querySelector(`${root} a[href^="https://example.com"] img[src^="blob:"]`)).not.toBeNull();
+    });
   });
 
   it('does not open on a video', async () => {

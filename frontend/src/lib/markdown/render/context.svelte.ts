@@ -4,7 +4,8 @@ import type { Component, Snippet } from 'svelte';
 import type { Theme } from './theme';
 import type { MermaidConfig } from 'mermaid';
 import type { KatexOptions } from 'katex';
-import type { Alignment, ProvenAppend } from '../parser/index';
+import type { Alignment, DocumentContext, ProvenAppend } from '../parser/index';
+import type { ColorScheme } from '../parser/extensions/themedImages';
 // The class below assigns these props at runtime (`bind`); the interface types them.
 // eslint-disable-next-line typescript/no-unsafe-declaration-merging
 export interface StreamdownContext extends Omit<StreamdownProps, keyof Snippets | 'class' | 'theme'> {
@@ -160,6 +161,11 @@ export type StreamdownProps = {
     isolatedVolatileTail?: boolean;
     allowedLinkPrefixes?: string[];
     allowedImagePrefixes?: string[];
+    /** The reader's color scheme, which a theme-specific image answers
+     *  (parser/extensions/themedImages.ts). Read by the image element alone,
+     *  so a change repaints those images and rebuilds no block. Unset:
+     *  every image paints its own src. */
+    colorScheme?: ColorScheme;
     theme: Theme;
     mermaidConfig?: MermaidConfig;
     katexConfig?: KatexOptions | ((inline: boolean) => KatexOptions);
@@ -182,6 +188,9 @@ export type StreamdownProps = {
         important?: Snippet;
     };
     extensions?: Extension[];
+    /** What the whole document defines, for each block's lex
+     * (parser/documentContext.ts); none when null or absent. */
+    document?: DocumentContext | null;
     children?: Snippet<[{
         streamdown: StreamdownContext;
         token: GenericToken;

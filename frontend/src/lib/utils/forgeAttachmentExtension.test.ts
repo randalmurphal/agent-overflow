@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EMBEDDED_HTML_EXTENSIONS, Lexer, type Token } from '../markdown';
+import { EMBEDDED_HTML_EXTENSIONS, Lexer, markedImageAttributes, type Token } from '../markdown';
 import { buildForgeAttachmentExtension } from './forgeAttachmentExtension';
 import { parseForgeAttachmentHref } from './forgeAttachments';
 import { buildPathLinkExtension } from './pathLinkExtension';
@@ -99,6 +99,34 @@ describe('markdown images and links', () => {
         href: `/uploads/${HEX}/shot.png`,
       },
     ]);
+  });
+
+  // The list is markedImageAttributes', which ChatMarkdown adds after the
+  // claims on a GitLab surface: it sizes whatever claimed the image.
+  it.each([
+    ['a markdown image', `![a shot](/uploads/${HEX}/shot.png)`],
+    ['an embedded <img>', `<img src="/uploads/${HEX}/shot.png" alt="a shot">`],
+    ['a video', `<video src="/uploads/${HEX}/clip.mp4"></video>`],
+  ])('is sized by a gitlab attribute list after %s', (_name, embed) => {
+    const source = `See ${embed}{width=30 height=20px} after`;
+    const tokens = lex(source, [...fullStack(GITLAB_MR, GITLAB_WEB), markedImageAttributes as unknown as Ext]);
+    const inline = (tokens[0] as { tokens: Array<{ type: string; raw: string; href: string; width?: string; height?: string }> }).tokens;
+    expect(inline.map((t) => [t.type, t.raw])).toEqual([
+      ['text', 'See '],
+      ['image', embed],
+      ['space', '{width=30 height=20px}'],
+      ['text', ' after'],
+    ]);
+    expect(parseForgeAttachmentHref(inline[1].href)).not.toBeNull();
+    expect([inline[1].width, inline[1].height]).toEqual(['30', '20']);
+  });
+
+  it('reads no attribute list on a github pull request', () => {
+    const asset = 'https://github.com/user-attachments/assets/abc';
+    const tokens = lex(`![a](${asset}){width=30}`, fullStack(GITHUB_PR));
+    const inline = (tokens[0] as { tokens: Array<{ type: string; raw: string; width?: string }> }).tokens;
+    expect(inline.map((t) => [t.type, t.raw])).toEqual([['image', `![a](${asset})`], ['text', '{width=30}']]);
+    expect(inline[0].width).toBeUndefined();
   });
 
   it('falls back to the attachment name when the image has no alt', () => {
@@ -248,5 +276,149 @@ describe('embedded HTML', () => {
   it('leaves an <a> to the embedded-HTML extension', () => {
     const source = `x <a href="/uploads/${HEX}/report.pdf">report</a>`;
     expect(claimed(lex(source, fullStack(GITLAB_MR)))).toEqual([]);
+  });
+});
+
+// A theme-specific image: each forge-shaped src of a <picture> is claimed,
+// and a claim keeps the scheme its authored fragment shows it in.
+describe('theme-specific images', () => {
+  const UUID_DARK = 'https://github.com/user-attachments/assets/0d0d0d0d-1111-2222-3333-444455556666';
+  const UUID_LIGHT = 'https://github.com/user-attachments/assets/1e1e1e1e-1111-2222-3333-444455556666';
+  const image = (tokens: readonly Token[]) => {
+    const found: Record<string, unknown>[] = [];
+    const walk = (list: readonly Token[]) => {
+      for (const token of list as unknown as { type: string; tokens?: Token[] }[]) {
+        if (token.type === 'image') found.push(token as unknown as Record<string, unknown>);
+        if (token.tokens) walk(token.tokens);
+      }
+    };
+    walk(tokens);
+    return found;
+  };
+  const sourceHref = (value: unknown) => parseForgeAttachmentHref(String(value))?.href ?? value;
+
+  it('claims a picture whose source alone is forge-hosted, rewriting only that source', () => {
+    const source =
+      `x <picture><source media="(prefers-color-scheme: dark)" srcset="${UUID_DARK}">` +
+      '<source media="(prefers-color-scheme: light)" srcset="https://example.invalid/light.png">' +
+      '<img alt="logo" src="https://example.invalid/default.png" width="40" align="right"></picture>';
+    const [token] = image(lex(source, fullStack(GITHUB_PR)));
+    const sources = token.sources as Record<string, string>;
+    expect(token.href).toBe('https://example.invalid/default.png');
+    expect(sourceHref(sources.dark)).toBe(UUID_DARK);
+    expect(sources.dark).not.toBe(UUID_DARK);
+    expect(sources.light).toBe('https://example.invalid/light.png');
+    expect(token).toMatchObject({ width: '40', align: 'right', text: 'logo' });
+  });
+
+  it('claims both the fallback and a source the forge serves', () => {
+    const source =
+      `<picture><source media="(prefers-color-scheme: light)" srcset="${UUID_LIGHT}">` +
+      `<img alt="logo" src="${UUID_DARK}"></picture>\n`;
+    const [token] = image(lex(source, fullStack(GITHUB_PR)));
+    expect(sourceHref(token.href)).toBe(UUID_DARK);
+    expect(sourceHref((token.sources as Record<string, string>).light)).toBe(UUID_LIGHT);
+  });
+
+  it('leaves a picture nothing of which the forge serves to the embedded-HTML extension', () => {
+    const source =
+      'x <picture><source media="(prefers-color-scheme: dark)" srcset="https://example.invalid/dark.png">' +
+      '<img src="https://example.invalid/default.png"></picture>';
+    expect(claimed(lex(source, fullStack(GITHUB_PR)))).toEqual([]);
+  });
+
+  it.each([
+    ['a Markdown image', `![logo](${UUID_DARK}#gh-dark-mode-only)`],
+    ['an <img>', `x <img alt="logo" src="${UUID_DARK}#gh-dark-mode-only">`],
+  ])('keeps the scheme of %s claimed with a #gh-*-mode-only fragment', (_name, source) => {
+    const [token] = image(lex(source, fullStack(GITHUB_PR)));
+    expect(sourceHref(token.href)).toBe(`${UUID_DARK}#gh-dark-mode-only`);
+    expect(token.shownIn).toBe('dark');
+  });
+
+  it('keeps a Markdown label for the plain alt', () => {
+    const [token] = image(lex(`![a *b*](${UUID_DARK})`, fullStack(GITHUB_PR)));
+    expect(token.text).toBe('a *b*');
+    expect((token.tokens as Token[]).map((t) => t.type)).toEqual(['text', 'em']);
+  });
+});
+
+// Link text is lexed with `inLink` set. A picture there is the link's
+// content, as a linked badge or screenshot is, so it is claimed and loaded
+// with the user's login; nothing else is.
+describe('inside link text', () => {
+  const PRIVATE = 'https://private-user-images.githubusercontent.com/123/asset.png?jwt=example';
+  const ASSET = 'https://github.com/user-attachments/assets/4f0b0b1e-1111-2222-3333-444455556666';
+
+  // Each link that is not itself a claim, with the claims inside it.
+  function linked(tokens: readonly Token[]): { link: string; claims: Claimed[] }[] {
+    const out: { link: string; claims: Claimed[] }[] = [];
+    const walk = (list: readonly Token[]): void => {
+      for (const token of list) {
+        const t = token as { type: string; href?: string; tokens?: Token[] };
+        if (t.type === 'link' && parseForgeAttachmentHref(t.href ?? '') === null) {
+          out.push({ link: t.href ?? '', claims: claimed(t.tokens ?? []) });
+        } else if (Array.isArray(t.tokens)) walk(t.tokens);
+      }
+    };
+    walk(tokens);
+    return out;
+  }
+
+  it.each([
+    ['a <picture>', `<picture><img src="${PRIVATE}"></picture>`],
+    ['an <img>', `<img src="${PRIVATE}" alt="shot">`],
+    ['a markdown image', `![shot](${PRIVATE})`],
+  ])('claims %s', (_name, inner) => {
+    const links = linked(lex(`[${inner}](https://example.com)`, fullStack(GITHUB_PR)));
+    expect(links.map((each) => each.link)).toEqual(['https://example.com']);
+    expect(links[0].claims.map((each) => [each.type, each.href, each.raw])).toEqual([['image', PRIVATE, inner]]);
+  });
+
+  it('claims a gitlab upload image', () => {
+    const inner = `![shot](/uploads/${HEX}/shot.png)`;
+    const [link] = linked(lex(`[${inner}](https://example.com)`, fullStack(GITLAB_MR)));
+    expect(link.claims.map((each) => each.raw)).toEqual([inner]);
+  });
+
+  // The host renders no control inside the author's link (R1), so the
+  // claim says where it is; a claim outside a link says nothing.
+  it.each([
+    ['a <picture>', `<picture><img src="${PRIVATE}"></picture>`],
+    ['an <img>', `<img src="${PRIVATE}" alt="shot">`],
+    ['a markdown image', `![shot](${PRIVATE})`],
+    ['an <a href> around an <img>', `<a href="https://example.com/x"><img src="${PRIVATE}"></a>`],
+  ])('marks %s claimed in link text as inLink', (_name, inner) => {
+    const source = inner.startsWith('<a ') ? `see ${inner} here` : `[${inner}](https://example.com)`;
+    const images = inLinkOf(lex(source, fullStack(GITHUB_PR)));
+    expect(images).toEqual([true]);
+    expect(inLinkOf(lex(`see ${inner.startsWith('<a ') ? `<img src="${PRIVATE}">` : inner} here`, fullStack(GITHUB_PR)))).toEqual([false]);
+    expect(inLinkOf(lex(`${ASSET}`, fullStack(GITHUB_PR)))).toEqual([false]);
+  });
+
+  function inLinkOf(tokens: readonly Token[]): boolean[] {
+    const out: boolean[] = [];
+    const walk = (list: readonly Token[]): void => {
+      for (const token of list) {
+        const t = token as { type: string; href?: string; inLink?: boolean; tokens?: Token[] };
+        if (t.type === 'image' && parseForgeAttachmentHref(t.href ?? '')) out.push(t.inLink === true);
+        if (Array.isArray(t.tokens)) walk(t.tokens);
+      }
+    };
+    walk(tokens);
+    return out;
+  }
+
+  it('claims no player or bare URL', () => {
+    expect(claimed(lex(`[<video src="${ASSET}"></video>](https://example.com)`, fullStack(GITHUB_PR)))).toEqual([]);
+    expect(claimed(lex(`[${ASSET}](https://example.com)`, fullStack(GITHUB_PR)))).toEqual([]);
+  });
+
+  it('stays in the link after an image it claimed', () => {
+    // The link tokenizer a claim delegates to clears `inLink`; a player
+    // after the image is still inside the link text.
+    const source = `[![a](/uploads/${HEX}/a.png) and <video src="/uploads/${HEX}/clip.mp4"></video>](https://example.com)`;
+    const [link] = linked(lex(source, fullStack(GITLAB_MR)));
+    expect(link.claims.map((each) => each.href)).toEqual([`/uploads/${HEX}/a.png`]);
   });
 });

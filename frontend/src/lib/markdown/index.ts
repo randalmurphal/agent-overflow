@@ -46,15 +46,55 @@ export { EMBEDDED_HTML_EXTENSIONS } from './parser/extensions/embeddedHtml';
 // `<img>` before this set sees it can reuse the same attribute parsing
 // rather than re-implementing it (utils/forgeAttachmentExtension.ts).
 export { markedEmbeddedInlineHtml } from './parser/extensions/embeddedHtml';
+export type { EmbeddedImageToken } from './parser/extensions/embeddedHtml';
+// GitHub's soft-break-as-<br> rendering, for a surface showing GitHub content.
+export { markedSoftBreak } from './parser/extensions/softBreak';
+// GitLab's image attribute list (`{width=… height=…}`), for a surface
+// showing GitLab content. It sizes the image token before it, whichever
+// extension claimed that image.
+export { markedImageAttributes } from './parser/extensions/imageAttributes';
+// A forge surface leaves agent chat's own grammar out (`[center]`,
+// citations, MDX, `~sub~`/`^sup^`, `:term:` lists, chat's inline math).
+export { markedForgeGrammar, usesChatGrammar } from './parser/index';
+// Forge syntax: GFM's `~text~` strikethrough; color chips in code spans
+// (GitHub's forms, then GitLab's CSS forms); and GitLab's inline diff,
+// `>>>` quotes, front matter, `[~]` and bare task boxes, task boxes in
+// table cells, description lists and `json:table` fences.
+export { markedStrikethrough } from './parser/extensions/strikethrough';
+export { markedColorChips, markedCssColorChips } from './parser/extensions/colorChips';
+export { markedInlineDiff } from './parser/extensions/inlineDiff';
+export { markedMultilineBlockquote } from './parser/extensions/multilineBlockquote';
+export { markedFrontMatter } from './parser/extensions/frontMatter';
+export { markedInapplicableTaskList } from './parser/extensions/list';
+// Each forge's list numbering, alerts and math: CommonMark list numbers,
+// GitHub's top-level alerts and GitLab's titled ones, `$`…`$` and `math`
+// fences as the forges delimit them.
+export { markedCommonmarkList } from './parser/extensions/list';
+export { markedGithubAlert, markedGitlabAlert } from './parser/extensions/alert';
+export { markedGithubMath, markedGitlabMath } from './parser/extensions/math';
+export { markedTableTaskCells } from './parser/extensions/tableTaskCells';
+export { markedDescriptionLists } from './parser/extensions/descriptionLists';
+export { markedJsonTable } from './parser/extensions/jsonTable';
+// GitLab's playable images (`![clip](demo.mp4)` is a player), for a surface
+// showing GitLab content.
+export { markedMediaImages } from './parser/extensions/mediaImages';
+export type { ImageMedia, MediaImageToken } from './parser/extensions/mediaImages';
+// GitHub's theme-specific images: the renderer's and the sanitizer's
+// `colorScheme`, and the `#gh-*-mode-only` reading a host claim keeps.
+export { colorSchemeOnly } from './parser/extensions/themedImages';
+export type { ColorScheme, ColorSchemeSources } from './parser/extensions/themedImages';
 export {
   MEDIA_CLAIM_ATTR,
   MEDIA_KIND_ATTR,
+  parseHtmlRegion,
   sanitizeEmbeddedHtmlToken,
 } from './render/htmlSanitize';
 export type {
   ClaimEmbeddedMedia,
   SanitizeEmbeddedHtmlOptions,
 } from './render/htmlSanitize';
+export { imageSizeOf } from './render/imageSize';
+export type { ImageSize } from './render/imageSize';
 export { acquireDocumentInteraction } from './render/documentInteraction';
 export type { DocumentInteraction } from './render/documentInteraction';
 export { attachStreamdownLiteralHost, streamdownLiteralHostOf } from './render/literalHost';
@@ -66,3 +106,8 @@ export { DENIED_LINK_SCHEMES, isOpenableScheme, urlScheme } from './render/eleme
 // The renderers' own decisions about what text a token shows, for find's
 // projection of rendered markdown (chat/markdown/markdownFindText.ts).
 export { linkTagText, tableCellRenders } from './render/elements/url';
+// What a whole document defines, for each block's lex: reference
+// definitions everywhere, and a forge's footnotes, heading anchors and
+// table of contents (parser/documentContext.ts).
+export { createDocumentContextCache, documentContextOf, mayNeedDocumentContext } from './parser/index';
+export type { DocumentContext, DocumentContextCache, DocumentForge } from './parser/index';

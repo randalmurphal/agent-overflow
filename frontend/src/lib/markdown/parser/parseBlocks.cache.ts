@@ -26,6 +26,7 @@ export const createParseBlocksCache = (observeLex?: ParseBlocksLexObserver): Par
     content: '',
     source: new ParseBlockSource(),
     extKey: null,
+    aligns: true,
     alignStart: null,
     alignAfter: [],
     raws: [],
@@ -64,7 +65,7 @@ export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: 
     const rawIndex = cache.raws.length;
     cache.rawStarts.push(start);
     cache.raws.push(raw);
-    cache.alignAfter.push(alignmentAfter(raw, alignmentBefore(cache, rawIndex)));
+    cache.alignAfter.push(alignAfterRaw(cache, raw, rawIndex));
     cache.keep.push(keep);
     if (keep) {
         const blockIndex = cache.blocks.length;
@@ -82,7 +83,7 @@ export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, 
     const previous = cache.raws[rawIndex];
     cache.raws[rawIndex] = raw;
     // Only the trailing raw is replaced, and never a marker's.
-    cache.alignAfter[rawIndex] = alignmentAfter(raw, alignmentBefore(cache, rawIndex));
+    cache.alignAfter[rawIndex] = alignAfterRaw(cache, raw, rawIndex);
     const blockIndex = cache.blockIndexes[rawIndex];
     if (blockIndex >= 0) {
         cache.blocks[blockIndex] = raw;
@@ -92,6 +93,8 @@ export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, 
     for (let i = rawIndex + 1; i < cache.rawStarts.length; i++)
         cache.rawStarts[i] += lengthDelta;
 };
+const alignAfterRaw = (cache: ParseBlocksCache, raw: string, rawIndex: number): Alignment =>
+    cache.aligns ? alignmentAfter(raw, alignmentBefore(cache, rawIndex)) : null;
 /** The alignment in force at the end of the last parsed source. */
 export const alignmentAtEnd = (cache: ParseBlocksCache): Alignment =>
     alignmentBefore(cache, cache.raws.length);
@@ -106,7 +109,7 @@ export const blockAlignment = (cache: ParseBlocksCache, blockIndex: number): Ali
     const rawIndex = cache.blockRawIndexes[blockIndex];
     const before = alignmentBefore(cache, rawIndex);
     const block = cache.raws[rawIndex];
-    return isAlignmentMarkerBlock(block, before) ? 'marker' : before;
+    return cache.aligns && isAlignmentMarkerBlock(block, before) ? 'marker' : before;
 };
 /**
  * Detach every published block from marked's full-document input string.
@@ -314,6 +317,9 @@ export type ParseBlocksCache = {
     source: ParseBlockSource;
     /** block-level custom extensions used to build the cached block boundaries */
     extKey: Extension[] | null;
+    /** whether `[center]` markers align: false under a forge's grammar
+     * (`usesChatGrammar`) */
+    aligns: boolean;
     /** the alignment in force at offset 0 (extensions/align.ts) */
     alignStart: Alignment;
     /** parallel to raws: the alignment in force after each token */

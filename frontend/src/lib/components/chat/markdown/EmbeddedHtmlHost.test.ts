@@ -112,6 +112,58 @@ describe('EmbeddedHtmlHost', () => {
     expect(container.querySelectorAll('[data-forge-attachment-loading]')).toHaveLength(1);
   });
 
+  // A re-lex (an extension list that changed after mount) hands the host an
+  // equal fragment under a new token: the mounted host stays, painted.
+  it('keeps its hosts, unremounted, when an equal fragment arrives under a new token', async () => {
+    const { container, rerender } = render(EmbeddedHtmlHost, {
+      props: { token, content: marked('one.png') },
+    });
+    await waitFor(() => expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull());
+    measure();
+    await waitFor(() => expect(acquired).toEqual([`/uploads/${HEX}/one.png`]));
+    const chip = container.querySelector('[data-forge-attachment-loading]');
+
+    for (let n = 0; n < 3; n++) await rerender({ token: { ...token }, content: marked('one.png') });
+
+    expect(container.querySelector('[data-forge-attachment-loading]')).toBe(chip);
+    expect(acquired).toEqual([`/uploads/${HEX}/one.png`]);
+    expect(released).toEqual([]);
+  });
+
+  it('re-hydrates a changed fragment holding the same claim', async () => {
+    const { container, rerender } = render(EmbeddedHtmlHost, {
+      props: { token, content: marked('one.png') },
+    });
+    await waitFor(() => expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull());
+    await rerender({ token: { ...token }, content: marked('one.png', 'another alt') });
+    await waitFor(() => expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull());
+    expect(container.querySelector(`[${MEDIA_CLAIM_ATTR}]`)).toBeNull();
+    expect(container.querySelectorAll('[data-forge-attachment-loading]')).toHaveLength(1);
+  });
+
+  it('marks its hosts linked when the token moves into a link', async () => {
+    const { container, rerender } = render(EmbeddedHtmlHost, {
+      props: { token, content: marked('one.png') },
+    });
+    await waitFor(() => expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull());
+    await rerender({ token: { ...token, inLink: true } as typeof token, content: marked('one.png') });
+    await waitFor(() => expect(container.querySelector(`[${MEDIA_CLAIM_ATTR}]`)).toBeNull());
+    expect(container.querySelectorAll('[data-forge-attachment-loading]')).toHaveLength(1);
+  });
+
+  it('releases its hosts when the fragment no longer holds a claim', async () => {
+    const { container, rerender } = render(EmbeddedHtmlHost, {
+      props: { token, content: marked('one.png') },
+    });
+    await waitFor(() => expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull());
+    measure();
+    await waitFor(() => expect(acquired).toEqual([`/uploads/${HEX}/one.png`]));
+    await rerender({ token: { ...token }, content: '<p>no media</p>' });
+    await waitFor(() => expect(released).toEqual([`/uploads/${HEX}/one.png`]));
+    expect(container.querySelector('[data-forge-attachment-loading]')).toBeNull();
+    expect(container.textContent).toBe('no media');
+  });
+
   it('leaves an unclaimed fragment as the bare injection it has always been', async () => {
     const { container } = render(EmbeddedHtmlHost, {
       props: {

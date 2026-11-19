@@ -119,6 +119,8 @@ interface GenericLinkToken extends Tokens.Link {
 
 interface GenericImageToken extends Tokens.Image {
   type: 'image';
+  /** Claimed inside link text (markdownImageSource.ts#claimedInLink). */
+  inLink?: true;
 }
 
 interface PathLinkTokenizerContext {
@@ -329,9 +331,12 @@ export function buildPathLinkExtension(
       return true;
     },
     tokenizer(this: unknown, src, tokens) {
-      if (isInsideMarkdownLinkLabel(this)) return undefined;
+      // Inside a link label only an image is claimed (a linked
+      // screenshot): a link holds no link, and its label is not prose.
+      // The claim says so, and the link stays the picture's one control.
+      const inLink = isInsideMarkdownLinkLabel(this);
 
-      if (src.startsWith('[') || src.startsWith('![')) {
+      if (src.startsWith('![') || (!inLink && src.startsWith('['))) {
         return markdownLocalResourceToken(
           src,
           this,
@@ -339,9 +344,10 @@ export function buildPathLinkExtension(
           workspacePath,
           effectiveImageWorkspace,
           mode,
+          inLink,
         );
       }
-      if (!bareRe || !wrappedRe) return undefined;
+      if (inLink || !bareRe || !wrappedRe) return undefined;
 
       // Boundary check: marked invokes inline extensions at every
       // position it advances to — including positions reached by
@@ -552,6 +558,7 @@ function markdownLocalResourceToken(
   workspacePath: string,
   imageWorkspacePath: string,
   mode: PathLinkMode,
+  inLink: boolean,
 ): GenericLinkToken | GenericImageToken | undefined {
   const tokenizerContext = ctx as PathLinkTokenizerContext;
   const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
@@ -566,6 +573,7 @@ function markdownLocalResourceToken(
     return {
       ...token,
       href: buildLocalImageHref(path, imageWorkspacePath, token.href),
+      ...(inLink ? { inLink: true } : {}),
     } as GenericImageToken;
   }
   if (mode === 'off') return token;

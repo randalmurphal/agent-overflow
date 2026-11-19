@@ -712,6 +712,29 @@ and anti-changes that live only here:
   `<details>` body), which PR templates use routinely. Do not
   reintroduce direct third-party `<img>` fetches for private forge
   assets, and do not hide a reference the browser could open.
+- A PR/MR body or comment reads in the review pane as it reads on its
+  forge, by that forge's own grammar; a form one forge leaves as text
+  stays text on its surface. Both: HTML wrappers around Markdown,
+  `<details>` in a quote or alert, safe inline tags, entity references,
+  images in their line at their authored size and placement, emoji
+  shortcodes, `~` strikethrough, color chips, `` $`…`$ `` and `math`
+  fence math, CommonMark list numbering, issue, PR/MR, commit, mention
+  and email references linked by shape (the page cannot check that a
+  target exists, so only shapes that cannot be prose link), relative
+  links resolved to the forge, a numbered footnotes section, and heading
+  anchors with `#name` jumps that stay inside the body clicked. GitHub:
+  a single newline is a line break, an alert needs its marker alone on
+  the first line of a top-level quote, and a `<picture>` source or
+  `#gh-*-mode-only` image follows the app's light or dark theme. GitLab:
+  the `{width=… height=…}` list, playable video and audio images,
+  inline diff, `>>>` quotes, front matter, `[~]` and table-cell tasks,
+  description lists, JSON tables, titled alerts and `[[_TOC_]]`. HTML
+  off the allowlist shows its text without the element, and scripts,
+  styles, svg and iframes show nothing. Agent chat renders no HTML and
+  keeps its own grammar (typed list numbers, `~` subscript, italic
+  quotes, footnote popovers); reference-style links resolve across the
+  whole message on every surface. Mechanism:
+  `frontend/src/lib/markdown/AGENTS.md`.
 - Forge reads and writes go directly over HTTPS with the token of the
   user's `gh`/`glab` login, read from the CLI at runtime and held in memory
   only: never on disk, in settings, in logs, in argv or environment, in

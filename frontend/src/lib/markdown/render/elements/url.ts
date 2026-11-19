@@ -102,6 +102,9 @@ export const transformUrl = (
  *   title and no tag.
  * - `blocked`: an absolute URL the policy refused (a denied scheme, or a
  *   prefix list without `*` that it did not match). Renders tagged.
+ * - `fragment`: with `fragments`, a `#name` link to an anchor in the same
+ *   rendered body. Renders as an anchor the host's click handler resolves
+ *   within that body (`data-md-fragment`).
  */
 /** The text a blocked link's span shows after the link text. */
 export const BLOCKED_LINK_SUFFIX = ' [blocked]';
@@ -126,12 +129,15 @@ export const linkTagText = (href: unknown, allowedPrefixes: string[]): string =>
 export type LinkHrefClass =
     | { kind: 'anchor'; href: string }
     | { kind: 'reference'; title: string }
-    | { kind: 'blocked'; title: string };
+    | { kind: 'blocked'; title: string }
+    | { kind: 'fragment'; href: string };
 
 export const classifyLinkHref = (
     href: unknown,
-    allowedPrefixes: string[]
+    allowedPrefixes: string[],
+    fragments = false
 ): LinkHrefClass => {
+    if (fragments && typeof href === 'string' && href.startsWith('#')) return { kind: 'fragment', href };
     const transformed = transformUrl(href, allowedPrefixes);
     if (transformed !== null) return { kind: 'anchor', href: transformed };
     const raw = typeof href === 'string' ? href : '';

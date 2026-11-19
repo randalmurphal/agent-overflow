@@ -96,8 +96,8 @@ function findCodespans(tokens: ReturnType<typeof lex>): string[] {
   return out;
 }
 
-function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: string; text: string }> {
-  const out: Array<{ raw: string; href: string; text: string }> = [];
+function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: string; text: string; inLink?: boolean }> {
+  const out: Array<{ raw: string; href: string; text: string; inLink?: boolean }> = [];
   const walk = (nodes: unknown[]) => {
     for (const node of nodes) {
       if (!node || typeof node !== 'object') continue;
@@ -106,6 +106,7 @@ function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: 
         raw?: string;
         href?: string;
         text?: string;
+        inLink?: boolean;
         tokens?: unknown[];
       };
       if (
@@ -113,7 +114,7 @@ function findImages(tokens: ReturnType<typeof lex>): Array<{ raw: string; href: 
         typeof token.raw === 'string' &&
         typeof token.href === 'string'
       ) {
-        out.push({ raw: token.raw, href: token.href, text: token.text ?? '' });
+        out.push({ raw: token.raw, href: token.href, text: token.text ?? '', ...(token.inLink ? { inLink: true } : {}) });
       }
       if (Array.isArray(token.tokens)) walk(token.tokens);
     }
@@ -405,6 +406,18 @@ describe('buildPathLinkExtension', () => {
     expect(links[0].childTypes).toEqual(['text']);
     expect(links[0].href.startsWith(PATH_LINK_HREF_PREFIX)).toBe(true);
     expect(links[0].href).toContain('line=42');
+  });
+
+  it('claims a local image inside a link label, and nothing after it in the label', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }], '/workspace');
+    const tokens = lex('[![shot](shots/a.png) src/foo.ts [b](src/foo.ts)](https://example.com/x)', ext);
+    expect(findImages(tokens).map(image => parseLocalImageHref(image.href)?.path)).toEqual(['shots/a.png']);
+    // The label holds no path link: not its prose, not a link inside it.
+    expect(findLinks(tokens).filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX))).toEqual([]);
+    // The claim says it is in a link, so the host keeps the link the
+    // picture's one control; outside a link it says nothing.
+    expect(findImages(tokens).map(image => image.inLink)).toEqual([true]);
+    expect(findImages(lex('see ![shot](shots/a.png)', ext)).map(image => image.inLink)).toEqual([undefined]);
   });
 
   it('rewrites a path-shaped markdown link even when the href is not allowlisted', () => {

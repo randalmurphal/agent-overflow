@@ -48,10 +48,16 @@
   import {
     Streamdown,
     alignmentAtEnd,
+    createDocumentContextCache,
     createParseBlocksCache,
+    documentContextOf,
+    mayNeedDocumentContext,
     parseBlocks,
     sanitizeEmbeddedHtmlToken,
     type Alignment,
+    type DocumentContext,
+    type DocumentForge,
+    type Extension,
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
@@ -101,6 +107,7 @@
     type StreamingAssistantSelectionSnapshot,
   } from './markdown/streamingAssistantSelection';
   import { ensureStaticCodeDelegate } from './markdown/staticCodeBlock';
+  import { ensureFragmentLinkDelegate } from './markdown/fragmentLinks';
   import { registerFootnoteSource } from './markdown/footnoteDefinitions';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
@@ -162,9 +169,8 @@
     /** Render forge-authored embedded HTML. OFF for agent chat output by
      *  design: only forge-content surfaces (PR/MR descriptions, review
      *  comments) pass true. `<details>/<summary>` and the safe inline
-     *  pairs become native tokens, remaining complete blocks render
-     *  through the allowlist sanitizer, and anything unrecognized shows
-     *  as escaped literal text — never silently dropped. See
+     *  pairs become native tokens, and remaining HTML renders through the
+     *  allowlist sanitizer, which keeps what the forge keeps. See
      *  `markdown/parser/extensions/embeddedHtml.ts`. */
     embeddedHtml?: boolean;
     /** Fenced blocks the host renders itself, in place (codeClaim.ts). */
@@ -225,6 +231,7 @@
     ensurePathLinkClickDelegate();
     ensureForgeAttachmentClickDelegate();
     ensureStaticCodeDelegate();
+    ensureFragmentLinkDelegate();
   });
 
   // Marked inline extension derived from the validated allowlist. The
@@ -405,16 +412,47 @@
   // the `[center]`/`[right]` alignment in force at the prefix's end. The
   // prefix only grows while streaming; its append proof keeps this fold
   // proportional to the newly committed bytes.
+  //
+  // The same parse feeds the document context (markdown/parser/
+  // documentContext.ts): what the committed blocks define, for every
+  // block's lex. A definition still in the volatile tail resolves the
+  // committed blocks once it commits; the tail sees the committed ones.
+  const documentForge = $derived<DocumentForge>(forgeForge === 'github' || forgeForge === 'gitlab' ? forgeForge : null);
+  // Stable identities: a fresh list or cache per evaluation would reset
+  // the context's per-block memo.
+  const NO_EXTENSIONS: Extension[] = [];
+  // Never parsed: a settled body with nothing to share folds no blocks.
+  const NO_BLOCKS = createParseBlocksCache();
   let prefixAlignmentCache = createParseBlocksCache();
-  const tailAlignStart = $derived.by((): Alignment => {
+  const prefixDocumentCache = createDocumentContextCache();
+  const prefixState = $derived.by((): { align: Alignment; document: DocumentContext | null } => {
     if (!streaming) {
       prefixAlignmentCache = createParseBlocksCache();
-      return null;
+      return { align: null, document: null };
     }
     const { prefix, prefixAppend } = splitDerived;
     parseBlocks(prefix, extensions, prefixAlignmentCache, prefixAppend);
-    return alignmentAtEnd(prefixAlignmentCache);
+    return {
+      align: alignmentAtEnd(prefixAlignmentCache),
+      document: documentContextOf(prefixAlignmentCache, extensions ?? NO_EXTENSIONS, prefixDocumentCache, documentForge),
+    };
   });
+  const tailAlignStart = $derived(prefixState.align);
+
+  // A settled body's context covers it whole. A body that cannot hold a
+  // definition, footnote, heading link or contents marker skips the parse;
+  // a forge body still gets its forge's empty context, which makes its
+  // `#name` links jump within it (markdown/fragmentLinks.ts).
+  const settledBlocksCache = createParseBlocksCache();
+  const settledDocumentCache = createDocumentContextCache();
+  const settledDocument = $derived.by((): DocumentContext | null => {
+    if (streaming) return null;
+    const source = processedSource;
+    const needed = mayNeedDocumentContext(source, documentForge);
+    if (needed) parseBlocks(source, extensions, settledBlocksCache);
+    return documentContextOf(needed ? settledBlocksCache : NO_BLOCKS, extensions ?? NO_EXTENSIONS, settledDocumentCache, documentForge);
+  });
+  const documentContext = $derived(streaming ? prefixState.document : settledDocument);
 
   // A stable block migrates from the volatile Streamdown to the committed
   // owner. Both render identical DOM, but they cannot share node identity.
@@ -475,6 +513,8 @@
   const showVolatileTail = $derived(
     !hideVolatileTail && (splitDerived.tail.length > 0 || splitDerived.prefix.length === 0),
   );
+  // A forge lists its footnotes after the body.
+  const footnoteSection = $derived(documentContext?.footnoteSection ?? null);
 </script>
 
 <!--
@@ -529,12 +569,14 @@
   trimFirstBlockMargin = false,
   trimLastBlockMargin = false,
   alignStart: Alignment = null,
+  document: DocumentContext | null = null,
 )}
   <Streamdown
     class={wrapperClass}
     {content}
     {contentAppend}
     {alignStart}
+    {document}
     {parseIncompleteMarkdown}
     isolatedVolatileTail={parseIncompleteMarkdown}
     {diagnostics}
@@ -542,6 +584,7 @@
     {mermaidConfig}
     {allowedLinkPrefixes}
     {allowedImagePrefixes}
+    colorScheme={forgeOptions.colorScheme?.()}
     renderHtml={embeddedHtml ? renderEmbeddedHtml : false}
     html={embeddedHtml ? embeddedHtmlFragment : undefined}
     compactStaticHtml={true}
@@ -575,7 +618,9 @@
       'md-committed',
       splitDerived.prefixAppend,
       true,
-      !showVolatileTail,
+      !showVolatileTail && !footnoteSection,
+      null,
+      documentContext,
     )}
   {/if}
   {#if showVolatileTail}
@@ -585,8 +630,20 @@
       'md-volatile',
       splitDerived.tailAppend,
       !splitDerived.prefix,
-      true,
+      !footnoteSection,
       tailAlignStart,
+      documentContext?.after ?? null,
+    )}
+  {/if}{#if footnoteSection}
+    {@render streamdownInstance(
+      footnoteSection,
+      false,
+      'md-footnotes',
+      undefined,
+      false,
+      true,
+      null,
+      documentContext?.after ?? null,
     )}
   {/if}
 </div>

@@ -23,9 +23,15 @@
 // keeps the held-back runs too, marked not shown, so each run has the same
 // number in walk order whichever <details> are open.
 //
+// An html region renders as one sanitized fragment with its Markdown islands
+// in place: its runs are the fragment's, each island's runs where its
+// placeholder sits, and its <details>, authored or island tokens, recorded
+// in the fragment's document order.
+//
 // `[center]`/`[right]` markers show nothing and the blocks between them
 // show as they would unaligned; a block string is lexed alone, so markers
-// are recognized here with the alignment in force, as Streamdown does.
+// are recognized here with the alignment in force, as Streamdown does. A
+// forge's grammar has no markers.
 //
 // Not shown, so not searched: markup, image alt text, link targets and
 // titles, a table cell merged into the one above, and the body of a
@@ -34,22 +40,30 @@
 // diagrams, math, and forge attachment chips, whose text is drawn or
 // fetched after the render, and a blocked link's tag, the link policy's
 // verdict rather than the message's text. Each ends the run it sits in, as
-// an image does, so a match never spans one (findHighlights.ts).
+// an image and a line break do, so a match never spans one
+// (findHighlights.ts).
 
 import {
   alignmentAfter,
+  createDocumentContextCache,
+  createParseBlocksCache,
+  documentContextOf,
   isAlignmentMarkerBlock,
   lex,
   linkTagText,
+  MEDIA_CLAIM_ATTR,
   parseBlocks,
+  parseHtmlRegion,
   sanitizeEmbeddedHtmlToken,
   tableCellRenders,
   type Alignment,
+  type DocumentContext,
   type StreamdownToken,
+  usesChatGrammar,
 } from '../../../markdown';
 import { CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
-import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './chatMarkdownOptions';
-import { findTextRuns, type FindRun } from '../../../utils/findHighlights';
+import { chatMarkdownExtensions, chatMarkdownForgeOptions, chatMarkdownOptionsGeneration } from './chatMarkdownOptions';
+import { findRegionRuns, findTextRuns, type FindRun } from '../../../utils/findHighlights';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { MarkdownFenceUnwrapper } from './unwrapMarkdownFence';
 
@@ -80,10 +94,13 @@ interface TokenLike {
   open?: boolean;
   lang?: string;
   label?: string;
+  number?: number;
   href?: string;
   rowspan?: number;
   variant?: string;
+  title?: string;
   tokens?: TokenLike[];
+  parts?: (string | TokenLike)[];
 }
 
 /** How a token kind shows: no text; its children (or its own text) in
@@ -94,16 +111,16 @@ type Shows = 'nothing' | 'inline' | 'block' | 'own';
 /** Every kind the lexer can produce, as ChatMarkdown renders it. */
 export const SHOWS: Record<StreamdownToken['type'], Shows> = {
   // Drawn or fetched after the render, or not text at all.
-  br: 'nothing', space: 'nothing', def: 'nothing', footnote: 'nothing', hr: 'block',
-  // Skipped, and the end of the run around them.
-  image: 'own', math: 'own',
+  space: 'nothing', def: 'nothing', footnote: 'nothing', hr: 'block',
+  // Skipped, and the end of the run around them; a line break ends it too.
+  image: 'own', math: 'own', br: 'own',
   align: 'nothing', paragraph: 'block', heading: 'block', blockquote: 'block', list: 'block', list_item: 'block',
-  table: 'block', thead: 'inline', tbody: 'inline', tfoot: 'inline', tr: 'block',
+  table: 'block', caption: 'block', checkbox: 'nothing', thead: 'inline', tbody: 'inline', tfoot: 'inline', tr: 'block',
   descriptionList: 'block', description: 'inline', descriptionTerm: 'block', descriptionDetail: 'block',
   detailsSummary: 'block',
-  strong: 'inline', em: 'inline', del: 'inline', sub: 'inline', sup: 'inline', mdx: 'inline',
+  strong: 'inline', em: 'inline', del: 'inline', sub: 'inline', sup: 'inline', mdx: 'inline', htmlInline: 'inline',
   code: 'own', html: 'own', codespan: 'own', escape: 'own', footnoteRef: 'own', 'inline-citations': 'own',
-  details: 'own', link: 'own', td: 'own', th: 'own', alert: 'own', text: 'own',
+  details: 'own', link: 'own', td: 'own', th: 'own', alert: 'own', text: 'own', htmlRegion: 'own',
 };
 
 /**
@@ -115,7 +132,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
   const shown = new MarkdownFenceUnwrapper().render(source, false);
   const forge = chatMarkdownForgeOptions(options.forgeSource, options.embeddedHtml);
   const extensions = chatMarkdownExtensions({ forge: forge.extensions, embeddedHtml: options.embeddedHtml });
-  const all: FindRun[] = [];
+  let all: FindRun[] = [];
   const details: boolean[] = [];
   let run = '';
   // How many closed <details> the walk is inside: rendered, not shown. A
@@ -141,15 +158,54 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     const out = sanitizeEmbeddedHtmlToken({ raw: token.raw ?? '', block: token.block }, forge.html);
     if (out === '') return;
     if (!token.block) {
-      // A stray inline tag renders as its own literal text.
-      add(token.raw ?? '');
+      // A stray inline tag shows a void element, which ends the run as a
+      // line break does, or its tag-filtered source text.
+      const text = new DOMParser().parseFromString(out, 'text/html').body.textContent ?? '';
+      if (text === '') flush();
+      else add(text);
       return;
     }
     flush();
     const doc = new DOMParser().parseFromString(`<div>${out}</div>`, 'text/html');
     const fragment = doc.body.firstElementChild!;
+    endRunsAtClaims(fragment);
     for (const element of fragment.querySelectorAll('details')) element.open = opened(element.open);
     for (const each of findTextRuns(fragment)) all.push({ text: each.text, shown: each.shown && hidden === 0 });
+  };
+  const region = (token: TokenLike) => {
+    const islands = token.tokens ?? [];
+    // Without embedded HTML a region shows its islands and no HTML.
+    if (!options.embeddedHtml) {
+      walk(islands);
+      return;
+    }
+    flush();
+    const parsed = parseHtmlRegion(token.parts ?? [], (each) => sanitizeEmbeddedHtmlToken(each, forge.html));
+    endRunsAtClaims(parsed.root);
+    // Each island's runs, walked where it sits among the fragment's
+    // <details> so every <details> is numbered in document order.
+    const islandRuns = new Map<number, FindRun[]>();
+    for (const element of parsed.root.querySelectorAll('details, div[data-markdown-island]')) {
+      const index = parsed.islands.get(element);
+      if (index === undefined) {
+        if (element instanceof HTMLDetailsElement) element.open = opened(element.open);
+        continue;
+      }
+      const outer = all;
+      const outerHidden = hidden;
+      all = [];
+      hidden = 0;
+      visit(islands[index]);
+      flush();
+      islandRuns.set(index, all);
+      all = outer;
+      hidden = outerHidden;
+    }
+    // Each placeholder, by identity, expands to its island's runs.
+    for (const each of findRegionRuns(parsed.root, parsed.islands)) {
+      const runs = 'island' in each ? (islandRuns.get(each.island) ?? []) : [each];
+      for (const run of runs) all.push({ text: run.text, shown: run.shown && each.shown && hidden === 0 });
+    }
   };
   const walk = (tokens: readonly TokenLike[] | undefined) => {
     for (const token of tokens ?? []) visit(token);
@@ -171,6 +227,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     switch (token.type) {
       case 'image':
       case 'math':
+      case 'br':
         flush();
         return;
       case 'code':
@@ -180,12 +237,15 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
       case 'html':
         html(token);
         return;
+      case 'htmlRegion':
+        region(token);
+        return;
       case 'codespan':
       case 'escape':
         add(token.text ?? '');
         return;
       case 'footnoteRef':
-        if (token.label && token.label !== 'streamdown:footnote') add(token.label.replace('^', ''));
+        if (token.label && token.label !== 'streamdown:footnote') add(token.number !== undefined ? String(token.number) : token.label.replace('^', ''));
         return;
       case 'inline-citations':
         // ChatMarkdown's inlineCitation snippet shows the token's text.
@@ -217,8 +277,9 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
         return;
       case 'alert':
         flush();
-        // The title shows the variant (ChatMarkdown passes no translations).
-        push(String(token.variant ?? ''));
+        // The title shows its own text or the variant (ChatMarkdown passes
+        // no translations).
+        push(String(token.title ?? token.variant ?? ''));
         walk(token.tokens);
         flush();
         return;
@@ -229,23 +290,48 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     }
     throw new Error(`markdownFindText: no rule for ${token.type}`);
   };
-  let align: Alignment = null;
-  for (const block of parseBlocks(shown, extensions)) {
-    const marker = isAlignmentMarkerBlock(block, align);
-    align = alignmentAfter(block, align);
-    if (marker) continue;
-    walk(lex(block, extensions) as unknown as TokenLike[]);
-    flush();
-  }
+  // Each block lexes under its document scope, and a forge's footnotes
+  // section follows the body, as ChatMarkdown renders them.
+  const blocksCache = createParseBlocksCache();
+  const blocks = parseBlocks(shown, extensions, blocksCache);
+  const forgeName = options.forgeSource?.pr.forge;
+  const documentForge = forgeName === 'github' || forgeName === 'gitlab' ? forgeName : null;
+  const document = documentContextOf(blocksCache, extensions, createDocumentContextCache(), documentForge);
+  const aligns = usesChatGrammar(extensions);
+  const walkBlocks = (blocks: readonly string[], context: DocumentContext | null) => {
+    let align: Alignment = null;
+    for (const [index, block] of blocks.entries()) {
+      const marker = aligns && isAlignmentMarkerBlock(block, align);
+      if (aligns) align = alignmentAfter(block, align);
+      if (marker) continue;
+      walk(lex(block, extensions, context?.scope(index) ?? null) as unknown as TokenLike[]);
+      flush();
+    }
+  };
+  walkBlocks(blocks, document);
+  if (document?.footnoteSection) walkBlocks(parseBlocks(document.footnoteSection, extensions), document.after);
   return { runs: all.filter((each) => each.shown).map((each) => each.text), all, details };
 }
 
-/** Holds `markdownFindText` per source while the sources stay the same;
- * a source with <details> the reader toggled is read fresh. */
+/** A claimed medium's host (ForgeAttachmentHost) is an image, a player or
+ * a chip, each of which ends a run, whatever the bytes turn out to be. */
+function endRunsAtClaims(root: Element): void {
+  for (const marker of root.querySelectorAll(`[${MEDIA_CLAIM_ATTR}]`)) marker.setAttribute('data-find-skip', '');
+}
+
+/** Holds `markdownFindText` per source while the sources and the options'
+ * generation stay the same; a source with <details> the reader toggled is
+ * read fresh. */
 export function createMarkdownFindTextCache(options: MarkdownFindTextOptions): (source: string, open?: readonly boolean[]) => MarkdownFindText {
   let held = new Map<string, MarkdownFindText>();
   let used = new Map<string, MarkdownFindText>();
+  let generation = chatMarkdownOptionsGeneration();
   return (source, open) => {
+    if (generation !== chatMarkdownOptionsGeneration()) {
+      generation = chatMarkdownOptionsGeneration();
+      held = new Map();
+      used = new Map();
+    }
     if (open) return markdownFindText(source, options, open);
     let text = used.get(source) ?? held.get(source);
     if (!text) text = markdownFindText(source, options);

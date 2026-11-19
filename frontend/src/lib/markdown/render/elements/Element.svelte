@@ -3,12 +3,14 @@
 	import Link from './Link.svelte';
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
+	import HtmlRegion from './HtmlRegion.svelte';
 	import type { GenericToken, ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte';
 	import { codespanClass } from '../codespan';
 	import FootnoteRef from './FootnoteRef.svelte';
 	import { tableCellRenders } from './url';
+	import { headingAnchor, htmlAnchorName } from '../../parser/documentScope';
 	let {
 		token,
 		children,
@@ -49,27 +51,27 @@
 		render={streamdown.snippets.heading}
 	>
 		{#if token.depth === 1}
-			<h1 data-streamdown-heading-1={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h1 data-streamdown-heading-1={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h1>
 		{:else if token.depth === 2}
-			<h2 data-streamdown-heading-2={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h2 data-streamdown-heading-2={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h2>
 		{:else if token.depth === 3}
-			<h3 data-streamdown-heading-3={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h3 data-streamdown-heading-3={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h3>
 		{:else if token.depth === 4}
-			<h4 data-streamdown-heading-4={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h4 data-streamdown-heading-4={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h4>
 		{:else if token.depth === 5}
-			<h5 data-streamdown-heading-5={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h5 data-streamdown-heading-5={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h5>
 		{:else if token.depth === 6}
-			<h6 data-streamdown-heading-6={id} class={streamdown.theme[`h${token.depth}`].base}>
+			<h6 data-streamdown-heading-6={id} data-md-anchor={headingAnchor(token)} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h6>
 		{/if}
@@ -115,7 +117,11 @@
 			data-streamdown-codespan={id}
 			class={codespanClass(streamdown.theme.codespan.base, token.text)}
 		>
-			{@render children()}
+			{@render children()}{#if token.color}<span
+					data-streamdown-color-swatch
+					aria-hidden="true"
+					style:background-color={token.color}
+				></span>{/if}
 		</code>
 	</Slot>
 {:else if token.type === 'list'}
@@ -123,6 +129,7 @@
 		<Slot props={{ children, token }} render={streamdown.snippets.ol}>
 			<ol
 				data-streamdown-ol={id}
+				start={token.start === 1 ? undefined : token.start}
 				style:list-style-type={token.listType}
 				class={streamdown.theme.ol.base}
 			>
@@ -167,6 +174,8 @@
 			</table>
 		</div>
 	</Slot>
+{:else if token.type === 'caption'}
+	<caption data-streamdown-caption={id}>{@render children()}</caption>
 {:else if token.type === 'thead'}
 	<Slot props={{ token, children }} render={streamdown.snippets.thead}>
 		<thead data-streamdown-thead={id} class={streamdown.theme.thead.base}>
@@ -263,6 +272,14 @@
 	</Slot>
 {:else if token.type === 'br'}
 	<br data-streamdown-br={id} />
+{:else if token.type === 'checkbox'}
+	<input
+		data-streamdown-checkbox={id}
+		disabled
+		type="checkbox"
+		checked={token.checked}
+		class={streamdown.theme.li.checkbox}
+	/>
 {:else if token.type === 'math'}
 	<Slot
 		props={{
@@ -341,6 +358,11 @@
 	<summary data-streamdown-summary={id}>
 		{@render children()}
 	</summary>
+{:else if token.type === 'htmlInline'}
+	<!-- The tag is one of the parser's fixed names, never authored text. -->
+	<svelte:element this={token.tag} data-streamdown-html-inline={id} data-md-anchor={htmlAnchorName(token.raw, streamdown.document?.forge)} title={token.title}>
+		{@render children()}
+	</svelte:element>
 {:else if token.type === 'html'}
 	{#if streamdown.renderHtml}
 		{@const content =
@@ -350,6 +372,13 @@
 		<Slot props={{ children, token, content }} render={streamdown.snippets.html}>
 			{@html content}
 		</Slot>
+	{/if}
+{:else if token.type === 'htmlRegion'}
+	<!-- Without `renderHtml`, a region shows its Markdown islands and no HTML. -->
+	{#if streamdown.renderHtml}
+		<HtmlRegion {token} />
+	{:else}
+		{@render children()}
 	{/if}
 {:else if token.type === 'mdx'}
 	{@const Component = streamdown.mdxComponents?.[token.tagName]}

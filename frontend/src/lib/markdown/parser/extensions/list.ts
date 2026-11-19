@@ -134,7 +134,22 @@ export function tokenizeListItemContent(lexer: Lexer, item: ListItemToken, top: 
         return;
     }
     item.tokens = tokens;
+    if (item.inapplicable)
+        strikeFirstBlock(item);
 }
+// An inapplicable task's first block renders struck through, as GitLab
+// renders it: its inline tokens move under one `del` covering its text.
+function strikeFirstBlock(item: ListItemToken): void {
+    const first = item.tokens[0];
+    if (first === undefined || (first.type !== 'text' && first.type !== 'paragraph') || !Array.isArray(first.tokens))
+        return;
+    first.tokens = [{ type: 'del', raw: first.text, text: first.text, tokens: first.tokens }];
+}
+// The task box a list item's text opens with: GFM's `[ ]`, `[x]` or `[X]`
+// and a space, or with `INAPPLICABLE_TASK` also `[~]`, and a box with no
+// text after it.
+const GFM_TASK = /^\[([ xX])\] +/;
+const INAPPLICABLE_TASK = /^\[([ xX~])\](?: +|(?=\n)|$)/;
 function finalizeListSource(list: ListToken): void {
     if (list.tokens.length === 0)
         return;
@@ -214,16 +229,24 @@ function listMarkerMayStart(source: string): boolean {
     return end + 1 === source.length || next === 9 || next === 10 || next === 32;
 }
 // `closer` is the alignment closer line that ends a top-level list
-// (extensions/align.ts), when an alignment is in force.
+// (extensions/align.ts), when an alignment is in force. `commonmark` numbers
+// a list as CommonMark does: the first item's number is the list's `start`,
+// the items carry no number of their own, and a change of bullet character
+// starts a new list. Without it each item keeps the number typed for it,
+// which agent prose relies on.
 export function parseListSource(src: string, options: LexerOptions, sourceOnly: true, closer?: string): ListBoundaryToken | undefined;
-export function parseListSource(src: string, options: LexerOptions, sourceOnly?: false, closer?: string): ListToken | undefined;
+export function parseListSource(src: string, options: LexerOptions, sourceOnly?: false, closer?: string, task?: RegExp, commonmark?: boolean): ListToken | undefined;
 export function parseListSource(
     src: string,
     options: LexerOptions,
     sourceOnly = false,
-    closer?: string
+    closer?: string,
+    task: RegExp = GFM_TASK,
+    commonmark = false
 ): ListToken | ListBoundaryToken | undefined {
-    if (!listMarkerMayStart(src))
+    // A thematic break wins over a list item (`- - -`), also for a list
+    // rule that runs ahead of the default `hr` rule.
+    if (!listMarkerMayStart(src) || LIST_BOUNDARY_TABLE[3].hr.test(src))
         return undefined;
     const originalSource = src;
     let cap = RULE_RE.exec(src);
@@ -258,7 +281,7 @@ export function parseListSource(
         }
     }
     else {
-        bull = options.pedantic ? escapeForRegex(bullet) : '[*+-]';
+        bull = options.pedantic || commonmark ? escapeForRegex(bullet) : '[*+-]';
     }
     const list: ListToken | null = sourceOnly
         ? null
@@ -377,10 +400,10 @@ export function parseListSource(
         let isChecked = false;
         // Check for task list items
         if (options.gfm) {
-            isTask = /^\[[ xX]] /.exec(itemContents);
+            isTask = task.exec(itemContents);
             if (isTask) {
-                isChecked = isTask[0] !== '[ ] ';
-                itemContents = itemContents.replace(/^\[[ xX]] +/, '');
+                isChecked = isTask[1] === 'x' || isTask[1] === 'X';
+                itemContents = itemContents.slice(isTask[0].length);
             }
         }
         let value: number | null = null;
@@ -407,22 +430,25 @@ export function parseListSource(
             }
             else {
                 // Subsequent items: check if value matches expected
-                skipped = value !== null && value !== expectedValue;
+                skipped = !commonmark && value !== null && value !== expectedValue;
                 // Increment expectedValue for next item
                 expectedValue += 1;
             }
         }
-        list.tokens.push({
+        const item: ListItemToken = {
             type: 'list_item',
             raw,
             task: !!isTask,
             checked: isChecked,
             loose: false,
             text: itemContents,
-            value,
+            value: commonmark ? null : value,
             skipped,
             tokens: []
-        });
+        };
+        if (isTask?.[1] === '~')
+            item.inapplicable = true;
+        list.tokens.push(item);
         list.raw += raw;
     }
     if (sourceOnly) {
@@ -459,6 +485,42 @@ export const markedList: Extension = {
         return list;
     }
 };
+/**
+ * Lists numbered and split as GitHub numbers them (CommonMark; see
+ * `parseListSource`). It runs ahead of the default list rule. GitLab's
+ * `markedInapplicableTaskList` numbers the same way.
+ */
+export const markedCommonmarkList: Extension = {
+    name: 'commonmarkList',
+    level: 'block',
+    precedesDefaults: true,
+    tokenizer(src) {
+        const list = parseListSource(src, this.lexer.options, false, openAlignmentCloser(this.lexer), GFM_TASK, true);
+        if (!list)
+            return undefined;
+        finalizeList(list, this.lexer);
+        return list;
+    }
+};
+/**
+ * Lists whose task items also take GitLab's forms: `[~]` marks an
+ * inapplicable task, an unchecked box with its text struck through, and a
+ * box with no text after it is a task. Opt-in: GitHub, CommonMark and agent
+ * chat read both as text. It runs ahead of the default list rule; list
+ * extents are the same, so block splitting needs nothing.
+ */
+export const markedInapplicableTaskList: Extension = {
+    name: 'inapplicableTaskList',
+    level: 'block',
+    precedesDefaults: true,
+    tokenizer(src) {
+        const list = parseListSource(src, this.lexer.options, false, openAlignmentCloser(this.lexer), INAPPLICABLE_TASK, true);
+        if (!list)
+            return undefined;
+        finalizeList(list, this.lexer);
+        return list;
+    }
+};
 
 export interface ListBoundaryToken {
     type: 'list';
@@ -484,5 +546,7 @@ export interface ListItemToken {
     text: string;
     value: number | null;
     skipped: boolean;
+    /** A GitLab `[~]` task: unchecked, its first block struck through. */
+    inapplicable?: boolean;
     tokens: GenericToken[];
 }

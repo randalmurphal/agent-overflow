@@ -12,7 +12,8 @@
 // scheduler. Text is matched by the find rule (`findMatch.ts`) within a
 // run: the text of one block, across inline markup. Content find skips
 // (`data-find-skip`, images, scripts) is in no run and ends the run it
-// interrupts, so a match never spans text the reader sees apart. With
+// interrupts, as a line break (`<br>`) does, so a match never spans text
+// the reader sees apart. With
 // `rowsOnly`, only text inside a row is matched, and a row boundary ends a
 // run; with `textSelector`, only text inside the elements it selects (a
 // row's `data-find-text` elements, what its count reads), and the edge of
@@ -76,8 +77,9 @@ const MAX_MATCHES = 5000;
 const RECOMPUTE_DELAY_MS = 40;
 const RECOMPUTE_MAX_WAIT_MS = 200;
 const SKIP_SELECTOR = 'script,style,noscript,textarea,[data-find-skip]';
-// What ends a run: skipped content, and an image, which has no text.
-const BOUNDARY_SELECTOR = `${SKIP_SELECTOR},img`;
+// What ends a run: skipped content, an image, which has no text, and a
+// line break, which puts what follows on another line.
+const BOUNDARY_SELECTOR = `${SKIP_SELECTOR},img,br`;
 const BLOCK_SELECTOR = [
   'address', 'article', 'aside', 'blockquote', 'dd', 'details', 'div', 'dl', 'dt',
   'figcaption', 'figure', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header',
@@ -149,6 +151,8 @@ interface Segment {
   region: Element | null;
   /** In a closed <details>: kept only when asked for (`keepHidden`). */
   hidden: boolean;
+  /** An island placeholder's index (`findRegionRuns`); no text. */
+  island?: number;
 }
 
 // A closed <details> shows only its summary.
@@ -161,7 +165,7 @@ function hiddenByDetails(element: Element): boolean {
   return false;
 }
 
-function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false, textSelector?: string): Segment[] {
+function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false, textSelector?: string, islands?: ReadonlyMap<Element, number>): Segment[] {
   const visible = new Map<Element, boolean>();
   // checkVisibility fails a `display: contents` element, which has no box,
   // though its loose text renders in its parent's.
@@ -180,9 +184,9 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
     }
     return answer;
   };
-  // Text nodes, and the elements that end a run.
+  // Text nodes, and the elements that end a run: island placeholders too.
   const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
-    acceptNode: (node) => node.nodeType === Node.TEXT_NODE || (node as Element).matches(BOUNDARY_SELECTOR)
+    acceptNode: (node) => node.nodeType === Node.TEXT_NODE || (node as Element).matches(BOUNDARY_SELECTOR) || islands?.has(node as Element)
       ? NodeFilter.FILTER_ACCEPT
       : NodeFilter.FILTER_SKIP,
   });
@@ -191,6 +195,11 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
   for (let next = walker.nextNode(); next; next = walker.nextNode()) {
     if (next.nodeType !== Node.TEXT_NODE) {
       current = null;
+      const element = next as Element;
+      const island = islands?.get(element);
+      if (island === undefined || element.parentElement?.closest(SKIP_SELECTOR)) continue;
+      const hidden = !isVisible(element);
+      if (!hidden || keepHidden) segments.push({ nodes: [], starts: [], text: '', block: null, row: null, region: null, hidden, island });
       continue;
     }
     const node = next as Text;
@@ -233,6 +242,23 @@ export function findTextSegments(root: Element, laidOut = true, textSelector?: s
  */
 export function findTextRuns(root: Element): FindRun[] {
   return collectSegments(root, undefined, false, false, true).map((segment) => ({ text: segment.text, shown: !segment.hidden }));
+}
+
+/** A Markdown island's place among a parsed region's runs. */
+export interface FindIslandRun {
+  readonly island: number;
+  readonly shown: boolean;
+}
+
+/**
+ * `findTextRuns` of a parsed html region (`parseHtmlRegion`) whose island
+ * placeholders are `islands`, by element: each placeholder is an entry of
+ * its own, at its place in walk order, and ends the run it sits in. The
+ * placeholder is known by identity, so no text can pose as one.
+ */
+export function findRegionRuns(root: Element, islands: ReadonlyMap<Element, number>): (FindRun | FindIslandRun)[] {
+  return collectSegments(root, undefined, false, false, true, undefined, islands).map((segment) =>
+    segment.island === undefined ? { text: segment.text, shown: !segment.hidden } : { island: segment.island, shown: !segment.hidden });
 }
 
 function pointAt(segment: Segment, offset: number, end: boolean): [Text, number] {

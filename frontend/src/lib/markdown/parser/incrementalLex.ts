@@ -50,9 +50,9 @@
  * def line), while footnote USAGE only needs the maps carried: a sealed
  * definition resolves a ref arriving in the tail through the seeded
  * maps' footnotes lookup, exactly as one full-document lexer would.
- * Cross-BLOCK definitions never resolved mid-stream in the first place
- * (each Block lexes its string in isolation upstream); these mechanisms
- * only close the divergence WITHIN the trailing block.
+ * Definitions in other blocks arrive through the `DocumentScope`
+ * (documentScope.ts), which the tail lexer inherits like a full lex; these
+ * mechanisms only close the divergence WITHIN the trailing block.
  *
  * Incomplete-markdown completion composes cleanly: every completer edit is
  * a suffix operation (seal an open fence at the end, drop a dangling
@@ -68,6 +68,8 @@ import type { Tokens } from './engine';
 import { createProvenAppend, matchesProvenAppend } from './provenAppend';
 import type { ProvenAppend } from './provenAppend';
 import { lexCapture } from './lexer';
+import { sameScopeReads, scopeIsPositional } from './documentScope';
+import type { DocumentScope } from './documentScope';
 import type { Extension, StreamdownToken } from './lexer';
 import {
     hasTrailingRowspanCaret,
@@ -182,16 +184,24 @@ export const incrementalLex = (
     extensions: Extension[] | undefined = [],
     cache: IncrementalLexCache,
     complete: ((markdown: string) => string) | null = null,
-    provenAppend?: ProvenAppend
+    provenAppend?: ProvenAppend,
+    scope: DocumentScope | null = null
 ): StreamdownToken[] => {
     cache.lastCodeTextAppend = undefined;
+    // A new document scope keeps the tokens when every key they read
+    // resolves as before; otherwise they are lexed afresh.
+    let scopeHolds = true;
+    if (cache.scope !== scope) {
+        scopeHolds = sameScopeReads(cache.scope, scope, cache.reads);
+        cache.scope = scope;
+    }
     const appendIsProven = matchesProvenAppend(provenAppend, cache.input, block);
     // Derive trim bounds from the proven suffix. String#trim flattened and
     // copied the whole active block on every revealed word.
     const trim = trimBlock(block, cache, complete, appendIsProven, provenAppend?.delta);
     const base = trim.value;
     const extKey = extensions.length > 0 ? extensions : null;
-    const previousTokens = cache.extKey === extKey && cache.completeKey === complete
+    const previousTokens = cache.extKey === extKey && cache.completeKey === complete && scopeHolds
         ? cache.tokens
         : null;
     if (previousTokens) {
@@ -206,8 +216,11 @@ export const incrementalLex = (
                     ? base.slice(cache.src.length)
                     : null
             : null;
+        // A tail lex cannot know where a positional scope's headings and
+        // footnote references fall in the block.
         if (previousTokens.length === 1 &&
-            appendDelta !== null) {
+            appendDelta !== null &&
+            !scopeIsPositional(scope)) {
             const head = previousTokens[0];
             if (head.type === 'code' && cache.codeFence) {
                 const merged = mergeOpenFence(
@@ -243,7 +256,8 @@ export const incrementalLex = (
                     extensions,
                     complete,
                     cache.tableTailUnstable,
-                    cache.tableAppend
+                    cache.tableAppend,
+                    cache
                 );
                 merged = tableMerge?.token ?? null;
                 nextTableAppend = tableMerge?.appendInfo ?? null;
@@ -268,7 +282,8 @@ export const incrementalLex = (
     cache.completeKey = complete;
     const completedBase = complete ? complete(base) : base;
     cache.observeLex?.('full', completedBase.length);
-    const result = lexCapture(completedBase, extensions, null, null);
+    const result = lexCapture(completedBase, extensions, null, null, scope);
+    cache.reads = result.reads;
     cache.tokens = previousTokens
         ? reuseUnchangedTokens(previousTokens, result.tokens)
         : result.tokens;

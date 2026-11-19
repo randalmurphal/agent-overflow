@@ -23,9 +23,18 @@
   // and what reaches the element is an object URL, or, for SVG, a data URL,
   // because a blob URL shares this page's origin and a navigated-to SVG
   // would run its script there.
+  //
+  // Inside an author's link (the claim's `inLink`) the link is the one
+  // control: a picture is plain, and a player, file button or "open on"
+  // anchor becomes a chip that names the attachment.
+  //
+  // An authored size and alignment (render/imageSize.ts) size and place a
+  // player as they do a picture.
+  import Film from '@lucide/svelte/icons/film';
+  import Music from '@lucide/svelte/icons/music';
   import Paperclip from '@lucide/svelte/icons/paperclip';
   import { untrack } from 'svelte';
-  import type { Tokens } from '../../../markdown';
+  import { imageSizeOf, type Tokens } from '../../../markdown';
   import Icon from '../../primitives/Icon.svelte';
   import { formatAttachmentSize } from '../../../types/attachment';
   import { errString } from '../../../utils/errors';
@@ -49,7 +58,7 @@
     observeImageBox,
     rememberImageTier,
   } from '../../../utils/imageTiers';
-  import { forgeMarkdownImageSource } from '../../../utils/markdownImageSource';
+  import { claimedInLink, forgeMarkdownImageSource } from '../../../utils/markdownImageSource';
   import MarkdownImage from './MarkdownImage.svelte';
 
   let { token }: { token: Tokens.Image } = $props();
@@ -147,6 +156,8 @@
   }
 
   const alt = $derived(token.text || name);
+  const linked = $derived(claimedInLink(token));
+  const size = $derived(imageSizeOf(token));
 
   function handleDecodeError(): void {
     decodeFailed = true;
@@ -167,7 +178,7 @@
   >
     [Attachment unavailable: {name}]
   </span>
-  {#if browserUrl}
+  {#if browserUrl && !linked}
     <a
       class="ml-1 text-xs underline"
       href={browserUrl}
@@ -194,14 +205,40 @@
     {alt}
     title={browserUrl ?? undefined}
     markdownImageSrc={parsed?.href}
+    {size}
+    {linked}
     initial={held ?? undefined}
     ondecodeerror={handleDecodeError}
   />
+{:else if linked}
+  <span
+    data-forge-attachment-linked={resolved.kind}
+    data-find-skip
+    class="inline-flex max-w-full items-center gap-1.5 rounded border border-border-subtle bg-surface-1 px-2 py-1 text-xs"
+    title={browserUrl ?? undefined}
+  >
+    <Icon icon={resolved.kind === 'video' ? Film : resolved.kind === 'audio' ? Music : Paperclip} size={12} />
+    <span class="truncate">{resolved.filename || name}</span>
+    <span class="text-fg-hint">{formatAttachmentSize(resolved.sizeBytes)}</span>
+  </span>
 {:else if resolved.kind === 'video'}
-  <span data-forge-attachment-video class="my-4 mx-auto block w-fit max-w-full">
+  <!-- A player has no text: `data-find-skip` makes it end find's run, as
+       the image or tag it was written as does. -->
+  <span
+    data-forge-attachment-video
+    data-find-skip
+    class="my-4 mx-auto block w-fit max-w-full"
+    style:width={size.wrapper}
+    style:float={size.float}
+    style:vertical-align={size.verticalAlign}
+    style:margin-inline={size.marginInline}
+  >
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
       class="max-w-full rounded-lg"
+      style:width={size.width}
+      style:height={size.height}
+      style:aspect-ratio={size.aspectRatio}
       src={resolved.url}
       title={browserUrl ?? undefined}
       controls
@@ -211,7 +248,7 @@
     ></video>
   </span>
 {:else if resolved.kind === 'audio'}
-  <span data-forge-attachment-audio class="my-2 block w-fit max-w-full">
+  <span data-forge-attachment-audio data-find-skip class="my-2 block w-fit max-w-full">
     <audio
       class="max-w-full"
       src={resolved.url}

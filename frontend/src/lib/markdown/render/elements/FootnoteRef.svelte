@@ -35,12 +35,15 @@
 </script>
 
 {#if token.label !== 'streamdown:footnote'}
+	<!-- On a forge surface the chip shows the footnote's number and is
+	     where the footnotes section's back-reference returns to. -->
 	<button
 		data-streamdown-footnote-ref={id}
 		data-footnote-label={token.label}
+		data-md-anchor={token.anchor}
 		aria-haspopup="dialog"
 		class={streamdown.theme.footnoteRef.base}
 	>
-		{token.label.replace('^', '')}
+		{token.number ?? token.label.replace('^', '')}
 	</button>
 {/if}

@@ -24,18 +24,33 @@ import { Tokenizer } from './Tokenizer';
 import { defaultOptions } from './options';
 import { other, block, inline } from './rules';
 import type { Token, TokensList, Tokens } from './tokens';
-import type { LexerOptions, TokenizerThis } from './options';
+import type { LexerOptions, TokenizerExtensionFunction, TokenizerStartFunction, TokenizerThis } from './options';
 // Type-only, and the one place the engine names an extension: the footnote
 // tables are per-DOCUMENT state, so they belong on the Lexer instance rather
 // than in a module-level map that would leak across documents.
 import type { FootnoteMaps } from '../extensions/footnotes';
+import type { DocumentScope } from '../documentScope';
 
 export class Lexer {
   tokens: TokensList;
   options: LexerOptions;
   state: {
     inLink: boolean;
+    /**
+     * Lexing the text of a link token being built. A link in it would nest
+     * anchors, so no tokenizer builds one while this is set. Unlike
+     * `inLink`, a raw `<a>` or `</a>` tag does not change it.
+     */
+    inLinkText: boolean;
+    /**
+     * A Markdown link was met in the link text being lexed, built in an
+     * image label or refused while `inLinkText` was set. CommonMark's
+     * innermost link wins: that text's own link is then not a link.
+     */
+    linkInText: boolean;
     inRawBlock: boolean;
+    /** Lexing a text run of HTML (`htmlTextTokens`), which holds no Markdown. */
+    inHtmlText: boolean;
     top: boolean;
   };
 
@@ -55,6 +70,15 @@ export class Lexer {
    * component rendering, where the Streamdown context owns them instead.
    */
   footnotes: FootnoteMaps | null = null;
+
+  /**
+   * What the rest of the document defines, when this Lexer lexes one block
+   * of it (`../documentScope.ts` installs it), and the keys of it this run
+   * read. A block's output may change only when a read key resolves
+   * differently.
+   */
+  document: DocumentScope | null = null;
+  documentReads: Set<string> | null = null;
 
   /** The `[center]` / `[right]` alignment in force at the current top-level
    * position (extensions/align.ts); seed it to lex from inside one. */
@@ -94,7 +118,10 @@ export class Lexer {
     this.inlineQueue = [];
     this.state = {
       inLink: false,
+      inLinkText: false,
+      linkInText: false,
       inRawBlock: false,
+      inHtmlText: false,
       top: true,
     };
 
@@ -165,27 +192,33 @@ export class Lexer {
     }
   }
 
-  private blockTokensAtDepth(src: string, tokens: Token[], lastParagraphClipped: boolean) {
+  /**
+   * The token a block extension claims at the start of `src`, if any. The
+   * block loop asks this first at every position; a tokenizer that builds a
+   * block token outside that loop asks it too, so the token is the one the
+   * loop would have produced there.
+   */
+  blockExtensionToken(src: string, tokens: Token[]): Tokens.Generic | undefined {
     const blockExtensions = this.options.extensions?.block;
+    if (!blockExtensions) return undefined;
+    for (let i = 0; i < blockExtensions.length; i++) {
+      const token = blockExtensions[i].call(this.tokenizerContext, src, tokens);
+      if (token) return token;
+    }
+    return undefined;
+  }
+
+  private blockTokensAtDepth(src: string, tokens: Token[], lastParagraphClipped: boolean) {
     const startBlock = this.options.extensions?.startBlock;
 
     while (src) {
       let token: Tokens.Generic | undefined;
 
       // extensions
-      if (blockExtensions) {
-        let matched = false;
-        for (let i = 0; i < blockExtensions.length; i++) {
-          if ((token = blockExtensions[i].call(this.tokenizerContext, src, tokens))) {
-            src = src.substring(token.raw.length);
-            tokens.push(token);
-            matched = true;
-            break;
-          }
-        }
-        if (matched) {
-          continue;
-        }
+      if ((token = this.blockExtensionToken(src, tokens))) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
       }
 
       // newline
@@ -371,10 +404,11 @@ export class Lexer {
     // The reflink preamble additionally allocated an `Object.keys` array per
     // call — on prose with no `[` at all, for a table that is usually empty.
 
-    // Mask out reflinks
+    // Mask out reflinks. `in`, not `Object.hasOwn`: a block's table
+    // inherits the document's definitions (../documentScope.ts).
     if (this.tokens.links && src.includes('[')) {
       maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.reflinkSearch, match0 =>
-        Object.hasOwn(this.tokens.links, match0.slice(match0.lastIndexOf('[') + 1, -1))
+        match0.slice(match0.lastIndexOf('[') + 1, -1) in this.tokens.links
           ? '[' + 'a'.repeat(match0.length - 2) + ']'
           : match0);
     }
@@ -484,7 +518,7 @@ export class Lexer {
       }
 
       // autolink
-      if ((token = this.tokenizer.autolink(src))) {
+      if (!this.state.inLinkText && (token = this.tokenizer.autolink(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
@@ -542,4 +576,67 @@ export class Lexer {
 
     return tokens;
   }
+
+  /**
+   * `src`, a text run of HTML, as the tokens `extensions` claim in it and
+   * text between; null when none claims anything. HTML text holds no
+   * Markdown, so no grammar rule runs, and `state.inHtmlText` is set for an
+   * extension that reads such text by another rule. Unless `linkable`,
+   * `state.inLink` is set too. Each extension's next start is scanned for
+   * once and kept until the run passes it, so the cost is linear in `src`.
+   */
+  htmlTextTokens(src: string, extensions: readonly HtmlTextExtension[], linkable: boolean): Token[] | null {
+    const tokens: Token[] = [];
+    const state = this.state;
+    const outer = { inLink: state.inLink, inHtmlText: state.inHtmlText };
+    state.inHtmlText = true;
+    state.inLink = !linkable;
+    try {
+      // Where each extension may claim next, as an index into the run.
+      const next = extensions.map(() => -1);
+      let at = 0;
+      let claimed = false;
+      while (src) {
+        let token: Tokens.Generic | undefined;
+        for (const extension of extensions) {
+          if ((token = extension.tokenizer?.call(this.tokenizerContext, src, tokens))) break;
+        }
+        if (token) {
+          src = src.substring(token.raw.length);
+          at += token.raw.length;
+          tokens.push(token as Token);
+          claimed = true;
+          continue;
+        }
+        let end = at + src.length;
+        for (let i = 0; i < extensions.length; i++) {
+          if (next[i] <= at) {
+            const start = extensions[i].start?.call(this.tokenizerContext, src.slice(1));
+            next[i] = typeof start === 'number' && start >= 0 ? at + 1 + start : Infinity;
+          }
+          end = Math.min(end, next[i]);
+        }
+        const text = src.slice(0, end - at);
+        src = src.substring(text.length);
+        at = end;
+        const last = tokens.at(-1);
+        if (last?.type === 'text') {
+          last.raw += text;
+          last.text += text;
+        } else {
+          tokens.push({ type: 'text', raw: text, text });
+        }
+      }
+      return claimed ? tokens : null;
+    } finally {
+      state.inLink = outer.inLink;
+      state.inHtmlText = outer.inHtmlText;
+    }
+  }
+}
+
+/** An inline extension as `htmlTextTokens` runs it. */
+export interface HtmlTextExtension {
+  tokenizer?: TokenizerExtensionFunction;
+  start?: TokenizerStartFunction;
 }

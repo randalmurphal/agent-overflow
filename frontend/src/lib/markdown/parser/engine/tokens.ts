@@ -61,6 +61,9 @@ export namespace Tokens {
     type: 'codespan';
     raw: string;
     text: string;
+    /** The color the code names, shown as a swatch beside it. Only
+     * `extensions/colorChips.ts` sets it, from a value its grammar accepted. */
+    color?: string;
   }
 
   export interface Def {

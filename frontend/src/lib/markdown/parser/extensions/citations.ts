@@ -9,6 +9,12 @@ export const markedCitations: Extension = {
     tokenizer(src) {
         if (src.charCodeAt(0) !== 91)
             return undefined;
+        // A bracket that names a reference definition anywhere in the
+        // document is a link. A forge surface has no citations
+        // (`markedForgeGrammar`).
+        const lexer = this.lexer;
+        if (lexer.tokenizer.reflinkDefinition(src, lexer.tokens.links))
+            return undefined;
         // Match inline citations like [1], [ref], [1] [2], [ref] [ref2], etc.
         // Requires non-empty bracket contents and spaces between adjacent citation brackets
         const match = src.match(/^\[[^\][]+\](?:\s+\[[^\][]+\])*/);

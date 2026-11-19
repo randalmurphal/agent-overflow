@@ -3,6 +3,7 @@ import type { Alignment, StreamdownToken } from '../parser/index';
 import { alignedTokens } from '../parser/extensions/align';
 import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
+import { headingAnchor, htmlAnchorName } from '../parser/documentScope';
 import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText, tableCellRenders } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
@@ -98,6 +99,7 @@ export function renderStaticTokenHtml(
 					const tag = `h${token.depth}`;
 					output.push(
 						`<${tag} data-streamdown-heading-${token.depth}="${dataId}"` +
+						attribute('data-md-anchor', headingAnchor(token)) +
 						attribute('class', streamdown.theme[tag as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'].base) +
 						'>',
 					);
@@ -129,6 +131,10 @@ export function renderStaticTokenHtml(
 					output.push(
 						`<code data-streamdown-codespan="${dataId}"${attribute('class', codespanClass(streamdown.theme.codespan.base, token.text))}>` +
 						escapeHtml(token.text) +
+						// Mirrors Element.svelte: `color` is a value colorChips.ts accepted.
+						(token.color
+							? `<span data-streamdown-color-swatch aria-hidden="true"${attribute('style', `background-color: ${token.color};`)}></span>`
+							: '') +
 						'</code>',
 					);
 					break;
@@ -141,8 +147,9 @@ export function renderStaticTokenHtml(
 					const listStyle = token.ordered && token.listType
 						? attribute('style', `list-style-type: ${token.listType};`)
 						: '';
+					const start = token.ordered && token.start !== 1 ? attribute('start', token.start) : '';
 					output.push(
-						`<${tag} ${marker}="${dataId}"${listStyle}${attribute('class', streamdown.theme[tag].base)}>`
+						`<${tag} ${marker}="${dataId}"${start}${listStyle}${attribute('class', streamdown.theme[tag].base)}>`
 					);
 					if (!render(children)) return false;
 					output.push(`</${tag}>`);
@@ -186,6 +193,12 @@ export function renderStaticTokenHtml(
 					);
 					if (!render(children)) return false;
 					output.push('</table></div>');
+					break;
+
+				case 'caption':
+					output.push(`<caption data-streamdown-caption="${dataId}">`);
+					if (!render(children)) return false;
+					output.push('</caption>');
 					break;
 
 				case 'thead':
@@ -234,7 +247,21 @@ export function renderStaticTokenHtml(
 					const linkClass = classifyLinkHref(
 						token.href,
 						streamdown.allowedLinkPrefixes ?? [],
+						!!streamdown.document?.forge,
 					);
+					// Mirrors Link.svelte's fragment branch.
+					if (linkClass.kind === 'fragment') {
+						output.push(
+							`<a data-streamdown-link="${dataId}" data-md-fragment=""` +
+							attribute('class', streamdown.theme.link.base) +
+							attribute('href', linkClass.href) +
+							attribute('title', token.title ?? undefined) +
+							'>',
+						);
+						if (!render(children)) return false;
+						output.push('</a>');
+						break;
+					}
 					const href = linkClass.kind === 'anchor' ? linkClass.href : null;
 					// Mirrors Link.svelte's first branch: a preview anchor is an
 					// ordinary anchor plus the data attributes the click delegate
@@ -313,6 +340,15 @@ export function renderStaticTokenHtml(
 					output.push(`<br data-streamdown-br="${dataId}">`);
 					break;
 
+				case 'checkbox':
+					output.push(
+						`<input data-streamdown-checkbox="${dataId}" disabled type="checkbox"` +
+						(token.checked ? ' checked' : '') +
+						attribute('class', streamdown.theme.li.checkbox) +
+						'>',
+					);
+					break;
+
 				case 'descriptionList':
 					if (streamdown.snippets.descriptionList) return false;
 					output.push(`<dl data-streamdown-description-list="${dataId}"${attribute('class', streamdown.theme.descriptionList.base)}>`);
@@ -339,6 +375,18 @@ export function renderStaticTokenHtml(
 					break;
 				}
 
+				// Mirrors Element.svelte: the tag is one of the parser's fixed
+				// names (HTML_INLINE_TAGS), never authored text.
+				case 'htmlInline':
+					output.push(
+						`<${token.tag} data-streamdown-html-inline="${dataId}"` +
+						attribute('data-md-anchor', htmlAnchorName(token.raw, streamdown.document?.forge)) +
+						`${attribute('title', token.title)}>`,
+					);
+					if (!render(children)) return false;
+					output.push(`</${token.tag}>`);
+					break;
+
 				case 'html':
 					// Mirror Element.svelte's html branch. An html snippet is a
 					// component island by definition (it hydrates claimed media
@@ -349,6 +397,13 @@ export function renderStaticTokenHtml(
 					// and the snippet check must not depend on `renderHtml`
 					// happening to be truthy at the same time.
 					if (streamdown.snippets.html || streamdown.renderHtml) return false;
+					break;
+
+				// Mirrors Element.svelte: with `renderHtml`, a component island
+				// (HtmlRegion.svelte); without, only its Markdown islands.
+				case 'htmlRegion':
+					if (streamdown.renderHtml) return false;
+					if (!render(children)) return false;
 					break;
 
 				case 'escape':

@@ -8,6 +8,17 @@
   // from the first frame and a sharper variant swaps pixels inside an
   // unchanged box. The scroll contract depends on that
   // (docs/architecture/frontend-scroll.md, "Async-short remount content").
+  // An authored size (`size`, render/imageSize.ts) sets the width, or a
+  // share of the line on the wrapper, and at most the ratio; the height
+  // stays derived from a ratio, so the box is still known in the first
+  // frame and no tier changes it. An authored height alone takes its width
+  // from the original's ratio, as a bare <img height> does, not the
+  // original's width from the attribute.
+  // An authored `align` or `hspace` places the wrapper.
+  //
+  // Inside an author's link (`linked`, from the claim) the link is the
+  // control: a click follows it, and the picture has no role, tab stop or
+  // lightbox of its own.
   //
   // Tier: a remount reads the last tier this image was painted at and, when
   // the cache still holds it, paints in the frame it mounts. Otherwise the
@@ -37,6 +48,7 @@
     observeImageBox,
     rememberImageTier,
   } from '../../../utils/imageTiers';
+  import type { ImageSize } from '../../../markdown';
   import { localImageFailureReason } from '../../../utils/localImageCache';
   import type { MarkdownImageSource, MarkdownImageVariant } from '../../../utils/markdownImageSource';
   import { rememberDecodedSize, type MediaHandle } from '../../../utils/mediaBlobCache';
@@ -46,12 +58,18 @@
     alt,
     title,
     markdownImageSrc,
+    size,
+    linked = false,
     initial,
     ondecodeerror,
   }: {
     source: MarkdownImageSource;
     alt: string;
     title?: string;
+    /** The size its author gave it (`<img width height>`), over the box's. */
+    size?: ImageSize;
+    /** Inside an author's link (markdownImageSource.ts#claimedInLink). */
+    linked?: boolean;
     /** The `data-markdown-image-src` value: the reference as its author wrote it. */
     markdownImageSrc?: string;
     /**
@@ -84,9 +102,6 @@
   // The tier whose fetch failed behind a painted variant; that tier and
   // every lower one are not asked for again, a higher one is.
   let refusedTier: number | null = null;
-  // Inside a link: the click follows it, as on the forge, and the picture
-  // is not its own control.
-  let linked = $state(false);
 
   // Keyed on the identity string, so a host rebuilding an equal source
   // object does not restart the fetch.
@@ -191,7 +206,6 @@
 
   // Attached to whichever of the picture and the loading chip is mounted.
   function watchBox(element: HTMLElement): (() => void) | void {
-    linked = element.closest('a[href]') !== null;
     const container = imageBoxContainer(element);
     if (!container) return;
     // A measured container reports synchronously, and what that starts must
@@ -208,6 +222,13 @@
     }
     if (image.width > 0 && image.height > 0) return { width: image.width, height: image.height };
     return {};
+  });
+
+  // An authored height alone: the width its ratio gives, in the first frame.
+  const derivedWidth = $derived.by((): string | undefined => {
+    if (!size?.height || size.width) return undefined;
+    const height = Number.parseFloat(size.height);
+    return box.width && box.height ? `${(height * box.width) / box.height}px` : 'auto';
   });
 
   const label = $derived(`Preview ${alt || source.filename}`);
@@ -227,7 +248,6 @@
   }
 
   function openLightbox(): void {
-    if (linked) return;
     const current = painted;
     if (!current) return;
     const { value } = current;
@@ -270,11 +290,15 @@
       'group relative my-4 mx-auto block w-fit max-w-full rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
       linked ? '' : 'cursor-zoom-in',
     ].join(' ')}
+    style:width={size?.wrapper}
+    style:float={size?.float}
+    style:vertical-align={size?.verticalAlign}
+    style:margin-inline={size?.marginInline}
     role={linked ? undefined : 'button'}
     tabindex={linked ? undefined : 0}
     aria-label={linked ? undefined : label}
-    onclick={openLightbox}
-    onkeydown={handleKeydown}
+    onclick={linked ? undefined : openLightbox}
+    onkeydown={linked ? undefined : handleKeydown}
     {@attach watchBox}
   >
     <img
@@ -284,6 +308,9 @@
       {title}
       width={box.width}
       height={box.height}
+      style:width={size?.width ?? derivedWidth}
+      style:height={size?.height}
+      style:aspect-ratio={size?.aspectRatio}
       data-markdown-image-src={markdownImageSrc}
       {...source.menuTag}
       onload={handleLoad}

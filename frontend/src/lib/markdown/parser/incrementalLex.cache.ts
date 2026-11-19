@@ -9,6 +9,7 @@
 import type { ProvenAppend } from './provenAppend';
 import type { Extension, LinkTable, StreamdownToken } from './lexer';
 import type { FootnoteMaps } from './extensions/footnotes';
+import type { DocumentScope } from './documentScope';
 const isTrimWhitespaceCode = (code: number): boolean => (code >= 9 && code <= 13) ||
     code === 32 ||
     code === 160 ||
@@ -99,6 +100,8 @@ export const createIncrementalLexCache = (observeLex?: IncrementalLexObserver): 
     tokens: null,
     links: null,
     footnotes: null,
+    scope: null,
+    reads: null,
     codeFence: null,
     tableTailUnstable: false,
     tableAppend: null,
@@ -133,6 +136,10 @@ export type IncrementalLexCache = {
     tokens: StreamdownToken[] | null;
     links: LinkTable | null;
     footnotes: FootnoteMaps | null;
+    /** The document scope `tokens` were lexed under, and the keys of it
+     * they read (documentScope.ts). */
+    scope: DocumentScope | null;
+    reads: Set<string> | null;
     codeFence: {
         char: '`' | '~';
         length: number;

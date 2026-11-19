@@ -51,8 +51,17 @@ anchor, untagged reference, or tagged blocked span; both renderers call it.
 
 Embedded forge HTML is opt-in. The extension maps supported structural and
 inline forms onto native tokens, then `render/htmlSanitize.ts` handles the
-remaining allowlisted elements and attributes. Unknown HTML renders as escaped
-text. Agent chat keeps HTML rendering disabled. `markedEmbeddedInlineHtml` is
+remaining allowlisted elements and attributes. Its output holds only
+allowlisted elements, allowlisted attributes and text. HTML off the allowlist
+renders as a forge renders it: the element's text shows without the element,
+and a script, style or svg shows nothing. On a GitHub surface GFM's disallowed
+tags (`<textarea>`, `<iframe>`) show as their source text. Agent chat keeps
+HTML rendering disabled. An HTML block that leaves a
+tracked container open until a later HTML block is one `htmlRegion` token
+(`parser/extensions/htmlRegion.ts`). Its HTML is sanitized and parsed once
+around a nonce-marked placeholder per Markdown island, as a forge sanitizes a
+whole document; `HtmlRegion.svelte` renders island-free HTML through the same
+`html` snippet as an html token. `markedEmbeddedInlineHtml` is
 exported on its own so an app extension that must claim an `<img>` first
 reuses this attribute parsing instead of re-implementing it. Media inside a
 wrapper the extension does not claim reaches the sanitizer's `claimMedia`
@@ -60,6 +69,13 @@ option: a host returning a claim gets the element without its `src`, marked
 with `data-markdown-media-claim`, and owns the injection through the `html`
 snippet. See
 [`remote-access-boundaries.md`](../../../../docs/specs/remote-access-boundaries.md).
+
+A theme-specific image (a `<picture>` color-scheme source, a
+`#gh-*-mode-only` fragment) paints the src the reader's scheme selects:
+the renderer's `colorScheme` prop and the sanitizer's `colorScheme` option,
+read only where such an image is, so a theme change repaints those images
+and rebuilds no block. Every candidate passes the same URL gate and host
+claim as the image's own src (`parser/extensions/themedImages.ts`).
 
 Keep `staticHtml.ts` and `Element.svelte` behavior equivalent for every token and
 URL class. The static path must bail out to a component island for component-
@@ -80,6 +96,13 @@ backed tokens such as Mermaid, including when highlight caches are warm.
   Every emitter of an inline `<code>` calls `render/codespan.ts#codespanClass`.
 - `data-footnote-label` publishes labels only. Chat owns the definition registry
   and popup and pays the whole-document definition lex when opening it.
+- A `DocumentContext` (`parser/documentContext.ts`) folds per-block facts
+  (reference definitions; on a forge, footnote numbers, heading anchors and
+  GitLab's table of contents) and hands each block a `DocumentScope`. A
+  block's lex records the keys it read; a renderer rebuilds kept output only
+  when one resolves differently. Forge anchors are `data-md-anchor` and
+  same-document links `data-md-fragment`, never `id` or a navigating href;
+  chat resolves them inside the clicked `.markdown-body`.
 - Mermaid and math elements publish parser-owned source values. Code source
   remains the code element's text content.
 
@@ -88,8 +111,21 @@ selectors. Scope Markdown styles to Markdown-owned markup.
 
 ## Parser invariants
 
-- A blockquote gets its own `Lexer`; shared instances leak inline queues and
-  reference definitions across documents.
+- The alert extension measures a blockquote with a throwaway `Lexer` and lexes
+  its body through the active one. A shared measuring instance leaks inline
+  queues and reference definitions across documents.
+- A tokenizer that builds a nested block token outside the block loop asks
+  `Lexer.blockExtensionToken` first, so the token is the one the loop would
+  produce there.
+- Link text holds no link: a tokenizer that builds a link checks
+  `lexer.state.inLinkText`, and one that lexes link text sets it. A raw
+  `<a>` tag changes `inLink` only.
+- A destination or title is resolved by the engine's `linkText` option, which
+  an extension sets. Build link tokens from `tokenizer.link` so every host
+  claim reads a destination the same way.
+- A block extension that can claim a run opening in a sealed block (a wrapper
+  closed by a later append) sets `reopensSealedBlocks`, which disables
+  `parseBlocks` append reuse.
 - A blockquote token's `raw` is exactly the consumed source prefix. Offset sums
   depend on it.
 - Extension tokenizers check their opening character codes before context lookup

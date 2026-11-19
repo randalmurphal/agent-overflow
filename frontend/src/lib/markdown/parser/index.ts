@@ -17,7 +17,7 @@
  * | `incrementalLex.merge.ts` | list/table tail splicing + token reuse       |
  * | `incompleteMarkdown.ts`   | the streaming-tail completers                |
  */
-export { lex, lexFootnoteDefinitions } from './lexer';
+export { lex, lexCapture, lexFootnoteDefinitions, markedForgeGrammar, usesChatGrammar } from './lexer';
 export type { Extension, GenericToken, StreamdownToken } from './lexer';
 export { Lexer } from './engine';
 export type { LexerOptions, Token, Tokens, TokensList } from './engine';
@@ -33,6 +33,8 @@ export type {
   MdxToken,
   DetailsToken,
   DetailsSummaryToken,
+  HtmlInlineToken,
+  HtmlRegionToken,
   TableToken,
   THead,
   TBody,
@@ -69,3 +71,7 @@ export type {
   IncrementalLexObserver,
   IncrementalLexPath
 } from './incrementalLex.cache';
+export { createDocumentContextCache, documentContextOf, headingSlug, mayNeedDocumentContext } from './documentContext';
+export type { DocumentContext, DocumentContextCache } from './documentContext';
+export { sameScopeReads } from './documentScope';
+export type { DocumentForge, DocumentScope } from './documentScope';

@@ -15,12 +15,14 @@ import type { SubSupToken } from './extensions/subsup';
 import type { ListItemToken, ListToken } from './extensions/list';
 import type { BrToken } from './extensions/br';
 import type { HrToken } from './extensions/hr';
-import type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';
+import type { TableToken, TCaption, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';
+import type { CheckboxToken } from './extensions/tableTaskCells';
 import type { DescriptionDetailToken, DescriptionListToken, DescriptionTermToken, DescriptionToken } from './extensions/dl';
 import type { AlignToken } from './extensions/align';
 import type { CitationToken } from './extensions/citations';
 import type { MdxToken } from './extensions/mdx';
-import type { DetailsSummaryToken, DetailsToken } from './extensions/embeddedHtml';
+import type { DetailsSummaryToken, DetailsToken, HtmlInlineToken } from './extensions/embeddedHtml';
+import type { HtmlRegionToken } from './extensions/htmlRegion';
 import { markedAlert } from './extensions/alert';
 import { markedFootnote, markedFootnoteBlock } from './extensions/footnotes';
 import { markedMath } from './extensions/math';
@@ -35,6 +37,8 @@ import { markedAlign } from './extensions/align';
 import { markedCitations } from './extensions/citations';
 import { markedMdx, markedMdxBlock } from './extensions/mdx';
 import { markedBlockquoteBlock } from './extensions/blockquoteSource';
+import { applyDocumentScope, installDocumentScope } from './documentScope';
+import type { DocumentScope } from './documentScope';
 // Default plugin sets, in registration order. Hoisted so the options object
 // (and the regexes/closures inside each plugin) is built once, not per chunk.
 // The tokenizers are stateless at creation time — per-document state lives on
@@ -76,6 +80,8 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
         }
     };
     extensions.forEach(({ level, name: _name, tokenizer, ...rest }) => {
+        if (rest.linkText)
+            options.linkText = rest.linkText;
         if ('start' in rest && rest.start) {
             if (level === 'block') {
                 options.extensions.startBlock.push(rest.start);
@@ -142,12 +148,46 @@ export const sameExtensionSequence = (left: Extension[] | null, right: Extension
     }
     return true;
 };
+// Agent chat's own grammar, which neither forge has and both show as text:
+// `~sub~` and `^sup^`, `:term: detail` lists, `[center]` alignment,
+// citations, MDX components, and chat's reading of inline `$` math.
+const CHAT_GRAMMAR: ReadonlySet<Extension> = new Set([
+    markedSub,
+    markedSup,
+    markedDl,
+    markedDlBlock,
+    markedAlign,
+    markedCitations,
+    markedMdx,
+    markedMdxBlock,
+    markedMath[1]
+]);
+/**
+ * In a forge surface's extension list: every lex and block split under the
+ * list leaves agent chat's own grammar (CHAT_GRAMMAR) out. It claims nothing.
+ */
+export const markedForgeGrammar: Extension = {
+    name: 'forgeGrammar',
+    level: 'block',
+    applyInBlockParsing: true,
+    omitsChatGrammar: true
+};
+/** Whether lexes under `extensions` read agent chat's own grammar. */
+export const usesChatGrammar = (extensions: readonly Extension[]): boolean =>
+    !extensions.some((extension) => extension.omitsChatGrammar);
+// The defaults with `extensions` around them: `precedesDefaults` ones first,
+// the rest after, each group in list order.
+const aroundDefaults = (defaults: Extension[], extensions: Extension[]): Extension[] => [
+    ...extensions.filter((extension) => extension.precedesDefaults),
+    ...(usesChatGrammar(extensions) ? defaults : defaults.filter((extension) => !CHAT_GRAMMAR.has(extension))),
+    ...extensions.filter((extension) => !extension.precedesDefaults)
+];
 export const getLexOptions = (extensions: Extension[]): LexerOptions => {
     if (extensions.length === 0)
         return DEFAULT_LEX_OPTIONS;
     let options = lexOptionsCache.get(extensions);
     if (!options) {
-        options = parseExtensions(...DEFAULT_LEX_EXTENSIONS, ...extensions);
+        options = parseExtensions(...aroundDefaults(DEFAULT_LEX_EXTENSIONS, extensions));
         lexOptionsCache.set(extensions, options);
     }
     return options;
@@ -158,21 +198,21 @@ export const getBlockOptions = (extensions: Extension[]): LexerOptions => {
         return DEFAULT_BLOCK_OPTIONS;
     let options = blockOptionsCache.get(blockExtensions);
     if (!options) {
-        options = parseExtensions(...DEFAULT_BLOCK_EXTENSIONS, ...blockExtensions);
+        options = parseExtensions(...aroundDefaults(DEFAULT_BLOCK_EXTENSIONS, blockExtensions));
         blockOptionsCache.set(blockExtensions, options);
     }
     return options;
 };
-export const lex = (markdown: string, extensions: Extension[] = []): StreamdownToken[] => {
-    return new Lexer(getLexOptions(extensions))
-        .lex(markdown)
-        .filter((token) => token.type !== 'space' && token.type !== 'footnote') as StreamdownToken[];
+/** `scope` is what the rest of the document defines (documentScope.ts). */
+export const lex = (markdown: string, extensions: Extension[] = [], scope: DocumentScope | null = null): StreamdownToken[] => {
+    return lexCapture(markdown, extensions, null, null, scope).tokens;
 };
 // The footnote seam (see AGENTS.md § Host seams): `[^label]` → its
 // `[^label]: body` definition, for a whole
 // document. The render path cannot answer this. A definition is always its
 // own block, parseBlocks splits blocks apart, and each Block lexes its
-// string in its own Lexer (see incrementalLex's cross-BLOCK note), so the
+// string in its own Lexer (a `DocumentScope` carries reference links, not
+// chat's footnote bodies), so the
 // tokenizer's `ref.content` back-reference is the empty placeholder for
 // every ref whose definition lives in another block — which is every real
 // document, since definitions conventionally sit at the end. The definition
@@ -206,16 +246,21 @@ export const lexCapture = (
     markdown: string,
     extensions: Extension[],
     seedLinks: LinkTable | null,
-    seedFootnotes: FootnoteMaps | null
+    seedFootnotes: FootnoteMaps | null,
+    scope: DocumentScope | null = null
 ): LexCapture => {
     const lexer = new Lexer(getLexOptions(extensions));
+    installDocumentScope(lexer, scope);
     if (seedLinks)
         Object.assign(lexer.tokens.links, seedLinks);
     if (seedFootnotes)
         lexer.footnotes = seedFootnotes;
-    const tokens = lexer.lex(markdown).filter((token) => isKeptType(token.type)) as StreamdownToken[];
+    const all = lexer.lex(markdown);
+    applyDocumentScope(lexer, all);
+    const tokens = all.filter((token) => isKeptType(token.type)) as StreamdownToken[];
     return {
         tokens,
+        reads: lexer.documentReads,
         links: lexer.tokens.links,
         // In component context the footnote extension uses the shared
         // Streamdown maps and never touches the lexer — null here keeps
@@ -236,9 +281,27 @@ export type GenericToken = {
 export type Extension = {
     name: string;
     level: 'block' | 'inline';
-    tokenizer: (this: TokenizerThis, src: string, tokens: Token[] | TokensList) => GenericToken | undefined;
+    /** Absent on an extension that only sets an option (`omitsChatGrammar`). */
+    tokenizer?: (this: TokenizerThis, src: string, tokens: Token[] | TokensList) => GenericToken | undefined;
     start?: TokenizerStartFunction;
     applyInBlockParsing?: boolean;
+    /**
+     * The tokenizer can claim a run that opens in a block an earlier, shorter
+     * source ended before (a wrapper whose closing tag arrives later).
+     * `parseBlocks` keeps no sealed boundary while such an extension takes
+     * part in block parsing.
+     */
+    reopensSealedBlocks?: boolean;
+    /**
+     * Runs before the default extensions instead of after them, so it claims
+     * a start a default would also claim (a `>>>` line before the
+     * blockquote rule, `~x~` before subscript).
+     */
+    precedesDefaults?: boolean;
+    /** The surface reads a forge's Markdown: see `markedForgeGrammar`. */
+    omitsChatGrammar?: boolean;
+    /** Sets the engine's `linkText` option. The last extension that has one wins. */
+    linkText?: (written: string) => string;
     /**
      * True only when this extension tokenizes `source` exactly as `previous`
      * did. A renderer holding output produced under `previous` may then keep
@@ -246,7 +309,7 @@ export type Extension = {
      */
     tokenizesAlike?: (previous: Extension, source: string) => boolean;
 };
-export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken;
+export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken | HtmlInlineToken | HtmlRegionToken | TCaption | CheckboxToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';
 
 /** marked's per-Lexer reference-link table. */
@@ -255,6 +318,8 @@ export type LinkTable = TokensList['links'];
 /** What `lexCapture` reports back from an observable lex run. */
 export type LexCapture = {
 	tokens: StreamdownToken[];
+	/** The document keys the run read (documentScope.ts), or null. */
+	reads: Set<string> | null;
 	links: LinkTable;
 	footnotes: FootnoteMaps | null;
 };
@@ -269,4 +334,4 @@ type LexOptions = LexerOptions & {
 	};
 };
 export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };
-export type { DetailsToken, DetailsSummaryToken };
+export type { DetailsToken, DetailsSummaryToken, HtmlInlineToken, HtmlRegionToken };

@@ -712,6 +712,17 @@ input[type="search"]::-webkit-search-cancel-button {
    type missing `.md-blk` keeps its edge margin, matching the old fallback. */
 .markdown-body > :is(.md-committed, .md-volatile) > .sd-trim-first-block { margin-top: 0; }
 .markdown-body > :is(.md-committed, .md-volatile) > .sd-trim-last-block { margin-bottom: 0; }
+/* A forge body's footnotes section (ChatMarkdown), below a rule in the
+   smaller muted type both forges give it. */
+.markdown-body > .md-footnotes {
+  margin-top: var(--markdown-block-gap);
+  padding-top: var(--markdown-block-gap);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.875em;
+  color: var(--fg-muted);
+}
+.markdown-body > .md-footnotes > .sd-first-block { margin-top: 0; }
+.markdown-body > .md-footnotes > .sd-trim-last-block { margin-bottom: 0; }
 
 /* Settle-moment scroll-flicker fix (COUPLED to the two edge resets above).
    Each timeline row renders inside [data-row-geometry-content]; the wrapper
@@ -1016,6 +1027,18 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--text-secondary);
 }
 
+/* A color chip's swatch (parser/extensions/colorChips.ts): its fill is the
+   authored color, set inline. */
+.markdown-body [data-streamdown-color-swatch] {
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  margin-left: 0.3em;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9999px;
+  vertical-align: middle;
+}
+
 /* LaTeX math starts as escaped source and upgrades to KaTeX when visible. */
 .markdown-body .math-inline {
   font-family: var(--font-mono);
@@ -1115,6 +1138,12 @@ svg[data-mermaid-svg] .labelBox {
    GitHub's and GitLab's rendering, where <details> is a bare disclosure
    (CodeRabbit nests several per finding; boxed, they stack into boxes in
    boxes) and bold is plain bold rather than a highlight color. */
+/* A forge collapses blanks in a paragraph: a soft line break shows as a
+   space on GitLab (GitHub's is already a <br>), and a run of blanks as
+   one. Agent chat keeps pre-wrap paragraphs. */
+.markdown-body.review-prose p {
+  white-space: normal;
+}
 .markdown-body.review-prose details {
   border-width: 0;
   border-style: none;
@@ -1157,6 +1186,38 @@ svg[data-mermaid-svg] .labelBox {
 }
 .markdown-body.review-prose strong {
   color: inherit;
+}
+/* Neither forge italicizes a quote, so emphasis inside one stays visible. */
+.markdown-body.review-prose blockquote {
+  font-style: normal;
+}
+/* A keycap, as both forges draw <kbd>; nested keys are caps in a cap. */
+.markdown-body kbd {
+  display: inline-block;
+  padding: 0.1rem 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  line-height: 1.2;
+  vertical-align: middle;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+/* An image sits in its line, as a forge renders it: a badge row is one
+   row, an icon stays in its sentence, and only an authored `align`
+   centers anything. Chat's centered, rounded picture block is its own. */
+.markdown-body.review-prose img {
+  display: inline;
+  max-width: 100%;
+}
+.markdown-body.review-prose [data-streamdown-image] {
+  display: inline-block;
+  margin: 0;
+}
+.markdown-body.review-prose [data-streamdown-image],
+.markdown-body.review-prose [data-streamdown-image] img {
+  border-radius: 0;
 }
 
 .markdown-body pre { position: relative; }
