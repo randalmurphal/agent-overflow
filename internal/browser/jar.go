@@ -111,7 +111,7 @@ func (m *Manager) jarForLocked(tb *threadBrowser, access Caller, kind string) (j
 		}
 		jar.key = jarKey("project:" + access.ProjectID)
 	case JarThread:
-		jar.key, jar.thread = jarKey("thread:"+access.ThreadID), access.ThreadID
+		jar.key, jar.thread = jarKey("thread:"+string(access.ThreadID)), access.ThreadID
 	case JarPrivate:
 		if tb.session.privateJar == "" {
 			tb.session.privateJar = uuid.NewString()

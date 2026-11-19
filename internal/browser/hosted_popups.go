@@ -286,6 +286,7 @@ func (e *hostedEngine) allowRequest(targets *cdpTargets, frame frameID, rawURL s
 // holds e.mu.
 func (e *hostedEngine) reportedOpenersLocked(owners []frameID) []frameID {
 	// Each step adds a page not in owners yet, so the chain ends.
+	// A page's main frame id is its target id.
 	for {
 		popupID, ok := e.popupByTarget[target.ID(owners[len(owners)-1])]
 		if !ok {
@@ -307,6 +308,7 @@ func (e *hostedEngine) reportedOpenersLocked(owners []frameID) []frameID {
 // target it is, a pending popup's, or the page that reported it as one of
 // its frames. The caller holds e.mu.
 func (e *hostedEngine) ownerPageLocked(frame frameID) (ids.PageHandle, bool) {
+	// A main frame's id is its target's.
 	if pageID, ok := e.targetPageLocked(target.ID(frame)); ok {
 		return pageID, true
 	}

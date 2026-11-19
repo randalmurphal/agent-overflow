@@ -151,6 +151,7 @@ func (p *cdpPage) lifecycle(m cdporder.Message, seeded chan struct{}) {
 				finish()
 			}
 		}
+	// The main frame's id is the target's, the page handle.
 	case cdproto.EventPageFrameStartedLoading:
 		var event page.EventFrameStartedLoading
 		if p.decodeLifecycle(m, &event) && event.FrameID == cdp.FrameID(p.handle) {

@@ -263,6 +263,7 @@ func (p *fakePage) Navigate(ctx context.Context, rawURL string) error {
 	}
 	if download, ok := fakeDownloadAddress(rawURL); ok {
 		// A response a browser saves rather than shows: the page stays.
+		// It begins in the page's one frame, its handle.
 		return p.profile.download(frameID(p.handle), download)
 	}
 	p.mu.Lock()

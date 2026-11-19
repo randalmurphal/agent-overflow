@@ -168,6 +168,7 @@ func (t *cdpTargets) isKnownLocked(id target.ID) bool {
 func (t *cdpTargets) owners(frame frameID) []frameID {
 	chain := t.chain(frame, false)
 	owners := make([]frameID, len(chain))
+	// A page's main frame id is its target id.
 	for i, id := range chain {
 		owners[i] = frameID(id)
 	}
@@ -181,6 +182,7 @@ func (t *cdpTargets) owners(frame frameID) []frameID {
 func (t *cdpTargets) downloadOwners(frame frameID) []ids.PageHandle {
 	chain := t.chain(frame, true)
 	owners := make([]ids.PageHandle, len(chain))
+	// A page's handle is its target id.
 	for i, id := range chain {
 		owners[i] = ids.PageHandle(id)
 	}
@@ -192,6 +194,7 @@ func (t *cdpTargets) downloadOwners(frame frameID) []ids.PageHandle {
 func (t *cdpTargets) chain(frame frameID, gone bool) []target.ID {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// A main frame's id is its target's.
 	chain := []target.ID{target.ID(frame)}
 	// A popup has one opener, so the chain is at most every recorded popup
 	// long; the bound stops a cycle.
