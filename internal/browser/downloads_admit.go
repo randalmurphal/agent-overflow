@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -67,7 +68,6 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, parked *parkedDow
 		m.reserveDownloadLocked(authority, &entry)
 	}
 	p.downloads = append(p.downloads, entry)
-	p.trimDownloadsLocked()
 	note := m.noteDownloadLocked(p, &p.downloads[len(p.downloads)-1], source)
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
@@ -114,22 +114,40 @@ func (m *Manager) takeParkedReservation(authority *workspaceAuthority, parked *p
 	entry.reservedBytes = maxDownloadBytes
 }
 
-// trimDownloadsLocked keeps the page's log within maxPageDownloads by
-// dropping its oldest settled entries. A running one stays: its progress,
-// its reservation and its cancel all need it, and the quotas bound how many
-// can run. The caller holds p.downloadMu.
+// trimDownloadsLocked numbers the entries that settled since it last ran
+// and drops the earliest settled beyond maxPageDownloads, so the entry that
+// just settled stays for its waiter however many run. A running one stays:
+// its progress, its reservation and its cancel all need it, and the quotas
+// bound how many can run. The caller holds p.downloadMu.
 func (p *managedPage) trimDownloadsLocked() {
-	excess := len(p.downloads) - maxPageDownloads
-	if excess <= 0 {
-		return
-	}
-	kept := make([]DownloadInfo, 0, maxPageDownloads)
-	for _, entry := range p.downloads {
-		if excess > 0 && entry.State != downloadStateRunning {
-			excess--
+	settled := 0
+	for i := range p.downloads {
+		entry := &p.downloads[i]
+		if entry.State == downloadStateRunning {
 			continue
 		}
-		kept = append(kept, entry)
+		if entry.settled == 0 {
+			p.downloadSettles++
+			entry.settled = p.downloadSettles
+		}
+		settled++
+	}
+	if settled <= maxPageDownloads {
+		return
+	}
+	stamps := make([]uint64, 0, settled)
+	for _, entry := range p.downloads {
+		if entry.settled != 0 {
+			stamps = append(stamps, entry.settled)
+		}
+	}
+	slices.Sort(stamps)
+	cutoff := stamps[settled-maxPageDownloads-1]
+	kept := make([]DownloadInfo, 0, len(p.downloads)-(settled-maxPageDownloads))
+	for _, entry := range p.downloads {
+		if entry.settled == 0 || entry.settled > cutoff {
+			kept = append(kept, entry)
+		}
 	}
 	p.downloads = kept
 }

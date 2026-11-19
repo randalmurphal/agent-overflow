@@ -400,6 +400,9 @@ type DownloadInfo struct {
 	// file is the finished file as it was when the download settled, so a
 	// later Open or Show in folder acts on that file and no other.
 	file os.FileInfo
+	// settled numbers the entry among its page's settled ones in the order
+	// they settled, from 1; zero while it runs (trimDownloadsLocked).
+	settled uint64
 }
 
 type DownloadOptions struct {

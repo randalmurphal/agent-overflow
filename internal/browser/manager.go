@@ -372,14 +372,17 @@ type managedPage struct {
 	// downloadMu.
 	downloadsEnded bool
 	downloadSeq    uint64
-	downloads      []DownloadInfo
-	downloadWait   chan struct{}
-	assetMu        sync.Mutex
-	inventories    map[string]AssetInventory
-	assetOrder     []string
-	nodeMu         sync.Mutex
-	nodeRefs       map[string]nodeReference
-	nodeOrder      []string
+	// downloadSettles counts the entries that settled
+	// (DownloadInfo.settled). Guarded by downloadMu.
+	downloadSettles uint64
+	downloads       []DownloadInfo
+	downloadWait    chan struct{}
+	assetMu         sync.Mutex
+	inventories     map[string]AssetInventory
+	assetOrder      []string
+	nodeMu          sync.Mutex
+	nodeRefs        map[string]nodeReference
+	nodeOrder       []string
 	// find is written only by a find transition, which holds mu (find.go);
 	// findMu guards it for readers. findMu may be held around the Manager's
 	// mu, never taken inside it. ends are the find ends submitted and not

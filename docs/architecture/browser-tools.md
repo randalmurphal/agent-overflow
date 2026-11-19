@@ -382,8 +382,9 @@ behave as a desktop browser's:
   download the address row shows a downloads button, never moved into the
   More menu. While downloads run it shows how far they are in eighths, or a
   stepped spinner when no running download announced its size. It opens the
-  thread's downloads, newest first (at most 20; a running one is never
-  dropped): name, the page it began on, received and total bytes, and the
+  thread's downloads, newest first (every running one, and the 20 that
+  settled last, so a download's notification always finds its row): name,
+  the page it began on, received and total bytes, and the
   failure. A running one cancels; a finished one shows in the file manager
   (the reveal hand-off of Show in folder) and, for a type every engine shows
   in a tab (PDF, PNG, JPEG, GIF, WebP, BMP, text, JSON), opens in a new tab.
