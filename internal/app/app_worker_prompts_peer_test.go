@@ -48,12 +48,7 @@ func newLinkedWorkers(t *testing.T, n int) *linkedWorkers {
 func newLinkedWorkersAt(t *testing.T, n int, createdAt int64) *linkedWorkers {
 	t.Helper()
 	a, dbPath := newTestAppWithStorePath(t)
-	events := &emitRecorder{}
-	a.testEmitHook = events.capture
-	a.triage = triage.NewRouter(a.store, a.emit)
-	a.configureTriageQueueCallbacks()
-	a.triage.SetPromptRouter(a.routeWorkerPrompt)
-	a.startSessionFn = func(string) error { return errors.New("no provider in this test") }
+	events := wireLinkedWorkersApp(a)
 	f := &linkedWorkers{app: a, events: events, device: reachableDevice(t, a.store), lead: "6f1c2a4e-9d3b-4c1a-8e2f-0a1b2c3d4e5f", dbPath: dbPath}
 	for i := range n {
 		worker := noticeTestThread(t, a, "linked-worker-"+string(rune('a'+i)))
@@ -79,6 +74,29 @@ func newLinkedWorkersAt(t *testing.T, n int, createdAt int64) *linkedWorkers {
 		t.Fatal(err)
 	}
 	return f
+}
+
+// wireLinkedWorkersApp gives a the fixture's triage, prompt router and
+// failing session starts, and returns the recorder of its events.
+func wireLinkedWorkersApp(a *App) *emitRecorder {
+	events := &emitRecorder{}
+	a.testEmitHook = events.capture
+	a.triage = triage.NewRouter(a.store, a.emit)
+	a.configureTriageQueueCallbacks()
+	a.triage.SetPromptRouter(a.routeWorkerPrompt)
+	a.startSessionFn = func(string) error { return errors.New("no provider in this test") }
+	return events
+}
+
+// restart is the computer after a restart: a second App over the same
+// database, whose store is a new run, with nothing in memory. Nothing of
+// its boot has run yet.
+func (f *linkedWorkers) restart(t *testing.T) *linkedWorkers {
+	t.Helper()
+	after := *f
+	after.app = newTestAppAtStorePath(t, f.dbPath)
+	after.events = wireLinkedWorkersApp(after.app)
+	return &after
 }
 
 func (f *linkedWorkers) drain(t *testing.T) {
@@ -450,7 +468,8 @@ func TestALinkedWorkersAsyncQuestionIsHeldForItsSpawner(t *testing.T) {
 	if listed := f.list(t, 0); len(listed) != 1 {
 		t.Fatalf("before the restart the link lists %+v, want the question", listed)
 	}
-	forgetPromptsAtRestart(f.app)
+	// record and everything below act on the restarted computer.
+	f = f.restart(t)
 	f.app.restoreDurableFlushQueueAtBoot()
 	f.app.syncAsyncQuestionPrompts(worker)
 	f.drain(t)

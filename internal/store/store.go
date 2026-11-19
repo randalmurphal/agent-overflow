@@ -103,6 +103,12 @@ type Store struct {
 	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
 	// agentRecordDeleted is the function OnAgentRecordDeleted set, or nil.
 	agentRecordDeleted atomic.Pointer[func(home string)]
+	// run is this open's run identity, random and never empty: an async
+	// question this Store records carries it (async_questions.run_id), and
+	// one whose mark differs was recorded before this run of the app
+	// (AsyncQuestionGroup.AskedThisRun). Every open is a new run, as a
+	// restart is; production opens one Store per process.
+	run string
 	// agentStopPageReadForTest, set only by tests before the store is
 	// shared, runs in ListThreadAgentStopRows after each full page, so a
 	// test can write a request between two of its pages.
@@ -179,7 +185,12 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed}
+	run, err := newRunID()
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed, run: run}
 
 	// Reclaim the WAL file before anything can read from it. Every other
 	// checkpoint the app runs is PASSIVE, which recycles WAL pages for

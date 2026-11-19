@@ -260,7 +260,9 @@ thread's async questions are prompts on the same registry, but triage's
 live state ends with the session and they do not: their route is kept
 in `app_worker_prompts_async.go`, reconciled from the store on every
 change to them, on every thread frame but a patch and on a move away,
-never at boot: one asked before this run started is the person's
+never at boot: one not recorded by this run of the app is the person's,
+which the store says from the run mark it keeps on each question
+(`store.AsyncQuestionGroup.AskedThisRun`), never a time
 ([thread_reply](../../docs/specs/agent-thread-tools.md#thread_reply-q25)). A
 reconcile of a thread asking nothing is one indexed read; a spawn that
 names a fork's thread adopts the questions it carries

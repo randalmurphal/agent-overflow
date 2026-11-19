@@ -410,7 +410,7 @@ func TestAsyncAnswersAreClaimedAgainstTheirItemsRevision(t *testing.T) {
 	if err != nil || len(groups) != 1 || groups[0].ItemID != "question:call" || len(groups[0].Questions) != 2 || groups[0].Questions[1].Title != "Deadline?" {
 		t.Fatalf("unanswered = %+v, %v", groups, err)
 	}
-	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+unansweredAsyncQuestionsSQL, "q")
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+unansweredAsyncQuestionsSQL, "q", s.run)
 	asked := groups[0].Revision
 	if err := s.SetAsyncQuestionDismissed("q", "question:call", 1, true); err != nil {
 		t.Fatal(err)

@@ -41,6 +41,8 @@ func (s *Store) exportTransferAnnotations(ctx context.Context, threadID string, 
 func importTransferAnnotation(tx *sql.Tx, targetID, sourceID string, record transferHistoryRecord) error {
 	switch record.Kind {
 	case "async_question":
+		// The run mark is not on the wire: a question that arrives by
+		// transfer was not asked in this run here, and is the person's.
 		var q AsyncQuestion
 		if err := json.Unmarshal(record.Data, &q); err != nil {
 			return err
