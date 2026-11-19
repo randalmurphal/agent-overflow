@@ -373,7 +373,7 @@ func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
 	if err := os.WriteFile(authority.downloadDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspaceBefore, artifactsBefore := authority.downloadBytes.Load(), manager.artifactBytes.Load()
+	workspaceBefore, artifactsBefore := authority.downloadBytes.Used(), manager.artifactBytes.Used()
 	startDownload(t, manager, access, page, "report.pdf", 5)
 	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
 	if item.State != downloadStateFailed {
@@ -386,10 +386,10 @@ func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
 	}
 	manager.mu.Unlock()
 	awaitRemoved(t, filepath.Join(engineDir, filepath.Base(item.engineID)))
-	if got := authority.downloadBytes.Load(); got != workspaceBefore {
+	if got := authority.downloadBytes.Used(); got != workspaceBefore {
 		t.Fatalf("the workspace holds %d download bytes, want %d", got, workspaceBefore)
 	}
-	if got := manager.artifactBytes.Load(); got != artifactsBefore {
+	if got := manager.artifactBytes.Used(); got != artifactsBefore {
 		t.Fatalf("the artifact root holds %d bytes, want %d", got, artifactsBefore)
 	}
 }
@@ -873,12 +873,12 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, mode.saving)
 			frame := paneHandle(manager, access, page.ID)
 
-			authorityOf(t, manager, access).downloadBytes.Store(maxWorkspaceDownloadBytes)
+			authorityOf(t, manager, access).downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 			admitted := manager.downloadStarted(downloadStart{Frame: frame, ID: "quota", SuggestedName: "q.bin"})
 			if admitted == artifacts {
 				t.Fatalf("a download past the workspace quota was admitted: %v", admitted)
 			}
-			authorityOf(t, manager, access).downloadBytes.Store(0)
+			authorityOf(t, manager, access).downloadBytes.SetUsed(0)
 
 			if !manager.downloadStarted(downloadStart{Frame: frame, ID: "big", SuggestedName: "big.bin"}) {
 				t.Fatal("a download within quota was refused")

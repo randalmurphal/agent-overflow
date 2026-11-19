@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/browser/quota"
 	"agent-overflow/internal/browser/threadlife"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
@@ -165,7 +166,7 @@ type Manager struct {
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
-	artifactBytes  atomic.Int64
+	artifactBytes  *quota.Pool
 	// downloadsMu guards threadDownloads, each thread's downloads as its
 	// pane lists them (downloads_thread.go). It is taken inside m.mu and
 	// inside a page's downloadMu, and never held around either.
@@ -435,6 +436,7 @@ func (p *managedPage) attach(driver pageDriver) {
 
 func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
+		artifactBytes: quota.NewPool("browser artifacts", maxArtifactRootBytes),
 		config:        config,
 		profileDir:    filepath.Join(configDir, browserProfileDir),
 		scopes:        make(map[string]*jarScope),

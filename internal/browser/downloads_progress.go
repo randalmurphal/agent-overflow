@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"agent-overflow/internal/browser/quota"
 )
 
 // A download's progress applied to its row, and a finished download's publish.
@@ -122,12 +124,10 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 				entry.Path, entry.file = destination, file
 			}
 		}
-		if entry.State == downloadStateCompleted && p.authority != nil && entry.reservedBytes > 0 {
+		if entry.State == downloadStateCompleted {
 			// The kept file holds its size of the quotas from here.
-			p.authority.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
-			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
-			entry.reservedBytes = 0
-		} else if entry.State != downloadStateCompleted {
+			quota.Take(&entry.reservation).Settle(entry.Bytes)
+		} else {
 			// Nothing is kept: the engine's file goes with its reservation.
 			m.releaseDownloadLocked(p, entry)
 			removePartial = true

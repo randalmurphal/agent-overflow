@@ -554,7 +554,7 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	}
 
 	manager.mu.Lock()
-	manager.authorities[canonical(t, proj.one)].downloadBytes.Store(maxWorkspaceDownloadBytes)
+	manager.authorities[canonical(t, proj.one)].downloadBytes.SetUsed(maxWorkspaceDownloadBytes)
 	manager.mu.Unlock()
 	if manager.downloadStarted(downloadStart{Frame: paneHandle(manager, a, pageA.ID), ID: "over"}) {
 		t.Fatal("a download over its workspace's quota was kept")

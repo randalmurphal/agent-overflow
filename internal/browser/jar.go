@@ -4,9 +4,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/google/uuid"
+
+	"agent-overflow/internal/browser/quota"
 )
 
 // Cookie jars. A jar is one engine profile: cookies and every other kind of
@@ -193,23 +194,7 @@ func framePageLocked(scope *jarScope, frame string) *managedPage {
 type workspaceAuthority struct {
 	workspace     string
 	downloadDir   string
-	downloadBytes atomic.Int64
-}
-
-// reserveDownload adds bytes to the workspace's download reservation when
-// that stays within maxWorkspaceDownloadBytes, answering whether it did. A
-// refused reservation never touches the counter, which other jars of the
-// workspace change concurrently.
-func (a *workspaceAuthority) reserveDownload(bytes int64) bool {
-	for {
-		current := a.downloadBytes.Load()
-		if current > maxWorkspaceDownloadBytes-bytes {
-			return false
-		}
-		if a.downloadBytes.CompareAndSwap(current, current+bytes) {
-			return true
-		}
-	}
+	downloadBytes *quota.Pool
 }
 
 // authorityLocked answers the workspace's authority, creating it. The caller
@@ -220,7 +205,7 @@ func (m *Manager) authorityLocked(workspace, downloadDir string) *workspaceAutho
 	}
 	authority := m.authorities[workspace]
 	if authority == nil {
-		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir}
+		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir, downloadBytes: quota.NewPool("workspace downloads", maxWorkspaceDownloadBytes)}
 		m.authorities[workspace] = authority
 	}
 	return authority

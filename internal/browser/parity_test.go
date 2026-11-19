@@ -93,17 +93,18 @@ func TestArtifactQuotaPrunesOnlyExpiredFilesAndReservesAtomically(t *testing.T) 
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatalf("expired artifact remains: %v", err)
 	}
-	if got := manager.artifactBytes.Load(); got != 5 {
+	if got := manager.artifactBytes.Used(); got != 5 {
 		t.Fatalf("artifact bytes=%d", got)
 	}
-	if !manager.reserveArtifacts(10) {
-		t.Fatal("small reservation refused")
+	reservation, err := manager.reserveArtifacts(10)
+	if err != nil {
+		t.Fatalf("small reservation refused: %v", err)
 	}
-	manager.settleArtifactReservation(10, 3)
-	if got := manager.artifactBytes.Load(); got != 8 {
+	reservation.Settle(3)
+	if got := manager.artifactBytes.Used(); got != 8 {
 		t.Fatalf("settled bytes=%d", got)
 	}
-	if manager.reserveArtifacts(maxArtifactRootBytes) {
+	if _, err := manager.reserveArtifacts(maxArtifactRootBytes); err == nil {
 		t.Fatal("over-quota reservation accepted")
 	}
 }

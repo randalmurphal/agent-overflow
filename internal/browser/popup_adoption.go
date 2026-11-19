@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"agent-overflow/internal/browser/quota"
 )
 
 // A popup between the engine's report of it (PopupOpened) and the
@@ -83,10 +85,11 @@ type parkedDownload struct {
 	// its cancel goes to the jar's profile while it is open, and its file is
 	// in the jar's download directory either way.
 	scope *jarScope
-	// authority is, on an engine whose downloads are AO's, the workspace
-	// whose allowance the download holds maxDownloadBytes of, with as much
-	// of the artifact quota; nil once that went to its row or back.
-	authority *workspaceAuthority
+	// reservation is, on an engine whose downloads are AO's, the quota the
+	// download holds, maxDownloadBytes of its workspace's allowance and of
+	// the artifact root's, from its start until its row takes it (admitTo)
+	// or it is refused.
+	reservation *quota.Reservation
 	// capped is whether it passed maxDownloadBytes, after which it takes no
 	// further progress.
 	capped bool
@@ -242,13 +245,14 @@ func (m *Manager) parkDownload(event downloadStart) bool {
 	if m.downloadsToArtifacts() {
 		// Its workspace's allowance and the artifact quota, as a listed
 		// download's, before the engine writes a byte of it.
-		if d.scope == nil || authority == nil {
+		if d.scope == nil {
 			return false
 		}
-		if _, ok := m.reserveDownloadBytes(authority); !ok {
+		reservation, err := m.reserveDownload(authority)
+		if err != nil {
 			return false
 		}
-		d.authority = authority
+		d.reservation = reservation
 	}
 	popup.openers = openers
 	popup.downloads = append(popup.downloads, d)
@@ -282,11 +286,7 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 // releaseParked returns a parked download's reservation. The caller holds
 // m.parkMu.
 func (m *Manager) releaseParked(d *parkedDownload) {
-	if d.authority != nil {
-		d.authority.downloadBytes.Add(-maxDownloadBytes)
-		m.settleArtifactReservation(maxDownloadBytes, 0)
-		d.authority = nil
-	}
+	quota.Take(&d.reservation).Release()
 }
 
 // profileScopeLocked answers the open jar whose profile has handle, or nil.
