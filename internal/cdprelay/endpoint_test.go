@@ -34,6 +34,10 @@ type fixture struct {
 	endpoint *Endpoint
 	server   *httptest.Server
 	ctx      context.Context
+	// cancel ends every tunnel connection's ServeCDPTunnel, and served
+	// hears each one return.
+	cancel context.CancelFunc
+	served chan struct{}
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -48,15 +52,20 @@ func newFixture(t *testing.T) *fixture {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	served := make(chan struct{}, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
 		}
 		endpoint.ServeCDPTunnel(ctx, conn)
+		select {
+		case served <- struct{}{}:
+		default:
+		}
 	}))
 	t.Cleanup(server.Close)
-	return &fixture{t: t, endpoint: endpoint, server: server, ctx: ctx}
+	return &fixture{t: t, endpoint: endpoint, server: server, ctx: ctx, cancel: cancel, served: served}
 }
 
 // dialLocal is what chromedp does: an ordinary TCP connection to the
@@ -427,6 +436,70 @@ func TestRelayClosesTheLocalConnectionOnAStreamError(t *testing.T) {
 	}
 	if _, err := local.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("the failed stream stayed open: %v", err)
+	}
+}
+
+// stallStream sends n chunks of data for stream id, whose local reader
+// never reads: far more than loopback socket buffers hold, so the stream's
+// write to its socket parks.
+func (p *peer) stallStream(id uint32, n int) {
+	p.t.Helper()
+	chunk := make([]byte, webview2host.TunnelChunkBytes)
+	for range n {
+		p.sendData(id, chunk)
+	}
+}
+
+// A stream whose local reader stopped holds no other stream's data, and
+// cancelling the tunnel ends its session while that stream's write is
+// parked.
+func TestRelayAStalledStreamHoldsNoOtherStream(t *testing.T) {
+	f := newFixture(t)
+	f.endpoint.streamBounds = webview2host.TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: time.Hour}
+	p := f.connect()
+
+	stalled := f.dialLocal()
+	stalledID := p.acceptOpen()
+	live := f.dialLocal()
+	liveID := p.acceptOpen()
+	_ = stalled
+
+	p.stallStream(stalledID, 1024)
+	p.sendData(liveID, []byte("still-flowing"))
+	if got := string(readN(t, live, len("still-flowing"))); got != "still-flowing" {
+		t.Fatalf("the live stream saw %q", got)
+	}
+
+	f.cancel()
+	select {
+	case <-f.served:
+	case <-time.After(testDeadline):
+		t.Fatal("the tunnel's cancel did not end its session while a stream's write was parked")
+	}
+}
+
+// A stream whose local reader stopped closes, its launcher told, once its
+// queued data passes the backlog bound or one write passes its timeout.
+func TestRelayClosesAStreamItsReaderStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bounds webview2host.TunnelStreamBounds
+	}{
+		{"backlog", webview2host.TunnelStreamBounds{Backlog: 1 << 20, WriteTimeout: time.Hour}},
+		{"write timeout", webview2host.TunnelStreamBounds{Backlog: 1 << 30, WriteTimeout: 50 * time.Millisecond}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.endpoint.streamBounds = tc.bounds
+			p := f.connect()
+			_ = f.dialLocal()
+			id := p.acceptOpen()
+
+			p.stallStream(id, 512)
+			if got := p.nextControl(); got.Op != webview2host.TunnelClose || got.StreamID != id {
+				t.Fatalf("expected a close for stream %d, got %+v", id, got)
+			}
+		})
 	}
 }
 
