@@ -39,7 +39,7 @@ import (
 //   - a popup a middle or Ctrl click opens has a target that names no
 //     opener, so its first request waits for the launcher's ReportPopup;
 //     that wait is logged and stays inside the backend's bound
-//     (requestOwnerWait in internal/browser cdp_page.go);
+//     (requestOwnerWait in internal/browser cdp_handlers.go);
 //
 //   - a redirect to an outside file and a renderer navigation to one never
 //     load it.

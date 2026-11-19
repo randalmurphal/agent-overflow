@@ -21,9 +21,9 @@ import (
 // driver.go seam (docs/specs/remote-access.md §7, "Headless Chromium
 // engine (serve mode)").
 //
-// A page's OPERATIONS are plain CDP — cdp_page.go drives a headless
-// Chromium target exactly as it drives a launcher-hosted WebView2
-// controller, and that file is reused whole. What differs is LIFETIME:
+// A page's OPERATIONS are plain CDP: cdp_page.go and its siblings drive a headless
+// Chromium target exactly as they drive a launcher-hosted WebView2
+// controller, and those files are reused whole. What differs is LIFETIME:
 //
 //   - a Chromium process belongs to a PROFILE, not to the engine. One
 //     workspace is one process with its own --user-data-dir, which is what

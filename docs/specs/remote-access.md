@@ -1437,7 +1437,7 @@ creation that finds the browser dead before the watcher runs retires it
 instead, reaping it and reporting its pages closed, then relaunches, and
 each page is reported once whichever runs first. Strictly no `--no-sandbox`: a launch that fails for lack of
 a sandbox surfaces the engine's error and serve-mode.md says to run
-the service as a non-root user. `cdp_page.go` is reused whole. The
+the service as a non-root user. The CDP page driver (`cdp_page.go`, `cdp_handlers.go`, `cdp_operations.go`) is reused whole. The
 pane host, DevTools, and site-data listing are not implemented
 (omission = refusal, as the seam already reads). Tests spawn a fake
 `chromium` script that advertises a fake CDP server, never a real
