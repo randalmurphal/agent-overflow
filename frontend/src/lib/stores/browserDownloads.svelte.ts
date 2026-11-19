@@ -1,11 +1,6 @@
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
-import {
-  browserCompanionAct,
-  browserCompanionState,
-  browserPaneOpen,
-  canUseNativeBrowser,
-  type BrowserActionFailure,
-} from './browserCompanion.svelte';
+import { browserCompanionAct, type BrowserActionFailure } from './browserActions';
+import { browserCompanionState, browserPaneOpen, canUseNativeBrowser } from './browserCompanion.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { formatBytes } from '../utils/formatBytes';
 

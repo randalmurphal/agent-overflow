@@ -1,5 +1,6 @@
 import { OpenExternalURL } from '../stores/bindings';
-import { canPresentNativeBrowser, openBrowserTab } from '../stores/browserCompanion.svelte';
+import { openBrowserTab } from '../stores/browserActions';
+import { canPresentNativeBrowser } from '../stores/browserCompanion.svelte';
 import { addErrorToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import type { BackendKey } from '../transport/backendKey';

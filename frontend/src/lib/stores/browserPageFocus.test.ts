@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { browserCompanionAct } from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
-  browserCompanionAct,
   noteBrowserActionError,
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';

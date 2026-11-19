@@ -3,7 +3,8 @@
   import Cookie from '@lucide/svelte/icons/cookie';
   import SquareUser from '@lucide/svelte/icons/square-user';
   import VenetianMask from '@lucide/svelte/icons/venetian-mask';
-  import { browserCompanionState, setBrowserJar, type BrowserJar } from '../../stores/browserCompanion.svelte';
+  import { setBrowserJar, type BrowserJar } from '../../stores/browserActions';
+  import { browserCompanionState } from '../../stores/browserCompanion.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import Icon from '../primitives/Icon.svelte';
