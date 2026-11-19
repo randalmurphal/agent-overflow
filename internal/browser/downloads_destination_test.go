@@ -331,6 +331,35 @@ func TestARunningArtifactDownloadIsNotOpenable(t *testing.T) {
 	}
 }
 
+// A file an earlier release left in the workspace's old download directory,
+// where its engine wrote running downloads beside finished ones, does not
+// open: only the finished files AO moved since are granted.
+func TestAnEarlierReleasesDownloadFileIsNotOpenable(t *testing.T) {
+	manager, _, access, page := newDownloadManagerFor(t, downloadsAsArtifacts)
+	workspace, err := canonicalRoot(access.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(manager.artifactRoot, "downloads", jarDirName(workspace))
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"4b1f6a2e-guid.crdownload", "report.pdf"} {
+		path := filepath.Join(old, name)
+		if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.authorizeFile(access, path); err == nil {
+			t.Fatalf("%s in an earlier release's download directory opens", name)
+		}
+	}
+	startDownload(t, manager, access, page, "done.bin", 10)
+	item, _ := manager.threadDownload(access.ThreadID, threadDownloads(manager, access)[0].ID)
+	if _, err := manager.authorizeFile(access, item.path); err != nil {
+		t.Fatalf("a finished download does not open: %v", err)
+	}
+}
+
 // With neither hard links nor a no-replace rename, or a staging directory
 // on another filesystem, the download fails on its row with the reason:
 // nothing is copied, nothing appears in Downloads, and the staged file goes.

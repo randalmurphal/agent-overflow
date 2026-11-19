@@ -405,9 +405,15 @@ func downloadOpensInPage(name string) bool {
 // opens from one is a finished download AO moved there.
 const jarDownloadingDir = "downloading"
 
+// workspaceDownloadsDir is the artifact subtree of the workspaces' finished
+// downloads. No earlier release wrote to it: one wrote its engine's running
+// downloads, and the files it finished, into "downloads", whose files
+// authorizeFile never grants and the artifact prune removes with age.
+const workspaceDownloadsDir = "finished"
+
 // workspaceDownloadDir is the directory a workspace's finished downloads
 // are kept in (workspaceAuthority.downloadDir), for the canonical
 // workspace.
 func (m *Manager) workspaceDownloadDir(workspace string) string {
-	return filepath.Join(m.artifactRoot, "downloads", jarDirName(workspace))
+	return filepath.Join(m.artifactRoot, workspaceDownloadsDir, jarDirName(workspace))
 }
