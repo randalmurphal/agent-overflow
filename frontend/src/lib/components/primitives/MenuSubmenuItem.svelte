@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Menu row that expands a nested Popover+Menu on hover / ArrowRight.
   // The child menu re-uses the Menu primitive so arrow-nav, typeahead,
   // and tabindex rules all come for free inside the submenu.
@@ -79,14 +80,13 @@
 
   function handleKeydown(e: KeyboardEvent): void {
     if (disabled) return;
+    if (e.key === 'ArrowRight' || e.key === ' ' || isLocalEnter(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      openImmediate();
+      return;
+    }
     switch (e.key) {
-      case 'ArrowRight':
-      case 'Enter':
-      case ' ':
-        e.preventDefault();
-        e.stopPropagation();
-        openImmediate();
-        return;
       case 'ArrowLeft':
         if (open) {
           e.preventDefault();

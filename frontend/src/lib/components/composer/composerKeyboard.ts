@@ -11,7 +11,7 @@
 // preventing the default event, moving focus, firing insert functions,
 // etc.
 
-import { isLocalEnter } from '../../utils/localEnter';
+import { isEnterKey, isLocalEnter } from '../../utils/localEnter';
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
 import type { ComposerSlashHandle } from './composerSlash.svelte';
 import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -70,9 +70,9 @@ function popoverYieldsKey(e: KeyboardEvent): boolean {
   // Mid-IME-composition, both insert keys belong to the IME: Enter confirms
   // the candidate and Tab walks the candidate list. Inserting the highlighted
   // completion here would replace the still-composing text.
-  if ((e.key === 'Enter' || e.key === 'Tab') && isImeComposingEvent(e)) return true;
+  if ((isEnterKey(e) || e.key === 'Tab') && isImeComposingEvent(e)) return true;
   // Enter with Alt, Ctrl or Meta is an app chord, not an insert.
-  if (e.key === 'Enter' && !isLocalEnter(e)) return true;
+  if (isEnterKey(e) && !isLocalEnter(e)) return true;
   return false;
 }
 
@@ -256,9 +256,9 @@ export function dispatchComposerInputKeydown(
   // Enter mid-IME-composition confirms the candidate; the composed text is
   // still in the IME's buffer, not the textarea's value. Yield WITHOUT
   // preventDefault — the browser has to deliver it to the composition.
-  if (e.key === 'Enter' && isImeComposingEvent(e)) return;
+  if (isEnterKey(e) && isImeComposingEvent(e)) return;
 
-  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+  if (isLocalEnter(e) && !e.shiftKey) {
     if (deps.enterSends === false) return;
     e.preventDefault();
     deps.submitEnter();

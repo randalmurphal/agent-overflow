@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import { projectHasScope } from '../../transport/entityScopes';
   // A single project row. Chevron + folder + name + new-group and new-thread
   // actions on the right. Right-click opens a small context menu
@@ -170,7 +171,7 @@
   }
 
   function handleRowKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (isLocalEnter(e) || e.key === ' ') {
       e.preventDefault();
       toggleProject(project.project.id);
     }
@@ -265,8 +266,8 @@
   function handleRenameKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing a CJK name; committing
     // the rename here would save the pre-composition text and exit edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       void commitRename();
     } else if (e.key === 'Escape') {

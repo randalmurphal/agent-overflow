@@ -107,7 +107,7 @@
   function handleKeydown(event: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing; creating the worktree
     // here would use the pre-composition name.
-    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
+    if (isLocalEnter(event) && isImeComposingEvent(event)) return;
     if (isLocalEnter(event)) {
       event.preventDefault();
       void confirmCreate();

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // A single row inside a <Menu>. Consumes roving tabindex from Menu —
   // the parent sets `tabindex` on these via the DOM, so we don't render
   // a baseline tabindex here (Menu takes care of it on mount + keyboard
@@ -114,7 +115,7 @@
     // parent Menu — this handler only claims the activation keys. A
     // held key's repeat never activates: the press that opened the menu
     // and moved focus here keeps repeating into the item.
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (isLocalEnter(e) || e.key === ' ') {
       e.preventDefault();
       if (e.repeat) return;
       activate();

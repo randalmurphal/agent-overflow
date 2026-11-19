@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import ForkPendingRow from './ForkPendingRow.svelte';
   import {
     getJumpHintsVisible,
@@ -243,8 +244,8 @@
   function handleRenameKeydown(e: KeyboardEvent) {
     // Enter confirms the IME candidate while composing a CJK title; committing
     // the rename here would save the pre-composition text and exit edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       saveRename();
     } else if (e.key === 'Escape') {

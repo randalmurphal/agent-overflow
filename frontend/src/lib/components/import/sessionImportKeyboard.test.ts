@@ -13,7 +13,7 @@ function el(tag: string, props: Record<string, unknown> = {}): HTMLElement {
 }
 
 function press(key: string, target: EventTarget | null, mods: Partial<ImportKeyEvent> = {}) {
-  return resolveImportKeyAction({ key, metaKey: false, ctrlKey: false, target, ...mods });
+  return resolveImportKeyAction({ key, metaKey: false, ctrlKey: false, altKey: false, target, ...mods });
 }
 
 const search = () => el('input', { type: 'search', value: '' });
@@ -38,6 +38,9 @@ describe('resolveImportKeyAction', () => {
     expect(press('Enter', el('div'))).toBe('run-import');
     expect(press('Enter', el('button'))).toBeNull();
     expect(press('Enter', el('select'))).toBeNull();
+    // Enter with Alt, Ctrl or Meta is an app chord.
+    expect(press('Enter', el('div'), { altKey: true })).toBeNull();
+    expect(press('Enter', el('div'), { ctrlKey: true })).toBeNull();
   });
 
   it('takes mod+a only where text select-all would be a no-op', () => {

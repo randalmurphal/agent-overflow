@@ -46,6 +46,7 @@ import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 import { isCompactLayout } from '../../stores/layoutMode.svelte';
 import { createTerminalFindLayer, type TerminalFindLayer } from './terminalFindLayer';
+import { isLocalEnter } from '../../utils/localEnter';
 
 const isMac = isMacPlatform();
 
@@ -281,11 +282,8 @@ export function buildTerminal(
     // handler. Only the bare chord qualifies — Ctrl/Alt/Meta+Enter fall through
     // so mod+enter (sidebar.cursor.open) isn't stolen.
     if (
-      event.key === 'Enter' &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey
+      isLocalEnter(event) &&
+      event.shiftKey
     ) {
       event.preventDefault();
       event.stopPropagation();
