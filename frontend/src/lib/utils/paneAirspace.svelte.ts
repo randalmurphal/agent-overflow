@@ -17,7 +17,8 @@
 // the reader dismisses; `airspaceSurfaces()` lists overlays only, because
 // command gates and Back read its length as "an overlay is open". A layer
 // (`overlay: false`) occludes views beneath it but is not something to
-// dismiss: a promoted pane, the toast stack. Either may supply its own
+// dismiss: a promoted pane, the toast stack, a field's suggestion list that
+// leaves the keyboard with the field. Either may supply its own
 // painted rect when its box is not what it paints (a clip-path reveal), and
 // neither occludes a view inside itself. `airspaceRevision()` changes whenever either kind
 // registers, releases or changes size, which is when a view must be judged

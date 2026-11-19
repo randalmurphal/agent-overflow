@@ -328,7 +328,9 @@ behave as a desktop browser's:
   the typed text, Enter or a click takes a row, Enter with none highlighted
   navigates the text, and Escape closes the list before it reverts the
   field. Nothing is fetched from the network while typing. The list is a
-  `Popover`, so the native view yields while it is open. Focusing the field
+  `Popover`, so the native view yields while it is open; it registers as an
+  airspace layer, not an overlay, since the field keeps the keyboard, so the
+  pane's commands (reload, tab switching) stay live under it. Focusing the field
   reads the recent addresses (`BrowserCompanionRecentAddresses`) and
   rescans the dev servers, so neither rides the state push.
 - The recent addresses are the Manager's, per thread, in memory only
