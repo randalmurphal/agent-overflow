@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   airspaceIntersects,
+  airspaceRevision,
+  airspaceSurface,
   airspaceSurfaces,
   registerAirspaceSurface,
   resetAirspaceForTest,
@@ -96,6 +98,23 @@ describe('paneAirspace', () => {
     expect(airspaceIntersects(paneRect)).toBe(true);
     release();
     release();
+    expect(airspaceIntersects(paneRect)).toBe(false);
+  });
+
+  it('the action registers again when its kind changes, both ways, and only then', () => {
+    const el = surfaceAt(0, 0, 1000, 1000);
+    const action = airspaceSurface(el, { overlay: true });
+    expect(airspaceSurfaces()).toEqual([el]);
+    action.update({ overlay: false });
+    expect(airspaceSurfaces()).toEqual([]);
+    expect(airspaceIntersects(paneRect)).toBe(true);
+    const revision = airspaceRevision();
+    action.update({ overlay: false });
+    expect(airspaceRevision()).toBe(revision);
+    action.update({ overlay: true });
+    expect(airspaceSurfaces()).toEqual([el]);
+    action.destroy();
+    expect(airspaceSurfaces()).toEqual([]);
     expect(airspaceIntersects(paneRect)).toBe(false);
   });
 
