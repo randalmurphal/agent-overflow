@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 import { threadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { requireEntityBackend } from '../transport/backends';
@@ -50,8 +51,10 @@ export interface BrowserCompanionView {
 }
 
 // paneIds maps a thread to its live pane mount, acquired by the entity
-// store's source and addressed by every rect report.
-const paneIds = new Map<string, string>();
+// store's source and addressed by every rect report. Reactive, so the pane's
+// geometry sends its first rect when the mount appears, which can be after
+// its state did (a push during the attach).
+const paneIds = new SvelteMap<string, string>();
 
 /**
  * A part of the browser pane that keeps its own state beside this store and
@@ -174,7 +177,7 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
-/** The backend's id of the thread's mounted pane, null while it has none. */
+/** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
 export function browserPaneMountId(threadId: string): string | null {
   return paneIds.get(threadId) ?? null;
 }

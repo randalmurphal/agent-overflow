@@ -15,8 +15,10 @@ export interface BrowserPaneGeometryOptions {
   /** The host rect element the native view is positioned over. */
   surface: () => HTMLElement | undefined;
   threadId: () => string | null;
-  /** Whether the pane holds a companion view; a re-attach re-sends the rect. */
-  attached: () => boolean;
+  /** The pane's mount (reactive), null while it has none. Reports before it
+   *  are dropped, so its arrival, and a re-attach's new mount, re-send the
+   *  rect. */
+  mount: () => string | null;
 }
 
 export interface BrowserPaneGeometry {
@@ -167,7 +169,7 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
   // id re-sends the rect a too-early report dropped.
   $effect(() => {
     airspaceSurfaces();
-    options.attached();
+    options.mount();
     scheduleRect();
   });
 

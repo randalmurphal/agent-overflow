@@ -48,8 +48,6 @@
   let activePageId = $derived(view?.state.activePageId ?? '');
   let closedTabs = $derived(view?.state.closedTabs ?? 0);
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  // Boolean, not the view object: the geometry's re-report effect must fire
-  // on attach, never on every page-state push.
   let attached = $derived(view !== null);
 
   $effect(() => {
@@ -94,7 +92,7 @@
   const geometry = createBrowserPaneGeometry({
     surface: () => surface,
     threadId: () => ctx.threadId,
-    attached: () => attached,
+    mount: () => (ctx.threadId ? browserPaneMountId(ctx.threadId) : null),
   });
 
   // The page lays out at the thread's viewport. By default that is this host
