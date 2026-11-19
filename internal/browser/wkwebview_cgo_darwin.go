@@ -365,59 +365,77 @@ func aoWKVPagePresented(pageID C.uint64_t) C.int {
 }
 
 //export aoWKVDownloadDestination
-func aoWKVDownloadDestination(profileID, downloadID C.uint64_t) *C.char {
-	// On the main thread inside the download delegate: the Manager's staging
-	// takes no lock a main-thread dispatch waits on and dispatches nothing.
-	profile := wkLookupProfile(uint64(profileID))
-	if profile == nil || profile.stage == nil {
-		return nil
-	}
-	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
-	path, err := profile.stage(handle)
-	if err != nil {
-		profile.mu.Lock()
-		profile.stageFailures[handle] = err
-		profile.mu.Unlock()
-		return nil
-	}
-	// Freed by the Objective-C side.
-	return C.CString(path)
-}
-
-//export aoWKVDownloadStarted
-func aoWKVDownloadStarted(profileID, pageID, popupID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
+func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t, download unsafe.Pointer, uri, suggested *C.char) {
 	target, name := wkTakeString(uri), wkTakeString(suggested)
 	profile := wkLookupProfile(uint64(profileID))
 	if profile == nil {
-		C.ao_wkv_download_cancel(download)
+		C.ao_wkv_download_decide(download, nil)
 		C.ao_wkv_download_release(download)
 		return
 	}
-	start := profile.downloadStart(wkLookupPage(uint64(pageID)), uint64(popupID))
 	handle := fmt.Sprintf("dl-%d", uint64(downloadID))
-	start.ID, start.URL = handle, target
-	profile.mu.Lock()
-	stageErr := profile.stageFailures[handle]
-	delete(profile.stageFailures, handle)
-	profile.mu.Unlock()
 	if name == "" {
 		name = handle
 	}
-	start.SuggestedName = name
+	pending := wkPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
+	// Naming the staged file resolves the Downloads folder and prunes the
+	// staging directory, file system work the main thread must not wait on;
+	// the decision is completed on it afterwards.
+	go func() {
+		path, err := stagedFile(profile.stage, handle)
+		if !wkDo(func() { profile.decideDownload(pending, path, err) }) {
+			log.Printf("browser: download %s: decide its destination: %v", handle, errWKUnavailable)
+		}
+	}()
+}
+
+// wkPendingDownload is a download whose destination is being decided, with
+// what its start report names.
+type wkPendingDownload struct {
+	ptr               unsafe.Pointer
+	page, popup       uint64
+	handle, url, name string
+}
+
+// decideDownload completes download's destination decision on the main
+// thread: it is written to the staged file at path, or canceled before a
+// byte is written when stageErr says why there is none, the profile closed
+// or the download failed meanwhile. Its start is reported here, so it is
+// queued before anything WebKit reports of it.
+func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stageErr error) {
+	start := p.downloadStart(wkLookupPage(download.page), download.popup)
+	start.ID, start.URL, start.SuggestedName = download.handle, download.url, download.name
+	handle := download.handle
+	if stageErr == nil && p.isDisposed() {
+		stageErr = errStagedProfileClosed
+	}
+	var staged *C.char
+	if stageErr == nil {
+		staged = C.CString(path)
+		defer C.free(unsafe.Pointer(staged))
+	}
+	switch {
+	case C.ao_wkv_download_decide(download.ptr, staged) == 0:
+		if stageErr == nil {
+			stageErr = errDownloadFailedUndecided
+		}
+	case stageErr == nil && !p.registerDownload(handle, download.ptr):
+		C.ao_wkv_download_cancel(download.ptr)
+		stageErr = errStagedProfileClosed
+	}
 	if stageErr != nil {
-		// The delegate canceled it before a byte was written; the row says why.
-		profile.engine.downloadEvents.Go(func() {
-			if profile.engine.events.DownloadStarted(start) {
-				profile.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
+		// Canceled before a byte was written; the row says why.
+		p.engine.downloadEvents.Go(func() {
+			if p.engine.events.DownloadStarted(start) {
+				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
 			}
-			wkReleaseDownload(download)
+			wkReleaseDownload(download.ptr)
 		})
 		return
 	}
-	profile.registerDownload(handle, download)
-	profile.engine.downloadEvents.Go(func() {
-		if !profile.engine.events.DownloadStarted(start) {
-			if err := profile.CancelDownload(handle); err != nil {
+	p.engine.downloadEvents.Go(func() {
+		if !p.engine.events.DownloadStarted(start) {
+			if err := p.CancelDownload(handle); err != nil {
 				log.Printf("browser: cancel refused download %s: %v", handle, err)
 			}
 		}

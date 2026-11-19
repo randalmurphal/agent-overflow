@@ -205,8 +205,9 @@ type profileOptions struct {
 	// (downloadsStaged) writes download id into, resolved as the download
 	// starts (download_staging.go); with an error the engine cancels the
 	// download before writing and reports the error as its end. Nil for
-	// other engines. Called on the engine's UI thread; it takes no lock a
-	// UI-thread dispatch waits on.
+	// other engines. It does file system work, so a native engine calls it
+	// off its UI thread and completes the download's destination there
+	// afterwards (webkit_downloads.go).
 	StageDownload func(id string) (string, error)
 	// Ephemeral keeps the profile in memory only (spec §4): the site-data
 	// setting is off, or the jar is private. The hosted engine forwards it

@@ -25,10 +25,9 @@ extern void aoWKVPageCrashed(uint64_t page_id, uint64_t popup_id, uint64_t profi
 extern uint64_t aoWKVPopup(uint64_t opener_page_id, uint64_t opener_popup_id, uint64_t profile_id,
                            void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
-extern char *aoWKVDownloadDestination(uint64_t profile_id, uint64_t download_id);
-extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t popup_id,
-                                 uint64_t download_id, void *download, char *uri,
-                                 char *suggested);
+extern void aoWKVDownloadDestination(uint64_t profile_id, uint64_t page_id, uint64_t popup_id,
+                                     uint64_t download_id, void *download, char *uri,
+                                     char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path,
                                   char *error);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
@@ -51,6 +50,8 @@ static const char kAODownloadPageKey;
 static const char kAODownloadPopupKey;
 static const char kAODownloadProfileKey;
 static const char kAODownloadPathKey;
+static const char kAODownloadDecisionKey;
+static const char kAODownloadFailedKey;
 static const char kAOBackgroundKey;
 static const char kAOClipKey;
 static const char kAOPageSizeKey;
@@ -1042,28 +1043,19 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
     decideDestinationUsingResponse:(NSURLResponse *)response
                  suggestedFilename:(NSString *)suggestedFilename
                  completionHandler:(void (^)(NSURL *))completionHandler {
-  uint64_t identifier = ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey));
   // The download is written to the staged file the Go side names for it (the
   // app's staging directory in the user's Downloads folder) and nowhere else;
-  // with none, a nil destination cancels it before a byte is written. The Go
-  // side reports why when the start below arrives.
-  char *staged =
-      aoWKVDownloadDestination(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
-                               identifier);
-  if (staged == NULL) {
-    completionHandler(nil);
-  } else {
-    NSString *path = [NSString stringWithUTF8String:staged];
-    free(staged);
-    objc_setAssociatedObject(download, &kAODownloadPathKey, path, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    completionHandler([NSURL fileURLWithPath:path]);
-  }
+  // with none, a nil destination cancels it before a byte is written. Naming
+  // the file is file system work, so the handler is kept and called on a
+  // later turn of this thread (ao_wkv_download_decide).
+  objc_setAssociatedObject(download, &kAODownloadDecisionKey, completionHandler,
+                           OBJC_ASSOCIATION_COPY_NONATOMIC);
   NSURL *url = [[download originalRequest] URL];
-  aoWKVDownloadStarted(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
-                       ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
-                       ao_number(objc_getAssociatedObject(download, &kAODownloadPopupKey)),
-                       identifier, download, ao_dup([url absoluteString]),
-                       ao_dup(suggestedFilename));
+  aoWKVDownloadDestination(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
+                           ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
+                           ao_number(objc_getAssociatedObject(download, &kAODownloadPopupKey)),
+                           ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
+                           download, ao_dup([url absoluteString]), ao_dup(suggestedFilename));
 }
 
 - (void)downloadDidFinish:(WKDownload *)download {
@@ -1076,6 +1068,7 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
 - (void)download:(WKDownload *)download
     didFailWithError:(NSError *)error
           resumeData:(NSData *)resumeData {
+  objc_setAssociatedObject(download, &kAODownloadFailedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   aoWKVDownloadFinished(ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
                         (double)[[download progress] completedUnitCount], AO_DL_CANCELED, NULL,
                         error ? ao_dup([error localizedDescription]) : NULL);
@@ -1617,6 +1610,28 @@ void ao_wkv_download_cancel(void *download) {
     [target cancel:^(NSData *resumeData) {
       aoWKVDownloadFinished(identifier, received, AO_DL_CANCELED, NULL, NULL);
     }];
+  }
+}
+
+int ao_wkv_download_decide(void *download, const char *path) {
+  @autoreleasepool {
+    WKDownload *target = (WKDownload *)download;
+    void (^decide)(NSURL *) = [objc_getAssociatedObject(target, &kAODownloadDecisionKey) retain];
+    objc_setAssociatedObject(target, &kAODownloadDecisionKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (decide == nil) {
+      return 0;
+    }
+    int live = objc_getAssociatedObject(target, &kAODownloadFailedKey) == nil;
+    NSURL *destination = nil;
+    if (live && path != NULL) {
+      NSString *staged = [NSString stringWithUTF8String:path];
+      objc_setAssociatedObject(target, &kAODownloadPathKey, staged,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      destination = [NSURL fileURLWithPath:staged];
+    }
+    decide(destination);
+    [decide release];
+    return live;
   }
 }
 

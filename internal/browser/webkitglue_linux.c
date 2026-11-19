@@ -22,10 +22,9 @@ extern void aoWebKitPageCrashed(uint64_t page_id, uint64_t popup_id, uint64_t pr
 extern uint64_t aoWebKitPopup(uint64_t opener_page_id, uint64_t opener_popup_id,
                               uint64_t profile_id, void *view, char *uri);
 extern int aoWebKitPagePresented(uint64_t page_id);
-extern char *aoWebKitDownloadDestination(uint64_t profile_id, uint64_t download_id);
-extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
-                                    uint64_t popup_id, uint64_t download_id,
-                                    void *download, char *uri, char *suggested);
+extern void aoWebKitDownloadDestination(uint64_t profile_id, uint64_t page_id,
+                                        uint64_t popup_id, uint64_t download_id,
+                                        void *download, char *uri, char *suggested);
 extern void aoWebKitDownloadProgress(uint64_t download_id, double received, double total,
                                      int state, char *path, char *error);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
@@ -449,12 +448,13 @@ int ao_wk_view_focus_presented(void *view) {
 
 static uint64_t ao_download_seq = 0;
 
-// ao_download_destination writes the file to the staged file the Go side
-// names for it (the app's staging directory in the user's Downloads folder)
-// and nowhere else: with none, the download is canceled before a byte is
-// written. It is also where the download is REPORTED: the suggested
-// filename the Manager sanitizes only exists once the response headers have
-// been seen, and this runs before any byte is written.
+// ao_download_destination hands the download to the Go side, which names
+// the staged file it is written to (the app's staging directory in the
+// user's Downloads folder) and nowhere else, with none canceling it before a
+// byte is written, and reports it: the suggested filename the Manager
+// sanitizes only exists once the response headers have been seen. Naming the
+// file is file system work, so the decision is left open here and completed
+// on a later turn of this thread (ao_wk_download_decide).
 static gboolean ao_download_destination(WebKitDownload *download, gchar *suggested,
                                         gpointer data) {
   (void)data;
@@ -464,20 +464,13 @@ static gboolean ao_download_destination(WebKitDownload *download, gchar *suggest
   WebKitNetworkSession *session = g_object_get_data(G_OBJECT(download), AO_SESSION_KEY);
   uint64_t profile_id =
       session ? (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(session), AO_PROFILE_KEY)) : 0;
-  char *path = aoWebKitDownloadDestination(profile_id, id);
-  if (path != NULL) {
-    webkit_download_set_destination(download, path);
-    free(path);
-  } else {
-    webkit_download_cancel(download);
-  }
   WebKitWebView *view = webkit_download_get_web_view(download);
   WebKitURIRequest *request = webkit_download_get_request(download);
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;
-  aoWebKitDownloadStarted(profile_id, view ? ao_view_page_id(view) : 0,
-                          view ? ao_view_popup_id(view) : 0, id, download,
-                          uri ? g_strdup(uri) : NULL,
-                          suggested ? g_strdup(suggested) : NULL);
+  aoWebKitDownloadDestination(profile_id, view ? ao_view_page_id(view) : 0,
+                              view ? ao_view_popup_id(view) : 0, id, download,
+                              uri ? g_strdup(uri) : NULL,
+                              suggested ? g_strdup(suggested) : NULL);
   return TRUE;
 }
 
@@ -519,6 +512,18 @@ static void ao_download_failed(WebKitDownload *download, GError *error, gpointer
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
                            ao_download_total(download), AO_DL_CANCELED, NULL,
                            error && error->message ? g_strdup(error->message) : NULL);
+}
+
+int ao_wk_download_decide(void *download, const char *path) {
+  if (g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY) != NULL) {
+    return 0;
+  }
+  if (path != NULL) {
+    webkit_download_set_destination(WEBKIT_DOWNLOAD(download), path);
+  } else {
+    webkit_download_cancel(WEBKIT_DOWNLOAD(download));
+  }
+  return 1;
 }
 
 static void ao_session_download_started(WebKitNetworkSession *session,

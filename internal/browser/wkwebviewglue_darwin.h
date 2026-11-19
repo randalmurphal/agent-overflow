@@ -194,6 +194,11 @@ void ao_wkv_free(void *pointer);
 
 // ---- downloads -----------------------------------------------------------
 
+// ao_wkv_download_decide completes the destination decision the download
+// delegate left open: the download is written to path, or with none
+// canceled. It answers 0, deciding nothing, for a download that failed
+// meanwhile.
+int ao_wkv_download_decide(void *download, const char *path);
 void ao_wkv_download_cancel(void *download);
 void ao_wkv_download_release(void *download);
 // ao_wkv_download_received reads the download's NSProgress. WKDownload reports

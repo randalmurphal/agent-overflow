@@ -239,7 +239,6 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	profile := &webkitProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), session: session, stage: opts.StageDownload,
 		pages: make(map[*webkitPage]struct{}), downloads: make(map[string]unsafe.Pointer),
-		stageFailures: make(map[string]error),
 	}
 	webkitProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -268,9 +267,6 @@ type webkitProfile struct {
 	disposed  bool
 	pages     map[*webkitPage]struct{}
 	downloads map[string]unsafe.Pointer
-	// stageFailures holds why a download got no staged file, from its
-	// destination to its start report.
-	stageFailures map[string]error
 }
 
 func (p *webkitProfile) Handle() string { return p.handle }
@@ -392,11 +388,23 @@ func (p *webkitProfile) parkNew(page *webkitPage) {
 	webkitParkView(page.view)
 }
 
-func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) {
+// registerDownload keeps download under handle, unless the profile was
+// disposed, and reports whether it did.
+func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.disposed {
+		return false
+	}
 	p.downloads[handle] = download
-	p.mu.Unlock()
 	webkitDownloadOwners.Store(handle, p)
+	return true
+}
+
+func (p *webkitProfile) isDisposed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.disposed
 }
 
 func (p *webkitProfile) releaseDownload(handle string) {

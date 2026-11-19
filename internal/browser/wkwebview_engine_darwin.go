@@ -292,7 +292,6 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
 		stage: opts.StageDownload,
 		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
-		stageFailures: make(map[string]error),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -324,9 +323,6 @@ type wkProfile struct {
 	disposed  bool
 	pages     map[*wkPage]struct{}
 	downloads map[string]*wkDownload
-	// stageFailures holds why a download got no staged file, from its
-	// destination to its start report.
-	stageFailures map[string]error
 }
 
 // wkDownload is one live download: the retained WKDownload and the sampler that
@@ -460,27 +456,26 @@ func (p *wkProfile) parkNew(page *wkPage) {
 	wkParkView(page.view, page.slot)
 }
 
-func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {
+// registerDownload keeps download ptr under handle and starts its sampler,
+// unless the profile was disposed, and reports whether it did.
+func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) bool {
 	entry := &wkDownload{handle: handle, ptr: ptr, stop: make(chan struct{})}
 	p.mu.Lock()
-	closed := p.disposed
-	if !closed {
-		p.downloads[handle] = entry
+	if p.disposed {
+		p.mu.Unlock()
+		return false
 	}
+	p.downloads[handle] = entry
 	p.mu.Unlock()
-	if closed {
-		// registerDownload runs INSIDE the delegate, on the main thread, and
-		// wkDo would queue behind the very callback it is running in. Every
-		// main-thread call this export makes goes to a goroutine for that
-		// reason.
-		go func() {
-			wkCancelDownload(func() unsafe.Pointer { return ptr })
-			wkReleaseDownload(ptr)
-		}()
-		return
-	}
 	wkDownloadOwners.Store(handle, p)
 	go p.sampleDownload(entry)
+	return true
+}
+
+func (p *wkProfile) isDisposed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.disposed
 }
 
 // heldDownload answers entry's download while entry is registered, nil
