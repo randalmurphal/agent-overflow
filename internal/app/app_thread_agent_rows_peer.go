@@ -178,18 +178,21 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 	if !reached {
 		return ThreadPeerReply{}, threadNotYoursToInterrupt(args.ThreadID)
 	}
+	if hook := a.peerAgentsReachedForTest; hook != nil {
+		hook(args.ThreadID)
+	}
 	var result any
 	switch call.Tool {
 	case threadAgentPeerRows:
 		listing, err := a.answerThreadAgentRows(ctx, owner, source, args)
 		if err != nil {
-			return ThreadPeerReply{}, err
+			return ThreadPeerReply{}, a.peerAnswerError(owner, source, args.ThreadID, err)
 		}
 		result = listing
 	case threadAgentPeerStop:
 		stop, err := a.stopThreadAgentWorkHere(ctx, args.ThreadID, args.Token)
 		if err != nil {
-			return ThreadPeerReply{}, err
+			return ThreadPeerReply{}, a.peerAnswerError(owner, source, args.ThreadID, err)
 		}
 		result = stop
 	default:
@@ -201,6 +204,21 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		return ThreadPeerReply{}, fmt.Errorf("thread tools: encode %s result: %w", call.Tool, err)
 	}
 	return ThreadPeerReply{Result: encoded}, nil
+}
+
+// peerAnswerError is what an agents call that passed its reach check and
+// then failed answers: the refusal when the thread stopped being the
+// caller's meanwhile, deleted or moved away, which the caller takes as
+// certain, and err otherwise.
+func (a *App) peerAnswerError(owner, source, threadID string, err error) error {
+	reached, reachErr := a.peerReachesThread(owner, source, threadID)
+	switch {
+	case reachErr != nil:
+		return fmt.Errorf("%w (and read whether the thread is still the caller's: %v)", err, reachErr)
+	case !reached:
+		return threadNotYoursToInterrupt(threadID)
+	}
+	return err
 }
 
 // answerThreadAgentRows is agent_rows on this computer: the thread's rows

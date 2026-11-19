@@ -775,6 +775,10 @@ type App struct {
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()
+	// peerAgentsReachedForTest, when set, runs in a paired computer's agents
+	// call after its reach check and before its answer
+	// (serveThreadAgentPeer), so a test can delete the thread at that moment.
+	peerAgentsReachedForTest func(threadID string)
 	// agentWakeClaimedForTest, when set, runs in a fire between its claim
 	// and its run's registration (fireAgentWake), under the wake lifecycle
 	// lock, so a test can cancel the row at that moment.

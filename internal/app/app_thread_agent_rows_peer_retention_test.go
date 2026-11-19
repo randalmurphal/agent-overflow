@@ -245,6 +245,28 @@ func TestAnEndedRemoteLineageIsExcludedFromDeleteConfirmation(t *testing.T) {
 	}
 }
 
+// A thread deleted there while that computer answers for it is refused as
+// not the spawn's, the answer every later call gets, never a failure to
+// answer, which would keep the last answer's state on the spawn's row.
+func TestAThreadDeletedDuringItsListingIsRefused(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	spawn, child := remoteRestedWorker(t, pair)
+	pair.dest.peerAgentsReachedForTest = func(threadID string) {
+		if threadID != child {
+			return
+		}
+		if err := pair.dest.deleteThread(child); err != nil {
+			t.Errorf("delete the thread there: %v", err)
+		}
+	}
+	_, _, err := pair.source.peerThreadAgentRows(t.Context(), spawn, 1)
+	if !threadAgentPeerRefused(err) {
+		t.Fatalf("the listing of a thread deleted during it failed with %v; want the refusal of a thread not the spawn's", err)
+	}
+}
+
 func TestDisconnectedOwnerKeepsRestingAnswerUntilReconciled(t *testing.T) {
 	remotetest.Require(t)
 	pair := newReachPair(t)
