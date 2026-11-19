@@ -497,6 +497,28 @@ func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
 	}
 }
 
+// A download that starts while the list's bound is all running downloads
+// is listed and takes its progress; the list is back within its bound once
+// one settles.
+func TestADownloadPastABoundOfRunningOnesIsListed(t *testing.T) {
+	manager, _, access, page := newDownloadManager(t)
+	frame := paneHandle(manager, access, page.ID)
+	for i := 0; i <= maxThreadDownloads; i++ {
+		id := fmt.Sprintf("dl-%d", i)
+		manager.downloadStarted(downloadStart{Frame: frame, ID: id, SuggestedName: id + ".bin"})
+	}
+	newest := fmt.Sprintf("dl-%d", maxThreadDownloads)
+	manager.downloadProgress(downloadProgress{ID: newest, Received: 7, Total: 10, State: downloadInProgress})
+	listed := threadDownloads(manager, access)
+	if len(listed) != maxThreadDownloads+1 || listed[0].Name != newest+".bin" || listed[0].ReceivedBytes != 7 {
+		t.Fatalf("with %d running downloads the list holds %d, newest %+v; want all of them, the newest %s with its progress", maxThreadDownloads+1, len(listed), listed[0], newest)
+	}
+	manager.downloadProgress(downloadProgress{ID: "dl-0", State: downloadCanceled, Error: "the server closed the connection"})
+	if listed := threadDownloads(manager, access); len(listed) != maxThreadDownloads || listed[0].Name != newest+".bin" {
+		t.Fatalf("after one settled the list holds %d downloads, newest %q; want %d and the newest", len(listed), listed[0].Name, maxThreadDownloads)
+	}
+}
+
 // A page's own log drops its oldest settled entries past maxPageDownloads,
 // never a running one, whose progress must still find it.
 func TestThePageLogKeepsARunningDownloadPastItsBound(t *testing.T) {

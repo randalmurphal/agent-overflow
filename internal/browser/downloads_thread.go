@@ -119,7 +119,6 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 		}
 		item = &threadDownload{ThreadDownload: ThreadDownload{ID: entry.key, Source: source}, engineID: entry.ID, workspace: p.access.Workspace}
 		list.items = append([]*threadDownload{item}, list.items...)
-		list.trim()
 	}
 	wasRunning := started || item.State == downloadStateRunning
 	item.Name = entry.SuggestedName
@@ -129,6 +128,10 @@ func (m *Manager) noteDownloadLocked(p *managedPage, entry *DownloadInfo, source
 	}
 	item.State, item.ReceivedBytes, item.TotalBytes, item.Error = entry.State, entry.Bytes, entry.TotalBytes, entry.Error
 	item.Openable = item.State == downloadStateCompleted && item.file != nil && downloadOpensInPage(item.Name)
+	// After the item takes its state: a new running item is never the one
+	// dropped, and a list over its bound while every item ran shrinks as
+	// one settles.
+	list.trim()
 	note := downloadNote{threadID: p.owner}
 	// The user's own cancel is not announced; a finish that beat it is.
 	userCanceled := item.State == downloadStateCanceled && entry.cancelRequested
