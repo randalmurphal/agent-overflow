@@ -56,8 +56,8 @@
     canPresentNativeBrowser,
     canUseNativeBrowser,
     hydrateBrowserCompanionState,
-    toggleBrowserFromHeader,
   } from '../../stores/browserCompanion.svelte';
+  import { toggleBrowserFromHeader } from '../../stores/browserActions';
 
   let { pane }: { pane: ThreadPane } = $props();
 

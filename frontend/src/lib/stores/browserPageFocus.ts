@@ -1,14 +1,12 @@
 import type { BrowserCompanionEvent } from './bindings';
+import { browserActionsStarted, sendBrowserPageFocus, type BrowserActionFailure } from './browserActions';
 import {
   applyBrowserCompanionState,
   browserActionError,
-  browserActionsStarted,
   browserPaneMountId,
   canUseNativeBrowser,
   noteBrowserActionError,
   observeBrowserCompanion,
-  sendBrowserPageFocus,
-  type BrowserActionFailure,
 } from './browserCompanion.svelte';
 import { postPaneFocusIntent } from '../native/paneGeometryBridge';
 import { errString } from '../utils/errors';

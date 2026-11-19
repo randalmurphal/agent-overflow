@@ -2,13 +2,12 @@
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
-    browserCompanionAct,
     browserPaneMountId,
-    openBrowserTab,
     noteBrowserActionError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
+  import { browserCompanionAct, openBrowserTab } from '../../stores/browserActions';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
@@ -140,7 +139,7 @@
   });
 
   // A new tab the user opened takes the address bar's focus once it is ready
-  // (stores/browserCompanion#openBrowserTab); the store withdraws the intent
+  // (stores/browserActions#openBrowserTab); the store withdraws the intent
   // when the user does anything else first or another tab is shown.
   let addressBar: ReturnType<typeof BrowserAddressBar> | undefined = $state(undefined);
   $effect(() => {
