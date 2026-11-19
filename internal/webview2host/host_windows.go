@@ -68,6 +68,10 @@ type Host struct {
 	// window (isForeground). A smoke stands in its answer so it never takes
 	// the user's foreground.
 	foreground func(hwnd uintptr) bool
+	// moveClipFunc moves a page's clip container; nil is moveWindow. A test
+	// stands in a refusal of a live window, which SetWindowPos does not
+	// give on demand.
+	moveClipFunc func(hwnd uintptr, r rect) error
 }
 
 // Config wires the host to the launcher without importing Wails here.
@@ -172,7 +176,7 @@ type hostPage struct {
 	// pres is what the backend said about the page's presentation, and
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
-	shown paneView
+	shown shownView
 }
 
 // after runs fn after wait, on a goroutine of its own.
@@ -182,6 +186,14 @@ func (h *Host) after(wait time.Duration, fn func()) {
 		return
 	}
 	time.AfterFunc(wait, fn)
+}
+
+// moveClip moves a page's clip container to r (moveWindow).
+func (h *Host) moveClip(hwnd uintptr, r rect) error {
+	if h.moveClipFunc != nil {
+		return h.moveClipFunc(hwnd, r)
+	}
+	return moveWindow(hwnd, r)
 }
 
 // raiseTarget is the window that must sit on top of the host's child

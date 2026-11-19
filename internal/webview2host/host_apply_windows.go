@@ -2,6 +2,8 @@
 
 package webview2host
 
+import "fmt"
+
 // Directive application: geometry, presentation and focus.
 
 // Apply validates and executes one directive. It is safe to call from any
@@ -124,28 +126,34 @@ func (h *Host) ApplyGeometry(reports []PaneGeometry) {
 
 // present brings one page to the view its presentation calls for
 // (presenter.go): moved before it is shown, never moved while hidden. raise
-// re-raises a page already shown. A move that failed, of the clip container
-// or the controller, leaves the page at no known place: the next present
-// moves it again whatever the bounds, a page not shown yet is not shown
-// there, and none takes focus until a move succeeds. Runs on the UI thread.
+// re-raises a page already shown. The page is at no known place from a
+// move's first write until both writes succeeded (place). A move that
+// failed, of the clip container or the controller, may leave the two apart,
+// so the page is hidden there and stays hidden, its focus intent pending,
+// until a later present places it. Runs on the UI thread.
 func (h *Host) present(page *hostPage, raise bool) {
 	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
-	step, next := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
-	if step.move && !h.applyBounds(page, step.bounds) {
-		next.hasBounds = false
-		if !page.shown.visible {
-			step.show, next.visible = false, false
+	step := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
+	if step.move {
+		page.shown.placement = appliedPlacement{}
+		placed, err := h.place(page, step.bounds)
+		if err != nil {
+			h.config.Logf("browser host: page %s: %v", page.id, err)
+			if page.shown.visible {
+				h.hidePage(page)
+				page.shown.visible = false
+			}
+			return
 		}
+		page.shown.placement = placed
 	}
-	if step.show && !h.showPage(page) {
-		next.visible = page.shown.visible
+	if step.show && h.showPage(page) {
+		page.shown.visible = true
+		h.applyPendingFocus(page)
 	}
 	if step.hide {
 		h.hidePage(page)
-	}
-	page.shown = next
-	if step.show {
-		h.applyPendingFocus(page)
+		page.shown.visible = false
 	}
 }
 
@@ -183,44 +191,49 @@ func (h *Host) hidePage(page *hostPage) {
 	h.releaseFocus(page, held)
 }
 
-// applyBounds positions one page and reports whether both its clip
-// container and its controller moved. Runs on the UI thread.
+// place moves one page to b and answers its placement there, which exists
+// only when both its clip container and its controller moved
+// (commitPlacement). Runs on the UI thread.
 //
 // The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
 // it was measured under (deviceScale). BOTH rects are scaled by that one
 // factor pair: a clip scaled differently from the rect it crops would slide
 // across the page as the window resized.
-func (h *Host) applyBounds(page *hostPage, b paneBounds) bool {
+func (h *Host) place(page *hostPage, b paneBounds) (appliedPlacement, error) {
 	cw, ch, hasClient := clientSize(h.config.HostWindow())
 	sx, sy := deviceScale(b, cw, ch, hasClient)
 	layout := resolvePaneLayout(b, sx, sy)
 
-	bounds := layout.Controller
+	moveController := func(bounds rect) func() error {
+		return func() error {
+			if err := page.controller.putBounds(bounds); err != nil {
+				return fmt.Errorf("controller bounds: %w", err)
+			}
+			return nil
+		}
+	}
 	if page.container == 0 {
 		// No container: the controller is still a direct child of the host,
 		// so its bounds are host-relative and there is nothing to clip
 		// against. Position the full rect and let it overhang, which is the
 		// behaviour that shipped before clipping existed.
-		bounds = rect{
+		return commitPlacement(b, moveController(rect{
 			Left:   layout.Container.Left + layout.Controller.Left,
 			Top:    layout.Container.Top + layout.Controller.Top,
 			Right:  layout.Container.Left + layout.Controller.Right,
 			Bottom: layout.Container.Top + layout.Controller.Bottom,
-		}
-	} else {
-		// Container first, then the controller inside it: moving the crop
-		// before its content means a growing pane never shows a frame of
-		// content outside the new clip.
-		if err := moveWindow(page.container, layout.Container); err != nil {
-			h.config.Logf("browser host: page %s clip bounds: %v", page.id, err)
-			return false
-		}
+		}))
 	}
-	if err := page.controller.putBounds(bounds); err != nil {
-		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
-		return false
+	// Container first, then the controller inside it: moving the crop
+	// before its content means a growing pane never shows a frame of content
+	// outside the new clip.
+	moveClip := func() error {
+		if err := h.moveClip(page.container, layout.Container); err != nil {
+			return fmt.Errorf("clip bounds: %w", err)
+		}
+		return nil
 	}
-	return true
+	return commitPlacement(b, moveClip, moveController(layout.Controller))
 }
 
 // applyBackground sets the controller's default background colour (an

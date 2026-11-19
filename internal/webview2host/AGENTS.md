@@ -47,7 +47,10 @@ its bounds directive to a mount with a local report is placed from that
 report with `paneplace.Fit` and shows only while the backend shows it and
 the report is visible, unless the directive's `Seq` (the SPA's number for
 the report the backend placed from) is newer than the report's; then, and
-without a local report, the directive's rect stands. Only backend
+without a local report, the directive's rect stands. A page is at a
+known place only once both its clip container and its controller moved
+(`commitPlacement`); a move that fails hides it, its focus intent
+pending, until a later move succeeds. Only backend
 directives bind a page to a mount. Raw reports have their own validation:
 an empty clip on either axis is a hidden pane, not an error. The mailbox
 keeps the newest report per mount, drops older sequences, and has at most

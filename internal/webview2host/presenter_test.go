@@ -147,18 +147,18 @@ func TestPresenterPlacesFromTheNewerReport(t *testing.T) {
 // the launcher window is the foreground window: AO never takes the OS focus
 // from another application, and never focuses a hidden or unplaced view.
 func TestFocusDecisionNeedsAShownPageAndTheForeground(t *testing.T) {
-	shown := paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true, visible: true}
+	shown := shownView{placement: placedAt(paneBounds{W: 10, H: 10}), visible: true}
 	for _, tc := range []struct {
 		name       string
-		view       paneView
+		view       shownView
 		foreground bool
 		want       focusOutcome
 	}{
 		{"shown, foreground", shown, true, focusMove},
 		{"shown, another app in front", shown, false, focusNotForeground},
-		{"hidden", paneView{bounds: shown.bounds, hasBounds: true}, true, focusNotShown},
-		{"never placed", paneView{visible: true}, true, focusNotShown},
-		{"nothing", paneView{}, false, focusNotShown},
+		{"hidden", shownView{placement: shown.placement}, true, focusNotShown},
+		{"at no known place", shownView{visible: true}, true, focusNotShown},
+		{"nothing", shownView{}, false, focusNotShown},
 	} {
 		taken := false
 		take := func() bool { taken = true; return true }
@@ -183,7 +183,7 @@ type launcherFocus struct {
 	mount string
 }
 
-func (l launcherFocus) decide(view paneView, foreground bool) (focusOutcome, uint64) {
+func (l launcherFocus) decide(view shownView, foreground bool) (focusOutcome, uint64) {
 	mount := l.mount
 	if mount == "" {
 		mount = "mount-1"
@@ -198,9 +198,18 @@ func (l launcherFocus) decide(view paneView, foreground bool) (focusOutcome, uin
 }
 
 var (
-	focusShown  = paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true, visible: true}
-	focusHidden = paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true}
+	focusShown  = shownView{placement: placedAt(paneBounds{W: 10, H: 10}), visible: true}
+	focusHidden = shownView{placement: placedAt(paneBounds{W: 10, H: 10})}
 )
+
+// placedAt is the placement of a page both of whose writes to b succeeded.
+func placedAt(b paneBounds) appliedPlacement {
+	placed, err := commitPlacement(b)
+	if err != nil {
+		panic(err)
+	}
+	return placed
+}
 
 // A focus directive delayed on its way through WSL leaves the keyboard where
 // the user put it after asking: the SPA's withdrawal reaches the launcher
@@ -409,41 +418,96 @@ func TestNewBoundsDirectiveDecodesForAnOlderLauncher(t *testing.T) {
 	}
 }
 
+// applied is shown after every part of step succeeded.
+func applied(shown shownView, step presentStep) shownView {
+	if step.move {
+		shown.placement = placedAt(step.bounds)
+	}
+	if step.show {
+		shown.visible = true
+	}
+	if step.hide {
+		shown.visible = false
+	}
+	return shown
+}
+
 func TestNextPresentStepMovesBeforeShowingAndNeverMovesHidden(t *testing.T) {
 	a := paneView{bounds: paneBounds{X: 1, W: 10, H: 10}, hasBounds: true, visible: true}
 	b := paneView{bounds: paneBounds{X: 2, W: 10, H: 10}, hasBounds: true, visible: true}
 
-	step, shown := nextPresentStep(paneView{}, a, false)
+	step := nextPresentStep(shownView{}, a, false)
 	if !step.move || step.bounds != a.bounds || !step.show || step.hide {
 		t.Fatalf("first show = %+v", step)
 	}
+	shown := applied(shownView{}, step)
 	// Unchanged: nothing to do, unless a backend show asks for a raise.
-	if step, _ := nextPresentStep(shown, a, false); step != (presentStep{}) {
+	if step := nextPresentStep(shown, a, false); step != (presentStep{}) {
 		t.Fatalf("unchanged view did work: %+v", step)
 	}
-	if step, _ := nextPresentStep(shown, a, true); !step.show || step.move {
+	if step := nextPresentStep(shown, a, true); !step.show || step.move {
 		t.Fatalf("a raise must re-show without moving: %+v", step)
 	}
 	// A move while shown moves only.
-	step, shown = nextPresentStep(shown, b, false)
+	step = nextPresentStep(shown, b, false)
 	if !step.move || step.show || step.hide {
 		t.Fatalf("move = %+v", step)
 	}
+	shown = applied(shown, step)
+	// A page at no known place (a move failed partway) is moved, even to
+	// bounds it stood at before.
+	if step := nextPresentStep(shownView{visible: true}, b, false); !step.move || step.bounds != b.bounds || step.show {
+		t.Fatalf("at no known place = %+v", step)
+	}
 	// Hidden: hide, and later geometry while hidden moves nothing.
-	step, shown = nextPresentStep(shown, paneView{}, false)
+	step = nextPresentStep(shown, paneView{}, false)
 	if !step.hide || step.move {
 		t.Fatalf("hide = %+v", step)
 	}
+	shown = applied(shown, step)
 	hiddenMove := paneView{bounds: paneBounds{X: 3, W: 10, H: 10}, hasBounds: true}
-	if step, _ := nextPresentStep(shown, hiddenMove, false); step != (presentStep{}) {
+	if step := nextPresentStep(shown, hiddenMove, false); step != (presentStep{}) {
 		t.Fatalf("a hidden page was touched: %+v", step)
 	}
 	// Re-shown at a new place: moved first, then shown.
 	reshown := hiddenMove
 	reshown.visible = true
-	step, shown = nextPresentStep(shown, reshown, false)
-	if !step.move || !step.show || step.bounds.X != 3 || !shown.visible {
+	step = nextPresentStep(shown, reshown, false)
+	if !step.move || !step.show || step.bounds.X != 3 {
 		t.Fatalf("reshow = %+v", step)
+	}
+}
+
+// A placement exists only when every write succeeded: the first failure
+// stops the writes after it and leaves no known place.
+func TestAPlacementIsCommittedOnlyByEveryWrite(t *testing.T) {
+	at := paneBounds{X: 4, W: 10, H: 10}
+	failed := errors.New("SetWindowPos")
+	for _, fail := range []int{0, 1, -1} {
+		var made []int
+		write := func(i int) func() error {
+			return func() error {
+				made = append(made, i)
+				if i == fail {
+					return failed
+				}
+				return nil
+			}
+		}
+		placed, err := commitPlacement(at, write(0), write(1))
+		switch fail {
+		case -1:
+			if err != nil || !placed.at(at) || len(made) != 2 {
+				t.Fatalf("both writes: %+v, %v, writes %v", placed, err, made)
+			}
+		default:
+			if !errors.Is(err, failed) || placed.known || placed.at(at) || len(made) != fail+1 {
+				t.Fatalf("write %d failed: %+v, %v, writes %v", fail, placed, err, made)
+			}
+		}
+	}
+	if (appliedPlacement{}).at(paneBounds{}) {
+		t.Fatal("no known place is at the zero bounds")
 	}
 }
 

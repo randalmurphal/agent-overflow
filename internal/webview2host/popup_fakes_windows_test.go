@@ -114,8 +114,10 @@ type fakeController struct {
 	put    []rect
 	// putErr fails PutBounds.
 	putErr uintptr
-	closed int
-	keys   []*comObject
+	// focused counts MoveFocus calls.
+	focused int
+	closed  int
+	keys    []*comObject
 }
 
 var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
@@ -135,6 +137,10 @@ var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
 		}
 		this.bounds = *bounds
 		this.put = append(this.put, *bounds)
+		return 0
+	}),
+	MoveFocus: newComProc(func(this *fakeController, _ uintptr) uintptr {
+		this.focused++
 		return 0
 	}),
 	AddAcceleratorKeyPressed: newComProc(func(this *fakeController, handler *comObject, _ *eventRegistrationToken) uintptr {
