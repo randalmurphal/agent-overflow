@@ -114,14 +114,14 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		// Reported without an address, and never taken for a resume.
 		h.config.Logf("browser host: page %s: a starting download: %v", page.id, err)
 	}
-	path, uri := args.resultFilePath(), newDownloadAddress(rawURI)
+	path, uri := args.resultFilePath(), readDownloadAddress(rawURI, err)
 	reason, err := op.interruptReason()
 	if err != nil {
 		// Read as no resume: a download of its own, nothing running touched.
 		h.config.Logf("browser host: page %s: a starting download: %v", page.id, err)
 	}
-	if reason != 0 {
-		if d := page.resumedDownload(uri); d != nil {
+	if key, ok := uri.resume.Key(); ok && reason != 0 {
+		if d := page.resumedDownload(key); d != nil {
 			h.resumeDownload(d, args, op, path, reason)
 			return
 		}
@@ -157,12 +157,15 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 // address dropped at once, or when one dropped beside a download that
 // already resumed once, whose operation (a resume's) reads its reason for
 // good, dropped or not. An operation from uri whose state cannot be read
-// makes the answer as uncertain, so it is nil too, and a resume or a
-// download whose address the runtime did not answer matches nothing.
-func (p *hostPage) resumedDownload(uri downloadAddress) *hostDownload {
+// makes the answer as uncertain, so it is nil too. A download whose
+// address the runtime did not answer has no key, so it is never taken.
+func (p *hostPage) resumedDownload(key resumeKey) *hostDownload {
 	var dropped *hostDownload
 	for _, d := range p.downloads {
-		if d.op == nil || !d.uri.same(uri) {
+		if d.op == nil {
+			continue
+		}
+		if own, ok := d.uri.resume.Key(); !ok || own != key {
 			continue
 		}
 		state, err := d.op.state()

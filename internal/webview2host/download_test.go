@@ -1,6 +1,7 @@
 package webview2host
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,11 +11,12 @@ import (
 )
 
 // A download keeps a bounded copy of its address, never a slice of a long
-// one, and a digest of the whole address that tells two long addresses
-// with one prefix apart.
+// one, and a resume key of the whole address that tells two long addresses
+// identical through the kept copy apart; an address that was not read has
+// no key.
 func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
 	long := "data:application/octet-stream;base64," + strings.Repeat("QUJD", 250_000)
-	addr := newDownloadAddress(long)
+	addr := readDownloadAddress(long, nil)
 	if len(addr.shown) > MaxDownloadURIBytes || !strings.HasPrefix(long, addr.shown) {
 		t.Fatalf("the kept address is %d bytes, want a prefix of at most %d", len(addr.shown), MaxDownloadURIBytes)
 	}
@@ -23,14 +25,25 @@ func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
 	if kept >= start && kept < start+uintptr(len(long)) {
 		t.Fatal("the kept address shares the long address's memory")
 	}
-	if newDownloadAddress(long).digest != addr.digest || newDownloadAddress(long+"x").digest == addr.digest {
-		t.Fatal("the digest does not name the whole address")
+	key := func(a downloadAddress) resumeKey {
+		t.Helper()
+		k, ok := a.resume.Key()
+		if !ok {
+			t.Fatalf("an address read as %.40q has no resume key", a.shown)
+		}
+		return k
 	}
-	if short := newDownloadAddress("https://example.test/f"); short.shown != "https://example.test/f" {
+	other := readDownloadAddress(long+"x", nil)
+	if other.shown != addr.shown || key(readDownloadAddress(long, nil)) != key(addr) || key(other) == key(addr) {
+		t.Fatal("the resume key does not name the whole address")
+	}
+	if short := readDownloadAddress("https://example.test/f", nil); short.shown != "https://example.test/f" {
 		t.Fatalf("a short address is kept as %q", short.shown)
 	}
-	if !addr.same(newDownloadAddress(long)) || newDownloadAddress("").same(newDownloadAddress("")) {
-		t.Fatal("an address matches itself only when it was read")
+	for _, unread := range []downloadAddress{readDownloadAddress("", nil), readDownloadAddress("https://example.test/f", errors.New("E_FAIL"))} {
+		if _, ok := unread.resume.Key(); ok || unread.shown != "" {
+			t.Fatalf("an address not read keeps %+v", unread)
+		}
 	}
 }
 

@@ -30,7 +30,7 @@ func (r *popupRig) startDownload(page *hostPage, id string) *hostDownload {
 	op := newFakeOp(`C:\Downloads\` + id)
 	op.uri = "https://example.test/" + id
 	op.refs++ // the reference DownloadStarting hands over
-	d := &hostDownload{id: id, page: page, uri: newDownloadAddress(op.uri), path: op.path}
+	d := &hostDownload{id: id, page: page, uri: readDownloadAddress(op.uri, nil), path: op.path}
 	r.host.attachOperation(d, op.com())
 	if page.downloads == nil {
 		page.downloads = map[string]*hostDownload{}

@@ -109,29 +109,40 @@ const MaxDownloadURIBytes = 2048
 // once as the download starts: at most MaxDownloadURIBytes of it, copied,
 // for its reports and its kept terminal snapshot, so an address of any
 // length (a data URL carries its whole file) is neither retained nor
-// encoded again on every report; and a digest of the whole address, which
-// a resume is matched by (resumedDownload). An address the runtime did not
-// answer is empty and matches nothing: two unread addresses are not one.
+// encoded again on every report; and, when the runtime answered it, the
+// resume key of the whole address.
 type downloadAddress struct {
 	shown  string
-	digest [sha256.Size]byte
-	known  bool
+	resume resumeIdentity
 }
 
-func newDownloadAddress(uri string) downloadAddress {
-	if uri == "" {
+// resumeKey is the digest of a download's whole address, which a resume is
+// matched by (resumedDownload).
+type resumeKey [sha256.Size]byte
+
+// resumeIdentity is a download's resume key, or none: only
+// readDownloadAddress makes one, and only from an address the runtime
+// answered, so two downloads whose address could not be read are never one.
+type resumeIdentity struct {
+	key resumeKey
+	ok  bool
+}
+
+// Key answers the resume key, and false when there is none.
+func (r resumeIdentity) Key() (resumeKey, bool) { return r.key, r.ok }
+
+// readDownloadAddress keeps the address the runtime answered as uri, or
+// failed to answer with err: an empty or failed read keeps no address and
+// has no resume key.
+func readDownloadAddress(uri string, err error) downloadAddress {
+	if err != nil || uri == "" {
 		return downloadAddress{}
 	}
 	shown := truncateUTF8(uri, MaxDownloadURIBytes)
 	if len(shown) < len(uri) {
 		shown = strings.Clone(shown)
 	}
-	return downloadAddress{shown: shown, digest: sha256.Sum256([]byte(uri)), known: true}
-}
-
-// same reports whether two downloads are from one address, both known.
-func (a downloadAddress) same(b downloadAddress) bool {
-	return a.known && b.known && a.digest == b.digest
+	return downloadAddress{shown: shown, resume: resumeIdentity{key: sha256.Sum256([]byte(uri)), ok: true}}
 }
 
 // Encode answers the report as a report detail of at most

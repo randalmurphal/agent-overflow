@@ -155,7 +155,7 @@ func TestAPopupGoneWithItsOpenerReadsItsDownloadsFirst(t *testing.T) {
 	finished.refuseStateSub = true
 	popup.downloads = map[string]*hostDownload{}
 	for i, op := range []*fakeOp{finished, running} {
-		d := &hostDownload{id: fmt.Sprintf("dl-%d", i+1), page: popup, path: op.path, uri: newDownloadAddress(op.uri)}
+		d := &hostDownload{id: fmt.Sprintf("dl-%d", i+1), page: popup, path: op.path, uri: readDownloadAddress(op.uri, nil)}
 		op.refs++ // the reference DownloadStarting hands over
 		r.host.attachOperation(d, op.com())
 		popup.downloads[d.id] = d

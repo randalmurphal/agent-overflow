@@ -127,8 +127,8 @@ terminal snapshot under its own number (up to `MaxEndedDownloads` per page
 while the page lives), or `DownloadUnknown` for an id with no record. The
 launcher keeps a copy of at most `MaxDownloadURIBytes` of a download's
 address, taken as it starts, and a digest of the whole address that a
-resume is matched by (`downloadAddress`); an address the runtime did not
-answer matches nothing. A report is bounded: the
+resume is matched by (`downloadAddress`, `resumeKey`); an address the
+runtime did not answer has no key, so it matches nothing. A report is bounded: the
 address is shortened, then the path left out, never the start or end. WebView2 resumes a dropped download as a new
 `DownloadStarting` whose operation carries the
 interruption's reason, while the dropped operation stays in progress with
