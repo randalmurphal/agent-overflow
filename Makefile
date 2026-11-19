@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -157,8 +157,8 @@ endif
 # The `noremote` passes compile the variant without remote access
 # (internal/buildvariant): the desktop half the noremote harness binary
 # uses, the nogui half its WSL payload ships, and its Windows launcher.
-go-build: gocache-trim
-	@set -e; \
+go-build: gocache-trim-tool
+	@set -e; $(gocache-trim-around); \
 	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	go build $$packages; \
@@ -195,11 +195,25 @@ GO_TEST_FLAGS ?=
 netns-tool:
 	go build -o bin/ao-netns ./cmd/ao-netns
 
-# gocache-trim caps the Go build cache (cmd/ao-gocache-trim; at most one
-# walk every few hours, off in CI). It builds and runs in the background,
-# so the target it serves does not wait for it.
-gocache-trim:
-	@[ -n "$$CI" ] || { go build -o bin/ao-gocache-trim ./cmd/ao-gocache-trim && bin/ao-gocache-trim; } &
+# gocache-trim caps the Go build cache (cmd/ao-gocache-trim; off in CI).
+# go-build, go-test and test-race run a pass before their build or test and
+# another when it ends, whatever its status (gocache-trim-around). There a
+# failed pass prints its error and the target goes on, since a cache
+# problem says nothing about the build or the tests, while an invalid
+# AO_GOCACHE_MAX_GIB fails the target, since it leaves the cache uncapped.
+# `make gocache-trim` fails on either.
+GOCACHE_TRIM := $(CURDIR)/bin/ao-gocache-trim
+gocache-trim-tool:
+	@[ -n "$$CI" ] || go build -o bin/ao-gocache-trim ./cmd/ao-gocache-trim
+
+gocache-trim: gocache-trim-tool
+	@[ -n "$$CI" ] || $(GOCACHE_TRIM)
+
+# gocache-trim-around opens a recipe's shell: it runs a pass now and traps
+# the shell's exit to run one after, keeping the recipe's exit status
+# unless that pass fails.
+gocache-trim-pass = { [ -n "$$CI" ] || $(GOCACHE_TRIM) -warn; }
+gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pass) || status=$$?; exit $$status' EXIT
 
 # GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
 # for CI shards that run the heavy packages on their own runners.
@@ -207,8 +221,8 @@ gocache-trim:
 # ./internal/app alone runs past 10 minutes. A -timeout in GO_TEST_FLAGS
 # replaces it.
 GO_TEST_EXCLUDE ?=
-go-test: netns-tool gocache-trim
-	@set -e; \
+go-test: netns-tool gocache-trim-tool
+	@set -e; $(gocache-trim-around); \
 	packages=$$(go list $(GO_TEST_PKGS)); \
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
@@ -289,8 +303,9 @@ frontend-lint: $(FRONTEND_DEPS)
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
 RACE_PKGS := ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
-test-race: netns-tool gocache-trim
-	$(call go-prefetch,$(GO_PACKAGE_ROOTS))
+test-race: netns-tool gocache-trim-tool
+	@set -e; $(gocache-trim-around); \
+	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
 	$(NETNS) go test -race -timeout 1800s $(RACE_PKGS)
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow

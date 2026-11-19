@@ -3,16 +3,13 @@
 package netisolate
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"agent-overflow/internal/goenvfile"
 	"agent-overflow/internal/ownedtemp"
 
 	"golang.org/x/sys/unix"
@@ -35,8 +32,7 @@ import (
 // GOTMPDIR. Tests do not see GOTMPDIR in their environment, and every value
 // the cache records is the same on every run.
 const (
-	// goWorkPrefix names the per-run directories under the host's temp
-	// directory (ownedtemp).
+	// goWorkPrefix names the per-run directories in diskParent (ownedtemp).
 	goWorkPrefix = "ao-gowork-"
 	// goWorkMount and goEnvName are the fixed names, in TempDir, of the
 	// mounted work directory and the Go environment file naming it.
@@ -48,33 +44,36 @@ func goWorkPath() string { return filepath.Join(TempDir(), goWorkMount) }
 
 func goEnvPath() string { return filepath.Join(TempDir(), goEnvName) }
 
-// newGoWorkDir creates the run's Go work directory on disk and removes those
-// of earlier runs that ended without their release. It returns "" when
-// GOTMPDIR is set already, in the environment or the developer's Go
-// environment file; that one stays. release removes the directory; a run
-// killed first leaves it to the next run's sweep, whose failures are
-// written to stderr.
-func newGoWorkDir(stderr io.Writer) (dir string, release func() error, err error) {
-	noop := func() error { return nil }
+// newGoWorkDir creates the run's Go work directory on disk. It returns nil
+// when GOTMPDIR is set already, in the environment or the developer's Go
+// environment file; that one stays.
+func newGoWorkDir() (*ownedtemp.Shared, error) {
 	if os.Getenv("GOTMPDIR") != "" {
-		return "", noop, nil
+		return nil, nil
 	}
-	userEnv, err := readGoEnvFile()
+	userEnv, err := goenvfile.Read()
 	if err != nil {
-		return "", noop, err
+		return nil, err
 	}
-	if goEnvFileSets(userEnv, "GOTMPDIR") {
-		return "", noop, nil
+	if goenvfile.Lookup(userEnv, "GOTMPDIR") != "" {
+		return nil, nil
 	}
-	parent := hostTempDir()
-	if err := ownedtemp.Sweep(parent, goWorkPrefix); err != nil {
-		fmt.Fprintln(stderr, "netisolate: remove leftover Go work directories:", err)
-	}
-	dir, release, err = ownedtemp.Make(parent, goWorkPrefix)
+	dir, err := ownedtemp.MakeShared(diskParent(), goWorkPrefix)
 	if err != nil {
-		return "", noop, fmt.Errorf("create the Go work directory: %w", err)
+		return nil, fmt.Errorf("create the Go work directory: %w", err)
 	}
-	return dir, release, nil
+	return dir, nil
+}
+
+// sweepRunDirs removes the directories on disk of earlier runs whose
+// processes have all exited (ownedtemp). What it cannot do goes to stderr.
+func sweepRunDirs(stderr io.Writer) {
+	parent := diskParent()
+	for _, prefix := range []string{goWorkPrefix, diskTempPrefix} {
+		if err := ownedtemp.Sweep(parent, prefix); err != nil {
+			fmt.Fprintln(stderr, "netisolate: remove an earlier run's directories:", err)
+		}
+	}
 }
 
 // hostTempDir is the temp directory outside any namespace: a namespace's
@@ -88,6 +87,19 @@ func hostTempDir() string {
 		return host
 	}
 	return "/tmp"
+}
+
+// diskParent is where a run's directories on disk go: the host's temp
+// directory, or /var/tmp where that is a tmpfs, as /tmp is on Fedora, Arch
+// and Ubuntu 25.10, since the point of these directories is to keep their
+// gigabytes out of memory.
+func diskParent() string {
+	dir := hostTempDir()
+	var stat unix.Statfs_t
+	if err := unix.Statfs(dir, &stat); err == nil && stat.Type == unix.TMPFS_MAGIC {
+		return "/var/tmp"
+	}
+	return dir
 }
 
 // mountGoWork mounts dir at goWorkPath and writes the Go environment file
@@ -111,40 +123,4 @@ func mountGoWork(dir string, userEnv []byte) error {
 		return fmt.Errorf("write the run's Go environment file: %w", err)
 	}
 	return nil
-}
-
-// readGoEnvFile returns the Go environment file the go command would read
-// now (GOENV, else go/env in the user config directory), or nothing when
-// there is none.
-func readGoEnvFile() ([]byte, error) {
-	path := os.Getenv("GOENV")
-	if path == "off" {
-		return nil, nil
-	}
-	if path == "" {
-		config, err := os.UserConfigDir()
-		if err != nil {
-			return nil, nil // the go command then reads no file either
-		}
-		path = filepath.Join(config, "go", "env")
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the Go environment file: %w", err)
-	}
-	return data, nil
-}
-
-func goEnvFileSets(data []byte, name string) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		key, value, ok := strings.Cut(strings.TrimSpace(scanner.Text()), "=")
-		if ok && strings.TrimSpace(key) == name && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
 }

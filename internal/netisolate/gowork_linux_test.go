@@ -3,7 +3,6 @@
 package netisolate
 
 import (
-	"bytes"
 	"errors"
 	"io/fs"
 	"os"
@@ -33,40 +32,37 @@ func goWorkTest(t *testing.T, userEnv []byte) (parent string) {
 }
 
 func TestGoWorkDirIsPerRunAndRemovedOnRelease(t *testing.T) {
-	parent := goWorkTest(t, []byte("GOPROXY=off\n"))
-	var stderr bytes.Buffer
-	dir, release, err := newGoWorkDir(&stderr)
+	goWorkTest(t, []byte("GOPROXY=off\n"))
+	parent := diskParent()
+	dir, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Dir(dir) != parent || !strings.HasPrefix(filepath.Base(dir), goWorkPrefix) {
-		t.Fatalf("dir = %q, want %s* under %s", dir, goWorkPrefix, parent)
+	if filepath.Dir(dir.Dir) != parent || !strings.HasPrefix(filepath.Base(dir.Dir), goWorkPrefix) {
+		t.Fatalf("dir = %q, want %s* under %s", dir.Dir, goWorkPrefix, parent)
 	}
 	// A concurrent run's sweep leaves it alone while it is in use.
 	if err := ownedtemp.Sweep(parent, goWorkPrefix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(dir); err != nil {
+	if _, err := os.Stat(dir.Dir); err != nil {
 		t.Fatalf("a sweep removed a directory in use: %v", err)
 	}
-	second, releaseSecond, err := newGoWorkDir(&stderr)
+	second, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second == dir {
+	if second.Dir == dir.Dir {
 		t.Fatal("two runs share one Go work directory")
 	}
-	if err := release(); err != nil {
+	if err := dir.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(dir.Dir); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("released directory still there: %v", err)
 	}
-	if err := releaseSecond(); err != nil {
+	if err := second.Release(); err != nil {
 		t.Fatal(err)
-	}
-	if stderr.Len() > 0 {
-		t.Fatalf("stderr: %s", stderr.String())
 	}
 }
 
@@ -76,18 +72,18 @@ func TestGoWorkDirKeepsAGivenGOTMPDIR(t *testing.T) {
 	t.Run("environment", func(t *testing.T) {
 		goWorkTest(t, nil)
 		t.Setenv("GOTMPDIR", "/somewhere/chosen")
-		dir, _, err := newGoWorkDir(&bytes.Buffer{})
-		if err != nil || dir != "" {
-			t.Fatalf("newGoWorkDir = %q, %v; want none while GOTMPDIR is set", dir, err)
+		dir, err := newGoWorkDir()
+		if err != nil || dir != nil {
+			t.Fatalf("newGoWorkDir = %v, %v; want none while GOTMPDIR is set", dir, err)
 		}
 	})
 	t.Run("Go environment file", func(t *testing.T) {
-		parent := goWorkTest(t, []byte("GOFLAGS=-mod=mod\n GOTMPDIR = /somewhere/chosen\n"))
-		dir, _, err := newGoWorkDir(&bytes.Buffer{})
-		if err != nil || dir != "" {
-			t.Fatalf("newGoWorkDir = %q, %v; want none while the Go environment file sets GOTMPDIR", dir, err)
+		goWorkTest(t, []byte("GOFLAGS=-mod=mod\n GOTMPDIR = /somewhere/chosen\n"))
+		dir, err := newGoWorkDir()
+		if err != nil || dir != nil {
+			t.Fatalf("newGoWorkDir = %v, %v; want none while the Go environment file sets GOTMPDIR", dir, err)
 		}
-		if matches, _ := filepath.Glob(filepath.Join(parent, goWorkPrefix+"*")); len(matches) > 0 {
+		if matches, _ := filepath.Glob(filepath.Join(diskParent(), goWorkPrefix+"*")); len(matches) > 0 {
 			t.Fatalf("created %v anyway", matches)
 		}
 	})
@@ -109,5 +105,30 @@ func TestHostTempDirLooksPastANamespacesOwn(t *testing.T) {
 	t.Setenv(EnvHostTempDir, "")
 	if got := hostTempDir(); got != "/tmp" {
 		t.Fatalf("hostTempDir = %q with nothing recorded, want /tmp", got)
+	}
+}
+
+// TestDiskParentIsNeverATmpfs: a host whose temp directory is a tmpfs gets
+// its run directories in /var/tmp, out of memory.
+func TestDiskParentIsNeverATmpfs(t *testing.T) {
+	disk := t.TempDir()
+	if isTmpfs(t, disk) {
+		// Under make go-test t.TempDir is the namespace's tmpfs; the host's
+		// temp directory is recorded beside it.
+		disk = hostTempDir()
+	}
+	if isTmpfs(t, disk) {
+		t.Skip("no temp directory on disk to compare with")
+	}
+	t.Setenv("TMPDIR", disk)
+	if got := diskParent(); got != disk {
+		t.Fatalf("diskParent = %q with TMPDIR on disk at %s", got, disk)
+	}
+	if _, err := os.Stat("/dev/shm"); err != nil || !isTmpfs(t, "/dev/shm") {
+		t.Skip("no tmpfs at /dev/shm")
+	}
+	t.Setenv("TMPDIR", "/dev/shm")
+	if got := diskParent(); got != "/var/tmp" {
+		t.Fatalf("diskParent = %q with TMPDIR on a tmpfs, want /var/tmp", got)
 	}
 }

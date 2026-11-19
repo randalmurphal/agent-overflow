@@ -3,7 +3,8 @@
 // it releases the directory or exits, however it exits; Sweep removes the
 // directories whose lock nobody holds. A process that is killed, panics at
 // a test timeout or calls os.Exit before its cleanup leaves a directory
-// the next Sweep of that prefix removes.
+// the next Sweep of that prefix removes. A Shared directory's lock is also
+// held by the processes it is passed to, so it outlives none of them.
 //
 // Standard library and filelock only, so test fixtures that must stay
 // light can use it.
@@ -46,6 +47,54 @@ func Make(parent, prefix string) (dir string, release func() error, err error) {
 	}, nil
 }
 
+// ErrInUse is wrapped by Shared.Release when another process still holds
+// the directory's lock.
+var ErrInUse = errors.New("another process still holds its lock")
+
+// Shared is a directory Make would create that processes this one starts
+// use too.
+type Shared struct {
+	Dir string
+	// Lock is the open lock file. Pass it to every process that uses Dir
+	// (exec.Cmd.ExtraFiles) and keep it open across their exec. A flock
+	// belongs to the open file all those copies share, so Dir stays owned,
+	// and no Sweep removes it, until the last of them has exited, this
+	// process included.
+	Lock *os.File
+}
+
+// MakeShared creates a directory like Make, for processes this one starts
+// to use and hold the lock of.
+func MakeShared(parent, prefix string) (*Shared, error) {
+	dir, err := os.MkdirTemp(parent, prefix)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := lockDir(dir)
+	if err != nil {
+		return nil, errors.Join(err, os.RemoveAll(dir))
+	}
+	return &Shared{Dir: dir, Lock: lock}, nil
+}
+
+// Release closes this process's copy of the lock and removes Dir once no
+// other process holds it. It never unlocks, which would release the lock
+// for every process sharing it. When one still holds it, Dir stays for the
+// Sweep after that process exits, and the error wraps ErrInUse.
+func (s *Shared) Release() error {
+	if err := s.Lock.Close(); err != nil {
+		return fmt.Errorf("close the lock of %s: %w", s.Dir, err)
+	}
+	removed, err := removeIfOwnerGone(s.Dir)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return fmt.Errorf("leave %s for a later sweep: %w", s.Dir, ErrInUse)
+	}
+	return nil
+}
+
 // lockDir takes the lock that marks dir owned. The lock file appears under
 // its final name only once locked, so a Sweep never takes it first.
 func lockDir(dir string) (*os.File, error) {
@@ -82,19 +131,27 @@ func Sweep(parent, prefix string) error {
 	}
 	var errs []error
 	for _, dir := range matches {
-		gone, err := ownerGone(dir)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("inspect %s: %w", dir, err))
-			continue
-		}
-		if !gone {
-			continue
-		}
-		if err := os.RemoveAll(dir); err != nil {
-			errs = append(errs, fmt.Errorf("remove %s: %w", dir, err))
+		if _, err := removeIfOwnerGone(dir); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// removeIfOwnerGone removes dir when its lock file is there and nobody
+// holds it, and reports whether it did.
+func removeIfOwnerGone(dir string) (bool, error) {
+	gone, err := ownerGone(dir)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", dir, err)
+	}
+	if !gone {
+		return false, nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return false, fmt.Errorf("remove %s: %w", dir, err)
+	}
+	return true, nil
 }
 
 func ownerGone(dir string) (bool, error) {

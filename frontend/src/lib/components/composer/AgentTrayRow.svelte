@@ -2,10 +2,10 @@
   // One row of the activity rail's Agents body (docs/specs/standing-agents.md,
   // "Agents segment"): a thread this thread is waiting on, or under Past one
   // it waited on, with its provider, title, state, how long a spawned
-  // thread's turns ran (agentRowRuntimeMs; any other row: how long since the
-  // request; a past row: when it settled, the time it ran its tooltip), what
-  // a spawned thread did (its tool calls and tokens, as a subagent's row
-  // counts them), and what it is blocked on or did last. A row
+  // thread's turns ran in the row's run (agentRowRuntimeMs; any other row:
+  // how long since the request; a past row: when it settled, the time it
+  // ran its tooltip), what the run did (its tool calls and tokens, as a
+  // subagent's row counts them), and what it is blocked on or did last. A row
   // is open while its request is, or its worker is not at rest; once its
   // request settled it shows its worker's state. The row's main button
   // opens the thread, or for a row no longer open the answer; the
@@ -111,8 +111,10 @@
     void now;
     return relativeTime(row.settledAt, 'locale', viewer);
   });
-  // A worker with no sidebar row, on a computer this window can place it on.
-  let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && canPlace && Boolean(row.threadId));
+  // A worker with no sidebar row, on a computer this window can place it on:
+  // its spawn's row or a send's that counts its run, which carry its
+  // placement.
+  let showInSidebar = $derived(row.placement === 'owned' && !row.archived && canPlace && Boolean(row.threadId));
   let activity = $derived(open && !blockedLabel ? (row.activity ?? '') : '');
   // What the spawned thread did, live while it works and final once it
   // rests; unknown from a computer that does not report it.

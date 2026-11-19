@@ -189,6 +189,11 @@ type ThreadRequest struct {
 	// request was admitted, or when its pairing ended for a request that
 	// kept none (EndPairing), which names it once no pairing here does.
 	TargetComputerName string `json:"-"`
+	// RunBase is what the worker had done when this request's run began,
+	// nil for a request that tracks no run (request_runs.go); RunTotal is
+	// what the run did, set once the worker came to rest after it.
+	RunBase  *RunFigures `json:"-"`
+	RunTotal *RunFigures `json:"-"`
 }
 
 // RemoteRequestSource is the thread a destination's receipts name for the
@@ -312,7 +317,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
     late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg, admit_until,
-    late_reply_expired, ack_owed, target_computer_name, link_end`
+    late_reply_expired, ack_owed, target_computer_name, link_end, ` + requestRunColumns
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -332,6 +337,7 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 	var notify, polling, lineageOnly, nestedOpen, restUnreported, lateReplyExpired int
 	var answerAgentRole, lateReplyAgentRole string
 	var answerAgent, lateReplyAgent int64
+	var run [6]sql.NullInt64
 	if answer == nil {
 		answer = &r.Answer
 	}
@@ -350,7 +356,9 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg, &r.AdmitUntil,
 		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName, &r.LinkEnd,
+		&run[0], &run[1], &run[2], &run[3], &run[4], &run[5],
 	}, extra...)...)
+	r.RunBase, r.RunTotal = runFiguresOf(run[:3]), runFiguresOf(run[3:])
 	r.LateReplyExpired = lateReplyExpired != 0
 	r.NestedOpen = nestedOpen != 0
 	r.RestUnreported = restUnreported != 0
@@ -382,15 +390,18 @@ func collectThreadRequests(rows *sql.Rows, action string) ([]ThreadRequest, erro
 // The token is the caller-minted idempotency key, so a duplicate insert is an
 // error rather than a silent overwrite: a retry re-reads the existing row.
 func (s *Store) InsertThreadRequest(r ThreadRequest) error {
-	if err := insertThreadRequestTx(s.db, r); err != nil {
+	if err := insertThreadRequestTx(s.db, r, false); err != nil {
 		return err
 	}
 	s.noteThreadRequestChanged(ThreadRequestChange{Token: r.Token, CallerThreadID: r.CallerThreadID})
 	return nil
 }
 
-// insertThreadRequestTx validates and writes one source row on ex.
-func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
+// insertThreadRequestTx validates and writes one source row on ex, with the
+// start of its run (insertThreadRequestSQL): r.RunBase when given, and for
+// a send this computer's tools accept (trackLocalSend), its target's tally
+// when its caller spawned the target.
+func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest, trackLocalSend bool) error {
 	action := fmt.Sprintf("store: insert thread request %s", r.Token)
 	if r.Token == "" || r.CallerThreadID == "" {
 		return fmt.Errorf("%s: token and caller thread id are required", action)
@@ -410,15 +421,15 @@ func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
 	if r.UpdatedAt == 0 {
 		r.UpdatedAt = r.CreatedAt
 	}
-	if _, err := ex.Exec(
-		`INSERT INTO thread_requests (
-		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
-		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, lineage_only, created_at, updated_at, admit_until, target_computer_name
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	var base [3]any
+	if b := r.RunBase; b != nil {
+		base = [3]any{b.ToolCalls, b.Tokens, b.TurnMs}
+	}
+	if _, err := ex.Exec(insertThreadRequestSQL,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
 		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt, r.AdmitUntil, r.TargetComputerName,
+		base[0], base[1], base[2], boolToInt(trackLocalSend), nowMillis(),
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}

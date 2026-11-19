@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,15 @@ import (
 	"agent-overflow/internal/netisolate"
 )
 
-const roleEnv = "AO_NETNS_TEST_ROLE"
+const (
+	roleEnv = "AO_NETNS_TEST_ROLE"
+	// launcherEnv makes the test binary ao-netns itself, run as a process
+	// of its own so a test can kill it.
+	launcherEnv = "AO_NETNS_TEST_LAUNCHER"
+	// markerEnv names the file the await-sigterm program creates when
+	// SIGTERM arrives.
+	markerEnv = "AO_NETNS_TEST_MARKER"
+)
 
 // TestMain lets the test binary stand in for both ao-netns, whose helper
 // re-executes os.Executable(), and the program it runs.
@@ -29,7 +38,25 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == netisolate.HelperArg {
 		os.Exit(netisolate.RunHelper(os.Args[2:], os.Stderr))
 	}
+	if os.Getenv(launcherEnv) != "" {
+		os.Setenv(launcherEnv, "")
+		// It runs this binary again as the program its role names.
+		os.Exit(run(os.Args, os.Stdin, os.Stdout, os.Stderr))
+	}
 	switch os.Getenv(roleEnv) {
+	case "await-sigterm":
+		terms := make(chan os.Signal, 1)
+		signal.Notify(terms, syscall.SIGTERM)
+		fmt.Println("ready")
+		select {
+		case <-terms:
+			if err := os.WriteFile(os.Getenv(markerEnv), nil, 0o600); err != nil {
+				os.Exit(3)
+			}
+			os.Exit(0)
+		case <-time.After(time.Minute):
+			os.Exit(5)
+		}
 	case "interfaces":
 		ifaces, err := net.Interfaces()
 		if err != nil {
@@ -192,6 +219,67 @@ func copyOutsideTempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return binary
+}
+
+// TestKilledLauncherEndsTheRun: SIGKILL of ao-netns skips everything it
+// would do on the way out; the program it started receives SIGTERM, from
+// the parent-death signal kept through the helper's exec, and ends.
+func TestKilledLauncherEndsTheRun(t *testing.T) {
+	t.Setenv(netisolate.EnvNamespace, "")
+	t.Setenv("GOTMPDIR", "")
+	t.Setenv("GOENV", filepath.Join(t.TempDir(), "absent"))
+	binary := copyOutsideTempDir(t)
+	dir := filepath.Dir(binary)
+	marker := filepath.Join(dir, "terminated")
+	launcher := exec.Command(binary, "-test.run=^$")
+	launcher.Env = append(os.Environ(), launcherEnv+"=1", roleEnv+"=await-sigterm", markerEnv+"="+marker)
+	// Files rather than pipes: Wait would wait for the program, which
+	// shares them, to close them too.
+	out, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	launcher.Stdout, launcher.Stderr = out, out
+	if err := launcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = launcher.Process.Kill() })
+	output := func() string {
+		data, _ := os.ReadFile(out.Name())
+		return string(data)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("ao-netns output:\n%s", output())
+		}
+	})
+	waitFor(t, "the program to start", func() bool { return strings.Contains(output(), "ready\n") })
+	if err := launcher.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = launcher.Wait()
+	waitFor(t, "the program to receive SIGTERM after ao-netns was killed", func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+	// The next run removes the Go work directory the killed one left.
+	t.Setenv(roleEnv, "exit7")
+	var stderr bytes.Buffer
+	if code := run([]string{binary, "-test.run=^$"}, nil, io.Discard, &stderr); code != 7 || stderr.Len() > 0 {
+		t.Fatalf("next run: exit %d, want 7\n%s", code, stderr.String())
+	}
+}
+
+func waitFor(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestExitStatusPassesThrough(t *testing.T) {

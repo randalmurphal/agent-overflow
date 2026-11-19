@@ -1,19 +1,20 @@
 // Command ao-netns runs a program inside the test namespace from
 // internal/netisolate: loopback plus a private LAN interface and no route
-// off it, a private RAM temp directory, and the lowest CPU priority. The
-// Make test targets run `go test` and the frontend test scripts under it,
-// so no test reaches the host network or writes temp files to disk. The go
-// command's own work directory goes to a per-run directory on disk
-// (netisolate.GoWorkDir), removed when the program exits.
+// off it, a private temp directory (in RAM when the host can afford it),
+// and the lowest CPU priority. The Make test targets run `go test` and the
+// frontend test scripts under it, so no test reaches the host network. The
+// go command's own work directory goes to a per-run directory on disk,
+// removed once the run's last process has exited.
 //
 //	ao-netns <program> [args...]
 //
 // It passes stdio, the working directory and the environment through, exits
 // with the program's status (128+N when signal N ended it), and forwards the
 // signals a test runner sends, including SIGQUIT, which `go test` sends a
-// timed-out test binary for a stack dump. A host that refuses unprivileged user namespaces
-// fails the run; nothing falls back to the host network. On non-Linux hosts
-// the program runs directly.
+// timed-out test binary for a stack dump. When ao-netns itself is killed,
+// the program gets SIGTERM. A host that refuses unprivileged user
+// namespaces fails the run; nothing falls back to the host network. On
+// non-Linux hosts the program runs directly.
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"agent-overflow/internal/netisolate"
@@ -40,6 +42,10 @@ func main() {
 var forwarded = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT}
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// The program's parent-death signal fires when the thread that starts it
+	// exits (netisolate.Command); this one lasts until the program is waited for.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: ao-netns <program> [args...]")
 		return 2

@@ -3,19 +3,30 @@ package ownedtemp
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-const childEnv = "AO_OWNEDTEMP_CHILD_PARENT"
+const (
+	childEnv = "AO_OWNEDTEMP_CHILD_PARENT"
+	// holderEnv makes the test binary a process that was passed a Shared
+	// directory's lock and holds it until its stdin closes.
+	holderEnv = "AO_OWNEDTEMP_HOLDER"
+)
 
 // TestMain lets the test binary stand in for a process that makes a
 // directory and exits without releasing it.
 func TestMain(m *testing.M) {
+	if os.Getenv(holderEnv) != "" {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
 	if parent := os.Getenv(childEnv); parent != "" {
 		dir, _, err := Make(parent, "ownedtemp-test-")
 		if err != nil {
@@ -86,5 +97,74 @@ func TestSweepRemovesOnlyDirectoriesWhoseOwnerIsGone(t *testing.T) {
 	}
 	if exists(t, held) {
 		t.Fatal("release left the directory")
+	}
+}
+
+// TestSharedDirectoryOutlivesNoneOfItsHolders: a process the lock was
+// passed to keeps the directory owned after this process releases it, so
+// a sweep leaves it; once that process exits, the next sweep removes it.
+func TestSharedDirectoryOutlivesNoneOfItsHolders(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exec.Cmd.ExtraFiles is Unix-only")
+	}
+	parent := t.TempDir()
+	shared, err := MakeShared(parent, "ownedtemp-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := exec.Command(self, "-test.run=^$")
+	holder.Env = append(os.Environ(), holderEnv+"=1")
+	holder.ExtraFiles = []*os.File{shared.Lock}
+	stdin, err := holder.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = holder.Wait()
+	})
+
+	if err := shared.Release(); !errors.Is(err, ErrInUse) {
+		t.Fatalf("Release while another process holds the lock = %v, want ErrInUse", err)
+	}
+	if err := Sweep(parent, "ownedtemp-test-"); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(t, shared.Dir) {
+		t.Fatal("a sweep removed a directory a process still holds")
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Wait(); err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	if err := Sweep(parent, "ownedtemp-test-"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, shared.Dir) {
+		t.Fatal("the sweep after the last holder exited left the directory")
+	}
+}
+
+// TestSharedReleaseRemovesAnUnsharedDirectory: with no other holder,
+// Release removes the directory itself.
+func TestSharedReleaseRemovesAnUnsharedDirectory(t *testing.T) {
+	shared, err := MakeShared(t.TempDir(), "ownedtemp-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, shared.Dir) {
+		t.Fatal("Release left the directory")
 	}
 }

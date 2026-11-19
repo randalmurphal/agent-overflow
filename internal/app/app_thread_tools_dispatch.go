@@ -188,6 +188,7 @@ func (t threadToolsApp) admitRemoteRequest(
 		return nil, nil, err
 	}
 	row.TargetComputerName = peer.Computer().Name
+	row.RunBase = t.app.remoteRunBase(row)
 	done, err = t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return nil, nil, err

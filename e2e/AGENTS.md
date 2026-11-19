@@ -91,7 +91,8 @@ memory boundary. The `desktop` project runs ordinary specs; `compact` runs
 `bin/ao-harness-e2e tests/<spec>`; it runs the `bin/agent-overflow` from the last
 `make harness-build`, so rebuild after changing Go or frontend code. On Linux
 the launcher runs the suite in an isolated namespace with one private LAN
-interface, a private RAM temp directory that holds the data roots, and the
+interface, a private temp directory (in RAM when the host has the memory)
+that holds the data roots, and the
 lowest CPU priority; a spec cannot reach host services or any real network.
 Elsewhere, macOS included, instances stay on loopback and specs that need an
 off-host peer skip. See

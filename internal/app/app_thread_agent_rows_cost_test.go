@@ -154,7 +154,10 @@ func TestAgentTreeReadCost(t *testing.T) {
 
 	list := measureAgentTree(f.app, 20, func() {
 		listing, err := f.app.ListThreadAgentRows(t.Context(), chief)
-		if err != nil || len(listing.Rows) != threadAgentRowLimit || !listing.Hidden {
+		// The read takes the row limit; the listing shows one row per
+		// worker of each caller: the managers, their workers, and the
+		// chief's sends to each worker as one.
+		if err != nil || len(listing.Rows) != agentTreeManagers+2*agentTreeWorkers || !listing.Hidden {
 			t.Fatalf("ListThreadAgentRows: %d rows, hidden %v, %v", len(listing.Rows), listing.Hidden, err)
 		}
 		for _, row := range listing.Rows {

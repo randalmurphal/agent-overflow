@@ -189,7 +189,9 @@ default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
 The suite runs in a process group of its own, so an interrupt (and on Unix
 `SIGTERM` or `SIGHUP`) reaches only the launcher; it stops the owned tree,
-waits for it, and exits with 128 plus the signal number. Each backend
+waits for it, and exits with 128 plus the signal number. On Linux a
+launcher killed outright, which tears nothing down, leaves the suite a
+`SIGTERM` (its parent-death signal). Each backend
 `launchHarness` starts has a process group of its own, out of that
 teardown's reach, so on Unix it is passed `--exit-with-parent` with its
 worker's PID and stops itself once that worker is gone. That stop does
@@ -284,23 +286,36 @@ real network. The suite keeps the invoking uid and holds no capabilities:
 helper builds the interfaces and mounts, and the helper clears them before
 it execs the suite.
 
-`TMPDIR` names a private tmpfs mounted at `/tmp/aot-<uid>`
-(`netisolate.TempDir`), capped at 8 GiB, so temp files cost no disk writes
-or syncs and vanish with the namespace, a `SIGKILL` included; a runaway
-test gets `ENOSPC`. The path is the same on every run because the Go test
+`TMPDIR` names a private temp directory mounted at `/tmp/aot-<uid>`
+(`netisolate.TempDir`). When the host's `MemAvailable` at launch is at
+least 12 GiB (the 4 GiB cap plus 8 GiB for the developer's processes and
+the run's own), it is a tmpfs capped at 4 GiB, so temp files cost no disk
+writes or syncs and vanish with the namespace, a `SIGKILL` included; a
+runaway test gets `ENOSPC`. The largest measured peak, on 24 cores, is
+1.2 GiB, for `./internal/store` alone and for the whole tree. Below that
+threshold, or when `/proc/meminfo` cannot be read, the launcher says once
+that the run's temp directory is on disk and why, and mounts a per-run
+directory on disk at the same path, handled like the Go work directory
+below. The path is the same on every run because the Go test
 cache keys a result by the `TMPDIR` a test reads, and short because a Unix
 socket path holds at most 107 bytes. `/tmp` itself is the host's, so paths
 a caller passes in stay readable. `AO_NETISOLATE_HOST_TMPDIR` names the
 host's temp directory for a file that must outlive the run, such as a data
 root `AO_E2E_KEEP_FAILED_ROOT` keeps. The go command's work directory,
 test binaries included, would add several GB to the tmpfs, so each run gets
-one on disk under the host's temp directory, mounted at
+one on disk under the host's temp directory (`/var/tmp` where that is a
+tmpfs), mounted at
 `/tmp/aot-<uid>/.ao-go-work` and named only in a Go environment file
 (`GOENV`) that copies the developer's and adds `GOTMPDIR`. A test never sees
 `GOTMPDIR`, which `t.TempDir` would follow back to disk, and every value
-the cache records stays the same. The launcher removes that directory when
-the run ends, signals included; one a killed launcher left is removed by
-the next run (`internal/ownedtemp`).
+the cache records stays the same. Every process of the run inherits the
+lock of each such directory (`internal/ownedtemp`), so none is removed
+while one of them may still use it. The launcher removes them when the
+run ends, signals included; ones a killed launcher left, or a process of
+the run still held, are removed by the first later run that finds them
+free. A launcher killed outright leaves the run a `SIGTERM` (its
+parent-death signal): `go test` and Vitest stop, but a test binary `go
+test` had started runs on until it ends or reaches its `-test.timeout`.
 
 The suite and everything it starts run at nice 19. The helper lowers its
 priority before it execs the suite; where it cannot, the suite runs at

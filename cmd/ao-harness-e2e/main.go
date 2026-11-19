@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +70,11 @@ func main() {
 }
 
 func run(args []string, stdout, stderr *os.File) int {
+	// The suite's parent-death signal fires when the thread that starts it
+	// exits (configureParentDeath); this one lasts until the suite is
+	// waited for.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	opts, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
@@ -170,6 +176,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessGroup(command)
+	configureParentDeath(command)
 	if isolate {
 		release, err := netisolate.Command(command, stderr)
 		if err != nil {

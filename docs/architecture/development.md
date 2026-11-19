@@ -38,14 +38,18 @@ needs that prefix mapped to the checkout.
 Make lowers itself to nice 19, so every build and test recipe yields to
 the developer's running app; goals that launch an app (`make dev`,
 `make harness` and the like) keep normal priority. The test targets run
-under `bin/ao-netns`, whose private RAM temp directory and on-disk Go work
+under `bin/ao-netns`, whose private temp directory and on-disk Go work
 directory are described with the
 [isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
 Go trims its build cache only by age, so `go-build`, `go-test` and
-`test-race` start `cmd/ao-gocache-trim` in the background: at most every
-four hours it deletes the least recently used entries of `go env GOCACHE`
-once the cache passes 20 GiB (`AO_GOCACHE_MAX_GIB`; 0 turns it off). It
-does nothing in CI.
+`test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
+another when it ends. A pass walks the cache at most every five minutes,
+one at a time across sessions, and once `go env GOCACHE` passes 20 GiB
+(`AO_GOCACHE_MAX_GIB`; 0 turns it off) deletes its least recently used
+entries, never one used in the last hour; when those alone keep the cache
+over the cap it says so. There a failed pass prints its error and the
+target goes on, while an invalid `AO_GOCACHE_MAX_GIB` fails it;
+`make gocache-trim` fails on either. It does nothing in CI.
 
 ## Generated artifacts
 

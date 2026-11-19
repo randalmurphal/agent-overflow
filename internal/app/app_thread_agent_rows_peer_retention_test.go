@@ -167,13 +167,14 @@ func sweepPastTheFloor(t *testing.T, pair *reachPair, token string) {
 // A remote worker at rest through both retention sweeps keeps its link at
 // both ends: the source keeps the spawn as its lineage, payload cleared and
 // token unknown, as the destination keeps the receipt. Continued there with
-// its spawner's pane closed, the owner update finds it: its row is
-// open, counted and out of Past, and its Stop reaches it.
+// its spawner's pane closed, the owner update finds it, and the run it
+// finds is not the spawner's: no row opens for it.
 func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	spawn, child := remoteRestedWorker(t, pair)
+	agentPair, child := restedRemoteRun(t, pair)
+	spawn := agentPair.spawn
 	startReconciledOwner(t, pair)
 	sweepPastTheFloor(t, pair, spawn.Token)
 	if _, found, err := pair.source.store.GetThreadRequest(spawn.Token); err != nil || found {
@@ -188,23 +189,15 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool { return readRemoteSpawnRow(t, pair, spawn.Token).nested })
-	var row ThreadAgentRow
-	waitUntil(t, 10*time.Second, func() bool {
-		listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		row, _ = agentRowByToken(listing.Rows, spawn.Token)
-		return row.Worker == workerRunning
-	})
-	(&agentPeerPair{reachPair: pair, spawn: spawn}).expectRemoteRowOpen(t, row, workerRunning)
-	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, spawn.Token)
-	if err != nil || len(stop.Failures) != 0 || !stop.Interrupted {
-		t.Fatalf("the Stop of the lineage's worker = %+v, %v; want its turn interrupted there", stop, err)
+	if listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(listing.Rows) != 0 {
+		t.Fatalf("listing %+v, %v; want no row for the person's run there", listing.Rows, err)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		return !threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
-	})
+	if stops, err := pair.source.StopThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(stops) != 0 {
+		t.Fatalf("Stop All = %+v, %v; want nothing of the spawner's to stop", stops, err)
+	}
+	if !threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn {
+		t.Fatal("Stop All interrupted the person's turn there")
+	}
 }
 
 // The source's lineage of a remote spawn lasts until that computer says
