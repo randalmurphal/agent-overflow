@@ -48,7 +48,7 @@ import (
 // names them (jarAllows).
 
 // Why a page's downloads still running end when the page goes, which the
-// launcher cancels with the page and reports nothing of (endPageDownloads):
+// launcher cancels with the page and reports nothing of (retirePage):
 // it closed by itself, or the Manager closed it. A listed page's downloads
 // the Manager has ended by then, so these name a popup's it never listed.
 const (
@@ -107,6 +107,8 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 	}
 	e.mu.Lock()
 	profile, known := e.pageProfile[report.Opener]
+	// An opener whose close or discard was received opens nothing more.
+	known = known && e.pages.admits(hostedPageID(report.Opener))
 	_, taken = e.pageProfile[pageID]
 	_, claimed := e.targetPageLocked(report.Target)
 	conn := e.pageConn[report.Opener]
@@ -137,12 +139,16 @@ func (e *hostedEngine) popupReported(pageID, detail string) {
 		e.closePage(pageID)
 		return
 	}
+	if !e.pages.addPopup(hostedPageID(pageID), hostedPageID(report.Opener), profile) {
+		e.mu.Unlock()
+		e.logf("browser: pane host reported popup %s, a page it already has", pageID)
+		return
+	}
 	e.popups[pageID] = &hostedPopup{target: report.Target, profile: profile, opener: report.Opener, conn: conn}
 	if report.Target != "" {
 		e.popupByTarget[report.Target] = pageID
 	}
 	e.pageProfile[pageID] = profile
-	e.downloads.openLocked(pageID)
 	e.mu.Unlock()
 	if report.Target == "" {
 		// Nothing to attach: it stays the owner of its downloads until its
@@ -198,11 +204,11 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 	if err != nil {
 		return nil, err
 	}
-	// Bound only while its record stands: a popup that went meanwhile left
-	// no page to bind.
+	// Bound only while its record stands and its close was not received: a
+	// popup that went meanwhile left no page to bind.
 	e.mu.Lock()
 	switch {
-	case e.popups[handle] != popup:
+	case e.popups[handle] != popup || !e.pages.admits(hostedPageID(handle)):
 		err = fmt.Errorf("browser: popup %s closed before it was adopted", handle)
 	case browserCtx.Err() != nil:
 		err = errors.New("browser: the connection to the pane browser was lost")
@@ -218,29 +224,6 @@ func (e *hostedEngine) attachPopup(profile *hostedProfile, handle string, hooks 
 		return nil, err
 	}
 	return &hostedPage{pageDriver: driver, engine: e, id: handle}, nil
-}
-
-// popupOwnersLocked answers, for a download of pageID, the download's
-// start naming the popup it began in, that popup's openers, nearest first,
-// and its profile, when pageID is a pending popup; empty otherwise. The
-// caller holds e.mu.
-func (e *hostedEngine) popupOwnersLocked(pageID string) downloadStart {
-	popup := e.popups[pageID]
-	if popup == nil {
-		return downloadStart{}
-	}
-	start := downloadStart{Popup: pageID, Profile: popup.profile}
-	// Each opener is reported before its popups, so the chain ends; the
-	// bound stops a cycle all the same.
-	for opener := popup.opener; opener != "" && len(start.Openers) <= len(e.popups); {
-		start.Openers = append(start.Openers, opener)
-		next := e.popups[opener]
-		if next == nil {
-			break
-		}
-		opener = next.opener
-	}
-	return start
 }
 
 // forgetPopupLocked drops the record of popup pageID, whose page goes, and

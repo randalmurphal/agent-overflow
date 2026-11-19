@@ -95,10 +95,7 @@ func TestHostedEngineTakesARefusalFromAnySnapshot(t *testing.T) {
 	if err == nil {
 		t.Fatal("a cancel with no pane host answered nil")
 	}
-	engine.mu.Lock()
-	cancels := engine.downloads.running["dl-a-3"].cancels
-	engine.mu.Unlock()
-	if cancels != 0 {
+	if cancels := engine.pages.cancelsOf("page1", "dl-a-3"); cancels != 0 {
 		t.Fatalf("a cancel never sent kept number %d", cancels)
 	}
 }

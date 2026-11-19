@@ -109,12 +109,7 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("page-b's lane waits on %v, want its progress as one snapshot, then its close", waiting)
 		}
-		waiting = nil
-		engine.mu.Lock()
-		for _, w := range engine.lanes.pages["page-b"].jobs {
-			waiting = append(waiting, fmt.Sprintf("%d %s %d", w.kind, w.snapshot.ID, w.snapshot.Received))
-		}
-		engine.mu.Unlock()
+		waiting = engine.pages.waiting("page-b")
 	}
 	if got := took(); slices.ContainsFunc(got, func(s string) bool { return strings.HasPrefix(s, "dl-1 completed") || s == "closed page-b" }) {
 		t.Fatalf("page-b's completion or close reached the Manager before its path was converted: %v", got)

@@ -107,12 +107,13 @@ func TestHostedTargetlessPopupsDownloadsGoToItsOpenerAtItsClose(t *testing.T) {
 	default:
 	}
 	l.settledEngine()
+	settleReports(t, l.engine, "")
 	l.engine.mu.Lock()
 	_, profiled := l.engine.pageProfile[popupID]
-	_, ended := l.engine.downloads.ended[popupID]
 	l.engine.mu.Unlock()
-	if profiled || ended {
-		t.Fatalf("the engine keeps the closed popup: profile %v, ended downloads %v", profiled, ended)
+	_, recorded := l.engine.pages.state(hostedPageID(popupID))
+	if profiled || recorded {
+		t.Fatalf("the engine keeps the closed popup: profile %v, record %v", profiled, recorded)
 	}
 }
 

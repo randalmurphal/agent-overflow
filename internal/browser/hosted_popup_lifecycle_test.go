@@ -21,19 +21,19 @@ func TestHostedPopupAttachCancelHoldsNoEngineLock(t *testing.T) {
 			t.Cleanup(engine.Stop)
 			entered, release := make(chan struct{}), make(chan struct{})
 			defer close(release)
+			pendingTestPopup(engine, "popup", "T-popup", "opener")
 			engine.mu.Lock()
-			engine.popups["popup"] = &hostedPopup{target: "T-popup", profile: "prof", opener: "opener", cancelAttach: func() {
+			engine.popups["popup"].cancelAttach = func() {
 				close(entered)
 				<-release
-			}}
-			engine.pageProfile["popup"] = "prof"
+			}
 			engine.mu.Unlock()
 			go func() {
 				switch how {
 				case "close":
 					engine.Report("popup", webview2host.ReportClosed, "")
 				case "discard":
-					if err := engine.DiscardPage(t.Context(), "popup"); err != nil {
+					if err := engine.DiscardPage(context.Background(), "popup"); err != nil {
 						t.Errorf("discard: %v", err)
 					}
 				case "stop":

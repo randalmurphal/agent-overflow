@@ -114,12 +114,10 @@ func settleReports(t *testing.T, engine *hostedEngine, pageID string) {
 // pageID (of every page when empty) it accepted, within hostedTestDeadline.
 func reportsProcessed(engine *hostedEngine, pageID string) bool {
 	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
-		engine.mu.Lock()
-		busy := len(engine.lanes.byKey) != 0
+		busy := engine.pages.busy()
 		if pageID != "" {
-			busy = engine.lanes.pages[hostedPageID(pageID)] != nil
+			_, busy = engine.pages.laneOf(hostedPageID(pageID))
 		}
-		engine.mu.Unlock()
 		if !busy {
 			return true
 		}
@@ -417,10 +415,7 @@ func TestHostedEngineAsksAboutAQuietDownload(t *testing.T) {
 	if extra := sink.drain(); len(extra) != 0 {
 		t.Fatalf("questions with nothing running: %+v", extra)
 	}
-	engine.mu.Lock()
-	watching := engine.downloads.watching
-	engine.mu.Unlock()
-	if watching {
+	if engine.pages.watchingNow() {
 		t.Fatal("the status loop outlived the last running download")
 	}
 }
@@ -471,10 +466,7 @@ func TestHostedEngineBoundsItsEndedDownloads(t *testing.T) {
 		reportDownload(t, engine, "page1", snapshot(fmt.Sprintf("dl-a-%d", i), webview2host.DownloadCompleted, 100))
 	}
 	recorder.take()
-	engine.mu.Lock()
-	kept := len(engine.downloads.ended["page1"])
-	engine.mu.Unlock()
-	if kept != maxHostedEndedDownloads {
+	if kept, _ := engine.pages.endedOf("page1", ""); kept != maxHostedEndedDownloads {
 		t.Fatalf("kept %d ended ids, want %d", kept, maxHostedEndedDownloads)
 	}
 	for i := 1; i <= maxHostedEndedDownloads; i++ {
@@ -779,7 +771,7 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 		leave func(engine *hostedEngine)
 		why   string
 	}{
-		{"the Manager closes it", func(engine *hostedEngine) { engine.closePage("page1") }, popupDiscardedReason},
+		{"the Manager closes it", func(engine *hostedEngine) { <-engine.closePage("page1") }, popupDiscardedReason},
 		{"the launcher reports it closed", func(engine *hostedEngine) {
 			engine.Report("page1", webview2host.ReportClosed, "")
 			reportsProcessed(engine, "page1")
@@ -799,12 +791,8 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 			if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-1", State: downloadCanceled, Error: tc.why, PageGone: true}) {
 				t.Fatalf("the departure reported %+v, want the running download's end", progress)
 			}
-			engine.mu.Lock()
-			_, running := engine.downloads.running["dl-a-1"]
-			_, ended := engine.downloads.ended["page1"]
-			engine.mu.Unlock()
-			if running || ended {
-				t.Fatalf("the gone page's records stayed: running %v, ended %v", running, ended)
+			if _, kept := engine.pages.state("page1"); kept {
+				t.Fatal("the gone page's record stayed")
 			}
 			if err := engine.cancelDownload("dl-a-1"); !errors.Is(err, errDownloadEnded) {
 				t.Fatalf("the gone page's download answers a cancel with %v, want errDownloadEnded", err)
@@ -935,10 +923,7 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 					t.Errorf("download %s started in the popup and never ended: starts %+v, progress %+v", start.ID, starts, progress)
 				}
 			}
-			engine.mu.Lock()
-			running := len(engine.downloads.running)
-			engine.mu.Unlock()
-			if running != 0 {
+			if running := engine.pages.running(); running != 0 {
 				t.Errorf("the engine still runs %d downloads of the gone popup", running)
 			}
 		})

@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -577,6 +578,11 @@ type engineEvents struct {
 	// ended while the page was open; reason is the engine's name for how.
 	// The engine page still exists and the Manager closes it (crash.go).
 	PageCrashed func(handle, reason string)
+	// PageEndReceived records, at once, a close or crash an engine received
+	// for a page and reports through PageClosed or PageCrashed only once it
+	// has processed what it received before (the hosted engine's report
+	// lanes), so a popup's listing that commits meanwhile reads it.
+	PageEndReceived func(handle string, end popupadmit.Observation)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
 	// native engine reports through the page's own hook (pageHooks.Info).
