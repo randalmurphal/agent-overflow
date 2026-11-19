@@ -29,7 +29,13 @@ re-forked (or re-pinned) on the next restart.
 `App.startSessionNow` picks the right cursor per provider:
 
 - **Claude**: passes `--resume <session_ref>` via `buildArgs` in
-  `internal/provider/claude/session_spawn.go`. If `PendingForkRef` is
+  `internal/provider/claude/session_spawn.go`. An ordinary resume passes
+  no `--resume-session-at` and reads nothing from the transcript: the
+  CLI picks its own default leaf, applies its own resume filters and
+  strips orphaned server-side tool calls from each request, so the start
+  never fails over a leaf AO chose
+  ([claude-wire.md](../references/claude-wire.md#session-jsonl-active-branch-semantics---resume----resume-session-at)).
+  If `PendingForkRef` is
   populated it replaces `Resume` and the `ForkSession` flag is set,
   producing `--fork-session --resume <source-ref>` so the CLI replays
   from the source into a fresh session id. If `PendingForkResumeAt` is
@@ -53,7 +59,8 @@ Forking a thread whose turn is still in flight produces a fork that
 resumes exactly as an interrupted one does. Claude PINS the lazy cut:
 the fork click captures the live session's `CanonicalLeafUUID`
 (cold-scanning the file via `ScanSessionLeaf` when the process is
-already gone) into `PendingForkResumeAt` alongside
+already gone, or when a just-resumed process has not emitted a row and
+so has no leaf yet) into `PendingForkResumeAt` alongside
 `PendingForkRef = <source ref>`, and the fork's first send resolves the
 pin and passes `--resume-session-at` (see above), so the CLI's own
 fork cuts where the AO fork was cut rather than wherever the

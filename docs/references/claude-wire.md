@@ -5415,14 +5415,16 @@ More spike-verified behavior (A1, B):
 - Plain `--resume` with no cursor uses the CLI's own default leaf, so
   omitting `--resume-session-at` is always safe, never wrong-branch.
 
-AO enforcement is described in the active-branch and resume-filter sections
-above. `sessionfork` re-chains deferred
-api_error tails so fork output keeps its writable tail on-branch;
-`ScanSessionLeaf` validates its file-order pick against a branch index
-and repairs picks the CLI would reject (off-branch OR filter-dropped,
-next section); `resolveClaudeResumeAt` passes that repaired pick at
-spawn. `internal/provider/claude/sessionleaf_branch.go` mirrors the row
-table above via `sessionfork.TranscriptTypes`.
+AO enforcement: an ordinary resume passes `--resume` alone and reads
+nothing from the transcript, so the CLI's own default leaf decides. Only
+a pinned fork start passes a cursor, which `ResolveForkResumeCursor`
+validates against a branch index and repairs when the CLI would reject
+it (off-branch OR filter-dropped, next section). `ScanSessionLeaf`
+applies the same repair to the leaf it reports for a mid-turn fork cut
+and the workflow resume preflight. `sessionfork` re-chains deferred
+api_error tails so fork output keeps its writable tail on-branch.
+`internal/provider/claude/sessionleaf_branch.go` mirrors the row table
+above via `sessionfork.TranscriptTypes`.
 
 ## Session JSONL: resume deserialization filters (crash tails)
 
@@ -5458,12 +5460,13 @@ The filters, in order (source: `utils/messages.ts`, 2.1.219):
    when the head is non-meta; meta-headed runs depend on the
    HISTORY_SNIP feature flag).
 
-AO enforcement: `sessionleaf_resumefilters.go` mirrors the three
-filters over the active chain; `repairLeafForActiveBranch` substitutes
-the deepest surviving row (or no cursor at all, always safe). The
-mirror is deliberately conservative. See the file header
-for the containment argument around
-`recoverOrphanedParallelToolResults`.
+AO enforcement: an ordinary resume passes no cursor, so these filters
+cannot fail it. For a pinned fork start's cursor and a scanned leaf,
+`sessionleaf_resumefilters.go` mirrors the three filters over the
+active chain and the repair substitutes the deepest surviving row
+(`repairLeafForActiveBranch`, `ResolveForkResumeCursor`). The mirror is
+deliberately conservative. See the file header for the containment
+argument around `recoverOrphanedParallelToolResults`.
 
 ## Orphaned server-side tool calls (`server_tool_use` without a result)
 
@@ -5478,7 +5481,8 @@ The CLI repairs this itself. `ensureToolResultPairing`
 (`services/api/claude.ts`) strips every `server_tool_use` or
 `mcp_tool_use` block without a matching result from each API request,
 live or resumed, so the next request and a later live user send both
-succeed. AO keeps these rows out of resume and fork cursors
+succeed, and an ordinary resume, which passes no cursor, needs nothing
+from AO. AO keeps these rows out of fork cursors and scanned leaves
 (`UnresolvedServerToolUUIDs`); a live session needs no restart. An
 interrupt cannot split an advisor call from its result in practice:
 both reach stdout within milliseconds of each other.
@@ -5530,8 +5534,10 @@ bypass. Fixture:
 AO countermeasures: `sessionfork/rechain.go` forces each deferred
 api_error row's fork parent to its file predecessor (subtype-scoped, since
 compact-boundary system rows are legitimate `parentUuid:null` roots and
-are never touched); the branch-aware leaf scan + spawn validation cover
-unforked files.
+are never touched). An ordinary resume of an unforked file passes no
+cursor, so it starts; it still resumes the CLI's active branch, which
+omits the bypassed tail. A pinned fork start's cursor and a scanned leaf
+are repaired onto the active branch by the branch-aware scan.
 
 ## Session JSONL: compact_boundary ordering
 

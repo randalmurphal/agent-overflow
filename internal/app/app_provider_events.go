@@ -27,7 +27,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	var deathRestoreGuard func() bool
 	// sawInit flips true on the session's first EventInit. An error
 	// turn-complete BEFORE init is the dead-on-arrival signature: the
-	// process failed during startup (Claude rejecting its
+	// process failed during startup (Claude rejecting a fork start's
 	// --resume-session-at cursor emits result{error_during_execution}
 	// pre-init, then lingers alive) and can never serve a send. Same
 	// single-worker justification as deathReported.
@@ -120,7 +120,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// Dead-on-arrival reap: a wire error result before this session
 		// ever reached init means startup failed and the process is
 		// useless yet still alive — Claude does not exit after failing
-		// its --resume-session-at validation. Runs AFTER triage.Handle
+		// a --resume-session-at validation. Runs AFTER triage.Handle
 		// so the orphan error item is already persisted and visible.
 		// Goroutine because the teardown closes this session, and a close
 		// drains this worker's queue.

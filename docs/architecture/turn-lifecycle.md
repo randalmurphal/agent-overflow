@@ -1168,7 +1168,8 @@ working indicator clears and the user gets actionable copy:
    `expect_turn_complete` opt-in (Codex doesn't follow up with a
    `result` envelope), so the synthetic truncated turn-complete fires.
 5. **Error `result` with no open round and no open turn** (pre-init
-   startup failure, e.g. an unusable `--resume-session-at` cursor, where
+   startup failure, e.g. a pinned fork start's unusable
+   `--resume-session-at` cursor, where
    the process emits only the error result and lingers):
    `handleTurnComplete`'s orphan branch persists an error item
    attributed to the first pending send that has not opened a turn (the send that

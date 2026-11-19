@@ -316,7 +316,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 }
 
 // CanonicalLeafUUID returns the latest settled top-level Claude transcript
-// UUID observed by this live session.
+// UUID observed by this live session. A start with Config.ResumeAt seeds it
+// with that cursor; any other start reports "" until the process emits its
+// first top-level row.
 func (s *Session) CanonicalLeafUUID() string {
 	if s == nil || s.leafTracker == nil {
 		return ""

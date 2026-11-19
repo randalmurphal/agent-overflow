@@ -7,7 +7,7 @@ import (
 )
 
 // claudeBranchIndex accumulates the session file's parentUuid graph
-// during a cold scan so the chosen resume-at leaf can be validated
+// during a cold scan so a scanned leaf or a fork pin can be validated
 // against the rows that SURVIVE claude's resume load. Two properties
 // decide whether `--resume-session-at <uuid>` is accepted:
 //
@@ -16,8 +16,8 @@ import (
 //     uuid-bearing transcript row. The graph and file order can
 //     disagree because the CLI writes some rows late with stale
 //     parents — deferred `system/api_error` rows are the known case
-//     (incident 2026-06-10; see sessionfork/rechain.go and
-//     claude-wire.md §"Session JSONL: deferred system/api_error rows").
+//     (see sessionfork/rechain.go and claude-wire.md §"Session JSONL:
+//     deferred system/api_error rows").
 //
 //  2. The row must survive the CLI's resume deserialization filters
 //     (deserializeMessages, conversationRecovery.ts): assistant rows
@@ -26,17 +26,16 @@ import (
 //     the CLI validates the cursor, so a uuid that is physically the
 //     file's branch tip can still hard-fail resume ("No message found
 //     with message.uuid of: ...", emitted as a pre-init
-//     result{error_during_execution}). A host crash mid-tool-execution
-//     produces exactly that tail (incident 2026-08-03: BSOD killed a
-//     34-minute Bash, leaving the leaf a dangling tool_use row). The
-//     filter mirror lives in sessionleaf_resumefilters.go.
+//     result{error_during_execution}). A crash mid-tool-execution
+//     leaves exactly that tail: a dangling tool_use row. The filter
+//     mirror lives in sessionleaf_resumefilters.go.
 //
 // Row admission mirrors the fork transform's transcript set
 // (user/assistant/attachment/system/progress with a non-empty uuid,
-// sidechains excluded): empirically, claude's own walk traverses
-// system rows (the api_error rows WERE the branch tip in the incident
-// file) and ignores non-transcript furniture (custom-title / mode /
-// queue-operation rows never broke a verified resume).
+// sidechains excluded): claude's own walk traverses system rows and
+// ignores non-transcript furniture (custom-title / mode /
+// queue-operation rows); claude-wire.md §"Session JSONL: active-branch
+// semantics" has the per-type evidence.
 //
 // Memory: one map bounded by the scan's existing row cap
 // (maxClaudeSessionLeafRows) — cold path only.
@@ -82,7 +81,8 @@ func (b *claudeBranchIndex) alreadySeen(uuid string) bool {
 // ingestRow admits one decoded transcript row, fed by
 // scanSessionTrackerAndBranch's single-decode path. Row admission uses
 // sessionfork.TranscriptTypes — the fork transform and this index must
-// agree on what claude's walk sees (invariant 28).
+// agree on what claude's walk sees (claude-wire.md §"Session JSONL:
+// active-branch semantics").
 func (b *claudeBranchIndex) ingestRow(row claudeSessionRow) {
 	if row.IsSidechain {
 		return
@@ -138,8 +138,8 @@ func (b *claudeBranchIndex) activeChain() []*claudeBranchRow {
 // plus the deepest such uuid (the natural repair pick). Rows in exclude
 // are screened from both — the caller passes assistant rows with
 // unresolved server-side tools, which the CLI's filters keep but which
-// are not valid continuation leaves (the API rejects a dangling
-// server_tool_use on the resumed context).
+// are not continuation leaves (claude-wire.md §"Orphaned server-side
+// tool calls").
 func (b *claudeBranchIndex) survivingResumeCursors(exclude map[string]struct{}) (map[string]struct{}, string) {
 	survivors := applyClaudeResumeFilters(b.activeChain())
 	set := make(map[string]struct{}, len(survivors))

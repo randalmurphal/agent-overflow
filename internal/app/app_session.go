@@ -187,43 +187,34 @@ func (a *App) startSessionNow(threadID string) error {
 		a.settleClaudeTranscriptForWorkspace(t)
 	}
 
-	// Resolve the resume cursor only after the prior session is fully
-	// stopped: Close blocks on the read loop, and the CLI can append
-	// final transcript rows right up to exit. Scanning before the stop
-	// could pick a leaf from a file the dying process is still extending.
+	// An ordinary Claude resume passes no cursor: the CLI picks its own
+	// default leaf and applies its own resume filters, so it never
+	// rejects the start over a leaf AO chose.
 	//
-	// A fork start resolves against the SOURCE session instead
-	// (opts.Resume IS the source ref while PendingForkRef is pending),
-	// and only when the fork stored a pin: a pinned lazy fork must cut
-	// where its timeline was cut, so an unresolvable pin FAILS the
-	// start rather than falling back to the source's current tail —
-	// spawning unpinned there silently snapshots whatever the source
-	// has streamed since the fork (the 2026-08-22 skew incident). An
-	// unpinned fork (idle source at fork time) keeps the CLI's own
-	// tail-cut semantics.
-	if t.Provider == string(provider.Claude) && opts.Resume != "" {
+	// A pinned fork start resolves its stored pin against the SOURCE
+	// session (opts.Resume is the source ref while PendingForkRef is
+	// pending). A pinned lazy fork must cut where its timeline was cut,
+	// so an unresolvable pin fails the start rather than falling back to
+	// the source's current tail, which would hand the fork whatever the
+	// source streamed since the fork. An unpinned fork (idle source at
+	// fork time) keeps the CLI's own tail cut.
+	if t.Provider == string(provider.Claude) && opts.ForkSession && t.PendingForkResumeAt != "" {
 		projectsDir, err := a.claudeProjectsDir()
 		if err != nil {
 			return fmt.Errorf("start session: %w", err)
 		}
-		if opts.ForkSession {
-			if t.PendingForkResumeAt != "" {
-				cursor, err := resolveClaudeForkResumeAt(projectsDir, opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
-				if err != nil {
-					return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
-				}
-				opts.ResumeAt = cursor
-			}
-		} else {
-			opts.ResumeAt = resolveClaudeResumeAt(projectsDir, opts.Resume, opts.WorkDir)
+		cursor, err := resolveClaudeForkResumeAt(projectsDir, opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
+		if err != nil {
+			return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
 		}
+		opts.ResumeAt = cursor
 	}
 
 	// Commit the thread to this session in triage BEFORE spawning. A
 	// prior StopSession left the stopped-thread marker set, and the
 	// replacement session can emit before any wire proof-of-life lands:
 	// Codex emits EventInit synchronously inside NewSession, and a
-	// Claude process that dies during startup (unusable
+	// Claude process that dies during startup (a fork start's unusable
 	// --resume-session-at cursor) emits its only diagnostics pre-init.
 	// From here triage admits only this session's frames, so a prior
 	// session's frames that stopExistingSessionLocked's drain left
@@ -374,22 +365,6 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 
 	return nil
-}
-
-// resolveClaudeResumeAt picks the --resume-session-at cursor for a
-// Claude session resume from the branch-aware file scan: the deepest row
-// on the session file's active parentUuid branch that survives the CLI's
-// resume filters, never an unresolved server-tool row. Claude hard-fails
-// resume on an off-branch uuid pre-init (invariant 28), which is why the
-// scan, not a wire-derived leaf, decides. Scan failure resumes with no
-// cursor at all (claude's own default-leaf semantics).
-func resolveClaudeResumeAt(projectsDir, sessionRef, workDir string) string {
-	state, err := claude.ScanSessionLeaf(projectsDir, sessionRef, workDir)
-	if err != nil {
-		log.Printf("start session: scan Claude session leaf %s: %v", sessionRef, err)
-		return ""
-	}
-	return state.CanonicalLeafUUID
 }
 
 // claudeForkPinRetries / claudeForkPinBackoff bound the wait for a fork
@@ -1325,8 +1300,8 @@ func (a *App) codexResendAfterInterrupt(
 }
 
 // teardownDeadPreInitSession reaps a session that reported a hard error
-// result before ever reaching init: it cannot serve sends (the resume
-// cursor it was launched with is unusable) and would otherwise linger
+// result before ever reaching init: it cannot serve sends (for example,
+// a fork start's resume cursor is unusable) and would otherwise linger
 // alive forever — Claude does not exit after a failed
 // --resume-session-at validation. The orphan error item persisted by
 // triage is the user-facing surface; this teardown stops the useless
