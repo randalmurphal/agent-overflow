@@ -130,8 +130,12 @@ authority, the launcher's popup report counting as an opener edge on the
 hosted engine. A request whose owner does not resolve yet is answered at
 once with what a page with no workspace's authority may open (`jarAllows`);
 only one that needs an owner's authority waits up to `requestOwnerWait`
-for it, then is refused (`awaitRequestOwner`). A CDP page seeds its frames
-from its frame tree at attach and installs no interception of its own.
+for it, then is refused (`awaitRequestOwner`). A CDP page reads its frame
+events, its main frame's loading and its frame tree read at attach from
+one input in the browser's order (`cdporder`, which both CDP engines
+connect through), so neither needs a time window or event counts, and it
+installs no interception of its own. chromedp gives no ordered join of
+methods; do not add per-method subscriptions for state two methods share.
 Every CDP page attach, a created page's or a popup's, is bounded by the
 engine's attach timeout, ends with its caller's cancel, and ends at the
 engine's `Interrupt` (`startCDPPage`).

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/browser/cdporder"
+
+	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/css"
 	"github.com/chromedp/cdproto/fetch"
@@ -31,47 +34,22 @@ func (p *cdpPage) installHandlers() error {
 			logf("browser: answer a %s dialog: %v", event.Type, err)
 		}
 	})
-	onTargetEvent(ctx, page.FrameAttached, logf, func(event page.EventFrameAttached) {
-		p.frames.attached(event.FrameID)
-	})
-	// Page.frameNavigated fires when a frame is associated with a new loader,
-	// that is a new document; a same-document navigation fires
-	// Page.navigatedWithinDocument instead (DevTools protocol, Page domain).
-	// The commit is ordered where the event arrives, on chromedp's event
-	// goroutine; nothing on that goroutine waits for the Manager.
-	onTargetEvent(ctx, page.FrameNavigated, logf, func(event page.EventFrameNavigated) {
-		if event.Frame == nil {
-			return
-		}
-		p.frames.navigated(event.Frame.ID)
-		if event.Frame.ParentID == "" && p.hooks.DocumentCommitted != nil {
-			if finish := p.hooks.DocumentCommitted(); finish != nil {
-				finish()
-			}
-		}
-	})
-	onTargetEvent(ctx, page.FrameDetached, logf, func(event page.EventFrameDetached) {
-		p.frames.detached(event.FrameID)
-	})
-	// A frame that attached before the subscriptions above, as a popup's
-	// iframe made before its adoption did, sends no event of its own: the
-	// frame tree names it, read once they are in place.
-	tree, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{})
-	if err != nil {
+	// The page's frames and loading, in the browser's order, with the frame
+	// tree read once the input is in place: a frame that attached before,
+	// as a popup's iframe made before its adoption did, sends no event of
+	// its own, and the tree names it.
+	seeded := make(chan struct{})
+	if err := cdporder.Watch(ctx, lifecycleMethods, func(m cdporder.Message) { p.lifecycle(m, seeded) }); err != nil {
+		return fmt.Errorf("browser: watch the page's frames: %w", err)
+	}
+	if _, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{}); err != nil {
 		return fmt.Errorf("browser: read the page's frames: %w", err)
 	}
-	p.frames.seed(tree.FrameTree)
-	// The main frame's id is the target's.
-	onTargetEvent(ctx, page.FrameStartedLoading, logf, func(event page.EventFrameStartedLoading) {
-		if string(event.FrameID) == p.handle {
-			p.reportLoading(p.loads.started(time.Now()))
-		}
-	})
-	onTargetEvent(ctx, page.FrameStoppedLoading, logf, func(event page.EventFrameStoppedLoading) {
-		if string(event.FrameID) == p.handle {
-			p.reportLoading(p.loads.stopped(time.Now()))
-		}
-	})
+	select {
+	case <-seeded:
+	case <-ctx.Done():
+		return fmt.Errorf("browser: read the page's frames: %w", context.Cause(ctx))
+	}
 	// chromedp.Console is the one ordered join of several event methods that
 	// chromedp offers: console API calls and browser log entries reach the
 	// log in the order the page wrote them.
@@ -119,6 +97,79 @@ func (p *cdpPage) installHandlers() error {
 		return fmt.Errorf("browser: disable unread style sheet events: %w", err)
 	}
 	return nil
+}
+
+// lifecycleMethods are what the page's ordered input carries
+// (cdpPage.lifecycle): the frame events, the main frame's loading, and the
+// frame tree's reply.
+var lifecycleMethods = []string{
+	string(cdproto.EventPageFrameAttached), string(cdproto.EventPageFrameNavigated), string(cdproto.EventPageFrameDetached),
+	string(cdproto.EventPageFrameStartedLoading), string(cdproto.EventPageFrameStoppedLoading),
+	string(cdproto.CommandPageGetFrameTree),
+}
+
+// lifecycle applies one message of the page's ordered input. The main
+// frame's id is the target's. Page.frameNavigated fires when a frame is
+// associated with a new loader, that is a new document; a same-document
+// navigation fires Page.navigatedWithinDocument instead (DevTools
+// protocol, Page domain). The commit is ordered where the event is
+// handled, on the input's goroutine; nothing on it waits for the Manager.
+// The frame tree's reply closes seeded.
+func (p *cdpPage) lifecycle(m cdporder.Message, seeded chan struct{}) {
+	switch cdproto.MethodType(m.Method) {
+	case cdproto.EventPageFrameAttached:
+		var event page.EventFrameAttached
+		if p.decodeLifecycle(m, &event) {
+			p.frames.attached(event.FrameID)
+		}
+	case cdproto.EventPageFrameDetached:
+		var event page.EventFrameDetached
+		if p.decodeLifecycle(m, &event) {
+			p.frames.detached(event.FrameID)
+		}
+	case cdproto.EventPageFrameNavigated:
+		var event page.EventFrameNavigated
+		if !p.decodeLifecycle(m, &event) || event.Frame == nil {
+			return
+		}
+		p.frames.attached(event.Frame.ID)
+		if event.Frame.ParentID == "" && p.hooks.DocumentCommitted != nil {
+			if finish := p.hooks.DocumentCommitted(); finish != nil {
+				finish()
+			}
+		}
+	case cdproto.EventPageFrameStartedLoading:
+		var event page.EventFrameStartedLoading
+		if p.decodeLifecycle(m, &event) && string(event.FrameID) == p.handle {
+			p.reportLoading(p.loads.observe(true))
+		}
+	case cdproto.EventPageFrameStoppedLoading:
+		var event page.EventFrameStoppedLoading
+		if p.decodeLifecycle(m, &event) && string(event.FrameID) == p.handle {
+			p.reportLoading(p.loads.observe(false))
+		}
+	case cdproto.CommandPageGetFrameTree:
+		var tree page.GetFrameTreeResult
+		if p.decodeLifecycle(m, &tree) {
+			p.frames.reset(tree.FrameTree)
+		}
+		select {
+		case <-seeded:
+		default:
+			close(seeded)
+		}
+	}
+}
+
+// decodeLifecycle decodes m into out, and logs one that does not decode.
+func (p *cdpPage) decodeLifecycle(m cdporder.Message, out any) bool {
+	if err := m.Decode(out); err != nil {
+		if p.ctx.Err() == nil {
+			log.Printf("browser: page %s: %s: %v", p.handle, m.Method, err)
+		}
+		return false
+	}
+	return true
 }
 
 // networkEnableParams enables the Network domain for its request lifecycle

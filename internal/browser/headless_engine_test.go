@@ -456,6 +456,35 @@ func TestCDPPageOwnsTheFramesItHadBeforeItsAttach(t *testing.T) {
 	}
 }
 
+// Over the connection, a frame whose attach the browser sent before the
+// frame tree's reply, which names it too, is the page's until its detach,
+// and a detach of the frame tree's own frame ends it as well: the page
+// reads its frame events and the tree in the order they came.
+func TestCDPPageReadsItsFramesInWireOrder(t *testing.T) {
+	browser := writeAnnouncingFakeChromium(t, "chromium", func(call fakeCDPCall) []map[string]any {
+		if call.Method != "Page.getFrameTree" {
+			return nil
+		}
+		return []map[string]any{{"method": "Page.frameAttached", "sessionId": call.SessionID, "params": map[string]any{"frameId": "F-child", "parentFrameId": "F-1"}}}
+	})
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	if !page.OwnsFrame("F-child") || !page.OwnsFrame("F-grandchild") {
+		t.Fatal("the page does not own the frames of its tree")
+	}
+	for _, frame := range []string{"F-child", "F-grandchild"} {
+		browser.send(map[string]any{"method": "Page.frameDetached", "sessionId": "S-1", "params": map[string]any{"frameId": frame, "reason": "remove"}})
+	}
+	eventually(t, "the detached frames to leave the page", func() bool {
+		return !page.OwnsFrame("F-child") && !page.OwnsFrame("F-grandchild")
+	})
+}
+
 // Two pages attached, the headless engine still pauses a request once: the
 // browser-wide policy is the only one.
 func TestHeadlessEnginePausesARequestOnce(t *testing.T) {

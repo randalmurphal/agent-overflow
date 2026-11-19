@@ -14,7 +14,7 @@ import (
 //
 // Every engine reports loading through pageHooks.Loading: the CDP engines
 // from Page.frameStartedLoading and frameStoppedLoading of the main frame
-// (cdpLoadTracker), WebKitGTK from the view's is-loading property, WKWebView
+// in the browser's order (cdpLoadTracker), WebKitGTK from the view's is-loading property, WKWebView
 // from its observed loading key, the fake engine around each navigation. The
 // favicon is read when a load stops, in the page with shared JavaScript
 // (faviconScript), so the request carries the page's own session. Only an

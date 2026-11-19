@@ -9,10 +9,8 @@ import (
 	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/cdproto/cdp"
 	jsonv2 "github.com/chromedp/cdproto/cdp/jsonv2"
 	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -130,81 +128,6 @@ func start(tr *networkTracker, id network.RequestID, redirect bool, now time.Tim
 
 func end(tr *networkTracker, id network.RequestID, now time.Time) eventStep {
 	return eventStep{"end " + string(id), func() { tr.ended(id, now) }}
-}
-
-// A page owns a frame from its attach until its detach, whichever of the
-// three frame events is handled first. A frame swapped out to another
-// process and back is attached twice and detached once.
-func TestFrameTrackerSettlesInAnyOrder(t *testing.T) {
-	const frame = cdp.FrameID("F1")
-	attach := func(tr *frameTracker) eventStep {
-		return eventStep{"attached", func() { tr.attached(frame) }}
-	}
-	navigate := func(tr *frameTracker) eventStep {
-		return eventStep{"navigated", func() { tr.navigated(frame) }}
-	}
-	detach := func(tr *frameTracker) eventStep {
-		return eventStep{"detached", func() { tr.detached(frame) }}
-	}
-	// The frame tree read once the page subscribed names the frame.
-	seed := func(tr *frameTracker) eventStep {
-		tree := &page.FrameTree{
-			Frame:       &cdp.Frame{ID: "main"},
-			ChildFrames: []*page.FrameTree{{Frame: &cdp.Frame{ID: frame, ParentID: "main"}}},
-		}
-		return eventStep{"seeded", func() { tr.seed(tree) }}
-	}
-	cases := []struct {
-		name     string
-		streams  func(tr *frameTracker) [][]eventStep
-		wantOwns bool
-	}{
-		{"a detached frame", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {navigate(tr)}, {detach(tr)}}
-		}, false},
-		{"a live frame", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {navigate(tr)}, {}}
-		}, true},
-		{"a frame attached before the page subscribed", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {navigate(tr)}, {}}
-		}, true},
-		{"a frame attached before the page subscribed, then detached", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {navigate(tr)}, {detach(tr)}}
-		}, false},
-		{"a frame swapped out and back", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr), attach(tr)}, {}, {detach(tr)}}
-		}, true},
-		{"a frame in the frame tree", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {seed(tr)}, {}}
-		}, true},
-		{"a frame in the frame tree, then detached", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{}, {seed(tr)}, {detach(tr)}}
-		}, false},
-		{"a frame in the frame tree, swapped out and back", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {seed(tr)}, {detach(tr)}}
-		}, true},
-		{"a frame in the frame tree, swapped out and back, navigated", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr)}, {seed(tr), navigate(tr)}, {detach(tr)}}
-		}, true},
-		{"a frame in the frame tree, swapped twice, then removed", func(tr *frameTracker) [][]eventStep {
-			return [][]eventStep{{attach(tr), attach(tr)}, {seed(tr)}, {detach(tr), detach(tr), detach(tr)}}
-		}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			count := len(interleavings(tc.streams(newFrameTracker())))
-			for i := range count {
-				tr := newFrameTracker()
-				order := interleavings(tc.streams(tr))[i]
-				for _, step := range order {
-					step.run()
-				}
-				if got := tr.owns(frame); got != tc.wantOwns {
-					t.Errorf("handled as [%s]: owns = %v, want %v", stepNames(order), got, tc.wantOwns)
-				}
-			}
-		})
-	}
 }
 
 // downloadRecorder stands in for the Manager's download bookkeeping: like
@@ -762,29 +685,6 @@ func TestNetworkTrackerBoundsUnmatchedEnds(t *testing.T) {
 	tr.ended("live", now)
 	if !tr.idle(now.Add(time.Hour), 0) {
 		t.Fatal("the newest early end no longer settles its late start")
-	}
-}
-
-// Detached frames are kept only up to orderSlack, and live frames are never
-// dropped to make room.
-func TestFrameTrackerBoundsDetachedFrames(t *testing.T) {
-	tr := newFrameTracker()
-	for i := range 10 {
-		tr.attached(cdp.FrameID(fmt.Sprintf("live-%d", i)))
-	}
-	for i := range 2 * orderSlack {
-		id := cdp.FrameID(fmt.Sprintf("gone-%d", i))
-		tr.attached(id)
-		tr.navigated(id)
-		tr.detached(id)
-	}
-	if got := tr.retained(); got != 10+orderSlack {
-		t.Fatalf("kept %d frames, want the 10 live ones and %d detached", got, orderSlack)
-	}
-	for i := range 10 {
-		if !tr.owns(cdp.FrameID(fmt.Sprintf("live-%d", i))) {
-			t.Fatalf("live frame %d was dropped to make room for detached ones", i)
-		}
 	}
 }
 

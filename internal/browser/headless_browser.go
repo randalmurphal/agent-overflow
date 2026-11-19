@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"agent-overflow/internal/browser/cdporder"
+
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/remote"
 )
 
 // A headless profile's Chromium process and its CDP connection: launch, adoption and loss.
@@ -95,7 +96,7 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 	// NoModifyURL: the DevTools line is already the browser websocket URL.
 	// chromedp's default would resolve its host again, or query
 	// /json/version for a URL without a /devtools/browser/ path.
-	allocCtx, allocCancel := remote.NewAllocator(context.Background(), wsURL, remote.NoModifyURL)
+	allocCtx, allocCancel := cdporder.NewAllocator(context.Background(), wsURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
 		p.engine.logf("browser: chromedp: "+format, args...)
 	}))

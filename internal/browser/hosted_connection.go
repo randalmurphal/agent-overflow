@@ -6,10 +6,11 @@ import (
 	"slices"
 	"time"
 
+	"agent-overflow/internal/browser/cdporder"
+
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/remote"
 )
 
 // ensureBrowser establishes (once) the CDP browser connection through the
@@ -61,7 +62,7 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// NoModifyURL: the URL was already rewritten onto the relay listener,
 	// and chromedp's own /json/version probe would re-read the Windows-side
 	// address and dial it.
-	allocCtx, allocCancel := remote.NewAllocator(context.Background(), wsURL, remote.NoModifyURL)
+	allocCtx, allocCancel := cdporder.NewAllocator(context.Background(), wsURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
 		e.logf("browser: chromedp: "+format, args...)
 	}))
