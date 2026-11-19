@@ -420,6 +420,7 @@ func (m *Manager) markClosingLocked(p *managedPage, scope *jarScope) *pageClose 
 		scope.closing = make(map[string]*pageClose)
 	}
 	scope.closing[p.id] = c
+	m.retirePrivateJarLocked(scope)
 	return c
 }
 
@@ -537,26 +538,34 @@ func (m *Manager) abandonPage(scope *jarScope, p *managedPage) error {
 // one m.mu hold means a concurrent createPage either reserved the scope first
 // or waits for the disposal, and a scope that is no longer registered is
 // never disposed again. Every path a page leaves its scope by calls it, so it
-// also forgets the authority of a workspace left with no page. A private jar
-// released is gone: its thread's next private page opens a new one. The
-// caller holds m.mu.
+// also forgets the authority of a workspace left with no page, and retires
+// a private jar left with no tab. The caller holds m.mu.
 func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
 	m.pruneAuthoritiesLocked()
+	m.retirePrivateJarLocked(scope)
 	if len(scope.pages) > 0 || len(scope.closing) > 0 || len(scope.creating) > 0 || m.scopes[scope.jar.key] != scope {
 		return false
 	}
 	delete(m.scopes, scope.jar.key)
-	if scope.jar.private != "" {
-		if info, ok := m.sessions[scope.jar.thread]; ok && info.privateJar == scope.jar.private {
-			info.privateJar = ""
-			m.sessions[scope.jar.thread] = info
-		}
-	}
 	if m.disposing == nil {
 		m.disposing = make(map[string]chan struct{})
 	}
 	m.disposing[scope.jar.key] = make(chan struct{})
 	return true
+}
+
+// retirePrivateJarLocked ends the thread's use of a private jar once no page
+// of it is live or being created: the thread's next private page opens a new
+// jar, while pages still closing finish in the old one, under its own key.
+// The caller holds m.mu.
+func (m *Manager) retirePrivateJarLocked(scope *jarScope) {
+	if scope.jar.private == "" || len(scope.pages) > 0 || len(scope.creating) > 0 {
+		return
+	}
+	if info, ok := m.sessions[scope.jar.thread]; ok && info.privateJar == scope.jar.private {
+		info.privateJar = ""
+		m.sessions[scope.jar.thread] = info
+	}
 }
 
 // disposeScope disposes a scope releaseScopeLocked unregistered, frees its
