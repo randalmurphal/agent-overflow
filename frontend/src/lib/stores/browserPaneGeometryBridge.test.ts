@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBrowserCompanionForTest, setBrowserPaneMountForTest } from './browserCompanion.svelte';
+import { resetBrowserCompanionForTest } from './browserCompanion.svelte';
 import { reportBrowserPaneRect } from './browserPaneRectReports';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 const THREAD = 'thread-browser';
@@ -19,7 +20,7 @@ describe('browser pane geometry to the window host', () => {
   let backend: number[];
   let backendSeqs: Array<[number, number]>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetBrowserCompanionForTest();
     posted = [];
     backend = [];
@@ -28,7 +29,7 @@ describe('browser pane geometry to the window host', () => {
       backend.push(r.x);
       backendSeqs.push([r.x, r.seq ?? 0]);
     });
-    setBrowserPaneMountForTest(THREAD, 'mount-1');
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
   });
 
   afterEach(() => {

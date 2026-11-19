@@ -84,7 +84,7 @@ export interface CommandFlags {
   workflowsPaneFocused: boolean;
   /** True while the raw focused pane is the Pull requests pane. */
   pullsPaneFocused: boolean;
-  /** True while the raw focused pane is a browser companion pane. */
+  /** True while the raw focused pane is a browser companion pane that compact does not hide. */
   browserPaneFocused: boolean;
   /** True while the focused workflows pane is showing a run detail level. */
   workflowsRunDetail: boolean;
@@ -94,6 +94,13 @@ export interface CommandFlags {
    * a second pane under compact is one Back can only reach the list from.
    */
   compactLayout: boolean;
+  /**
+   * True when no pane takes the keyboard's pane commands
+   * (`panes.svelte#paneCommandTarget` is null): the compact list screen,
+   * or no pane focused. A command that acts on that pane gates on it.
+   * Negative so a context built without it leaves those commands enabled.
+   */
+  noPaneTarget: boolean;
   /**
    * Whether this session holds `access:admin` (`transport/scopes.ts`), which
    * covers the device list and the provider-account surface. A command whose

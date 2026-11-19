@@ -542,12 +542,16 @@
         {@const paired = pane !== undefined && pairedSourceIds.has(item.paneId)}
         {@const onPaneDragStart = promoted ? undefined : (event: DragEvent) => drag.onPaneDragStart(event, item.paneId)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- Focusable by script only: a keyboard pane move puts the caret
+             here when the pane has no composer that takes it
+             (paneComposerFocus#carryCaretIntoPane). -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange, promoted }}
           style={sectionStyle(item)}
           style:clip-path={promotion.clipFor(item.paneId)}
+          tabindex="-1"
           class={[
-            'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
+            'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70 focus:outline-none',
             item.kind === 'take-control' || paired ? 'take-control-pair-top' : '',
             promoted ? 'bg-surface-0' : focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
             !companion && drag.draggingPaneId === item.paneId ? 'opacity-55' : '',

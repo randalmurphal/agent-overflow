@@ -8,8 +8,9 @@
 // Show in folder, and one that fails is announced with its reason. The fake
 // engine's download.invalid addresses stand in for a server
 // (fake_downloads.go).
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test, expect, type SeedResult } from './fixtures.js';
 
 interface BrowserState {
@@ -89,18 +90,13 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
   const listed = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
   const firstName = listed.downloads?.find((item) => item.state === 'completed')?.name ?? '';
   expect(firstName).toMatch(/^report \(\d+\)\.pdf$/);
-  // The file URL escapes the name (a space is %20), so the opened tab is
-  // compared by its decoded file name.
-  const savedName = (url: string): string => {
-    if (!url.startsWith('file:')) return '';
-    const path = new URL(url).pathname.split('/');
-    if (path.at(-3) !== 'home' || path.at(-2) !== 'Downloads') return '';
-    return decodeURIComponent(path.at(-1) ?? '');
-  };
+  // The tab shows this harness home's file, by its whole path: the file URL
+  // escapes the name, and engines differ on which characters they escape.
+  const openedPath = (url: string): string => (url.startsWith('file:') ? fileURLToPath(url) : url);
   await expect.poll(async () => {
     const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
-    return savedName(state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '');
-  }).toBe(firstName);
+    return openedPath(state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '');
+  }).toBe(path.join(home, 'Downloads', firstName));
 
   // The same name again is saved beside the first, never over it.
   await pane.getByTestId('browser-tab').first().click();
@@ -117,6 +113,7 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
   expect(names[1]).toBe(firstName);
   expect(names[0]).not.toBe(firstName);
   expect(names[0]).toMatch(/^report \(\d+\)\.pdf$/);
+  expect(await readFile(path.join(home, 'Downloads', 'report.pdf'), 'utf8')).toBe('earlier');
 
   // Clearing empties the list, and the button goes with it.
   await button.click();

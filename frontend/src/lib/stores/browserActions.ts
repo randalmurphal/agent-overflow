@@ -1,22 +1,30 @@
 import { BrowserCompanionAction, BrowserCompanionDo, type BrowserCompanionEvent } from './bindings';
 import {
-  applyBrowserCompanionState,
+  admitBrowserState,
   browserCompanionState,
   browserPaneMountId,
   browserPaneOpen,
+  browserPaneShown,
+  browserSourcePaneShown,
+  browserStateGeneration,
+  browserThreadSnapshot,
+  canPresentNativeBrowser,
+  canUseNativeBrowser,
+  nativeBrowserRefusal,
   noteBrowserActionError,
   observeBrowserCompanion,
+  presentWantedBrowser,
   readBrowserCompanionState,
 } from './browserCompanion.svelte';
 import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelte';
 import { getCompanionPane } from './companionPanes.svelte';
-import { getFocusedPaneId, getPane } from './panes.svelte';
+import { getPane, paneCommandTarget } from './panes.svelte';
 import { errString } from '../utils/errors';
 import { addErrorToast } from './toast.svelte';
 
 // The user's actions on a thread's browser: the pane's chrome, the chat
 // header's button, the keyboard's tab close and the page focus requests. Each
-// answer is a state and lands through applyBrowserCompanionState; a refusal
+// answer is a state and lands through admitBrowserState; a refusal
 // lands in the pane's banner (noteBrowserActionError). The per-mount
 // selection numbers and the in-flight selections are kept here and follow the
 // pane mount through observeBrowserCompanion.
@@ -51,7 +59,20 @@ export async function browserCompanionAct(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number; downloadId?: string },
 ): Promise<BrowserActionFailure | null> {
-  return (await runBrowserAction(threadId, action)).failure;
+  return refuseUnhosted(threadId) ?? (await runBrowserAction(threadId, action)).failure;
+}
+
+/**
+ * The refusal of an action on a browser this page cannot host now
+ * (nativeBrowserRefusal), in the banner and returned; null when it can.
+ * Asked as the action is sent, since one sent after a wait (a state read,
+ * an earlier selection) may find the thread's owner moved or contested.
+ */
+function refuseUnhosted(threadId: string): BrowserActionFailure | null {
+  const refusal = nativeBrowserRefusal(threadId);
+  if (!refusal) return null;
+  noteBrowserActionError(threadId, refusal.message);
+  return { error: refusal.message, cause: refusal };
 }
 
 /** The cookie jars a thread's browser can use (internal/browser/jar.go). */
@@ -125,6 +146,7 @@ async function sendBrowserAction(
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   noteBrowserActionStarted(threadId);
   noteBrowserActionError(threadId, '');
+  const generation = browserStateGeneration();
   try {
     const state = await BrowserCompanionDo(
       threadId,
@@ -138,7 +160,7 @@ async function sendBrowserAction(
         ...order,
       }),
     );
-    applyBrowserCompanionState(state);
+    admitBrowserState(state, generation);
     return { failure: null, state };
   } catch (err) {
     const message = errString(err);
@@ -161,7 +183,10 @@ export async function openBrowserTab(
   options: { address?: string; focusAddress?: boolean } = {},
 ): Promise<BrowserActionFailure | null> {
   const request = options.focusAddress ? armAddressFocus(threadId) : 0;
-  const { failure, state } = await runBrowserAction(threadId, { kind: 'new', address: options.address });
+  const refused = refuseUnhosted(threadId);
+  const { failure, state } = refused
+    ? { failure: refused, state: null }
+    : await runBrowserAction(threadId, { kind: 'new', address: options.address });
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
@@ -230,12 +255,15 @@ export function closeFocusedBrowserTab(): boolean {
 }
 
 /**
- * The thread of the focused pane when it is a browser companion, with its
- * last state (null before any). Null when another pane, or none, is focused.
+ * The thread of the keyboard's target pane (paneCommandTarget) when it is
+ * a browser companion, with its last state (null before any). Null when
+ * the target is another pane or none, so a browser the screen does not
+ * show never takes the keyboard's commands. Reactive.
  */
-export function focusedBrowser(): { threadId: string; state: BrowserCompanionEvent | null } | null {
-  const focusedId = getFocusedPaneId();
-  const companion = focusedId ? getCompanionPane(focusedId) : null;
+export function focusedBrowser(): { threadId: string; state: Readonly<BrowserCompanionEvent> | null } | null {
+  const targetId = paneCommandTarget();
+  if (!targetId) return null;
+  const companion = getCompanionPane(targetId);
   if (companion?.kind !== 'browser') return null;
   const threadId = getPane(companion.sourcePaneId)?.threadId;
   if (!threadId) return null;
@@ -243,32 +271,138 @@ export function focusedBrowser(): { threadId: string; state: BrowserCompanionEve
 }
 
 /**
- * The chat header's browser button. With tabs it shows or hides the pane;
- * with none it opens the pane on a new tab with its address focused. Which
- * it is comes from a state this connection has seen: an unknown one is read
- * first, so a thread whose tabs opened while this window was away is shown
- * rather than given another tab. A refusal, or a read that fails, reaches a
+ * What a press of the chat header's browser button means, chosen from what
+ * the button shows when pressed (browserHeaderButton): hide the pane this
+ * layout shows, or show the thread's browser.
+ */
+export type BrowserHeaderIntent =
+  | { readonly kind: 'hide'; readonly threadId: string }
+  | { readonly kind: 'show'; readonly threadId: string };
+
+/** The chat header's browser button, as it renders now. Reactive. */
+export type BrowserHeaderButton =
+  | { readonly rendered: false }
+  | {
+    readonly rendered: true;
+    readonly label: 'Open browser' | 'Toggle browser pane';
+    /** The pane is in this layout, not merely wanted by the session. */
+    readonly pressed: boolean;
+    readonly intent: BrowserHeaderIntent;
+  };
+
+/**
+ * The one answer to how the chat header's browser button renders and what
+ * a press does: it renders where this page can present the thread's browser
+ * (canPresentNativeBrowser), or while the thread has tabs this page could
+ * show; it is pressed while the thread's pane is in this layout, and a
+ * press then hides it, else shows the browser.
+ */
+export function browserHeaderButton(threadId: string): BrowserHeaderButton {
+  if (!threadId) return { rendered: false };
+  const tabs = canUseNativeBrowser(threadId) && browserCompanionState(threadId) !== null;
+  if (!tabs && !canPresentNativeBrowser(threadId)) return { rendered: false };
+  const intent = browserHeaderIntent(threadId);
+  return {
+    rendered: true,
+    label: tabs ? 'Toggle browser pane' : 'Open browser',
+    pressed: intent.kind === 'hide',
+    intent,
+  };
+}
+
+/** What a header press means now: hide the pane this layout shows, else show the browser. */
+export function browserHeaderIntent(threadId: string): BrowserHeaderIntent {
+  return browserPaneShown(threadId) ? { kind: 'hide', threadId } : { kind: 'show', threadId };
+}
+
+// The header's shows in flight, one per thread: a press while the button
+// still shows the browser closed joins the show under way. It stands in for
+// a Manager operation that shows the current tab, or reserves one blank tab
+// when there is none, in one admission (see showBrowserFromHeader).
+const headerShows = new Map<string, Promise<void>>();
+
+/**
+ * Carries out a header press. A refusal, or a read that fails, reaches a
  * toast, since a hidden pane has no banner.
  */
-export async function toggleBrowserFromHeader(threadId: string): Promise<void> {
+export function runBrowserHeaderIntent(intent: BrowserHeaderIntent): Promise<void> {
+  switch (intent.kind) {
+    case 'hide':
+      return hideBrowserFromHeader(intent.threadId);
+    case 'show': {
+      const pending = headerShows.get(intent.threadId);
+      if (pending) return pending;
+      const show = showBrowserFromHeader(intent.threadId).finally(() => {
+        if (headerShows.get(intent.threadId) === show) headerShows.delete(intent.threadId);
+      });
+      headerShows.set(intent.threadId, show);
+      return show;
+    }
+    default:
+      return unhandledIntent(intent);
+  }
+}
+
+function unhandledIntent(intent: never): never {
+  throw new Error(`Unhandled browser header intent: ${JSON.stringify(intent)}`);
+}
+
+async function hideBrowserFromHeader(threadId: string): Promise<void> {
+  const failure = await browserCompanionAct(threadId, { kind: 'hide' });
+  if (failure) addErrorToast(failure.error, failure.cause);
+}
+
+/**
+ * Shows the thread's browser. A state this connection does not know is
+ * read first, so tabs opened while this window was away are shown rather
+ * than given another; admitting the read may show the pane already. After
+ * the read the pane that asked must still show the thread. Existing tabs
+ * are shown; only a state known to have none gets a new tab, its address
+ * focused. The owner is checked again as each action is sent.
+ *
+ * The show and the new tab are two calls, so an agent's tab opened between
+ * them still gets a blank tab beside it: closing that needs one Manager
+ * operation that shows the active tab, or reserves one blank tab when there
+ * is none, in one admission.
+ */
+async function showBrowserFromHeader(threadId: string): Promise<void> {
   try {
     await readBrowserCompanionState(threadId);
   } catch (err) {
     addErrorToast(`The browser's tabs could not be read: ${errString(err)}`, err);
     return;
   }
-  const state = browserCompanionState(threadId);
-  if (!state) {
-    // A refusal reaches a toast there (openBrowserTab).
-    await openBrowserTab(threadId, { focusAddress: true });
-    return;
+  if (!browserSourcePaneShown(threadId)) return;
+  const snapshot = browserThreadSnapshot(threadId);
+  switch (snapshot.status) {
+    case 'unknown': {
+      // Only a page that cannot host the browser leaves it unread.
+      const refusal = nativeBrowserRefusal(threadId) ?? new Error("The browser's tabs are not known yet.");
+      addErrorToast(refusal.message, refusal);
+      return;
+    }
+    case 'known': {
+      if ((snapshot.snapshot.pages?.length ?? 0) === 0) {
+        // A refusal reaches a toast there (openBrowserTab).
+        await openBrowserTab(threadId, { focusAddress: true });
+        return;
+      }
+      if (snapshot.snapshot.visible === true) {
+        // The session is shown already; only this layout lacks the pane.
+        presentWantedBrowser(threadId);
+        return;
+      }
+      const failure = await browserCompanionAct(threadId, { kind: 'show', pageId: snapshot.snapshot.activePageId ?? '' });
+      if (failure) addErrorToast(failure.error, failure.cause);
+      return;
+    }
+    default:
+      unhandledSnapshot(snapshot);
   }
-  const visible = state.visible === true;
-  const failure = await browserCompanionAct(threadId, {
-    kind: visible ? 'hide' : 'show',
-    pageId: visible ? '' : (state.activePageId ?? ''),
-  });
-  if (failure) addErrorToast(failure.error, failure.cause);
+}
+
+function unhandledSnapshot(snapshot: never): never {
+  throw new Error(`Unhandled browser snapshot: ${JSON.stringify(snapshot)}`);
 }
 
 observeBrowserCompanion({
@@ -280,5 +414,6 @@ observeBrowserCompanion({
     browserActionCounts.clear();
     selectionSeqs.clear();
     orderedActions.clear();
+    headerShows.clear();
   },
 });

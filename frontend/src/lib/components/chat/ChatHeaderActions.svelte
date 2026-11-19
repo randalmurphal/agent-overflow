@@ -11,6 +11,7 @@
   // the two badges read the resulting status through `pane.gitStatus`, which
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
+  import { untrack } from 'svelte';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Globe from '@lucide/svelte/icons/globe';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -52,12 +53,11 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
-    browserCompanionState,
-    canPresentNativeBrowser,
-    canUseNativeBrowser,
+    browserPresentationWanted,
     hydrateBrowserCompanionState,
+    reconcileBrowserCompanionForPane,
   } from '../../stores/browserCompanion.svelte';
-  import { toggleBrowserFromHeader } from '../../stores/browserActions';
+  import { browserHeaderButton, runBrowserHeaderIntent } from '../../stores/browserActions';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -167,28 +167,24 @@
     toggle();
   }
 
-  // The browser chip renders wherever this page can open the thread's
-  // browser and show it (canPresentNativeBrowser), tabs or not, and for a
-  // thread with tabs. With tabs it shows and hides the companion, which
-  // closing never strands; with none it opens the pane on a new tab with
-  // its address bar focused (toggleBrowserFromHeader, which reads a state
-  // this connection has not seen before deciding). The state read is
-  // per-key reactive, and the hydration read fills in what the ephemeral
-  // `browser:companion-state` channel cannot replay to a fresh UI.
+  // The browser chip: how it renders and what a press means are one answer
+  // (browserHeaderButton), its intent chosen from what it shows. The
+  // hydration read fills in what the ephemeral `browser:companion-state`
+  // channel cannot replay to a fresh UI, and a state the layout could not
+  // present when it arrived (compact) is presented once it can.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserAvailable = $derived(threadIdForBrowser !== '' && canPresentNativeBrowser(threadIdForBrowser));
-  let browserState = $derived(
-    threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser) ? browserCompanionState(threadIdForBrowser) : null,
-  );
-  let browserVisible = $derived(browserState?.visible === true);
+  let browserButton = $derived(browserHeaderButton(threadIdForBrowser));
+  let browserWanted = $derived(threadIdForBrowser !== '' && browserPresentationWanted(threadIdForBrowser));
 
   $effect(() => {
     if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
   });
 
-  function toggleBrowserCompanion(): void {
-    if (threadIdForBrowser) void toggleBrowserFromHeader(threadIdForBrowser);
-  }
+  $effect(() => {
+    const threadId = threadIdForBrowser;
+    if (!browserWanted) return;
+    untrack(() => reconcileBrowserCompanionForPane(pane.paneId, threadId));
+  });
 
   // Plain click on the PR badge opens the companion review pane on the PR
   // scope; mod+click falls through to the external forge link. False (no
@@ -417,18 +413,20 @@
     </Button>
   {/if}
 
-  {#if browserState || browserAvailable}
-    <!-- Browser companion toggle. With tabs it shows and hides the pane
-         (closing the pane never closes the pages); with none it opens the
-         pane on a new tab, which a compact screen never shows, so there it
-         appears only once tabs exist. -->
+  {#if browserButton.rendered}
+    {@const intent = browserButton.intent}
+    <!-- Browser companion toggle, on the desktop only (compact has no
+         browser row). Pressed while the pane is in the layout, and a press
+         then hides it; otherwise a press shows the tabs, or opens the pane
+         on a new tab when there are none. Closing the pane never closes the
+         pages. -->
     <Button
       variant="secondary"
       size="xs"
-      pressed={browserVisible}
-      ariaLabel={browserState ? 'Toggle browser pane' : 'Open browser'}
-      title={browserState ? 'Toggle browser pane' : 'Open browser'}
-      onclick={toggleBrowserCompanion}
+      pressed={browserButton.pressed}
+      ariaLabel={browserButton.label}
+      title={browserButton.label}
+      onclick={() => void runBrowserHeaderIntent(intent)}
       testId="browser-companion-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
     >

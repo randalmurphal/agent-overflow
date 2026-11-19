@@ -55,8 +55,8 @@ them through `paneFindReads(paneId)`, which keeps one in flight per layout
 pane across body remounts, applies an answer only for the query and owner
 it asked, updates in place on a content change without moving the view,
 and withdraws any jump it requested when its query changes or it closes.
-Find acts on the focused pane, or under compact on the pane on screen, and
-on no overlay above it; the store drops a pane's state and reads when the
+Find acts on the keyboard's pane (`stores/panes.svelte#paneCommandTarget`),
+and on no overlay above it; the store drops a pane's state and reads when the
 pane leaves the layout. Review panes use `review/ReviewPaneFind.svelte`
 over `stores/reviewFind.svelte.ts`, keyed by `ReviewPane`'s `findKey`: its
 layout pane id as a companion, the detail region key on the Pull requests

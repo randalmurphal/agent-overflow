@@ -2,7 +2,9 @@
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
+    browserActionError,
     browserPaneMountId,
+    browserThreadState,
     noteBrowserActionError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
@@ -40,14 +42,17 @@
   let surface: HTMLDivElement | undefined = $state(undefined);
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
 
-  let view = $derived(attachment?.current ?? null);
+  // The thread's admitted state (the header and the keyboard read the same
+  // one) and this pane's mount, which the attachment owns.
+  let threadState = $derived(ctx.threadId ? browserThreadState(ctx.threadId) : null);
+  let actionError = $derived(ctx.threadId ? browserActionError(ctx.threadId) : '');
   let findCleanupError = $derived(ctx.threadId ? browserFindCleanupError(ctx.threadId) : '');
-  let pages = $derived(view?.state.pages ?? []);
-  let sessionName = $derived(view?.state.sessionName ?? '');
-  let activePageId = $derived(view?.state.activePageId ?? '');
-  let closedTabs = $derived(view?.state.closedTabs ?? 0);
+  let pages = $derived(threadState?.pages ?? []);
+  let sessionName = $derived(threadState?.sessionName ?? '');
+  let activePageId = $derived(threadState?.activePageId ?? '');
+  let closedTabs = $derived(threadState?.closedTabs ?? 0);
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  let attached = $derived(view !== null);
+  let attached = $derived((attachment?.current?.mount ?? null) !== null);
 
   $effect(() => {
     const threadId = ctx.threadId;
@@ -60,11 +65,11 @@
   });
 
   // Find in the page, through the engine's own find (stores/browserFind). It
-  // belongs to this companion's layout pane, and exists only while the shown
-  // page's engine has one: "bar" drives the shared bar, "engine" opens the
-  // engine's own find UI.
+  // belongs to this companion's layout pane, and exists only while the pane
+  // has a mount to address and the shown page's engine has one: "bar" drives
+  // the shared bar, "engine" opens the engine's own find UI.
   let browserPaneId = $derived(companionForSource(ctx.paneId, 'browser')?.paneId ?? null);
-  let findMode = $derived(view?.state.findMode ?? '');
+  let findMode = $derived(attached ? (threadState?.findMode ?? '') : '');
   $effect(() => {
     const paneId = browserPaneId;
     const threadId = ctx.threadId;
@@ -99,9 +104,9 @@
   // label appears when the size is not the pane's: the agent pinned one, or
   // the pane is below the viewport minimum, and then carries the size and,
   // when the host rect is smaller, the percentage it is shown at.
-  let viewportWidth = $derived(view?.state.viewportWidth ?? 0);
-  let viewportHeight = $derived(view?.state.viewportHeight ?? 0);
-  let viewportPinned = $derived(view?.state.viewportSet === true);
+  let viewportWidth = $derived(threadState?.viewportWidth ?? 0);
+  let viewportHeight = $derived(threadState?.viewportHeight ?? 0);
+  let viewportPinned = $derived(threadState?.viewportSet === true);
   let viewScale = $derived(
     viewportWidth > 0 && viewportHeight > 0 && geometry.hostWidth > 0 && geometry.hostHeight > 0
       ? Math.min(1, geometry.hostWidth / viewportWidth, geometry.hostHeight / viewportHeight)
@@ -249,8 +254,8 @@
     <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => surface ?? null} />
   {/if}
 
-  {#if view?.actionError}
-    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{view.actionError}</div>
+  {#if actionError}
+    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{actionError}</div>
   {/if}
   {#if findCleanupError}
     <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert" data-testid="browser-find-cleanup-error">Find could not clear the page: {findCleanupError}</div>
@@ -267,8 +272,8 @@
     aria-label="Browser page"
     tabindex="-1"
   >
-    {#if view?.error || attachment?.error}
-      <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>
+    {#if attachment?.error}
+      <div class="flex h-full items-center justify-center px-4 text-sm text-error">{attachment.error}</div>
     {:else if pendingNote}
       <div
         class="flex h-full flex-col items-center justify-center gap-3 px-4 text-sm {activePage?.error ? 'text-error' : 'text-fg-muted'}"

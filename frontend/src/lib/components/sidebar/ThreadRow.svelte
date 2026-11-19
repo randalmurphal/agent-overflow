@@ -47,6 +47,7 @@
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { roleButtonKeys } from '../../utils/roleButtonKeys';
+  import { activationIntent, type ActivationIntent } from '../../utils/modClick';
   import {
     archiveThreadAction,
     deleteThreadAction,
@@ -187,30 +188,27 @@
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
 
-  function handleClick(e?: MouseEvent) {
+  /**
+   * The row's one activation, from a click or from Enter or Space: the
+   * intent's modifier opens a new pane; `range` (a shift-click) extends a
+   * selection when the list keeps one.
+   */
+  function activate(intent: ActivationIntent, range = false) {
     if (editing) return;
-    // A mouse click is an unambiguous "I'm picking THIS thread" — drop
+    // Picking a row is an unambiguous "I'm picking THIS thread": drop
     // the visual cursor so it doesn't drift from where the user is.
     clearSidebarCursor();
-    if (e && (e.metaKey || e.ctrlKey)) {
+    if (intent.openInNewPane) {
       void openThreadInNewPane(thread);
       return;
     }
-    if (onSelectClick && e) {
-      const modifier: 'toggle' | 'range' | 'single' | null = e.shiftKey
-        ? 'range'
-        : null;
-      if (modifier !== null) {
-        const handled = onSelectClick(modifier);
-        if (handled) return;
-      }
-    }
+    if (range && onSelectClick?.('range')) return;
     if (pane) void openThreadFromNavigation(thread, pane);
     else void openThreadFromNavigation(thread);
   }
 
   // Enter and Space open the row as they would a native button.
-  const rowKeys = roleButtonKeys(() => handleClick());
+  const rowKeys = roleButtonKeys((intent) => activate(intent));
 
   function startRename() {
     editing = true;
@@ -430,7 +428,7 @@
 <!-- Keyboard activation lives on the focusable row inside. -->
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
-  onclick={(e) => handleClick(e)}
+  onclick={(e) => activate(activationIntent(e), e.shiftKey)}
   ondblclick={startRename}
   oncontextmenu={handleContextMenu}
   ondragstart={handleDragStart}

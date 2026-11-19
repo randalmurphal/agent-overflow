@@ -1,11 +1,11 @@
 // Composer DOM-focus helpers, serving two callers with one no-scroll rule:
 //
-// 1. Pane-nav keybindings (pane.focusLeft, pane.focusRight, pane.close,
-//    thread.newPane): when focus shifts panes while the user was typing,
-//    move DOM focus to the new pane's composer textarea so subsequent
-//    keystrokes land where the user expects. Without this, pressing alt+h
-//    from inside the right pane updates focusedPaneId but leaves the caret
-//    in the right pane's textarea — feeling like alt+h "did nothing".
+// 1. Pane moves by keyboard (paneNavigation.ts, pane.close): when focus
+//    shifts panes while the user was typing, the caret moves into the new
+//    pane, its composer when it takes input, else its section, so later
+//    keystrokes land where logical focus says. Without this, alt+h from
+//    inside the right pane moves focusedPaneId but leaves the caret in the
+//    right pane's textarea, where Enter still sends.
 //
 // 2. Picker-popup closes (`restorePickerFocus`): the one place composer
 //    toolbar and workspace pickers decide where focus goes when their
@@ -16,18 +16,47 @@ import {
   type PopoverCloseReason,
 } from '../../utils/popoverOwnership';
 
-function isActiveElementEditable(): boolean {
+/** Whether an editing caret holds focus now, which a pane move carries. */
+export function isEditingFocused(): boolean {
   const active = typeof document !== 'undefined' ? document.activeElement : null;
-  if (!active) return false;
+  if (!(active instanceof HTMLElement)) return false;
   const tag = active.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  return (active as HTMLElement).isContentEditable === true;
+  return active.isContentEditable;
 }
 
-export function focusPaneComposerIfEditableActive(paneId: string): void {
-  if (typeof document === 'undefined') return;
-  if (!isActiveElementEditable()) return;
-  focusPaneComposer(paneId);
+/** Whether an editing caret holds focus inside `paneId`'s section. */
+export function isEditingFocusedIn(paneId: string): boolean {
+  if (!isEditingFocused()) return false;
+  const section = paneSection(paneId);
+  return section !== null && section.contains(document.activeElement);
+}
+
+function paneSection(paneId: string): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  return document.querySelector<HTMLElement>(`[data-pane-id="${CSS.escape(paneId)}"]`);
+}
+
+/**
+ * Puts the caret in `paneId`: its composer when it takes input, else the
+ * pane's own section (PaneHost's, focusable by script), so keys typed after
+ * a move never reach the pane focus left. A blocking prompt, a side chat
+ * still preparing and a pane with no composer all take the section.
+ */
+export function carryCaretIntoPane(paneId: string): void {
+  if (focusPaneComposer(paneId)) return;
+  paneSection(paneId)?.focus({ preventScroll: true });
+}
+
+/**
+ * Whether a focus that lands later (a terminal mounting a frame after it was
+ * asked for) may take it from where focus is now: not when it has moved
+ * into another pane since.
+ */
+export function delayedFocusStillCurrent(target: Element): boolean {
+  if (typeof document === 'undefined') return false;
+  const activePane = document.activeElement?.closest('[data-pane-id]') ?? null;
+  return activePane === null || activePane === target.closest('[data-pane-id]');
 }
 
 /**

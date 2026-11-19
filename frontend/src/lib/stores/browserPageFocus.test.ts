@@ -3,6 +3,7 @@ import { browserCompanionAct } from './browserActions';
 import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
+  browserActionError,
   noteBrowserActionError,
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
@@ -179,11 +180,11 @@ describe('handing the keyboard to the browser page', () => {
     answerFocus();
     expect(await request).toBeNull();
     if (!reportFirst) applyBrowserCompanionState(refusal);
-    expect(pane.current?.actionError).toContain('E_FAIL');
+    expect(browserActionError(THREAD)).toContain('E_FAIL');
     // The page's state, admitted after, leaves the banner up.
     applyBrowserCompanionState({ ...shown, seq: 100 });
-    expect(pane.current?.actionError).toContain('E_FAIL');
-    expect(pane.current?.error).toBe('');
+    expect(browserActionError(THREAD)).toContain('E_FAIL');
+    expect(pane.error).toBeNull();
   });
 
   it('never lets an obsolete refusal overwrite a newer banner', async () => {
@@ -194,13 +195,13 @@ describe('handing the keyboard to the browser page', () => {
     const first = focusBrowserPage(THREAD, 'a', area);
     composer.focus();
     applyBrowserCompanionState(refusal(1));
-    expect(pane.current?.actionError).toBe('');
+    expect(browserActionError(THREAD)).toBe('');
 
     // A superseded intent's refusal.
     const second = focusBrowserPage(THREAD, 'a', area);
     const third = focusBrowserPage(THREAD, 'a', area);
     applyBrowserCompanionState(refusal(2));
-    expect(pane.current?.actionError).toBe('');
+    expect(browserActionError(THREAD)).toBe('');
 
     // A navigation started after the request failed: its banner stays.
     setBindingMock('BrowserCompanionDo', vi.fn(async () => {
@@ -208,7 +209,7 @@ describe('handing the keyboard to the browser page', () => {
     }));
     await browserCompanionAct(THREAD, { kind: 'navigate', pageId: 'a', address: 'https://example.test/x' });
     applyBrowserCompanionState(refusal(3));
-    expect(pane.current?.actionError).toBe('navigation refused');
+    expect(browserActionError(THREAD)).toBe('navigation refused');
     answerFocus();
     await Promise.all([first, second, third]);
 
@@ -218,7 +219,7 @@ describe('handing the keyboard to the browser page', () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
     await browserCompanionAct(THREAD, { kind: 'navigate', pageId: 'a', address: 'https://example.test/y' });
     applyBrowserCompanionState(refusal(4));
-    expect(pane.current?.actionError).toBe('refused 4');
+    expect(browserActionError(THREAD)).toBe('refused 4');
     answerFocus();
     await fourth;
   });
@@ -229,13 +230,13 @@ describe('handing the keyboard to the browser page', () => {
     }));
     const failure = await focusBrowserPage(THREAD, 'a', area);
     expect(failure?.error).toContain('pane mount not found');
-    expect(pane.current?.actionError).toContain('pane mount not found');
+    expect(browserActionError(THREAD)).toContain('pane mount not found');
 
     // The navigation the focus follows failed: its banner stays.
     noteBrowserActionError(THREAD, 'navigation refused');
     setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
     expect(await focusBrowserPage(THREAD, 'a', area)).toBeNull();
-    expect(pane.current?.actionError).toBe('navigation refused');
+    expect(browserActionError(THREAD)).toBe('navigation refused');
   });
 
   it('asks nothing outside the host window, where there is no native view', async () => {

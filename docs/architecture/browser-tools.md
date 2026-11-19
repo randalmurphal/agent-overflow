@@ -122,7 +122,7 @@ per-platform no-op.
   it. Hidden pages keep rendering, so screenshots and
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
-- `pane.close` (Mod+W) on a focused browser companion closes the active tab;
+- `pane.close` (Mod+W) on the keyboard's browser companion closes the active tab;
   the companion closes when its last tab does. With a tab selection or an
   earlier Mod+W of the pane still unanswered, the close waits for those
   answers and closes the tab active then, so it closes the tab the user just
@@ -242,7 +242,11 @@ per-platform no-op.
   state channel has no replay, so the client reads the state of each thread
   it shows once per connection of the home backend, and the button decides
   between showing the pane and opening a tab only from a state read or
-  pushed on the current connection, reading one first when it has none. A new tab the user
+  pushed on the current connection, reading one first when it has none.
+  The button reads pressed while this layout shows the thread's pane, and
+  a press is chosen from that at the click: hide it, or show the browser
+  (a session already visible is presented here without a backend call,
+  hidden tabs are shown, and a thread with no tab gets one). A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted
@@ -470,8 +474,9 @@ behave as a desktop browser's:
   download ends, and opens its own download dialog over the opener, which
   nothing a host sets prevents; the launcher closes it as it opens, so it
   shows for about 0.2 s and nothing on it can be used.
-- Chords, live while the browser pane is the focused pane
-  (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
+- Chords, live while the browser pane is the keyboard's pane
+  (`paneCommandTarget`: the focused or promoted pane, under compact the one
+  on screen; `browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
@@ -565,6 +570,9 @@ so AO's chords have to be taken back at the engine:
   mount, go through `openBrowserCompanion`, which asks
   `canUseNativeBrowser`; a mod-clicked link asks it before minting a
   page, and no layout restore or companion stash reopens a browser pane.
+  It holds only while the thread's owner is the home computer and no
+  other computer claims the same ownership epoch (`resolveThreadBackend`),
+  and a user action asks it again as it is sent, after any wait.
   A thread's pages are presented in one mount, its earliest attached live
   one (`presenterLocked`), until that mount detaches; the presentation,
   the pages' size, and the routed chord and Escape all name it.

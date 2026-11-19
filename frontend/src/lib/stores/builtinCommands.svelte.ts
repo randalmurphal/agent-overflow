@@ -27,10 +27,8 @@ import { toggleAccountSwitcher } from './accountSwitcher.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
-  focusAdjacentPane,
   getFocusedPaneId,
-  getFocusedThreadPaneId,
-  getPane,
+  paneCommandTarget,
   moveFocusedPane,
   openThreadFromNavigation,
   openThreadInNewPane,
@@ -41,11 +39,11 @@ import {
 import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
-import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
+import { closePaneById } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserActions';
 import { isReplayingBrowserPageChord } from './browserCompanion.svelte';
-import { isThreadHostingPaneKind, type PaneLayoutItem } from './paneLayout.svelte';
-import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
+import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
+import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
@@ -110,7 +108,7 @@ import {
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
-import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
@@ -297,31 +295,23 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.close',
     label: 'Pane: Close Focused',
     icon: '×',
-    when: '!terminalFocus',
+    // It closes the pane the screen shows (paneCommandTarget), and nothing
+    // on the compact list.
+    when: '!terminalFocus && !noPaneTarget',
     editableReachable: true,
     run: () => {
-      // A focused browser companion closes a TAB; the pane goes with its last
-      // tab (browserCompanion.svelte.ts). Focus stays where it is.
+      // A browser companion closes a TAB; the pane goes with its last tab
+      // (browserCompanion.svelte.ts). Focus stays where it is.
       if (closeFocusedBrowserTab()) return;
-      closeFocusedPaneOrCompanion();
-      const nextFocused = getFocusedThreadPaneId();
-      if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
+      const target = paneCommandTarget();
+      if (!target) return;
+      // A caret typing in the closed pane goes to the pane focus falls to.
+      const carrying = isEditingFocusedIn(target);
+      closePaneById(target);
+      const nextFocused = getFocusedPaneId();
+      if (carrying && nextFocused) carryCaretIntoPane(nextFocused);
     },
   });
-
-  // Landing on a pane that hosts a conversation (a thread pane, a side chat,
-  // an agent thread) moves DOM focus with the logical focus: latch a
-  // terminal-mode thread's xterm, otherwise carry an editing caret to the
-  // pane's composer, so typing goes to the conversation now focused. Other
-  // companion and take-control stops keep logical focus only: they have no
-  // composer, and yanking the caret out of one would surprise.
-  function followPaneNavDomFocus(item: PaneLayoutItem): void {
-    if (item.kind !== 'thread' && !isThreadHostingPaneKind(item.kind)) return;
-    const nextPane = getPane(item.paneId);
-    if (!nextPane) return;
-    if (nextPane.thread?.mode === 'terminal') nextPane.requestTerminalFocus();
-    else focusPaneComposerIfEditableActive(nextPane.paneId);
-  }
 
   // Pane navigation stays reachable from inside a focused terminal: the default
   // vim chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go
@@ -333,8 +323,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '←',
     editableReachable: true,
     run: () => {
-      const next = focusAdjacentPane(-1);
-      if (next) followPaneNavDomFocus(next);
+      navigateToAdjacentPane(-1);
     },
   });
 
@@ -344,8 +333,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '→',
     editableReachable: true,
     run: () => {
-      const next = focusAdjacentPane(1);
-      if (next) followPaneNavDomFocus(next);
+      navigateToAdjacentPane(1);
     },
   });
 
@@ -739,7 +727,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   // The target pane's own find bar, or its target region's
-  // (stores/paneFind.svelte.ts; target: `paneFindTargetId`, then
+  // (stores/paneFind.svelte.ts; target: `paneCommandTarget`, then
   // `paneFindTarget`). A pane kind with no provider, or a pane under an
   // overlay, leaves the command disabled.
   registerCommand({
@@ -751,7 +739,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
     run: () => {
-      const key = paneFindTarget(paneFindTargetId());
+      const key = paneFindTarget(paneCommandTarget());
       if (!key || !hasPaneFindProvider(key)) return;
       const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
       const active = typeof document === 'undefined' ? null : document.activeElement;
@@ -771,7 +759,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'paneFindOpen && !overlayOpen',
     editableReachable: true,
     run: () => {
-      const key = paneFindTarget(paneFindTargetId());
+      const key = paneFindTarget(paneCommandTarget());
       if (key) closePaneFind(key);
     },
   });
@@ -1185,16 +1173,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 }
 
 /**
- * The pane find commands act on: the focused pane, or under compact the
- * pane on the thread screen, since opening a companion leaves focus on its
- * source thread. The compact list screen shows no pane.
- */
-function paneFindTargetId(): string | null {
-  if (!isCompactLayout()) return getFocusedPaneId();
-  return getCompactScreen() === 'thread' ? onScreenCompactPaneId() : null;
-}
-
-/**
  * `overlayOpen` for the palette's own list: a command picked there runs
  * after the palette closes, so only another overlay above the panes counts.
  */
@@ -1213,7 +1191,7 @@ function documentHasFocus(): boolean {
 export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
   const thread = pane?.thread ?? null;
   const overlayOpen = extra.overlayOpen ?? airspaceSurfaces().length > 0;
-  const findTarget = paneFindTarget(paneFindTargetId());
+  const findTarget = paneFindTarget(paneCommandTarget());
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
@@ -1263,6 +1241,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // (settings, a dialog) leaves them to the overlay.
     workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
+    noPaneTarget: paneCommandTarget() === null,
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

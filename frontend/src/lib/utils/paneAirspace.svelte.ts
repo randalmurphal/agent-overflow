@@ -106,11 +106,25 @@ export function registerAirspaceSurface(el: HTMLElement, options?: AirspaceSurfa
  * Svelte action form: `use:airspaceSurface` on an overlay primitive's painted
  * root, or `use:airspaceSurface={{ overlay: false }}` on a layer's. The
  * overlay primitives, the toast stack and the pane strip's drag shield own
- * the call sites; feature components never register themselves.
+ * the call sites; feature components never register themselves. Options that
+ * change while mounted (a popover that starts or stops taking the keyboard)
+ * register the surface again under them.
  */
-export function airspaceSurface(el: HTMLElement, options?: AirspaceSurfaceOptions): { destroy: () => void } {
-  const release = registerAirspaceSurface(el, options);
-  return { destroy: release };
+export function airspaceSurface(
+  el: HTMLElement,
+  options?: AirspaceSurfaceOptions,
+): { update: (next?: AirspaceSurfaceOptions) => void; destroy: () => void } {
+  let current = options;
+  let release = registerAirspaceSurface(el, options);
+  return {
+    update(next) {
+      if ((next?.overlay !== false) === (current?.overlay !== false) && next?.rect === current?.rect) return;
+      current = next;
+      release();
+      release = registerAirspaceSurface(el, next);
+    },
+    destroy: () => release(),
+  };
 }
 
 /**

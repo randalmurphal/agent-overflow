@@ -230,4 +230,45 @@ describe('TerminalSurface focus follows the active tab', () => {
 
     expect(terminalFocusCalls).toEqual(['t1']);
   });
+
+  // Keyboard navigation latches a terminal pane's focus, which lands a frame
+  // later; a move into another pane meanwhile keeps its caret there.
+  it('lands a latched focus a frame later only while focus is not in another pane', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb));
+    const handle = seededHandle();
+    handle.addTab(terminalSummary('t1', 'thread-A'));
+    const own = document.createElement('section');
+    own.dataset.paneId = 'pane-1';
+    const other = document.createElement('section');
+    other.dataset.paneId = 'pane-2';
+    const otherComposer = document.createElement('textarea');
+    other.appendChild(otherComposer);
+    document.body.append(own, other);
+    let intent = true;
+    const consumeFocusRequest = () => {
+      const value = intent;
+      intent = false;
+      return value;
+    };
+    try {
+      render(TerminalSurface, { target: own, props: { surface: makeSurface({ consumeFocusRequest }) as never, manual: true } });
+      await tick();
+      otherComposer.focus();
+      for (const frame of frames.splice(0)) frame(0);
+      expect(terminalFocusCalls).toEqual([]);
+      expect(document.activeElement).toBe(otherComposer);
+
+      cleanup();
+      intent = true;
+      otherComposer.blur();
+      render(TerminalSurface, { target: own, props: { surface: makeSurface({ consumeFocusRequest }) as never, manual: true } });
+      await tick();
+      for (const frame of frames.splice(0)) frame(0);
+      expect(terminalFocusCalls).toEqual(['t1']);
+    } finally {
+      own.remove();
+      other.remove();
+    }
+  });
 });
