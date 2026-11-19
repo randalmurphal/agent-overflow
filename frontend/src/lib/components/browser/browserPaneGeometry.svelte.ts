@@ -1,5 +1,5 @@
 import { reportBrowserPaneRect } from '../../stores/browserPaneRectReports';
-import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
+import { airspaceIntersects, airspaceRevision } from '../../utils/paneAirspace.svelte';
 import { promotedLayerClip, promotedLayerFrame } from '../../utils/panePromotion.svelte';
 import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
 import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
@@ -174,10 +174,11 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
     };
   });
 
-  // Overlay open/close re-evaluates obscurity; the mount acquiring its pane
-  // id re-sends the rect a too-early report dropped.
+  // A surface over the window appearing, going or changing size re-evaluates
+  // obscurity; the mount acquiring its pane id re-sends the rect a too-early
+  // report dropped.
   $effect(() => {
-    airspaceSurfaces();
+    airspaceRevision();
     options.mount();
     scheduleRect();
   });

@@ -3,7 +3,9 @@
 // one goes out when the mount appears, even when the pane's state arrived
 // before it and nothing moved since; and the view reads hidden while the
 // compact thread list is the screen shown, though the strip keeps its
-// bounds under it. The engines show and hide the native
+// bounds under it; and a toast over the pane hides the view while it covers
+// it, judged again as the stack appears, grows and goes, without taking the
+// pane's keyboard commands. The engines show and hide the native
 // view from exactly these reports (internal/browser `paneCanShow`).
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -23,7 +25,9 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
-import { resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
+import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
+import { addToast, removeToast, resetToastsForTest } from '../../stores/toast.svelte';
+import Toast from '../shared/Toast.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
@@ -123,4 +127,36 @@ it('reports the view hidden while the compact thread list is shown over the stri
 
   showCompactThread();
   await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown again on the thread screen');
+});
+
+it('hides the view while a toast covers it, as the stack appears, grows and goes', async () => {
+  // The strip against the window's right edge, so the browser pane, the
+  // strip's second pane, sits under the toast corner.
+  host.style.cssText = 'position:fixed;top:0;right:0;width:1000px;height:700px;display:flex';
+  const toasts = mount(Toast, { target: document.body });
+  try {
+    answerAttach();
+    await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown');
+
+    const first = addToast('success', 'Downloaded report.pdf', 0);
+    await waitFor(() => reports.at(-1)?.visible === false, 'the browser view hidden under the toast');
+    // A toast is not an overlay: the pane's commands stay live.
+    expect(airspaceSurfaces()).toEqual([]);
+
+    // The pane ends just above the stack: shown again.
+    const stack = document.querySelector<HTMLElement>('[aria-live="polite"]')!;
+    host.style.height = `${Math.floor(stack.getBoundingClientRect().top) - 8}px`;
+    await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown above the stack');
+
+    // A second toast grows the same stack up over the pane.
+    const second = addToast('info', 'Another', 0);
+    await waitFor(() => reports.at(-1)?.visible === false, 'the browser view hidden under the grown stack');
+
+    removeToast(first);
+    removeToast(second);
+    await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown once the toasts went');
+  } finally {
+    await unmount(toasts);
+    resetToastsForTest();
+  }
 });
