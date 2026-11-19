@@ -727,17 +727,19 @@ func TestHostedEngineCancelAsksTheLauncher(t *testing.T) {
 }
 
 // A page that goes takes its own downloads, running and ended, from the
-// engine, whichever way it goes: a later snapshot of one reaches nobody,
-// as the Manager settles them as the page leaves. Another page's running
-// download is left alone: its progress still reaches the Manager and its
-// cancel still reaches the launcher.
+// engine, whichever way it goes: one still running ends there, canceled
+// with the page as the launcher cancels it, and a later snapshot of one
+// reaches nobody. Another page's running download is left alone: its
+// progress still reaches the Manager and its cancel still reaches the
+// launcher.
 func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		leave func(engine *hostedEngine)
+		why   string
 	}{
-		{"the Manager closes it", func(engine *hostedEngine) { engine.closePage("page1") }},
-		{"the launcher reports it closed", func(engine *hostedEngine) { engine.Report("page1", webview2host.ReportClosed, "") }},
+		{"the Manager closes it", func(engine *hostedEngine) { engine.closePage("page1") }, popupDiscardedReason},
+		{"the launcher reports it closed", func(engine *hostedEngine) { engine.Report("page1", webview2host.ReportClosed, "") }, pageClosedReason},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine, sink, recorder := newDownloadHostedEngine(t)
@@ -750,6 +752,9 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 			recorder.take()
 
 			tc.leave(engine)
+			if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-1", State: downloadCanceled, Error: tc.why, PageGone: true}) {
+				t.Fatalf("the departure reported %+v, want the running download's end", progress)
+			}
 			engine.mu.Lock()
 			_, running := engine.downloads.running["dl-a-1"]
 			_, ended := engine.downloads.ended["page1"]
@@ -786,9 +791,8 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 
 // A browser connection lost mid-download reports the page crashed; the
 // download is the launcher's and runs on until the Manager closes the
-// crashed page, which takes it from the engine, so the launcher's later
-// report of its end reaches nobody: the Manager settles a leaving page's
-// downloads itself.
+// crashed page, which ends it and takes it from the engine, so the
+// launcher's later report of its end reaches nobody.
 func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 	endpoint := startFakeCDPEndpoint(t, nil, nil)
 	recorder := &hostedDownloadLog{}
@@ -828,8 +832,8 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 	}
 	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, Path: `C:\Users\dev\Downloads\x.bin`, Received: 3, Reason: "the download was canceled"})
 	_, progress := recorder.take()
-	if len(progress) != 1 || progress[0].Received != 3 || terminals(progress) != 0 {
-		t.Fatalf("progress %+v, want the one progress and no end from the engine", progress)
+	if len(progress) != 2 || progress[0].Received != 3 || progress[1] != (downloadProgress{ID: "dl-a-1", State: downloadCanceled, Error: popupDiscardedReason, PageGone: true}) {
+		t.Fatalf("progress %+v, want the one progress and the end of the close, none of the launcher's late report", progress)
 	}
 	ops := sink.ops()
 	if len(ops) < 2 || ops[len(ops)-2] != webview2host.OpCancelDownload || ops[len(ops)-1] != webview2host.OpClose {

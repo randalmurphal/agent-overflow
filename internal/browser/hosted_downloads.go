@@ -30,8 +30,9 @@ import (
 // Manager's cancel (downloadProgress.CancelRefused). Nothing about
 // downloads crosses CDP. A popup is a pane page too: a download it starts
 // before the Manager lists its tab names it and its openers, for the
-// Manager to list (popup_adoption.go), and one still running when such a
-// popup goes ends here (joinDownloadReports).
+// Manager to list (popup_adoption.go). A page admits downloads from its
+// creation or report until it goes (hostedDownloads.open), and one still
+// running then ends here (endPageDownloads).
 
 const (
 	// hostedPathTimeout bounds the `wslpath -u` of a finished download's
@@ -61,6 +62,10 @@ type hostedDownloads struct {
 	running map[string]*hostedDownload
 	// ended is each page's ended or refused download ids, oldest first.
 	ended map[string][]string
+	// open is each page that admits a download's first snapshot: from its
+	// creation or its report as a popup until its seal as it goes
+	// (beginLocked, sealLocked).
+	open map[string]struct{}
 	// watching is set while the status loop runs; stop ends it.
 	watching bool
 	stop     chan struct{}
@@ -85,7 +90,36 @@ type hostedDownload struct {
 }
 
 func newHostedDownloads() hostedDownloads {
-	return hostedDownloads{running: make(map[string]*hostedDownload), ended: make(map[string][]string)}
+	return hostedDownloads{running: make(map[string]*hostedDownload), ended: make(map[string][]string), open: make(map[string]struct{})}
+}
+
+// openLocked opens page's admission, as the page is bound or reported.
+func (d *hostedDownloads) openLocked(page string) {
+	d.open[page] = struct{}{}
+}
+
+// beginLocked registers download id of page, from its first snapshot, and
+// answers it, or false when page admits none: never opened, or sealed.
+func (d *hostedDownloads) beginLocked(page, id string) (*hostedDownload, bool) {
+	if _, open := d.open[page]; !open {
+		return nil, false
+	}
+	known := &hostedDownload{page: page}
+	d.running[id] = known
+	return known, true
+}
+
+// sealLocked closes page's admission and answers its downloads running
+// then, which are all it will have.
+func (d *hostedDownloads) sealLocked(page string) map[string]*hostedDownload {
+	delete(d.open, page)
+	running := make(map[string]*hostedDownload)
+	for id, known := range d.running {
+		if known.page == page {
+			running[id] = known
+		}
+	}
+	return running
 }
 
 func (d *hostedDownloads) endedIn(page, id string) bool {
@@ -131,16 +165,13 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			e.mu.Unlock()
 			return
 		}
-		_, bound := e.targetByPage[pageID]
-		if popup := e.popups[pageID]; (popup != nil && popup.downloadsEnded) || (popup == nil && !bound) {
-			// No page of the Manager's started it, or that page is a popup
-			// leaving before its listing, bound or not; the launcher cancels
-			// a closed page's downloads itself.
+		var open bool
+		if known, open = e.downloads.beginLocked(pageID, report.ID); !open {
+			// No page of the engine's started it, or that page is going; the
+			// launcher cancels a closed page's downloads itself.
 			e.mu.Unlock()
 			return
 		}
-		known = &hostedDownload{page: pageID}
-		e.downloads.running[report.ID] = known
 		e.watchDownloadsLocked()
 	}
 	known.heard = time.Now()
@@ -231,7 +262,7 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 	if report.Terminal() {
 		// After the Manager has its end, so a page that goes meanwhile
 		// still finds the download running and waits for this snapshot
-		// (joinDownloadReports).
+		// (endPageDownloads).
 		e.mu.Lock()
 		e.downloads.noteEnded(pageID, report.ID)
 		e.mu.Unlock()
@@ -324,43 +355,23 @@ func (e *hostedEngine) askQuietDownloads(stop chan struct{}) {
 	}
 }
 
-// forgetDownloadsLocked drops a page's downloads as the page goes; the
-// launcher cancels them with the page. The caller holds e.mu.
-func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
-	for id, d := range e.downloads.running {
-		if d.page == pageID {
-			d.gone = true
-			delete(e.downloads.running, id)
-		}
-	}
-	delete(e.downloads.ended, pageID)
-}
-
-// joinDownloadReports returns once every snapshot being applied for a
-// download of pageID, a page that goes, has reached the Manager, so the
-// page's close reaches it after them. With why set, pageID is a popup the
-// Manager never listed, and its downloads still running then end as
-// canceled for why: the launcher cancels a going page's downloads and
-// reports nothing, and only a listed page's leaving settles them in the
-// Manager. The popup admits no new download from the hold that takes its
-// running ones, so none starts after them unended. Each ends in its apply
-// section; one whose admission had not begun ends unreported.
-func (e *hostedEngine) joinDownloadReports(pageID, why string) {
+// endPageDownloads ends the downloads of pageID, a page that goes, and
+// forgets them: the launcher cancels a going page's downloads and reports
+// nothing. Its admission is sealed in the hold that takes its running
+// downloads, so none starts after them unended, and each still running
+// ends as canceled for why in its apply section, after any snapshot being
+// applied, so the page's close reaches the Manager after them. One whose
+// admission had not begun ends unreported. A listed page's rows the
+// Manager ended as it closed the page take nothing from this; a popup's it
+// never listed settle here.
+func (e *hostedEngine) endPageDownloads(pageID, why string) {
 	e.mu.Lock()
-	if popup := e.popups[pageID]; popup != nil && why != "" {
-		popup.downloadsEnded = true
-	}
-	running := make(map[string]*hostedDownload)
-	for id, d := range e.downloads.running {
-		if d.page == pageID {
-			running[id] = d
-		}
-	}
+	running := e.downloads.sealLocked(pageID)
 	e.mu.Unlock()
 	for id, d := range running {
 		d.apply.Lock()
 		e.mu.Lock()
-		end := why != "" && !d.gone
+		end := !d.gone
 		report := end && d.admitted
 		if end {
 			e.downloads.noteEnded(pageID, id)
@@ -371,6 +382,9 @@ func (e *hostedEngine) joinDownloadReports(pageID, why string) {
 		}
 		d.apply.Unlock()
 	}
+	e.mu.Lock()
+	delete(e.downloads.ended, pageID)
+	e.mu.Unlock()
 }
 
 // stopDownloadsLocked forgets every download and ends the status loop

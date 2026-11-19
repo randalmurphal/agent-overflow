@@ -306,28 +306,33 @@ func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repea
 
 //export aoWKVPageClosed
 func aoWKVPageClosed(pageID, popupID, profileID C.uint64_t) {
-	wkViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{closed: true})
+	if events, handle, ok := wkViewOwner(uint64(pageID), uint64(popupID), uint64(profileID)); ok {
+		events.PageClosed(handle)
+	}
 }
 
 //export aoWKVPageCrashed
 func aoWKVPageCrashed(pageID, popupID, profileID C.uint64_t) {
-	wkViewEnded(uint64(pageID), uint64(popupID), uint64(profileID), pageEnd{crashed: "web content process terminated"})
+	if events, handle, ok := wkViewOwner(uint64(pageID), uint64(popupID), uint64(profileID)); ok {
+		events.PageCrashed(handle, "web content process terminated")
+	}
 }
 
-// wkViewEnded routes what ended a view, on the main thread: to its page
-// once the view answers to one, and before that, for a popup, to the
-// engine of its profile by the popup's number.
-func wkViewEnded(pageID, popupID, profileID uint64, end pageEnd) {
+// wkViewOwner answers whom to tell what ended a view, on the main thread:
+// its page's handle once the view answers to one, and before that, for a
+// popup, the handle its number gives it, which its adoption keeps
+// (pageHandle). The Manager records either at once (engineEvents).
+func wkViewOwner(pageID, popupID, profileID uint64) (engineEvents, string, bool) {
 	if page := wkLookupPage(pageID); page != nil {
-		page.ends.report(end, page.engine.events, page.handle)
-		return
+		return page.engine.events, page.handle, true
 	}
 	if popupID == 0 {
-		return
+		return engineEvents{}, "", false
 	}
 	if profile := wkLookupProfile(profileID); profile != nil {
-		profile.engine.popupEnded(pageHandle(popupID), end)
+		return profile.engine.events, pageHandle(popupID), true
 	}
+	return engineEvents{}, "", false
 }
 
 // aoWKVPopup holds a popup WebKit created and answers its number, zero for
@@ -355,7 +360,9 @@ func aoWKVPopup(openerID, openerPopup, profileID C.uint64_t, view unsafe.Pointer
 		return 0
 	}
 	n, handle := profile.engine.holdPopup(view, opener)
-	go profile.engine.events.PopupOpened(enginePopup{
+	// Before the view can report its close, which the popup's admission
+	// then holds for its listing (engineEvents).
+	profile.engine.events.PopupOpened(enginePopup{
 		Profile: profile.Handle(), Opener: opener, Handle: handle, URL: target,
 	})
 	return C.uint64_t(n)

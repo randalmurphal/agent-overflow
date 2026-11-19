@@ -483,15 +483,6 @@ type pageAssets struct {
 	InlineSVGs []InlineSVG `json:"inlineSvgs"`
 }
 
-// adoptedPage is implemented by a page driver whose engine holds what a
-// popup reports while the Manager adopts it (the hosted engine:
-// hosted_popups.go). The Manager calls Adopted once the popup is in its
-// thread's tabs, so a download, crash or close it held reaches a listed
-// page.
-type adoptedPage interface {
-	Adopted()
-}
-
 // enginePopup is a page the engine opened on its own behalf. Nothing about
 // ownership is decided here: the Manager matches the opener and applies its
 // own per-thread and per-workspace limits before adopting it.
@@ -568,14 +559,23 @@ const (
 
 // engineEvents are the engine-originated notifications the Manager subscribes
 // to. The engine reports; the Manager alone routes and decides.
+//
+// PopupOpened, PageClosed and PageCrashed are the popup admission's
+// inputs (engine_pages.go): each records the report and returns at once,
+// acting on a goroutine of its own, so an engine calls them in the order
+// it observed the facts, from its UI thread or event reader, and holds
+// nothing back for a popup's listing. The Manager decides from them
+// whether a popup becomes a tab.
 type engineEvents struct {
+	// PopupOpened reports a page the engine opened by itself, which the
+	// Manager adopts (AttachPage) or discards (DiscardPage).
 	PopupOpened func(enginePopup)
-	PageClosed  func(handle string)
+	// PageClosed reports that the page closed by itself or its engine
+	// lost it.
+	PageClosed func(handle string)
 	// PageCrashed reports that the page's renderer or web content process
 	// ended while the page was open; reason is the engine's name for how.
 	// The engine page still exists and the Manager closes it (crash.go).
-	// Never called on a UI thread (it takes Manager locks and closes the
-	// page's driver).
 	PageCrashed func(handle, reason string)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a

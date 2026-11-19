@@ -69,8 +69,10 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 	}
 	adopt := engine.events.PopupOpened
 	engine.events.PopupOpened = func(popup enginePopup) {
-		time.Sleep(time.Second)
-		adopt(popup)
+		go func() {
+			time.Sleep(time.Second)
+			adopt(popup)
+		}()
 	}
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {

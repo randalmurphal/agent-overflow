@@ -247,13 +247,23 @@ func (l *popupLauncher) settledEngine() {
 	deadline := time.Now().Add(hostedTestDeadline)
 	for {
 		l.engine.mu.Lock()
-		pending, byTarget := len(l.engine.popups), len(l.engine.popupByTarget)
+		var stale []string
+		for id, popup := range l.engine.popups {
+			if _, live := l.engine.pageProfile[id]; !live || popup.cancelAttach != nil {
+				stale = append(stale, id)
+			}
+		}
+		for target, id := range l.engine.popupByTarget {
+			if popup := l.engine.popups[id]; popup == nil || popup.target != target {
+				stale = append(stale, target)
+			}
+		}
 		l.engine.mu.Unlock()
-		if pending == 0 && byTarget == 0 {
+		if len(stale) == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			l.t.Fatalf("the engine keeps %d pending popups and %d targets", pending, byTarget)
+			l.t.Fatalf("the engine keeps popups attaching or whose pages went: %v", stale)
 		}
 		time.Sleep(time.Millisecond)
 	}

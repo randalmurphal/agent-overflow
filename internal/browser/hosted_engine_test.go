@@ -514,17 +514,19 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 // A profile attaches only a popup the launcher reported in it, and not
 // once the popup closed (hosted_popups_test.go covers the adoption).
 func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
-	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(string) {}})
 	profile := testProfile(t, engine)
 	engine.mu.Lock()
 	engine.popups["popup-other"] = &hostedPopup{target: "T-other", profile: "another-profile"}
-	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id, closed: true}
+	engine.popups["popup-closed"] = &hostedPopup{target: "T-closed", profile: profile.id}
+	engine.pageProfile["popup-closed"] = profile.id
 	engine.mu.Unlock()
+	engine.retirePage("popup-closed")
 
 	for handle, why := range map[string]string{
 		"TARGET-1":     "reported no popup",
 		"popup-other":  "reported no popup",
-		"popup-closed": "closed before it was adopted",
+		"popup-closed": "reported no popup",
 	} {
 		if _, err := profile.AttachPage(context.Background(), handle, pageHooks{}); err == nil || !strings.Contains(err.Error(), why) {
 			t.Errorf("attach %s: %v, want %q", handle, err, why)

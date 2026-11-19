@@ -113,13 +113,17 @@ close also takes. An engine keeps no download of its own for a popup.
 Headless Chromium runs with its popup blocker off, so a window a page opens
 with no gesture is a popup there as on WebView2. On the hosted engine a
 popup is the launcher's report (`hosted_popups.go`), attached only on its
-opener's connection, within the attach timeout, and canceled by its close;
-until the Manager lists its tab, the engine holds its crash and close and
-delivers them at the listing (`adoptedPage`). The WebKit engines do the
-same (`pageEnds`): a popup view's close and crash handlers are installed
-at its creation, and until its adoption it names itself by its popup
-number. Headless Chromium holds them from the popup's target creation
-(`headlessPopupPage`). The CDP engines answer the
+opener's connection, within the attach timeout, and canceled by its close.
+Every engine reports a popup, and any page's close and crash, as it
+observes them and holds none back: the Manager records each in the
+popup's admission (`popupadmit`) before it acts, and the listing's one
+commit decides the tab (a close refuses it, a crash alone lists it
+crashed); a listed page's close and crash run in report order
+(`engine_pages.go`). A WebKit popup view's close and crash handlers are
+installed at its creation, and until its adoption it names itself by its
+popup number. A hosted page admits downloads from its bind or popup
+report until it goes, which ends those still running
+(`hostedDownloads.open`, `endPageDownloads`). The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per
 request, so a popup's requests before its adoption have its opener chain's
 authority, the launcher's popup report counting as an opener edge on the
@@ -150,8 +154,9 @@ profile or download up there (`withProfileOnUI`, `withDownloadOnUI`); an
 action whose answer is reported runs through `uicall.Run`, which never runs
 it after it answered withdrawn. A download's destination decision is held
 by its profile from WebKit's hand-over until its completion or the
-profile's close takes it, once (`internal/browser/destination`). Native callbacks carry integer IDs, never Go pointers. Keep shared
-page-operation JavaScript in `webkitjs.go` and `pagejs.go`; selectors and user
+profile's close takes it, once (`internal/browser/destination`). Native
+callbacks carry integer IDs, never Go pointers. Keep shared page-operation
+JavaScript in `webkitjs.go` and `pagejs.go`; selectors and user
 text cross as JSON values rather than source fragments.
 
 Hidden native WebKit pages must remain attached to their window in a clipped

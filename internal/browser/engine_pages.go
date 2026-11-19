@@ -3,12 +3,119 @@ package browser
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
+
+	"agent-overflow/internal/browser/popupadmit"
 )
 
-// adoptPopup takes ownership of a page the engine opened by itself. The opener
-// decides the thread, the workspace authority and the jar; this manager's own
-// limits decide whether it survives.
+// Pages an engine reports: a popup it opened by itself (popupOpened), and
+// the close or crash of any page (pageClosed, pageCrashedReport). Each
+// enters the popup's admission (popupadmit) in the engine's call, before
+// anything the Manager does about it starts, so the adoption's one commit
+// at the listing reads every close and crash the engine reported before
+// it. Each returns at once and acts on a goroutine of its own, so an
+// engine may call it on its UI thread or its event reader; what a page's
+// close and crash do runs in the order they were reported (pageEndQueue),
+// so a listed tab that closed and then crashed is gone, not crashed.
+
+// popupOpened is engineEvents.PopupOpened: it registers the popup's
+// admission and adopts it on a goroutine of its own.
+func (m *Manager) popupOpened(popup enginePopup) {
+	if !m.announcePopup(popup) {
+		return
+	}
+	go m.runAdoption(popup)
+}
+
+// pageClosed is engineEvents.PageClosed. A popup not listed yet keeps the
+// close for its listing, which it vetoes; the teardown runs either way
+// (removeClosedPage), which for a popup never listed lists what it
+// downloaded in its opener's tab at once.
+func (m *Manager) pageClosed(handle string) {
+	m.pageEnds.report(handle, func() bool {
+		m.admissions.Observe(popupadmit.Handle(handle), popupadmit.Closed())
+		return true
+	}, func() { m.removeClosedPage(handle) })
+}
+
+// pageCrashedReport is engineEvents.PageCrashed. A popup not listed yet
+// keeps the crash for its listing, which lists it crashed unless it also
+// closed; any other page is handled as a crashed tab (pageCrashed).
+func (m *Manager) pageCrashedReport(handle, reason string) {
+	m.pageEnds.report(handle, func() bool {
+		return m.admissions.Observe(popupadmit.Handle(handle), popupadmit.Crashed(reason)) == popupadmit.Unheld
+	}, func() { m.pageCrashed(handle, reason) })
+}
+
+// pageEndQueue runs what the Manager does about each page's reported
+// close and crash, one page's in the order they were reported, on a
+// goroutine that exists while the page has work queued. Pages' work runs
+// apart, so one page's teardown never waits for another's.
+type pageEndQueue struct {
+	mu   sync.Mutex
+	jobs map[string][]func()
+}
+
+// report records a report of page handle (record, which answers whether
+// it leaves work to do) and queues that work behind the page's earlier
+// work, in one hold, so the work runs in the order the records were made.
+func (q *pageEndQueue) report(handle string, record func() bool, work func()) {
+	q.mu.Lock()
+	if !record() {
+		q.mu.Unlock()
+		return
+	}
+	if q.jobs == nil {
+		q.jobs = make(map[string][]func())
+	}
+	queued, running := q.jobs[handle]
+	q.jobs[handle] = append(queued, work)
+	q.mu.Unlock()
+	if !running {
+		go q.run(handle)
+	}
+}
+
+// run does the queued work of handle until none is left.
+func (q *pageEndQueue) run(handle string) {
+	for {
+		q.mu.Lock()
+		jobs := q.jobs[handle]
+		if len(jobs) == 0 {
+			delete(q.jobs, handle)
+			q.mu.Unlock()
+			return
+		}
+		work := jobs[0]
+		jobs[0] = nil
+		q.jobs[handle] = jobs[1:]
+		q.mu.Unlock()
+		work()
+	}
+}
+
+// adoptPopup announces popup and adopts it in the caller's goroutine.
+func (m *Manager) adoptPopup(popup enginePopup) {
+	if m.announcePopup(popup) {
+		m.runAdoption(popup)
+	}
+}
+
+// announcePopup registers popup's admission and answers false for a popup
+// reported before.
+func (m *Manager) announcePopup(popup enginePopup) bool {
+	if !m.admissions.Announce(popupadmit.Handle(popup.Handle), popupadmit.Handle(popup.Opener)) {
+		log.Printf("browser: popup %s reported twice", popup.Handle)
+		return false
+	}
+	return true
+}
+
+// runAdoption takes ownership of a page the engine opened by itself. The
+// opener decides the thread, the workspace authority and the jar; this
+// manager's own limits decide whether it survives, and the popup's
+// admission whether it closed meanwhile.
 //
 // A popup opened by a popup still being adopted waits for that adoption
 // (awaitOpener), and what the popup downloads before its fate is listed at
@@ -17,11 +124,8 @@ import (
 // does (scope.creating), and counts against every cap, so a close of its
 // opener cannot dispose the profile it is attached in and a burst of
 // popups cannot pass the caps before any of them is listed.
-func (m *Manager) adoptPopup(popup enginePopup) {
-	if !m.startAdoption(popup.Handle) {
-		log.Printf("browser: popup %s reported twice", popup.Handle)
-		return
-	}
+func (m *Manager) runAdoption(popup enginePopup) {
+	m.startAdoption(popup.Handle)
 	var listed *managedPage
 	defer func() { m.finishAdoption(popup.Handle, popup.Opener, listed) }()
 	if !m.awaitOpener(popup.Opener) {
@@ -88,8 +192,17 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	// jar switch is one such close: it moves every live page of the thread
 	// to closing in the hold that advances the generation, so a live opener
 	// is always in its thread's current jar and the popup is too. The caps
-	// were taken at admission by the reservation the listing ends.
+	// were taken at admission by the reservation the listing ends. The
+	// commit, in the same hold, reads what ended the popup before it: a
+	// close refuses it, a crash alone lists it crashed.
 	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil {
+		m.mu.Unlock()
+		m.parkMu.Unlock()
+		driver.Close()
+		return
+	}
+	verdict := m.admissions.Commit(popupadmit.Handle(popup.Handle))
+	if verdict.Kind() == popupadmit.Refuse {
 		m.mu.Unlock()
 		m.parkMu.Unlock()
 		driver.Close()
@@ -113,8 +226,10 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	m.parkMu.Unlock()
 	// A new tab.
 	m.pageAdded(p)
-	if adopted, ok := driver.(adoptedPage); ok {
-		adopted.Adopted()
+	if verdict.Kind() == popupadmit.ListCrashed {
+		// Its process ended before its listing: the tab is a crashed one,
+		// as any listed page's would be.
+		m.pageCrashed(popup.Handle, verdict.CrashReason())
 	}
 	if m.pageAdopted != nil {
 		m.pageAdopted()
@@ -190,6 +305,8 @@ func pageWithHandle(scope *jarScope, handle string) *managedPage {
 	return nil
 }
 
+// removeClosedPage is the teardown of a page whose engine reported its
+// close (pageClosed).
 func (m *Manager) removeClosedPage(handle string) {
 	// Before m.mu, so a popup's tab is taken only once the downloads its
 	// listing owes it are in it (adoptPopup).

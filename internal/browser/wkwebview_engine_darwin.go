@@ -72,8 +72,6 @@ type wkEngine struct {
 	pane     map[uint64]wkPaneState
 	profiles map[uint64]*wkProfile
 	stopped  bool
-	// popupEnds is what ended a popup's view before its adoption.
-	popupEnds heldPopupEnds
 
 	// downloadEvents carries every download report to the Manager off the
 	// main thread, one at a time in the order they were made, so a fast
@@ -122,7 +120,6 @@ func (e *wkEngine) Stop() {
 		orphans = append(orphans, held.view)
 		delete(e.popups, handle)
 	}
-	e.popupEnds = heldPopupEnds{}
 	e.stopped = true
 	e.mu.Unlock()
 	// The window and its park view stay: the SPA lives in it, and re-attaching
@@ -183,40 +180,13 @@ func (e *wkEngine) holdPopup(view unsafe.Pointer, opener string) (uint64, string
 	return n, handle
 }
 
-// takePopup takes the held popup handle, for its attach when attach is
-// set (popupEnds), and otherwise for its discard.
-func (e *wkEngine) takePopup(handle string, attach bool) heldPopupView {
+// takePopup takes the held popup handle, for its attach or its discard.
+func (e *wkEngine) takePopup(handle string) heldPopupView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	held, ok := e.popups[handle]
+	held := e.popups[handle]
 	delete(e.popups, handle)
-	if ok && attach {
-		e.popupEnds.attachLocked(handle)
-	} else {
-		e.popupEnds.forgetLocked(handle)
-	}
 	return held
-}
-
-// popupEnded keeps what ended the view of the popup handle before its
-// adoption named the view's page (heldPopupEnds). A close also reaches the
-// Manager at once (pageEnds).
-func (e *wkEngine) popupEnded(handle string, end pageEnd) {
-	e.mu.Lock()
-	_, held := e.popups[handle]
-	kept := e.popupEnds.recordLocked(handle, held, end)
-	e.mu.Unlock()
-	if kept && end.closed {
-		go e.events.PageClosed(handle)
-	}
-}
-
-// endAttach ends the attach of the popup handle and answers what ended its
-// view before its adoption.
-func (e *wkEngine) endAttach(handle string) pageEnd {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.popupEnds.takeLocked(handle)
 }
 
 // heldOpener answers the opener of the held popup handle, "" for none.
@@ -256,7 +226,7 @@ func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
 func (e *wkEngine) DiscardPage(_ context.Context, handle string) error {
-	if held := e.takePopup(handle, false); held.view != nil {
+	if held := e.takePopup(handle); held.view != nil {
 		return wkCloseViewErr(held.view)
 	}
 	return nil
@@ -373,7 +343,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 }
 
 func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
-	held := p.engine.takePopup(handle, true)
+	held := p.engine.takePopup(handle)
 	view := held.view
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
@@ -381,31 +351,22 @@ func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks
 	script := wkUserScript()
 	page, err := p.newPageShell(hooks, held.n)
 	if err != nil {
-		p.engine.endAttach(handle)
 		wkCloseView(view)
 		return nil, err
 	}
 	page.view = view
 	page.popup, page.opener = handle, held.opener
-	page.ends.popup = true
 	// The popup already exists and may already be loading, so its document start
 	// is gone: the injected script applies from its next document on. That is
 	// the same trade CDP's addScriptToEvaluateOnNewDocument makes for an adopted
 	// target.
 	if err := wkAdoptView(view, page.id, p.id, script, webkitConsoleHandler); err != nil {
-		p.engine.endAttach(handle)
 		page.discard()
 		wkCloseView(view)
 		return nil, err
 	}
-	// The view answers to the page from its adoption on, so what ended it
-	// before has reached the engine by now.
-	end := p.engine.endAttach(handle)
-	if end.closed {
-		page.Close()
-		return nil, fmt.Errorf("browser: popup %s closed before it was adopted", handle)
-	}
-	page.ends.hold(end)
+	// What ended the view before reached the Manager by the popup's handle,
+	// which its page keeps: the Manager's listing reads it.
 	p.parkNew(page)
 	if err := p.publish(page); err != nil {
 		return nil, err

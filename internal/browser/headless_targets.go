@@ -9,7 +9,7 @@ import (
 )
 
 // A headless profile's browser-level target events: popups, crashes and
-// closes. A popup's crash and close wait for its listing (pageEnds).
+// closes, each reported to the Manager as it is handled (engineEvents).
 
 // subscribe connects the CDP events of the browser connected on browserCtx
 // to the seam, and answers the requests the workspace's navigation policy
@@ -82,9 +82,7 @@ func (p *headlessProfile) targetCrashed(event target.EventTargetCrashed) {
 	if owner, ok := p.engine.profileForPage(handle); !ok || owner != p {
 		return
 	}
-	// Off the event reader (pageEnds.report): the Manager closes the
-	// page's driver.
-	p.engine.pageEnded(handle, pageEnd{crashed: cdpCrashReason(event)})
+	p.engine.events.PageCrashed(handle, cdpCrashReason(event))
 }
 
 // headlessTargets handles the target events of one browser connection, over
@@ -128,11 +126,12 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 			}
 			return
 		}
-		p.engine.bindPopup(handle, p)
-		// On its own goroutine, as the WebKit engines report popups: the
-		// Manager adopts a popup through AttachPage, a CDP round trip that
-		// must not hold the target events queued behind it.
-		go p.engine.events.PopupOpened(enginePopup{
+		// Bound and reported in the record's hold, so the destroyed
+		// handler, which unbinds in it too, reports the popup's close
+		// after its report. The Manager adopts it on a goroutine of its
+		// own (engineEvents).
+		p.engine.bindPage(handle, p)
+		p.engine.events.PopupOpened(enginePopup{
 			Profile: p.handle, Opener: string(info.OpenerID), Handle: handle,
 			URL: newest.URL, Title: newest.Title,
 		})
@@ -173,10 +172,5 @@ func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
 	if !bound {
 		return
 	}
-	// On its own goroutine (pageEnds.report) for the same reason as the
-	// popup above, and as the hosted engine retires a page: PageClosed is
-	// the Manager's page teardown, which on the workspace's last page
-	// disposes this profile and blocks until Chromium is reaped. A popup
-	// not listed yet hears it again at its listing.
-	p.engine.pageEnded(handle, pageEnd{closed: true})
+	p.engine.events.PageClosed(handle)
 }

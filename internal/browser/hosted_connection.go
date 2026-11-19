@@ -163,7 +163,7 @@ func (e *hostedEngine) claimLostLocked(conn context.Context) []string {
 // reportLost reports pages, claimed from a lost connection, crashed.
 func (e *hostedEngine) reportLost(pages []string) {
 	for _, pageID := range pages {
-		e.pageCrashed(pageID, connectionLostReason)
+		e.events.PageCrashed(pageID, connectionLostReason)
 	}
 }
 
@@ -224,8 +224,7 @@ func (e *hostedEngine) subscribe(browserCtx context.Context, targets *cdpTargets
 // finds no live page.
 func (e *hostedEngine) targetCrashed(event target.EventTargetCrashed) {
 	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
-		// Off the event reader: the Manager closes the page's driver.
-		go e.pageCrashed(pageID, cdpCrashReason(event))
+		e.events.PageCrashed(pageID, cdpCrashReason(event))
 	}
 }
 
