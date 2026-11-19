@@ -884,9 +884,17 @@ func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]
 	}
 }
 
-// webkitCancelDownload reports false when the GTK main loop could not run it.
-func webkitCancelDownload(download unsafe.Pointer) bool {
-	return gtkDo(func() { C.ao_wk_download_cancel(download) })
+// webkitCancelDownload cancels the download lookup answers on the GTK
+// thread, nil for none. It reports whether lookup found one, and ran false
+// when the GTK main loop could not run it.
+func webkitCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
+	ran = gtkDo(func() {
+		if download := lookup(); download != nil {
+			found = true
+			C.ao_wk_download_cancel(download)
+		}
+	})
+	return found, ran
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {

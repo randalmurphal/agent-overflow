@@ -410,7 +410,7 @@ func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {
 		// main-thread call this export makes goes to a goroutine for that
 		// reason.
 		go func() {
-			wkCancelDownload(ptr)
+			wkCancelDownload(func() unsafe.Pointer { return ptr })
 			wkReleaseDownload(ptr)
 		}()
 		return
@@ -419,8 +419,22 @@ func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {
 	go p.sampleDownload(entry)
 }
 
+// heldDownload answers entry's download while entry is registered, nil
+// once it is released.
+func (p *wkProfile) heldDownload(entry *wkDownload) unsafe.Pointer {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.downloads[entry.handle] != entry {
+		return nil
+	}
+	return entry.ptr
+}
+
 // sampleDownload is the WKDownload half of what WebKitGTK reports for free on
 // its `received-data` signal: the pane's progress for a running download.
+// Each sample looks the download up on the main thread, where a released
+// download is let go after it leaves downloads (releaseDownload), so a
+// tick that wins the race with the release samples nothing.
 func (p *wkProfile) sampleDownload(entry *wkDownload) {
 	ticker := time.NewTicker(wkDownloadPollInterval)
 	defer ticker.Stop()
@@ -429,7 +443,13 @@ func (p *wkProfile) sampleDownload(entry *wkDownload) {
 		case <-entry.stop:
 			return
 		case <-ticker.C:
-			received, total := wkDownloadProgress(entry.ptr)
+			received, total, held, ran := wkDownloadProgress(func() unsafe.Pointer { return p.heldDownload(entry) })
+			if !ran {
+				continue
+			}
+			if !held {
+				return
+			}
 			select {
 			case <-entry.stop:
 				return
@@ -458,17 +478,25 @@ func (p *wkProfile) releaseDownload(handle string) {
 	wkReleaseDownload(entry.ptr)
 }
 
+// CancelDownload looks the download up on the main thread, where a
+// released download is let go after it leaves downloads (releaseDownload),
+// so the one it finds is still held through the cancel.
 func (p *wkProfile) CancelDownload(id string) error {
-	p.mu.Lock()
-	entry := p.downloads[id]
-	p.mu.Unlock()
-	if entry == nil {
+	found, ran := wkCancelDownload(func() unsafe.Pointer {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if entry := p.downloads[id]; entry != nil {
+			return entry.ptr
+		}
+		return nil
+	})
+	if !ran {
+		return errWKUnavailable
+	}
+	if !found {
 		// Released: WebKit finished, failed or canceled it, and that report
 		// is on its way (aoWKVDownloadFinished releases before it reports).
 		return errDownloadEnded
-	}
-	if !wkCancelDownload(entry.ptr) {
-		return errWKUnavailable
 	}
 	return nil
 }

@@ -800,25 +800,43 @@ func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 	}
 }
 
-// wkCancelDownload reports false when the main thread could not run it.
-func wkCancelDownload(download unsafe.Pointer) bool {
-	return wkDo(func() { C.ao_wkv_download_cancel(download) })
+// wkCancelDownload cancels the download lookup answers on the main thread,
+// nil for none. It reports whether lookup found one, and ran false when the
+// main thread could not run it.
+func wkCancelDownload(lookup func() unsafe.Pointer) (found, ran bool) {
+	ran = wkDo(func() {
+		if download := lookup(); download != nil {
+			found = true
+			C.ao_wkv_download_cancel(download)
+		}
+	})
+	return found, ran
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
 	wkDo(func() { C.ao_wkv_download_release(download) })
 }
 
-// wkDownloadProgress samples one download's NSProgress: the bytes received and
-// the size expected, 0 when unknown. WKDownload reports no per-chunk callback,
-// so the profile polls this while a download is live; that sample is what
-// lets the Manager cancel one that outgrows its byte cap before the whole
-// file is on disk.
-func wkDownloadProgress(download unsafe.Pointer) (received, total float64) {
+// wkDownloadProgress samples the NSProgress of the download lookup answers
+// on the main thread: the bytes received and the size expected, 0 when
+// unknown. held is false when lookup found none, and ran false when the
+// main thread could not run the sample. WKDownload reports no per-chunk
+// callback, so the profile polls this while a download is live; that
+// sample is what lets the Manager cancel one that outgrows its byte cap
+// before the whole file is on disk.
+func wkDownloadProgress(lookup func() unsafe.Pointer) (received, total float64, held, ran bool) {
 	var r, t C.double
-	wkDo(func() {
+	ran = wkDo(func() {
+		download := lookup()
+		if download == nil {
+			return
+		}
+		held = true
 		r = C.ao_wkv_download_received(download)
 		t = C.ao_wkv_download_total(download)
 	})
-	return float64(r), float64(t)
+	if !ran {
+		return 0, 0, false, false
+	}
+	return float64(r), float64(t), held, true
 }

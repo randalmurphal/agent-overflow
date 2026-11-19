@@ -346,17 +346,26 @@ func (p *webkitProfile) releaseDownload(handle string) {
 	}
 }
 
-func (p *webkitProfile) CancelDownload(id string) error {
+// heldDownload answers the download registered under id, nil once it is
+// released.
+func (p *webkitProfile) heldDownload(id string) unsafe.Pointer {
 	p.mu.Lock()
-	download := p.downloads[id]
-	p.mu.Unlock()
-	if download == nil {
+	defer p.mu.Unlock()
+	return p.downloads[id]
+}
+
+// CancelDownload looks the download up on the GTK thread, where a released
+// download's reference is dropped after it leaves downloads
+// (releaseDownload), so the one it finds is still held through the cancel.
+func (p *webkitProfile) CancelDownload(id string) error {
+	found, ran := webkitCancelDownload(func() unsafe.Pointer { return p.heldDownload(id) })
+	if !ran {
+		return errGTKUnavailable
+	}
+	if !found {
 		// Released: WebKit finished or failed it, and that report is on its
 		// way (aoWebKitDownloadProgress releases before it reports).
 		return errDownloadEnded
-	}
-	if !webkitCancelDownload(download) {
-		return errGTKUnavailable
 	}
 	return nil
 }
