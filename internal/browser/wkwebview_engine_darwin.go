@@ -254,10 +254,11 @@ func (p *wkProfile) downloadStart(page *wkPage, popup uint64) downloadStart {
 // publishes each finished file to the user's Downloads folder.
 func (e *wkEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
-func (e *wkEngine) DiscardPage(handle string) {
+func (e *wkEngine) DiscardPage(_ context.Context, handle string) error {
 	if held := e.takePopup(handle, false); held.view != nil {
-		wkCloseView(held.view)
+		return wkCloseViewErr(held.view)
 	}
+	return nil
 }
 
 // claimSlot reserves one row in the park view. Parked views are stacked by slot

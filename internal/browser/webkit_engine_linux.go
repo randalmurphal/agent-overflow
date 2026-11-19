@@ -204,10 +204,11 @@ func (p *webkitProfile) downloadStart(page *webkitPage, popup uint64) downloadSt
 // publishes each finished file to the user's Downloads folder.
 func (e *webkitEngine) DownloadSaving() downloadSaving { return downloadsStaged }
 
-func (e *webkitEngine) DiscardPage(handle string) {
+func (e *webkitEngine) DiscardPage(_ context.Context, handle string) error {
 	if held := e.takePopup(handle, false); held.view != nil {
-		webkitCloseView(held.view)
+		return webkitCloseViewErr(held.view)
 	}
+	return nil
 }
 
 func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {

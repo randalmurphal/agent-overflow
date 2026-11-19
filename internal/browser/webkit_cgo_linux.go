@@ -624,11 +624,21 @@ func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHand
 // webkitCloseView closes the view, giving keyboard focus it held to the SPA's
 // webview. No caller can act on a failed handoff, so it is logged here.
 func webkitCloseView(view unsafe.Pointer) {
-	released := 0
-	gtkDo(func() { released = int(C.ao_wk_view_close(view)) })
-	if err := focusReleaseError(released); err != nil {
+	if err := webkitCloseViewErr(view); err != nil {
 		log.Printf("browser: close a page: %v", err)
 	}
+}
+
+// webkitCloseViewErr closes the view on the GTK thread and answers how its
+// focus handoff ended. A dispatch that timed out answers
+// errGTKUnavailable, and the close may still run; its answer is read only
+// from the closure that ran (a buffered completion).
+func webkitCloseViewErr(view unsafe.Pointer) error {
+	released := make(chan int, 1)
+	if !gtkDo(func() { released <- int(C.ao_wk_view_close(view)) }) {
+		return errGTKUnavailable
+	}
+	return focusReleaseError(<-released)
 }
 
 func webkitOpenInspector(view webkitView) error {

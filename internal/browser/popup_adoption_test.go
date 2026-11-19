@@ -28,6 +28,9 @@ type adoptionEngine struct {
 	discarded []string
 	canceled  []string
 	profile   string
+	// stallDiscard makes a discard wait for its deadline, as an engine
+	// whose browser stopped answering does.
+	stallDiscard bool
 	// wrap, when set, answers the driver an attach returns.
 	wrap func(pageDriver) pageDriver
 }
@@ -68,10 +71,16 @@ func (e *adoptionEngine) NewProfile(ctx context.Context, opts profileOptions) (e
 	return &adoptionProfile{fakeProfile: profile.(*fakeProfile), engine: e}, nil
 }
 
-func (e *adoptionEngine) DiscardPage(handle string) {
+func (e *adoptionEngine) DiscardPage(ctx context.Context, handle string) error {
 	e.mu.Lock()
 	e.discarded = append(e.discarded, handle)
+	stall := e.stallDiscard
 	e.mu.Unlock()
+	if stall {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
 }
 
 // gate holds the attach of handle until the answered release.
@@ -989,4 +998,35 @@ func TestPopupsBeingAdoptedCountAgainstTheCaps(t *testing.T) {
 	if got := len(manager.CompanionState(access).Pages); got != maxPagesPerThread {
 		t.Fatalf("the thread has %d tabs, want its cap of %d", got, maxPagesPerThread)
 	}
+}
+
+// A popup whose discard the engine never answers ends its adoption at the
+// discard's deadline: its reservation goes, so its profile and the caps
+// are free again, and its downloads go to its opener.
+func TestAPopupWhoseDiscardNeverAnswersEndsItsReservation(t *testing.T) {
+	manager, engine, _, opener := newAdoptionManager(t)
+	engine.failing["popup"] = true
+	engine.stallDiscard = true
+	popupDownload(manager, engine, "popup", "dl-1")
+	done := make(chan struct{})
+	go func() {
+		manager.adoptPopup(engine.popup(opener, "popup"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(popupDiscardTimeout + hostedTestDeadline):
+		t.Fatal("the adoption never ended")
+	}
+	manager.mu.Lock()
+	reserved := 0
+	for _, scope := range manager.scopes {
+		reserved += len(scope.creating)
+	}
+	adopting := len(manager.adopting)
+	manager.mu.Unlock()
+	if reserved != 0 || adopting != 0 {
+		t.Fatalf("%d reservations and %d adoptions remain, want none", reserved, adopting)
+	}
+	wantDownloads(t, manager, opener, "dl-1 in_progress 0")
 }

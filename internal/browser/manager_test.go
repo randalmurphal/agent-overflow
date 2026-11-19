@@ -821,10 +821,11 @@ type discardRecordingEngine struct {
 	discarded []string
 }
 
-func (e *discardRecordingEngine) DiscardPage(handle string) {
+func (e *discardRecordingEngine) DiscardPage(_ context.Context, handle string) error {
 	e.mu.Lock()
 	e.discarded = append(e.discarded, handle)
 	e.mu.Unlock()
+	return nil
 }
 
 // A popup its profile fails to attach is discarded, not left open with no

@@ -87,8 +87,9 @@ func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedBy
 
 // DiscardPage closes a controller the Manager declined to adopt. The handle
 // is this engine's page id, because that is what pageDriver.Handle answers.
-func (e *hostedEngine) DiscardPage(handle string) {
+func (e *hostedEngine) DiscardPage(_ context.Context, handle string) error {
 	e.closePage(handle)
+	return nil
 }
 
 // Report routes one launcher answer. Called from the App's

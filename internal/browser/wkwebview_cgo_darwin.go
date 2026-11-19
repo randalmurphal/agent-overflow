@@ -695,11 +695,21 @@ func wkAdoptView(view unsafe.Pointer, pageID, profileID uint64, userScript, cons
 // wkCloseView closes the view, giving keyboard focus it held to the SPA's
 // webview. No caller can act on a failed handoff, so it is logged here.
 func wkCloseView(view unsafe.Pointer) {
-	released := 0
-	wkDo(func() { released = int(C.ao_wkv_view_close(view)) })
-	if err := focusReleaseError(released); err != nil {
+	if err := wkCloseViewErr(view); err != nil {
 		log.Printf("browser: close a page: %v", err)
 	}
+}
+
+// wkCloseViewErr closes the view on the main thread and answers how its
+// focus handoff ended. A dispatch that timed out answers errWKUnavailable,
+// and the close may still run; its answer is read only from the closure
+// that ran (a buffered completion).
+func wkCloseViewErr(view unsafe.Pointer) error {
+	released := make(chan int, 1)
+	if !wkDo(func() { released <- int(C.ao_wkv_view_close(view)) }) {
+		return errWKUnavailable
+	}
+	return focusReleaseError(<-released)
 }
 
 func wkSetViewSize(view wkView, width, height int) error {

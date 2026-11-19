@@ -35,8 +35,11 @@ type browserEngine interface {
 	Stop()
 	// NewProfile creates one isolated site-data profile.
 	NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error)
-	// DiscardPage closes an engine page the Manager declined to adopt.
-	DiscardPage(handle string)
+	// DiscardPage closes an engine page the Manager declined to adopt,
+	// within ctx. It is idempotent, and a page it fails to close stays the
+	// engine's to close at its profile's disposal; the Manager's
+	// reservation for the page ends either way.
+	DiscardPage(ctx context.Context, handle string) error
 	// DownloadSaving is where the engine's downloads go; constant for an
 	// engine.
 	DownloadSaving() downloadSaving

@@ -974,8 +974,10 @@ func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
 }
 
 // A discarded popup's close and a download's cancel end when a connected
-// Chromium stops answering them: the popup's discard holds its reservation
-// until it returns, and a page's close waits on its downloads' cancels.
+// Chromium stops answering them: the discard within its caller's deadline,
+// the cancel within the close timeout. Meanwhile another page opens, the
+// target the discard could not close stays bound to its profile, and a
+// later discard, answered, closes it.
 func TestHeadlessProfileBoundsItsBrowserCalls(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
@@ -986,18 +988,41 @@ func TestHeadlessProfileBoundsItsBrowserCalls(t *testing.T) {
 	}
 	engine.bindPage("P-1", profile)
 	browser.stallBrowserCalls.Store(true)
-	done := make(chan error, 1)
+	discarded := make(chan error, 1)
 	go func() {
-		engine.DiscardPage("P-1")
-		done <- profile.CancelDownload("G-1")
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		discarded <- engine.DiscardPage(ctx, "P-1")
 	}()
+	opened, err := profile.NewPage(t.Context(), testPageHooks())
+	if err != nil {
+		t.Fatalf("another page while the discard is unanswered: %v", err)
+	}
+	opened.Close()
 	select {
-	case err := <-done:
+	case err := <-discarded:
+		if err == nil {
+			t.Fatal("a discard Chromium never answered succeeded")
+		}
+	case <-time.After(headlessTestDeadline):
+		t.Fatal("a discard Chromium never answers did not end")
+	}
+	if owner, bound := engine.profileForPage("P-1"); !bound || owner != profile {
+		t.Fatal("the target the discard could not close has no owner")
+	}
+	canceled := make(chan error, 1)
+	go func() { canceled <- profile.CancelDownload("G-1") }()
+	select {
+	case err := <-canceled:
 		if err == nil {
 			t.Fatal("a cancel Chromium never answered succeeded")
 		}
 	case <-time.After(headlessTestDeadline):
-		t.Fatal("a discard or cancel Chromium never answers did not end")
+		t.Fatal("a cancel Chromium never answers did not end")
+	}
+	browser.stallBrowserCalls.Store(false)
+	if err := engine.DiscardPage(t.Context(), "P-1"); err != nil {
+		t.Fatalf("a discard again, answered: %v", err)
 	}
 	if _, bound := engine.profileForPage("P-1"); bound {
 		t.Fatal("the discarded page is still bound")

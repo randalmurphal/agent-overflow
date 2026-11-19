@@ -84,7 +84,7 @@ func (e *fakeEngine) Stop() {
 
 // DiscardPage has nothing to discard: this engine opens no page on its own, so
 // the Manager is never offered one to decline.
-func (e *fakeEngine) DiscardPage(string) {}
+func (e *fakeEngine) DiscardPage(context.Context, string) error { return nil }
 
 func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {
 	if !e.Running() {

@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"log"
+	"time"
 )
 
 // adoptPopup takes ownership of a page the engine opened by itself. The opener
@@ -24,7 +25,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	var listed *managedPage
 	defer func() { m.finishAdoption(popup.Handle, popup.Opener, listed) }()
 	if !m.awaitOpener(popup.Opener) {
-		m.engine.DiscardPage(popup.Handle)
+		m.discardPopup(popup.Handle)
 		return
 	}
 	m.mu.Lock()
@@ -39,7 +40,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	if opener == nil || m.popupRefusedLocked(scope, opener) {
 		m.mu.Unlock()
-		m.engine.DiscardPage(popup.Handle)
+		m.discardPopup(popup.Handle)
 		return
 	}
 	p := newManagedPage(opener.access)
@@ -59,7 +60,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p))
 	if err != nil {
 		log.Printf("browser: adopt popup %s: %v", popup.Handle, err)
-		m.engine.DiscardPage(popup.Handle)
+		m.discardPopup(popup.Handle)
 		return
 	}
 	// Under m.mu: the jar's policy resolves a request to the reserved page
@@ -119,6 +120,21 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		m.pageAdopted()
 	}
 }
+
+// discardPopup has the engine close a popup the Manager will not list,
+// within popupDiscardTimeout. Its reservation ends whatever the engine
+// answers (endPopupReservation); a page the engine failed to close stays
+// the engine's, closed at its profile's disposal.
+func (m *Manager) discardPopup(handle string) {
+	ctx, cancel := context.WithTimeout(context.Background(), popupDiscardTimeout)
+	defer cancel()
+	if err := m.engine.DiscardPage(ctx, handle); err != nil {
+		log.Printf("browser: discard popup %s: %v", handle, err)
+	}
+}
+
+// popupDiscardTimeout bounds an engine's discard of a popup.
+const popupDiscardTimeout = 5 * time.Second
 
 // endPopupReservation ends the reservation of a popup's page that will not
 // be listed, its engine page already closed or discarded, and disposes the
