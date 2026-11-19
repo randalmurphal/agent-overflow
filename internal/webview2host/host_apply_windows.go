@@ -126,14 +126,18 @@ func (h *Host) ApplyGeometry(reports []PaneGeometry) {
 
 // present brings one page to the view its presentation calls for
 // (presenter.go): moved before it is shown, never moved while hidden. raise
-// re-raises a page already shown. A move the controller refused leaves the
-// bounds last applied as the page's, so the next present moves it again.
-// Runs on the UI thread.
+// re-raises a page already shown. A move that failed, of the clip container
+// or the controller, leaves the page at no known place: the next present
+// moves it again whatever the bounds, a page not shown yet is not shown
+// there, and none takes focus until a move succeeds. Runs on the UI thread.
 func (h *Host) present(page *hostPage, raise bool) {
 	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
 	step, next := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
 	if step.move && !h.applyBounds(page, step.bounds) {
-		next.bounds, next.hasBounds = page.shown.bounds, page.shown.hasBounds
+		next.hasBounds = false
+		if !page.shown.visible {
+			step.show, next.visible = false, false
+		}
 	}
 	if step.show && !h.showPage(page) {
 		next.visible = page.shown.visible
@@ -181,8 +185,8 @@ func (h *Host) hidePage(page *hostPage) {
 	h.releaseFocus(page, held)
 }
 
-// applyBounds positions one page and reports whether the controller took
-// its bounds. Runs on the UI thread.
+// applyBounds positions one page and reports whether both its clip
+// container and its controller moved. Runs on the UI thread.
 //
 // The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
 // it was measured under (deviceScale). BOTH rects are scaled by that one
@@ -209,7 +213,10 @@ func (h *Host) applyBounds(page *hostPage, b paneBounds) bool {
 		// Container first, then the controller inside it: moving the crop
 		// before its content means a growing pane never shows a frame of
 		// content outside the new clip.
-		moveWindow(page.container, layout.Container)
+		if err := moveWindow(page.container, layout.Container); err != nil {
+			h.config.Logf("browser host: page %s clip bounds: %v", page.id, err)
+			return false
+		}
 	}
 	if err := page.controller.putBounds(bounds); err != nil {
 		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
