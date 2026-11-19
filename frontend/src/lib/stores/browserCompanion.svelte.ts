@@ -535,16 +535,6 @@ export function reconcileBrowserCompanionForPane(paneId: string, threadId: strin
   if (browserPresentationWanted(threadId)) openBrowserCompanion(paneId, threadId);
 }
 
-/**
- * Presents the thread's admitted state beside the pane showing it, when this
- * window can (browserPresentationWanted): a show for a session already
- * visible, which no backend change would push again.
- */
-export function presentWantedBrowser(threadId: string): void {
-  const sourcePaneId = sourcePaneIdForThread(threadId);
-  if (sourcePaneId && browserPresentationWanted(threadId)) openBrowserCompanion(sourcePaneId, threadId);
-}
-
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
 export function resetBrowserCompanionForTest(): void {

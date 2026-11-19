@@ -41,6 +41,7 @@ const (
 	kindFocusPageWithdraw
 	kindCloseActive
 	kindReloadActive
+	kindShowBrowser
 )
 
 // companionTarget is which tab a kind acts on.
@@ -97,6 +98,9 @@ var companionSpecs = map[string]companionSpec{
 	"focus-page-withdraw": {kind: kindFocusPageWithdraw, target: targetOptional, focus: true},
 	"close-active":        {kind: kindCloseActive, target: targetActive},
 	"reload-active":       {kind: kindReloadActive, target: targetActive},
+	// The chat header's show: names no tab; the Manager shows the one
+	// selected at its turn or opens one blank tab (ShowCompanion).
+	"show-browser": {kind: kindShowBrowser, selects: true},
 }
 
 // companionCommand is a BrowserCompanionAction that parseCompanionAction

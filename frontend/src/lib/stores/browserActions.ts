@@ -7,14 +7,11 @@ import {
   browserPaneShown,
   browserSourcePaneShown,
   browserStateGeneration,
-  browserThreadSnapshot,
   canPresentNativeBrowser,
   canUseNativeBrowser,
   nativeBrowserRefusal,
   noteBrowserActionError,
   observeBrowserCompanion,
-  presentWantedBrowser,
-  readBrowserCompanionState,
   type BrowserMountId,
 } from './browserCompanion.svelte';
 import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelte';
@@ -108,7 +105,7 @@ export type BrowserAction =
   | { readonly kind: 'step'; readonly step: 1 | -1 }
   | { readonly kind: 'new'; readonly address: string }
   | { readonly kind: 'reopen' }
-  | { readonly kind: 'show'; readonly pageId: PageId | null }
+  | { readonly kind: 'show-browser' }
   | { readonly kind: 'hide' }
   | { readonly kind: 'jar'; readonly jar: BrowserJar; readonly confirmed: boolean }
   | { readonly kind: DownloadKind; readonly downloadId: DownloadId }
@@ -125,7 +122,7 @@ export const browserAction = {
   step: (step: 1 | -1): BrowserAction => ({ kind: 'step', step }),
   newTab: (address = ''): BrowserAction => ({ kind: 'new', address }),
   reopen: (): BrowserAction => ({ kind: 'reopen' }),
-  show: (pageId: PageId | null): BrowserAction => ({ kind: 'show', pageId }),
+  showBrowser: (): BrowserAction => ({ kind: 'show-browser' }),
   hide: (): BrowserAction => ({ kind: 'hide' }),
   jar: (jar: BrowserJar, confirmed: boolean): BrowserAction => ({ kind: 'jar', jar, confirmed }),
   download: (kind: DownloadKind, downloadId: DownloadId): BrowserAction => ({ kind, downloadId }),
@@ -142,6 +139,7 @@ function ordered(action: BrowserAction): boolean {
     case 'reopen':
     case 'duplicate':
     case 'download-open':
+    case 'show-browser':
       return true;
     case 'download-cancel':
     case 'download-reveal':
@@ -156,7 +154,6 @@ function ordered(action: BrowserAction): boolean {
     case 'devtools':
     case 'navigate':
     case 'move':
-    case 'show':
     case 'hide':
     case 'jar':
     case 'downloads-clear':
@@ -199,9 +196,8 @@ function wireAction(action: BrowserAction, order: { mount: BrowserMountId; selec
     case 'reopen':
     case 'hide':
     case 'downloads-clear':
+    case 'show-browser':
       return new BrowserCompanionAction({ ...base, kind: action.kind });
-    case 'show':
-      return new BrowserCompanionAction({ ...base, kind: 'show', pageId: action.pageId ?? '' });
     case 'jar':
       return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed });
     case 'download-cancel':
@@ -313,7 +309,7 @@ async function sendBrowserAction(
  * even when the thread had no tab: the backend selects the tab and shows the
  * companion before the engine page exists, so the creating tab arrives with
  * the pane. `address`, when set, is loaded in it (a mod-clicked link).
- * `focusAddress` is the new-tab button's, shortcut's and header button's: the
+ * `focusAddress` is the new-tab button's and shortcut's: the
  * address bar takes focus, its text selected, once the tab is ready, unless
  * the user did anything else first (addressFocusIntent).
  */
@@ -426,19 +422,22 @@ export function browserHeaderIntent(threadId: string): BrowserHeaderIntent {
   return browserPaneShown(threadId) ? { kind: 'hide', threadId } : { kind: 'show', threadId };
 }
 
-// The header's shows in flight, one per thread: a press while the button
-// still shows the browser closed joins the show under way. It stands in for
-// a Manager operation that shows the current tab, or reserves one blank tab
-// when there is none, in one admission (see showBrowserFromHeader).
+// A header show still unanswered, per thread. A press while the button
+// still offers show (the show's state has not landed) is the same press
+// repeated and joins it, so a double click arms one address focus and
+// raises one toast. A hide press of the thread ends the run: a show after
+// it is sent again. The Manager converges two shows on its own
+// (ShowCompanion); this is only the UI's.
 const headerShows = new Map<string, Promise<void>>();
 
 /**
- * Carries out a header press. A refusal, or a read that fails, reaches a
- * toast, since a hidden pane has no banner.
+ * Carries out a header press. A refusal reaches a toast, since a hidden
+ * pane has no banner.
  */
 export function runBrowserHeaderIntent(intent: BrowserHeaderIntent): Promise<void> {
   switch (intent.kind) {
     case 'hide':
+      headerShows.delete(intent.threadId);
       return hideBrowserFromHeader(intent.threadId);
     case 'show': {
       const pending = headerShows.get(intent.threadId);
@@ -464,57 +463,31 @@ async function hideBrowserFromHeader(threadId: string): Promise<void> {
 }
 
 /**
- * Shows the thread's browser. A state this connection does not know is
- * read first, so tabs opened while this window was away are shown rather
- * than given another; admitting the read may show the pane already. After
- * the read the pane that asked must still show the thread. Existing tabs
- * are shown; only a state known to have none gets a new tab, its address
- * focused. The owner is checked again as each action is sent.
+ * Shows the thread's browser with one action that names no tab: at its
+ * turn the Manager shows the tab the thread has selected, or opens one
+ * blank tab when it has none, which the answer names and whose address bar
+ * takes focus (ShowCompanion). The answer's state opens the pane.
  *
- * The show and the new tab are two calls, so an agent's tab opened between
- * them still gets a blank tab beside it: closing that needs one Manager
- * operation that shows the active tab, or reserves one blank tab when there
- * is none, in one admission.
+ * The show may open a tab, so it is sent only where this layout presents
+ * the pane: beside a pane showing the thread, in a layout and page that
+ * can present the browser (canPresentNativeBrowser, never compact). It is
+ * asked in the press's own task, as the action is sent, so no layout
+ * change falls between the check and the send; a tab the show opens
+ * before a later change to compact is presented when the layout can be
+ * again (browserPresentationWanted).
  */
 async function showBrowserFromHeader(threadId: string): Promise<void> {
-  try {
-    await readBrowserCompanionState(threadId);
-  } catch (err) {
-    addErrorToast(`The browser's tabs could not be read: ${errString(err)}`, err);
+  const refused = refuseUnhosted(threadId);
+  if (refused) {
+    addErrorToast(refused.error, refused.cause);
     return;
   }
-  if (!browserSourcePaneShown(threadId)) return;
-  const snapshot = browserThreadSnapshot(threadId);
-  switch (snapshot.status) {
-    case 'unknown': {
-      // Only a page that cannot host the browser leaves it unread.
-      const refusal = nativeBrowserRefusal(threadId) ?? new Error("The browser's tabs are not known yet.");
-      addErrorToast(refusal.message, refusal);
-      return;
-    }
-    case 'known': {
-      if ((snapshot.snapshot.pages?.length ?? 0) === 0) {
-        // A refusal reaches a toast there (openBrowserTab).
-        await openBrowserTab(threadId, { focusAddress: true });
-        return;
-      }
-      if (snapshot.snapshot.visible === true) {
-        // The session is shown already; only this layout lacks the pane.
-        presentWantedBrowser(threadId);
-        return;
-      }
-      const active = snapshot.snapshot.activePageId;
-      const failure = await browserCompanionAct(threadId, browserAction.show(active ? toPageId(active) : null));
-      if (failure) addErrorToast(failure.error, failure.cause);
-      return;
-    }
-    default:
-      unhandledSnapshot(snapshot);
-  }
-}
-
-function unhandledSnapshot(snapshot: never): never {
-  throw new Error(`Unhandled browser snapshot: ${JSON.stringify(snapshot)}`);
+  if (!canPresentNativeBrowser(threadId) || !browserSourcePaneShown(threadId)) return;
+  const request = armAddressFocus(threadId);
+  const { failure, state } = await runBrowserAction(threadId, browserAction.showBrowser());
+  settleAddressFocus(threadId, request, failure ? '' : (state?.pageId ?? ''));
+  // An older backend refuses the kind ("unsupported companion action").
+  if (failure) addErrorToast(failure.error, failure.cause);
 }
 
 observeBrowserCompanion({

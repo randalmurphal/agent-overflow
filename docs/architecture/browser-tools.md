@@ -171,13 +171,13 @@ per-platform no-op.
 - A pane's tab commands take effect in the order the user made them
   (`selection.go`, `internal/browser/turnorder`), though the transport runs
   each call on its own goroutine. Every pane action that selects a tab
-  (`activate`, `step`, and the `new`, `reopen`, `duplicate` and
-  `download-open` that select the tab they open) and every keyboard command
+  (`activate`, `step`, `show-browser`, and the `new`, `reopen`, `duplicate`
+  and `download-open` that select the tab they open) and every keyboard command
   on the active tab (`close-active`, `reload-active`) carries the pane's
   mount and a number the client takes when the user acts, consecutive from
   1 in each mount; a re-attach is a new mount and starts again at 1. A
   keyboard command on the active tab must carry them; a selection made with
-  no pane mounted (the chat header's new tab, a download opened from its
+  no pane mounted (the chat header's show, a download opened from its
   toast) carries neither, and the backend refuses an action that does not
   match its kind (`parseCompanionAction`). The Manager admits a mount's
   numbers in order: the next one acts at once, a later one waits for its
@@ -196,8 +196,8 @@ per-platform no-op.
   mount detaches, and a command admitted before its mount detached answer
   success and act on nothing; a reopen keeps its closed tab. More than 256
   waiting in one mount are refused with an error, and that number, sent
-  again, is treated as never sent. An agent's `browser_select_page` and the
-  chat header's show apply in arrival order and never wait. Closing a tab
+  again, is treated as never sent. An agent's `browser_select_page` applies
+  in arrival order and never waits. Closing a tab
   by its id reselects only when that tab was the active one.
 - Each page reports `loading` and a `favicon`. Every engine reports loading
   (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
@@ -260,15 +260,19 @@ per-platform no-op.
   tab, as a mod-clicked link does on a tab at the link. Both ask one
   question (`canPresentNativeBrowser`): the window hosts the thread's view,
   the home backend has an engine, the browser is on, and the layout is not
-  compact. A mod-click that fails it opens the link the ordinary way. The
-  state channel has no replay, so the client reads the state of each thread
-  it shows once per connection of the home backend, and the button decides
-  between showing the pane and opening a tab only from a state read or
-  pushed on the current connection, reading one first when it has none.
-  The button reads pressed while this layout shows the thread's pane, and
-  a press is chosen from that at the click: hide it, or show the browser
-  (a session already visible is presented here without a backend call,
-  hidden tabs are shown, and a thread with no tab gets one). A new tab the user
+  compact. A mod-click that fails it opens the link the ordinary way, and a
+  header press that fails it sends nothing. The state channel has no
+  replay, so the client reads the state of each thread it shows once per
+  connection of the home backend. The button reads pressed while
+  this layout shows the thread's pane, and a press is chosen from that at
+  the click: hide it, or show the browser. The show (`show-browser`,
+  `Manager.ShowCompanion`) names no tab: in one `Manager.mu` hold at its
+  turn it shows the tab the thread has selected then, or the one used last,
+  and with no tab it opens one blank tab, selected and shown, which the
+  answer names. So an agent's open or the user's selection before its turn
+  wins, two shows open one tab between them, and the client decides nothing
+  from a state it may not have read yet. A press repeated before the show's
+  state lands joins it; a hide press ends that run. A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted

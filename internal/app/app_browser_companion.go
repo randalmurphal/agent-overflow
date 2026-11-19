@@ -207,8 +207,9 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	// newPage is the page a "new" opened, named in the answer so the client
-	// that asked can tell its own tab from one an agent opened meanwhile.
+	// newPage is the page a "new", or a "show-browser" that found no tab,
+	// opened, named in the answer so the client that asked can tell its own
+	// tab from one an agent opened meanwhile.
 	newPage := ""
 	if cmd.numbered && cmd.kind != kindCloseActive && cmd.kind != kindReloadActive {
 		ctx = appbrowser.WithSelection(ctx, cmd.place)
@@ -247,6 +248,17 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case kindHide:
 		visible := false
 		_, err = m.Visibility(ctx, access, &visible, "")
+	case kindShowBrowser:
+		// The tab selected at its turn, or one blank tab it opens, which the
+		// answer names.
+		var outcome appbrowser.ShowOutcome
+		var shown string
+		outcome, shown, err = m.ShowCompanion(ctx, access)
+		switch outcome {
+		case appbrowser.ShowOpened:
+			newPage = shown
+		case appbrowser.ShowShown, appbrowser.ShowPassed:
+		}
 	case kindNew:
 		// Address, when set, is navigated in the new tab (a mod-clicked link).
 		var page appbrowser.PageInfo
