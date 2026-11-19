@@ -46,7 +46,7 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, saving)
 			startDownload(t, manager, access, page, "chart.png", 10)
 			row := threadDownloads(manager, access)[0]
-			item, err := manager.threadDownload(access, row.ID)
+			item, err := manager.threadDownload(access, DownloadKey(row.ID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -59,7 +59,7 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 					t.Error(err)
 				}
 			}
-			_, err = manager.OpenThreadDownload(t.Context(), access, row.ID)
+			_, err = manager.OpenThreadDownload(t.Context(), access, DownloadKey(row.ID))
 			if !errors.Is(err, errDownloadReplaced) {
 				t.Fatalf("opening a replaced download answered %v", err)
 			}

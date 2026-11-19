@@ -103,7 +103,7 @@ func (l *threadDownloadList) start(item *threadDownload) {
 // when the list no longer has it. An item that settles in the change is
 // numbered the newest settled, and the earliest settled past the shown
 // bound leaves the shown items then.
-func (l *threadDownloadList) change(id string, apply func(*threadDownload)) (item *threadDownload, wasRunning bool) {
+func (l *threadDownloadList) change(id DownloadKey, apply func(*threadDownload)) (item *threadDownload, wasRunning bool) {
 	item = l.find(id)
 	if item == nil {
 		return nil, false
@@ -152,14 +152,14 @@ func (l *threadDownloadList) boundShown() {
 }
 
 // find answers the item with key id, shown or only resolvable, or nil.
-func (l *threadDownloadList) find(id string) *threadDownload {
+func (l *threadDownloadList) find(id DownloadKey) *threadDownload {
 	for _, item := range l.shown {
-		if item.ID == id {
+		if DownloadKey(item.ID) == id {
 			return item
 		}
 	}
 	for _, item := range l.resolvable {
-		if item.ID == id {
+		if DownloadKey(item.ID) == id {
 			return item
 		}
 	}
@@ -221,7 +221,7 @@ func (m *Manager) noteDownloadStartLocked(p *managedPage, entry *DownloadInfo, s
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
 	m.threadListLocked(p.owner).start(&threadDownload{
-		ThreadDownload: ThreadDownload{ID: entry.key, Source: source, State: downloadStateRunning},
+		ThreadDownload: ThreadDownload{ID: string(entry.key), Source: source, State: downloadStateRunning},
 		engineID:       downloadID(entry.ID), workspace: p.access.Workspace,
 	})
 	return m.noteChangeLocked(p, entry, true)
@@ -356,14 +356,14 @@ func (m *Manager) forgetThreadDownloads(tb *threadBrowser) {
 
 var errDownloadNotFound = errors.New("browser: that download is no longer in this browser's list")
 
-func (m *Manager) threadDownload(access Access, id string) (threadDownload, error) {
+func (m *Manager) threadDownload(access Access, id DownloadKey) (threadDownload, error) {
 	if err := access.End(); err != nil {
 		return threadDownload{}, err
 	}
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
 	if list := access.tb.downloads; list != nil {
-		if item := list.find(strings.TrimSpace(id)); item != nil {
+		if item := list.find(DownloadKey(strings.TrimSpace(string(id)))); item != nil {
 			return *item, nil
 		}
 	}
@@ -378,7 +378,7 @@ func (m *Manager) threadDownload(access Access, id string) (threadDownload, erro
 // finish when the download finished first, so a cancel racing a finish never
 // deletes the finished file. The engine's refusal is the answer and the
 // download keeps running and listed as such.
-func (m *Manager) CancelThreadDownload(access Access, id string) error {
+func (m *Manager) CancelThreadDownload(access Access, id DownloadKey) error {
 	item, err := m.threadDownload(access, id)
 	if err != nil {
 		return err
@@ -441,7 +441,7 @@ func (m *Manager) ClearThreadDownloads(access Access) error {
 
 // finishedDownloadPath answers the file of one of the thread's finished
 // downloads.
-func (m *Manager) finishedDownloadPath(access Access, id string) (threadDownload, error) {
+func (m *Manager) finishedDownloadPath(access Access, id DownloadKey) (threadDownload, error) {
 	item, err := m.threadDownload(access, id)
 	if err != nil {
 		return threadDownload{}, err
@@ -481,7 +481,7 @@ func sameDownloadedFile(recorded, current os.FileInfo) bool {
 
 // RevealThreadDownload opens the OS file manager with a finished download
 // selected, through the same hand-off as RevealPageFile.
-func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id string) error {
+func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id DownloadKey) error {
 	item, err := m.finishedDownloadPath(access, id)
 	if err != nil {
 		return err
@@ -496,7 +496,7 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id st
 // browser, for a type a tab shows (downloadOpensInPage). A page may open
 // its workspace's downloads (authorizeFile). With ctx's numbered selection
 // passed (selection.go) it opens nothing.
-func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id string) (PageInfo, error) {
+func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id DownloadKey) (PageInfo, error) {
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return PageInfo{}, err

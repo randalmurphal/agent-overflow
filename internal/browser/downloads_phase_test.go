@@ -108,14 +108,14 @@ func TestACancelDuringThePublishIsNotSent(t *testing.T) {
 	// Before the Manager's Close, which waits for the publish.
 	t.Cleanup(unblock)
 	startDownload(t, manager, access, page, "late.txt", 10, "hold")
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	profile := fakeProfileOf(t, manager)
 	counting := countCancels(t, manager)
 	finished := make(chan error, 1)
 	go func() { finished <- profile.finishHeld(item.engineID) }()
 	<-linking
 	log.take()
-	if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 		t.Fatalf("a cancel during the publish answered %v", err)
 	}
 	if n := counting.sent(); n != 0 {
@@ -139,11 +139,11 @@ func TestACancelDuringThePublishIsNotSent(t *testing.T) {
 func TestACancelIsSentOnceUntilItsRefusal(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "slow.bin", 4096, "hold")
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	counting := countCancels(t, manager)
 	log.take()
 	for range 2 {
-		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -154,7 +154,7 @@ func TestACancelIsSentOnceUntilItsRefusal(t *testing.T) {
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateRunning || got.Error != "refused" {
 		t.Fatalf("after the refusal the download lists as %+v", got)
 	}
-	if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if n := counting.sent(); n != 2 {
@@ -174,10 +174,10 @@ func TestACancelIsSentOnceUntilItsRefusal(t *testing.T) {
 func TestAPublishAfterARefusedCancelCompletes(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "kept.txt", 10, "hold")
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	profile := fakeProfileOf(t, manager)
 	countCancels(t, manager)
-	if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 		t.Fatal(err)
 	}
 	manager.downloadProgress(downloadProgress{ID: item.engineID, State: downloadCancelRefused, Error: "refused"})

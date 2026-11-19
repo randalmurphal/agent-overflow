@@ -67,7 +67,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			if first.State != downloadStateCompleted {
 				t.Fatalf("the first completion announced %+v", first)
 			}
-			if err := manager.RevealThreadDownload(t.Context(), access, first.ID); err != nil {
+			if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(first.ID)); err != nil {
 				t.Fatalf("the first completion's reveal while the others run: %v", err)
 			}
 			for _, id := range held[1:] {
@@ -82,7 +82,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			if len(shown) != maxThreadDownloads || slices.ContainsFunc(shown, func(d ThreadDownload) bool { return d.ID == first.ID }) {
 				t.Fatalf("the pane shows %d downloads, want the newest %d settled without the first", len(shown), maxThreadDownloads)
 			}
-			if err := manager.RevealThreadDownload(t.Context(), access, first.ID); err != nil {
+			if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(first.ID)); err != nil {
 				t.Fatalf("the first completion's reveal once every other settled: %v", err)
 			}
 			if len(revealed) != 2 || revealed[0] != revealed[1] {
@@ -95,7 +95,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			if got := threadDownloads(manager, access); len(got) != 0 {
 				t.Fatalf("the pane lists %d downloads after its history was cleared", len(got))
 			}
-			if err := manager.RevealThreadDownload(t.Context(), access, first.ID); err == nil {
+			if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(first.ID)); err == nil {
 				t.Fatal("a cleared download still resolves")
 			}
 			tool, err := manager.Downloads(t.Context(), access, DownloadOptions{PageID: page.ID})
@@ -114,7 +114,7 @@ func TestANotificationResolvesItsDownloadAmongManyTransfers(t *testing.T) {
 			if len(kept) != 1 || kept[0].Name != "last.txt" || kept[0].State != downloadStateCompleted {
 				t.Fatalf("after its tab closed the thread lists %+v, want the finished last.txt", kept)
 			}
-			if err := manager.RevealThreadDownload(t.Context(), access, kept[0].ID); err != nil {
+			if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(kept[0].ID)); err != nil {
 				t.Fatalf("a download of a closed tab does not reveal: %v", err)
 			}
 		})

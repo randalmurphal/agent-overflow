@@ -159,7 +159,7 @@ func TestARelocatedDownloadsFolderWithAnEscapeIsUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	startDownload(t, manager, access, page, "a.bin", 10)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if item.State != downloadStateCompleted || filepath.Dir(item.path) != archive {
 		t.Fatalf("the download lists as %+v at %s, want it completed in %s", item.ThreadDownload, item.path, archive)
 	}
@@ -222,7 +222,7 @@ func TestPublishingMovesTheStagedFile(t *testing.T) {
 	var staged string
 	manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 	startDownload(t, manager, access, page, "notes.txt", 10)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the staged file %s is still there: %v", staged, err)
 	}
@@ -255,7 +255,7 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 	var staged string
 	manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 	startDownload(t, manager, access, page, "moved.bin", 10)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if item.State != downloadStateCompleted || item.Name != "moved (1).bin" {
 		t.Fatalf("the renamed download lists as %+v", item.ThreadDownload)
 	}
@@ -294,7 +294,7 @@ func TestAnArtifactDownloadNeverReplacesAFileTakingItsName(t *testing.T) {
 	}
 	t.Cleanup(func() { linkDownload = os.Link })
 	startDownload(t, manager, access, page, "report.pdf", 10)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if item.State != downloadStateCompleted || item.path != filepath.Join(dir, "report-1.pdf") {
 		t.Fatalf("the download lists as %+v at %q, want completed at report-1.pdf", item.ThreadDownload, item.path)
 	}
@@ -317,7 +317,7 @@ func TestARunningArtifactDownloadIsNotOpenable(t *testing.T) {
 	startDownload(t, manager, access, page, "running.bin", 10, "hold")
 	var done, running threadDownload
 	for _, row := range threadDownloads(manager, access) {
-		item, _ := manager.threadDownload(access, row.ID)
+		item, _ := manager.threadDownload(access, DownloadKey(row.ID))
 		if row.Name == "done.bin" {
 			done = item
 		} else {
@@ -355,7 +355,7 @@ func TestAnEarlierReleasesDownloadFileIsNotOpenable(t *testing.T) {
 		}
 	}
 	startDownload(t, manager, access, page, "done.bin", 10)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if _, err := manager.authorizeFile(access.Caller(), item.path); err != nil {
 		t.Fatalf("a finished download does not open: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestAnArtifactDownloadThatCannotBePlacedKeepsNothing(t *testing.T) {
 	}
 	workspaceBefore, artifactsBefore := authority.downloadBytes.Used(), manager.artifactBytes.Used()
 	startDownload(t, manager, access, page, "report.pdf", 5)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if item.State != downloadStateFailed {
 		t.Fatalf("the download lists as %+v, want failed", item.ThreadDownload)
 	}
@@ -445,7 +445,7 @@ func TestCloseWaitsForAPublishInFlight(t *testing.T) {
 	}
 	t.Cleanup(func() { linkDownload = os.Link })
 	startDownload(t, manager, access, page, "last.txt", 10, "hold")
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	profile := fakeProfileOf(t, manager)
 	finished := make(chan error, 1)
 	go func() { finished <- profile.finishHeld(item.engineID) }()
@@ -461,7 +461,7 @@ func TestCloseWaitsForAPublishInFlight(t *testing.T) {
 	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
-	got, _ := manager.threadDownload(access, item.ID)
+	got, _ := manager.threadDownload(access, DownloadKey(item.ID))
 	if got.State != downloadStateCompleted {
 		t.Fatalf("after Close the download lists as %+v", got.ThreadDownload)
 	}
@@ -489,7 +489,7 @@ func TestTheStagingDirectoryIsPrivateAndGoesWhenEmpty(t *testing.T) {
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("the staging directory: %v, %v", info, err)
 	}
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if err := fakeProfileOf(t, manager).finishHeld(item.engineID); err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestADownloadsFolderThatMovesOrGoesNeverRedirectsAWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	startDownload(t, manager, access, page, "moved.bin", 10)
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if item.State != downloadStateCompleted || filepath.Dir(item.path) != relocated {
 		t.Fatalf("after the move the download lists as %+v at %s", item.ThreadDownload, item.path)
 	}
@@ -604,7 +604,7 @@ func TestADownloadsFolderThatMovesOrGoesNeverRedirectsAWrite(t *testing.T) {
 		}
 	}
 	startDownload(t, manager, access, page, "orphan.bin", 10, "hold")
-	held, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	held, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if err := fakeProfileOf(t, manager).finishHeld(held.engineID); err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestALinkSwappedInBeforeTheFinishGrantsNothing(t *testing.T) {
 			if _, err := manager.authorizeFile(access.Caller(), filepath.Join(downloads, "file.txt")); err == nil {
 				t.Fatal("the link is openable")
 			}
-			if _, err := manager.OpenThreadDownload(t.Context(), access, got.ID); err == nil {
+			if _, err := manager.OpenThreadDownload(t.Context(), access, DownloadKey(got.ID)); err == nil {
 				t.Fatal("the row opens")
 			}
 			if got, _ := os.ReadFile(private); string(got) != "private" {
@@ -685,7 +685,7 @@ func TestAnEngineSavedFileWithNoPathCompletesWithItsReason(t *testing.T) {
 	if got.State != downloadStateCompleted || got.Error != reason || got.Openable {
 		t.Fatalf("the download lists as %+v, want completed saying %q with nothing to open", got, reason)
 	}
-	if _, err := manager.OpenThreadDownload(t.Context(), access, got.ID); err == nil {
+	if _, err := manager.OpenThreadDownload(t.Context(), access, DownloadKey(got.ID)); err == nil {
 		t.Fatal("the row opens")
 	}
 }
@@ -702,7 +702,7 @@ func TestAPageLeavingDuringThePublishLeavesItToFinish(t *testing.T) {
 	}
 	t.Cleanup(func() { linkDownload = os.Link })
 	startDownload(t, manager, access, page, "late.txt", 10, "hold")
-	item, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	profile := fakeProfileOf(t, manager)
 	finished := make(chan error, 1)
 	go func() { finished <- profile.finishHeld(item.engineID) }()
@@ -745,7 +745,7 @@ func TestACanceledOrFailedDownloadLeavesDownloadsAsItWas(t *testing.T) {
 			}
 			startDownload(t, manager, access, page, "held.bin", 100, "hold")
 			held := threadDownloads(manager, access)[0]
-			item, _ := manager.threadDownload(access, held.ID)
+			item, _ := manager.threadDownload(access, DownloadKey(held.ID))
 			partial := heldFile(t, manager, item.engineID)
 			// While it runs, only the staging folder is new in Downloads, or
 			// the engine's own file where it saves there itself.
@@ -758,7 +758,7 @@ func TestACanceledOrFailedDownloadLeavesDownloadsAsItWas(t *testing.T) {
 			if names := folderNames(t, downloads); !slices.Equal(names, want) {
 				t.Fatalf("during the download the Downloads folder holds %q, want %q", names, want)
 			}
-			if err := manager.CancelThreadDownload(access, held.ID); err != nil {
+			if err := manager.CancelThreadDownload(access, DownloadKey(held.ID)); err != nil {
 				t.Fatal(err)
 			}
 			startDownload(t, manager, access, page, "broken.bin", 100, "fail")
@@ -817,7 +817,7 @@ func TestOnlyArtifactDownloadsAreBounded(t *testing.T) {
 			}
 
 			startDownload(t, manager, access, page, "old.txt", 10)
-			item, err := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+			item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 			if err != nil || item.path == "" {
 				t.Fatalf("the finished download: %+v, %v", item, err)
 			}
@@ -962,7 +962,7 @@ func TestForgettingBrowsingLeavesTheDownloadsFolderAlone(t *testing.T) {
 					t.Fatal(err)
 				}
 				startDownload(t, manager, access, page, "done.txt", 10)
-				item, err := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+				item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -995,7 +995,7 @@ func TestOpenFileAllowsAListedDownloadAndNotItsNeighbor(t *testing.T) {
 		t.Fatal(err)
 	}
 	startDownload(t, manager, access, page, "notes.txt", 10)
-	item, err := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1034,7 +1034,7 @@ func TestOpenFileAllowsAListedDownloadAndNotItsNeighbor(t *testing.T) {
 	}
 	// Once no list holds its row, the download is not openable.
 	startDownload(t, manager, access, mustOpen(t, manager, access, "https://example.test/files"), "later.txt", 10)
-	later, _ := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+	later, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 	manager.closeAllPages(t, access)
 	if err := manager.ClearThreadDownloads(access); err != nil {
 		t.Fatal(err)
@@ -1089,7 +1089,7 @@ func TestAListedRowStaysOpenableWhateverOthersDownload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := manager.OpenThreadDownload(t.Context(), access, original.ID); err != nil {
+	if _, err := manager.OpenThreadDownload(t.Context(), access, DownloadKey(original.ID)); err != nil {
 		t.Fatalf("the listed download does not open after others downloaded: %v", err)
 	}
 }

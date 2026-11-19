@@ -172,7 +172,7 @@ func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, saving download
 	if got != want {
 		t.Fatalf("the thread lists %+v, want %+v", got, want)
 	}
-	item, err := manager.threadDownload(access, got.ID)
+	item, err := manager.threadDownload(access, DownloadKey(got.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSavi
 	if len(listed) != 1 || listed[0].State != downloadStateRunning || listed[0].ReceivedBytes != 2048 || listed[0].TotalBytes != 4096 {
 		t.Fatalf("a held download lists as %+v", listed)
 	}
-	item, err := manager.threadDownload(access, listed[0].ID)
+	item, err := manager.threadDownload(access, DownloadKey(listed[0].ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSavi
 	}
 	log.take()
 
-	if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
@@ -304,7 +304,7 @@ func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSavi
 		t.Fatalf("the workspace still reserves %d bytes", reserved)
 	}
 	// A second cancel of a settled download is no error and changes nothing.
-	if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
 		t.Fatalf("a repeated cancel: %v", err)
 	}
 	if err := manager.CancelThreadDownload(access, "d-nonexistent"); !errors.Is(err, errDownloadNotFound) {
@@ -332,14 +332,14 @@ func TestACancelRacingTheFinishKeepsTheFinishedFile(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "late.bin", 4096, "hold")
 	listed := threadDownloads(manager, access)
-	item, err := manager.threadDownload(access, listed[0].ID)
+	item, err := manager.threadDownload(access, DownloadKey(listed[0].ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	log.take()
 	engine := manager.engine.(*fakeEngine)
 	engine.downloadReleased = func(downloadID) {
-		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
 			t.Errorf("a cancel that lost to the finish answers %v", err)
 		}
 		if got := threadDownloads(manager, access)[0]; got.State != downloadStateRunning {
@@ -353,7 +353,7 @@ func TestACancelRacingTheFinishKeepsTheFinishedFile(t *testing.T) {
 	if got.State != downloadStateCompleted || got.ReceivedBytes != 4096 {
 		t.Fatalf("the download lists as %+v, want completed", got)
 	}
-	finished, err := manager.finishedDownloadPath(access, got.ID)
+	finished, err := manager.finishedDownloadPath(access, DownloadKey(got.ID))
 	if err != nil {
 		t.Fatalf("the finished file: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestARefusedCancelReachesTheUserAndTheDownloadRuns(t *testing.T) {
 	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G", SuggestedName: "a.bin"})
 	id := threadDownloads(manager, access)[0].ID
 
-	err = manager.CancelThreadDownload(access, id)
+	err = manager.CancelThreadDownload(access, DownloadKey(id))
 	if err == nil || !strings.Contains(err.Error(), "cancelDownload wasn't found") {
 		t.Fatalf("a refused cancel answers %v, want the engine's refusal", err)
 	}
@@ -442,14 +442,14 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 		t.Helper()
 		row := func() ThreadDownload {
 			for _, d := range threadDownloads(manager, access) {
-				if item, err := manager.threadDownload(access, d.ID); err == nil && item.engineID == engineID {
+				if item, err := manager.threadDownload(access, DownloadKey(d.ID)); err == nil && item.engineID == engineID {
 					return d
 				}
 			}
 			t.Fatalf("no row for %s", engineID)
 			return ThreadDownload{}
 		}
-		if err := manager.CancelThreadDownload(access, row().ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(row().ID)); err != nil {
 			t.Fatal(err)
 		}
 		manager.downloadProgress(downloadProgress{ID: engineID, State: downloadCancelRefused, Error: refusal})
@@ -469,7 +469,7 @@ func TestALaterCancelRefusalWithdrawsTheCancel(t *testing.T) {
 	manager.downloadStarted(downloadStart{Frame: frameID(frame), ID: "G2", SuggestedName: "b.bin"})
 	refuse("G2")
 	id := threadDownloads(manager, access)[0].ID
-	if err := manager.CancelThreadDownload(access, id); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(id)); err != nil {
 		t.Fatal(err)
 	}
 	manager.downloadProgress(downloadProgress{ID: "G2", State: downloadCanceled})
@@ -499,7 +499,7 @@ func TestAFinishAfterARefusedCancelListsNoRefusal(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, mode.saving)
 			startDownload(t, manager, access, page, "late.bin", 4096, "hold")
 			listed := threadDownloads(manager, access)
-			item, err := manager.threadDownload(access, listed[0].ID)
+			item, err := manager.threadDownload(access, DownloadKey(listed[0].ID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -556,7 +556,7 @@ func TestClearingDownloadsKeepsRunningOnesAndFiles(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "done.txt", 10)
 	done := threadDownloads(manager, access)[0]
-	item, err := manager.threadDownload(access, done.ID)
+	item, err := manager.threadDownload(access, DownloadKey(done.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +630,7 @@ func TestADownloadThatSettlesAmongRunningOnesStaysListed(t *testing.T) {
 	if announced == nil {
 		t.Fatal("the settled download was not announced")
 	}
-	if _, err := manager.threadDownload(access, announced.ID); err != nil {
+	if _, err := manager.threadDownload(access, DownloadKey(announced.ID)); err != nil {
 		t.Fatalf("the announced download is not in the list: %v", err)
 	}
 
@@ -721,8 +721,8 @@ func testRevealingADownloadShowsItsFile(t *testing.T, saving downloadSaving, gon
 	}
 	startDownload(t, manager, access, page, "notes.txt", 10)
 	download := threadDownloads(manager, access)[0]
-	item, _ := manager.threadDownload(access, download.ID)
-	if err := manager.RevealThreadDownload(t.Context(), access, download.ID); err != nil {
+	item, _ := manager.threadDownload(access, DownloadKey(download.ID))
+	if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(download.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(revealed, []string{item.path}) {
@@ -731,12 +731,12 @@ func testRevealingADownloadShowsItsFile(t *testing.T, saving downloadSaving, gon
 	if err := os.Remove(item.path); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.RevealThreadDownload(t.Context(), access, download.ID); err == nil || !strings.Contains(err.Error(), gone) {
+	if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(download.ID)); err == nil || !strings.Contains(err.Error(), gone) {
 		t.Fatalf("revealing a download whose file is gone answers %v, want %q", err, gone)
 	}
 	// Another thread cannot reach this thread's download.
 	other := manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
-	if err := manager.RevealThreadDownload(t.Context(), other, download.ID); !errors.Is(err, errDownloadNotFound) {
+	if err := manager.RevealThreadDownload(t.Context(), other, DownloadKey(download.ID)); !errors.Is(err, errDownloadNotFound) {
 		t.Fatalf("another thread's reveal answers %v", err)
 	}
 }
@@ -753,8 +753,8 @@ func TestADownloadRowActsOnlyOnItsOwnFile(t *testing.T) {
 		return nil
 	}
 	act := func(id string) error {
-		revealErr := manager.RevealThreadDownload(t.Context(), access, id)
-		_, openErr := manager.OpenThreadDownload(t.Context(), access, id)
+		revealErr := manager.RevealThreadDownload(t.Context(), access, DownloadKey(id))
+		_, openErr := manager.OpenThreadDownload(t.Context(), access, DownloadKey(id))
 		if (revealErr == nil) != (openErr == nil) {
 			t.Fatalf("Show in folder answers %v and Open %v", revealErr, openErr)
 		}
@@ -764,14 +764,14 @@ func TestADownloadRowActsOnlyOnItsOwnFile(t *testing.T) {
 
 	startDownload(t, manager, access, page, "report.pdf", 10)
 	older := threadDownloads(manager, access)[0]
-	olderItem, _ := manager.threadDownload(access, older.ID)
+	olderItem, _ := manager.threadDownload(access, DownloadKey(older.ID))
 	moved := olderItem.path + ".moved"
 	if err := os.Rename(olderItem.path, moved); err != nil {
 		t.Fatal(err)
 	}
 	startDownload(t, manager, access, page, "report.pdf", 20)
 	newer := threadDownloads(manager, access)[0]
-	newerItem, _ := manager.threadDownload(access, newer.ID)
+	newerItem, _ := manager.threadDownload(access, DownloadKey(newer.ID))
 	if newerItem.path != olderItem.path {
 		t.Fatalf("the second download is at %s, not the freed name %s", newerItem.path, olderItem.path)
 	}
@@ -810,7 +810,7 @@ func TestADownloadRowRefusesALaterDownloadOnAReusedInode(t *testing.T) {
 	manager.revealFileInFileManager = func(context.Context, string) error { return nil }
 	startDownload(t, manager, access, page, "report.pdf", 10)
 	older := threadDownloads(manager, access)[0]
-	olderItem, _ := manager.threadDownload(access, older.ID)
+	olderItem, _ := manager.threadDownload(access, DownloadKey(older.ID))
 	if err := os.Remove(olderItem.path); err != nil {
 		t.Fatal(err)
 	}
@@ -818,7 +818,7 @@ func TestADownloadRowRefusesALaterDownloadOnAReusedInode(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	startDownload(t, manager, access, page, "report.pdf", 10)
 	newer := threadDownloads(manager, access)[0]
-	newerItem, _ := manager.threadDownload(access, newer.ID)
+	newerItem, _ := manager.threadDownload(access, DownloadKey(newer.ID))
 	if newerItem.path != olderItem.path {
 		t.Fatalf("the second download is at %s, not the freed name %s", newerItem.path, olderItem.path)
 	}
@@ -840,16 +840,16 @@ func TestADownloadRowRefusesALaterDownloadOnAReusedInode(t *testing.T) {
 			t.Fatalf("%s: the forced record does not share the newer file's inode: %v", record.name, err)
 		}
 		manager.downloadsMu.Lock()
-		access.tb.downloads.find(older.ID).file = reused
+		access.tb.downloads.find(DownloadKey(older.ID)).file = reused
 		manager.downloadsMu.Unlock()
 
-		if err := manager.RevealThreadDownload(t.Context(), access, older.ID); err == nil || !strings.Contains(err.Error(), "moved, changed or replaced") {
+		if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(older.ID)); err == nil || !strings.Contains(err.Error(), "moved, changed or replaced") {
 			t.Fatalf("%s: the older row on a reused inode answers %v", record.name, err)
 		}
-		if _, err := manager.OpenThreadDownload(t.Context(), access, older.ID); err == nil {
+		if _, err := manager.OpenThreadDownload(t.Context(), access, DownloadKey(older.ID)); err == nil {
 			t.Fatalf("%s: the older row opened the newer download", record.name)
 		}
-		if err := manager.RevealThreadDownload(t.Context(), access, newer.ID); err != nil {
+		if err := manager.RevealThreadDownload(t.Context(), access, DownloadKey(newer.ID)); err != nil {
 			t.Fatalf("%s: the newer row: %v", record.name, err)
 		}
 	}
@@ -934,7 +934,7 @@ func TestASecondCancelKeepsTheFirstCancel(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "held.bin", 4096, "hold")
 	listed := threadDownloads(manager, access)
-	item, err := manager.threadDownload(access, listed[0].ID)
+	item, err := manager.threadDownload(access, DownloadKey(listed[0].ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -944,11 +944,11 @@ func TestASecondCancelKeepsTheFirstCancel(t *testing.T) {
 	}
 	log.take()
 	manager.engine.(*fakeEngine).downloadReleased = func(downloadID) {
-		if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
 			t.Errorf("the second cancel answers %v", err)
 		}
 	}
-	if err := manager.CancelThreadDownload(access, listed[0].ID); err != nil {
+	if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := threadDownloads(manager, access)[0]; got.State != downloadStateCanceled || got.Error != "" {
@@ -973,15 +973,15 @@ func TestOpeningADownloadShowsItInANewTab(t *testing.T) {
 	if html.Openable || !png.Openable {
 		t.Fatalf("openable: html=%v png=%v, want only the image", html.Openable, png.Openable)
 	}
-	opened, err := manager.OpenThreadDownload(t.Context(), access, png.ID)
+	opened, err := manager.OpenThreadDownload(t.Context(), access, DownloadKey(png.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, _ := manager.threadDownload(access, png.ID)
+	item, _ := manager.threadDownload(access, DownloadKey(png.ID))
 	if opened.ID == page.ID || !strings.HasSuffix(opened.URL, filepath.ToSlash(item.path)) {
 		t.Fatalf("the download opened as %+v, want a new tab at %s", opened, item.path)
 	}
-	if _, err := manager.OpenThreadDownload(t.Context(), access, html.ID); err == nil {
+	if _, err := manager.OpenThreadDownload(t.Context(), access, DownloadKey(html.ID)); err == nil {
 		t.Fatal("an HTML download opened in a tab")
 	}
 
@@ -1070,7 +1070,7 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 			baseline := manager.artifactBytes.Used()
 			startDownload(t, manager, access, page, "held.bin", 4096, "hold")
 			authority := authorityOf(t, manager, access)
-			item, err := manager.threadDownload(access, threadDownloads(manager, access)[0].ID)
+			item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 			if err != nil {
 				t.Fatal(err)
 			}

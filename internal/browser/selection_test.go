@@ -293,7 +293,7 @@ var selectionCases = []selectionCase{
 		return m.DuplicateCompanionPage(ctx, access, f.ids[0])
 	}},
 	{"open download", func(ctx context.Context, m *Manager, access Access, f pairFixture) error {
-		_, err := m.OpenThreadDownload(ctx, access, f.download)
+		_, err := m.OpenThreadDownload(ctx, access, DownloadKey(f.download))
 		return err
 	}},
 }

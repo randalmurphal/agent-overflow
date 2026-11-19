@@ -399,7 +399,7 @@ type DownloadInfo struct {
 	// at admission, which its discard removes (downloads_discard.go).
 	source downloadFile
 	// key is the download's entry in its thread's list (downloads_thread.go).
-	key string
+	key DownloadKey
 	// phase is where the download is in its life (downloads_phase.go),
 	// written only by advance and settle.
 	phase downloadRowPhase

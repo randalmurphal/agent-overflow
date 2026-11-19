@@ -1,9 +1,15 @@
 package browser
 
-// The identifiers only this package uses, one defined type per kind, so a
-// value of one kind cannot be passed where another is meant. Each is
-// converted from or to a plain string once, where it enters or leaves the
-// package; a kind the subpackages share is in internal/browser/ids.
+// The identifiers this package owns, one defined type per kind, so a value
+// of one kind cannot be passed where another is meant. Each is converted
+// from or to a plain string once, where it enters or leaves the package: a
+// bound DTO, an MCP argument, a wire message or a log keeps its plain
+// string. A kind the subpackages share is in internal/browser/ids.
+
+// DownloadKey names one download in its thread's list (ThreadDownload.ID),
+// which the pane's download actions pass back. The Manager numbers it as the
+// download is admitted; it is not the engine's id (downloadID).
+type DownloadKey string
 
 // frameID is an engine's frame identity, which a download start and a
 // request's owners name: a CDP frame id, whose main frame's is its page's

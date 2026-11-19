@@ -179,7 +179,7 @@ func TestADownloadRowListsTheCauseTheLauncherSaw(t *testing.T) {
 			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
 			l.awaitDownloads(access, downloadStateRunning)
 			row := l.manager.CompanionState(access.Caller()).Downloads[0]
-			if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
+			if err := l.manager.CancelThreadDownload(access, DownloadKey(row.ID)); err != nil {
 				t.Fatal(err)
 			}
 			end := snapshot("dl-1", webview2host.DownloadRunning, 20)
@@ -224,7 +224,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
 	l.awaitDownloads(access, downloadStateRunning)
 	row := l.manager.CompanionState(access.Caller()).Downloads[0]
-	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
+	if err := l.manager.CancelThreadDownload(access, DownloadKey(row.ID)); err != nil {
 		t.Fatal(err)
 	}
 	// The refusal's answer is lost; the next status answer carries it.
@@ -234,7 +234,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	if got := l.manager.CompanionState(access.Caller()).Downloads[0]; got.State != downloadStateRunning || got.Error != testRefusal {
 		t.Fatalf("after the status the row is %+v", got)
 	}
-	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
+	if err := l.manager.CancelThreadDownload(access, DownloadKey(row.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := sent(); !reflect.DeepEqual(got, []webview2host.CancelAttempt{1, 2}) {
@@ -246,7 +246,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 	if got := l.manager.CompanionState(access.Caller()).Downloads[0]; got.State != downloadStateRunning || got.Error != "" {
 		t.Fatalf("the first cancel's refusal after the second made the row %+v", got)
 	}
-	if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
+	if err := l.manager.CancelThreadDownload(access, DownloadKey(row.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if got := sent(); len(got) != 2 {

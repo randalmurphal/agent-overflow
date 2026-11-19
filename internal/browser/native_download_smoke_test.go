@@ -293,7 +293,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 			t.Fatalf("while the download runs the staging folder holds %q", names)
 		}
 		t.Logf("while the download runs the staging folder holds %q", names)
-		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
 		if got := settled(item.ID, notRunning); got.State != downloadStateCanceled {
@@ -321,7 +321,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 		}()
 		// The staging folder goes with the canceled download's staged file.
 		before := slices.DeleteFunc(folder(), func(name string) bool { return name == stagingDirName })
-		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
 		if got := settled(item.ID, notRunning); got.State != downloadStateCanceled {
@@ -432,7 +432,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 	t.Run("a cancel as soon as the download starts leaves no file", func(t *testing.T) {
 		before := folder()
 		item := download("/slow.bin")
-		if err := manager.CancelThreadDownload(access, item.ID); err != nil {
+		if err := manager.CancelThreadDownload(access, DownloadKey(item.ID)); err != nil {
 			t.Fatalf("cancel: %v", err)
 		}
 		if got := settled(item.ID, notRunning); got.State != downloadStateCanceled {
@@ -492,7 +492,7 @@ func TestNativeEngineRealDownloads(t *testing.T) {
 				t.Fatalf("the download settled as %+v, want completed and openable", item)
 			}
 			before := len(manager.CompanionState(access.Caller()).Downloads)
-			opened, err := manager.OpenThreadDownload(ctx, access, item.ID)
+			opened, err := manager.OpenThreadDownload(ctx, access, DownloadKey(item.ID))
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
