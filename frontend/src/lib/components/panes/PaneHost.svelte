@@ -587,7 +587,9 @@
                     <PanePromoteButton paneId={item.paneId} />
                     <PaneCloseButton paneId={item.paneId} />
                   </div>
-                  <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="{item.kind}-preparing">
+                  <!-- The caret pane navigation carries here waits on this
+                       placeholder (paneComposerFocus), not on the pane it left. -->
+                  <div role="status" aria-busy="true" tabindex="-1" data-pane-focus-fallback class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted focus:outline-none" data-testid="{item.kind}-preparing">
                     <SteppedSpinner /> {item.kind === 'side-chat' ? 'Preparing side chat…' : 'Opening thread…'}
                   </div>
                 {/if}

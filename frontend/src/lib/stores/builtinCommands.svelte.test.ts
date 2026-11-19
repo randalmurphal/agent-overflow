@@ -2448,6 +2448,70 @@ describe('pane navigation into a terminal pane', () => {
         hostedComposer.cleanup();
       }
     });
+
+    // A blocking approval disables the composer; a side chat still
+    // preparing has none. The caret must not stay where Enter sends to
+    // the pane logical focus left.
+    it(`takes the caret out of the pane it left when the ${kind} pane's composer is disabled or absent`, () => {
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      const hosted = createThreadPane({ paneId: `${kind}-main` });
+      hosted.replaceThread(makeThread({ id: 'hosted', mode: 'chat' }));
+      registerPaneForTest(`${kind}-main`, hosted);
+      setPaneLayoutItemsForTest([
+        { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+        { id: `i-${kind}`, paneId: `${kind}-main`, kind, sourcePaneId: 'main', widthPx: 1 },
+      ]);
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      const hostedComposer = mountComposerForPane(`${kind}-main`);
+      const hostedRoot = hostedComposer.textarea.parentElement!;
+      const fallback = document.createElement('div');
+      fallback.tabIndex = -1;
+      fallback.setAttribute('data-pane-focus-fallback', '');
+      hostedRoot.appendChild(fallback);
+      try {
+        hostedComposer.textarea.disabled = true;
+        focusPane('main');
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).toBe(fallback);
+
+        hostedComposer.textarea.remove();
+        fallback.remove();
+        focusPane('main');
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).not.toBe(leftComposer.textarea);
+      } finally {
+        leftComposer.cleanup();
+        hostedComposer.cleanup();
+      }
+    });
+
+    it(`takes the caret out of the pane it left when the ${kind} pane has no registered pane yet`, () => {
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      setPaneLayoutItemsForTest([
+        { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+        { id: `i-${kind}`, paneId: `${kind}-main`, kind, sourcePaneId: 'main', widthPx: 1 },
+      ]);
+      focusPane('main');
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      try {
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).not.toBe(leftComposer.textarea);
+      } finally {
+        leftComposer.cleanup();
+      }
+    });
   }
 
   it('does not latch terminal focus when focusRight lands on a chat pane', () => {

@@ -2,10 +2,10 @@
 //
 // 1. Pane-nav keybindings (pane.focusLeft, pane.focusRight, pane.close,
 //    thread.newPane): when focus shifts panes while the user was typing,
-//    move DOM focus to the new pane's composer textarea so subsequent
-//    keystrokes land where the user expects. Without this, pressing alt+h
-//    from inside the right pane updates focusedPaneId but leaves the caret
-//    in the right pane's textarea — feeling like alt+h "did nothing".
+//    move DOM focus into the new pane, its composer when it takes input,
+//    so subsequent keystrokes land where logical focus says. Without this,
+//    pressing alt+h from inside the right pane updates focusedPaneId but
+//    leaves the caret in the right pane's textarea, where Enter still sends.
 //
 // 2. Picker-popup closes (`restorePickerFocus`): the one place composer
 //    toolbar and workspace pickers decide where focus goes when their
@@ -24,10 +24,22 @@ function isActiveElementEditable(): boolean {
   return (active as HTMLElement).isContentEditable === true;
 }
 
+/**
+ * Carry an editing caret into the pane focus just moved to. Its composer
+ * takes it when it accepts input; otherwise (a blocking prompt, a side
+ * chat still preparing) the pane's `data-pane-focus-fallback` element
+ * does, and when the pane has none the caret leaves the editable, so keys
+ * typed after the move never reach the pane focus left.
+ */
 export function focusPaneComposerIfEditableActive(paneId: string): void {
   if (typeof document === 'undefined') return;
   if (!isActiveElementEditable()) return;
-  focusPaneComposer(paneId);
+  if (focusPaneComposer(paneId)) return;
+  document
+    .querySelector(`[data-pane-id="${CSS.escape(paneId)}"]`)
+    ?.querySelector<HTMLElement>('[data-pane-focus-fallback]')
+    ?.focus({ preventScroll: true });
+  if (isActiveElementEditable()) (document.activeElement as HTMLElement).blur();
 }
 
 /**

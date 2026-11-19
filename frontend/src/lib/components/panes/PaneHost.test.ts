@@ -39,6 +39,7 @@ import { stubScrollController } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
+import { focusPaneComposerIfEditableActive } from './paneComposerFocus';
 
 class FireableResizeObserver {
   static instances: FireableResizeObserver[] = [];
@@ -283,6 +284,28 @@ describe('PaneHost', () => {
     });
     expect(companion.closest('[data-pane-id="plan-source"]')).toHaveAttribute('data-pane-kind', 'plan');
     expect(review.closest('[data-pane-id="review-source"]')).toHaveAttribute('data-pane-kind', 'review');
+  });
+
+  // Pane navigation carries an editing caret into the pane it lands on;
+  // a side chat still preparing has no composer, so its placeholder takes
+  // the caret and the composer it left stops receiving keys.
+  it('takes a navigated caret into a preparing side chat placeholder', async () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'side-chat-source', paneId: 'side-chat-source', kind: 'side-chat', widthPx: 1, sourcePaneId: 'source' },
+    ]);
+    const rendered = render(PaneHost);
+    const placeholder = rendered.getByTestId('side-chat-preparing');
+    const input = document.createElement('textarea');
+    document.body.appendChild(input);
+    try {
+      input.focus();
+      focusPaneComposerIfEditableActive('side-chat-source');
+      expect(document.activeElement).toBe(placeholder);
+    } finally {
+      input.remove();
+    }
   });
 
   // Regression: CompanionPane called its lazy loader inside the {#await}

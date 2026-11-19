@@ -317,10 +317,11 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // composer, and yanking the caret out of one would surprise.
   function followPaneNavDomFocus(item: PaneLayoutItem): void {
     if (item.kind !== 'thread' && !isThreadHostingPaneKind(item.kind)) return;
+    // A companion still preparing may have no registered pane yet; the
+    // caret still leaves the pane it was in.
     const nextPane = getPane(item.paneId);
-    if (!nextPane) return;
-    if (nextPane.thread?.mode === 'terminal') nextPane.requestTerminalFocus();
-    else focusPaneComposerIfEditableActive(nextPane.paneId);
+    if (nextPane?.thread?.mode === 'terminal') nextPane.requestTerminalFocus();
+    else focusPaneComposerIfEditableActive(item.paneId);
   }
 
   // Pane navigation stays reachable from inside a focused terminal: the default
