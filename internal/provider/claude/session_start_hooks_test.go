@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,14 +13,28 @@ import (
 )
 
 var testSessionStartHook = provider.SessionStartHook{
-	Label: "the memory", Command: `'/opt/a o/agent-overflow' deliver '/h/it'\''s'`, PromptCommand: `'/opt/a o/agent-overflow' changes '/h/it'\''s'`,
-	Heading: "## Memory", Ending: "(End of memory)", Stamp: "(Delivered at ", Failure: "deliver:",
+	Label: "the memory",
+	Parts: []provider.SessionStartPart{
+		{Command: `'/opt/a o/agent-overflow' deliver one '/h/it'\''s'`, PromptCommand: `'/opt/a o/agent-overflow' changes one '/h/it'\''s'`, Heading: "## Memory"},
+	},
+	Ending: "(End of memory)", Stamp: "(Delivered at ", Failure: "deliver:",
 }
 
 // testHook is a copy of testSessionStartHook, so a test can change it.
 func testHook() *provider.SessionStartHook {
 	hook := testSessionStartHook
+	hook.Parts = slices.Clone(hook.Parts)
 	return &hook
+}
+
+// partsHook is testHook delivered in two parts.
+func partsHook() *provider.SessionStartHook {
+	hook := testHook()
+	hook.Parts[0].Heading = "## Memory, part 1 of 2"
+	hook.Parts = append(hook.Parts, provider.SessionStartPart{
+		Command: `'/opt/a o/agent-overflow' deliver two`, PromptCommand: `'/opt/a o/agent-overflow' changes two`, Heading: "## Memory, part 2 of 2",
+	})
+	return hook
 }
 
 func settingsArg(t *testing.T, args []string) map[string]any {
@@ -41,28 +56,37 @@ func settingsArg(t *testing.T, args []string) map[string]any {
 }
 
 // The hook rides the one inline settings block beside its other keys, in a
-// SessionStart group of its own for start, compaction and clear, and its
-// PromptCommand in a UserPromptSubmit group; a session without the hook
-// carries no hooks key.
+// SessionStart group of its own for start, compaction and clear holding
+// each part's command, and the parts' PromptCommands in a UserPromptSubmit
+// group, in order; a session without the hook carries no hooks key.
 func TestBuildArgsRegistersTheSessionStartHookInTheSettingsBlock(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7", FastMode: true})
 	if _, ok := settingsArg(t, buildArgs(cfg, "", ""))["hooks"]; ok {
 		t.Fatal("a session without the hook carries a hooks key")
 	}
-	start := map[string]any{
-		"matcher": "startup|compact|clear",
-		"hooks":   []any{map[string]any{"type": "command", "command": testSessionStartHook.Command, "timeout": 60}},
+	parts := partsHook().Parts
+	handler := func(command string) map[string]any {
+		return map[string]any{"type": "command", "command": command, "timeout": 60}
 	}
-	prompt := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": testSessionStartHook.PromptCommand, "timeout": 60}}}
+	start := map[string]any{"matcher": "startup|compact|clear", "hooks": []any{handler(parts[0].Command), handler(parts[1].Command)}}
 	for name, tc := range map[string]struct {
-		prompt string
-		want   map[string]any
+		prompts []string
+		want    map[string]any
 	}{
-		"with prompt command": {testSessionStartHook.PromptCommand, map[string]any{"SessionStart": []any{start}, "UserPromptSubmit": []any{prompt}}},
-		"without":             {"", map[string]any{"SessionStart": []any{start}}},
+		"with prompt commands": {[]string{parts[0].PromptCommand, parts[1].PromptCommand}, map[string]any{
+			"SessionStart":     []any{start},
+			"UserPromptSubmit": []any{map[string]any{"hooks": []any{handler(parts[0].PromptCommand), handler(parts[1].PromptCommand)}}},
+		}},
+		"one prompt command": {[]string{"", parts[1].PromptCommand}, map[string]any{
+			"SessionStart":     []any{start},
+			"UserPromptSubmit": []any{map[string]any{"hooks": []any{handler(parts[1].PromptCommand)}}},
+		}},
+		"without": {[]string{"", ""}, map[string]any{"SessionStart": []any{start}}},
 	} {
-		cfg.SessionStartHook = testHook()
-		cfg.SessionStartHook.PromptCommand = tc.prompt
+		cfg.SessionStartHook = partsHook()
+		for i, prompt := range tc.prompts {
+			cfg.SessionStartHook.Parts[i].PromptCommand = prompt
+		}
 		settings := settingsArg(t, buildArgs(cfg, "", ""))
 		if settings["fastMode"] != true || settings["crossSessionInbound"] != "refuse" {
 			t.Fatalf("%s: the hook displaced the block's other keys: %v", name, settings)
@@ -414,8 +438,8 @@ func TestNewSessionExpectsTheHookItsSpawnRuns(t *testing.T) {
 	}
 
 	binary := mockexec.Write(t, t.TempDir()+"/mock-claude", "#!/bin/sh\nexit 1\n")
-	if _, err := NewSession(context.Background(), testThread, Config{Binary: binary, SessionStartHook: &provider.SessionStartHook{Label: "a", Command: "a"}},
-		func(provider.ProviderEvent) {}); err == nil || !strings.Contains(err.Error(), "heading, ending and stamp are all required") {
+	if _, err := NewSession(context.Background(), testThread, Config{Binary: binary, SessionStartHook: &provider.SessionStartHook{Label: "a", Parts: []provider.SessionStartPart{{Command: "a"}}}},
+		func(provider.ProviderEvent) {}); err == nil || !strings.Contains(err.Error(), "are all required") {
 		t.Fatalf("NewSession with a hook without a heading: %v", err)
 	}
 }

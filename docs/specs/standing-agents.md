@@ -674,6 +674,22 @@ assistant's memory reach the model in one delivery. How it runs, and
 how a missing delivery or an unreadable file is reported, is in
 [memory](memory.md#delivery).
 
+**Two memories.** An assistant's sessions run without their provider's
+own memory unless the computer's choice for that provider is "never"
+([memory](memory.md#settings)). While it is, and that provider's own
+memory is on (`GetNativeMemoryStatus`), the assistant's thread shows a
+warning row of its own above its timeline, never over it, on desktop and
+compact and on every connected screen: "Claude's own memory is also on for this
+assistant, so it may save what it learns there instead of in Agent
+Overflow memory." (Codex's for a Codex assistant), with one action,
+Memory settings, which opens that computer's memory settings. It is not
+a session claim and cannot be dismissed. It goes when the choice
+changes, read live from the settings, and when the provider's own
+memory is turned off, read again when that computer's settings change
+and each time the window comes back. A provider whose configuration
+cannot be read shows no warning; the memory settings say why. Its
+workers and ordinary threads never show it.
+
 **Agent-to-agent context.** What a receiver needs from the surfaces a
 standing agent reads and writes:
 
@@ -1736,7 +1752,8 @@ hidden thread's, raised only where `notifyHiddenThreads` is on.
 folder, wake registration, draft and unread state is untouched. An
 assistant's home memory is neither read nor written while it is
 paused. Project and user memory ([memory](memory.md)) are not affected:
-threads that read them with shared memory on still do, and nobody
+threads that read them, with shared memory on or working for an
+assistant, still do, and nobody
 receives the maintenance warnings, which only assistants get.
 
 ### Attention

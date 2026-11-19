@@ -86,6 +86,9 @@ type scratchForkOptions struct {
 	RequestToken string
 	// SpawnLevel is the level a paired computer's ask carried to its copy.
 	SpawnLevel int
+	// Lineage is the thread an ask's copy works for
+	// (forkOptions.Lineage), "" for a side chat.
+	Lineage string
 }
 
 // forkScratchThread forks source at its tail into a hidden scratch thread and
@@ -102,6 +105,7 @@ func (a *App) forkScratchThread(
 		RuntimeMode: opts.RuntimeMode,
 		Title:       scratchForkTitle(opts.TitlePrefix, source.Title),
 		SpawnLevel:  opts.SpawnLevel,
+		Lineage:     opts.Lineage,
 	})
 	if err != nil {
 		return store.Thread{}, err

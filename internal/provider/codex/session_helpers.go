@@ -89,7 +89,7 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	// Shared with thread/resume like the tool overrides: a resumed thread
 	// that compacts runs the hook too, and runs the prompt hook at each
 	// turn.
-	if hooks := sessionStartHookConfig(cfg.SessionStartHook, false); hooks != nil {
+	if hooks := sessionStartHookConfig(cfg.SessionStartHook, false, codexVersion); hooks != nil {
 		configOverrides["hooks"] = hooks
 	}
 	params["config"] = configOverrides

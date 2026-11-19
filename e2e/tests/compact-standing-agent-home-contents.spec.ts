@@ -2,7 +2,10 @@
 // (docs/specs/standing-agents.md, "Agent home contents"): the same flow as
 // standing-agent-home-contents.spec.ts on the Claude mock, then the agent's
 // session and the worker's first message, an agent row opened on the
-// attached file and the facts its footer carried, each fitting the phone.
+// attached file and the facts its footer carried, each fitting the phone;
+// the banner on the assistant while it runs with its provider's own memory
+// too (expectOwnMemoryBanner), shown and cleared on the assistant and never
+// on its worker or an ordinary thread.
 import { test, expect } from './fixtures.js';
 import { capture } from './wake-rows-helpers.js';
 import {
@@ -10,6 +13,7 @@ import {
   ATTACHED_OPENING,
   ROLE,
   VERIFICATION,
+  expectOwnMemoryBanner,
   runHomeContents,
   scrollTimelineToTop,
   showTextUncovered,
@@ -44,4 +48,9 @@ test('compact: the agent session and the worker first message fit the phone', as
   await expect(first.locator('[data-fact="Role"]')).toHaveText(ROLE);
   await showTextUncovered(page, first, 'Go to the sender, which spawned this thread');
   await capture(page, 'compact-worker-first-message.png');
+
+  await expectOwnMemoryBanner(harness, page, 'claude', async (section, title) => {
+    await page.goBack();
+    await page.getByTestId(`sidebar-${section}-section`).getByTestId('thread-row').getByText(title, { exact: true }).tap();
+  });
 });

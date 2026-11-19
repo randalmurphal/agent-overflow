@@ -251,6 +251,8 @@ func emitFrontendConstraints(b *strings.Builder) {
 		"notifyQuietWhen": allowedNotifyQuietWhen, "projectSortMode": allowedProjectSortModes,
 		"usagePeriod":               allowedUsagePeriods,
 		"accountAutoSwitchStrategy": allowedAccountAutoSwitchStrategies,
+		"claudeOwnMemoryOff":        allowedOwnMemoryOff,
+		"codexOwnMemoryOff":         allowedOwnMemoryOff,
 	}
 	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")
 	keys := make([]string, 0, len(options))

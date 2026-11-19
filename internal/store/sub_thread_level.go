@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strconv"
 )
 
 // subThreadLevelWalk bounds the walk up a delegation chain. The setting
@@ -88,4 +89,43 @@ func (s *Store) DelegationChain(threadID string) ([]string, error) {
 		return nil, fmt.Errorf("store: delegation chain of %s: %w", threadID, err)
 	}
 	return chain, nil
+}
+
+// lineageWalk bounds the walk up a thread's lineage. A thread with a
+// sidebar row may spawn again at level 0, so lineage has no depth limit; the
+// bound only keeps the walk finite.
+const lineageWalk = 64
+
+// worksForAssistantSQL walks from ?1 up its lineage on this computer: who
+// spawned each thread (spawnerOfSQL's link, whatever the thread's
+// placement now, and kept as lineage past the retention floor) and who
+// asked an agent's ask copy (delegatorOfSQL's ask). It reports whether the
+// walk reaches an assistant's current thread or helper.
+var worksForAssistantSQL = `WITH RECURSIVE up(id, level) AS (
+	  SELECT ?1, 0
+	  UNION ALL
+	  SELECT link.caller_thread_id, up.level + 1
+	    FROM up CROSS JOIN thread_requests AS link
+	   WHERE up.level < ` + strconv.Itoa(lineageWalk) + ` AND link.target_thread_id = up.id AND ` + agentSpawnLinkSQL("link") + `
+	  UNION ALL
+	  SELECT ask.caller_thread_id, up.level + 1
+	    FROM up CROSS JOIN scratch_threads AS copy CROSS JOIN thread_requests AS ask
+	   WHERE up.level < ` + strconv.Itoa(lineageWalk) + ` AND copy.thread_id = up.id AND ask.token = copy.request_token
+	     AND ask.kind = '` + ThreadRequestAsk + `' AND ask.target_computer_id = '')
+	SELECT EXISTS (SELECT 1 FROM up
+	                WHERE up.id IN (SELECT thread_id FROM agents)
+	                   OR up.id IN (SELECT thread_id FROM agent_helpers))`
+
+// WorksForAssistant reports whether threadID works for an assistant on this
+// computer: it is an assistant's current thread or helper, or it descends
+// from one (worksForAssistantSQL). A thread an assistant spawned, directly
+// or through its own workers at any depth, works for it wherever its row is
+// drawn: owned, or shown in the sidebar at its spawn or later.
+func (s *Store) WorksForAssistant(threadID string) (bool, error) {
+	var works bool
+	err := s.reader().QueryRow(worksForAssistantSQL, threadID).Scan(&works)
+	if err != nil {
+		return false, fmt.Errorf("store: read whether %s works for an assistant: %w", threadID, err)
+	}
+	return works, nil
 }

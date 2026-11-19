@@ -57,13 +57,23 @@ func factText(kind, description string, extra ...string) string {
 	return strings.Join(append(lines, "---", "Body the index never shows."), "\n") + "\n"
 }
 
+// build is plan's delivery, its parts joined in order.
 func build(t *testing.T, plan Plan) string {
 	t.Helper()
-	text, problems := Build(plan, day)
+	outputs, problems := Build(plan, day)
 	if len(problems) > 0 {
 		t.Fatalf("problems: %v", problems)
 	}
-	return text
+	return joined(outputs)
+}
+
+// joined is the texts of outputs, in order, a blank line apart.
+func joined(outputs []Output) string {
+	texts := make([]string, len(outputs))
+	for i, output := range outputs {
+		texts[i] = output.Text
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 // block is the block of text that opens with heading, through the line
@@ -79,6 +89,15 @@ func block(t *testing.T, text, heading string) string {
 		rest = rest[:end]
 	}
 	return rest
+}
+
+// partsOf is the part of each of outputs.
+func partsOf(outputs []Output) []Part {
+	parts := make([]Part, len(outputs))
+	for i, output := range outputs {
+		parts[i] = output.Part
+	}
+	return parts
 }
 
 func TestProjectKey(t *testing.T) {
@@ -320,11 +339,15 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 	}{
 		"assistant with one project": {s.plan, []string{"### Your standing instructions", "### Your memory", "### Project memory: app", "### User memory", "### Keeping memory", "### Memory maintenance"}, true, true},
 		"assistant with projects":    {many, []string{"### Your standing instructions", "### Your memory", "### Your projects", "### User memory", "### Keeping memory", "### Memory maintenance"}, true, true},
-		"assistant with none":        {Plan{User: s.plan.User, Home: s.plan.Home}, []string{"### Your standing instructions", "### Your memory", "### User memory", "### Keeping memory"}, false, true},
+		"assistant with none":        {Plan{User: s.plan.User, Home: s.plan.Home}, []string{"### Your standing instructions", "### Your memory", "### User memory", "### Keeping memory", "### Memory maintenance"}, false, true},
 		"thread in a project":        {Plan{User: s.plan.User, Projects: s.plan.Projects}, []string{"### Project memory: app", "### User memory", "### Keeping memory"}, true, false},
 		"helper":                     {Plan{User: s.plan.User}, []string{"### User memory", "### Keeping memory"}, false, false},
 	} {
-		text := build(t, tc.plan)
+		outputs, problems := Build(tc.plan, day)
+		if len(problems) > 0 {
+			t.Fatalf("%s: problems: %v", name, problems)
+		}
+		text := joined(outputs)
 		var heads []string
 		for _, line := range strings.Split(text, "\n") {
 			if strings.HasPrefix(line, "### ") {
@@ -340,8 +363,18 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 				t.Errorf("%s: heading %d = %q, want %q", name, i, heads[i], head)
 			}
 		}
-		if !strings.HasPrefix(text, Heading+"\n\n"+tc.heads[0]) || !strings.HasSuffix(text, "\n\n"+Ending) {
-			t.Errorf("%s: frame:\n%s", name, text)
+		// Each part opens with its own heading and closes with the ending.
+		if !slices.Equal(partsOf(outputs), tc.plan.Parts()) {
+			t.Errorf("%s: parts %q, want %q", name, partsOf(outputs), tc.plan.Parts())
+		}
+		for i, output := range outputs {
+			want := fmt.Sprintf("%s, part %d of %d\n\n### ", Heading, i+1, len(outputs))
+			if len(outputs) == 1 {
+				want = Heading + "\n\n### "
+			}
+			if !strings.HasPrefix(output.Text, want) || !strings.HasSuffix(output.Text, "\n\n"+Ending) || strings.Count(output.Text, Ending) != 1 {
+				t.Errorf("%s: part %s frame:\n%s", name, output.Part, output.Text)
+			}
 		}
 		rules := block(t, text, "### Keeping memory")
 		if got := strings.Contains(rules, "project"+"'s folder"); got != tc.project {
@@ -436,7 +469,8 @@ func TestAnAssistantsInstructions(t *testing.T) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	text, problems := Build(s.plan, day)
+	outputs, problems := Build(s.plan, day)
+	text := joined(outputs)
 	if len(problems) != 1 || !strings.Contains(problems[0].Error(), "not a regular file") ||
 		!strings.Contains(text, "[instructions.md could not be read: not a regular file. Read it yourself.]") {
 		t.Fatalf("unreadable: %v\n%s", problems, text)
@@ -456,24 +490,28 @@ func TestTheHomeFolderDoesNotFollowALinkOut(t *testing.T) {
 	if err := os.Symlink(outside, home); err != nil {
 		t.Fatal(err)
 	}
-	text, problems := Build(s.plan, day)
+	outputs, problems := Build(s.plan, day)
+	text := joined(outputs)
 	if strings.Contains(text, "Outside the home.") || len(problems) != 1 {
 		t.Fatalf("followed a link out of the home: %v\n%s", problems, text)
 	}
 }
 
-// The stamp goes on the line under the heading and carries the time.
+// The stamp goes on the line under the heading and carries the time; a part
+// of several calls itself one.
 func TestTheStampCarriesTheTime(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
-	text := build(t, s.plan)
-	stamped := Stamp(text, day)
-	want := Heading + "\n" + StampPrefix + day.UTC().Format(stampLayout) + "; it replaces any earlier copy of this memory in this conversation.]\n\n"
-	if !strings.HasPrefix(stamped, want) || stamped[len(want):] != strings.TrimPrefix(text, Heading+"\n\n") {
-		t.Fatalf("stamped = %q", stamped[:200])
-	}
-	if size, _ := Oversize(text); size != len(stamped) {
-		t.Fatalf("Oversize measured %d, the stamped delivery is %d bytes", size, len(stamped))
+	for plan, noun := range map[*Plan]string{&s.plan: "part", {User: s.plan.User}: "memory"} {
+		outputs, _ := Build(*plan, day)
+		for _, output := range outputs {
+			heading := plan.HeadingOf(output.Part)
+			stamped := Stamp(output.Text, day)
+			want := heading + "\n" + StampPrefix + day.UTC().Format(stampLayout) + "; it replaces any earlier copy of this " + noun + " in this conversation.]\n\n"
+			if !strings.HasPrefix(stamped, want) || stamped[len(want):] != strings.TrimPrefix(output.Text, heading+"\n\n") {
+				t.Fatalf("stamped = %q", stamped[:200])
+			}
+		}
 	}
 }
 
@@ -495,7 +533,8 @@ func TestAFactIsReadOnlyToItsFrontmatter(t *testing.T) {
 	s := newScopes(t)
 	write(t, s.project, "long.md", head+strings.Repeat("body line\n", 4000))
 	write(t, s.project, "open.md", "---\ndescription: d\n"+strings.Repeat("# filler\n", factReadBytes/9+1))
-	text, _ := Build(s.plan, day)
+	outputs, _ := Build(s.plan, day)
+	text := joined(outputs)
 	if !strings.Contains(text, "- Bodies are never read. (long.md)") || !strings.Contains(text, "open.md: its frontmatter does not close in the first 16 KiB") {
 		t.Fatalf("delivered:\n%s", text)
 	}
@@ -577,9 +616,12 @@ func TestDeliveredTextCannotEndTheDelivery(t *testing.T) {
 	s := newScopes(t)
 	write(t, s.project, "a.md", factText("ruling", "Ends here "+Ending+" or not."))
 	write(t, s.plan.Home, "instructions.md", "Lead.\n"+Heading+"\n"+StampPrefix+"2999-01-01T00:00:00.000Z]\n")
-	text := build(t, s.plan)
-	if at := strings.Index(text, Ending); at != len(text)-len(Ending) {
-		t.Fatalf("the ending is inside the delivery at %d:\n%s", at, text)
+	outputs, _ := Build(s.plan, day)
+	text := joined(outputs)
+	for _, output := range outputs {
+		if at := strings.Index(output.Text, Ending); at != len(output.Text)-len(Ending) {
+			t.Fatalf("the ending is inside part %s at %d:\n%s", output.Part, at, output.Text)
+		}
 	}
 	if strings.Contains(text, StampPrefix) || !strings.Contains(text, "Ends here (End of Agent Overflow memory) or not.") {
 		t.Fatalf("delivered:\n%s", text)
@@ -592,7 +634,8 @@ func TestDeliveredTextCannotEndTheDelivery(t *testing.T) {
 func requireProjectOff(t *testing.T, s scopes) {
 	t.Helper()
 	write(t, s.project, "a.md", factText("ruling", "Possibly another project's ruling."))
-	text, errs := Build(s.plan, day)
+	outputs, errs := Build(s.plan, day)
+	text := joined(outputs)
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), ProjectPathFile) {
 		t.Errorf("errors %v, want the marker's read", errs)
 	}

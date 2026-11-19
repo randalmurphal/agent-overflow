@@ -174,6 +174,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	// or grouped by its group.
 	link := origin.foreign && call.Placement == threadtools.PlacementOwned && call.Level >= 1
 	create.owned = call.Placement == threadtools.PlacementOwned && (!origin.foreign || link)
+	create.lineage = origin.lineage()
 	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
@@ -372,6 +373,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 			// never agreed to this conversation.
 			RuntimeMode:  string(provider.RuntimeReadOnly),
 			RequestToken: token,
+			Lineage:      origin.lineage(),
 			// A local ask's copy counts from the asker by the ask itself
 			// (store.SubThreadLevel); a paired computer's carries its level.
 			SpawnLevel: carriedLevel(origin, call.Level),

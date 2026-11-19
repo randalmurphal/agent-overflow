@@ -27,8 +27,8 @@ export const RESULTLESS_AT_V0_0_19 = ['ArchiveThread', 'DeleteThread'] as const;
 
 /** The settings keys this build has and v0.0.19's Settings does not. */
 export const SETTINGS_AFTER_V0_0_19 = [
-  'agentNotes', 'agentProfiles', 'assistantsEnabled', 'claudeNativeMemoryDisabled',
-  'codexNativeMemoryDisabled', 'notifyThreadAttention', 'sharedMemoryEnabled', 'subThreadLevels',
+  'agentNotes', 'agentProfiles', 'assistantsEnabled', 'claudeOwnMemoryOff',
+  'codexOwnMemoryOff', 'notifyThreadAttention', 'sharedMemoryEnabled', 'subThreadLevels',
 ] as const;
 
 /** A settings answer shaped like v0.0.19's: this build's, less the keys it added. */

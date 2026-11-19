@@ -178,22 +178,23 @@ type Settings struct {
 	// no thread_spawn and no native subagents. Spawn-only: a session keeps
 	// the tool list it started with.
 	SubThreadLevels int `json:"subThreadLevels"`
-	// ClaudeNativeMemoryDisabled turns Claude Code's own auto memory off in
-	// this app's Claude and claude-tui sessions, through their inline
-	// settings; the user's settings files are never touched. Spawn-only.
-	ClaudeNativeMemoryDisabled bool `json:"claudeNativeMemoryDisabled"`
-	// CodexNativeMemoryDisabled turns Codex's own memories off in this app's
-	// Codex threads, through their thread config, so a thread neither uses
-	// memories nor is mined for them. Spawn-only; a loaded thread keeps the
-	// memory mode it was loaded with.
-	CodexNativeMemoryDisabled bool   `json:"codexNativeMemoryDisabled"`
-	ConfirmArchive            bool   `json:"confirmArchive"`
-	ConfirmDelete             bool   `json:"confirmDelete"`
-	AutoPinNewThreads         bool   `json:"autoPinNewThreads"`
-	ClaudeBinaryPath          string `json:"claudeBinaryPath"`
-	CodexBinaryPath           string `json:"codexBinaryPath"`
-	ClaudeEnabled             bool   `json:"claudeEnabled"`
-	CodexEnabled              bool   `json:"codexEnabled"`
+	// ClaudeOwnMemoryOff is in which of this app's Claude and claude-tui
+	// sessions Claude Code's own auto memory is turned off, through their
+	// inline settings (OwnMemoryOff*); the user's settings files are never
+	// touched. Spawn-only.
+	ClaudeOwnMemoryOff string `json:"claudeOwnMemoryOff"`
+	// CodexOwnMemoryOff is in which of this app's Codex threads Codex's own
+	// memories are turned off, through their thread config, so a thread
+	// neither uses memories nor is mined for them (OwnMemoryOff*).
+	// Spawn-only; a loaded thread keeps the memory mode it was loaded with.
+	CodexOwnMemoryOff string `json:"codexOwnMemoryOff"`
+	ConfirmArchive    bool   `json:"confirmArchive"`
+	ConfirmDelete     bool   `json:"confirmDelete"`
+	AutoPinNewThreads bool   `json:"autoPinNewThreads"`
+	ClaudeBinaryPath  string `json:"claudeBinaryPath"`
+	CodexBinaryPath   string `json:"codexBinaryPath"`
+	ClaudeEnabled     bool   `json:"claudeEnabled"`
+	CodexEnabled      bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
@@ -728,6 +729,8 @@ var DefaultSettings = Settings{
 	AgentProfiles:          defaultAgentProfiles,
 	AgentNotes:             defaultAgentNotes,
 	SubThreadLevels:        DefaultSubThreadLevels,
+	ClaudeOwnMemoryOff:     OwnMemoryOffWhereAgentOverflowMemory,
+	CodexOwnMemoryOff:      OwnMemoryOffWhereAgentOverflowMemory,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,
 	AutoPinNewThreads:      true,
@@ -848,6 +851,20 @@ const (
 	NotifyCueChime = "chime"
 	// NotifyCueSystem is the OS notification sound, carried by the banner.
 	NotifyCueSystem = "system"
+)
+
+// When the app turns a provider's own memory off in its sessions, the values
+// of Settings.ClaudeOwnMemoryOff and Settings.CodexOwnMemoryOff
+// (docs/specs/memory.md, "Settings").
+const (
+	// OwnMemoryOffWhereAgentOverflowMemory turns it off in each session that
+	// receives Agent Overflow memory, so no session keeps two memories, and
+	// leaves it as the user configured it in every other session.
+	OwnMemoryOffWhereAgentOverflowMemory = "agentOverflowMemory"
+	// OwnMemoryOffAlways turns it off in every session.
+	OwnMemoryOffAlways = "always"
+	// OwnMemoryOffNever leaves it as the user configured it everywhere.
+	OwnMemoryOffNever = "never"
 )
 
 // The four readings of "quiet when", the values of Settings.NotifyQuietWhen.

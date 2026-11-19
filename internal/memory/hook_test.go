@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -45,27 +47,48 @@ func eventContext(t *testing.T, stdout, event string) string {
 	return output.HookSpecificOutput.AdditionalContext
 }
 
-func encodedPlan(t *testing.T, plan Plan) string {
+// planFile writes plan to a plan file, as the app does before a session
+// starts, and returns its path.
+func planFile(t *testing.T, plan Plan) string {
 	t.Helper()
-	data, err := json.Marshal(plan)
-	if err != nil {
+	path := filepath.Join(t.TempDir(), "plan.json")
+	if err := WritePlan(path, plan); err != nil {
 		t.Fatal(err)
 	}
-	return string(data)
+	return path
 }
 
-// The hook prints what Build makes, stamped with the time it ran.
+// rawPlanFile is a plan file holding text, which WritePlan may refuse.
+func rawPlanFile(t *testing.T, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plan.json")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// userOutput is Build's user part of plan.
+func userOutput(t *testing.T, plan Plan) Output {
+	t.Helper()
+	built, _ := Build(plan, day)
+	return built[slices.Index(plan.Parts(), PartUser)]
+}
+
+// The hook prints each part as Build makes it, stamped with the time it ran.
 func TestRunHookDeliversTheBuild(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
 	write(t, s.project, "a.md", factText("ruling", "Never push to main."))
-	var stdout, stderr strings.Builder
-	if code := runHookAt([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, &stderr, day); code != 0 || stderr.Len() > 0 {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
-	}
 	built, _ := Build(s.plan, day)
-	if got := hookContext(t, stdout.String()); got != Stamp(built, day) {
-		t.Fatalf("context = %q", got)
+	for _, output := range built {
+		var stdout, stderr strings.Builder
+		if code := runHookAt([]string{string(AtSessionStart), string(output.Part), planFile(t, s.plan)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, &stderr, day); code != 0 || stderr.Len() > 0 {
+			t.Fatalf("%s: exit %d, stderr %q", output.Part, code, stderr.String())
+		}
+		if got := hookContext(t, stdout.String()); got != Stamp(output.Text, day) {
+			t.Fatalf("%s: context = %q", output.Part, got)
+		}
 	}
 }
 
@@ -79,7 +102,7 @@ func TestRunHookReportsAnUnreadableFolder(t *testing.T) {
 	}
 	write(t, filepath.Dir(s.plan.User), "user", "a file where the folder goes")
 	var stdout, stderr strings.Builder
-	if code := RunHook([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, strings.NewReader("{}"), &stdout, &stderr); code != 0 {
+	if code := RunHook([]string{string(AtSessionStart), string(PartUser), planFile(t, s.plan)}, strings.NewReader("{}"), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if got := hookContext(t, stdout.String()); !strings.Contains(got, "could not be read: open "+s.plan.User+": not a folder.]") ||
@@ -88,24 +111,37 @@ func TestRunHookReportsAnUnreadableFolder(t *testing.T) {
 	}
 }
 
+// A refused argument or plan, or a plan file that is gone or cannot be read,
+// exits 1 with the reason on stderr and nothing on stdout: the provider
+// reports the delivery as one that did not arrive.
 func TestRunHookRefusesBadArguments(t *testing.T) {
 	t.Parallel()
 	abs := t.TempDir()
+	plan := func(text string) string { return rawPlanFile(t, text) }
+	user := plan(`{"user":"` + abs + `"}`)
 	for name, args := range map[string][]string{
 		"none":            nil,
-		"no event":        {`{"user":"` + abs + `"}`},
-		"three":           {"prompt", `{"user":"` + abs + `"}`, "x"},
-		"unknown event":   {"stop", `{"user":"` + abs + `","records":"` + abs + `"}`},
-		"not JSON":        {"session-start", "instructions.md"},
-		"unknown field":   {"session-start", `{"user":"` + abs + `","extra":1}`},
-		"relative":        {"session-start", `{"user":"memory/user"}`},
-		"project name":    {"session-start", `{"user":"` + abs + `","projects":[{"name":"","path":"` + abs + `","dir":"` + abs + `"}]}`},
-		"prompt, no file": {"prompt", `{"user":"` + abs + `"}`},
-		"records":         {"prompt", `{"user":"` + abs + `","records":"records"}`},
+		"no part":         {"session-start", user},
+		"four":            {"prompt", "user", user, "x"},
+		"unknown event":   {"stop", "user", plan(`{"user":"` + abs + `","records":"` + abs + `"}`)},
+		"unknown part":    {"session-start", "rules", user},
+		"not in the plan": {"session-start", "home", user},
+		"no plan file":    {"session-start", "user", filepath.Join(abs, "gone.json")},
+		"a folder":        {"session-start", "user", abs},
+		"not JSON":        {"session-start", "user", plan("instructions.md")},
+		"too long":        {"session-start", "user", plan(`{"user":"` + abs + `"}` + strings.Repeat(" ", maxPlanBytes))},
+		"unknown field":   {"session-start", "user", plan(`{"user":"` + abs + `","extra":1}`)},
+		"relative":        {"session-start", "user", plan(`{"user":"memory/user"}`)},
+		"project name":    {"session-start", "user", plan(`{"user":"` + abs + `","projects":[{"name":"","path":"` + abs + `","dir":"` + abs + `"}]}`)},
+		"prompt, no file": {"prompt", "user", user},
+		"records":         {"prompt", "user", plan(`{"user":"` + abs + `","records":"records"}`)},
 	} {
 		var stdout, stderr strings.Builder
-		if code := RunHook(args, strings.NewReader(""), &stdout, &stderr); code != 1 || stdout.Len() > 0 || stderr.Len() == 0 {
+		if code := RunHook(args, strings.NewReader(`{"session_id":"s1"}`), &stdout, &stderr); code != 1 || stdout.Len() > 0 || !strings.HasPrefix(stderr.String(), HookSubcommand+": ") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout.String(), stderr.String())
+		}
+		if name == "no plan file" && !strings.Contains(stderr.String(), "read the memory plan: open "+filepath.Join(abs, "gone.json")+": no such file") {
+			t.Errorf("a gone plan file: stderr %q", stderr.String())
 		}
 	}
 }
@@ -117,7 +153,7 @@ func TestRunHookDrainsItsInput(t *testing.T) {
 	s := newScopes(t)
 	input := &countingReader{r: strings.NewReader(strings.Repeat("x", 300<<10))}
 	var stdout, stderr strings.Builder
-	if code := RunHook([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, input, &stdout, &stderr); code != 0 || input.n != 300<<10 {
+	if code := RunHook([]string{string(AtSessionStart), string(PartUser), planFile(t, s.plan)}, input, &stdout, &stderr); code != 0 || input.n != 300<<10 {
 		t.Fatalf("exit %d, drained %d", code, input.n)
 	}
 }
@@ -137,7 +173,7 @@ func TestRunHookReportsAFailedWrite(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
 	var stderr strings.Builder
-	if code := RunHook([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, strings.NewReader(""), failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "output gone") {
+	if code := RunHook([]string{string(AtSessionStart), string(PartUser), planFile(t, s.plan)}, strings.NewReader(""), failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "output gone") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -152,10 +188,10 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("output g
 func TestRunHookFailsWhenStderrRefusesAReport(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
-	plan := encodedPlan(t, s.plan)
+	plan := planFile(t, s.plan)
 
 	var stdout strings.Builder
-	if code := runHookAt([]string{string(AtSessionStart), plan}, strings.NewReader("{}"), &stdout, failingWriter{}, day); code != 1 || stdout.Len() > 0 {
+	if code := runHookAt([]string{string(AtSessionStart), string(PartUser), plan}, strings.NewReader("{}"), &stdout, failingWriter{}, day); code != 1 || stdout.Len() > 0 {
 		t.Fatalf("report before the delivery: exit %d, stdout %q", code, stdout.String())
 	}
 
@@ -164,16 +200,15 @@ func TestRunHookFailsWhenStderrRefusesAReport(t *testing.T) {
 	unwritable := s.plan
 	unwritable.Records = filepath.Join(blocked, "thread")
 	stdout.Reset()
-	if code := runHookAt([]string{string(AtSessionStart), encodedPlan(t, unwritable)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, failingWriter{}, day); code != 1 {
+	if code := runHookAt([]string{string(AtSessionStart), string(PartUser), planFile(t, unwritable)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, failingWriter{}, day); code != 1 {
 		t.Fatalf("report after the delivery: exit %d", code)
 	}
 
 	stdout.Reset()
-	if code := runHookAt([]string{string(AtSessionStart), plan}, strings.NewReader(`{"session_id":"s1"}`), &stdout, failingWriter{}, day); code != 0 {
+	if code := runHookAt([]string{string(AtSessionStart), string(PartUser), plan}, strings.NewReader(`{"session_id":"s1"}`), &stdout, failingWriter{}, day); code != 0 {
 		t.Fatalf("nothing to report: exit %d", code)
 	}
-	built, _ := Build(s.plan, day)
-	if got := hookContext(t, stdout.String()); got != Stamp(built, day) {
+	if got := hookContext(t, stdout.String()); got != Stamp(userOutput(t, s.plan).Text, day) {
 		t.Fatalf("context = %q", got)
 	}
 }
@@ -208,8 +243,15 @@ func TestHookCommandRunsThroughAShell(t *testing.T) {
 	}
 	write(t, plan.Projects[0].Dir, "a.md", factText("ruling", "Quoted `$(x)` & 'more'."))
 	plan.Records = filepath.Join(config, "memory-records", "thread 1")
+	path, err := PlanFile(config, "thread 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePlan(path, plan); err != nil {
+		t.Fatal(err)
+	}
 	run := func(event HookEvent) (string, string) {
-		command, err := HookCommand(link, event, plan)
+		command, err := HookCommand(link, event, PartProject, path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,7 +267,8 @@ func TestHookCommandRunsThroughAShell(t *testing.T) {
 	}
 	stdout, _ := run(AtSessionStart)
 	got := hookContext(t, stdout)
-	if built, _ := Build(plan, day); !strings.Contains(got, strings.TrimPrefix(built, Heading)) {
+	built, _ := Build(plan, day)
+	if project := built[slices.Index(plan.Parts(), PartProject)]; !strings.Contains(got, strings.TrimPrefix(project.Text, plan.HeadingOf(PartProject))) {
 		t.Fatalf("context = %q", got)
 	}
 	write(t, plan.Projects[0].Dir, "b.md", factText("ruling", "Added `$(y)`."))
@@ -236,33 +279,40 @@ func TestHookCommandRunsThroughAShell(t *testing.T) {
 }
 
 // A command the hook cannot run from the workspace, or that the provider's
-// JSON settings cannot carry, is refused rather than built.
+// JSON settings cannot carry, is refused rather than built, and so is a
+// plan the hook could not read.
 func TestHookCommandRefusesWhatItCannotCarry(t *testing.T) {
 	t.Parallel()
 	abs := filepath.Join(t.TempDir(), "x")
-	for name, tc := range map[string]struct {
-		exe  string
-		plan Plan
-		want string
-	}{
-		"relative exe":   {"agent-overflow", Plan{User: abs}, `"agent-overflow" is not an absolute path`},
-		"non-UTF-8 exe":  {abs + "\xff", Plan{User: abs}, "is not valid UTF-8"},
-		"relative user":  {abs, Plan{User: "memory/user"}, `the user folder "memory/user" is not an absolute path`},
-		"relative home":  {abs, Plan{User: abs, Home: "agents/a"}, `the home "agents/a" is not an absolute path`},
-		"non-UTF-8 home": {abs, Plan{User: abs, Home: abs + "\xfe"}, "is not valid UTF-8"},
-		"project dir":    {abs, Plan{User: abs, Projects: []Project{{Name: "app", Path: abs, Dir: "x"}}}, `the memory folder of app "x" is not an absolute path`},
+	for name, tc := range map[string]struct{ exe, plan, want string }{
+		"relative exe":   {"agent-overflow", abs, `"agent-overflow" is not an absolute path`},
+		"non-UTF-8 exe":  {abs + "\xff", abs, "is not valid UTF-8"},
+		"relative plan":  {abs, "plan.json", `"plan.json" is not an absolute path`},
+		"non-UTF-8 plan": {abs, abs + "\xfe", "is not valid UTF-8"},
 	} {
-		if command, err := HookCommand(tc.exe, AtSessionStart, tc.plan); err == nil || !strings.Contains(err.Error(), tc.want) || command != "" {
+		if command, err := HookCommand(tc.exe, AtSessionStart, PartUser, tc.plan); err == nil || !strings.Contains(err.Error(), tc.want) || command != "" {
 			t.Errorf("%s: %q, %v; want an error with %q", name, command, err, tc.want)
 		}
 	}
-	if _, err := HookCommand(abs, AtSessionStart, Plan{User: abs}); err != nil {
+	if _, err := HookCommand(abs, AtPrompt, PartHome, abs); err != nil {
 		t.Fatalf("absolute paths: %v", err)
 	}
-	if _, err := HookCommand(abs, AtPrompt, Plan{User: abs}); err == nil || !strings.Contains(err.Error(), "needs the records folder") {
-		t.Fatalf("a prompt's command without records: %v", err)
-	}
-	if _, err := HookCommand(abs, AtPrompt, Plan{User: abs, Records: "records"}); err == nil || !strings.Contains(err.Error(), `the records folder "records" is not an absolute path`) {
-		t.Fatalf("relative records: %v", err)
+	for name, tc := range map[string]struct {
+		plan Plan
+		want string
+	}{
+		"relative user":  {Plan{User: "memory/user"}, `the user folder "memory/user" is not an absolute path`},
+		"relative home":  {Plan{User: abs, Home: "agents/a"}, `the home "agents/a" is not an absolute path`},
+		"non-UTF-8 home": {Plan{User: abs, Home: abs + "\xfe"}, "is not valid UTF-8"},
+		"project dir":    {Plan{User: abs, Projects: []Project{{Name: "app", Path: abs, Dir: "x"}}}, `the memory folder of app "x" is not an absolute path`},
+		"records":        {Plan{User: abs, Records: "records"}, `the records folder "records" is not an absolute path`},
+	} {
+		path := filepath.Join(t.TempDir(), "plan.json")
+		if err := WritePlan(path, tc.plan); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v; want an error with %q", name, err, tc.want)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s: the refused plan was written: %v", name, err)
+		}
 	}
 }

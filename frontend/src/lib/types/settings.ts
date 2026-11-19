@@ -44,6 +44,12 @@ export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 export type CommitMessageStyle = "conventional" | "repo" | "custom";
 /** Preferred order of the auto-switch pool; mirrors internal/settings AccountAutoSwitch*. */
 export type AccountAutoSwitchStrategy = "soonest-reset" | "account-order";
+/**
+ * In which sessions the app turns a provider's own memory off; mirrors
+ * internal/settings OwnMemoryOff*: those that receive Agent Overflow memory,
+ * every one, or none.
+ */
+export type OwnMemoryOff = "agentOverflowMemory" | "always" | "never";
 /** The four readings of "quiet when"; mirrors internal/settings NotifyQuiet*. */
 export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAndThreadVisible";
 
@@ -337,10 +343,10 @@ export interface Settings {
   agentNotes: AgentNote[];
   /** How many levels of sub-threads may open below a thread the person talks to (1 to 4). */
   subThreadLevels: number;
-  /** Turn Claude Code's own auto memory off in this app's Claude sessions. */
-  claudeNativeMemoryDisabled: boolean;
-  /** Turn Codex's own memories off in this app's Codex threads. */
-  codexNativeMemoryDisabled: boolean;
+  /** In which of this app's Claude sessions Claude Code's own auto memory is off. */
+  claudeOwnMemoryOff: OwnMemoryOff;
+  /** In which of this app's Codex threads Codex's own memories are off. */
+  codexOwnMemoryOff: OwnMemoryOff;
   /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never

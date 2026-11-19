@@ -1827,11 +1827,13 @@ that a later independent batch cannot settle.
 
 ---
 
-## SessionStart hooks (verified 0.157.1)
+## SessionStart hooks (verified 0.169.0)
 
-Spikes 2026-10-18, codex-cli 0.157.1 against a mock Responses server;
-source read at `rust-v0.143.0`, `rust-v0.153.4` and `rust-v0.162.1`, which
-agree on everything below unless a bullet names a tag. Agent Overflow
+Spikes 2026-10-18, codex-cli 0.157.1 against a mock Responses server, and
+2026-11-18, codex-cli 0.169.0 against the model (the context limit
+below); source read at `rust-v0.143.0`, `rust-v0.153.4` and
+`rust-v0.162.1`, which agree on everything below unless a bullet names a
+tag. Agent Overflow
 uses a SessionStart and a UserPromptSubmit hook to deliver a session's
 memory ([memory](../specs/memory.md#delivery)); the mechanism is
 `internal/provider/codex/session_start_hooks.go`.
@@ -1875,9 +1877,21 @@ which Codex reads as the thread's session-flags config layer:
   and tail with `Full hook output saved to: <path>`
   (`hooks/src/output_spill.rs`). When the file cannot be written, the
   context is cut to the same head and tail with no path. From
-  `rust-v0.153.4` a command handler's `additionalContextLimit` sets the
-  threshold, `0` turning the spill off; `rust-v0.143.0` has the fixed
-  limit and no key.
+  `rust-v0.145.0` a SessionStart or UserPromptSubmit command handler's
+  `additionalContextLimit` (tokens) sets the threshold, `0` turning the
+  spill off, and is part of the handler's trust identity
+  (`hooks/src/engine/discovery.rs`, `hooks/src/output_spill.rs` at that
+  tag); `rust-v0.144.0` and `rust-v0.143.0` have the fixed limit and no
+  key. The limit applies to each handler's output on
+  its own. On 0.169.0, two handlers in one group, one printing 39,087
+  bytes with a marker in its middle and one at its end: with
+  `additionalContextLimit` 0 on each, the model quoted both markers and
+  the end of the other output; with the default it quoted the end
+  markers and not the middle one. `hook/completed` carried the whole text
+  in its `context` entry either way.
+- A group's handlers run at once, and their contexts reach the model in
+  configured order, whatever order they finish in
+  (`hooks/src/engine/dispatcher.rs`).
 - The `hooks` feature (stable, on by default) turns all hooks off when a
   user sets `features.hooks = false`.
 
@@ -1908,6 +1922,16 @@ model. `hooks/list` reports each hook's `key`, `trustStatus` and
   `currentHash` to this computation for a command holding quotes, a
   backslash, `<>&`, non-ASCII, U+2028, an emoji, a tab and control
   characters.
+
+  An `additionalContextLimit` other than the default 2,500 is part of the
+  identity, its key sorted first:
+
+  ```json
+  {"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"<command>","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}
+  ```
+
+  On 0.169.0 handlers under the hash of this identity ran, as handlers
+  without the key ran under the hash of the identity above.
 
 A hash in the thread's own config trusts exactly that command, matcher
 and timeout in that layer. Hooks of the user's or a project's config
@@ -2007,9 +2031,12 @@ the text as it was at the last start or compaction.
 - Registers its memory hook, timeout 60, on `thread/start` and
   `thread/resume`, so a resumed thread that compacts runs it too: a
   SessionStart group of its own with the matcher `startup|compact|clear`,
-  or `startup|compact|clear|resume|fork` for a rehydrate below, and a
-  UserPromptSubmit group with the same binary's prompt command, each
-  under its trust hash (`sessionStartHookConfig`). The
+  or `startup|compact|clear|resume|fork` for a rehydrate below, holding
+  one handler per part of the delivery, and a UserPromptSubmit group with
+  each part's prompt command, each handler under its trust hash
+  (`sessionStartHookConfig`). On a Codex whose app-server reports 0.145.0
+  or later each handler carries `additionalContextLimit` 0, and its hash
+  covers it; an older or unknown version gets handlers without the key. The
   command quotes its words in POSIX single quotes, which sh, bash and zsh
   read verbatim. A fish user's hooks run under zsh or bash; only the
   `$SHELL -lc` fallback can reach fish, which reads the quotes the same
@@ -2021,8 +2048,8 @@ the text as it was at the last start or compaction.
   its heading and is reported as not delivered.
 - Root `hook/started` and `hook/completed` of either event with `source`
   `sessionFlags` render no row. A `completed` SessionStart run's
-  `context` entry counts as delivered when it opens with the hook's
-  heading. A failed UserPromptSubmit run is a non-fatal error row.
+  `context` entry counts as the delivery of the part whose heading it
+  opens with; a start or compaction is delivered once every part is. A failed UserPromptSubmit run is a non-fatal error row.
 - The prompt command exits 0 with no output when nothing changed, and
   never exits 2, so it cannot block a prompt. A subagent's run, whose
   input names `agent_id`, delivers nothing.
@@ -2081,7 +2108,8 @@ app-server's runtime feature enablement (`protected_feature_keys`).
   present since `rust-v0.143.0`, changes a stored mode:
   `{"threadId": "...", "mode": "disabled"}` answers `{}`
   (`ThreadMemoryModeSetParams`, `v2/thread.rs`). Agent Overflow sends it
-  after a resume when its Codex memory setting is off.
+  after a resume when its setting turns Codex's own memory off for
+  the thread.
 - The pipeline reads only other threads whose stored mode is `enabled`
   (`state/src/runtime/memories.rs`), so a `disabled` thread is never
   mined, whichever session runs it.

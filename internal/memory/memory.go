@@ -2,10 +2,11 @@
 // (docs/specs/memory.md): the write rules, the user, project and home
 // scopes' indexes, built from their facts' frontmatter at every delivery, an
 // assistant's instructions.md and the maintenance warnings of the scopes it
-// keeps, as the output of one hook (RunHook): whole at a session's start and
-// after a compaction, and what changed since at each prompt, against each
-// session's record of what it was shown (changes.go). The app builds the
-// same text (Build) to report what its read or size costs the thread.
+// keeps, as the outputs of one hook command per part (Part, RunHook): each
+// part whole at a session's start and after a compaction, and what changed
+// in it since at each prompt, against each session's record of what it was
+// shown of that part (changes.go). The app builds the same texts (Build) to
+// report what their read or size costs the thread.
 //
 // Every read goes through an os.Root opened on the folder it reads, so a
 // link out of it is never followed, and opens only regular files
@@ -20,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -39,7 +41,8 @@ const (
 )
 
 // Plan is what one session's delivery holds. The app makes it from the
-// thread and its assistant; the hook receives it as JSON.
+// thread and its assistant and writes it to the thread's plan file
+// (PlanFile), which the hook reads.
 type Plan struct {
 	// User is the user scope's folder (UserDir).
 	User string `json:"user"`
@@ -65,6 +68,67 @@ type Project struct {
 	Path string `json:"path"`
 	// Dir is its memory folder (ProjectDir).
 	Dir string `json:"dir"`
+}
+
+// Part is one hook output of a delivery. Each provider shows the model a
+// hook output whole only up to Limit, so every section that can grow is a
+// part of its own, with that whole budget (docs/specs/memory.md,
+// "Delivery"). The write rules, small and fixed, share the user index's
+// part, which every delivery has, so read-only mode changes no part.
+type Part string
+
+const (
+	// PartInstructions is an assistant's instructions.md.
+	PartInstructions Part = "instructions"
+	// PartHome is the index of an assistant's own memory.
+	PartHome Part = "home"
+	// PartProject is the project's index, or an assistant's project list.
+	PartProject Part = "project"
+	// PartUser is the user index and the write rules.
+	PartUser Part = "user"
+	// PartWarnings is an assistant's maintenance warnings, delivered when
+	// nothing needs fixing too, so the parts follow from the plan alone.
+	PartWarnings Part = "warnings"
+)
+
+// Parts are the parts of plan's delivery in delivery order, the most
+// important first.
+func (p Plan) Parts() []Part {
+	var parts []Part
+	if p.Home != "" {
+		parts = append(parts, PartInstructions, PartHome)
+	}
+	if len(p.Projects) > 0 {
+		parts = append(parts, PartProject)
+	}
+	parts = append(parts, PartUser)
+	if p.Home != "" {
+		parts = append(parts, PartWarnings)
+	}
+	return parts
+}
+
+// absentParts are the parts a delivery can have that plan's does not.
+func (p Plan) absentParts() []Part {
+	parts := p.Parts()
+	var absent []Part
+	for _, part := range []Part{PartInstructions, PartHome, PartProject, PartUser, PartWarnings} {
+		if !slices.Contains(parts, part) {
+			absent = append(absent, part)
+		}
+	}
+	return absent
+}
+
+// HeadingOf is the line part's whole delivery opens with: Heading for a
+// delivery of one part, and Heading with the part's place among them for
+// one of several, so each output tells the provider which part it is.
+func (p Plan) HeadingOf(part Part) string {
+	parts := p.Parts()
+	if len(parts) == 1 {
+		return Heading
+	}
+	return fmt.Sprintf("%s, part %d of %d", Heading, slices.Index(parts, part)+1, len(parts))
 }
 
 // UserDir is the user scope's folder under the app's config directory.
@@ -253,9 +317,13 @@ func recordProjectPath(project Project) (err error) {
 	return nil
 }
 
-// validateFor is validate for a hook run at event: a prompt's run compares
-// with the record, so it needs the records folder.
-func (p Plan) validateFor(event HookEvent) error {
+// validateFor is validate for a hook run of part at event: part must be
+// one of the plan's, and a prompt's run compares with the record, so it
+// needs the records folder.
+func (p Plan) validateFor(event HookEvent, part Part) error {
+	if !slices.Contains(p.Parts(), part) {
+		return fmt.Errorf("%q is not a part of this memory plan's delivery", part)
+	}
 	if event == AtPrompt && p.Records == "" {
 		return errors.New("a prompt's memory hook needs the records folder")
 	}

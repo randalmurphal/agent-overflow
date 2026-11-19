@@ -206,8 +206,8 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	// The memory hook joins whatever observes the same event.
 	if hook := cfg.SessionStartHook; hook != nil {
 		hooks["SessionStart"] = append(observedHooks(hooks, "SessionStart"), claude.SessionStartHookGroup(*hook))
-		if hook.PromptCommand != "" {
-			hooks["UserPromptSubmit"] = append(observedHooks(hooks, "UserPromptSubmit"), claude.UserPromptSubmitHookGroup(*hook))
+		if prompt := claude.UserPromptSubmitHookGroup(*hook); prompt != nil {
+			hooks["UserPromptSubmit"] = append(observedHooks(hooks, "UserPromptSubmit"), prompt)
 		}
 	}
 

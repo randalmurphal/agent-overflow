@@ -87,6 +87,11 @@ type forkOptions struct {
 	// paired computer's spawn carried (store.Thread).
 	Instructions string
 	SpawnLevel   int
+	// Lineage is the thread on this computer the fork works for: a local
+	// thread_spawn's caller, or a local ask's asker. "" for a fork the
+	// person or a paired computer made. Its link is written after the fork,
+	// so the fork's provider memory is decided from it (lineageOwnMemoryOff).
+	Lineage string
 }
 
 // forkThreadTail forks a thread at its tail with the given overrides. It is
@@ -302,7 +307,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	timing.next("provider")
-	resume, err := a.resolveForkResumeState(ctx, source, atTurnIndex, midTurnCut)
+	resume, err := a.resolveForkResumeState(ctx, source, atTurnIndex, midTurnCut, opts.Lineage)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}

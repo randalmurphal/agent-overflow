@@ -17,16 +17,18 @@ const (
 	// Label names the delivery in the warnings a provider shows when it
 	// did not arrive.
 	Label = "Agent Overflow memory"
-	// Heading opens every whole delivery and Ending closes it, so a
-	// provider can tell this hook's output from another SessionStart
+	// Heading opens every whole delivery, followed by the part it is when
+	// the delivery has several (Plan.HeadingOf), and Ending closes it, so a
+	// provider can tell this hook's outputs from another SessionStart
 	// hook's.
 	Heading = "## Agent Overflow memory"
 	Ending  = "[End of Agent Overflow memory]"
 	// Limit is the most a hook's output can be, in bytes, and reach the
 	// model whole: Codex keeps 2,500 tokens it counts as four bytes each,
 	// Claude 10,000 UTF-16 code units, which a text never has more of than
-	// bytes. Past it each provider saves the output to a file and shows the
+	// bytes. Past it each provider saves that output to a file and shows the
 	// model its start with the file's path (docs/specs/memory.md, "Size").
+	// Each part of a delivery is an output of its own.
 	Limit = 10000
 	// instructionsKeep bounds the cleaned bytes of instructions.md a
 	// delivery reads; a longer file is named with its path instead, and
@@ -48,38 +50,65 @@ const StampPrefix = "[Delivered at "
 // millisecond, so two runs a moment apart differ, and always as long.
 const stampLayout = "2006-01-02T15:04:05.000Z07:00"
 
-// stampLine is the stamp of a delivery at at.
-func stampLine(at time.Time) string {
-	return StampPrefix + at.UTC().Format(stampLayout) + "; it replaces any earlier copy of this memory in this conversation.]"
+// stampLine is the stamp of a delivery, or a part of one as noun says, at
+// at.
+func stampLine(at time.Time, noun string) string {
+	return StampPrefix + at.UTC().Format(stampLayout) + "; it replaces any earlier copy of this " + noun + " in this conversation.]"
 }
 
-// stampSize is the size of every stamp line with the line break before it.
-var stampSize = 1 + len(stampLine(time.Unix(0, 0)))
+// stampSize is the size of the stamp line of noun with the line break
+// before it, the same at every time.
+func stampSize(noun string) int {
+	return 1 + len(stampLine(time.Unix(0, 0), noun))
+}
 
-// Stamp is a delivery Build made with the stamp of a delivery at at under
-// its heading.
+// Stamp is a part Build made with the stamp of a delivery at at under its
+// heading line.
 func Stamp(text string, at time.Time) string {
-	return Heading + "\n" + stampLine(at) + strings.TrimPrefix(text, Heading)
+	heading, rest, _ := strings.Cut(text, "\n")
+	return heading + "\n" + stampLine(at, headingNoun(heading)) + "\n" + rest
 }
 
-// Oversize reports the size of a delivery Build made, stamped, when it is
-// over Limit, so a provider shows the model only its start.
-func Oversize(text string) (size int, over bool) {
-	size = len(text) + stampSize
-	return size, size > Limit
-}
-
-// Build is plan's delivery as of now, without its stamp, and the failures to
-// read it other than absence, which the caller reports. The text depends on
-// the folders' files and the local date alone, so two builds of unchanged
-// folders on one day are the same bytes. Nothing is cut: a delivery over
-// Limit says so at its top, where the start a provider shows carries it.
-func Build(plan Plan, now time.Time) (string, []error) {
-	if err := plan.validate(); err != nil {
-		return "", []error{err}
+// headingNoun is what a delivery under heading calls itself: the memory,
+// or a part of it.
+func headingNoun(heading string) string {
+	if heading == Heading {
+		return "memory"
 	}
-	d := readDelivery(plan, now)
-	return d.render(d.sections()), d.errs
+	return "part"
+}
+
+// Output is one part of a delivery as Build reads it.
+type Output struct {
+	Part Part
+	// Name says what the part holds, as a warning row names it.
+	Name string
+	// Text is the part's whole delivery without its stamp, and Size its
+	// size once stamped, as the provider receives it.
+	Text string
+	Size int
+}
+
+// Over reports whether the provider shows the model only the part's start.
+func (o Output) Over() bool { return o.Size > Limit }
+
+// Build is plan's delivery as of now, each part as its hook output carries
+// it without its stamp, and the failures to read it other than absence,
+// which the caller reports. The texts depend on the folders' files and the
+// local date alone, so two builds of unchanged folders on one day are the
+// same bytes. Nothing is cut: a part over Limit says so at its top, where
+// the start a provider shows carries it.
+func Build(plan Plan, now time.Time) ([]Output, []error) {
+	if err := plan.validate(); err != nil {
+		return nil, []error{err}
+	}
+	d := readDelivery(plan, now, "")
+	outputs := make([]Output, len(d.parts))
+	for i, part := range d.parts {
+		text := d.render(part)
+		outputs[i] = Output{Part: part, Name: d.nameOf(part), Text: text, Size: len(text) + stampSize(d.noun)}
+	}
+	return outputs, d.errs
 }
 
 const (
@@ -89,28 +118,17 @@ const (
 	markerReadBytes = 4 << 10
 )
 
-// readDelivery reads every block of plan's delivery.
-func readDelivery(plan Plan, now time.Time) *delivery {
-	d := &delivery{assistant: plan.Home != "", today: now.Format(dateLayout)}
-	d.user = d.readIndex("### User memory ("+folderShown(plan.User)+")", plan.User, func() (*os.Root, error) { return openFolder(plan.User) })
-	writesProject := false
-	switch len(plan.Projects) {
-	case 0:
-	case 1:
-		project := plan.Projects[0]
-		heading := "### Project memory: " + projectName(project) + " (" + folderShown(project.Dir) + ")"
-		if off := d.clash(project); off != "" {
-			d.projectOff = heading + "\n" + off
-			break
-		}
-		d.project = d.readIndex(heading, project.Dir, func() (*os.Root, error) { return openFolder(project.Dir) })
-		writesProject = true
-	default:
-		d.projects = d.listProjects(plan.Projects)
-		writesProject = true
-	}
-	if d.assistant {
+// readDelivery reads the blocks of plan's delivery that part holds, every
+// block for "": the warnings part reads them all too, since it names each
+// part over Limit.
+func readDelivery(plan Plan, now time.Time, part Part) *delivery {
+	d := &delivery{assistant: plan.Home != "", day: readDayOf(now), parts: plan.Parts(), plan: plan}
+	d.noun = headingNoun(plan.HeadingOf(d.parts[0]))
+	reads := func(p Part) bool { return part == "" || part == PartWarnings || part == p }
+	if reads(PartInstructions) && d.assistant {
 		d.instructions = readInstructionsBlock(plan.Home, &d.errs)
+	}
+	if reads(PartHome) && d.assistant {
 		home := HomeDir(plan.Home)
 		d.home = d.readIndex("### Your memory ("+folderShown(home)+")", home, func() (_ *os.Root, err error) {
 			root, err := openFolder(plan.Home)
@@ -121,25 +139,73 @@ func readDelivery(plan Plan, now time.Time) *delivery {
 			return openFolderIn(root, homeFolder)
 		})
 	}
-	if !plan.ReadOnly {
-		d.rules = writeRules(d.assistant, writesProject)
+	if reads(PartProject) {
+		switch len(plan.Projects) {
+		case 0:
+		case 1:
+			project := plan.Projects[0]
+			heading := "### Project memory: " + projectName(project) + " (" + folderShown(project.Dir) + ")"
+			if off := d.clash(project); off != "" {
+				d.projectOff = heading + "\n" + off
+				break
+			}
+			d.project = d.readIndex(heading, project.Dir, func() (*os.Root, error) { return openFolder(project.Dir) })
+		default:
+			d.projects = d.listProjects(plan.Projects)
+		}
 	}
-	// Over Limit, the delivery gains the size warning, which names no size
-	// and so cannot bring it back under, and the notice states the size of
-	// the stamped delivery it opens with that warning and itself included:
-	// a section joined after the heading. So the size is measured again
-	// once the warning is in.
-	if _, d.over = Oversize(d.text(d.sections())); d.over {
-		size, _ := Oversize(d.text(d.sections()))
-		d.size = noticedSize(size, len("\n\n"))
+	if reads(PartUser) {
+		d.user = d.readIndex("### User memory ("+folderShown(plan.User)+")", plan.User, func() (*os.Root, error) { return openFolder(plan.User) })
+		if !plan.ReadOnly {
+			d.rules = writeRules(d.assistant, writesProject(plan))
+		}
+	}
+	// A part over Limit opens with the notice of its size, which states the
+	// size of the stamped part with the notice itself included. The
+	// warnings name the other parts over it, so they are measured first.
+	d.over = map[Part]int{}
+	for _, p := range d.parts {
+		if p != PartWarnings && reads(p) {
+			d.measure(p)
+		}
+	}
+	if reads(PartWarnings) && d.assistant {
+		d.measure(PartWarnings)
 	}
 	return d
 }
 
-// delivery is one Build: its blocks, read.
+// writesProject reports whether a session of plan may write a project's
+// folder, which its write rules then name: an assistant's projects, or the
+// one project of a thread when the project owns its folder (clash).
+func writesProject(plan Plan) bool {
+	switch len(plan.Projects) {
+	case 0:
+		return false
+	case 1:
+		return ownerOf(plan.Projects[0]).owns(plan.Projects[0])
+	}
+	return true
+}
+
+// measure records part's stamped size with its notice when it is over
+// Limit without one.
+func (d *delivery) measure(part Part) {
+	if size := len(d.text(part, d.sectionsOf(part))) + stampSize(d.noun); size > Limit {
+		d.over[part] = noticedSize(size, len("\n\n"), d.noun)
+	}
+}
+
+// delivery is what one hook run or Build read: the blocks of the parts it
+// reads.
 type delivery struct {
+	plan      Plan
+	parts     []Part
 	assistant bool
-	today     string
+	day       readDay
+	// noun is what each part calls itself in its stamp and its notice:
+	// "memory" when it is the delivery's one part, "part" otherwise.
+	noun string
 	// rules are the write rules, "" for a session that may not write.
 	rules string
 	user  *index
@@ -153,10 +219,9 @@ type delivery struct {
 	home         *index
 	// problems are the maintenance warnings about the folders' files.
 	problems []string
-	// size is the stamped delivery's size without the notice over is set
-	// for, which opens a delivery over Limit; 0 when it is not over.
-	size int
-	over bool
+	// over holds each part over Limit with its stamped size, its notice
+	// included.
+	over map[Part]int
 	errs []error
 }
 
@@ -171,7 +236,7 @@ type index struct {
 // readIndex reads the scope at dir, which open opens, as an index.
 func (d *delivery) readIndex(heading, dir string, open func() (*os.Root, error)) *index {
 	x := &index{heading: heading, dir: dir}
-	read, err := readScope(dir, d.today, open)
+	read, err := readScope(dir, d.day, open)
 	x.facts = read.facts
 	d.problems = append(d.problems, read.problems...)
 	if read.more {
@@ -186,7 +251,7 @@ func (d *delivery) readIndex(heading, dir string, open func() (*os.Root, error))
 
 // readScope reads the facts of the scope at dir, which open opens; an
 // absent folder holds none. A folder past the entry bound is a problem.
-func readScope(dir, today string, open func() (*os.Root, error)) (folderRead, error) {
+func readScope(dir string, on readDay, open func() (*os.Root, error)) (folderRead, error) {
 	root, err := open()
 	if errors.Is(err, fs.ErrNotExist) {
 		return folderRead{}, nil
@@ -194,7 +259,7 @@ func readScope(dir, today string, open func() (*os.Root, error)) (folderRead, er
 	if err != nil {
 		return folderRead{}, err
 	}
-	read, err := readFolder(root, dir, today)
+	read, err := readFolder(root, dir, on)
 	err = errors.Join(err, root.Close())
 	if read.more {
 		read.problems = append(read.problems, fmt.Sprintf("%s holds more than %d entries, and only the first %d were read. Merge or delete facts.", folderShown(dir), maxEntries, maxEntries))
@@ -242,6 +307,9 @@ func factLine(f fact) string {
 	}
 	if f.until != "" {
 		line += "; until " + f.until
+	}
+	if f.confirmed != "" {
+		line += "; unchecked since " + f.confirmed
 	}
 	return line + ")"
 }
@@ -376,7 +444,7 @@ func (d *delivery) listProjects(projects []Project) *projectList {
 			list.lines = append(list.lines, projectLine{project.Path, line + off})
 			continue
 		}
-		read, err := readScope(project.Dir, d.today, func() (*os.Root, error) { return openFolder(project.Dir) })
+		read, err := readScope(project.Dir, d.day, func() (*os.Root, error) { return openFolder(project.Dir) })
 		d.problems = append(d.problems, read.problems...)
 		if err != nil {
 			d.errs = append(d.errs, fmt.Errorf("read the memory folder %s: %w", project.Dir, err))
@@ -485,29 +553,30 @@ func readInstructions(home string) (_ string, bytes int64, err error) {
 	return text, info.Size(), nil
 }
 
-// sections are the delivery's sections in order, the most important first,
-// so the start a provider shows of a delivery over Limit carries them: the
-// assistant's instructions.md and memory, the project's, the user's, then
-// the write rules and the maintenance warnings.
-func (d *delivery) sections() []section {
+// sectionsOf are part's sections in order (Plan.Parts).
+func (d *delivery) sectionsOf(part Part) []section {
 	var out []section
-	if d.assistant {
-		out = append(out, wholeSection("instructions", d.instructions.render()), d.home.section("home"))
-	}
-	switch {
-	case d.project != nil:
-		out = append(out, d.project.section("project"))
-	case d.projectOff != "":
-		out = append(out, wholeSection("project", d.projectOff))
-	case d.projects != nil:
-		out = append(out, d.projects.section())
-	}
-	out = append(out, d.user.section("user"))
-	if d.rules != "" {
-		out = append(out, wholeSection("rules", d.rules))
-	}
-	if warnings := d.warnings(); warnings != "" {
-		out = append(out, wholeSection("warnings", warnings))
+	switch part {
+	case PartInstructions:
+		out = append(out, wholeSection("instructions", d.instructions.render()))
+	case PartHome:
+		out = append(out, d.home.section("home"))
+	case PartProject:
+		switch {
+		case d.project != nil:
+			out = append(out, d.project.section("project"))
+		case d.projectOff != "":
+			out = append(out, wholeSection("project", d.projectOff))
+		case d.projects != nil:
+			out = append(out, d.projects.section())
+		}
+	case PartUser:
+		out = append(out, d.user.section("user"))
+		if d.rules != "" {
+			out = append(out, wholeSection("rules", d.rules))
+		}
+	case PartWarnings:
+		out = append(out, wholeSection("warnings", d.warnings()))
 	}
 	for i := range out {
 		out[i] = out[i].escaped()
@@ -515,61 +584,84 @@ func (d *delivery) sections() []section {
 	return out
 }
 
-// render is the delivery's text from its sections: opened by the notice of
-// its size when it is over Limit.
-func (d *delivery) render(sections []section) string {
-	if !d.over {
-		return d.text(sections)
+// nameOf says what part holds, as a warning row names it.
+func (d *delivery) nameOf(part Part) string {
+	switch part {
+	case PartInstructions:
+		return agenthome.InstructionsFile
+	case PartHome:
+		return "the assistant's own memory index"
+	case PartProject:
+		if d.projects != nil {
+			return "the list of the assistant's projects"
+		}
+		return "the project memory index"
+	case PartUser:
+		return "the user memory index"
 	}
-	return d.text(append([]section{{text: overNotice(d.size)}}, sections...))
+	return "the memory maintenance warnings"
+}
+
+// render is part's text: opened by the notice of its size when it is over
+// Limit.
+func (d *delivery) render(part Part) string {
+	sections := d.sectionsOf(part)
+	if size, over := d.over[part]; over {
+		sections = append([]section{{text: overNotice(size, d.noun)}}, sections...)
+	}
+	return d.text(part, sections)
 }
 
 // noticedSize is the size of a text of size bytes once it carries its
-// overNotice, joined to it by sep more bytes: the notice's digits count.
-func noticedSize(size, sep int) int {
+// overNotice for noun, joined to it by sep more bytes: the notice's digits
+// count.
+func noticedSize(size, sep int, noun string) int {
 	total := size
 	// Each pass can add one digit; the digits hold by the third.
 	for range 3 {
-		total = size + sep + len(overNotice(total))
+		total = size + sep + len(overNotice(total, noun))
 	}
 	return total
 }
 
-// overNotice opens a delivery of size bytes, over Limit.
-func overNotice(size int) string {
-	return fmt.Sprintf("[This memory is %d bytes, more than the %d a hook's output reaches you whole. If you see only its start, read all of it from the file the provider saved it to before you act.]", size, Limit)
+// overNotice opens a text of size bytes over Limit, which calls itself
+// noun.
+func overNotice(size int, noun string) string {
+	return fmt.Sprintf("[This %s is %d bytes, more than the %d a hook's output reaches you whole. If you see only its start, read all of it from the file the provider saved it to before you act.]", noun, size, Limit)
 }
 
-// text is sections as a whole delivery: under its heading, closed by its
-// ending.
-func (d *delivery) text(sections []section) string {
+// text is sections as part's whole delivery: under its heading, closed by
+// the ending.
+func (d *delivery) text(part Part, sections []section) string {
 	blocks := make([]string, len(sections))
 	for i, s := range sections {
 		blocks[i] = s.text
 	}
-	return Heading + "\n\n" + strings.Join(blocks, "\n\n") + "\n\n" + Ending
+	return d.plan.HeadingOf(part) + "\n\n" + strings.Join(blocks, "\n\n") + "\n\n" + Ending
 }
 
 const (
-	// warningsHeading opens the maintenance block; each warning follows
-	// on its own line after warningsBullet.
-	warningsHeading = "### Memory maintenance\nKeeping these folders sound is your job. Fix these:"
+	// warningsHeading opens the maintenance block, then warningsFix and
+	// each warning on its own line after warningsBullet, or noWarnings.
+	warningsHeading = "### Memory maintenance"
+	warningsFix     = "\nKeeping these folders sound is your job. Fix these:"
 	warningsBullet  = "\n- "
+	noWarnings      = "[Nothing here needs fixing now.]"
 )
 
-// warnings is the maintenance block of an assistant's delivery, "" for any
-// other or when nothing needs fixing. The warning that the delivery is over
-// Limit names no size, so the block reads the same while it stays over.
+// The fixes the warnings name for a part over Limit.
+const (
+	fixInstructions = "Move detail into files in your home that it points to."
+	fixIndex        = "Merge or delete facts, or move detail from their descriptions into their bodies."
+)
+
+// warnings is the maintenance block of an assistant's delivery. A warning
+// that a part is over Limit names no size, so the block reads the same
+// while it stays over.
 func (d *delivery) warnings() string {
-	if !d.assistant {
-		return ""
-	}
-	var lines []string
-	if d.over {
-		lines = append(lines, fmt.Sprintf("Your memory is more than the %d bytes a hook's output reaches the model whole, so every session sees only its start until it reads the file the provider saved it to. Shorten %s and your context facts, and merge or delete facts.", Limit, agenthome.InstructionsFile))
-	}
+	lines := d.oversizeWarnings()
 	if b := d.instructions; b != nil && b.out {
-		lines = append(lines, fmt.Sprintf("%s (%d bytes) is more than the %d a delivery carries, so it is named instead of shown. Shorten it.", b.path, b.bytes, instructionsKeep))
+		lines = append(lines, fmt.Sprintf("%s (%d bytes) is more than the %d a delivery carries, so it is named instead of shown. %s", b.path, b.bytes, instructionsKeep, fixInstructions))
 	}
 	problems := d.problems
 	if len(problems) > maxListedProblems {
@@ -577,9 +669,40 @@ func (d *delivery) warnings() string {
 	}
 	lines = append(lines, problems...)
 	if len(lines) == 0 {
-		return ""
+		return warningsHeading + "\n" + noWarnings
 	}
-	return warningsHeading + warningsBullet + strings.Join(lines, warningsBullet)
+	return warningsHeading + warningsFix + warningsBullet + strings.Join(lines, warningsBullet)
+}
+
+// oversizeWarnings name each part other than the warnings that is over
+// Limit, and what shortens it.
+func (d *delivery) oversizeWarnings() []string {
+	var lines []string
+	over := func(what, fix string) {
+		line := fmt.Sprintf("%s is more than the %d bytes a hook's output reaches every provider's model whole, so a session may see only its start until it reads the file the provider saved it to.", what, Limit)
+		if fix != "" {
+			line += " " + fix
+		}
+		lines = append(lines, line)
+	}
+	for _, part := range d.parts {
+		if _, ok := d.over[part]; !ok {
+			continue
+		}
+		switch {
+		case part == PartInstructions:
+			over("Your "+d.instructions.path, fixInstructions)
+		case part == PartHome:
+			over("The index of "+folderShown(d.home.dir), fixIndex)
+		case part == PartProject && d.project != nil:
+			over("The index of "+folderShown(d.project.dir), fixIndex)
+		case part == PartProject && d.projects != nil:
+			over("Your project list", "")
+		case part == PartUser:
+			over("The index of "+folderShown(d.user.dir), fixIndex)
+		}
+	}
+	return lines
 }
 
 // writeRules are the rules a delivery opens with, naming the scopes its

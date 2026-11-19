@@ -15,16 +15,19 @@
 // worker spawned with home_files whose first message opens with the
 // attached verification file and whose footer names the agent, its role
 // and the route of its questions; the role line on a message from the
-// agent to an ordinary thread and none on one back; a memory past the size
-// limit delivered whole, opening with its size, with the maintenance
-// warning and one warning row. A provider that runs no hook leaves a
+// agent to an ordinary thread and none on one back; sections over the size
+// limit together delivered whole, each a hook output of its own, then one
+// section over it opening with its size, whole on Codex and its start on
+// Claude, named by the maintenance warning, with one warning row. A provider that runs no hook leaves a
 // warning row for the start and for each compaction, and none for a
 // resume; a prompt with no record of what its session was shown, and the
 // first prompt after a compaction whose hook did not deliver, delivers the
 // whole memory. Then the timeline: neither the block nor the delivery shows as a
 // message, the worker's first message is an agent row whose body shows the
 // attached file and whose facts name the agent's role and the route of its
-// questions.
+// questions. The banner on the assistant while it runs with its provider's
+// own memory too (expectOwnMemoryBanner): shown and cleared on the
+// assistant, never on its worker or an ordinary thread.
 //
 // No mock speaks claude-tui; its leg is proven at the argv level by
 // TestStandingAgentSessionsCarryTheirHomeFiles in internal/app.
@@ -38,6 +41,7 @@ import {
   ATTACHED_OPENING,
   ROLE,
   VERIFICATION,
+  expectOwnMemoryBanner,
   runHomeContents,
   runHomeHooksOff,
   scrollTimelineToTop,
@@ -92,6 +96,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await showTextUncovered(page, first, 'Go to the sender, which spawned this thread');
     // The whole expanded message, attached file to facts, in one shot.
     await capture(page, `${provider}-worker-first-message.png`, first);
+
+    await expectOwnMemoryBanner(harness, page, provider, (section, title) => openThread(page, section, title));
   });
 
   test(`${provider}: a session whose hooks do not run shows why its memory is missing`, async ({ harness, page }) => {

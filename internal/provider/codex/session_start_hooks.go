@@ -15,13 +15,16 @@ import (
 
 // A thread's SessionStart hook (Config.SessionStartHook) rides the
 // thread/start|resume `config` map, which Codex reads as the thread's
-// session-flags config layer, in a matcher group of its own, and its
-// PromptCommand in a UserPromptSubmit group. Codex runs a hook from a
-// non-managed layer only when the config's `hooks.state` holds its trust
-// hash, so the map carries each handler's hash: the trust covers exactly
-// these commands and nothing else the user configured
-// (docs/references/codex-wire.md, SessionStart hooks). The runs are
-// followed by observeSessionStartHooks.
+// session-flags config layer: a matcher group of its own holding one
+// command handler per part, and a UserPromptSubmit group holding each
+// part's PromptCommand. Codex runs a hook from a non-managed layer only
+// when the config's `hooks.state` holds its trust hash, so the map carries
+// each handler's hash: the trust covers exactly these commands and nothing
+// else the user configured (docs/references/codex-wire.md, SessionStart
+// hooks). Where the running Codex reads it, each handler turns off the
+// spill of its output to a file (additionalContextLimit 0), so a part over
+// the default limit still reaches the model whole. The runs are followed by
+// observeSessionStartHooks.
 //
 // Codex keeps the hooks a load queued only in the loaded thread, so a
 // rehydrate registers the hook for `resume` too while the open expectation
@@ -31,19 +34,38 @@ import (
 // layer's hooks (codex-rs/hooks/src/engine/discovery.rs, 0.153 to 0.162).
 const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
 
+// additionalContextLimitMinimumCodexVersion is the first Codex whose
+// command handlers take additionalContextLimit (rust-v0.145.0). An older
+// one has the fixed limit, and a handler carrying the key there would
+// hash, and so be trusted, differently from the one it reads.
+const additionalContextLimitMinimumCodexVersion = "0.145.0"
+
 // sessionStartHandler is a command handler of the hook: what the thread
 // config registers and what its trust hash covers.
 type sessionStartHandler struct {
 	command string
 	timeout int
+	// noSpill sets additionalContextLimit to 0, which turns off the spill
+	// of the handler's output to a file.
+	noSpill bool
 }
 
-func newSessionStartHandler(command string) sessionStartHandler {
-	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds}
+// newSessionStartHandler is the handler running command for a Codex of
+// codexVersion: with the spill off where that Codex reads the key.
+func newSessionStartHandler(command, codexVersion string) sessionStartHandler {
+	return sessionStartHandler{
+		command: command,
+		timeout: provider.SessionStartHookTimeoutSeconds,
+		noSpill: provider.CodexCLIVersionAtLeast(codexVersion, additionalContextLimitMinimumCodexVersion),
+	}
 }
 
 func (h sessionStartHandler) config() map[string]any {
-	return map[string]any{"type": "command", "command": h.command, "timeout": h.timeout}
+	config := map[string]any{"type": "command", "command": h.command, "timeout": h.timeout}
+	if h.noSpill {
+		config["additionalContextLimit"] = 0
+	}
+	return config
 }
 
 // trustHash is the hash Codex trusts the handler by in a group of event,
@@ -53,12 +75,17 @@ func (h sessionStartHandler) config() map[string]any {
 // codex-rs/hooks/src/engine/discovery.rs and version_for_toml in
 // codex-rs/config/src/fingerprint.rs). Codex drops the matcher of an event
 // that reads none (matcher_pattern_for_event), and its TOML form leaves the
-// key out.
+// key out. A limit other than the default is part of the identity, and its
+// key sorts first.
 func (h sessionStartHandler) trustHash(event, matcher string) string {
 	var identity strings.Builder
 	identity.WriteString(`{"event_name":`)
 	writeSerdeJSONString(&identity, event)
-	identity.WriteString(`,"hooks":[{"async":false,"command":`)
+	identity.WriteString(`,"hooks":[{`)
+	if h.noSpill {
+		identity.WriteString(`"additionalContextLimit":0,`)
+	}
+	identity.WriteString(`"async":false,"command":`)
 	writeSerdeJSONString(&identity, h.command)
 	identity.WriteString(`,"timeout":`)
 	identity.WriteString(strconv.Itoa(h.timeout))
@@ -72,39 +99,49 @@ func (h sessionStartHandler) trustHash(event, matcher string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// The keys Codex gives the one handler of each of the hook's groups in the
-// session-flags layer, which the trust state is kept under.
-const (
-	sessionStartHookKey     = sessionFlagsHookKeySource + ":session_start:0:0"
-	userPromptSubmitHookKey = sessionFlagsHookKeySource + ":user_prompt_submit:0:0"
-)
+// hookKey is the key Codex gives handler h of the hook's one group of event,
+// its key label, in the session-flags layer, which the trust state is kept
+// under.
+func hookKey(event string, h int) string {
+	return sessionFlagsHookKeySource + ":" + event + ":0:" + strconv.Itoa(h)
+}
 
-// sessionStartHookConfig is the `hooks` value of the thread config: one
-// SessionStart matcher group holding the hook's command handler, with the
-// resume sources when resume is set, one UserPromptSubmit group holding its
-// PromptCommand, and the handlers' trust state. nil without a hook.
-func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool) map[string]any {
+// sessionStartHookConfig is the `hooks` value of the thread config for a
+// Codex of codexVersion: one SessionStart matcher group holding a command
+// handler per part, with the resume sources when resume is set, one
+// UserPromptSubmit group holding each part's PromptCommand, and the
+// handlers' trust state. nil without a hook.
+func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool, codexVersion string) map[string]any {
 	if hook == nil {
 		return nil
 	}
 	matcher := provider.SessionStartMatcher(resume)
-	handler := newSessionStartHandler(hook.Command)
+	state := map[string]any{}
+	var starts, prompts []any
+	for _, part := range hook.Parts {
+		handler := newSessionStartHandler(part.Command, codexVersion)
+		state[hookKey("session_start", len(starts))] = map[string]any{"trusted_hash": handler.trustHash("session_start", matcher)}
+		starts = append(starts, handler.config())
+		if part.PromptCommand != "" {
+			prompt := newSessionStartHandler(part.PromptCommand, codexVersion)
+			state[hookKey("user_prompt_submit", len(prompts))] = map[string]any{"trusted_hash": prompt.trustHash("user_prompt_submit", "")}
+			prompts = append(prompts, prompt.config())
+		}
+	}
 	config := map[string]any{
-		"SessionStart": []any{map[string]any{"matcher": matcher, "hooks": []any{handler.config()}}},
+		"SessionStart": []any{map[string]any{"matcher": matcher, "hooks": starts}},
+		"state":        state,
 	}
-	state := map[string]any{sessionStartHookKey: map[string]any{"trusted_hash": handler.trustHash("session_start", matcher)}}
-	if hook.PromptCommand != "" {
-		prompt := newSessionStartHandler(hook.PromptCommand)
-		config["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{prompt.config()}}}
-		state[userPromptSubmitHookKey] = map[string]any{"trusted_hash": prompt.trustHash("user_prompt_submit", "")}
+	if len(prompts) > 0 {
+		config["UserPromptSubmit"] = []any{map[string]any{"hooks": prompts}}
 	}
-	config["state"] = state
 	return config
 }
 
 // withSessionStartHook is a copy of a thread's params whose `config`
-// registers hook, for its resume as well when resume is set.
-func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook, resume bool) map[string]any {
+// registers hook for a Codex of codexVersion, for its resume as well when
+// resume is set.
+func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook, resume bool, codexVersion string) map[string]any {
 	if hook == nil {
 		return params
 	}
@@ -113,7 +150,7 @@ func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook
 	if config == nil {
 		config = map[string]any{}
 	}
-	config["hooks"] = sessionStartHookConfig(hook, resume)
+	config["hooks"] = sessionStartHookConfig(hook, resume, codexVersion)
 	params = maps.Clone(params)
 	params["config"] = config
 	return params

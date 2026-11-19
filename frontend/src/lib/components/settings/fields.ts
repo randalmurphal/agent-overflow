@@ -611,18 +611,18 @@ const STATIC_FIELDS = [
     keywords: ['facts', 'remember', 'project memory', 'user memory'],
   },
   {
-    id: 'memory.claude-off',
+    id: 'memory.claude-own',
     section: 'memory',
     label: "Turn off Claude's own memory",
-    hint: 'Sessions this app starts send autoMemoryEnabled: false. Your Claude settings files are not changed.',
-    keywords: ['auto memory', 'MEMORY.md', 'autoMemoryEnabled'],
+    hint: 'Where it is off, sessions this app starts send autoMemoryEnabled: false. Your Claude settings files are not changed.',
+    keywords: ['auto memory', 'MEMORY.md', 'autoMemoryEnabled', 'native memory'],
   },
   {
-    id: 'memory.codex-off',
+    id: 'memory.codex-own',
     section: 'memory',
     label: "Turn off Codex's own memory",
-    hint: 'Threads this app starts neither use memories nor are mined for them. Your Codex config is not changed.',
-    keywords: ['memories', 'generate_memories'],
+    hint: 'Where it is off, threads this app starts neither use memories nor are mined for them. Your Codex config is not changed.',
+    keywords: ['memories', 'generate_memories', 'native memory'],
   },
 
   // --- Projects -----------------------------------------------------------

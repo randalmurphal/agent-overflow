@@ -405,6 +405,14 @@ func TestCodexAssistantRegistersTheMemoryHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireMemoryRecordsForgotten(t, app, thread.ID, "the session's Forget")
+	// The plan the live session's hooks read outlives its records.
+	var commands []string
+	for _, part := range mem.Hook.Parts {
+		commands = append(commands, part.Command)
+	}
+	if got := runMemoryHook(t, commands); !strings.Contains(got, "a new fact") {
+		t.Fatalf("after the session's Forget the hooks delivered:\n%s", got)
+	}
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatal(err)
 	}

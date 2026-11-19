@@ -9,6 +9,7 @@
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ShellRunCard from '../composer/ShellRunCard.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
+  import OwnMemoryBanner from './OwnMemoryBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ThreadPaneFind from './ThreadPaneFind.svelte';
@@ -489,6 +490,10 @@
       scope={pane.threadId ? { threadId: pane.threadId } : null}
       root={chatColumn ?? null}
     />
+    <!-- A standing warning with no dismissal takes its own row, so it never
+         covers the start of the conversation the way the overlay banners
+         may. -->
+    <OwnMemoryBanner thread={pane.thread} />
 
     <!--
       Single growing region: the timeline takes the entire remaining

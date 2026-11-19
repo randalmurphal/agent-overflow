@@ -40,7 +40,7 @@ func TestDestroyPreservesResourceOrder(t *testing.T) {
 		ClearAutoReconnect:      func(string) { calls = append(calls, "reconnect") },
 		CleanupAttachments:      func(string) error { calls = append(calls, "attachments"); return nil },
 		CleanupReplayLog:        func(string) error { calls = append(calls, "replay"); return nil },
-		CleanupMemoryRecords:    func(string) error { calls = append(calls, "records"); return nil },
+		CleanupMemoryFiles:      func(string) error { calls = append(calls, "records"); return nil },
 		Dropped:                 func(store.Thread, []string) { calls = append(calls, "dropped") },
 		Forget:                  func(string) { calls = append(calls, "forget") },
 	}
@@ -91,7 +91,7 @@ func TestTearDownContinuesCleanupButKeepsTheRowOnFailure(t *testing.T) {
 			return cleanupErr
 		},
 		CleanupReplayLog: func(string) error { calls = append(calls, "replay"); return nil },
-		CleanupMemoryRecords: func(string) error {
+		CleanupMemoryFiles: func(string) error {
 			calls = append(calls, "records")
 			return recordsErr
 		},

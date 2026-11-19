@@ -581,7 +581,7 @@ func (a *App) spawnProviderSession(
 		cfg.AppendSystemPrompt = prompts.claudeAppend
 		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartForget = mem.Forget
-		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
+		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
@@ -653,7 +653,7 @@ func (a *App) spawnProviderSession(
 		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartForget = mem.Forget
 		cfg.WritableRoots = mem.Dirs
-		cfg.NativeMemoryOff = appSettings.CodexNativeMemoryDisabled
+		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
 		if err != nil {
 			return session{}, err
@@ -815,7 +815,7 @@ func (a *App) claudeTUISessionConfig(
 	cfg.AppendSystemPrompt = appGuide
 	cfg.SessionStartHook = mem.Hook
 	cfg.SessionStartForget = mem.Forget
-	cfg.NativeMemoryOff = a.currentSettings().ClaudeNativeMemoryDisabled
+	cfg.NativeMemoryOff = mem.OwnMemoryOff
 	cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 	cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 	cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)

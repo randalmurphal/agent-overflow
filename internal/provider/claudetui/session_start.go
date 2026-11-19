@@ -16,16 +16,16 @@ import (
 const sessionStartMarker = "SessionStart hook additional context: "
 
 // observeMainRequest settles an expected SessionStart delivery on the first
-// main request after a start or a compaction: the request carries the hook's
-// context, under its heading and stamp, when it delivered. The body is
-// searched only while a delivery is expected.
+// main request after a start or a compaction: the request carries each
+// part's context, under its heading and stamp, when it delivered. The body
+// is searched only while a delivery is expected.
 func (s *Session) observeMainRequest(body []byte) {
 	s.sessionStartMu.Lock()
 	if s.sessionStart.Expecting() == "" {
 		s.sessionStartMu.Unlock()
 		return
 	}
-	if context, ok := sessionStartContext(body, *s.sessionStart.Hook(), s.sessionStartSince, s.logf); ok {
+	for _, context := range sessionStartContexts(body, *s.sessionStart.Hook(), s.sessionStartSince, s.logf) {
 		s.sessionStart.Deliver(context)
 	}
 	warning := s.sessionStart.Settle()
@@ -35,22 +35,25 @@ func (s *Session) observeMainRequest(body []byte) {
 	}
 }
 
-// sessionStartContext is the latest context of hook in a model request body
-// that a run at or after since delivered. A context runs from the hook's
-// heading through its ending, or to the end of its block when the ending is
-// missing, and counts only when the line after the heading is the hook's
-// stamp of a time not before since: an earlier run's block, which a resumed
-// transcript or a compaction keeps, or a summary that quotes the heading, is
-// not this run's delivery. The blocks are read from the last, so the search
-// usually decodes one.
-func sessionStartContext(body []byte, hook provider.SessionStartHook, since time.Time, logf func(string, ...any)) (string, bool) {
+// sessionStartContexts are the latest context of each of hook's parts in a
+// model request body that a run at or after since delivered, one per part
+// found. A context runs from its part's heading through the hook's ending,
+// or to the end of its block when the ending is missing, and counts only
+// when the line after the heading is the hook's stamp of a time not before
+// since: an earlier run's block, which a resumed transcript or a compaction
+// keeps, or a summary that quotes a heading, is not this run's delivery. The
+// blocks are read from the last, so the search usually decodes one: a run's
+// parts share its block.
+func sessionStartContexts(body []byte, hook provider.SessionStartHook, since time.Time, logf func(string, ...any)) []string {
 	// A stamp has milliseconds and no finer.
 	since = since.Truncate(time.Millisecond)
 	marker := []byte(sessionStartMarker)
-	for end := len(body); ; {
+	found := make([]bool, len(hook.Parts))
+	var contexts []string
+	for end := len(body); len(contexts) < len(hook.Parts); {
 		at := bytes.LastIndex(body[:end], marker)
 		if at < 0 {
-			return "", false
+			break
 		}
 		end = at
 		block, ok := sessionStartBlock(body[at+len(marker):])
@@ -58,10 +61,17 @@ func sessionStartContext(body []byte, hook provider.SessionStartHook, since time
 			logf("claudetui: a SessionStart context block in a model request is not a JSON string; its contexts do not count")
 			continue
 		}
-		if context, ok := stampedContext(block, hook, since); ok {
-			return context, true
+		for i, part := range hook.Parts {
+			if found[i] {
+				continue
+			}
+			if context, ok := stampedContext(block, part.Heading, hook, since); ok {
+				found[i] = true
+				contexts = append(contexts, context)
+			}
 		}
 	}
+	return contexts
 }
 
 // sessionStartBlock decodes the rest of the JSON string that rest, the bytes
@@ -84,10 +94,10 @@ func sessionStartBlock(rest []byte) (string, bool) {
 	return block, true
 }
 
-// stampedContext is hook's context in block if one carries a stamp of a time
-// not before since.
-func stampedContext(block string, hook provider.SessionStartHook, since time.Time) (string, bool) {
-	opening := hook.Heading + "\n" + hook.Stamp
+// stampedContext is the context of hook's part under heading in block if
+// one carries a stamp of a time not before since.
+func stampedContext(block, heading string, hook provider.SessionStartHook, since time.Time) (string, bool) {
+	opening := heading + "\n" + hook.Stamp
 	for from := 0; ; {
 		at := strings.Index(block[from:], opening)
 		if at < 0 {

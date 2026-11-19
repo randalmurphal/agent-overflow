@@ -587,7 +587,9 @@ with the user's own and run beside them:
   is plain-text context.
 - A context longer than 10,000 characters (JavaScript string length,
   UTF-16 units) is written to disk and replaced by its first 2,000
-  characters and the file's path (read from the bundle).
+  characters and the file's path (read from the bundle). The limit is
+  each hook's: several handlers of one group each have their own
+  (2.1.325).
 - `disableAllHooks` in the user's settings turns every hook off.
 - An interactive session (claude-tui) writes no `hook_response`. A
   run's contexts reach the next main model request as one
@@ -617,22 +619,24 @@ prompt; any other non-zero exit is a failed run that lets it through
 
 Agent Overflow registers its memory hook in groups of its own, timeout
 60 (`claude.SessionStartHookGroup`, `claude.UserPromptSubmitHookGroup`;
-claude-tui puts the same groups beside its relay): SessionStart with the
-matcher `startup|compact|clear`, so a resume runs none, and
-UserPromptSubmit with the binary's prompt command, which prints nothing
-when nothing changed and never exits 2. The SessionStart context
-carries its delivery time under its heading
+claude-tui puts the same groups beside its relay), with one handler per
+part of the delivery: SessionStart with the matcher
+`startup|compact|clear`, so a resume runs none, and UserPromptSubmit
+with each part's prompt command, which prints nothing when nothing
+changed and never exits 2. Each SessionStart context carries its
+delivery time under its part's heading
 (`provider.SessionStartHook.Stamp`). The headless parser counts a
-`hook_response` with exit code 0 whose context opens with the hook's
-heading, and checks a fresh start at `system/init` and a compaction at
-its `compact_boundary`; a miss forgets the thread's records of what its
+`hook_response` with exit code 0 whose context opens with a part's
+heading as that part's delivery, and checks at `system/init` for a fresh
+start and at its `compact_boundary` for a compaction that every part
+arrived; a miss forgets the thread's records of what its
 sessions were shown, so the next prompt delivers the whole memory
 (`parse_session_start.go`). A failed UserPromptSubmit `hook_response` is
 the hook's when its stderr opens with `__memory-context:`, and is a
 non-fatal error row. claude-tui's gateway reads the first main model
 request after the start or `PostCompact`: in the
-`SessionStart hook additional context: ` blocks, read from the last, the
-hook's context runs from its heading to its ending, and counts only when
+`SessionStart hook additional context: ` blocks, read from the last, each
+part's context runs from its heading to its ending, and counts only when
 its stamp's time is not before that start or compaction
 (`claudetui/session_start.go`). A claude-tui session closed before that
 request forgets the records.

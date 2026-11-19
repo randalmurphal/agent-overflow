@@ -4,13 +4,14 @@ import type { ReasoningEffort } from './settings';
 // Wire shapes re-exported so feature code does not import from the
 // generated bindings tree: what a delete removes with a thread
 // (GetDeleteDependents), whether Claude's and Codex's own memory is on
-// (GetNativeMemoryStatus), and what an archive or a delete left undone
-// (ArchiveThread, DeleteThread, DeleteProject).
+// (GetNativeMemoryStatus, one ProviderMemory each), and what an archive or
+// a delete left undone (ArchiveThread, DeleteThread, DeleteProject).
 export type {
   ArchiveThreadResult,
   DeleteDependents,
   DeleteThreadResult,
   NativeMemoryStatus,
+  ProviderMemory,
   WorkerFailure,
 } from '../../../bindings/agent-overflow/internal/app/models';
 

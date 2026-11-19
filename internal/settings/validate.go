@@ -83,6 +83,11 @@ var (
 		"month": {},
 		"all":   {},
 	}
+	allowedOwnMemoryOff = map[string]struct{}{
+		OwnMemoryOffWhereAgentOverflowMemory: {},
+		OwnMemoryOffAlways:                   {},
+		OwnMemoryOffNever:                    {},
+	}
 	// allowedFonts enumerates the typefaces selectable for --font-sans
 	// and --font-mono. "geist" is the eager default, "hack-nerd" lazy-
 	// loads, and "system" uses the OS fallback chain.
@@ -159,6 +164,14 @@ func validateSettings(current Settings) (Settings, error) {
 	}
 	current.NotifyQuietWhen = strings.TrimSpace(current.NotifyQuietWhen)
 	if err := validateOption("notifyQuietWhen", current.NotifyQuietWhen, allowedNotifyQuietWhen); err != nil {
+		return Settings{}, err
+	}
+	current.ClaudeOwnMemoryOff = strings.TrimSpace(current.ClaudeOwnMemoryOff)
+	if err := validateOption("claudeOwnMemoryOff", current.ClaudeOwnMemoryOff, allowedOwnMemoryOff); err != nil {
+		return Settings{}, err
+	}
+	current.CodexOwnMemoryOff = strings.TrimSpace(current.CodexOwnMemoryOff)
+	if err := validateOption("codexOwnMemoryOff", current.CodexOwnMemoryOff, allowedOwnMemoryOff); err != nil {
 		return Settings{}, err
 	}
 	// The one option-shaped group whose legal values are NOT a closed list:
@@ -425,6 +438,8 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.NotifyQuietWhen,
 		allowedNotifyQuietWhen,
 	)
+	current.ClaudeOwnMemoryOff = sanitizeOption("claudeOwnMemoryOff", current.ClaudeOwnMemoryOff, DefaultSettings.ClaudeOwnMemoryOff, allowedOwnMemoryOff)
+	current.CodexOwnMemoryOff = sanitizeOption("codexOwnMemoryOff", current.CodexOwnMemoryOff, DefaultSettings.CodexOwnMemoryOff, allowedOwnMemoryOff)
 	// The fallback stays the PER-EVENT default: a cue file that was deleted
 	// while this screen was away must leave the other two events alone.
 	for _, cue := range notifyCueFields(&current) {
