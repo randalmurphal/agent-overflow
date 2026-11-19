@@ -8,7 +8,7 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
-// The operator-guidance block: what `agent-overflow run guide` left for this run,
+// The operator-guidance block: what run_guide left for this run,
 // rendered into the prompt of the attempt that consumed it.
 //
 // It is the thread→run direction of `notify:` (D54), and it exists because

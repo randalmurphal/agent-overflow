@@ -14,11 +14,6 @@ import (
 )
 
 func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) func(provider.ProviderEvent) {
-	// NewApp installs built-in observers during App construction. Keep the
-	// once-guarded install here as well for tests and other internal callers
-	// that intentionally construct a bare App before starting a session.
-	a.installDiscussionTurnObserver()
-
 	// deathReported flips true if the read loop emits a session_status
 	// "error" — the wire-typed signal for an abnormal exit (signal, crash,
 	// clean exit-0 we didn't initiate). Captured in the closure so the
@@ -42,6 +37,39 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// the worker handles the event, a replacement start may have bumped
 	// it. Zero for every other event.
 	handle := func(evt provider.ProviderEvent, deathEpoch uint64) {
+		// Whether this session still owns the thread. A replacement start
+		// retires it, whether it ran while this worker was stalled behind
+		// the frames before this one (the frame is refused at entry) or
+		// while this frame was being handled (triage's answer after
+		// handling). Triage refuses a retired session's frame, and nothing
+		// here may act on it either: its turn would earn the replacement a
+		// reconnect or finish its workflow phase, its death would restore or
+		// reconnect for the replacement, and its disconnect would clear what
+		// the replacement armed.
+		current := a.triage == nil || a.triage.SessionCurrent(threadID, sessionToken)
+		if current {
+			a.observeFrameBeforeTriage(threadID, sessionToken, providerType, evt)
+		}
+		if a.triage != nil {
+			stillCurrent, err := a.triage.HandleSessionFrame(evt)
+			if err != nil {
+				log.Printf("triage: thread %s: %s event: %v", threadID, evt.Kind, err)
+			}
+			current = current && stillCurrent
+		}
+		if !current {
+			// One thing stands at a retired session's disconnect: a
+			// workflow attempt's fold of a death it already observed from
+			// this session's own "error", handled while the session was
+			// still current. The event queue is not marked: it belongs to
+			// the session that owns the thread now, whether or not that
+			// session has queued a frame yet.
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				a.workflowApplication().SessionDisconnected(threadID)
+			}
+			return
+		}
+
 		// EventInit carries Claude's `system/init.mcp_servers` array
 		// via the SessionInfo meta. Feed each entry into the status
 		// cache so the popup shows authoritative provider state
@@ -55,49 +83,34 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			}
 		}
 
-		// Claude command output settles live-config applies (/effort,
-		// /fast) and follows user-typed /effort; a cancelled command
-		// lifecycle reverts an apply whose output will never arrive. See
-		// app_claude_live_config.go.
-		if providerType == string(provider.Claude) {
-			switch evt.Kind {
-			case provider.EventCommandResult:
-				a.observeClaudeCommandResult(threadID, sessionToken, evt)
-			case provider.EventCommandLifecycle:
-				a.observeClaudeCommandLifecycle(evt)
-			}
-		}
+		// A TOP-LEVEL turn boundary: a subagent's completion is not the
+		// thread's. The auto-reconnect rule and the post-turn hooks below
+		// key off it, so it is resolved once rather than spelled out per
+		// hook.
+		topLevelTurn := evt.Kind == provider.EventTurnComplete &&
+			strings.TrimSpace(evt.ParentToolUseID) == ""
 
-		// The process moved its own working directory (EnterWorktree /
-		// ExitWorktree). Both Claude providers share the parser that
-		// emits this, and both leave the thread row to follow the move.
-		if providerType == string(provider.Claude) || providerType == string(provider.ClaudeTUI) {
-			a.observeClaudeWorktreeExit(threadID, sessionToken, evt)
-		}
-		if evt.Kind == provider.EventWorkspaceChanged {
-			a.followProviderWorkspaceChange(threadID, sessionToken, evt)
-		}
 		// The CLI changed its permission mode on its own (it leaves auto
 		// on a model without it); the thread's runtime mode follows.
 		if evt.Kind == provider.EventPermissionModeChanged && providerType == string(provider.Claude) {
 			a.followClaudePermissionMode(threadID, sessionToken)
 		}
 
-		// A successful turn start is the wire-level proof that the new
-		// session is alive and serving. Reset the per-thread auto-
-		// reconnect attempt counter so a later (unrelated) death gets a
-		// fresh recovery attempt instead of falling straight through to
-		// the banner.
-		if evt.Kind == provider.EventTurnStart {
+		// Auto-reconnect makes one attempt per death and earns another only
+		// from wire-level proof that a session served: a turn start, or a
+		// top-level turn that completed without error. Codex reports both;
+		// Claude reports only the completion. Init is not proof: a process
+		// that reaches init and then dies would reconnect without bound. A
+		// replacement that never serves a turn gets no second attempt.
+		if evt.Kind == provider.EventTurnStart || (topLevelTurn && turnCompletedWithoutError(evt)) {
 			a.clearAutoReconnectAttempted(threadID)
 		}
-
-		if a.triage != nil {
-			if err := a.triage.Handle(evt); err != nil {
-				log.Printf("triage: thread %s: %s event: %v", threadID, evt.Kind, err)
-			}
-		}
 		a.dispatchTurnObservers(threadID, evt)
+		a.noteProviderWorkerLiveness(threadID, evt)
+		// A compaction runs the memory hook again.
+		if evt.Kind == provider.EventCompactBoundary && strings.TrimSpace(evt.ParentToolUseID) == "" {
+			a.reportMemoryCompactionProblems(threadID)
+		}
 		// A provider reroute rewrites the thread's model, which picks the
 		// override the next start would use.
 		if evt.Kind == provider.EventModelRerouted {
@@ -130,12 +143,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// estimate in place. Nested/subagent completes are excluded for the
 		// same reason appendUsageLedger excludes them: they are not the
 		// thread's turn boundary. See internal/codexthread.
-		// A TOP-LEVEL turn boundary: a subagent's completion is not the
-		// thread's. Both post-turn hooks below key off it, so it is resolved
-		// once rather than spelled out per hook.
-		topLevelTurn := evt.Kind == provider.EventTurnComplete &&
-			strings.TrimSpace(evt.ParentToolUseID) == ""
-
 		if topLevelTurn && providerType == string(provider.Codex) {
 			a.noteCodexThreadCost(threadID, sessionToken)
 		}
@@ -195,7 +202,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 					a.attemptAutoReconnect(threadID)
 				}()
 			}
-			// The provider emits nothing after "disconnected".
+			// The provider emits nothing after "disconnected". Only the
+			// disconnect of the session that owns the thread marks the
+			// queue; a retired session's returns above.
 			a.providerEvents.retireWhenIdle(threadID)
 		}
 	}
@@ -204,6 +213,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// Activity and rate-limit attribution describe the wire as it is
 		// read, so they stay on the provider's goroutine; everything else
 		// runs on the thread's worker, in emission order.
+		evt.SessionToken = sessionToken
 		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" && a.triage != nil {
 			epoch := a.triage.ThreadEpoch(threadID)
@@ -211,6 +221,39 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			return
 		}
 		a.providerEvents.enqueue(threadID, evt, handleEvent)
+	}
+}
+
+// observeFrameBeforeTriage is the host's work on a current session's frame
+// that runs before triage handles it, so it has only the entry check, which
+// keeps a retired session's frame from replacing the thread's one pending
+// ExitWorktree call. A commit that lands after the entry check reaches no
+// replacement state through here: the live-config applies go through the
+// session registry under the frame's token, and the worktree follow
+// re-checks the registry's token under the thread lock a replacement start
+// holds through registration.
+func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType string, evt provider.ProviderEvent) {
+	// Claude command output settles live-config applies (/effort,
+	// /fast) and follows user-typed /effort; a cancelled command
+	// lifecycle reverts an apply whose output will never arrive. See
+	// app_claude_live_config.go.
+	if providerType == string(provider.Claude) {
+		switch evt.Kind {
+		case provider.EventCommandResult:
+			a.observeClaudeCommandResult(threadID, sessionToken, evt)
+		case provider.EventCommandLifecycle:
+			a.observeClaudeCommandLifecycle(evt)
+		}
+	}
+
+	// The process moved its own working directory (EnterWorktree /
+	// ExitWorktree). Both Claude providers share the parser that
+	// emits this, and both leave the thread row to follow the move.
+	if providerType == string(provider.Claude) || providerType == string(provider.ClaudeTUI) {
+		a.observeClaudeWorktreeExit(threadID, sessionToken, evt)
+	}
+	if evt.Kind == provider.EventWorkspaceChanged {
+		a.followProviderWorkspaceChange(threadID, sessionToken, evt)
 	}
 }
 
@@ -227,10 +270,10 @@ func (a *App) attributeSessionRateLimits(
 // unregistered, so there are no live background processes to disturb; the
 // orphaned tool_call rows in the store match exactly what manual Reconnect
 // would have left behind. We resume from the thread's stored SessionRef
-// when one exists and the death is the first since the last observed
-// turn_started; if reconnect itself fails or a second death lands before
-// the new session reaches turn_started, the session_died banner already
-// dispatched stays put for the user to act on.
+// when one exists and the death is the first since a session last served
+// a turn (see the clear in sessionEventHandler); if reconnect itself fails
+// or a second death lands before the new session serves a turn, the
+// session_died banner already dispatched stays put for the user to act on.
 func (a *App) attemptAutoReconnect(threadID string) {
 	if a.shuttingDown.Load() {
 		return
@@ -287,6 +330,14 @@ func (a *App) markAutoReconnectAttempted(threadID string) bool {
 
 func (a *App) clearAutoReconnectAttempted(threadID string) {
 	a.sessionManager().runtime.ClearAutoReconnect(threadID)
+}
+
+// turnCompletedWithoutError reports whether a turn-complete event is the
+// provider's own result for a turn that did not fail. Claude's soft round
+// close is not a result; the result that follows it is.
+func turnCompletedWithoutError(evt provider.ProviderEvent) bool {
+	wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
+	return ok && wire != nil && wire.ErrorMessage == "" && evt.Failure == nil
 }
 
 // recordSessionActivity is the single chokepoint that bumps a session's
@@ -424,7 +475,22 @@ func claudeMCPServerErrorText(e provider.MCPServerError) string {
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
 	current, exists := a.sessionManager().get(threadID)
-	if !exists || current.Token != sessionToken {
+	if exists && current.Token != sessionToken {
+		return
+	}
+	// A ScheduleWakeup timer and armed cron jobs end with the process.
+	// Every provider read loop ends with "disconnected" after the
+	// process's last event, however it ended: its own exit, a crash, a
+	// signal, or any stop the host made (closeProviderSession drains this
+	// event before it returns). So every process end passes through here,
+	// including a session a stop already took out of the registry; only a
+	// registered replacement, returned above, keeps its own record.
+	if a.triage != nil {
+		a.triage.ClearProcessSchedule(threadID)
+		// A worker its timers held may rest now (workerTimerUnrest).
+		a.noteWorkerLiveness(threadID)
+	}
+	if !exists {
 		return
 	}
 	removed, ok := a.sessionManager().unregister(threadID, sessionToken)

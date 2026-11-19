@@ -529,67 +529,8 @@ export class AttachmentShell {
 }
 
 /**
- * ChannelMessage is one ordered message within a channel.
- * 
- * Meta is JSON-shaped optional sidecar data persisted alongside the
- * raw message content. Today it carries the pathlinks allowlist
- * (`pathRefs`) stamped at PostMessage time so the frontend's markdown
- * linkifier knows which file references in the rendered text point
- * at real files in the thread's workspace. The column is nullable
- * (pre-v2 rows have no value); callers should treat absence as
- * "no allowlist".
- */
-export class ChannelMessage {
-    "id": string;
-    "channelId": string;
-    "sequence": number;
-    "fromType": string;
-    "fromId": string;
-    "fromRole"?: string;
-    "content": string;
-    "meta"?: string;
-    "createdAt": number;
-
-    /** Creates a new ChannelMessage instance. */
-    constructor($$source: Partial<ChannelMessage> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("channelId" in $$source)) {
-            this["channelId"] = "";
-        }
-        if (!("sequence" in $$source)) {
-            this["sequence"] = 0;
-        }
-        if (!("fromType" in $$source)) {
-            this["fromType"] = "";
-        }
-        if (!("fromId" in $$source)) {
-            this["fromId"] = "";
-        }
-        if (!("content" in $$source)) {
-            this["content"] = "";
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ChannelMessage instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ChannelMessage {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ChannelMessage($$parsedSource as Partial<ChannelMessage>);
-    }
-}
-
-/**
  * ChatBarFavorite is one starred entry in the composer model menu.
- * Kind is "model" or "discussion". Provider is set only for model
- * favorites; Value is the model slug or discussion definition id.
+ * Kind is always "model"; Value is the model slug.
  */
 export class ChatBarFavorite {
     "kind": string;
@@ -953,125 +894,6 @@ export class DiffReviewThreadContext {
 }
 
 /**
- * DiscussionDefinition is the persisted discussion registry record.
- */
-export class DiscussionDefinition {
-    "id": string;
-    "name": string;
-    "description": string;
-    "scope": string;
-    "projectId"?: string;
-    "participants": DiscussionParticipant[];
-    "settings": DiscussionSettings;
-    "createdAt": number;
-    "updatedAt": number;
-
-    /** Creates a new DiscussionDefinition instance. */
-    constructor($$source: Partial<DiscussionDefinition> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("description" in $$source)) {
-            this["description"] = "";
-        }
-        if (!("scope" in $$source)) {
-            this["scope"] = "";
-        }
-        if (!("participants" in $$source)) {
-            this["participants"] = [];
-        }
-        if (!("settings" in $$source)) {
-            this["settings"] = (new DiscussionSettings());
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-        if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DiscussionDefinition instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType18;
-        const $$createField6_0 = $$createType19;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("participants" in $$parsedSource) {
-            $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
-        }
-        if ("settings" in $$parsedSource) {
-            $$parsedSource["settings"] = $$createField6_0($$parsedSource["settings"]);
-        }
-        return new DiscussionDefinition($$parsedSource as Partial<DiscussionDefinition>);
-    }
-}
-
-/**
- * DiscussionParticipant defines a single participant in a discussion.
- */
-export class DiscussionParticipant {
-    "role": string;
-    "description": string;
-    "system": string;
-    "provider"?: string;
-    "model"?: string;
-
-    /** Creates a new DiscussionParticipant instance. */
-    constructor($$source: Partial<DiscussionParticipant> = {}) {
-        if (!("role" in $$source)) {
-            this["role"] = "";
-        }
-        if (!("description" in $$source)) {
-            this["description"] = "";
-        }
-        if (!("system" in $$source)) {
-            this["system"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DiscussionParticipant instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DiscussionParticipant {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DiscussionParticipant($$parsedSource as Partial<DiscussionParticipant>);
-    }
-}
-
-/**
- * DiscussionSettings contains runtime discussion configuration.
- */
-export class DiscussionSettings {
-    "maxTurns": number;
-
-    /** Creates a new DiscussionSettings instance. */
-    constructor($$source: Partial<DiscussionSettings> = {}) {
-        if (!("maxTurns" in $$source)) {
-            this["maxTurns"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new DiscussionSettings instance from a string or object.
-     */
-    static createFrom($$source: any = {}): DiscussionSettings {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new DiscussionSettings($$parsedSource as Partial<DiscussionSettings>);
-    }
-}
-
-/**
  * HeldWindow is the caller's description of the rows it already holds for
  * a thread (docs/architecture/thread-replica-sync.md §5). It is the
  * evidence behind the second route to a page-less `fresh`: the stamps did
@@ -1265,7 +1087,7 @@ export class Item {
      * Creates a new Item instance from a string or object.
      */
     static createFrom($$source: any = {}): Item {
-        const $$createField0_0 = $$createType20;
+        const $$createField0_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("completionLaunch" in $$parsedSource) {
             $$parsedSource["completionLaunch"] = $$createField0_0($$parsedSource["completionLaunch"]);
@@ -1354,11 +1176,11 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType22;
+        const $$createField0_0 = $$createType19;
         const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType23;
-        const $$createField3_0 = $$createType24;
-        const $$createField4_0 = $$createType24;
+        const $$createField2_0 = $$createType20;
+        const $$createField3_0 = $$createType21;
+        const $$createField4_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("scope" in $$parsedSource) {
             $$parsedSource["scope"] = $$createField0_0($$parsedSource["scope"]);
@@ -1376,6 +1198,106 @@ export class PagedItems {
             $$parsedSource["newestCursor"] = $$createField4_0($$parsedSource["newestCursor"]);
         }
         return new PagedItems($$parsedSource as Partial<PagedItems>);
+    }
+}
+
+/**
+ * PastAgentRowsCursor is where a page of past agent rows starts: after the
+ * row it names, in page order. The zero cursor starts at the newest.
+ */
+export class PastAgentRowsCursor {
+    "settledAt": number;
+    "token": string;
+
+    /** Creates a new PastAgentRowsCursor instance. */
+    constructor($$source: Partial<PastAgentRowsCursor> = {}) {
+        if (!("settledAt" in $$source)) {
+            this["settledAt"] = 0;
+        }
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PastAgentRowsCursor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PastAgentRowsCursor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PastAgentRowsCursor($$parsedSource as Partial<PastAgentRowsCursor>);
+    }
+}
+
+/**
+ * PastThreadsCursor is where a page of past threads starts: after the
+ * thread it names, in page order. The zero cursor starts at the newest.
+ */
+export class PastThreadsCursor {
+    "supersededAt": number;
+    "threadId": string;
+
+    /** Creates a new PastThreadsCursor instance. */
+    constructor($$source: Partial<PastThreadsCursor> = {}) {
+        if (!("supersededAt" in $$source)) {
+            this["supersededAt"] = 0;
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PastThreadsCursor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PastThreadsCursor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PastThreadsCursor($$parsedSource as Partial<PastThreadsCursor>);
+    }
+}
+
+/**
+ * PastThreadsPage is one page of an assistant's past threads.
+ */
+export class PastThreadsPage {
+    /**
+     * Threads are newest superseded first, ties by thread id descending.
+     * Each carries AgentSupersededAt.
+     */
+    "threads": Thread[];
+
+    /**
+     * Next continues after the last thread of this page; nil when no
+     * thread follows.
+     */
+    "next"?: PastThreadsCursor | null;
+
+    /** Creates a new PastThreadsPage instance. */
+    constructor($$source: Partial<PastThreadsPage> = {}) {
+        if (!("threads" in $$source)) {
+            this["threads"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PastThreadsPage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PastThreadsPage {
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("threads" in $$parsedSource) {
+            $$parsedSource["threads"] = $$createField0_0($$parsedSource["threads"]);
+        }
+        if ("next" in $$parsedSource) {
+            $$parsedSource["next"] = $$createField1_0($$parsedSource["next"]);
+        }
+        return new PastThreadsPage($$parsedSource as Partial<PastThreadsPage>);
     }
 }
 
@@ -1494,7 +1416,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType25;
+        const $$createField0_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1719,6 +1641,150 @@ export class RemoteJob {
 }
 
 /**
+ * SpawnRevision names the latest change to a spawn, together with the
+ * current facts read in the same database snapshot.
+ */
+export class SpawnRevision {
+    /**
+     * Token identifies the original spawn.
+     */
+    "token": string;
+
+    /**
+     * Revision increases for each change, including restores.
+     */
+    "revision": number;
+
+    /**
+     * End records why a link ended, or is empty for an active link.
+     */
+    "end"?: string;
+
+    /**
+     * TargetThreadID identifies the surviving worker.
+     */
+    "targetThreadId"?: string;
+
+    /**
+     * Placement is the worker’s current placement.
+     */
+    "placement"?: string;
+
+    /**
+     * Title is the current worker title.
+     */
+    "title"?: string;
+
+    /**
+     * Archived reports whether the worker is archived.
+     */
+    "archived"?: boolean;
+
+    /** Creates a new SpawnRevision instance. */
+    constructor($$source: Partial<SpawnRevision> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SpawnRevision instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SpawnRevision {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SpawnRevision($$parsedSource as Partial<SpawnRevision>);
+    }
+}
+
+/**
+ * SpawnRevisionAck confirms that one owner has applied this exact version.
+ */
+export class SpawnRevisionAck {
+    /**
+     * Token identifies the original spawn.
+     */
+    "token": string;
+
+    /**
+     * Revision increases for each change, including restores.
+     */
+    "revision": number;
+
+    /** Creates a new SpawnRevisionAck instance. */
+    constructor($$source: Partial<SpawnRevisionAck> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("revision" in $$source)) {
+            this["revision"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SpawnRevisionAck instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SpawnRevisionAck {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SpawnRevisionAck($$parsedSource as Partial<SpawnRevisionAck>);
+    }
+}
+
+/**
+ * StandingAgent is one assistant record.
+ */
+export class StandingAgent {
+    "id": string;
+    "threadId": string;
+    "home": string;
+    "creatorAgentId"?: string;
+    "createdAt": number;
+
+    /**
+     * AllProjects is set for an assistant that serves every project, those
+     * added later included; otherwise it serves the projects
+     * AgentProjectIDs names, which may be none once its last one is
+     * deleted.
+     */
+    "allProjects": boolean;
+
+    /** Creates a new StandingAgent instance. */
+    constructor($$source: Partial<StandingAgent> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("home" in $$source)) {
+            this["home"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("allProjects" in $$source)) {
+            this["allProjects"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StandingAgent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StandingAgent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StandingAgent($$parsedSource as Partial<StandingAgent>);
+    }
+}
+
+/**
  * Thread represents a conversation thread.
  * 
  * ID is minted by internal/entityid and is unique across BACKENDS, not
@@ -1775,8 +1841,6 @@ export class Thread {
      * authoritative normalizer at the binding boundary.
      */
     "runtimeMode": string;
-    "discussionId"?: string;
-    "parentThreadId"?: string;
     "forkedFromThreadId"?: string;
     "lastTokenUsage"?: string;
     "createdAt": number;
@@ -1803,6 +1867,14 @@ export class Thread {
     "lastReadAt"?: number | null;
 
     /**
+     * Attention is the flag the thread's agent raised for the user
+     * (SetThreadAttention), nil when it raised none. It is pending while
+     * LastReadAt is before its At, as an unread completion is, so a read
+     * of the thread clears it.
+     */
+    "attention"?: ThreadAttention | null;
+
+    /**
      * PinnedAt is the Unix-ms timestamp of when the user pinned the
      * thread. NULL (nil) = unpinned. Pinned threads sort into two manual
      * attention groups above needs-attention in the sidebar. Set by
@@ -1822,12 +1894,21 @@ export class Thread {
      * (migration v76), or "" for a top-level thread. SetThreadGroup is its
      * ONE writer. A grouped row pins like any other; a row that joins or
      * leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
-     * the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
-     * members instead of deleting them.
-     * Discussion children follow their root, so the frontend reads it on
-     * top-level nodes only.
+     * DeleteThreadGroup ungroups its members before the group row goes.
      */
     "groupId"?: string;
+
+    /**
+     * Placement is where the sidebar shows the row (migration v154):
+     * PlacementOwned nowhere, as a worker of the thread that spawned it
+     * (SpawnedByThreadID); PlacementGrouped in GroupID's group;
+     * PlacementStandalone as a plain row of its project. The schema makes
+     * it grouped exactly when GroupID is set. Its writers are
+     * SetThreadGroup, SetThreadPlacement, the write that names a local
+     * spawn's thread and a handoff; an insert derives it from GroupID, so
+     * the field is ignored there.
+     */
+    "placement": string;
 
     /**
      * WorktreeSetupState is the durable half of the per-project worktree
@@ -1870,6 +1951,81 @@ export class Thread {
      * as the two fields above.
      */
     "origin": ThreadOrigin;
+
+    /**
+     * AgentID names the assistant whose current thread this is, "" for
+     * any other thread (docs/specs/standing-agents.md, "Standing agent").
+     * PastAgentID names the assistant a handoff superseded this thread for,
+     * and AgentSupersededAt is when. All three are derived from agents and
+     * agent_past_threads, not persisted threads columns.
+     */
+    "agentId"?: string;
+    "pastAgentId"?: string;
+    "agentSupersededAt"?: number | null;
+
+    /**
+     * HelperOfAgentID names the assistant this thread is a helper of: a
+     * thread it spawned without a project, always owned by it
+     * (agent_helpers). Read like the three above; CreateThread and a fork
+     * record it from this field.
+     */
+    "helperOfAgentId"?: string;
+
+    /**
+     * AgentAllProjects and AgentProjectIDs are the projects the assistant
+     * whose current thread this is serves (agents.all_projects,
+     * agent_projects), for the sidebar's assistant card. Derived; empty for
+     * any other thread.
+     */
+    "agentAllProjects"?: boolean;
+    "agentProjectIds"?: string[];
+
+    /**
+     * SpawnedByThreadID names the local thread whose thread_spawn made this
+     * one, read from its spawn link (spawnerOfSQL), or "" when the user
+     * started it or its spawner is gone; an owned thread's owner. Derived: the spawn request
+     * row is the record, and it outlives the retention floor while this
+     * thread exists (spawnLineageSQL).
+     */
+    "spawnedByThreadId"?: string;
+
+    /**
+     * SpawnedByComputerID names the paired computer whose owned spawn made
+     * this thread, read from its link (spawn_links.go), or "" for none.
+     * Derived, as SpawnedByThreadID is; set whatever the placement, so a
+     * linked thread given a sidebar row can be owned again.
+     */
+    "spawnedByComputerId"?: string;
+
+    /**
+     * SpawnInstructions is the text a thread_spawn appended to this
+     * thread's system prompt for its whole life: its profile's
+     * instructions, then the spawn's own (migration v155). Every session
+     * start appends it after what the app and the person append. Written
+     * at creation and carried by a fork and a transfer; absent from
+     * updateThreadSetSQL, so nothing rewrites it.
+     */
+    "spawnInstructions"?: string;
+
+    /**
+     * SpawnLevel is the sub-thread level a paired computer's spawn or ask
+     * carried here (migration v155): how far below a thread the person
+     * talks to the thread is. Zero for every thread a local spawn, a local
+     * ask or the person made, whose level its links answer
+     * (SubThreadLevel), and zero again once the thread is transferred. It
+     * counts only while the thread is owned or an ask copy
+     * (carriedLevelSQL), so a sidebar row ends it and Remove from Sidebar
+     * restores it.
+     */
+    "spawnLevel"?: number;
+
+    /**
+     * AskCopy marks the hidden copy a thread_ask runs in (a scratch thread
+     * its request owns, scratch_threads.request_token): it takes no
+     * message from a person and cannot be kept, and it is deleted once it
+     * answers. Derived; false for a side chat and every other thread.
+     */
+    "askCopy"?: boolean;
 
     /**
      * HasActionableProposedPlan is derived for sidebar boot state. It is
@@ -1966,6 +2122,9 @@ export class Thread {
         if (!("archived" in $$source)) {
             this["archived"] = false;
         }
+        if (!("placement" in $$source)) {
+            this["placement"] = "";
+        }
         if (!("worktreeSetupState" in $$source)) {
             this["worktreeSetupState"] = "";
         }
@@ -1995,12 +2154,53 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType26;
+        const $$createField28_0 = $$createType28;
+        const $$createField36_0 = $$createType29;
+        const $$createField42_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("attention" in $$parsedSource) {
+            $$parsedSource["attention"] = $$createField28_0($$parsedSource["attention"]);
+        }
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
         }
+        if ("agentProjectIds" in $$parsedSource) {
+            $$parsedSource["agentProjectIds"] = $$createField42_0($$parsedSource["agentProjectIds"]);
+        }
         return new Thread($$parsedSource as Partial<Thread>);
+    }
+}
+
+/**
+ * ThreadAttention is the flag an agent raises on its thread for the user:
+ * its kind, the short reason it gave and when it raised it.
+ */
+export class ThreadAttention {
+    "kind": string;
+    "reason": string;
+    "at": number;
+
+    /** Creates a new ThreadAttention instance. */
+    constructor($$source: Partial<ThreadAttention> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("reason" in $$source)) {
+            this["reason"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadAttention instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadAttention {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadAttention($$parsedSource as Partial<ThreadAttention>);
     }
 }
 
@@ -2065,7 +2265,7 @@ export class ThreadFindAnswer {
      * Creates a new ThreadFindAnswer instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadFindAnswer {
-        const $$createField0_0 = $$createType27;
+        const $$createField0_0 = $$createType30;
         const $$createField2_0 = $$createType1;
         const $$createField3_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -2167,7 +2367,7 @@ export class ThreadFindSince {
      * Creates a new ThreadFindSince instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadFindSince {
-        const $$createField2_0 = $$createType28;
+        const $$createField2_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("selection" in $$parsedSource) {
             $$parsedSource["selection"] = $$createField2_0($$parsedSource["selection"]);
@@ -2182,8 +2382,8 @@ export class ThreadFindSince {
  * 
  * It is not a thread: it has a name and nothing else of its own. It is
  * not pinnable; its members pin as threads do (migration v139). Its status,
- * activity, and sort position are its members', the same bubbling a
- * discussion parent does, so nothing here is derived or cached.
+ * activity, and sort position are bubbled from its members, so nothing
+ * here is derived or cached.
  */
 export class ThreadGroup {
     "id": string;
@@ -2464,8 +2664,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType29;
-        const $$createField1_0 = $$createType29;
+        const $$createField0_0 = $$createType32;
+        const $$createField1_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2506,8 +2706,8 @@ export class TimelineScopeContext {
     static createFrom($$source: any = {}): TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
-        const $$createField2_0 = $$createType20;
-        const $$createField3_0 = $$createType31;
+        const $$createField2_0 = $$createType17;
+        const $$createField3_0 = $$createType34;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -3072,18 +3272,21 @@ const $$createType13 = DiffReviewPRContext.createFrom;
 const $$createType14 = $Create.Nullable($$createType13);
 const $$createType15 = DiffReviewThreadComment.createFrom;
 const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = DiscussionParticipant.createFrom;
-const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = DiscussionSettings.createFrom;
-const $$createType20 = $Create.Nullable($$createType0);
-const $$createType21 = TimelineScopeContext.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = $Create.Array($$createType2);
-const $$createType24 = TimelineCursor.createFrom;
-const $$createType25 = Project.createFrom;
-const $$createType26 = ThreadOrigin.createFrom;
-const $$createType27 = ThreadFindSince.createFrom;
-const $$createType28 = TimelineSelection.createFrom;
-const $$createType29 = $Create.Nullable($$createType24);
-const $$createType30 = TimelineDigestContext.createFrom;
-const $$createType31 = $Create.Nullable($$createType30);
+const $$createType17 = $Create.Nullable($$createType0);
+const $$createType18 = TimelineScopeContext.createFrom;
+const $$createType19 = $Create.Nullable($$createType18);
+const $$createType20 = $Create.Array($$createType2);
+const $$createType21 = TimelineCursor.createFrom;
+const $$createType22 = Thread.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = PastThreadsCursor.createFrom;
+const $$createType25 = $Create.Nullable($$createType24);
+const $$createType26 = Project.createFrom;
+const $$createType27 = ThreadAttention.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = ThreadOrigin.createFrom;
+const $$createType30 = ThreadFindSince.createFrom;
+const $$createType31 = TimelineSelection.createFrom;
+const $$createType32 = $Create.Nullable($$createType21);
+const $$createType33 = TimelineDigestContext.createFrom;
+const $$createType34 = $Create.Nullable($$createType33);

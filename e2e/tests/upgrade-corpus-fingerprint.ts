@@ -16,18 +16,15 @@
 // is made only when some row changed. Row content is never reported: the
 // queries return keys, column names and flags, and the one composition done
 // outside SQLite (restoredDraftThreads) keeps the text it reads in memory.
-import { execFile } from 'node:child_process';
 import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
+import { execProduct, productBinary } from '../src/product-process.js';
 import {
   fingerprintIgnoredColumns, fingerprintIgnoredTables, recoveryRules, sendConfirmed, sendRecorded, unconfirmedUserRow,
   type MigrationException, type RecoveryRule,
 } from './upgrade-corpus-config.js';
 import { CONFIG_FILE, exceptionsFor } from './upgrade-corpus-helpers.js';
-import { dbQuery, harnessTool, tableNames } from './upgrade-corpus-tools.js';
-
-const run = promisify(execFile);
+import { dbQuery, tableNames } from './upgrade-corpus-tools.js';
 
 /** What a recovery rule explained in one run. */
 export interface RecoveryCount {
@@ -136,9 +133,9 @@ export async function storeAt(db: string, version: number): Promise<void> {
 }
 
 async function migrate(db: string, through?: number): Promise<void> {
-  const { stdout } = await run(harnessTool('ao-store-test'),
+  const { stdout } = await execProduct(productBinary('ao-store-test'),
     ['-test.run', '^TestMigrateHarnessDatabase$', '-test.count=1', '-test.timeout=0', '-test.v'], {
-      env: { ...process.env, AO_TEST_MIGRATE_DATABASE: db, ...(through ? { AO_TEST_MIGRATE_THROUGH: String(through) } : {}) },
+      env: { AO_TEST_MIGRATE_DATABASE: db, ...(through ? { AO_TEST_MIGRATE_THROUGH: String(through) } : {}) },
       maxBuffer: 16 * 1024 * 1024,
     });
   // The test skips, and exits 0, when it is not handed a path.
@@ -512,6 +509,75 @@ function userRowSends(metaJSON: string): string[] {
 const emptyPart = (part: DraftPart) => trimSpace(part.content) === '' && part.attachmentIds.length === 0 && !part.plan;
 
 /**
+ * app.ownedSendID: a request's answer or late reply, a remote job's
+ * completion, or a spawner's answer to its worker's async questions. Its
+ * owner takes it back (giveBackToOwners); it is never the draft's.
+ */
+function ownedSend(sendId: string): boolean {
+  return /^thread-wake(-late)?:./.test(sendId) || /^remote-completion:[^:]*:/.test(sendId) || sendId.startsWith('agent-answer:');
+}
+
+/** app.agentAppPartRoot: a loop or watch wake, an outside send, a worker's prompt or an assistant's opening. */
+const appPartRoot = (sendId: string) => ['agent-wake:', 'agent-send:', 'agent-ask:', 'assistant:'].some((root) => sendId.startsWith(root));
+
+/** app.threadRequestSendIDToken: another thread's request. */
+const threadRequestSend = (sendId: string) => /^thread-request:./.test(sendId);
+
+/** app.appWrittenSendID: a message the app wrote for a thread rather than a person. */
+const appWrittenSend = (sendId: string) => appPartRoot(sendId) || ownedSend(sendId) || threadRequestSend(sendId);
+
+/**
+ * app.discardAgentWakeAtBoot's selection: a queue row of a message the app
+ * wrote that goes neither to the draft nor to an owner (a worker's prompt,
+ * another thread's request, an outside send, an assistant's opening, a loop
+ * or watch wake).
+ */
+function discardedAtBoot(sendId: string): boolean {
+  return sendId.startsWith('agent-ask:') || threadRequestSend(sendId) || sendId.startsWith('agent-send:')
+    || sendId.startsWith('assistant:') || /^agent-wake:[^:]+:[+-]?\d+$/.test(sendId);
+}
+
+/** agentmeta.JoinSeparator. */
+const JOIN_SEPARATOR = '\n\n---\n\n';
+
+/**
+ * unconfirmedRowAtBoot: an unconfirmed row's part, or null when nothing of
+ * it goes to the draft. A row that names a message the app wrote keeps only
+ * the person's text: one member is all the app's; a joined row splits by
+ * its recorded parts (agentmeta.SplitJoinedParts, which counts bytes, and
+ * partsNameIDs); one whose parts do not describe its text goes whole.
+ */
+function unconfirmedRowPart(summary: string, metaJSON: string): DraftPart | null {
+  const part = userRowPart(summary, metaJSON);
+  const sends = userRowSends(metaJSON);
+  if (!sends.some(appWrittenSend)) return part;
+  const meta = jsonObject(metaJSON) as Record<string, unknown>;
+  const joined = stringList(meta.joinedSendIds);
+  if (joined === 'invalid' || joined.length === 0) return sends.length === 1 ? null : part;
+  const parts = Array.isArray(meta.joinedParts) ? meta.joinedParts as Array<{ sendId?: unknown; bytes?: unknown }> : [];
+  if (parts.length === 0) return part;
+  const named = parts.map((p) => (typeof p?.sendId === 'string' ? p.sendId : '')).filter((id) => id !== '');
+  if (named.length !== sends.length || named.some((id, i) => id !== sends[i])) return part;
+  const text = Buffer.from(part.content, 'utf8');
+  const kept: string[] = [];
+  let at = 0;
+  for (const [i, member] of parts.entries()) {
+    if (i > 0) {
+      if (!text.subarray(at).toString('utf8').startsWith(JOIN_SEPARATOR)) return part;
+      at += Buffer.byteLength(JOIN_SEPARATOR);
+    }
+    const bytes = typeof member?.bytes === 'number' ? member.bytes : 0;
+    if (bytes < 0 || bytes > text.length - at) return part;
+    if (!appWrittenSend(typeof member?.sendId === 'string' ? member.sendId : '')) {
+      kept.push(text.subarray(at, at + bytes).toString('utf8'));
+    }
+    at += bytes;
+  }
+  if (at !== text.length) return part;
+  return kept.length === 0 ? null : { ...part, content: kept.join(JOIN_SEPARATOR) };
+}
+
+/**
  * composerdraft.MergeParts over content, attachments and terminal chips:
  * each part's text trimmed, the empty ones skipped, then the draft's own,
  * joined by a blank line; attachment ids trimmed and kept once, the parts'
@@ -540,10 +606,12 @@ function mergeParts(current: Draft, parts: DraftPart[]): Draft {
  * app.(*App).restoreReplacementDraftsAtBoot (recoverReplacementDraft, for a
  * recovery whose send findRecordedSend does not find) and
  * app.(*App).restoreDurableFlushQueueAtBoot (restoreThreadQueueAtBoot: the
- * unconfirmed rows first, whole, in timeline order, by draftPartFromUserItem;
- * then the queue rows in queue order by draftPartFromQueueRow, less the
- * copies of a send an unconfirmed row carries and the messages
- * queuedSendDelivered calls delivered), each written through
+ * unconfirmed rows first, in timeline order, by draftPartFromUserItem, less
+ * the messages the app wrote they carry (unconfirmedRowAtBoot); then the
+ * queue rows in queue order by draftPartFromQueueRow, less the messages
+ * their owners take back (ownedSendID), the copies of a send an unconfirmed
+ * row carries, the messages queuedSendDelivered calls delivered and the
+ * app's messages discardAgentWakeAtBoot takes), each written through
  * composerdraft.MergeParts. Content, attachments and terminal chips are
  * compared exactly. A meta or payload field of the wrong type other than
  * the ones a part reads is not mirrored: Go's decode would fail and take
@@ -587,11 +655,11 @@ async function restoredDraftThreads(dbPath: string, schemas: Record<string, stri
       const carried = new Set<string>();
       for (const row of unconfirmed.filter((r) => r.thread === thread)) {
         for (const send of userRowSends(row.meta)) carried.add(send);
-        const part = userRowPart(row.summary, row.meta);
-        if (!emptyPart(part)) parts.push(part);
+        const part = unconfirmedRowPart(row.summary, row.meta);
+        if (part && !emptyPart(part)) parts.push(part);
       }
       for (const row of queued.filter((r) => r.thread === thread)) {
-        if ((row.send !== '' && carried.has(row.send)) || row.confirmed) continue;
+        if (ownedSend(row.send) || (row.send !== '' && carried.has(row.send)) || row.confirmed || discardedAtBoot(row.send)) continue;
         const part = queueRowPart(row.message, row.payload);
         if (!emptyPart(part)) parts.push(part);
       }

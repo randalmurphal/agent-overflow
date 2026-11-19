@@ -57,12 +57,14 @@ type WorktreeCut struct {
 }
 
 // CutWorktree is a worktree a cut made: where it is, the branch it checks
-// out ("" for a tag), and whether the cut made that branch (a new one, or the local branch
-// of one only origin had), which undoing the cut deletes.
+// out ("" for a tag), and Tip, the commit the cut made that branch at (a
+// new one, or the local branch of one only origin had), "" when the branch
+// was there before. Undoing the cut deletes the branch only while it still
+// points at Tip.
 type CutWorktree struct {
-	Path          string
-	Branch        string
-	CreatedBranch bool
+	Path   string
+	Branch string
+	Tip    string
 }
 
 // Workspace is the explicit git/worktree subprocess port. Thread policy asks
@@ -72,8 +74,8 @@ type Workspace interface {
 	FindWorktree(projectPath, candidate string) (path, branch string, found bool, err error)
 	// CreateWorktree cuts a fresh worktree for cut and reports what it made.
 	CreateWorktree(ctx context.Context, projectPath string, cut WorktreeCut) (CutWorktree, error)
-	// RemoveCutWorktree undoes a cut nothing has used yet: it removes the
-	// worktree, then deletes the branch when the cut made it.
+	// RemoveCutWorktree undoes a cut as far as it is still the cut's alone
+	// (gitops.Core.UndoCut): what it kept is a *gitops.CutKept naming why.
 	RemoveCutWorktree(projectPath string, cut CutWorktree) error
 	// ObserveOrigin reads the workspace's git coordinates as they stand right
 	// now. It has no error return because every failure, no repository, no

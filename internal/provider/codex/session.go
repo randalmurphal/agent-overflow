@@ -330,6 +330,11 @@ type Session struct {
 	// started with, which RestoreDeveloperInstructions gives back to the
 	// thread after a history cut. Guarded by mu.
 	developerInstructionsComposed composedDeveloperInstructions
+	// sessionStart follows the delivery of Config.SessionStartHook, nil
+	// without one; sessionStartDueTurn is the turn that gave it its chance
+	// to run, guarded by mu (session_start_hooks.go).
+	sessionStart        *provider.SessionStartDelivery
+	sessionStartDueTurn string
 	// rehydrateParams holds the thread-scoped params this session loaded
 	// its thread with that turn/start does not repeat (see
 	// threadRehydrateParams). Guarded by mu; read by Resume.
@@ -356,7 +361,12 @@ type Session struct {
 	turn       sessionTurnState
 	origins    sessionTurnOrigins
 	turnConfig sessionTurnConfig
-	settings   sessionSettingsState
+	// writableRoots and nativeMemoryOff are Config.WritableRoots and
+	// Config.NativeMemoryOff, set at construction and never changed, so a
+	// turn or a fork reads them without a lock.
+	writableRoots   []string
+	nativeMemoryOff bool
+	settings        sessionSettingsState
 	// review is the bounded correlation state for Codex's built-in inline
 	// review. A review has two turn ids: the outer id carried by visible item
 	// events and turn/completed, and a private execution id carried only by
@@ -726,6 +736,32 @@ type Config struct {
 	// a user's configured value from being replaced. See
 	// developer_instructions.go.
 	DeveloperInstructions string
+	// SessionStartHook runs at the thread's start, after a compaction and
+	// after a clear, and its PromptCommand at each turn's input, registered
+	// with their trust in the thread/start|resume `config` map
+	// (sessionStartHookConfig). A start or compaction whose next turn
+	// completes without its output, and a failed prompt run, is reported
+	// as a warning (session_start_hooks.go). nil for none.
+	SessionStartHook *provider.SessionStartHook
+	// SessionStartForget forgets what the thread's records say its model
+	// was shown, so the next prompt delivers the whole memory: it runs at a
+	// compaction, whose hook Codex runs only at the next turn, perhaps in
+	// another process, and when a start or a compaction ended without the
+	// hook's output. nil for nothing.
+	SessionStartForget func() error
+	// NativeMemoryOff turns Codex's own memories off for the thread:
+	// `features.memories` and `memories.generate_memories` false in the
+	// thread/start|resume|fork `config` map, and a resumed thread's stored
+	// memory mode set to disabled, so the thread neither uses memories nor
+	// is mined for them. A loaded thread keeps the config it was loaded
+	// with. Stamped at spawn by the app, like SessionStartHook.
+	NativeMemoryOff bool
+	// WritableRoots are folders outside the workspace a turn may write in
+	// the workspace-write sandbox, sent in every turn's `sandboxPolicy`
+	// (turnSandboxPolicy): the memory folders and an assistant's projects.
+	// The other sandboxes treat a write there as they treat a workspace
+	// write. Stamped at spawn.
+	WritableRoots []string
 	// DeveloperInstructionsDelivery records what the thread's model has
 	// read as developer instructions, so a resume can inject a changed
 	// text. Nil for a session that never runs a turn.

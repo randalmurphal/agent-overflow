@@ -21,10 +21,39 @@ type Computer struct {
 // and runtime mode. The thread_spawn descriptions state them so the common
 // case needs no discovery call, which is why they are part of the shape
 // rather than read at call time.
+//
+// Spawn is what the session may start, fixed when it registered.
 type Shape struct {
 	Computers []Computer
 	Defaults  SpawnDefaults
+	Spawn     SpawnShape
+	// AssistantsOff is this computer's Assistants setting turned off: the
+	// session has no tool, parameter or sentence of the guide that is about
+	// assistants (docs/specs/standing-agents.md, "Turning assistants off").
+	AssistantsOff bool
 }
+
+// SpawnShape is what the guide and the tool list say about spawning in one
+// session (docs/specs/agent-thread-tools.md, "Sub-thread depth" and "Agent
+// profiles").
+type SpawnShape struct {
+	// Level is the session's thread's sub-thread level and Limit the most
+	// levels of sub-threads this computer allows. A thread at the limit
+	// has no thread_spawn. A zero Limit is no limit known, as in a shape
+	// computed for no session.
+	Level, Limit int
+	// Providers are the providers this computer offers, and Profiles the
+	// names of the agent profiles it can run.
+	Providers []string
+	Profiles  []string
+}
+
+// CanSpawn reports whether the session has thread_spawn.
+func (s SpawnShape) CanSpawn() bool { return s.Limit == 0 || s.Level < s.Limit }
+
+// spawnsAtLimit reports whether a thread this session spawns is at the
+// limit, with no thread_spawn of its own.
+func (s SpawnShape) spawnsAtLimit() bool { return s.Limit != 0 && s.Level+1 >= s.Limit }
 
 // Paired reports whether this shape has other computers in it.
 func (s Shape) Paired() bool { return len(s.Computers) > 0 }
@@ -45,6 +74,11 @@ type Caller struct {
 	ComputerID   string
 	ComputerName string
 	Title        string
+	// Session is the token of the provider session on this computer the
+	// call authenticated as, empty for a call no session here made. Work
+	// the call starts is that session's alone: it is refused once the
+	// session has ended. It never leaves this computer.
+	Session string `json:"-"`
 }
 
 // Thread is the App's row for one thread, including the derived columns
@@ -72,6 +106,11 @@ type Thread struct {
 	// LastActivity is the newest completed turn in Unix milliseconds, or
 	// the thread's update time when it has never completed a turn.
 	LastActivity int64 `json:"last_activity,omitempty"`
+	// Assistant is set on an assistant's current thread, and SpawnedBy
+	// names the thread that spawned this one on its computer, so a reader
+	// can tell a lead from its workers without another call.
+	Assistant *Assistant `json:"assistant,omitempty"`
+	SpawnedBy string     `json:"spawned_by,omitempty"`
 
 	// The four derived columns State reads, named as the frontend's
 	// reference implementation names them.
@@ -81,6 +120,17 @@ type Thread struct {
 	WorktreeSetupState        string `json:"-"`
 }
 
+// Assistant names the assistant whose current thread a row is.
+type Assistant struct {
+	ID string `json:"id"`
+	// Name is the thread's title. A search answer covering several
+	// computers suffixes it `-<computer>` where two assistants share it;
+	// the suffix is never written to the title.
+	Name string `json:"name"`
+	// Role is its role line (agenthome.BoundRole), its own text, or empty.
+	Role string `json:"role,omitempty"`
+}
+
 // Pin tiers. The app's front and back burner are the two pin tiers; the
 // sidebar carries no third.
 const (
@@ -88,6 +138,36 @@ const (
 	PinBack  = "back"
 	PinNone  = "none"
 )
+
+// Placements: whether a thread a local thread spawned has a sidebar row
+// (docs/specs/standing-agents.md, "Owned workers"). Owned is its spawner's
+// worker with no row; grouped and standalone give it one. They match the
+// store's values.
+const (
+	PlacementOwned      = "owned"
+	PlacementGrouped    = "grouped"
+	PlacementStandalone = "standalone"
+)
+
+// checkPlacement refuses a placement outside the three and a placement that
+// contradicts group: a group name implies grouped, and ungrouping (an empty
+// name, set) cannot be grouped. Grouped with no group at all is left to the
+// caller, because only the thread knows whether it is in a group already.
+func checkPlacement(placement string, group *string) error {
+	switch placement {
+	case "", PlacementOwned, PlacementGrouped, PlacementStandalone:
+	default:
+		return invalidf("placement must be owned, grouped or standalone.")
+	}
+	switch {
+	case group == nil:
+	case *group != "" && (placement == PlacementOwned || placement == PlacementStandalone):
+		return invalidf("group puts the thread in a group, so it cannot also be %s. Pass placement grouped with group, or drop group.", placement)
+	case *group == "" && placement == PlacementGrouped:
+		return invalidf("group null takes the thread out of its group, so placement cannot be grouped.")
+	}
+	return nil
+}
 
 // LiveState is the part of the app's live projection the state derivation
 // needs. Everything here dies with the provider session; the durable
@@ -124,6 +204,17 @@ const (
 	StateInterrupted     = "interrupted"
 )
 
+// StateUnavailable is a thread_status row for a thread whose state could
+// not be read: its computer did not answer, or the row's error says why.
+// StateUnresolved is one for a reference no computer that answered
+// matched while another did not answer its lookup. Neither is a thread
+// state: nothing is known of the thread, so it never reads as resting and
+// no filter accepts it.
+const (
+	StateUnavailable = "unavailable"
+	StateUnresolved  = "unresolved"
+)
+
 // Resolution is one computer's answer to a thread reference.
 type Resolution struct {
 	// Matches are the threads on this computer whose id the reference
@@ -137,8 +228,12 @@ type Resolution struct {
 
 // Candidate is one thread a reference could mean.
 type Candidate struct {
-	ThreadID   string `json:"thread_id"`
-	Title      string `json:"title,omitempty"`
+	ThreadID string `json:"thread_id"`
+	Title    string `json:"title,omitempty"`
+	// Assistant is the name of the assistant whose current thread this is,
+	// set when the reference matched that name. A computer that predates
+	// assistants never sets it.
+	Assistant  string `json:"assistant,omitempty"`
 	ComputerID string `json:"computer_id,omitempty"`
 	Computer   string `json:"computer,omitempty"`
 }
@@ -296,9 +391,13 @@ type Item struct {
 	// Kind is the item kind: user_text, assistant_text, thinking,
 	// tool_call, tool_output, diff, subagent, error.
 	Kind string `json:"kind"`
-	// Role is what the transcript prefixes the row with: user, assistant,
-	// tool or system.
-	Role   string `json:"role"`
+	// Role is what the transcript prefixes the row with: user, agent,
+	// assistant, tool or system. A user_text another agent, a wake or
+	// another Claude session wrote is `agent`, never `user`.
+	Role string `json:"role"`
+	// From names the sender of an `agent` row: the sending thread's title
+	// and id, a loop or watch, a worker, a script or a Claude session.
+	From   string `json:"from,omitempty"`
 	TurnID string `json:"turn_id,omitempty"`
 	// Name is the tool name on a tool_call row.
 	Name string `json:"name,omitempty"`
@@ -359,6 +458,8 @@ type SearchQuery struct {
 	// Group is a sidebar group's id or name. A name matches every group
 	// of that name on the computer, case-insensitively.
 	Group string
+	// Agents restricts to assistants' current threads.
+	Agents bool
 	// SinceUnixMs bounds last activity.
 	SinceUnixMs int64
 	Limit       int
@@ -390,7 +491,8 @@ type Hit struct {
 
 // LastMessage says who spoke last in a thread and how it ended.
 type LastMessage struct {
-	// Role is user or assistant.
+	// Role is user, agent (a message another agent or a wake wrote into
+	// the thread) or assistant.
 	Role string
 	// At is when the message was last written, in Unix milliseconds.
 	At int64
@@ -452,6 +554,11 @@ type ProviderOption struct {
 	Name         string        `json:"name,omitempty"`
 	DefaultModel string        `json:"default_model,omitempty"`
 	Models       []ModelOption `json:"models"`
+	// Unlisted are the models the provider no longer offers a new thread
+	// but still runs for one already on them, such as a spawner's own.
+	// The computer that has them resolves with them; they are never
+	// listed.
+	Unlisted []ModelOption `json:"-"`
 }
 
 // ModelOption is one model of one provider.

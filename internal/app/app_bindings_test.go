@@ -34,7 +34,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 		"WorkflowCompleteTakeover",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",
 		"WorkflowFetchPRReviewComments", "WorkflowSendPRReviewCommentsToThread", "WorkflowDiscussPR",
-		"WorkflowGetJobNotes", "WorkflowSetJobNotes", "WorkflowListDefinitions",
+		"WorkflowListDefinitions",
 	} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App method %s is not registered", name)
@@ -1080,7 +1080,7 @@ func TestUnarchiveThreadRestoresThread(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread() error = %v", err)
 	}
 
@@ -1184,6 +1184,10 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// stub and the textgen poison; tests that assert those behaviors
 	// install their own fakes over the top.
 	isolateE2EProviderSpawns(t, app)
+	// Cleanups run last first: the cancel releases a notice's session
+	// start waiting on a thread lock, and the join lands it before the
+	// store closes.
+	t.Cleanup(app.waitAgentNoticeWork)
 	t.Cleanup(app.appCancel)
 	joinBackgroundWorkAtCleanup(t, app)
 	ensureDefaultTestProject(t, app)

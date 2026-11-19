@@ -76,7 +76,7 @@ func TestApprovalScopeFallsBackToTheRequestedToolsOwnRow(t *testing.T) {
 	if got := lastApprovalRequest(t, emits).ParentToolUseID; got != "toolu_agent" {
 		t.Fatalf("emitted scope = %q, want toolu_agent", got)
 	}
-	pending, ok := r.takePendingApproval("t1", "req-1")
+	pending, ok, _ := r.takePendingApproval("t1", "req-1", 0)
 	if !ok {
 		t.Fatal("approval was not registered")
 	}

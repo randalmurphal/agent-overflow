@@ -16,6 +16,7 @@
 // drift fails CI rather than only showing up in production.
 
 import { __bindingMocksInternal } from './bindings-app';
+import { methodId } from '../../lib/transport/methodId';
 import { getBackendIdentity } from '../../lib/transport/backendIdentity';
 import type { EventOrigin } from '../../lib/transport/handle';
 
@@ -130,6 +131,21 @@ export const Call = {
       );
     }
     return Promise.resolve(fn(...args));
+  },
+  // A wrapper that calls by id (stores/bindings.ts, ArchiveThread) reaches
+  // the mock installed under the method's name, as the generated binding
+  // of that name would.
+  ByID(id: number, ...args: unknown[]): Promise<unknown> {
+    for (const [name, fn] of __bindingMocksInternal) {
+      if (methodId(name) !== id) continue;
+      // Synchronous, as a dispatch is: the mock sees the call's routing pin.
+      try {
+        return Promise.resolve(fn(...args));
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    }
+    return Promise.reject(new Error(`Call.ByID: no mock for method ${id}. Install one via setBindingMock(name, impl).`));
   },
 };
 
@@ -246,7 +262,7 @@ export function emitWailsEvent(
   // replay would.
   const origin: EventOrigin = { backendId: backendId ?? getBackendIdentity().backendId };
   // Copy to avoid mutation-during-iteration if handlers unsubscribe.
-  for (const handler of [...set]) {
+  for (const handler of Array.from(set)) {
     handler({ name, data, origin, sequence: delivery.sequence, replayed: delivery.replayed });
   }
 }

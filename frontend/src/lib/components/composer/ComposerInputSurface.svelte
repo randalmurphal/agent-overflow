@@ -505,7 +505,8 @@
       {textarea}
     />
   </div>
-  {#if threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
+  <!-- An ask's copy (Thread.askCopy) takes no message, so nothing to attach. -->
+  {#if !pane.thread?.askCopy && threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
     {#if showDraftRows && editsDraft}
       <AttachmentPicker disabled={attachmentsOnHold} onChoose={chooseAttachments} />
     {/if}

@@ -131,7 +131,7 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 					message = err.Error()
 					failures.Add(1)
 				}
-				if held, getErr := m.carrier(id); getErr == nil {
+				if held, getErr := m.carrier(ctx, id); getErr == nil {
 					if held.setOwnError(message) {
 						m.notifyMembershipChanged()
 					}
@@ -154,7 +154,7 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 }
 
 func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDeviceHooks) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -358,8 +358,9 @@ func (m *Manager) pruneOwnProfiles(snapshot owndevices.List) (bool, error) {
 }
 
 // retireOwnProfile forgets one own-device profile the way a tombstone does,
-// if it still holds the session named (any session when sessionID is empty).
-// Ordinary limited shares are separate grants and are never touched.
+// if it still holds the session named (any session when sessionID is empty),
+// and announces it as SetRemoved, as every removal is. Ordinary limited
+// shares are separate grants and are never touched.
 func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
 	unlock := m.profiles.Lock(id)
 	defer unlock()
@@ -376,5 +377,6 @@ func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
 	if err := m.forgetLocked(id); err != nil {
 		return false, err
 	}
+	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
 	return true, nil
 }

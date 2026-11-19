@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -152,7 +153,41 @@ type Settings struct {
 	// the chat pane renders and which built-in tool servers are on
 	// (internal/app/app_agent_guide.go). Default on; spawn-only, so a
 	// change reaches a session at its next start or resume.
-	AgentGuideEnabled bool   `json:"agentGuideEnabled"`
+	AgentGuideEnabled bool `json:"agentGuideEnabled"`
+	// AssistantsEnabled shows this computer's assistants and lets them run
+	// (docs/specs/standing-agents.md, "Turning assistants off"). Off hides
+	// every assistant surface, pauses their loops, watches and reminders and
+	// ends their sessions; nothing is archived or deleted, and turning it on
+	// resumes them. Default on; applies live.
+	AssistantsEnabled bool `json:"assistantsEnabled"`
+	// SharedMemoryEnabled delivers project and user memory to every
+	// thread's sessions, not only to assistants' (docs/specs/memory.md,
+	// "Settings"). Default off; spawn-only, so a change reaches a session at
+	// its next start or resume.
+	SharedMemoryEnabled bool `json:"sharedMemoryEnabled"`
+	// AgentProfiles are the agents an agent spawns a sub-thread by, and
+	// AgentNotes the notes on choosing between them (agentroster.go).
+	// Seeded from DefaultSettings: an absent key reads the current seed,
+	// and once the person edits either list the stored list is theirs. No
+	// omitempty: an emptied list is stored as empty, never read back as
+	// the seed.
+	AgentProfiles []AgentProfile `json:"agentProfiles"`
+	AgentNotes    []AgentNote    `json:"agentNotes"`
+	// SubThreadLevels is how many levels of owned sub-threads may exist
+	// under a thread the person talks to. A thread at the last level has
+	// no thread_spawn and no native subagents. Spawn-only: a session keeps
+	// the tool list it started with.
+	SubThreadLevels int `json:"subThreadLevels"`
+	// ClaudeOwnMemoryOff is in which of this app's Claude and claude-tui
+	// sessions Claude Code's own auto memory is turned off, through their
+	// inline settings (OwnMemoryOff*); the user's settings files are never
+	// touched. Spawn-only.
+	ClaudeOwnMemoryOff string `json:"claudeOwnMemoryOff"`
+	// CodexOwnMemoryOff is in which of this app's Codex threads Codex's own
+	// memories are turned off, through their thread config, so a thread
+	// neither uses memories nor is mined for them (OwnMemoryOff*).
+	// Spawn-only; a loaded thread keeps the memory mode it was loaded with.
+	CodexOwnMemoryOff string `json:"codexOwnMemoryOff"`
 	ConfirmArchive    bool   `json:"confirmArchive"`
 	ConfirmDelete     bool   `json:"confirmDelete"`
 	AutoPinNewThreads bool   `json:"autoPinNewThreads"`
@@ -552,13 +587,13 @@ type Settings struct {
 
 	// The OS-notification preferences (docs/specs/remote-access.md §9).
 	// NotificationsEnabled is the master switch: with it off this screen
-	// raises no OS notification at all. The six per-kind toggles below cover
-	// every notify.Kind — the four mapped moments plus the two senders that
+	// raises no OS notification at all. The seven per-kind toggles below cover
+	// every notify.Kind — the five mapped moments plus the two senders that
 	// predate the mapping (a workflow item needing a human, and the WSL
 	// launcher's "update didn't apply" notice), which used to have the
 	// master switch as their only silencer.
 	//
-	// THE MASTER SWITCH AND THE SIX PER-KIND TOGGLES DEFAULT TRUE, and are
+	// THE MASTER SWITCH AND THE SEVEN PER-KIND TOGGLES DEFAULT TRUE, and are
 	// therefore all present in DefaultSettings. That is the KeepAwakeScreen
 	// pattern and it is what makes an absent key read as ON — which matters
 	// more here than anywhere else, because notifications were
@@ -591,6 +626,11 @@ type Settings struct {
 	// "update didn't apply" notice and an unfinished deferred store
 	// migration. Same reasoning as NotifyWorkflowAttention.
 	NotifyAppUpdate bool `json:"notifyAppUpdate"`
+	// NotifyThreadAttention covers notify.KindThreadAttention: a turn that
+	// ended with its agent's attention flag up, a decision, a review or a
+	// problem. It is how a loop or watch turn reaches the user, the one
+	// rest a tick raises.
+	NotifyThreadAttention bool `json:"notifyThreadAttention"`
 	// NotifyHiddenThreads lets a thread the sidebar does not list (a
 	// workflow-owned mode, or a thread with no row) interrupt this screen.
 	// It narrows the per-kind toggles above rather than adding a kind: a
@@ -624,7 +664,7 @@ type Settings struct {
 	// toggle and the "quiet when" reading apply to sounds without being
 	// restated, and a sound can never fire where a banner was suppressed.
 	//
-	// THREE SOUND EVENTS, not six, because the six notify kinds answer three
+	// THREE SOUND EVENTS, not seven, because the seven notify kinds answer three
 	// questions a person reacts to differently: the agent finished, the agent
 	// needs you, something is wrong. The four "wrong or waiting on a system"
 	// kinds (error, provider signed out, workflow attention, app update)
@@ -637,7 +677,8 @@ type Settings struct {
 	NotificationSoundsEnabled bool `json:"notificationSoundsEnabled"`
 	// NotifySoundTurnComplete covers notify.KindTurnComplete.
 	NotifySoundTurnComplete bool `json:"notifySoundTurnComplete"`
-	// NotifySoundInputNeeded covers notify.KindApprovalNeeded.
+	// NotifySoundInputNeeded covers notify.KindApprovalNeeded and
+	// notify.KindThreadAttention: the agent needs you either way.
 	NotifySoundInputNeeded bool `json:"notifySoundInputNeeded"`
 	// NotifySoundAttention covers notify.KindError,
 	// notify.KindProviderSignedOut, notify.KindWorkflowAttention and
@@ -684,6 +725,12 @@ var DefaultSettings = Settings{
 	BrowserPersistSiteData: true,
 	ThreadToolsEnabled:     true,
 	AgentGuideEnabled:      true,
+	AssistantsEnabled:      true,
+	AgentProfiles:          defaultAgentProfiles,
+	AgentNotes:             defaultAgentNotes,
+	SubThreadLevels:        DefaultSubThreadLevels,
+	ClaudeOwnMemoryOff:     OwnMemoryOffWhereAgentOverflowMemory,
+	CodexOwnMemoryOff:      OwnMemoryOffWhereAgentOverflowMemory,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,
 	AutoPinNewThreads:      true,
@@ -763,6 +810,7 @@ var DefaultSettings = Settings{
 	NotifyProviderSignedOut: true,
 	NotifyWorkflowAttention: true,
 	NotifyAppUpdate:         true,
+	NotifyThreadAttention:   true,
 	// Muting a screen you are already looking at is what a person means by
 	// "notify me": the interruption is worth nothing when the answer is
 	// already in front of them.
@@ -803,6 +851,20 @@ const (
 	NotifyCueChime = "chime"
 	// NotifyCueSystem is the OS notification sound, carried by the banner.
 	NotifyCueSystem = "system"
+)
+
+// When the app turns a provider's own memory off in its sessions, the values
+// of Settings.ClaudeOwnMemoryOff and Settings.CodexOwnMemoryOff
+// (docs/specs/memory.md, "Settings").
+const (
+	// OwnMemoryOffWhereAgentOverflowMemory turns it off in each session that
+	// receives Agent Overflow memory, so no session keeps two memories, and
+	// leaves it as the user configured it in every other session.
+	OwnMemoryOffWhereAgentOverflowMemory = "agentOverflowMemory"
+	// OwnMemoryOffAlways turns it off in every session.
+	OwnMemoryOffAlways = "always"
+	// OwnMemoryOffNever leaves it as the user configured it everywhere.
+	OwnMemoryOffNever = "never"
 )
 
 // The four readings of "quiet when", the values of Settings.NotifyQuietWhen.
@@ -1455,6 +1517,9 @@ func copyDefaults() Settings {
 	d := DefaultSettings
 	d.RecentWorkspaces = nil
 	d.GitLabSelfHostedHosts = nil
+	// The seeds are cloned so an edit made in place never reaches them.
+	d.AgentProfiles = slices.Clone(DefaultSettings.AgentProfiles)
+	d.AgentNotes = slices.Clone(DefaultSettings.AgentNotes)
 	return d
 }
 

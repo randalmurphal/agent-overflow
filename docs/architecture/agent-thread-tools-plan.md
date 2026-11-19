@@ -59,9 +59,10 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
    own draft-merge hazards for a case the agent has already handled.
 7. **Boot settles every open receipt as `interrupted`**, not only
    scratch ones. A queued `thread_send` that had not reached the
-   provider before a restart is restored into the composer draft by
-   `restoreDurableFlushQueueAtBoot`, never sent, so it can never settle
-   on its own. Honest and uniform: the caller learns the computer
+   provider before a restart is discarded at boot
+   (`restoreDurableFlushQueueAtBoot`, `discardAgentWakeAtBoot`), never
+   sent and never put in the composer, so it can never settle on its
+   own. Honest and uniform: the caller learns the computer
    restarted and decides whether to send again.
 8. **Every spawn and send names its sender.** The footer's line naming
    the sender thread (and its computer when it is another one) is on
@@ -248,10 +249,9 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   opt-in; `openRPC(ctx, capability)` refuses a peer whose hello lacks
   the capability with `errUnsupportedPeerOperation`, translated to
   `remote_unsupported`.
-- The remote watch poller: 2 s ticker, 32 due rows, four concurrent,
-  +5 s normal, +30 s after an error, +5 s while a wait is parked,
-  resumed at boot from the table. `beginRemoteWait` ends after the reply
-  is written so the poller cannot double-deliver.
+- The remote watch poller runs on the schedule in
+  [remote commands](remote-commands.md#agent-use). `beginRemoteWait` ends
+  after the reply is written so the poller cannot double-deliver.
 - `ForkThread` locks the source, forks at the tail mid-turn, settles the
   fork as interrupted, copies `Mode` and `RuntimeMode`, has no override
   options. Title generation is skipped when the title is not
@@ -260,7 +260,7 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   `threadmode.hiddenModes` holds the workflow modes; six store queries
   use `hiddenThreadModesClause`. The chain stood at v100 before this
   work.
-- `DeleteThread` runs paced in 500-row chunks; `threadapp.DeleteTree`
+- `DeleteThread` runs paced in 500-row chunks; `threadapp.Destroy`
   calls `StopRemoteWork` before and after the session stop.
 - Move keeps the thread id and records the new owner
   (`thread_transfers.peer_backend_id`, surfaced by
@@ -360,7 +360,7 @@ computer's threads made):
 | `answer`, `answer_kind` | The whole settled text, uncapped (`payloads`-style BLOB, never truncated), and whether it was an explicit `reply`, the `final` assistant text, an `error`, or a reminder `note`. Wakes carry a 24 KB preview; `thread_status` pages the whole. |
 | `late_reply`, `late_reply_at` | A `thread_reply` that arrived after `finished`. Delivered as a second wake. |
 | `revision` | Increments on every settlement and late reply; `thread_status` waits with `after_revision`. |
-| `settled_at`, `delivered_at`, `delivered_how`, `late_delivered_at` | When settlement was stored here; when and how each wake was handed over: `inline`, `queued`, or `draft` (a queued wake restored into the composer instead of reaching the agent). |
+| `settled_at`, `delivered_at`, `delivered_how`, `late_delivered_at`, `late_delivered_how` | When settlement was stored here; when and how each wake was handed over: `inline` or `queued`. `draft` is a queued wake an earlier version restored into the composer; nothing writes it now. |
 | `expires_at` | From the destination: when the uncollected answer is dropped there. |
 | `next_check`, `attempts`, `issue` | Poller schedule and last error text for remote targets. |
 | `created_at`, `updated_at` | |
@@ -383,7 +383,7 @@ against this computer's threads, including local ones):
 |---|---|
 | `token` PK | Same token as the source row. |
 | `owner_device_id` | `"local"` or the authenticated device of the source computer. Authorization principal for every later call about this token. |
-| `source_computer_id`, `source_computer_name`, `source_thread_id`, `source_thread_title` | Display metadata from the call for the footer and the chip. Never trusted for authorization. |
+| `source_computer_id`, `source_computer_name`, `source_thread_id`, `source_thread_title` | Display metadata for the footer and the chip: the ids and title from the call, the computer's name as this computer's pairing gives it (the call's own when it has none). Never trusted for authorization. |
 | `kind` | As above. |
 | `target_thread_id` | The thread that answers. For `ask`, the scratch fork. |
 | `message_item_id`, `turn_id` | The user row the request wrote, and the turn that consumed it, both set when the row is written to the provider. Distinguishes queued from running, and binds settlement to that turn and no other. |
@@ -652,7 +652,8 @@ the thread-level text in place, which a Codex test pins.
 
 ### Spawn, send, ask
 
-`app_thread_tools_start.go`. Shared prologue: mint token, insert the
+`app_thread_tools_start.go`, with the acceptance in
+`app_thread_tools_accept.go`. Shared prologue: mint token, insert the
 `thread_requests` row as `unconfirmed`, then dispatch locally or to the
 peer. The local dispatch and the peer's `ThreadToolCall` land in the
 same function, `acceptRequest(ctx, owner, call)`, which:
@@ -739,7 +740,7 @@ same text returns the existing acceptance; anything else is refused
 with the state as the reason. Unknown token: `thread_request_unknown`.
 
 Scratch receipts settle on any non-running state and the settle
-function deletes the scratch thread (through `threadapp.DeleteTree`
+function deletes the scratch thread (through `threadapp.Destroy`
 outside the lock, DB rows only) after the answer is stored and after
 the `thread_reply` call that stored it has written its response, so the
 responder's own tool call never fails against a vanished thread. The
@@ -759,11 +760,12 @@ SendID: "thread-wake:" + token}, injectedQueueOptions{preserveDraft:
 true, persist: a.store.QueueThreadWake(token, item)})`, where
 `QueueThreadWake` inserts the queue row and sets `delivered_at` and
 `delivered_how = queued` in one transaction. Inline delivery sets
-`delivered_how = inline` only after the tool response was written. Every
-restore of queued messages into the composer draft
-(`RestoreFlushQueueToDraft`) marks the matching requests
-`delivered_how = draft` in the transaction that writes the draft. A late reply
-uses `SendID "thread-wake-late:" + token` and `late_delivered_at`. The
+`delivered_how = inline` only after the tool response was written. A
+wake still queued at boot, or one a session ended or could not start, the
+provider dropped unrun or a resend failed without taking in, goes back to
+its request (`WithdrawThreadWake`) rather than into the composer draft. A late reply
+uses `SendID "thread-wake-late:" + token`, `late_delivered_at` and
+`late_delivered_how`. The
 caller archived after the request: unarchive first (spec). Caller
 deleted or missing: mark delivered with nothing queued and log.
 No live session: `startSession` after queuing, as `deliverRemoteCompletion`
@@ -877,8 +879,11 @@ receipt past `expires_at` whose latest revision is uncollected has its
 `answer` and `late_reply` cleared and its state set `expired`; the row
 stays until the retention floor so the token keeps answering. Rows past
 the floor (30 days from `created_at`) are deleted, source rows the
-same. Destination-side export files awaiting transfer are deleted after
-one day; delivered export files stay until removed.
+same, except a local spawn row whose thread still exists: it is marked
+`lineage_only` with its answer, late reply and wake cleared, and every
+ledger read treats its token as unknown. Destination-side export files
+awaiting transfer are deleted after one day; delivered export files stay
+until removed.
 
 ### Resolution
 
@@ -907,6 +912,8 @@ In `app_thread_tools_peer.go`, all `//ao:route selected`:
 - `ThreadToolResolve(ctx, prefix string)` `//ao:scope threads:read`
 - `ThreadToolQuery(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
   (`thread_search`, `thread_show`, `thread_item`, `thread_options`)
+- `ThreadToolWatch(ctx, call ThreadPeerCall)` `//ao:scope threads:read`
+  `//ao:callerbound` (a `thread_status` wait on `thread_ids`)
 - `ThreadToolCall(ctx, call ThreadPeerCall)` `//ao:scope terminal:operate`
   (`spawn` including `from_thread`, `send`, `ask`, `cancel`,
   `thread_update`, `thread_group`)
@@ -920,9 +927,9 @@ method: `threadToolOwner(ctx)` (the `remoteCommandOwner` rule), a
 comes from the session. `make methodgen` regenerates the table and the
 TS mirror.
 
-`attachedbackends.CallThreadPeer` shares `callAgentPeer`'s body with a
+`attachedbackends.CallThreadPeer` shares `CallAgentPeer`'s body with a
 capability parameter (`CapabilityThreadTools`) and its own allowlist of
-the five names, without the agent-computer opt-in check, because reach
+the peer method names, without the agent-computer opt-in check, because reach
 is pairing alone. `CapabilityThreadTools = "thread-tools.v1"` is
 appended to every `serverCapabilities` variant. An older peer:
 `thread_unsupported` with the update hint.
@@ -935,10 +942,16 @@ and keeps raw causes in the host log with a reference id.
 ### `to_file` across computers
 
 The destination renders to `<configDir>/thread-exports/<id>.txt`,
-returns `{export_id, size, sha256}`, and serves `ThreadToolExportChunk`
-in 256 KiB pieces with the file stamp rule from `readRemoteArtifactChunk`.
-The source calls `receiveRemoteArtifact` with a reader that wraps the
-peer method and lands the file in its own `thread-exports/`. That
+returns `{export_id, size, sha256}`, records that digest and the file's
+stamp in memory, and serves `ThreadToolExportChunk` in 256 KiB pieces
+under the recorded stamp, with the recorded digest on the first piece
+instead of a second read of the file. An export with no record (after a
+restart or the sweep) is refused with "ask for the window again". The
+source holds one connection for the whole copy
+(`attachedbackends.HoldThreadPeer`), reads a chunk the connection lost
+once more on a fresh one (`attachedbackends.Unanswered`), and calls `receiveRemoteArtifact`
+with the announced size and digest, landing the file in its own
+`thread-exports/`. That
 receiver refuses files over `remoteArtifactMaxBytes` (1 GiB); an
 export larger than that is refused on the destination with its size
 and a suggestion to narrow `include` or the window, since no thread
@@ -957,7 +970,7 @@ transfer, which expire with receipts.
   sent threads keep running.
 - Copy: `HasOpenThreadRequests` joins `HasPendingRemoteWatches` in the
   copy refusal.
-- Target thread deleted while a receipt is open: `DeleteTree` settles
+- Target thread deleted while a receipt is open: `DeleteThread` settles
   its receipts `errored` ("the thread was deleted") through the same
   `StopRemoteWork` port before rows go.
 - Target moved: the transfer stops the thread's session, and the
@@ -1073,10 +1086,10 @@ Requests and waits:
   revision; the poller collects it and the second wake lands.
 - Two `thread_status` calls waiting on the same token: both return.
 - A thread sending to itself: refused at admission.
-- Wake restored to the composer draft (a restart, a session that ends or
-  cannot start, a message the provider dropped unrun): the request reads
-  `delivered: draft`; `thread_status` still returns the answer; the
-  user sees the text in the composer and decides.
+- Wake still queued at a restart, left by a session that ended or could
+  not start, or dropped unrun by the provider: it goes back to its
+  request, owed and disarmed, and never into the composer;
+  `thread_status` still returns the answer.
 - Scratch responder needs a write: read-only refuses instantly; the
   model says so in its reply; nothing waits on a human.
 - Scratch responder calls `thread_ask` itself: allowed (all tools in

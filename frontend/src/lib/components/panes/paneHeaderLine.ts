@@ -1,5 +1,5 @@
-import type { Thread } from '../../types/models';
-import { hasUnread } from '../../utils/threadStatusPill';
+import type { AttentionKind, Thread } from '../../types/models';
+import { ATTENTION_KINDS, attentionKindOf, hasUnread, pendingAttention } from '../../utils/threadStatusPill';
 import {
   getEffectiveThreadStatus,
   type ThreadLiveStatus,
@@ -39,9 +39,17 @@ export interface PaneHeaderLineInput {
   focused: boolean;
   paneCount: number;
   compact: boolean;
-  thread: Pick<Thread, 'lastReadAt' | 'latestTurnCompletedAt'> | null;
+  thread: Pick<Thread, 'lastReadAt' | 'latestTurnCompletedAt' | 'attention'> | null;
   status: ThreadLiveStatus | null;
 }
+
+// An attention flag takes its sidebar colour, but for a review: accent is
+// focus here, so a review reads as a finished turn, as a waiting plan does.
+const ATTENTION_HEADER_COLORS: Record<AttentionKind, PaneHeaderLineColor> = {
+  decision: 'info',
+  review: 'success',
+  problem: 'warning',
+};
 
 export function resolvePaneHeaderLine(input: PaneHeaderLineInput): PaneHeaderLine | null {
   if (input.compact) return null;
@@ -65,9 +73,15 @@ export function resolvePaneHeaderLine(input: PaneHeaderLineInput): PaneHeaderLin
       return { color: 'success', label: 'Plan Ready' };
     case 'interrupted':
       return { color: 'warning', label: 'Interrupted' };
-    case 'idle':
+    case 'idle': {
+      const attention = pendingAttention(input.thread);
+      if (attention) {
+        const kind = attentionKindOf(attention);
+        return { color: ATTENTION_HEADER_COLORS[kind], label: ATTENTION_KINDS[kind].label };
+      }
       if (hasUnread(input.thread)) return { color: 'success', label: 'Completed' };
       return null;
+    }
   }
 }
 

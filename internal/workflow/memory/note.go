@@ -11,8 +11,8 @@ import (
 // The note vocabulary is CLOSED. A campaign accrues hundreds of these across
 // waves and two readers consume them — `grep` and the injected digest — so both
 // need to be able to say "show me the warnings" without knowing what an element
-// decided to call one. An unrecognised kind is refused loudly (a CLI usage
-// error, an envelope validation finding) rather than filed under itself: a kind
+// decided to call one. An unrecognised kind is refused loudly (a tool
+// argument error, an envelope validation finding) rather than filed under itself: a kind
 // nobody groups by is a note nobody reads.
 //
 // `ruling` as an operator-only kind is deliberately absent. It is deferred
@@ -125,7 +125,7 @@ func (e *ValidationError) Error() string {
 }
 
 // ValidateDraft reports every rule a draft breaks. It is the ONE definition of
-// a valid note: the CLI verb, the envelope post-validator, and the append path
+// a valid note: memory_add, the envelope post-validator, and the append path
 // all call it, so a note refused on one channel cannot be accepted on another.
 //
 // Findings are collected rather than short-circuited, and sorted by path, so a

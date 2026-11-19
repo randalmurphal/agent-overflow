@@ -26,7 +26,8 @@ Some SQLite rows are authoritative because no provider history can reconstruct
 them. This includes account and credential records, personal membership,
 accepted messages awaiting dispatch, transfer ownership and recovery state,
 remote command acceptance, remote completion notification ownership, and
-agent thread requests with the receipts that answer them. Never
+agent thread requests with the receipts that answer them and the owner
+operations owed for them. Never
 apply generic history retention or cleanup logic to these tables. Snapshot
 restore must handle each authoritative family deliberately rather than treating
 it as disposable provider history.
@@ -188,6 +189,25 @@ an atomic persistence decision; they must not become a business-logic layer.
   refused write at its writer, never by narrowing a guard. A write that
   removes `thread_fork_lineage` rows calls `holdersMayBeReleased` after its
   commit, so the app deletes the holders it released.
+- A delete claim (`threads.delete_claim`) fences its thread at every write
+  that runs, moves or changes it (`checkThreadNotDeleting`); an app
+  message's queue write passes it (`CheckThreadDeliverable`), and due reads
+  ignore it. Claim, release
+  and commit each change one delete's family in one transaction, and a
+  worker's claim takes its owner, or the link a paired computer's owner
+  reaches it by, as its fence (`workerFence`); keep that fence a parameter,
+  not a read of this computer's state. The commit owes the paired computers
+  its threads spawned on in the same transaction (`thread_owner_ops.go`).
+- `threads.archived` has one writer, `setThreadArchivedTx`
+  (`thread_archive.go`): an unarchive withdraws what the archive owed, in
+  the flip's transaction. A new path
+  that archives or reopens a thread calls it with its fence.
+- A paired computer's call about its spawn is authenticated by one reader,
+  `ReachSpawnLink` (`spawn_links.go`): the receipt for the token, device
+  and source thread, lineage included, which records the owner's contact
+  with a standing link. Do not add another device and source check. A
+  receipt names its thread only while it is open (`openReceiptSQL`), for
+  every naming write.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by
@@ -259,3 +279,8 @@ Query work on timeline, lifecycle, workflow, or restore paths needs result
 parity and a plan assertion when index use is part of the contract. Use
 `storetest` or a `t.TempDir()` database and never share a database file between
 tests.
+
+
+Remote spawn changes, their restore-preserved issuance counter and revision-specific acknowledgments live in
+`spawn_revisions.go`. Owner activity and recovery reads start in
+`activity_owners.go` and `owner_reads.go`.

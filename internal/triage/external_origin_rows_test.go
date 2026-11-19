@@ -275,3 +275,101 @@ func TestConsumeMatchingPendingSend_UnknownClientID_MatchesNothing(t *testing.T)
 		t.Fatal("the entry was consumed anyway")
 	}
 }
+
+// A scheduled turn's prompt (a Claude cron fire or ScheduleWakeup wake)
+// persists as its own badged user row, and it can arrive while one of the
+// user's sends waits for its echo: it must not take that send's row.
+func TestHandleUserText_ScheduledPrompt_PersistsItsOwnRowAndLeavesThePendingSendAlone(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 4)
+	router.RegisterPendingSendWithExpectation("t1", "user:5", 5, PendingSendExpectation{})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "Reply with CRON-FIRED.",
+		Meta:      json.RawMessage(`{"provider_item_id":"fire-1","origin":"scheduled"}`),
+		Timestamp: time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("Handle scheduled prompt: %v", err)
+	}
+	row, found, err := st.GetThreadItem("t1", "user:scheduled:fire-1")
+	if err != nil || !found {
+		t.Fatalf("scheduled prompt row missing: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if row.Role != "user" || row.Summary != "Reply with CRON-FIRED." || meta["origin"] != scheduledTurnOrigin || meta["wire_only"] != true {
+		t.Fatalf("row = %+v meta %v", row, meta)
+	}
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatal("the scheduled prompt consumed the user's pending send")
+	}
+}
+
+// A cron job's fire sends no `system/init`: its prompt is the first frame
+// of its turn. The prompt opens that turn, a turn of its own after the one
+// the session settled, and the reply that follows lands in it.
+func TestHandleUserText_ScheduledPromptWithNoTurnOpenOpensItsOwnTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	settleTurnZero(t, router)
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "Reply with CRON-FIRED.",
+		Meta:      json.RawMessage(`{"provider_item_id":"fire-1","origin":"scheduled"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle scheduled prompt: %v", err)
+	}
+	row, found, err := st.GetThreadItem("t1", "user:scheduled:fire-1")
+	if err != nil || !found {
+		t.Fatalf("scheduled prompt row missing: found=%v err=%v", found, err)
+	}
+	if row.TurnIndex != 1 {
+		t.Fatalf("scheduled prompt is in turn %d, want its own turn 1", row.TurnIndex)
+	}
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("open turn = %d/%v, want the fire's turn 1", open, ok)
+	}
+	if err := router.Handle(parentContentBlockStart("t1", "text")); err != nil {
+		t.Fatalf("reply content: %v", err)
+	}
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("open turn after the reply started = %d/%v, want the fire's turn 1", open, ok)
+	}
+}
+
+// A fire that reaches a send still waiting for its turn joins that turn
+// and leaves the send to its own echo.
+func TestHandleUserText_ScheduledPromptTakesAWaitingSendsTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	settleTurnZero(t, router)
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "Reply with CRON-FIRED.",
+		Meta:      json.RawMessage(`{"provider_item_id":"fire-1","origin":"scheduled"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("Handle scheduled prompt: %v", err)
+	}
+	row, found, err := st.GetThreadItem("t1", "user:scheduled:fire-1")
+	if err != nil || !found {
+		t.Fatalf("scheduled prompt row missing: found=%v err=%v", found, err)
+	}
+	if row.TurnIndex != 1 {
+		t.Fatalf("scheduled prompt is in turn %d, want the waiting send's turn 1", row.TurnIndex)
+	}
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatal("the scheduled prompt consumed the user's pending send")
+	}
+}

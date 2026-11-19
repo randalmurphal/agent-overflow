@@ -72,7 +72,7 @@ func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testi
 	t.Cleanup(func() { s.Close() })
 	mustCreateThread(t, s, "returning")
 	child := makeThread("local-fork", "claude")
-	child.ForkedFromThreadID, child.ParentThreadID = "returning", "returning"
+	child.ForkedFromThreadID = "returning"
 	if err := s.CreateThread(child); err != nil {
 		t.Fatal(err)
 	}
@@ -148,15 +148,15 @@ func TestReturningTransferReplacesHistoryWithoutDeletingLocalReferences(t *testi
 		t.Fatalf("history not replaced: %+v %v", items, err)
 	}
 	got, err := s.GetThread(child.ID)
-	if err != nil || got.ParentThreadID != target.ID || got.ForkedFromThreadID != target.ID {
+	if err != nil || got.ForkedFromThreadID != target.ID {
 		t.Fatalf("local fork links lost: %+v %v", got, err)
 	}
 	returned, err := s.GetThread(target.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if returned.GroupID != "" || returned.PinnedAt != nil || returned.PinGroup != nil {
-		t.Fatalf("returned thread = group %q pin %v/%v, want it ungrouped and unpinned", returned.GroupID, returned.PinnedAt, returned.PinGroup)
+	if returned.GroupID != "" || returned.PinnedAt != nil || returned.PinGroup != nil || returned.Placement != PlacementStandalone {
+		t.Fatalf("returned thread = group %q pin %v/%v placement %s, want it ungrouped, unpinned and standalone", returned.GroupID, returned.PinnedAt, returned.PinGroup, returned.Placement)
 	}
 	photo, found, err := s.GetAttachment(oldAttachment.ID)
 	if err != nil || !found || photo != oldAttachment {
@@ -210,5 +210,41 @@ func TestTransferActivationRefusesAnExistingUnretiredConversation(t *testing.T) 
 	}
 	if err := s.CheckThreadTransferAccess("incoming"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An owned thread comes back owned: the link that owns it is this
+// computer's own spawn row, which the move did not take.
+func TestReturningTransferKeepsAnOwnedThreadOwned(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "agent")
+	mustCreateThread(t, s, "returning")
+	spawnLocal(t, s, "tok", "agent", "returning", true)
+	outgoing := transferRequest("returning", "move", "outgoing")
+	if _, err := s.CreateThreadTransfer(outgoing); err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, outgoing.ID, "prepared", "committed", "complete")
+	incoming := transferRequest("returning", "move", "incoming")
+	incoming.OwnershipEpoch = 2
+	if _, err := s.CreateThreadTransfer(incoming); err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, incoming.ID, "prepared")
+	remote := newTestStore(t)
+	target := makeThread("returning", "claude")
+	if err := remote.CreateThread(target); err != nil {
+		t.Fatal(err)
+	}
+	var history bytes.Buffer
+	if err := remote.ExportThreadHistory(context.Background(), target.ID, &history); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitIncomingThreadTransfer(context.Background(), incoming.ID, strings.Repeat("b", 64), transferTestSecret(), target, &history); err != nil {
+		t.Fatal(err)
+	}
+	returned, err := s.GetThread(target.ID)
+	if err != nil || returned.Placement != PlacementOwned {
+		t.Fatalf("returned owned thread = %+v, %v; want owned", returned.Placement, err)
 	}
 }

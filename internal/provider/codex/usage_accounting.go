@@ -226,6 +226,9 @@ func (s *Session) attachTurnUsage(meta *provider.WireTurnCompleteMeta) {
 		return
 	}
 	meta.Usage = &usage
+	// The thread's own usage: its children's never reach this stream.
+	own := usage
+	meta.OwnUsage = &own
 	model := s.usageAcct.model
 	if model == "" {
 		model = s.currentModel()

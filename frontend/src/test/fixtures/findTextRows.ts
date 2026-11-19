@@ -5,6 +5,7 @@
 
 import type { Item } from '../../lib/types/models';
 import { CORPUS, findCandidateCombinations, generatedMarkdown } from './markdownFindCorpus';
+import agentMessages from '../../../../internal/app/testdata/agent_message_labels.json';
 
 export const FIND_TEXT_THREAD = 'thread-1';
 /** The workspace of makeThread, which the rows' paths are shown against. */
@@ -47,6 +48,19 @@ const shellMeta = (id: string, command: string, exitCode: number, preview: strin
   }],
 });
 
+/** The name prefix of a row made from Go's agent message labels fixture. */
+export const AGENT_MESSAGE_ROW = 'agent message: ';
+
+/**
+ * An agent's message as a client receives it, with the facts Go serves
+ * (internal/app/testdata/agent_message_labels.json).
+ */
+function agentMessageRow(name: string): FindTextRow {
+  const message = agentMessages.find((candidate) => candidate.name === name);
+  if (!message) throw new Error(`no agent message ${name}`);
+  return row(`${AGENT_MESSAGE_ROW}${name}`, { kind: 'user_text', summary: message.text, meta: message.meta });
+}
+
 export const FIND_TEXT_ROWS: FindTextRow[] = [
   row('user plain', { kind: 'user_text', summary: 'Please find **needle** and [docs](https://example.com/x) as typed' }),
   row('user with an image block', { kind: 'user_text', summary: 'look at this needle\n\n![image](attachment://att-1)' }),
@@ -78,6 +92,14 @@ export const FIND_TEXT_ROWS: FindTextRow[] = [
     meta: shellMeta('att-edited', 'make needle-target', 2, 'make: *** No rule\n'),
   }),
   row('user with a bang that is no command', { kind: 'user_text', summary: 'Wow! !important: the needle stays\n\n---\n\n!still typed text' }),
+  // A message an agent wrote is an agent-message row; the person's message
+  // a provider joined after a wake keeps the bubble, its data decoded.
+  ...['a request', 'a reply', 'a digest with no text', 'a watch', 'a workflow wake whose data holds escapes'].map(agentMessageRow),
+  row('user joined after a wake', {
+    kind: 'user_text',
+    summary: 'Loop "nightly" fired.\nnote: "caf\\u00e9 \\u003cneedle\\u003e"\n\n---\n\nmy own needle',
+    meta: JSON.stringify({ origin: 'agent-wake', originWake: { kind: 'loop', label: 'nightly' }, expandComposerCommands: true }),
+  }),
   row('error', { kind: 'error', summary: 'Request failed: needle not found' }),
   row('command from meta', { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: bash({ command: 'grep -rn needle src/' }) }),
   row('command with a description', { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: bash({ command: 'ls -la', description: 'List the needle files' }) }),
@@ -101,9 +123,13 @@ export const FIND_TEXT_ROWS: FindTextRow[] = [
   ].map((summary, at) => row(`assistant ${at}`, { kind: 'assistant_text', summary })),
 ];
 
-/** The rows findCandidateVectors.json holds: every row above, and the
- * combinations of Markdown pieces, which the vectors hold without a render. */
+/** The rows findCandidateVectors.json holds: every row above, every agent
+ * message Go's labels fixture holds, as served, and the combinations of
+ * Markdown pieces, which the vectors hold without a render. */
 export const FIND_CANDIDATE_ROWS: FindTextRow[] = [
   ...FIND_TEXT_ROWS,
+  ...agentMessages
+    .filter((message) => !FIND_TEXT_ROWS.some((rendered) => rendered.name === `${AGENT_MESSAGE_ROW}${message.name}`))
+    .map((message) => agentMessageRow(message.name)),
   ...findCandidateCombinations().map((summary, at) => row(`combination ${at}`, { kind: 'assistant_text', summary })),
 ];

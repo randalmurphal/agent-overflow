@@ -33,8 +33,7 @@ func TestEmitErrorToThreadRoutesThroughTriageWhenAvailable(t *testing.T) {
 }
 
 // TestEmitWireErrorToThreadRespectsStoppedGate pins the routing split:
-// errors triggered by wire events on the provider read loop (the
-// discussion-sync failure path) must drop with the rest of a stopped
+// errors triggered by wire events on the provider read loop must drop with the rest of a stopped
 // thread's tail, while host-synthesized errors keep their
 // HandleSynthetic carve-out. Without the split, a torn-down session's
 // draining read loop could persist items under the stopped thread
@@ -49,7 +48,7 @@ func TestEmitWireErrorToThreadRespectsStoppedGate(t *testing.T) {
 
 	app.triage.CleanupThread("thread-stopped")
 
-	app.emitWireErrorToThread("thread-stopped", "discussion sync failed: late wire tail")
+	app.emitWireErrorToThread("thread-stopped", "observer failed: late wire tail")
 	items, err := app.store.ListItems("thread-stopped")
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)

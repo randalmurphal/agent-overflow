@@ -37,8 +37,8 @@
     onReorder,
   }: Props = $props();
 
-  // One array for every project with no threads, so its list is not handed
-  // a new empty one on each render.
+  // One array for every project with no threads, so its list is not
+  // handed a new empty one on each render.
   const NO_THREADS: Thread[] = [];
 
   let orderedIds = $derived(projects.map((p) => p.project.id));

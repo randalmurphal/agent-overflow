@@ -49,7 +49,7 @@ func (e *Engine) enforceBudget(item *runtimeItem) (bool, error) {
 // reader guessing between tokens, dollars, and the clock.
 //
 // The decision is `ResolveBudget`'s, not this method's: the same call answers
-// the reserved `{{budget}}` read an element renders and the `run status` line a
+// the reserved `{{budget}}` read an element renders and the `run_status` line a
 // human reads, so what a budget SAYS and what it DOES cannot drift apart.
 func (e *Engine) checkBudget(item *runtimeItem) (string, error) {
 	view, err := e.budgetView(item)
@@ -107,7 +107,7 @@ type BudgetView struct {
 	// It is a field rather than an error because the two callers need opposite
 	// things from it. Enforcement must refuse — running on under a ceiling
 	// nobody can evaluate is exactly what a budget exists to prevent — while a
-	// READ must still answer: taking `run status` and the `{{budget}}` binding
+	// READ must still answer: taking `run_status` and the `{{budget}}` binding
 	// away from an operator is the worst possible response to a model the rate
 	// table has not learned yet, and those surfaces are how the operator finds
 	// out. `checkBudget` is the one place it becomes an error.

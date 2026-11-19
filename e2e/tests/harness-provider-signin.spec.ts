@@ -36,6 +36,7 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { instrument, mintLink, nonLoopbackIPv4, type Surfaced } from './offhost-helpers.js';
+import { liveCodexMock } from './provider-account-helpers.js';
 
 // ---------------------------------------------------------------------
 // Wire shapes.
@@ -49,13 +50,6 @@ interface ProviderLoginState {
   authorizeUrl?: string;
   userCode?: string;
   error?: string;
-}
-
-/** `control.MockInfo`, narrowed to what picking a live mock needs. */
-interface MockInfo {
-  mockId: string;
-  registration: { protocol: string };
-  exited: boolean;
 }
 
 interface PendingPairing {
@@ -295,27 +289,4 @@ async function openProviderPage(page: Page, label: 'Claude Code' | 'Codex'): Pro
     'aria-selected',
     'true',
   );
-}
-
-/**
- * The mock serving the live sign-in: the one Codex process that has not
- * exited. A sign-in registers on the control channel because it is a spawn
- * something outside it has to steer; account probes do not, and this spec
- * starts no threads, so nothing else here is a Codex mock. Liveness is still
- * the discriminator, because each earlier leg left its own closed one behind.
- */
-async function liveCodexMock(harness: HarnessApp): Promise<string> {
-  let mockId = '';
-  await expect
-    .poll(
-      async () => {
-        const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
-        const live = mocks.filter((m) => m.registration.protocol === 'codex' && !m.exited);
-        mockId = live.at(-1)?.mockId ?? '';
-        return live.length;
-      },
-      { message: 'the sign-in must reach a live Codex mock', timeout: SIGNIN_STEP_MS },
-    )
-    .toBeGreaterThan(0);
-  return mockId;
 }

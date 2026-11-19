@@ -3,11 +3,11 @@ package app
 import "sync"
 
 // workGroup counts goroutines as a sync.WaitGroup does, for work that
-// starts at any time and from any goroutine: a provider event, a
-// settlement, a wake. A WaitGroup requires every Add that leaves zero to
-// happen before the Wait it might race, and panics when one lands while a
-// Wait is returning; that work cannot promise it while shutdown or a test
-// waits. Wait returns at the first moment no member runs, and a member
+// starts at any time and from any goroutine: an emit, a provider event, a
+// settlement. A WaitGroup requires every Add that leaves zero to happen
+// before the Wait it might race, and panics when one lands while a Wait is
+// returning; that work cannot promise it while shutdown, the harness or a
+// test waits. Wait returns at the first moment no member runs, and a member
 // that starts after that moment is not waited for. Every member starts
 // through Go, which Close refuses, so shutdown joins every member that
 // started. The zero value is ready.
@@ -23,7 +23,11 @@ type workGroup struct {
 
 // Go runs fn on its own goroutine as a member and reports true, or runs
 // nothing and reports false once Close has begun.
-func (g *workGroup) Go(fn func()) bool {
+func (g *workGroup) Go(fn func()) bool { return g.GoCounted(nil, fn) }
+
+// GoCounted is Go that also counts the member in counted for its life, so
+// a Wait on counted waits for it too. counted is never closed.
+func (g *workGroup) GoCounted(counted *workGroup, fn func()) bool {
 	g.mu.Lock()
 	if g.closed {
 		g.mu.Unlock()
@@ -31,8 +35,14 @@ func (g *workGroup) Go(fn func()) bool {
 	}
 	g.n++
 	g.mu.Unlock()
+	if counted != nil {
+		counted.addMember(1)
+	}
 	go func() {
 		defer g.addMember(-1)
+		if counted != nil {
+			defer counted.addMember(-1)
+		}
 		fn()
 	}()
 	return true

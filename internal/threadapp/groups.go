@@ -60,11 +60,24 @@ func (s *Service) DeleteGroup(groupID string) (store.ThreadGroup, []store.Thread
 
 // SetGroup moves threads into groupID, or out of any group when it is "".
 // The rows come back from the store's own transaction, so they are exactly
-// the rows written — discussion children the caller never named included.
-func (s *Service) SetGroup(threadIDs []string, groupID string) ([]store.Thread, error) {
+// the rows written, each with how the move took it across the sidebar
+// listing.
+func (s *Service) SetGroup(threadIDs []string, groupID string) ([]store.ThreadMove, error) {
 	database, err := s.database("set thread group")
 	if err != nil {
 		return nil, err
 	}
 	return database.SetThreadGroup(threadIDs, groupID)
+}
+
+// SetPlacement makes threads owned or standalone, out of any group they
+// were in (store.SetThreadPlacement); grouped is SetGroup. The rows come
+// back from the store's own transaction, each with how the write took it
+// across the sidebar listing.
+func (s *Service) SetPlacement(threadIDs []string, placement string) ([]store.ThreadMove, error) {
+	database, err := s.database("set thread placement")
+	if err != nil {
+		return nil, err
+	}
+	return database.SetThreadPlacement(threadIDs, placement)
 }

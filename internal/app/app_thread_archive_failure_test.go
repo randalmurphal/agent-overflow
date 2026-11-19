@@ -92,19 +92,11 @@ func (f cleanupFailureFixture) startAsk(t *testing.T, computerID string) {
 	}
 }
 
-// requireCleanupError checks that err is the cleanup failure of an archive
-// or delete that happened, whose public message names exactly the parts
-// given, and returns that message.
-func requireCleanupError(t *testing.T, err error, outcome string, parts ...string) string {
+// requireCleanupError checks that message is the cleanup failure of an
+// archive or delete that happened (ArchiveThreadResult.CleanupError,
+// DeleteThreadResult.CleanupError) and names exactly the parts given.
+func requireCleanupError(t *testing.T, message, outcome string, parts ...string) {
 	t.Helper()
-	var cleanup *threadCleanupError
-	if !errors.As(err, &cleanup) {
-		t.Fatalf("error = %v, want a *threadCleanupError", err)
-	}
-	code, message, ok := errorsx.PublicDetails(err)
-	if !ok || code != threadtools.CodeCleanupFailed {
-		t.Fatalf("public details = %q %q %v, want code %s", code, message, ok, threadtools.CodeCleanupFailed)
-	}
 	if !strings.HasPrefix(message, "The thread was "+outcome+", but ") {
 		t.Fatalf("message = %q, want it to say the thread was %s", message, outcome)
 	}
@@ -117,6 +109,18 @@ func requireCleanupError(t *testing.T, err error, outcome string, parts ...strin
 			t.Fatalf("message = %q: mentions %q = %v, want %v", message, part, !want, want)
 		}
 	}
+}
+
+// requireCleanupCause checks that cleanup is a failure whose public error
+// (err) carries threadtools.CodeCleanupFailed and its message, and returns
+// that message.
+func requireCleanupCause(t *testing.T, cleanup threadCleanupError, outcome string, parts ...string) string {
+	t.Helper()
+	code, message, ok := errorsx.PublicDetails(cleanup.err())
+	if !ok || code != threadtools.CodeCleanupFailed {
+		t.Fatalf("public details = %q %q %v, want code %s", code, message, ok, threadtools.CodeCleanupFailed)
+	}
+	requireCleanupError(t, message, outcome, parts...)
 	return message
 }
 
@@ -135,32 +139,28 @@ func (f cleanupFailureFixture) requireArchived(t *testing.T, broadcasts *threadB
 }
 
 // Each cleanup failure after the archive committed reaches the person who
-// archived, as an error that says the thread was archived and names only
-// what failed.
+// archived, in the archive's result: it says the thread was archived and
+// names only what failed, and its causes are logged.
 func TestArchiveThreadReturnsCleanupFailures(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		arrange func(*testing.T, cleanupFailureFixture)
 		part    string
-		check   func(*testing.T, cleanupFailureFixture, error)
+		check   func(*testing.T, cleanupFailureFixture)
 	}{
 		{"provider close", func(t *testing.T, f cleanupFailureFixture) {
 			f.app.closeProviderSessionFn = func(string) error { return errors.New("injected provider close failure") }
 		}, "provider session could not be closed", nil},
 		{"background calls not marked ended", func(t *testing.T, f cleanupFailureFixture) {
 			f.failBackgroundRetire(t)
-		}, "background tasks", func(t *testing.T, _ cleanupFailureFixture, err error) {
-			if !strings.Contains(err.Error(), "injected retire failure") {
-				t.Fatalf("error %q lost its cause", err)
-			}
-		}},
+		}, "background tasks", nil},
 		{"turn history read", func(t *testing.T, f cleanupFailureFixture) {
 			if err := f.app.store.InsertTurn(store.Turn{TurnID: "turn-unreadable", ThreadID: f.thread.ID, StartedAt: 1}); err != nil {
 				t.Fatal(err)
 			}
 			execOnStore(t, f.dbPath, `UPDATE turns SET started_at = 'unreadable' WHERE turn_id = 'turn-unreadable'`)
-		}, "provider session could not be closed", func(t *testing.T, f cleanupFailureFixture, _ error) {
+		}, "provider session could not be closed", func(t *testing.T, f cleanupFailureFixture) {
 			if _, live := f.app.sessionManager().get(f.thread.ID); !live {
 				t.Fatal("an unreadable turn history closed the session anyway")
 			}
@@ -170,7 +170,7 @@ func TestArchiveThreadReturnsCleanupFailures(t *testing.T) {
 		}, "browser pages", nil},
 		{"remote command cancel not delivered", func(t *testing.T, f cleanupFailureFixture) {
 			f.startRemoteCommand(t, f.unreachableComputer(t))
-		}, "for up to an hour", func(t *testing.T, f cleanupFailureFixture, _ error) {
+		}, "for up to an hour", func(t *testing.T, f cleanupFailureFixture) {
 			rows, err := f.app.store.ListRemoteWatches(f.thread.ID, 0, 10)
 			if err != nil || len(rows) != 1 || rows[0].Notification != "dismissed" {
 				t.Fatalf("watches = %+v, %v; want the undelivered command dismissed anyway", rows, err)
@@ -186,11 +186,14 @@ func TestArchiveThreadReturnsCleanupFailures(t *testing.T) {
 			tc.arrange(t, f)
 			broadcasts := captureThreadBroadcasts(t, f.app)
 
-			err := f.app.ArchiveThread(f.thread.ID)
-			requireCleanupError(t, err, "archived", tc.part)
+			result, err := f.app.ArchiveThread(f.thread.ID)
+			if err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			requireCleanupError(t, result.CleanupError, "archived", tc.part)
 			f.requireArchived(t, broadcasts)
 			if tc.check != nil {
-				tc.check(t, f, err)
+				tc.check(t, f)
 			}
 		})
 	}
@@ -198,7 +201,7 @@ func TestArchiveThreadReturnsCleanupFailures(t *testing.T) {
 
 // A session kept because a turn started after the archive was requested is
 // the archive working as meant, not a failure.
-func TestArchiveThreadKeepingAReengagedSessionReturnsNil(t *testing.T) {
+func TestArchiveThreadKeepingAReengagedSessionReportsNothing(t *testing.T) {
 	t.Parallel()
 	f := newCleanupFailureFixture(t)
 	f.app.closeBrowserPagesFn = func(string) error { return errors.New("pages must stay open") }
@@ -207,8 +210,8 @@ func TestArchiveThreadKeepingAReengagedSessionReturnsNil(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.ArchiveThread(f.thread.ID); err != nil {
-		t.Fatalf("ArchiveThread: %v", err)
+	if result, err := f.app.ArchiveThread(f.thread.ID); err != nil || result.CleanupError != "" {
+		t.Fatalf("ArchiveThread: %+v, %v", result, err)
 	}
 	if _, live := f.app.sessionManager().get(f.thread.ID); !live {
 		t.Fatal("the re-engaged session was closed")
@@ -237,13 +240,16 @@ func TestThreadUpdateArchiveReportsCleanupFailure(t *testing.T) {
 		t.Fatalf("result %q leaks the private cause", row.Error)
 	}
 
-	// The internal door returns the same error with the applied result.
+	// The internal door returns the same failure with the applied result.
 	g := newCleanupFailureFixture(t)
 	g.startAsk(t, g.unreachableComputer(t))
 	broadcasts := captureThreadBroadcasts(t, g.app)
 	archived := true
 	applied, err := g.app.applyThreadOrganizePatch(t.Context(), g.thread.ID, threadapp.OrganizePatch{Archived: &archived})
-	requireCleanupError(t, err, "archived", "an ask")
+	if err != nil {
+		t.Fatalf("applyThreadOrganizePatch: %v", err)
+	}
+	requireCleanupCause(t, applied.archive.cleanup, "archived", "an ask")
 	g.requireArchived(t, broadcasts)
 	if !applied.Thread.Archived {
 		t.Fatalf("applied result = %+v, want the archived row", applied.Thread)
@@ -259,8 +265,11 @@ func TestDeleteThreadReportsWorkItCouldNotStop(t *testing.T) {
 	f.startRemoteCommand(t, computer)
 	f.startAsk(t, computer)
 
-	err := f.app.DeleteThread(f.thread.ID)
-	requireCleanupError(t, err, "deleted", "an ask", "for up to an hour")
+	result, err := f.app.DeleteThread(f.thread.ID)
+	if err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	requireCleanupError(t, result.CleanupError, "deleted", "an ask", "for up to an hour")
 	if _, getErr := f.app.store.GetThread(f.thread.ID); getErr == nil {
 		t.Fatal("the thread was not deleted")
 	}
@@ -303,12 +312,12 @@ func TestDeleteReportsAnAskByItsLastStopAttempt(t *testing.T) {
 	f.startRemoteCommand(t, computer)
 	f.startAsk(t, computer)
 
-	unstopped := threadCleanupError{outcome: "deleted"}
+	var unstopped deleteUnstopped
 	ports := f.app.threadDeletePorts(&unstopped)
 	if err := ports.StopRemoteWork(f.thread.ID); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
-	requireCleanupError(t, unstopped.err(), "deleted", "an ask", "for up to an hour")
+	requireCleanupCause(t, unstopped.cleanup(), "deleted", "an ask", "for up to an hour")
 
 	// The ask ends before the second pass, as it does when that pass's
 	// cancel reaches the computer.
@@ -316,7 +325,7 @@ func TestDeleteReportsAnAskByItsLastStopAttempt(t *testing.T) {
 	if err := ports.StopRemoteWork(f.thread.ID); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
-	requireCleanupError(t, unstopped.err(), "deleted", "for up to an hour")
+	requireCleanupCause(t, unstopped.cleanup(), "deleted", "for up to an hour")
 
 	// Another thread's ask that stays unstopped is still reported.
 	other := testThread(uuid.NewString())
@@ -335,7 +344,7 @@ func TestDeleteReportsAnAskByItsLastStopAttempt(t *testing.T) {
 	if err := ports.StopRemoteWork(f.thread.ID); err != nil {
 		t.Fatalf("third pass: %v", err)
 	}
-	requireCleanupError(t, unstopped.err(), "deleted", "an ask", "for up to an hour")
+	requireCleanupCause(t, unstopped.cleanup(), "deleted", "an ask", "for up to an hour")
 }
 
 // A cancel that was not delivered and a watch that could not be dismissed
@@ -348,8 +357,8 @@ func TestCancelThreadRemoteCommandsReturnsBothFailures(t *testing.T) {
 	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_dismiss BEFORE UPDATE ON remote_watches
 		WHEN NEW.notification = 'dismissed' BEGIN SELECT RAISE(ABORT, 'injected dismiss failure'); END`)
 
-	undelivered, err := f.app.cancelThreadRemoteCommands(t.Context(), f.thread.ID)
-	if undelivered == nil || !strings.Contains(undelivered.Error(), "cancel not delivered") {
+	undelivered, err := f.app.cancelThreadRemoteCommands(t.Context(), f.thread.ID, false)
+	if undelivered == nil || !strings.Contains(undelivered.Error(), "it is sent again until the computer takes it") {
 		t.Fatalf("undelivered = %v, want the cancel that did not reach the computer", undelivered)
 	}
 	if err == nil || !strings.Contains(err.Error(), "injected dismiss failure") {

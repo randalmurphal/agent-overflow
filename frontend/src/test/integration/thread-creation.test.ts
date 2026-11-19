@@ -113,41 +113,4 @@ describe('App integration — thread creation', () => {
       expect(document.body.textContent).toMatch(/db locked/i);
     });
   });
-
-  it('Cmd+K opens the palette and a discussion command surfaces the Start Discussion flow', async () => {
-    const existing = makeThread({ id: 'origin', title: 'Origin Thread' });
-    setBindingMock('ListThreads', async () => [existing]);
-    seedSidebarProject([existing]);
-    setBindingMock('GetKeybindings', async () => ({
-      bindings: [{ key: 'mod+k', command: 'palette.open' }],
-    }));
-    setBindingMock('ListDiscussions', async () => []);
-    installThreadViewDefaults();
-
-    const { findByText, getByTestId, findByTestId } = render(App);
-    await waitFor(async () => {
-      const mod = await import('../../lib/stores/keybindings.svelte');
-      expect(mod.isKeybindingsLoaded()).toBe(true);
-    });
-
-    // Click the thread in the expanded project to activate it.
-    const row = await findByText('Origin Thread');
-    await fireEvent.click(row);
-    await flush(10);
-
-    await fireEvent.keyDown(window, { key: 'k', metaKey: true });
-    await fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-    await flush();
-
-    const input = (await findByTestId('command-palette-input')) as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'start discussion' } });
-    await flush();
-    await fireEvent.keyDown(input, { key: 'Enter' });
-    await flush(10);
-
-    await waitFor(() => {
-      expect(document.body.textContent).toMatch(/Start discussion/i);
-    });
-    expect(() => getByTestId('command-palette-backdrop')).toThrow();
-  });
 });

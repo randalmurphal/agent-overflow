@@ -128,15 +128,15 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 			UserItemID:     r.pendingSendItemIDForProviderID(evt.ThreadID, meta.CommandUUID),
 			RoundIDAtQueue: r.openRoundID(evt.ThreadID),
 		}
-		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry)
+		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry, evt.SessionToken)
 		out.UserItemID = entry.UserItemID
 	case provider.CommandStarted:
-		r.markPendingSendStarted(evt.ThreadID, meta.CommandUUID)
 		entry, ok := r.peekCommandLifecycle(evt.ThreadID, meta.CommandUUID)
 		if ok {
 			out.UserItemID = entry.UserItemID
 			out.Delivery = classifyCommandDelivery(entry.RoundIDAtQueue, r.openRoundID(evt.ThreadID))
 		}
+		r.noteSendStarted(evt.ThreadID, evt.SessionToken, meta.CommandUUID)
 	default:
 		// completed / cancelled / discarded are terminal: release the
 		// correlation in the same step that reports it.
@@ -212,6 +212,7 @@ func (r *Router) settleTerminalSend(evt provider.ProviderEvent, meta provider.Co
 // it was before the frame. Caller holds the flush anchor.
 func (r *Router) retireUnrunSend(threadID string, entry pendingSend, state provider.CommandLifecycleState) error {
 	item := unconfirmedFlushItemFromPending(entry)
+	item.Discarded = state == provider.CommandDiscarded
 	if item.DeferredItem == nil && item.QuietItem == nil {
 		row, found, err := r.store.GetThreadItem(threadID, entry.AOItemID)
 		if err != nil {
@@ -271,9 +272,13 @@ func classifyCommandDelivery(roundAtQueue, roundAtStart string) CommandDelivery 
 	return CommandDeliveredNewTurn
 }
 
-func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry commandLifecycleEntry) {
+func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry commandLifecycleEntry, sessionToken string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		// The ack it waits on can only come from the retired process.
+		return
+	}
 	st := r.state(threadID)
 	byUUID := st.commandLifecycle
 	if byUUID == nil {

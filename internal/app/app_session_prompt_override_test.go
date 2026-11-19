@@ -404,36 +404,6 @@ func TestClaudeMemoryDirForThreadCoversBothClaudeTransports(t *testing.T) {
 	}
 }
 
-// Discussions already run a fully custom system prompt.
-// Replacing it would break them, so the settings override stands down — but
-// the tool toggles are a separate axis and still apply.
-func TestBuildSessionOptionsKeepsAFeatureOwnedSystemPrompt(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-feature", string(provider.Codex), "gpt-5.4")
-	app.setThreadSystemPrompt(id, "deliberation prompt")
-
-	if _, err := updatePromptFileSettings(t, app, map[string]any{
-		"codexPromptOverrides": []map[string]any{
-			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "settings prompt"},
-		},
-		"codexDisabledTools": []string{"web_search"},
-	}); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-
-	opts, res := promptOverrideOptionsAndResolution(t, app, id)
-	if opts.SystemPrompt != "deliberation prompt" {
-		t.Fatalf("SystemPrompt = %q, want the feature-owned prompt", opts.SystemPrompt)
-	}
-	if !slices.Equal(opts.DisabledTools, []string{"web_search"}) {
-		t.Fatalf("DisabledTools = %v, want the toggles to apply regardless", opts.DisabledTools)
-	}
-	if res.Applied {
-		t.Fatal("resolution reports the override applied over a feature-owned prompt")
-	}
-}
-
 // Rendering is multiplicative: {{GIT_BLOCK}} expands to a repository
 // snapshot, so a stored prompt within the settings length limit can still
 // render to tens of megabytes. That must fail the spawn with both sizes
@@ -770,51 +740,6 @@ func TestPromptOverrideChangeDoesNotDisturbALiveSession(t *testing.T) {
 	}
 	if !slices.Equal(next.DisabledTools, []string{"update_plan"}) {
 		t.Fatalf("next-spawn DisabledTools = %v, want the edited list", next.DisabledTools)
-	}
-}
-
-// The other half of the pin: SystemPrompt is a SHARED axis. Discussions own it
-// for their threads, and an edit to a feature-owned prompt
-// must keep converging exactly as it did before the settings override
-// existed. A pin that swallowed that would silently freeze feature-owned
-// prompts after their first value.
-func TestFeatureOwnedPromptChangeStillConvergesThroughTheReconciler(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-feature-live", string(provider.Codex), "gpt-5.4")
-	app.setThreadSystemPrompt(id, "deliberation prompt v1")
-
-	launchOpts := promptOverrideOptions(t, app, id)
-	if launchOpts.SystemPrompt != "deliberation prompt v1" {
-		t.Fatalf("launch SystemPrompt = %q, want the feature-owned prompt", launchOpts.SystemPrompt)
-	}
-	registerLiveCodexSession(t, app, id, launchOpts)
-
-	restarted := make(chan string, 1)
-	app.startSessionFn = func(threadID string) error {
-		select {
-		case restarted <- threadID:
-		default:
-		}
-		return nil
-	}
-	app.sessionManager().runtime.SetConfigReconnectPollOverride(10 * time.Millisecond)
-	app.sessionManager().runtime.SetConfigReconnectQuietOverride(time.Nanosecond)
-
-	app.setThreadSystemPrompt(id, "deliberation prompt v2")
-
-	// Only a restart can converge a system-prompt change on either provider.
-	if app.liveApplySessionConfig(id, false) {
-		t.Fatal("liveApplySessionConfig() = true; a feature-prompt edit must fall through to a restart")
-	}
-	app.reconcileSessionConfig(id, false)
-	select {
-	case got := <-restarted:
-		if got != id {
-			t.Fatalf("restarted thread = %q, want %q", got, id)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the feature-owned prompt edit never reached a restart")
 	}
 }
 

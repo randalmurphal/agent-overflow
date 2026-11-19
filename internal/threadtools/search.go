@@ -34,6 +34,7 @@ type searchArgs struct {
 	Archived    *bool    `json:"archived"`
 	SpawnedByMe bool     `json:"spawned_by_me"`
 	Group       string   `json:"group"`
+	Agents      bool     `json:"agents"`
 	Since       string   `json:"since"`
 	Limit       int      `json:"limit"`
 	Cursor      string   `json:"cursor"`
@@ -55,6 +56,9 @@ type searchRow struct {
 	Pin          string `json:"pin,omitempty"`
 	Archived     bool   `json:"archived"`
 	Unread       bool   `json:"unread"`
+	// Assistant and SpawnedBy are Thread's.
+	Assistant *Assistant `json:"assistant,omitempty"`
+	SpawnedBy string     `json:"spawned_by,omitempty"`
 	// Self marks the calling thread's own row.
 	Self        bool            `json:"self,omitempty"`
 	LastMessage *lastMessageRow `json:"last_message,omitempty"`
@@ -161,6 +165,7 @@ func searchFilters(query SearchQuery) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		query.Query, query.ThreadID, query.Kind, query.ProjectID, query.Provider,
 		query.State, archived, strconv.FormatInt(query.SinceUnixMs, 10), query.SpawnedBy, query.Group,
+		strconv.FormatBool(query.Agents),
 	}, "\x00")))
 	return hex.EncodeToString(sum[:8])
 }
@@ -177,6 +182,7 @@ func (c *session) searchQuery(args searchArgs) (SearchQuery, error) {
 		State:     trim(args.State),
 		Group:     trim(args.Group),
 		Archived:  args.Archived,
+		Agents:    args.Agents,
 		Limit:     args.Limit,
 	}
 	if utf8.RuneCountInString(query.Group) > MaxTitleRunes {
@@ -273,7 +279,7 @@ type searchAnswer struct {
 // first failure as its own error, which a single-computer call returns
 // rather than answering "no threads" for a search that never ran.
 func (c *session) runSearch(ctx context.Context, targets []Computer, query SearchQuery, offsets map[string]int) ([]searchGroup, []errorRow, error) {
-	answers := eachComputer(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) searchAnswer {
+	answers := concurrently(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) searchAnswer {
 		_, local, _ := c.computerByID(computer.ID)
 		return c.searchOne(ctx, computer, local, query, offsets[offsetKey(computer, local)])
 	})
@@ -365,6 +371,9 @@ func peerSearchArgs(query SearchQuery, offset int) (json.RawMessage, error) {
 	if query.SpawnedBy != "" {
 		args["spawned_by_me"] = true
 	}
+	if query.Agents {
+		args["agents"] = true
+	}
 	if query.SinceUnixMs != 0 {
 		args["since"] = unixMsToRFC3339(query.SinceUnixMs)
 	}
@@ -427,6 +436,8 @@ func (c *session) row(computer Computer, hit Hit) searchRow {
 		Pin:          thread.Pin,
 		Archived:     thread.Archived,
 		Unread:       thread.Unread,
+		Assistant:    thread.Assistant,
+		SpawnedBy:    thread.SpawnedBy,
 		Self:         thread.ID == c.caller.ThreadID,
 		LastMessage:  newLastMessageRow(hit.LastMessage),
 		ItemID:       hit.ItemID,
@@ -480,6 +491,7 @@ func (c *session) searchResult(groups []searchGroup, failures []errorRow, failur
 		}
 		return solo, nil
 	}
+	suffixAssistantClashes(groups)
 	grouped := searchGrouped{Computers: groups, Errors: failures, Cursor: encoded, Note: note}
 	if grouped.Computers == nil {
 		grouped.Computers = []searchGroup{}
@@ -494,6 +506,40 @@ func (c *session) searchResult(groups []searchGroup, failures []errorRow, failur
 		grouped.Note = appendNote(grouped.Note, "One or more computers did not answer; their threads are not in this result.")
 	}
 	return grouped, nil
+}
+
+// suffixAssistantClashes names an assistant `<name>-<computer>` where an
+// assistant on another computer in the same answer has its name, as the
+// sidebar does. Names are unique on each computer, so a clash is always
+// across computers; the suffix is only in this answer.
+func suffixAssistantClashes(groups []searchGroup) {
+	type held struct{ name, computerID string }
+	var names []held
+	for _, group := range groups {
+		for _, row := range group.Rows {
+			if row.Assistant != nil {
+				names = append(names, held{row.Assistant.Name, group.ComputerID})
+			}
+		}
+	}
+	// Names compare as the store compares them (store.SameAssistantName):
+	// trimmed, under Unicode simple case folding.
+	clashes := func(name, computerID string) bool {
+		return slices.ContainsFunc(names, func(other held) bool {
+			return other.computerID != computerID && strings.EqualFold(strings.TrimSpace(other.name), strings.TrimSpace(name))
+		})
+	}
+	for _, group := range groups {
+		for index := range group.Rows {
+			row := &group.Rows[index]
+			if row.Assistant == nil || !clashes(row.Assistant.Name, group.ComputerID) {
+				continue
+			}
+			named := *row.Assistant
+			named.Name += "-" + NameOfComputer(Computer{ID: group.ComputerID, Name: group.Computer})
+			row.Assistant = &named
+		}
+	}
 }
 
 func appendNote(note, text string) string {

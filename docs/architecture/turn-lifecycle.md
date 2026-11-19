@@ -741,7 +741,11 @@ provider-started turn, rather than writing into the settled one.
 
 A provider-started turn (`openProviderStartedTurn`) takes
 `store.NextTurnIndex` and has no user row; the completion notice that
-woke it stays above it. It has its own round, timer and Stop. A message
+woke it stays above it. The exception is a scheduled prompt (a
+ScheduleWakeup wake or a cron job's fire), which the transcript carries
+as a user record: it is the turn's first row, badged Scheduled, and a
+cron fire, which sends no init, opens the turn with it
+(`openScheduledTurn`). It has its own round, timer and Stop. A message
 sent while it runs is queued and drained into it as into any running
 turn.
 
@@ -985,7 +989,10 @@ running, and immediately from `RegisterQueueItem`.
 App worker serializes dispatch per thread behind the thread lock. A thread
 with no session gets one started by the worker
 (`ensureSessionForFlushLocked`), as a direct send does; when the start
-fails, the batch returns to the composer with the reason on the thread.
+fails, the batch returns to the composer with the reason on the thread. A
+thread a Stop is bringing to rest or an archived one is not started and
+keeps the batch queued; one a delete claimed is waited on, as a live
+session's dispatch is, until the delete decides (`lockFlushDispatch`).
 While a queued message is undispatched, a composer send queues behind it
 rather than overtaking it. Per item,
 `dispatchFlushItem` resolves placement, allocates the row identity, registers
@@ -1087,9 +1094,10 @@ pending messages and a count of the earlier ones. Its height is part of the
 composer clearance, so an unbounded list would cover the timeline.
 
 **Removal before dispatch.** `removeQueuedItem` deletes a queued message that
-has not been sent: it takes the durable row and the triage entry out together
-and refuses once the dispatcher has claimed the batch, when only an interrupt
-can stop the message. Cancelling an agent's thread request is its only caller
+has not been sent: it deletes the durable row, which every copy of the message
+the dispatch still holds is checked against before it is written
+([user-message-ordering.md](user-message-ordering.md)), and refuses once a
+dispatch committed to writing it, when only an interrupt can stop the message. Cancelling an agent's thread request is its only caller
 (`internal/app/app_thread_tools_lifecycle.go`); a person's queued message is
 removed through the composer.
 
@@ -1100,10 +1108,17 @@ snapshot naming that id drops the Zone 2 entry (`replaceQueueForThread`), as
 does `provider:queue_restored` when the content goes back to the composer.
 
 **Working indicator.** `isThreadWorking` is
-`activeTurn !== null || hasPendingSend || hasQueueItems` (either zone), so
-the spinner stays up across the gap between a turn ending and the queued
-message's next turn starting. The elapsed counter is gated on `activeTurn`
-alone, so the bridge moment renders `Working` without a `for 0s` flash.
+`activeTurn !== null || hasPendingSend || sendsPending`, so the spinner
+stays up across the gap between a turn ending and the queued message's
+next turn starting. Sends pending (`provider:sends_pending`, the backend's
+answer every surface reads, and `ListThreadLiveActivity`) counts a queued
+or flushed message only while the thread has a session live or starting: a
+message queued with no process waits for the next start and nothing is
+working on it, so a stopped thread holding an owed request, or a thread
+whose start failed, reads as idle. A backend without the capability falls
+back to the pane's queue (`hasQueueItems`, either zone). The elapsed
+counter is gated on `activeTurn` alone, so the bridge moment renders
+`Working` without a `for 0s` flash.
 
 **Approval gate.** A pending tool approval keeps the wire round open, so no
 `turn_completed` fires and the boundary drain simply does not run. There is
@@ -1161,7 +1176,9 @@ working indicator clears and the user gets actionable copy:
    suppresses the queued-send flush so deferred sends aren't
    dispatched into a dead session. Settled turns are excluded: a late
    wire `result` folding into a soft-closed round still routes to
-   `persistLateTurnPayload`, never here. The app layer additionally
+   `persistLateTurnPayload`, never here. So is a result from a session a
+   replacement has retired, whose empty ledger is the replacement's: it
+   writes nothing (`claimOrphanError`). The app layer additionally
    reaps the never-inited session (`teardownDeadPreInitSession`,
    Claude-only, since the lingering-process failure mode is the Claude
    CLI's; token- and epoch-guarded so a racing user retry's

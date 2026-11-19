@@ -1,12 +1,15 @@
 package triage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // A Stop issued after a send reached the provider but before its turn
@@ -351,7 +354,7 @@ func TestHeldStopDoesNotOutliveItsSession(t *testing.T) {
 	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 
 	stopWaitingSend(t, router, st, "t1", 1)
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "session-b")
 	router.RegisterPendingSendWithExpectation("t1", "user:1:again", 1, PendingSendExpectation{})
 	handleStopEvent(t, router, initEvent("t1"))
 	handleStopEvent(t, router, turnCompleteEvent("t1", "interrupted"))
@@ -374,5 +377,173 @@ func TestSampleInterrupt_UnconfirmedSteerIsNotAWaitingSend(t *testing.T) {
 	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{ByClientID: true})
 	if sample := router.SampleInterrupt("t1"); sample.CutTurn() != 2 {
 		t.Fatalf("cut turn = %d, want the direct send's turn 2", sample.CutTurn())
+	}
+}
+
+// A Stop that lands while a tick (a loop or watch wake) waits for its
+// turn is held for that turn as a person's send's is: the turn ending
+// interrupted gets one stop row. The interrupted tick is the user's to
+// read, not quiet, and its delivery is reported once, into its own turn.
+func TestMarkInterrupt_WaitingTickIsStoppedOnceAndNotQuiet(t *testing.T) {
+	const uuid = "uuid-tick-1"
+	router, st, emissions, _ := quietTurnRouter(t, true)
+	var delivered []SendDelivery
+	router.SetSendDeliveredHook(func(_ string, d SendDelivery) {
+		if !d.AwaitingTurn {
+			delivered = append(delivered, d)
+		}
+	})
+	runTurn(t, router, time.Now().UnixMilli()-2_000, time.Now().UnixMilli()-1_000, normalTurnCompleteMeta())
+	before, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlier := len(completedEvents(emissions))
+	now := time.Now().UnixMilli()
+	if err := router.PersistItem(store.Item{
+		ID: "user:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "sent", CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist tick row: %v", err)
+	}
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: uuid, Members: []string{"agent-wake:w1:1"}})
+
+	stopWaitingSend(t, router, st, "t1", 1)
+
+	completeAt := time.Now().UnixMilli() + 10_000
+	handleAll(t, router,
+		commandLifecycleEvent("t1", uuid, provider.CommandStarted),
+		openerInit(t, provider.TurnOpenerCommand),
+		echoUUID(uuid),
+		provider.ProviderEvent{
+			Kind: provider.EventTurnComplete, ThreadID: "t1", Timestamp: millis(completeAt),
+			TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn", Aborted: true},
+		})
+
+	requireOneStoppedRow(t, st, "t1", 1)
+	if len(delivered) != 1 || delivered[0].TurnIndex != 1 || delivered[0].UserItemID != "user:1" {
+		t.Fatalf("deliveries = %+v, want one into turn 1", delivered)
+	}
+	if events := completedEvents(emissions)[earlier:]; len(events) != 1 || events[0].Quiet {
+		t.Fatalf("turn_completed = %+v, want one event, not quiet", events)
+	}
+	thread, err := st.GetThread("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread.LastReadAt == nil || before.LastReadAt == nil || *thread.LastReadAt != *before.LastReadAt {
+		t.Fatalf("last_read_at = %v, want it left at %v: the stopped tick is the user's to read", thread.LastReadAt, before.LastReadAt)
+	}
+}
+
+// markStop runs the interrupt flow's triage half with sample, as a Stop
+// whose interrupt the provider acknowledged.
+func markStop(t *testing.T, router *Router, threadID string, sample InterruptSample) (string, error) {
+	t.Helper()
+	return router.MarkInterrupt(threadID, sample, router.MarkFlushSendsInterrupted(threadID, sample.Turn), StoppedByUser)
+}
+
+// A turn cut twice before it reports its end, as a rest cuts the request's
+// turn and then the session's, carries one stop row. A later turn gets its
+// own, and so does a replacement session's turn at a reused index.
+func TestATurnCutTwiceCarriesOneStopRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 1)
+
+	for range 2 {
+		if _, err := markStop(t, router, "t1", router.SampleInterrupt("t1")); err != nil {
+			t.Fatalf("MarkInterrupt: %v", err)
+		}
+	}
+	requireOneStoppedRow(t, st, "t1", 1)
+	handleStopEvent(t, router, turnCompleteEvent("t1", "interrupted"))
+	requireOneStoppedRow(t, st, "t1", 1)
+
+	seedOpenTurn(t, router, st, "t1", 2)
+	if _, err := markStop(t, router, "t1", router.SampleInterrupt("t1")); err != nil {
+		t.Fatalf("MarkInterrupt of turn 2: %v", err)
+	}
+	if rows := stoppedRows(t, st, "t1"); len(rows) != 2 || rows[1].TurnIndex != 2 {
+		t.Fatalf("stop rows = %+v, want one on turn 1 and one on turn 2", rows)
+	}
+
+	router.MarkThreadActive("t1", "session-b")
+	if _, _, err := st.DeleteConversationFromTurn("t1", 2); err != nil {
+		t.Fatalf("revert turn 2: %v", err)
+	}
+	seedOpenTurn(t, router, st, "t1", 2)
+	if _, err := markStop(t, router, "t1", router.SampleInterrupt("t1")); err != nil {
+		t.Fatalf("MarkInterrupt of the replacement's turn 2: %v", err)
+	}
+	if rows := stoppedRows(t, st, "t1"); len(rows) != 2 || rows[1].TurnIndex != 2 {
+		t.Fatalf("stop rows = %+v, want the replacement's turn 2 stopped too", rows)
+	}
+}
+
+// A Stop held for a waiting send's turn is written by the turn's
+// settlement; a second Stop sampled before that settlement and marked
+// after it reads the turn as cut and writes nothing more.
+func TestAStopMarkedAfterTheSettlementWroteTheHeldStopAddsNoRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+
+	stopWaitingSend(t, router, st, "t1", 1)
+	second := router.SampleInterrupt("t1")
+	tok := router.MarkFlushSendsInterrupted("t1", second.Turn)
+	handleStopEvent(t, router, initEvent("t1"))
+	handleStopEvent(t, router, turnCompleteEvent("t1", "interrupted"))
+	requireOneStoppedRow(t, st, "t1", 1)
+	if errID, err := router.MarkInterrupt("t1", second, tok, StoppedByUser); err != nil || errID != "" {
+		t.Fatalf("second MarkInterrupt = %q, %v; want nothing written", errID, err)
+	}
+	requireOneStoppedRow(t, st, "t1", 1)
+}
+
+// A stop row whose write failed is not the turn's: the next Stop writes it.
+func TestAFailedStopRowWriteLeavesTheTurnUnstopped(t *testing.T) {
+	path := storetest.ClonePath(t)
+	st, err := store.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	router := NewRouter(st, func(eventchan.Channel, any) {})
+	t.Cleanup(router.DrainWireItemRefresh)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 1)
+
+	execOnStorePath(t, path, `CREATE TRIGGER fail_stop_row BEFORE INSERT ON items WHEN NEW.summary = 'Stopped by user' BEGIN SELECT RAISE(ABORT, 'injected stop write failure'); END`)
+	if _, err := markStop(t, router, "t1", router.SampleInterrupt("t1")); err == nil {
+		t.Fatal("MarkInterrupt reported the failed stop row written")
+	}
+	requireNoStoppedRow(t, st, "t1")
+	execOnStorePath(t, path, `DROP TRIGGER fail_stop_row`)
+	errID, err := markStop(t, router, "t1", router.SampleInterrupt("t1"))
+	if err != nil {
+		t.Fatalf("MarkInterrupt after the failure: %v", err)
+	}
+	requireStoppedByUserRow(t, st, "t1", errID, 1)
+}
+
+// execOnStorePath runs one statement on the store's database file through
+// a connection of its own.
+func execOnStorePath(t *testing.T, path, statement string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, execErr := raw.Exec(statement)
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if execErr != nil {
+		t.Fatal(execErr)
 	}
 }

@@ -11,13 +11,14 @@ import (
 	"time"
 
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/uitrace"
 )
 
 // retentionTestApp wraps newTestAppWithStore with a settings service
 // and configDir on a t.TempDir(). The retention sweep needs both: it
 // reads Retention.Days from settings and uses configDir to locate the
-// log + bookmark directories. deleteThreadTreeLocked is heavy and
+// log + bookmark directories. the sweep's delete is heavy and
 // touches `a.replay`, `a.terminals`, etc., so we install a no-op
 // stopSessionFn (Codex test threads with no live session don't need
 // any of the other subsystems either).
@@ -73,6 +74,50 @@ func TestRunRetentionSweepEvictsOnlyOlderThanCutoff(t *testing.T) {
 		if _, err := app.store.GetThread(kept); err != nil {
 			t.Errorf("%s missing after sweep, expected preservation: %v", kept, err)
 		}
+	}
+}
+
+// An assistant's current and superseded threads outlive the retention
+// floor; an ordinary archived thread of the same age does not.
+func TestRunRetentionSweepKeepsAssistantThreads(t *testing.T) {
+	t.Parallel()
+	app := retentionTestApp(t)
+	if _, err := app.settings.Update(map[string]any{"retention": map[string]any{"days": 30}}); err != nil {
+		t.Fatalf("settings.Update: %v", err)
+	}
+	// The handoff and the archive stamp updated_at with the wall clock, so
+	// the sweep runs ninety days later than that.
+	now := time.Now().Add(90 * 24 * time.Hour)
+	app.retentionNowFn = func() time.Time { return now }
+	old := time.Now().UnixMilli()
+	for _, id := range []string{"assistant-past", "assistant-current", "plain-archived"} {
+		seedThread(t, app, id, old)
+	}
+	home := t.TempDir()
+	for _, id := range []string{"assistant-past", "assistant-current"} {
+		if err := app.store.PlaceThreadInHome(id, home); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.store.CreateStandingAgent(store.StandingAgent{ID: "agent", ThreadID: "assistant-past", Home: home, CreatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.HandOffAssistant("assistant-past", "assistant-current", old); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := app.store.ArchiveThread("plain-archived"); err != nil {
+		t.Fatal(err)
+	}
+
+	app.runRetentionSweep(now)
+
+	for _, kept := range []string{"assistant-past", "assistant-current"} {
+		if _, err := app.store.GetThread(kept); err != nil {
+			t.Errorf("%s was swept: %v", kept, err)
+		}
+	}
+	if _, err := app.store.GetThread("plain-archived"); err == nil {
+		t.Error("an ordinary archived thread past the floor was kept")
 	}
 }
 
@@ -350,7 +395,7 @@ func TestRunRetentionThreadSweepAbortsAtTheNextThreadOnShutdown(t *testing.T) {
 		seedThread(t, app, fmt.Sprintf("mb-%03d", i), 0)
 	}
 
-	// Flip shuttingDown from inside deleteThreadTreeLocked (it calls
+	// Flip shuttingDown from inside the sweep's delete (it calls
 	// stopSessionFn for any tracked session; we hook the same path even
 	// though our test threads have no live session), so the flag is
 	// visible to the next iteration's check.

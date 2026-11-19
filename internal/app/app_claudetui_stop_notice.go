@@ -3,8 +3,10 @@ package app
 import (
 	"log"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // The interactive Claude TUI drops a just-sent prompt from the model's
@@ -88,11 +90,16 @@ func (a *App) noticeClaudeTUIDiscardedMessage(threadID string) {
 }
 
 // isReaderAuthoredUserItem reports whether item is a top-level message the
-// user sent, as opposed to a subagent prompt (parented) or a wire-only echo
-// of content the provider consumed without an AO send.
+// user sent, as opposed to a subagent prompt (parented), a wire-only echo
+// of content the provider consumed without an AO send, or an agent's
+// message or a wake (agentmeta.IsAgentMessage), which is never the
+// person's. A row whose meta does not decode is not read as the person's
+// either.
 func isReaderAuthoredUserItem(item store.Item) bool {
-	return item.Kind == string(provider.ItemUserText) &&
-		item.Role == "user" &&
-		item.ParentID == "" &&
-		!store.IsWireOnlyUserItem(item)
+	if item.Kind != string(provider.ItemUserText) || item.Role != "user" ||
+		item.ParentID != "" || store.IsWireOnlyUserItem(item) {
+		return false
+	}
+	meta, err := usermessage.FromItem(item)
+	return err == nil && !agentmeta.IsAgentMessage(meta.Agent())
 }

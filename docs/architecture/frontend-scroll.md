@@ -1,9 +1,9 @@
 # Frontend Scroll Architecture
 
-This is the durable contract for chat and discussion scrolling. It keeps
-the operational rules out of `AGENTS.md` while preserving the invariants
-that matter when changing `ThreadPane`, `MessageTimeline`, `ChannelView`,
-the timeline virtualizer, or the scroll controller (`utils/scroll/`).
+This is the durable contract for chat scrolling. It keeps the operational
+rules out of `AGENTS.md` while preserving the invariants that matter when
+changing `ThreadPane`, `MessageTimeline`, the timeline virtualizer, or the
+scroll controller (`utils/scroll/`).
 
 ## Owners
 
@@ -173,7 +173,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     places the bottom (`reconnect.catchup`), smaller growth starts a glide.
     Keyboard height changes are not content growth. Existing reader escape,
     any new outer-scroll input, width reflow, or a cancelled recovery prevents
-    that placement. The same controller contract serves discussion timelines.
+    that placement.
     Every pane spring schedules through `utils/animationFrameBatcher.ts`, the
     app-wide native-rAF coordinator also used by streaming reveal and nav-rail
     sync. Spring callbacks use `before-dom-update`; reveal and rail callbacks
@@ -187,7 +187,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     (quiescence) gate, and resize classification. Two sources feed the
     one pipeline: engine-sourced samples in chat
     (`externalContentGeometry`), a contentEl ResizeObserver everywhere
-    else (ChannelView). Each delivery is gathered here, decided by the
+    else (the activity run's nested controller). Each delivery is gathered here, decided by the
     resolver, and applied through the controller's chokepoint, so "a
     content delivery" reads in one place.
 - The MessageTimeline scroll-session modules (extracted siblings in
@@ -240,9 +240,8 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
   internals. It is **single-occupancy and belongs to the surface that owns
-  the pane's scroll container**: `MessageTimeline`, or `ChannelView` on a
-  discussion pane, whichever is mounted. A controller *nested inside* one
-  of those (the activity run's) never registers.
+  the pane's scroll container**: `MessageTimeline`. A controller *nested
+  inside* it (the activity run's) never registers.
 
   The slot is `$state.raw`, and that is load-bearing rather than a
   micro-optimization: `detachScrollController` decides whether a teardown
@@ -446,6 +445,10 @@ scheduler's `viewport-fill` pass (`timelinePaging.ts#maybeFillViewport`)
 pages one section per pass, older first, until the window is taller
 than `clientHeight + 2 × AUTO_LOAD_OFFSET_PX`, there is nothing more to
 page, or the window holds `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` rows.
+It decides only once every mounted row has measured (the content-geometry
+sample's `windowMeasured`): a load pauses auto-scroll, so a fill started
+on estimates would leave a pinned reader where the estimates put the
+bottom while the rows measure taller under it.
 
 A mounted timeline normally defers the
 cut to visual quiet because reconciling hundreds of rows is still expensive
@@ -465,7 +468,7 @@ therefore only *records* the cut as pending
 (`settleRecentWindowPrune`) when a mounted timeline is behind the pane;
 the quiet scheduler (`timelineQuietWork.ts`) runs
 `retryDeferredRecentWindowPrune` once no glide is running or armed. A
-pane with no timeline (discussion surface, headless) cuts at settle
+pane with no timeline (headless) cuts at settle
 directly. The streaming append path defers the same way while a turn is
 active, until `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS`, past which
 the cut runs mid-stream. The ceiling ends the deferral only; the
@@ -700,9 +703,6 @@ rather than a missing case:
   instead of gliding them and park an empty pane behind the 2.5s
   failsafe. Empty panes stay visible, as the placeholder→materialized
   path already treats them.
-- **Chat only.** A discussion pane registers ChannelView's controller
-  over an unrelated surface (the same stand-down `armStructuralSpring`
-  makes).
 - **First content mount only.** With the IndexedDB replica
   (`docs/architecture/thread-replica-sync.md` §6.1), staged rows stay
   unmounted through verification. `runItemWindowSync` arms the warm gate
@@ -746,7 +746,13 @@ navigation key whose target consumes it (a writable, enabled textarea or
 text-type input, a select, or content whose `isContentEditable` is true)
 moves a caret, not the scroller, and is neither escape nor down intent. A
 readonly or disabled field, a checkbox, or a button in a non-editable
-island of an editor leaves the key to the scroller.
+island of an editor leaves the key to the scroller. On macOS an
+unmodified Home, End, PageUp or PageDown scrolls instead of moving the
+caret, even in an editor: it moves the editor when the editor scrolls and
+can move that way, and the scroller otherwise, so it is key intent like
+any other scrolling key. A key that scrolls is attributed like a wheel
+(see "Nested Scrollers And Gesture Attribution"): one a nested box or the
+editor consumes is neither escape nor down intent.
 
 Down input (wheel, key, touch) is the only consent path for re-sticking
 after escape. A down gesture made while escaped stays pending until its
@@ -820,7 +826,7 @@ Programmatic scrolls go through the controller:
 
 - `forceStick({ reason: 'user' })` for explicit bottom-follow.
 - `armRestoreSnap()` (sets the defensive escape, then arms consent)
-  followed by `forceStick({ reason: 'restore' })` for thread/channel
+  followed by `forceStick({ reason: 'restore' })` for thread
   restore. While the consent is armed, `restorePending` reports true;
   `isAtBottom` keeps its honest meaning. The chip predicate is
   `!restorePending && !isAtBottom` (chat also ors in `hasMoreNewer`),
@@ -951,6 +957,17 @@ part above the reading position is a *part* of the whole. That is what
 keeps the DOM measurement non-load-bearing: a stale anchor, a re-rendered
 subtree, or a NaN can only pull the correction back toward zero (toward
 the historical behavior), never past it into an over-correction.
+
+A scroller inside a row (an activity run's clip) moves the anchor within
+its row with no scroll event on the timeline, which would read as growth
+above the reading position. A scroll from a scroller that contains the
+sampled anchor drops the anchor, and the next post-flush pass samples
+afresh; dropping instead of re-sampling keeps a clip that chases its own
+tail from costing a hit test per frame. A scroller beside the anchor (a
+code block scrolled sideways, a textarea) leaves it in place. Coverage:
+the clip, sideways and textarea cases in the same describe, and
+`readRow` in `ao-tool-rows-more-helpers.ts`, which checks a row opens
+downward from where it was clicked.
 
 Tracking is gated on `trackReadingAnchor`, which chat wires to "the
 controller does *not* hold bottom-follow intent". While pinned, the
@@ -1104,8 +1121,7 @@ compaction reasoning, direct text patches, visible-field updates to
 already mounted rows (a running tool row growing its output preview per
 flush window, or running→completed result chrome landing), and wire
 appends / reveal-gate releases entering the loaded tail (via
-`armLiveContentAppendSpring`, below). `MessageTimeline` and `ChannelView`
-turn it into a boolean with `isLiveContentActive(now, lastLiveContentAt,
+`armLiveContentAppendSpring`, below). `MessageTimeline` turns it into a boolean with `isLiveContentActive(now, lastLiveContentAt,
 LIVE_CONTENT_ACTIVE_HOLD_MS)` and pass it as the controller's
 `liveContentActive` option. Stamps are scoped to the row's transcript;
 agent children and nested completion siblings do not mark the main
@@ -1205,11 +1221,7 @@ that still exist (`boundaryChangeReleasesRows`: a gate dropping because
 the lone streaming row drained, or because a revert removed the tail,
 mounts nothing) and never fires across a switch because
 `disposeAllSmoothers` nulls the boundary first, and the controller's
-warm gate independently pins the post-restore settle. Discussion-surface
-panes are skipped entirely (`threadUsesDiscussionSurface`, shared with
-ChatView's surface swap): their registered controller belongs to
-ChannelView, so arming would open a spring window on unrelated
-channel-message growth.
+warm gate independently pins the post-restore settle.
 
 `spring` is an eligibility signal, not an unconditional animation. If
 `contentRO` observes a content-width change, the controller opens a short
@@ -1421,7 +1433,7 @@ moving bottom instead of sync-pinning mid-chase.
 also set on the virtualizer's spacer). Browser scroll anchoring otherwise
 fights the engine's compensation targets and the controller's sync-pin.
 
-The pane scroll surfaces (chat timeline, discussion channel) draw no
+The pane scroll surface (the chat timeline) draws no
 native bar: `.pane-scroll-surface` (app.css) suppresses it and applies
 `will-change: scroll-position`, and an `<OverlayScrollbar>` sibling is
 the surface's scrollbar with zero layout width in every state, so an
@@ -1447,7 +1459,12 @@ and renders the same overlay thumb. See
 Desktop transport banners overlay without resizing the scroll surface.
 Compact transport banners occupy a row while visible so the only Back control
 stays reachable during an outage; normal viewport-resize handling preserves
-the timeline's follow/escape intent. No space is reserved while healthy.
+the timeline's follow/escape intent. No space is reserved while healthy. The
+compact row appears and goes without a fade: a fading row would keep its
+height after its state ended and move live content under a pressed pointer.
+A tap's click is hit-tested after its release, so a press on the compact
+list or the compact thread header while the row shows keeps the row's height
+until that click, or until the press ends without one (`utils/tapHold.ts`).
 
 ## Nested Scrollers And Gesture Attribution
 
@@ -1462,11 +1479,12 @@ Every such box opts in with the `nestedScroll` action
 (`utils/scroll/wheelAttribution.ts`). On each gesture the intent machine
 walks `event.target` up to its own scroll element, and the first
 registered scroller that can still move in that direction owns the
-event; the machine then ignores it. Nothing registered can consume it →
-the gesture belongs to the boundary, and native scroll chaining takes it
-there. That chaining is deliberate, because browsing up out of a nested
-box has to reach the pane, which is why nested boxes keep the default
-`overscroll-behavior` rather than `contain`.
+event; the machine then ignores it. A scrolling key uses the same walk
+from its target. Nothing registered can consume it → the gesture belongs
+to the boundary, and native scroll chaining takes it there. That chaining
+is deliberate, because browsing up out of a nested box has to reach the
+pane, which is why nested boxes keep the default `overscroll-behavior`
+rather than `contain`.
 
 A registry, not a computed-style measurement: wheel handling runs while layout
 is dirty mid-stream, so `getComputedStyle` over every ancestor of every
@@ -1516,7 +1534,7 @@ side ([`activity-runs.md`](activity-runs.md) has the rest):
   never sees inner movement.
 - **The nested controller leaves `externalContentGeometry` unset** (no
   virtualizer inside a run, so its own contentEl ResizeObserver is the right
-  source, following the `ChannelView` precedent) and never touches
+  source) and never touches
   `pane.attachScrollController`.
 - **Inner scroll position lives in the per-pane registry**, keyed by the
   registry-assigned `runId`, so a run the reader scrolled inside does not snap
@@ -1750,7 +1768,13 @@ always a candidate. The pane counts a candidate's matches in its find text, the
 text its renderer marks `data-find-text` and the highlighter paints, by
 the find rule over the projection beside each row renderer
 (`chat/threadFindText.ts`), so the count and the paint read the same
-text; `threadFindText.browser.test.ts` holds each kind's projection to
+text. An agent message row's find text is its headline, the first line the
+row shows (`agent-message-first-line`); its expanded body is not searched.
+The store's candidate holds the same headline: the served facts' headline
+(`agentmeta.Headlines`), and for a row without facts its first line
+(`agentmeta.FirstLine`, white space as Go's `unicode.IsSpace` reads it,
+which `firstLineOf` in `utils/agentMessage.ts` matches).
+`threadFindText.browser.test.ts` holds each kind's projection to
 its render, and `findCandidateVectors.json` holds the store's candidates
 to the projections. An answer stopped at its limit shows the count with a
 `+`. One read is in flight per layout pane
@@ -1828,45 +1852,6 @@ outcome, traced as `timeline.jump`: `issued` and `withheld` land; `missing`
 tells the reader the row is gone; `failed` was already reported by the
 window; `unresolved` means a loaded row no node shows, which is a defect, so
 it toasts "Could not show that message" and reports a diagnostic.
-
-## Discussion Mode
-
-`ChannelView.svelte` shares the scroll controller (`utils/scroll/`)
-without a virtualizer. Its
-content element wraps the channel-message list so the same ResizeObserver
-path handles message growth and async Streamdown layout. Composer-section
-resize must also notify the controller because discussion's composer is a
-flex sibling that changes `scrollEl.clientHeight`.
-
-The channel is push-driven, not polled: `discussion:message` and
-`discussion:state` events land on `threadChannelState.svelte.ts` (the
-pane's discussion data layer, surfaced through `ThreadPane`'s
-`channel*` getters), and `ChannelView` renders whatever that state holds.
-Initial load and transport-gap recovery share one resync helper
-(`eventsDiscussion.ts`'s `refreshDiscussionChannel`) that fetches with
-`afterSeq = -1`, the exclusive "everything" cursor, since message
-sequences are zero-based and a `0` cursor would silently drop the
-channel's first message.
-
-The current speaker's in-flight text streams like chat: a discussion
-child thread (one participant's own session) has no mounted pane, so
-`eventsItemStream.ts` feeds its `assistant_text` upserts/deltas through a
-side-channel registry (`discussionLiveTail.ts`) into the channel state's
-`liveTail`, keyed by the roster `discussion:state` last published.
-`ChannelView` renders that tail as a streaming card and lets it fall
-away once the matching agent message lands.
-
-Growth animates exactly as it does in chat: unconditionally, subject
-only to the signal-based spring gate (see Live Content Animation above).
-The channel keeps its own liveness stamp for the sentinel and viewport
-paths: the channel state stamps `lastLiveContentAt` on every
-genuinely-new message and on live-tail growth, and `ChannelView` calls
-`isLiveContentActive(now, pane.channelLastLiveContentAt,
-LIVE_CONTENT_ACTIVE_HOLD_MS)` for the controller's `liveContentActive`
-option. This is the channel's own stamp, independent of the chat
-timeline's `lastLiveContentAt`. The two
-surfaces never mount at once, but each pane tracks both so switching a
-pane between chat and discussion mode never reads a stale latch.
 
 ## Diagnostics
 

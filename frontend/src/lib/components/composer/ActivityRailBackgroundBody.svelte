@@ -9,6 +9,8 @@
   // however many there are, and renders the result it returns for each:
   // a failed stop on its row, a task that had already ended in a notice.
   // Remote jobs are cancelled through their own computers, a few at a time.
+  // The composer's tray also lists the thread's loops, watches and
+  // reminders after the tasks (WakeTrayRow); Stop All leaves them alone.
 
   import {
     CancelThreadRemoteCommand,
@@ -39,6 +41,8 @@
   import { errString } from '../../utils/errors';
   import RemoteJobTrayRow from './RemoteJobTrayRow.svelte';
   import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
+  import WakeTrayRow from './WakeTrayRow.svelte';
+  import type { WakeController } from './activityRailWakes.svelte';
 
   interface Props {
     tasks: TrayTask[];
@@ -56,6 +60,10 @@
     onOpenAgent?: (scopeId: string, label: string) => void;
     /** Prefix of the body's id and test ids, distinct per rail. */
     idPrefix?: string;
+    /** The thread's loops, watches and reminders; the composer's tray only. */
+    wakes?: WakeController;
+    /** The rail's clock, for the schedule rows' next fire. */
+    now?: number;
   }
 
   let {
@@ -67,6 +75,8 @@
     scoped = false,
     onOpenAgent,
     idPrefix = 'activity-rail',
+    wakes,
+    now = Date.now(),
   }: Props = $props();
 
   // The open button opens the companion and nothing else. The tray never
@@ -95,6 +105,21 @@
     const next = new Set(expandedRows);
     for (const rowId of stale) next.delete(rowId);
     expandedRows = next;
+  });
+  // Watch rows whose detail is open, kept the same way.
+  let expandedWakes = $state<Set<string>>(new Set());
+  function onToggleWake(id: string): void {
+    const next = new Set(expandedWakes);
+    if (!next.delete(id)) next.add(id);
+    expandedWakes = next;
+  }
+  $effect(() => {
+    const rows = wakes?.rows ?? [];
+    const stale = [...expandedWakes].filter((id) => !rows.some((row) => row.id === id));
+    if (stale.length === 0) return;
+    const next = new Set(expandedWakes);
+    for (const id of stale) next.delete(id);
+    expandedWakes = next;
   });
   let backgroundStop = $derived<ProviderBackgroundStop>(
     provider ? getProviderDefinition(provider).backgroundStop : 'none',
@@ -300,7 +325,7 @@
   </div>
   <!-- An open digest scrolls inside its own clip; the list grows so the
        clip and the row's header fit before the list itself scrolls. -->
-  <ul class="flex flex-col gap-1 overflow-y-auto {expandedRows.size > 0 ? 'max-h-[min(70vh,32rem)]' : 'max-h-56'}">
+  <ul class="flex flex-col gap-1 overflow-y-auto {expandedRows.size > 0 || expandedWakes.size > 0 ? 'max-h-[min(70vh,32rem)]' : 'max-h-56'}">
     {#each tasks as task (task.rowId)}
       {@const remote = trayRemoteJob(task)}
       <li>
@@ -328,5 +353,23 @@
         {/if}
       </li>
     {/each}
+    {#if wakes && threadId}
+      {#each wakes.rows as wake (wake.kind + ':' + wake.id)}
+        <li>
+          <WakeTrayRow
+            row={wake}
+            {threadId}
+            {now}
+            expanded={expandedWakes.has(wake.id)}
+            onToggleExpanded={() => onToggleWake(wake.id)}
+          />
+        </li>
+      {/each}
+      {#if wakes.moreReminders > 0}
+        <li class="px-2 py-0.5 text-[0.6875rem] text-fg-hint" data-testid="wake-tray-more-reminders">
+          {wakes.moreReminders === 1 ? '1 more reminder' : `${wakes.moreReminders} more reminders`}
+        </li>
+      {/if}
+    {/if}
   </ul>
 </div>

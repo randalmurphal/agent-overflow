@@ -1,13 +1,13 @@
 # Embedded workflow starters
 
 This package embeds starter definitions and their sibling prompt or helper
-files for `workflow new`.
+files for the `workflow_new` tool.
 
 - Keep each starter's leading binding inventory synchronized with every check,
   command, secret, capacity, and referenced file it requires.
 - Validate the embedded starters as a complete set because starters may call
   one another.
-- Renaming through `workflow new --id` changes only self-references. Calls to a
+- Renaming through `workflow_new`'s `id` changes only self-references. Calls to a
   different embedded starter keep that starter's canonical ID.
 - Copy non-prompt sibling assets with the definition. Tests must exercise
   executable helpers, not only compare embedded bytes.

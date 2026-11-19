@@ -28,8 +28,10 @@ type App interface {
 	// no live provider session returns the zero value and no error.
 	LiveState(ctx context.Context, threadID string) (LiveState, error)
 
-	// ResolveThreadRef matches a full thread id or a prefix of at least
-	// MinPrefixLen characters against this computer's threads, bounded to
+	// ResolveThreadRef matches a full thread id, an assistant's name
+	// (case-insensitively, as its current thread, with
+	// Candidate.Assistant set) or an id prefix of at least MinPrefixLen
+	// characters against this computer's threads, bounded to
 	// MaxResolutionCandidates rows. Hidden workflow threads are included;
 	// scratch threads are excluded unless the caller owns them. A thread
 	// this computer moved away is reported through Resolution.MovedTo
@@ -72,11 +74,20 @@ type App interface {
 	// Catalog returns what a spawn can choose from on this computer.
 	Catalog(ctx context.Context, q CatalogQuery) (Catalog, error)
 
+	// Roster returns the person's agent profiles and notes on choosing
+	// them, from this computer's settings.
+	Roster(ctx context.Context) (Roster, error)
+
 	// Spawn creates a visible thread, sends the prompt as its first user
 	// message, starts the turn and returns the request receipt. It mints
 	// the token, writes the request row and dispatches locally or to the
 	// destination computer.
 	Spawn(ctx context.Context, caller Caller, call SpawnCall) (RequestAck, error)
+
+	// NewAssistant creates an assistant for a caller that is an assistant's
+	// current thread on this computer, and starts it as the caller's spawn
+	// with its opening block, answer notification armed.
+	NewAssistant(ctx context.Context, caller Caller, call NewAssistantCall) (NewAssistantAck, error)
 
 	// Send continues an existing thread as if the user had typed the
 	// message: queued at the turn boundary mid-turn, sent now when idle.
@@ -105,6 +116,25 @@ type App interface {
 
 	// Remind arms a clock-settled request that wakes the caller later.
 	Remind(ctx context.Context, caller Caller, call RemindCall) (RequestAck, error)
+
+	// FlagAttention raises or lowers the caller's own attention flag and
+	// returns the flag as it stands.
+	FlagAttention(ctx context.Context, caller Caller, call AttentionCall) (AttentionAck, error)
+
+	// Loop registers or replaces one loop of the caller's own thread and
+	// returns it as thread_status lists it, next fire included.
+	Loop(ctx context.Context, caller Caller, call LoopCall) (WakeState, error)
+
+	// Watch registers or replaces one watch of the caller's own thread. A
+	// thread that is not a standing agent is refused with the reason.
+	Watch(ctx context.Context, caller Caller, call WatchCall) (WakeState, error)
+
+	// ListWakes lists the caller's own loops and watches, live ones first.
+	ListWakes(ctx context.Context, caller Caller) ([]WakeState, error)
+
+	// CancelWake cancels the caller's live loop or watch with this label; an
+	// empty kind matches either. Cancelled false means there was none.
+	CancelWake(ctx context.Context, caller Caller, label, kind string) (WakeState, bool, error)
 
 	// UpdateThreads applies one organize patch to threads on this
 	// computer. The whole patch is validated per thread before any thread
@@ -151,6 +181,10 @@ type Peer interface {
 	// Invoke runs one write tool there and returns its JSON result
 	// unchanged: thread_update and thread_group.
 	Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
+
+	// Watch runs one thread_status wait on thread ids there and returns its
+	// JSON result unchanged. The wait there ends when ctx does.
+	Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 
 	// FetchExport copies a file that peer rendered onto the calling
 	// computer and returns it with a path the caller's model can open. A

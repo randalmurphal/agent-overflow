@@ -357,9 +357,8 @@ func EffectiveProviderCapacity(bindings Bindings, provider string) int {
 // is a profile finding of its own, so it resolves to the default here rather
 // than to a ceiling that would refuse every fan-out.
 //
-// Nil bindings — a dry-run with no project resolved (`ao workflow validate`
-// with no `--project`, a project with no profile.yaml) — get the default
-// rather than a skip. Unset means the default everywhere else, and "no profile
+// Nil bindings (a dry-run with no project resolved, a project with no
+// profile.yaml) get the default rather than a skip. Unset means the default everywhere else, and "no profile
 // at all" is the most unset a project can be: the run-start path loads
 // profile.Default() for exactly that project and enforces 32, so skipping here
 // would let a definition validate clean and then be refused at its first

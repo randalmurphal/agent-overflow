@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -342,5 +343,42 @@ func TestMockInfoLatchesInjectedItems(t *testing.T) {
 	}
 	if got := srv.Mocks()[0].InjectedItems; len(got) != maxTrackedInjectedItems || got[0].Text != "first" {
 		t.Fatalf("InjectedItems holds %d, want the first %d kept", len(got), maxTrackedInjectedItems)
+	}
+}
+
+// TestMockInfoLatchesSessionStartRuns: the SessionStart hook runs a mock
+// reported accumulate on its row in arrival order, each with its own copy of
+// the contexts, and the row stays bounded.
+func TestMockInfoLatchesSessionStartRuns(t *testing.T) {
+	srv := bareServer(t)
+	conn := srv.addMock("mock-1", 1, 0)
+	apply := func(rep Report) {
+		srv.mu.Lock()
+		srv.applyReportLocked(conn, rep)
+		srv.mu.Unlock()
+	}
+
+	contexts := []string{"## Your standing instructions", "## Your memory index"}
+	apply(Report{Kind: ReportSessionStartContext, SessionStartRun: &SessionStartRun{Source: "startup", Contexts: contexts}})
+	contexts[0] = "changed after the report"
+	apply(Report{Kind: ReportSessionStartContext, SessionStartRun: &SessionStartRun{Source: "compact", Contexts: []string{}}})
+	apply(Report{Kind: ReportSessionStartContext})
+	got := srv.Mocks()[0].SessionStartRuns
+	want := []SessionStartRun{
+		{Source: "startup", Contexts: []string{"## Your standing instructions", "## Your memory index"}},
+		{Source: "compact", Contexts: []string{}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SessionStartRuns = %+v, want %+v", got, want)
+	}
+	got[0].Contexts[0] = "changed by a reader"
+	if again := srv.Mocks()[0].SessionStartRuns; again[0].Contexts[0] != "## Your standing instructions" {
+		t.Fatalf("a reader changed the latched runs: %+v", again)
+	}
+	for i := 0; i < maxTrackedSessionStartRuns; i++ {
+		apply(Report{Kind: ReportSessionStartContext, SessionStartRun: &SessionStartRun{Source: "compact", Contexts: []string{}}})
+	}
+	if got := srv.Mocks()[0].SessionStartRuns; len(got) != maxTrackedSessionStartRuns || got[0].Source != "startup" {
+		t.Fatalf("SessionStartRuns holds %d, want the first %d kept", len(got), maxTrackedSessionStartRuns)
 	}
 }

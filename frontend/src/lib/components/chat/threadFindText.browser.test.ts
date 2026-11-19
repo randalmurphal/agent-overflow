@@ -4,7 +4,8 @@ import '../../../app.css';
 import TimelineLeaf from './TimelineLeaf.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { FIND_CANDIDATE_ROWS, FIND_TEXT_ROWS, FIND_TEXT_WORKSPACE, type FindTextRow } from '../../../test/fixtures/findTextRows';
+import agentMessages from '../../../../../internal/app/testdata/agent_message_labels.json';
+import { AGENT_MESSAGE_ROW, FIND_CANDIDATE_ROWS, FIND_TEXT_ROWS, FIND_TEXT_WORKSPACE, type FindTextRow } from '../../../test/fixtures/findTextRows';
 import { paneWorkspacePath } from '../../stores/threadPaneShared';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { findTextSegments } from '../../utils/findHighlights';
@@ -109,7 +110,17 @@ describe('thread find text', () => {
         isItemSmoothing: () => false,
       }).filter((run) => run.trim()),
     }));
-    expect(rows.filter((row) => !row.runs.length && !row.name.startsWith('combination')).map((row) => row.name)).toEqual([
+    // An agent message's find text is its header's first line: the headline
+    // Go's label for it names (internal/app/agent_message_label.go), none
+    // when the label is the sender alone.
+    const agentRows = rows.filter((row) => row.name.startsWith(AGENT_MESSAGE_ROW));
+    expect(agentRows.length).toBe(agentMessages.length);
+    for (const row of agentRows) {
+      const label = agentMessages.find((message) => `${AGENT_MESSAGE_ROW}${message.name}` === row.name)!.label;
+      const headline = label.indexOf(': ');
+      expect([row.name, row.runs]).toEqual([row.name, headline < 0 ? [] : [label.slice(headline + 2)]]);
+    }
+    expect(rows.filter((row) => !row.runs.length && !row.name.startsWith('combination') && !row.name.startsWith(AGENT_MESSAGE_ROW)).map((row) => row.name)).toEqual([
       'generic tool path', 'thinking collapsed', 'notification',
       // Chat drops embedded HTML: these show none of it.
       'assistant 17', 'assistant 18', 'assistant 26',

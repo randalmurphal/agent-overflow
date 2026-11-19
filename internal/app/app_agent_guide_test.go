@@ -55,13 +55,13 @@ func TestAgentGuideTextListsOnlyTheServersThatAreOn(t *testing.T) {
 	if !strings.Contains(browserOnly, "`"+appbrowser.ServerName+"`") {
 		t.Errorf("browser-only guide does not name the browser server:\n%s", browserOnly)
 	}
-	for _, name := range []string{threadMCPName, remoteMCPName} {
+	for _, name := range []string{threadMCPName, remoteMCPName, workflowMCPName} {
 		if strings.Contains(browserOnly, name) {
 			t.Errorf("browser-only guide names %s:\n%s", name, browserOnly)
 		}
 	}
 
-	all := agentGuideText(map[string]bool{appbrowser.ServerName: true, threadMCPName: true, remoteMCPName: true})
+	all := agentGuideText(map[string]bool{appbrowser.ServerName: true, threadMCPName: true, remoteMCPName: true, workflowMCPName: true})
 	last := -1
 	for _, server := range agentGuideServers {
 		at := strings.Index(all, server.sentence)
@@ -91,6 +91,7 @@ func TestAgentGuideServersOnFollowTheEffectiveSwitches(t *testing.T) {
 		appbrowser.ServerName: map[string]any{"url": "http://127.0.0.1/browser/" + token},
 		threadMCPName:         map[string]any{"url": "http://127.0.0.1/threads/" + token},
 		remoteMCPName:         map[string]any{"url": "http://127.0.0.1/remote/" + token},
+		workflowMCPName:       map[string]any{"url": "http://127.0.0.1/workflows/" + token},
 	}
 
 	on := app.agentGuideServersOn(thread.ID, registered)
@@ -182,26 +183,26 @@ func TestCodexDeveloperInstructionsComposeTheGuides(t *testing.T) {
 		threadMCPName:         map[string]any{"url": "http://127.0.0.1/threads/" + token},
 	}
 
-	got := app.codexDeveloperInstructions(thread.ID, "APP GUIDE", registered)
+	got := app.codexDeveloperInstructions(thread.ID, "APP GUIDE", registered, subThreadPlace{})
 	want := strings.Join([]string{
 		"APP GUIDE",
 		appbrowser.Instructions(),
-		app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)),
+		app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID, subThreadPlace{})),
 	}, "\n\n")
 	if got != want {
 		t.Fatalf("composed developer instructions:\n%s\nwant:\n%s", got, want)
 	}
 
 	app.browser.mcp.SetThreadEnabled(thread.ID, false)
-	if got := app.codexDeveloperInstructions(thread.ID, "APP GUIDE", registered); strings.Contains(got, appbrowser.Instructions()) {
+	if got := app.codexDeveloperInstructions(thread.ID, "APP GUIDE", registered, subThreadPlace{}); strings.Contains(got, appbrowser.Instructions()) {
 		t.Error("browser guide composed while the thread's browser switch is off")
 	}
 
-	if got := app.codexDeveloperInstructions(thread.ID, "", nil); got != "" {
+	if got := app.codexDeveloperInstructions(thread.ID, "", nil, subThreadPlace{}); got != "" {
 		t.Fatalf("nothing on and no app guide, yet developer instructions = %q", got)
 	}
 	app.browser.mcp.SetThreadEnabled(thread.ID, true)
-	if got := app.codexDeveloperInstructions(thread.ID, "", registered); !strings.HasPrefix(got, appbrowser.Instructions()) {
+	if got := app.codexDeveloperInstructions(thread.ID, "", registered, subThreadPlace{}); !strings.HasPrefix(got, appbrowser.Instructions()) {
 		t.Fatalf("with the app guide off the server guides must still ride alone; got %q", got)
 	}
 }

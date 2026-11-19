@@ -193,7 +193,7 @@ func (f *startWatchdogFixture) refuteOutcome(reason string) {
 // The primary path: the deadline cancels the start's context, every ctx-aware
 // wait unwinds, and Start's RETURN is the single channel the failure reaches the
 // engine on — no second report, and a typed setup failure the engine parks
-// `setup-failed` and a bare `run resume` re-enters fresh.
+// `setup-failed` and a bare resume re-enters fresh.
 func TestWorkflowStartDeadlineCancelsAWedgedSessionProof(t *testing.T) {
 	fixture := newStartWatchdogFixture(t)
 	threadID := fixture.seedPriorThread()
@@ -231,7 +231,7 @@ func TestWorkflowStartDeadlineCancelsAWedgedSessionProof(t *testing.T) {
 	if !strings.Contains(err.Error(), threadID) {
 		t.Fatalf("start error does not name the wedged thread: %v", err)
 	}
-	if !strings.Contains(err.Error(), "run resume") {
+	if !strings.Contains(err.Error(), "a resume without phase_id") {
 		t.Fatalf("start error does not say how to recover: %v", err)
 	}
 	fixture.refuteOutcome("the deadline reported an outcome as well as failing the start")

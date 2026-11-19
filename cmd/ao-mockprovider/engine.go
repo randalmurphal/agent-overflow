@@ -27,7 +27,7 @@ type protocolAdapter interface {
 	// adapter then tells the app the way its CLI does: Claude Code writes a
 	// control_cancel_request for the abandoned can_use_tool callback, Codex
 	// writes nothing and lets turn/interrupt settle the request.
-	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan bool, cancel func(abandoned bool), err error)
+	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan approvalAnswer, cancel func(abandoned bool), err error)
 	// sendInterruptedTurn writes the protocol-native terminal frame for an
 	// interrupted turn. The adapter has already acknowledged the inbound
 	// interrupt before this is called.
@@ -94,6 +94,8 @@ type engine struct {
 	adapter     protocolAdapter
 	// exitFn is os.Exit in production; tests substitute a recorder.
 	exitFn func(code int)
+	// hooks is the hook commands in flight, stopped before an exit.
+	hooks hookRuns
 
 	mu   sync.Mutex
 	base scenario.Vars // SESSION_ID / THREAD_ID / CWD
@@ -420,6 +422,20 @@ func (e *engine) finishTurn(n int) {
 	}
 }
 
+// turnLive reports whether a user turn has begun and not finished: from
+// turn/start's answer, through its wait for pickup, until its steps end.
+// Turn 0 is the onStart steps, which are no turn a steer can join.
+func (e *engine) turnLive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for n := range e.turns {
+		if n > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // turnActive reports whether a scenario turn is running.
 func (e *engine) turnActive() bool {
 	e.mu.Lock()
@@ -566,9 +582,11 @@ func (e *engine) handleCommand(cmd control.Command) {
 		e.advance(cmd.Name)
 	case control.CommandEmit:
 		vars := e.currentVars()
-		for _, line := range cmd.Lines {
-			e.w.writeLine(vars.Substitute(line), 0, 0)
+		lines := make([]string, len(cmd.Lines))
+		for i, line := range cmd.Lines {
+			lines[i] = vars.Substitute(line)
 		}
+		e.writeScenarioLines(vars, lines, false, 0, 0, 0)
 	case control.CommandExit:
 		e.terminate(cmd.Code)
 	case control.CommandLoginComplete:
@@ -697,9 +715,18 @@ func gateMatches(gateName, advanceName string) bool {
 	return advanceName == "" || gateName == "" || advanceName == gateName
 }
 
-// terminate reports and exits. The exiting report is synchronous so it
-// lands before the process dies.
+// terminate stops the hook runs, reports and exits. The exiting report is
+// synchronous so it lands before the process dies.
 func (e *engine) terminate(code int) {
+	e.hooks.stop()
 	e.rep.report(control.Report{Kind: control.ReportExiting, Detail: strconv.Itoa(code)})
 	e.exitFn(code)
+}
+
+// approvalAnswer is the app's answer to one approval request: whether it
+// allows, and the response body as the app wrote it, which the
+// approval_decided report carries so a spec can read what was answered.
+type approvalAnswer struct {
+	allow    bool
+	response string
 }

@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // The settling half: how a request stops being open, and how the answer
@@ -34,12 +35,29 @@ import (
 // subscription would have to follow spawns.
 func (a *App) installThreadRequestObserver() {
 	a.threadRequests.observerOnce.Do(func() {
+		// Every write to a request reaches the Agents rows of its caller.
+		a.store.OnThreadRequestChanged(a.noteThreadRequestChanged)
 		a.subscribeGlobalTurnObserver(func(threadID string, evt provider.ProviderEvent) {
 			// Top-level turn ends only: a subagent finishing inside the turn
 			// is not the turn ending, and settling there would answer with a
 			// Task tool's last words.
-			if evt.Kind != provider.EventTurnComplete || strings.TrimSpace(evt.ParentToolUseID) != "" {
+			sessionEnded := evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected"
+			turnEnded := evt.Kind == provider.EventTurnComplete && strings.TrimSpace(evt.ParentToolUseID) == ""
+			if !sessionEnded && !turnEnded {
 				return
+			}
+			// A read mark held for a turn that answered mid-turn has its
+			// own gate, one map read, since that answer already left the
+			// running set.
+			if a.hasAnsweredReads(threadID) && a.lifeCtx().Err() == nil {
+				a.goThreadRequestSettling(func() { a.finishAnsweredReads(threadID, sessionEnded) })
+			}
+			if sessionEnded {
+				a.disarmRequestCancels(threadID)
+			}
+			// So does an echo whose confirmation failed to write.
+			if a.hasUnwrittenEchoes(threadID) && a.lifeCtx().Err() == nil {
+				a.goThreadRequestSettling(func() { a.retryOwnedEchoes(threadID) })
 			}
 			// The gate is read here, on the event worker, because that is what
 			// keeps a turn end on a thread with no requests to one map read
@@ -52,7 +70,23 @@ func (a *App) installThreadRequestObserver() {
 			// wake, and both stop or start a provider session: a stop drains
 			// the thread's event queue, so doing that on the worker waits for
 			// itself. Shutdown joins these through threadRequestsWG.
-			a.goThreadRequestSettling(func() { a.settleReceiptsForEndedTurn(threadID) })
+			if a.lifeCtx().Err() != nil {
+				return
+			}
+			a.goThreadRequestSettling(func() {
+				if sessionEnded {
+					// A stop sent to the session that ended has been read
+					// once its end settled what it cut: a send it cut that
+					// was still waiting never opens its turn there. One the
+					// end failed to settle stays for the next try.
+					stops := a.sessionTurnStops(threadID, evt.SessionToken)
+					if a.settleReceiptsForEndedSession(threadID, evt.SessionToken) {
+						a.retireTurnStops(threadID, stops)
+					}
+					return
+				}
+				a.settleReceiptsForEndedTurn(threadID)
+			})
 		})
 	})
 }
@@ -61,6 +95,10 @@ func (a *App) installThreadRequestObserver() {
 // completed. The in-memory gate keeps a turn end on a thread with no requests
 // to a single map read.
 func (a *App) settleReceiptsForEndedTurn(threadID string) {
+	// The stops this pass may retire are those whose turn was over before
+	// it read which requests are running: a turn that ends while it runs,
+	// and a request that reaches such a turn meanwhile, are a later pass's.
+	ended := a.endedTurnStops(threadID)
 	tokens, ok := a.runningReceiptTokens(threadID)
 	if !ok {
 		return
@@ -69,15 +107,277 @@ func (a *App) settleReceiptsForEndedTurn(threadID string) {
 	// They are all settled before anything is delivered, so their callers
 	// are told once per turn rather than once per message.
 	works := make([]threadSettlementWork, 0, len(tokens))
+	holds := make([]receiptHold, 0, len(tokens))
+	failed := false
 	for _, token := range tokens {
-		work, err := a.settleReceiptOnTurnEnd(threadID, token)
+		work, hold, err := a.settleReceiptOnTurnEnd(threadID, token)
 		if err != nil {
 			log.Printf("thread tools: settle request %s on %s: %v", token, threadID, err)
-			continue
+			failed = true
+		}
+		works = append(works, work)
+		holds = append(holds, hold)
+	}
+	a.runThreadSettlementWorks(works)
+	if hook := a.turnEndSettledForTest; hook != nil {
+		hook(threadID)
+	}
+	// An ended turn's stop has been read by every request its end settled.
+	// It stays for the next try of a settlement that failed, and for a
+	// request still waiting on that turn or on a delivery to name its turn.
+	if !failed {
+		a.retireTurnStops(threadID, slices.DeleteFunc(ended, func(recorded recordedTurnStop) bool {
+			return slices.ContainsFunc(holds, func(hold receiptHold) bool { return hold.holds(recorded.turn) })
+		}))
+	}
+}
+
+// settleReceiptsForEndedSession settles the receipts on a thread whose
+// provider session ended while they were running. The process that held
+// their messages is gone: nothing will deliver an undelivered one, and
+// nothing will continue the turn a delivered one was read in. A stop, a
+// death and a replacement each end that turn as interrupted (CleanupThread,
+// handleSessionDied, EndReplacedSessionTurn), and none of those ends is a
+// frame this observer sees.
+//
+// A message the agent never took in belongs to the restore that holds it
+// (a death's, a replacement's, a teardown's), which puts it back on its
+// queue or settles it when it cannot (giveBackRequest). Every restore holds
+// the thread action lock from taking the message until its receipt is back
+// in `accepted`, and the messages still held are read under that lock, so
+// this sees either the message held or the receipt returned, never the
+// moment between.
+//
+// session is the session that ended. The pass runs off the event worker,
+// so a replacement can have started and been handed requests by the time it
+// runs, a message this session never took in included: it settles only the
+// receipts whose message went to this session (receiptGate). An empty
+// session names none and settles every running receipt.
+//
+// It reports whether every receipt it read settled or was left to its
+// restore; false when a read or a settlement failed.
+func (a *App) settleReceiptsForEndedSession(threadID, session string) bool {
+	tokens, ok := a.runningReceiptTokens(threadID)
+	if !ok {
+		return true
+	}
+	held, err := a.heldSendIDs(threadID)
+	if err != nil {
+		log.Printf("thread tools: read what %s still holds at its session's end: %v", threadID, err)
+		return false
+	}
+	// Every receipt settles before anything is delivered, as at a turn's
+	// end, so a caller with several requests the session's end settled is
+	// told once.
+	works := make([]threadSettlementWork, 0, len(tokens))
+	settled := true
+	for _, token := range tokens {
+		work, err := a.settleReceiptOnSessionEnd(threadID, session, token, held)
+		if err != nil {
+			log.Printf("thread tools: settle request %s on %s at its session's end: %v", token, threadID, err)
+			settled = false
 		}
 		works = append(works, work)
 	}
 	a.runThreadSettlementWorks(works)
+	return settled
+}
+
+// heldSendIDs names the messages a thread's queue, dispatch or provider
+// registry still holds, read under the thread action lock.
+func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
+	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	held := map[string]bool{}
+	if a.triage == nil {
+		return held, nil
+	}
+	items := a.triage.UnconfirmedFlushSends(threadID)
+	for _, queued := range append(a.triage.QueuedFlushItems(threadID), a.pendingFlushDispatchItems(threadID)...) {
+		items = append(items, triage.UnconfirmedFlushItem{QueueItemID: queued.ID, Payload: queued.Payload})
+	}
+	for _, item := range items {
+		for _, id := range unconfirmedMembersOf(item).ids {
+			held[id] = true
+		}
+	}
+	return held, nil
+}
+
+// settleReceiptOnSessionEnd settles one running receipt for its session's
+// end. One the provider took in with no turn open yet settles as never
+// answered. One it never took in settles as never read, unless its message
+// is still held (held) and so its restore's to give back. A delivered one
+// settles interrupted with what its turn had written by then, unless that
+// turn ended on its own first, whose end then answers it as any turn end
+// does.
+//
+// The receipt is read once, under the token's settle lock, and that read is
+// the one the settlement writes from. It returns the work the settlement
+// owes, for the caller to run with the work of the session's other receipts
+// once the lock is released.
+//
+// A receipt whose message went to another session than the one that ended
+// (session) is that session's, and is left to it. The dispatch and the
+// delivery record their session under the same settle lock.
+func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held map[string]bool) (threadSettlementWork, error) {
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	if gate, held := a.heldReceiptGate(threadID, token); held {
+		// Its own turn ended: the session's end is one of its thread's,
+		// which cut the turn it ran then, if any.
+		receipt, found, err := a.deliveredReceiptLocked(token)
+		if err != nil || !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning {
+			return threadSettlementWork{}, err
+		}
+		return a.settleHeldReceiptLocked(receipt, gate, heldEnd{sessionEnded: true, session: session})
+	}
+	if a.receiptSession(threadID, token) != session {
+		return threadSettlementWork{}, nil
+	}
+	receipt, found, err := a.deliveredReceiptLocked(token)
+	if err != nil {
+		return threadSettlementWork{}, err
+	}
+	if !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning {
+		return threadSettlementWork{}, nil
+	}
+	settlement := interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedUnanswered}, "")
+	var rest *restDecision
+	if receipt.TurnID == "" {
+		switch {
+		case a.receiptTakenIn(threadID, token):
+		case !held[threadRequestSendID(token)]:
+			settlement = interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedUnread}, "")
+		default:
+			return threadSettlementWork{}, nil
+		}
+	} else {
+		if settlement, err = a.sessionEndSettlement(threadID, receipt.TurnID); err != nil {
+			return threadSettlementWork{}, err
+		}
+		// A turn that ended on its own before its session did answers as
+		// any turn end does, rest included.
+		index, _ := threadRequestTurnIndex(threadID, receipt.TurnID)
+		held := false
+		if settlement, rest, held, err = a.restSettlement(receipt, settlement, index); err != nil || held {
+			return threadSettlementWork{}, err
+		}
+		defer rest.done()
+	}
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread, rest)
+	return work, err
+}
+
+// sessionEndSettlement is what a delivered receipt answers when its
+// session ends: its turn's own end if that turn ended first, or a person's
+// Stop cut it, and otherwise an interruption with what the turn wrote.
+func (a *App) sessionEndSettlement(threadID, turnID string) (store.ThreadRequestSettlement, error) {
+	index, ok := threadRequestTurnIndex(threadID, turnID)
+	if !ok {
+		return store.ThreadRequestSettlement{}, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", turnID)
+	}
+	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
+	if err != nil {
+		return store.ThreadRequestSettlement{}, err
+	}
+	if found && turn.CompletedAt != nil && (turn.StopReason != "interrupted" || a.stoppedByPerson(threadID, turn)) {
+		return a.turnSettlement(threadID, turn)
+	}
+	if (!found || turn.CompletedAt == nil) && a.triage != nil {
+		// A replaced session's turn is ended after its disconnect, and
+		// what it wrote last may still be in the stream buffers.
+		if err := a.triage.FlushThread(threadID); err != nil {
+			return store.ThreadRequestSettlement{}, err
+		}
+	}
+	text, err := a.lastAssistantText(threadID, index)
+	if err != nil {
+		return store.ThreadRequestSettlement{}, err
+	}
+	return interruptedSettlement(threadtools.Cause{Code: threadtools.CauseSessionEndedMidTurn}, text), nil
+}
+
+// giveBackRequest puts a request whose message a session's end took back
+// before the agent took it in on its queue again, owed: its receipt returns
+// to `accepted`, its sender is told nothing, and the thread's next session
+// start sends it. One the agent did take in is the session end's to settle.
+// One its queue refuses (an archived thread, a failed write) settles as
+// never read.
+func (a *App) giveBackRequest(threadID, token string, message usermessage.AgentMessage) {
+	a.runThreadSettlementWorkDetached(a.giveBackRequestWork(threadID, token, message))
+}
+
+// giveBackRequestWork is giveBackRequest returning the work a settlement owes
+// instead of running it, for a restore that gives back several requests and
+// runs their work together.
+func (a *App) giveBackRequestWork(threadID, token string, message usermessage.AgentMessage) threadSettlementWork {
+	tools := a.threadTools()
+	if !tools.returnRequestNotTakenIn(threadID, token) {
+		return threadSettlementWork{}
+	}
+	if err := tools.requeueRequest(token, threadID, message); err != nil {
+		log.Printf("thread tools: give request %s back to %s: %v", token, threadID, err)
+		return a.settleReceiptNotRead(threadID, token, store.ThreadReceiptAccepted, threadtools.CauseSessionEndedUnread)
+	}
+	return threadSettlementWork{}
+}
+
+// settleReceiptNotRead settles one receipt `interrupted` for why, the code
+// of its cause (threadtools.Cause), if it is still in state with no turn:
+// `running` for a message the provider was handed, `accepted` for one given
+// back to a queue that refused it. The read and the write share the token's
+// settle lock, which a delivery's binding takes too, so a delivery that
+// lands first wins and this settles nothing.
+//
+// It returns the work the settlement owes. A restore holds the thread's
+// action lock and the work takes thread locks of its own, so the caller runs
+// it detached, with the work of the restore's other requests
+// (runThreadSettlementWorksDetached) so a caller with several of them is
+// told once.
+func (a *App) settleReceiptNotRead(threadID, token, state, why string) threadSettlementWork {
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	receipt, found, err := a.deliveredReceiptLocked(token)
+	if err != nil {
+		log.Printf("thread tools: settle undelivered request %s on %s: %v", token, threadID, err)
+		return threadSettlementWork{}
+	}
+	if !found || receipt.TargetThreadID != threadID || receipt.State != state || receipt.TurnID != "" {
+		return threadSettlementWork{}
+	}
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{state}, interruptedSettlement(threadtools.Cause{Code: why}, ""), dropScratchThread, nil)
+	if err != nil {
+		log.Printf("thread tools: settle undelivered request %s on %s: %v", token, threadID, err)
+	}
+	return work
+}
+
+// interruptedSettlement is the answer of a request cause interrupted: the
+// cause as data, and what the turn had written by then, if anything, as its
+// text. The words a caller reads are rendered from both (threadtools.Cause).
+// The user's Stop answers with exactly what the turn said, which is its
+// `final` message; every other cause's answer is an `error`, and text that
+// is only white space is no text.
+func interruptedSettlement(cause threadtools.Cause, written string) store.ThreadRequestSettlement {
+	settlement := store.ThreadRequestSettlement{
+		State:      store.ThreadReceiptInterrupted,
+		AnswerKind: store.ThreadAnswerError,
+		Cause:      cause.Code,
+		CauseArg:   cause.Arg,
+	}
+	if cause.Code == threadtools.CauseUserStop {
+		settlement.AnswerKind = store.ThreadAnswerFinal
+		settlement.Answer = []byte(written)
+		return settlement
+	}
+	if strings.TrimSpace(written) != "" {
+		settlement.Answer = []byte(written)
+	}
+	return settlement
 }
 
 // settleReceiptOnTurnEnd reads what the receipt's own turn did and settles it.
@@ -85,107 +385,137 @@ func (a *App) settleReceiptsForEndedTurn(threadID string) {
 // The binding is the turn, not the event: an end of some other turn on the
 // same thread leaves this receipt's turn row unfinished and settles nothing,
 // which is what keeps a user's own turn from answering an agent's request.
+// A receipt no delivery has named a turn for is bound first to the turn
+// that took its message, when one did (bindUndeliveredReceiptToTakingTurn).
 //
 // It returns the work the settlement owes, for the caller to run with the
-// work of the turn's other receipts (runThreadSettlementWorks).
-func (a *App) settleReceiptOnTurnEnd(threadID, token string) (threadSettlementWork, error) {
-	receipt, found, err := a.store.GetThreadRequestReceipt(token)
+// work of the turn's other receipts (runThreadSettlementWorks), and what a
+// running receipt it left unsettled still waits for (receiptHold).
+func (a *App) settleReceiptOnTurnEnd(threadID, token string) (threadSettlementWork, receiptHold, error) {
+	work, undelivered, hold, err := a.settleBoundReceiptOnTurnEnd(threadID, token)
+	if err != nil || undelivered == "" {
+		return work, hold, err
+	}
+	bound, err := a.bindUndeliveredReceiptToTakingTurn(threadID, token, undelivered)
+	if err != nil || !bound {
+		return threadSettlementWork{}, receiptHold{unbound: true, turn: anyOpenTurn}, err
+	}
+	work, _, hold, err = a.settleBoundReceiptOnTurnEnd(threadID, token)
+	return work, hold, err
+}
+
+// receiptHold is what a running receipt a turn-end pass left unsettled
+// still waits for: the end of its bound turn (turn, with the row's start
+// when it was read), or, with no turn bound yet (unbound), a delivery that
+// can name any turn, an ended one too. The hold of a settled or absent
+// receipt is noHold.
+type receiptHold struct {
+	unbound   bool
+	turn      int
+	startedAt int64
+}
+
+// holds reports whether the hold keeps the stop of turn.
+func (h receiptHold) holds(turn stoppedTurn) bool {
+	return h.unbound || (h.turn >= 0 && turn.matches(store.Turn{TurnIndex: h.turn, StartedAt: h.startedAt}))
+}
+
+var noHold = receiptHold{turn: anyOpenTurn}
+
+// settleBoundReceiptOnTurnEnd is settleReceiptOnTurnEnd for a receipt whose
+// delivery named its turn. For a running receipt no delivery has named a
+// turn for, it settles nothing and returns the row of the receipt's message
+// (undelivered).
+//
+// The receipt is read once, under the token's settle lock, and that read is
+// the one the settlement writes from.
+func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (threadSettlementWork, string, receiptHold, error) {
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	receipt, found, err := a.deliveredReceiptLocked(token)
 	if err != nil {
-		return threadSettlementWork{}, err
+		return threadSettlementWork{}, "", noHold, err
 	}
 	if !found || receipt.TargetThreadID != threadID {
 		// Gone, or bound to another thread: nothing here owns it any more.
 		a.forgetReceiptRunning(threadID, token)
-		return threadSettlementWork{}, nil
+		return threadSettlementWork{}, "", noHold, nil
 	}
 	if receipt.State == store.ThreadReceiptAccepted {
 		// The dispatch has not bound its turn yet. The gate is set before
 		// the row, so dropping it here would take away the only thing
-		// watching for this receipt's turn end.
-		return threadSettlementWork{}, nil
+		// watching for this receipt's turn end. Its message has not reached
+		// the provider, so no ended turn can take it.
+		return threadSettlementWork{}, "", noHold, nil
 	}
 	if receipt.State != store.ThreadReceiptRunning {
 		// Replied, cancelled or settled: nothing here owns it any more.
 		a.forgetReceiptRunning(threadID, token)
-		return threadSettlementWork{}, nil
+		return threadSettlementWork{}, "", noHold, nil
 	}
-	turn, ended, err := a.receiptEndedTurn(threadID, token, receipt.MessageItemID)
-	if err != nil {
-		return threadSettlementWork{}, err
+	if gate, held := a.heldReceiptGate(threadID, token); held {
+		// Its own turn ended: the turn that ended now is a later one of its
+		// thread's.
+		work, err := a.settleHeldReceiptLocked(receipt, gate, heldEnd{})
+		return work, "", noHold, err
 	}
-	if !ended {
-		// The request's own turn is still running. Some other turn ended.
-		return threadSettlementWork{}, nil
+	if receipt.TurnID == "" {
+		// The message is with the provider and no delivery has named its
+		// turn: the turn that ended may be one it was written during, not
+		// one that read it. The gate stays for the turn that is named.
+		return threadSettlementWork{}, receipt.MessageItemID, noHold, nil
 	}
-	settlement, err := a.turnSettlement(threadID, turn)
-	if err != nil {
-		return threadSettlementWork{}, err
-	}
-	work, _, err := a.settleReceiptUnderLock(token, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
-	return work, err
-}
-
-// receiptEndedTurn returns the ended turn that answers a running receipt,
-// or false while that answer is still to come.
-//
-// The receipt names the turn its message's row sits in until the provider
-// consumes the message, and from then the turn that consumption named
-// (recordRequestAnswerTurn). A message queued behind a running turn is not
-// answered by that turn ending: while the provider holds it unconsumed the
-// receipt waits, and once a turn start takes it, that turn answers.
-//
-// The pending state is read before the receipt. A send reported consumed has
-// had its answer turn written, so the receipt read after it is current.
-func (a *App) receiptEndedTurn(threadID, token, messageItemID string) (store.Turn, bool, error) {
-	claimed, state := a.triage.PendingSendTurn(threadID, messageItemID)
-	if state == triage.PendingSendWaiting {
-		return store.Turn{}, false, nil
-	}
-	turnKey := ""
-	if state == triage.PendingSendClaimed {
-		turnKey = threadRequestTurnKey(threadID, claimed)
-		if _, err := a.store.SetThreadReceiptAnswerTurn(token, threadID, turnKey); err != nil {
-			return store.Turn{}, false, err
-		}
-	} else {
-		receipt, found, err := a.store.GetThreadRequestReceipt(token)
-		if err != nil || !found {
-			return store.Turn{}, false, err
-		}
-		turnKey = receipt.TurnID
-	}
-	index, ok := threadRequestTurnIndex(threadID, turnKey)
+	index, ok := threadRequestTurnIndex(threadID, receipt.TurnID)
 	if !ok {
-		return store.Turn{}, false, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", turnKey)
+		return threadSettlementWork{}, "", noHold, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
 	}
-	if a.triage.OpenTurnIndex(threadID) == index {
+	if a.triage != nil && a.triage.OpenTurnIndex(threadID) == index {
 		// The turn is running. A row that still carries an earlier
 		// completion (a soft-closed turn the model continued, a re-sent
 		// turn start) is not this turn's end.
-		return store.Turn{}, false, nil
+		return threadSettlementWork{}, "", receiptHold{turn: index}, nil
 	}
 	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
-	if err != nil || !found || turn.CompletedAt == nil {
-		return store.Turn{}, false, err
+	if err != nil {
+		return threadSettlementWork{}, "", noHold, err
 	}
-	return turn, true, nil
+	if !found || turn.CompletedAt == nil {
+		// The request's own turn is still running. Some other turn ended.
+		return threadSettlementWork{}, "", receiptHold{turn: index, startedAt: turn.StartedAt}, nil
+	}
+	settlement, err := a.turnSettlement(threadID, turn)
+	if err != nil {
+		return threadSettlementWork{}, "", noHold, err
+	}
+	settlement, rest, held, err := a.restSettlement(receipt, settlement, index)
+	if err != nil || held {
+		return threadSettlementWork{}, "", noHold, err
+	}
+	defer rest.done()
+	work, _, err := a.settleReadReceiptLocked(receipt, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread, rest)
+	return work, "", noHold, err
 }
 
-// recordRequestAnswerTurn is the consumed hook: the provider consumed a
-// message, and answerTurn is the turn that answers it. Each request whose
-// message the row carries has that turn written to its receipt. It runs
-// inside triage's confirmation transaction, so it writes and returns.
-func (a *App) recordRequestAnswerTurn(threadID string, sendIDs []string, answerTurn int) {
-	turnKey := threadRequestTurnKey(threadID, answerTurn)
-	for _, sendID := range sendIDs {
-		token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix)
-		if !ok {
-			continue
-		}
-		if _, err := a.store.SetThreadReceiptAnswerTurn(token, threadID, turnKey); err != nil {
-			log.Printf("thread tools: record answer turn %d of %s for request %s: %v", answerTurn, threadID, token, err)
-		}
+// bindUndeliveredReceiptToTakingTurn binds a running receipt no delivery has
+// named a turn for to the turn that took its message (the row
+// messageItemID) and ran it (triage.PendingSendTurn): a provider that opens
+// the message's turn and never echoes the message still answers there. A
+// delivery that arrives first wins as always (BindThreadReceiptTurn). It
+// reports whether the receipt is bound now.
+//
+// The caller holds no settle lock: the read of the send waits on the
+// thread's flush anchor, which a delivery holds when it takes that lock.
+func (a *App) bindUndeliveredReceiptToTakingTurn(threadID, token, messageItemID string) (bool, error) {
+	if a.triage == nil {
+		return false, nil
 	}
+	turnIndex, state := a.triage.PendingSendTurn(threadID, messageItemID)
+	if state != triage.PendingSendClaimed {
+		return false, nil
+	}
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	return a.store.BindThreadReceiptTurn(token, messageItemID, threadRequestTurnKey(threadID, turnIndex), true)
 }
 
 // turnSettlement maps one ended turn onto the answer its requester reads.
@@ -193,6 +523,10 @@ func (a *App) recordRequestAnswerTurn(threadID string, sendIDs []string, answerT
 // A turn that answered without thread_reply still said something, and that
 // last message is the most useful thing this computer has; it is reported as
 // `final` so the caller is never told a fallback is the answer it asked for.
+// An interrupted turn settles `interrupted` with the cause its stop recorded
+// (recordTurnStop, threadtools.Cause); the user's own Stop keeps what the
+// turn said by then. A turn whose session ended with it is settled by
+// settleReceiptOnSessionEnd.
 func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequestSettlement, error) {
 	settledAt := time.Now().UnixMilli()
 	if turn.CompletedAt != nil {
@@ -200,12 +534,21 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 	}
 	switch {
 	case turn.StopReason == "interrupted":
-		return store.ThreadRequestSettlement{
-			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte(a.turnStopCause(threadID, turn.TurnIndex)),
-			AnswerKind: store.ThreadAnswerError,
-			SettledAt:  settledAt,
-		}, nil
+		cause := threadtools.Cause{Code: threadtools.CauseTurn}
+		if stop, stopped := a.turnStopOf(threadID, turn); stopped {
+			cause = stop.cause
+		}
+		said := ""
+		if cause.Code == threadtools.CauseUserStop {
+			text, err := a.lastAssistantText(threadID, turn.TurnIndex)
+			if err != nil {
+				return store.ThreadRequestSettlement{}, err
+			}
+			said = text
+		}
+		settlement := interruptedSettlement(cause, said)
+		settlement.SettledAt = settledAt
+		return settlement, nil
 	case turn.ErrorMessage != "" || turn.StopReason == "error":
 		message := turn.ErrorMessage
 		if message == "" {
@@ -265,6 +608,11 @@ type threadSettlementWork struct {
 	// late marks it as the second wake of a late reply.
 	wake bool
 	late bool
+	// answered is the settled receipt when its answer reached the thread
+	// on this computer that spawned the thread that answered, which may
+	// then be marked read (markAnsweredRead). Nil for every other
+	// settlement.
+	answered *store.ThreadRequestReceipt
 }
 
 // dropScratchThread and keepScratchThread name what a settlement does with
@@ -304,7 +652,13 @@ func (a *App) runThreadSettlementWorks(works []threadSettlementWork) {
 		a.deliverThreadWakes(wakes)
 	}
 	for _, work := range works {
-		if work.token != "" && work.dropScratch {
+		if work.token == "" {
+			continue
+		}
+		if work.answered != nil {
+			a.markAnsweredRead(*work.answered)
+		}
+		if work.dropScratch {
 			// The scratch thread has done its work. The answer lives in the
 			// receipt, which the drop detaches from the thread first so a
 			// paired computer that has not collected it yet still can; a
@@ -315,30 +669,37 @@ func (a *App) runThreadSettlementWorks(works []threadSettlementWork) {
 	}
 }
 
+// runThreadSettlementWorkDetached is runThreadSettlementWorksDetached for
+// one settlement.
+func (a *App) runThreadSettlementWorkDetached(work threadSettlementWork) {
+	a.runThreadSettlementWorksDetached([]threadSettlementWork{work})
+}
+
 // runThreadSettlementWorksDetached runs the deferred work on its own
 // goroutine, for settlements written inside an operation that holds thread
-// locks of its own: the delete port, and the dispatch binding a receipt to
-// its turn. None of that work may wait on a lock its own caller is holding.
-// Shutdown joins these through threadRequestsWG, and a wake dropped by a
-// shutdown is redelivered by the next boot's undelivered-wake pass.
+// locks of its own: the delete port, a delivery binding a receipt to its
+// turn, and a restore settling a request whose message went back
+// undelivered. None of that work may wait on a lock its own caller is
+// holding. Shutdown joins these through threadRequestsWG, and a wake dropped
+// by a shutdown is redelivered by the next boot's undelivered-wake pass.
 func (a *App) runThreadSettlementWorksDetached(works []threadSettlementWork) {
 	works = slices.DeleteFunc(works, func(work threadSettlementWork) bool { return work.token == "" })
-	if len(works) == 0 {
+	if len(works) == 0 || a.lifeCtx().Err() != nil {
 		return
 	}
 	a.goThreadRequestSettling(func() { a.runThreadSettlementWorks(works) })
 }
 
 // goThreadRequestSettling runs a settlement or a wake delivery on its own
-// goroutine, joined at shutdown through threadRequestsWG, and reports
-// whether it started it. Once shutdown has begun it runs nothing: work
-// started then could outlive the join and the store. What it would have
-// done is left to the next boot's sweeps.
+// goroutine, joined at shutdown through threadRequestsWG and counted in
+// threadRequestSettling, and reports whether it started it. Once shutdown
+// has begun it runs nothing: work started then could outlive the join and
+// the store. What it would have done is left to the next boot's sweeps.
 func (a *App) goThreadRequestSettling(fn func()) bool {
 	if a.lifeCtx().Err() != nil {
 		return false
 	}
-	return a.threadRequestsWG.Go(fn)
+	return a.threadRequestsWG.GoCounted(&a.threadRequestSettling, fn)
 }
 
 // settleThreadReceipt writes one settlement on the destination row and hands
@@ -361,15 +722,14 @@ func (a *App) settleThreadReceipt(token string, from []string, settlement store.
 // settleThreadReceiptNoScratch is the door for the delete and move ports: the
 // thread that answered is being destroyed or handed away by the caller, which
 // owns that destruction itself, so this settlement must not also delete it.
-// It returns the work the settlement owes.
+// It returns the work the settlement owes and whether it applied.
 //
 // Those callers hold the answering thread's action lock, so they run the
 // deferred work detached (runThreadSettlementWorksDetached): the wake takes
 // the asking thread's own locks, and a subtree delete can be holding those
 // too.
-func (a *App) settleThreadReceiptNoScratch(token string, from []string, settlement store.ThreadRequestSettlement) (threadSettlementWork, error) {
-	work, _, err := a.settleReceiptUnderLock(token, from, settlement, keepScratchThread)
-	return work, err
+func (a *App) settleThreadReceiptNoScratch(token string, from []string, settlement store.ThreadRequestSettlement) (threadSettlementWork, bool, error) {
+	return a.settleReceiptUnderLock(token, from, settlement, keepScratchThread)
 }
 
 // settleReceiptUnderLock is the locking half of both doors.
@@ -384,7 +744,7 @@ func (a *App) settleReceiptUnderLock(
 // settleThreadReceiptLocked is the settlement itself, for a caller that
 // already holds the token's settle lock because a read it made under that
 // lock must not be separated from this write: thread_reply's idempotency
-// check, and the dispatch binding a receipt to its turn. It returns the work
+// check and a delivery binding a receipt to its turn. It returns the work
 // the caller must run after releasing the lock.
 //
 // A request this computer made of its own thread is collected in the same
@@ -401,38 +761,81 @@ func (a *App) settleThreadReceiptLocked(
 	if !found {
 		return threadSettlementWork{}, false, nil
 	}
-	source, local, err := a.localThreadRequest(token)
-	if err != nil {
-		return threadSettlementWork{}, false, err
+	return a.settleReadReceiptLocked(receipt, from, settlement, scratch, nil)
+}
+
+// settleReadReceiptLocked is settleThreadReceiptLocked for a receipt the
+// caller read under the token's settle lock. The receipt, the source row on
+// this computer and the acknowledgement are one store transaction
+// (SettleLocalThreadRequest); a request another computer made is collected
+// by its poller. A settlement at its thread's rest carries that decision
+// (rest): the transaction reads the rest again first and writes nothing
+// when its thread is no longer at rest, which leaves the request held for
+// the next pass.
+func (a *App) settleReadReceiptLocked(
+	receipt store.ThreadRequestReceipt, from []string, settlement store.ThreadRequestSettlement, scratch bool, rest *restDecision,
+) (threadSettlementWork, bool, error) {
+	token := receipt.Token
+	// The answer records whether its thread is a standing agent now, and
+	// the source row copies it, on this computer or another.
+	settlement.Agent = a.threadTools().answerAgent(token, receipt.TargetThreadID)
+	if settlement.AnswerKind == store.ThreadAnswerReply {
+		// An explicit reply is owed to a caller on this computer as a
+		// message whether or not it asked to be told (replyArmsWake); the
+		// settlement arms it in the statement that stores the reply.
+		row, found, err := a.store.GetThreadRequest(token)
+		if err != nil {
+			return threadSettlementWork{}, false, err
+		}
+		// A cancel's settlement disarms instead (DisarmWake), in the same
+		// write; the store refuses both.
+		settlement.ArmWake = found && row.TargetComputerID == "" && !settlement.DisarmWake && a.replyArmsWake(row)
 	}
-	disarm := settlement.DisarmWake
-	settlement.DisarmWake = false
-	settled := false
-	var collected store.ThreadRequestCollected
-	if local {
-		var result store.LocalThreadRequestSettlement
-		result, err = a.store.SettleLocalThreadRequest(token, from, settlement, store.ThreadRequestWake{
-			ReplyArms: settlement.AnswerKind == store.ThreadAnswerReply && !disarm && a.replyArmsWake(source),
-			Disarm:    disarm,
-		})
-		settled, collected = result.Receipt, result.Request
+	var result store.LocalSettlement
+	var err error
+	if rest == nil {
+		result, err = a.store.SettleLocalThreadRequest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State))
 	} else {
-		settled, err = a.store.SettleThreadRequestReceipt(token, from, settlement)
+		result, err = a.store.SettleLocalThreadRequestAtRest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State),
+			rest.guard(receipt.TargetThreadID))
+		// The attempt is complete once the write ran, settled or not at
+		// rest, which ends a retry owed (noteRestRead). A rest that failed
+		// to read, or no longer holds, is read again by the next pass: the
+		// sweep's for a failure, the one the change asks for otherwise.
+		a.noteRestRead(receipt.TargetThreadID, err)
+		if err == nil && result.Unrested {
+			a.noteRestWaitsMayChange()
+		}
 	}
 	if err != nil {
 		return threadSettlementWork{}, false, err
 	}
-	if !settled {
+	if !result.Settled {
 		// Another path settled it first. Its collection ran with its answer.
 		return threadSettlementWork{}, false, nil
 	}
 	a.forgetReceiptRunning(receipt.TargetThreadID, token)
+	if result.Outbound {
+		// The row names a request THIS computer sent elsewhere. A receipt
+		// carrying the same token was minted by a paired computer, and
+		// settling the outbound row from it would write another computer's
+		// answer into this one's request.
+		log.Printf("thread tools: receipt %s collides with an outbound request; nothing collected", token)
+	}
 	work := threadSettlementWork{
 		token:        token,
 		targetThread: receipt.TargetThreadID,
 		dropScratch:  scratch,
 	}
-	work.wake, work.late = a.collectionWake(token, collected)
+	if result.Collected {
+		work.wake = a.collectionWakeOwed(token, result.Notify)
+	}
+	if result.AnsweredBySpawned {
+		// Collected here, or a paired computer's request from the thread
+		// whose link owns the target, which that computer's poller collects.
+		answered := result.Receipt
+		work.answered = &answered
+	}
 	return work, true, nil
 }
 
@@ -452,19 +855,19 @@ func (a *App) collectionWake(token string, collected store.ThreadRequestCollecte
 
 // storeThreadReceiptLateReply stores a late reply on the receipt and, for a
 // request this computer made of its own thread, collects the receipt into the
-// request in the same transaction. It reports whether the receipt took it and
-// what the request collected.
-func (a *App) storeThreadReceiptLateReply(token string, reply []byte, at int64) (bool, store.ThreadRequestCollected, error) {
+// request in the same transaction. agent is whether the thread that answered
+// is a standing agent now, which both rows record. It reports whether the
+// receipt took it and what the request collected.
+func (a *App) storeThreadReceiptLateReply(token string, reply []byte, at int64, agent *store.ThreadAnswerAgent) (bool, store.ThreadRequestCollected, error) {
 	source, local, err := a.localThreadRequest(token)
 	if err != nil {
 		return false, store.ThreadRequestCollected{}, err
 	}
 	if !local {
-		stored, err := a.store.StoreThreadReceiptLateReply(token, reply, at)
+		stored, err := a.store.StoreThreadReceiptLateReply(token, reply, at, agent)
 		return stored, store.ThreadRequestCollected{}, err
 	}
-	result, err := a.store.StoreLocalThreadRequestLateReply(token, reply, at, a.replyArmsWake(source))
-	return result.Receipt, result.Request, err
+	return a.store.StoreLocalThreadRequestLateReply(token, reply, at, agent, a.replyArmsWake(source))
 }
 
 // localThreadRequest reads the request a receipt answers, when this computer
@@ -493,6 +896,16 @@ func (a *App) localThreadRequest(token string) (store.ThreadRequest, bool, error
 // after it, never inside it: an in-process caller runs the after-response
 // work on this same goroutine, and the lock is not reentrant.
 func (t threadToolsApp) Reply(ctx context.Context, caller threadtools.Caller, call threadtools.ReplyCall) (threadtools.ReplyAck, error) {
+	if ack, handled, err := t.app.answerWorkerPrompt(ctx, caller, call); handled {
+		if err != nil {
+			return threadtools.ReplyAck{}, err
+		}
+		return ack, nil
+	}
+	if call.Decision != "" || len(call.Answers) > 0 {
+		return threadtools.ReplyAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"decision and answers answer a worker's question or approval. That token is a request's: put your answer in text.", nil)
+	}
 	ack, work, err := t.replyLocked(caller, call)
 	if err != nil {
 		return threadtools.ReplyAck{}, err
@@ -527,9 +940,10 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			"That token belongs to a request addressed to another thread. Reply only to the requests this thread was asked.", nil)
 	}
 	ack := threadtools.ReplyAck{
-		Token:          call.Token,
-		SourceThreadID: receipt.SourceThreadID,
-		SourceComputer: receipt.SourceComputerName,
+		Token:            call.Token,
+		SourceThreadID:   receipt.SourceThreadID,
+		SourceComputer:   receipt.SourceComputerName,
+		SourceComputerID: receipt.SourceComputerID,
 	}
 	text := []byte(call.Text)
 	switch receipt.State {
@@ -578,7 +992,7 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			return threadtools.ReplyAck{}, work, errorsx.Public(threadtools.CodeInvalidRequest,
 				"That request finished more than a day ago and its sender has stopped listening for a reply. Use thread_send to reach it.", nil)
 		}
-		stored, collected, err := t.app.storeThreadReceiptLateReply(call.Token, text, now)
+		stored, collected, err := t.app.storeThreadReceiptLateReply(call.Token, text, now, t.answerAgent(call.Token, receipt.TargetThreadID))
 		if err != nil {
 			return threadtools.ReplyAck{}, work, err
 		}
@@ -625,7 +1039,7 @@ func (a *App) dropScratchThreadForRequest(token, threadID string) {
 		log.Printf("thread tools: detach receipts from scratch thread %s: %v", threadID, err)
 		return
 	}
-	if err := a.DeleteThread(threadID); err != nil {
+	if err := a.deleteThread(threadID); err != nil {
 		log.Printf("thread tools: delete scratch thread %s for request %s: %v", threadID, token, err)
 		return
 	}
@@ -642,8 +1056,10 @@ func (a *App) dropScratchThreadForRequest(token, threadID string) {
 // It is, whether or not the caller asked to be notified: `notify` decides
 // whether a caller hears that a turn ended without an answer, and a
 // thread_reply is the answer. The one caller it is not owed to is a thread
-// that cannot take it: one that is gone or that this computer may no longer
-// run. An archived caller is refused by the statement that stores the reply
+// that cannot take it: one that is gone, that this computer may no longer
+// run, or whose delete committed (store.CheckThreadDeliverable); one a
+// delete only claimed takes it into its queue. An archived caller is
+// refused by the statement that stores the reply
 // (store.ThreadRequestSettlement.ArmWake), where an archive cannot slip in
 // between the check and the write. The reply stays on the request either
 // way, where `thread_status` returns it.
@@ -661,11 +1077,11 @@ func (a *App) replyArmsWake(row store.ThreadRequest) bool {
 		log.Printf("thread tools: read caller %s of request %s: %v", row.CallerThreadID, row.Token, err)
 		return true
 	}
-	return a.store.CheckThreadExecutionAccess(thread) == nil
+	return a.store.CheckThreadDeliverable(thread) == nil
 }
 
 // finishThreadRequestCollection decides how a stored settlement reaches the
-// caller. It is the delivery half of collection, shared by the local door
+// caller. It is the delivery half of collection, shared by the local doors
 // above and the poller that collects from another computer, so a remote
 // answer arrives exactly the way a local one does.
 //
@@ -676,14 +1092,20 @@ func (a *App) replyArmsWake(row store.ThreadRequest) bool {
 // wrote, and any wake a wait armed while it was parked, are both part of what
 // the decision reads.
 func (a *App) finishThreadRequestCollection(token string, late bool) bool {
-	a.wakeRequestWaits(token)
 	row, found, err := a.store.GetThreadRequest(token)
 	if err != nil {
+		a.wakeRequestWaits(token)
 		log.Printf("thread tools: read request %s for delivery: %v", token, err)
 		return false
 	}
-	if !found || !row.Notify {
-		return false
-	}
-	return !a.requestWaitActive(token)
+	return a.collectionWakeOwed(token, found && row.Notify)
+}
+
+// collectionWakeOwed wakes the calls parked on token and reports whether
+// its answer is owed as a message: its wake is armed (notify, read under the
+// token's settle lock after the settlement was written) and no wait is
+// parked on it to return it.
+func (a *App) collectionWakeOwed(token string, notify bool) bool {
+	a.wakeRequestWaits(token)
+	return notify && !a.requestWaitActive(token)
 }

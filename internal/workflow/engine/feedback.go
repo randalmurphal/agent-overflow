@@ -18,7 +18,7 @@ import (
 // Nothing re-read a superseded or parked attempt's feedback, so an operator who
 // answered a question whose continuation then failed to start had their answer
 // durably recorded and effectively destroyed: the recovery they reached for (a
-// fresh phase entry) built an attempt that carried none of it, and `run guide`
+// fresh phase entry) built an attempt that carried none of it, and `run_guide`
 // was the only channel left to say the same thing a second time by hand.
 //
 // This is `guidance.go`'s ordering rule applied to the other prompt block, and

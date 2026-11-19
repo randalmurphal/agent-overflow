@@ -46,7 +46,7 @@ func dropTurnRequestsLocked(st *threadState, agentScopes map[string]bool) {
 	maps.DeleteFunc(st.pendingApprovalItems, func(_ string, remembered approvalDecision) bool {
 		return !agentScopes[remembered.scope]
 	})
-	maps.DeleteFunc(st.answeredRequests, func(requestID string, _ struct{}) bool {
+	maps.DeleteFunc(st.answeredRequests, func(requestID string, _ provider.PromptOccurrence) bool {
 		_, approval := st.pendingApprovals[requestID]
 		_, question := st.pendingUserInputs[requestID]
 		return !approval && !question
@@ -98,18 +98,18 @@ func (r *Router) settleAgentRequests(threadID, rootID string) error {
 	}
 	asked := func(scope string) bool { return scope != "" && owners[scope] == rootID }
 
-	var approvals, questions []string
+	var approvals, questions []PromptRef
 	r.mu.Lock()
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		for _, requestID := range st.pendingApprovalOrder {
 			if pending, ok := st.pendingApprovals[requestID]; ok && asked(pending.Request.ParentToolUseID) {
-				approvals = append(approvals, requestID)
+				approvals = append(approvals, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: pending.Request.Occurrence})
 				delete(st.pendingApprovals, requestID)
 			}
 		}
 		for _, requestID := range st.pendingUserInputOrder {
 			if request, ok := st.pendingUserInputs[requestID]; ok && asked(request.ParentToolUseID) {
-				questions = append(questions, requestID)
+				questions = append(questions, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: request.Occurrence})
 				delete(st.pendingUserInputs, requestID)
 			}
 		}
@@ -121,14 +121,14 @@ func (r *Router) settleAgentRequests(threadID, rootID string) error {
 	}
 	r.mu.Unlock()
 
-	for _, requestID := range approvals {
+	for _, ref := range approvals {
 		r.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
-			Action: "resolve", ThreadID: threadID, RequestID: requestID, Decision: "lost",
+			Action: "resolve", ThreadID: threadID, RequestID: ref.RequestID, Decision: "lost", Occurrence: ref.Occurrence,
 		})
 	}
-	for _, requestID := range questions {
+	for _, ref := range questions {
 		r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
-			Action: "resolve", ThreadID: threadID, RequestID: requestID, Decision: "lost",
+			Action: "resolve", ThreadID: threadID, RequestID: ref.RequestID, Decision: "lost", Occurrence: ref.Occurrence,
 		})
 	}
 	return nil

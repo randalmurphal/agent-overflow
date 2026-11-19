@@ -195,7 +195,7 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 			EnqueuedAt: now + int64(2+i),
 		})
 	}
-	app.dispatchFlush(thread.ID, items)
+	dispatchThroughWorker(app, thread.ID, items)
 
 	wantJoined := strings.Join(messages, joinedFlushSeparator)
 
@@ -416,7 +416,7 @@ func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testi
 
 	// The third member references an attachment that no longer exists, so
 	// its envelope cannot be resolved.
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:0", Message: "first queued", Payload: flushQueuePayloadJSON(t, flushQueuePayload{SendID: "send-a"})},
 		{ID: "queue:1", Message: "second queued", Payload: flushQueuePayloadJSON(t, flushQueuePayload{SendID: "send-b"})},
 		{ID: "queue:2", Message: "third queued", Payload: flushQueuePayloadJSON(t, flushQueuePayload{
@@ -506,7 +506,7 @@ func TestDispatchFlush_Claude_RedispatchKeepsInheritedSendIDs(t *testing.T) {
 
 	restored := "first queued" + joinedFlushSeparator + "second queued"
 	sendIDs := []string{"send-a", "send-b"}
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID:      "queue:restored",
 		Message: restored,
 		Payload: flushQueuePayloadJSON(t, flushQueuePayload{
@@ -640,7 +640,7 @@ func TestDispatchFlush_Claude_JoinRenumbersImageMarkers(t *testing.T) {
 
 	const firstMessage = "look at [Image #1] first"
 	const secondMessage = "then [Image #1] second"
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{
 			ID: "queue:0", Message: firstMessage,
 			Payload: flushQueuePayloadJSON(t, flushQueuePayload{
@@ -691,10 +691,11 @@ func TestDispatchFlush_Claude_JoinRenumbersImageMarkers(t *testing.T) {
 	// as ONE message rebuilt from the row (queuePayloadFromUserItem). The
 	// re-dispatch resolves the summary's markers against the same attachment
 	// list, so the wire must come out identical.
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	_, restored := queuePayloadFromUserItem(row, nil, nil)
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID:              "queue:restored",
 		Message:         row.Summary,
-		Payload:         queuePayloadFromUserItem(row, nil),
+		Payload:         restored,
 		StaleUserItemID: row.ID,
 	}})
 	envelopes = waitForCapturedUserEnvelopeParts(t, capturePath, 2)
@@ -836,7 +837,7 @@ func startReviewDispatchOf(t *testing.T, name string, messages ...reviewMessage)
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(d.thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
-	app.dispatchFlush(d.thread.ID, items)
+	dispatchThroughWorker(app, d.thread.ID, items)
 	d.row = d.messageRow(t)
 	d.wantEnvelope(t, 1)
 	return d
@@ -897,7 +898,7 @@ func (d reviewDispatch) resend(t *testing.T) {
 	if !ok {
 		t.Fatal("the restore did not put the message back on the queue")
 	}
-	d.app.dispatchFlush(d.thread.ID, []triage.QueuedFlushItem{item})
+	dispatchThroughWorker(d.app, d.thread.ID, []triage.QueuedFlushItem{item})
 }
 
 // wantStatus fails unless every review comment has status.
@@ -1032,7 +1033,7 @@ func (d reviewDispatch) requeue(t *testing.T, failure reviewRequeueFailure) {
 		if _, ok := d.app.triage.RemoveQueuedFlushItem(d.thread.ID, "queue:review"); !ok {
 			t.Fatal("the restore did not put the message back on the queue")
 		}
-		d.app.requeueUnconfirmedFlushItems(d.thread.ID, requeued)
+		d.app.requeueUnconfirmedFlushItems(d.thread.ID, requeued, queueRestoredReasonSessionDied)
 	}
 	undo()
 }
@@ -1334,5 +1335,38 @@ func TestJoinFlushMembersRecordsTheTextBeforeReviewComments(t *testing.T) {
 		if !strings.Contains(joined.content, rendered) {
 			t.Fatalf("joined summary = %q, want %q", joined.content, rendered)
 		}
+	}
+}
+
+// Messages the provider was handed mid-turn and has not consumed count
+// against the queue's bound, as the merge evidence triage keeps for each of
+// them does. Their rows are written at dispatch, so none is deferred: a
+// message past the bound while they wait in Claude's own queue is refused,
+// rather than admitted past the evidence for the first.
+func TestMessagesAwaitingTheirEchoCountAgainstTheQueueBound(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	h := newHeldRequestTarget(t, f)
+	for n := range triage.MaxOutstandingFlushSends {
+		if _, err := f.app.registerQueueItem(h.thread.ID, fmt.Sprintf("message %d", n), SendMessageOptions{SendID: fmt.Sprintf("send-%d", n)}, injectedQueueOptions{preserveDraft: true}); err != nil {
+			t.Fatalf("message %d: %v", n, err)
+		}
+		// Its own flush group, taken off the queue as the boundary flush does.
+		queued := f.app.triage.QueuedFlushItems(h.thread.ID)
+		for _, item := range queued {
+			f.app.triage.RemoveQueuedFlushItem(h.thread.ID, item.ID)
+		}
+		dispatchThroughWorker(f.app, h.thread.ID, queued)
+	}
+	pending := f.app.triage.PendingSendsForTest(h.thread.ID)
+	if len(pending) != triage.MaxOutstandingFlushSends || slices.ContainsFunc(pending, func(p triage.PendingSendSnapshot) bool { return p.HasDeferred }) {
+		t.Fatalf("fixture: pending = %+v, want %d written sends awaiting their echo", pending, triage.MaxOutstandingFlushSends)
+	}
+	if queued := f.app.triage.QueuedFlushItemCount(h.thread.ID); queued != 0 {
+		t.Fatalf("fixture: %d messages still queued", queued)
+	}
+	_, err := f.app.registerQueueItem(h.thread.ID, "one more", SendMessageOptions{SendID: "send-over"}, injectedQueueOptions{preserveDraft: true})
+	if err == nil || !strings.Contains(err.Error(), "queue full") {
+		t.Fatalf("a message past the bound = %v, want it refused as queue full", err)
 	}
 }

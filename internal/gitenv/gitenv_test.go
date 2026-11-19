@@ -6,11 +6,12 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // lastValue is the value exec.Cmd hands the child for key: the last entry
@@ -84,11 +85,7 @@ var gitSpawnExempt = []string{"internal/harness/", "internal/testutil/"}
 // internal/git resolves its binary through a policy rather than a literal,
 // so its runner is held by its own tests instead.
 func TestEveryGitSpawnIsNonInteractive(t *testing.T) {
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("no caller information")
-	}
-	root := filepath.Join(filepath.Dir(self), "..", "..")
+	root := reporoot.Dir(t)
 
 	spawns := map[string][]string{} // package dir -> files spawning git
 	imports := map[string]bool{}    // package dir -> imports gitenv

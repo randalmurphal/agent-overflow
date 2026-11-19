@@ -31,7 +31,7 @@ import (
 // provider would be configured with.
 func threadMCPEndpoint(t *testing.T, a *App, thread store.Thread, token string) string {
 	t.Helper()
-	servers, err := a.threadMCPConfigForThread(thread, token)
+	servers, err := a.threadMCPConfigForThread(thread, token, subThreadPlace{})
 	if err != nil {
 		t.Fatalf("threadMCPConfigForThread: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
 
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		thread, token := remoteMCPThread(t, app, name)
-		servers, err := app.threadMCPConfigForThread(thread, token)
+		servers, err := app.threadMCPConfigForThread(thread, token, subThreadPlace{})
 		if err != nil {
 			t.Fatalf("%s: threadMCPConfigForThread: %v", name, err)
 		}
@@ -96,7 +96,7 @@ func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateWorkItemPhase: %v", err)
 	}
-	servers, err := app.threadMCPConfigForThread(phase, "phase-token")
+	servers, err := app.threadMCPConfigForThread(phase, "phase-token", subThreadPlace{})
 	if err != nil {
 		t.Fatalf("threadMCPConfigForThread(phase): %v", err)
 	}
@@ -108,11 +108,17 @@ func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
 		t.Fatalf("a workflow phase thread lists the thread tools row: %#v", row)
 	}
 
-	// A provider that hosts no MCP servers at all.
+	// claude-tui hosts the workflow tools and no thread tools
+	// (docs/decisions.md).
 	terminal, terminalToken := remoteMCPThread(t, app, string(provider.ClaudeTUI))
-	servers, err = app.threadMCPConfigForThread(terminal, terminalToken)
+	servers, err = app.threadMCPConfigForThread(terminal, terminalToken, subThreadPlace{})
 	if err != nil || len(servers) != 0 {
-		t.Fatalf("non-MCP provider = %#v, %v", servers, err)
+		t.Fatalf("claude-tui got thread tools: %#v, %v", servers, err)
+	}
+	t.Cleanup(func() { _ = app.workflowMCPServer().Close() })
+	servers, err = app.workflowMCPConfigForThread(terminal, terminalToken)
+	if err != nil || len(servers) != 1 || servers[workflowMCPName] == nil {
+		t.Fatalf("claude-tui servers = %#v, %v, want exactly %s", servers, err, workflowMCPName)
 	}
 }
 
@@ -279,17 +285,19 @@ func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
 	if guide == "" {
 		t.Fatal("thread/start carried no developerInstructions, so the decision guide never reaches Codex")
 	}
-	// The app guide leads, naming the thread tools as on, and the thread
-	// tools' own guide follows it: Codex reads neither from the handshake.
-	want := agentGuideText(map[string]bool{threadMCPName: true}) + "\n\n" + app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID))
+	// The app guide leads, naming the thread and workflow tools as on, and
+	// each server's own guide follows it: Codex reads none from the handshake.
+	want := agentGuideText(map[string]bool{threadMCPName: true, workflowMCPName: true}) + "\n\n" +
+		app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID, subThreadPlace{})) + "\n\n" +
+		app.workflowToolsInstructions(thread.ID)
 	if guide != want {
 		t.Errorf("developerInstructions:\n%s\nwant:\n%s", guide, want)
 	}
 }
 
 // With the app guide switched off, Codex still gets the on servers' guides;
-// with the thread tools off too, nothing is sent and the cwd's configured
-// instructions stand unchanged.
+// with the thread tools off too, only the workflow tools' guide is sent,
+// because a project session always has them.
 func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -310,8 +318,12 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 		t.Fatalf("StartSession: %v", err)
 	}
 	params := waitForCodexRequest(t, logPath, "thread/start")
-	if got := params["developerInstructions"]; got != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) {
-		t.Errorf("guide off: developerInstructions = %v, want the thread tools guide alone", got)
+	workflowGuide := app.workflowToolsInstructions(thread.ID)
+	if workflowGuide == "" {
+		t.Fatal("a project session has no workflow tools guide")
+	}
+	if got := params["developerInstructions"]; got != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID, subThreadPlace{}))+"\n\n"+workflowGuide {
+		t.Errorf("guide off: developerInstructions = %v, want the thread and workflow tools guides", got)
 	}
 
 	// A second, fresh thread: the first one would resume its provider thread.
@@ -329,8 +341,8 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 		t.Fatalf("StartSession: %v", err)
 	}
 	params = waitForCodexRequest(t, logPath, "thread/start")
-	if got, present := params["developerInstructions"]; present {
-		t.Errorf("everything off, yet thread/start carried developerInstructions %v", got)
+	if got := params["developerInstructions"]; got != workflowGuide {
+		t.Errorf("guide and thread tools off: developerInstructions = %v, want the workflow tools guide alone", got)
 	}
 }
 
@@ -346,7 +358,7 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 			app.appCtx = ctx
 			t.Cleanup(func() { cancel(); _ = app.threadMCPServer().Close() })
 			thread, token := remoteMCPThread(t, app, name)
-			if _, err := app.threadMCPConfigForThread(thread, token); err != nil {
+			if _, err := app.threadMCPConfigForThread(thread, token, subThreadPlace{}); err != nil {
 				t.Fatalf("register: %v", err)
 			}
 			capture := t.TempDir()
@@ -448,7 +460,7 @@ func TestThreadMCPPerConversationToggleIsANDedWithTheSwitch(t *testing.T) {
 	if err := app.SetThreadMcpServerEnabled(thread.ID, threadMCPName, false); err != nil {
 		t.Fatalf("SetThreadMcpServerEnabled: %v", err)
 	}
-	servers, err := app.threadMCPConfigForThread(thread, token)
+	servers, err := app.threadMCPConfigForThread(thread, token, subThreadPlace{})
 	if err != nil || len(servers) != 0 {
 		t.Fatalf("an opted-out conversation registered the server: %#v, %v", servers, err)
 	}
@@ -466,7 +478,7 @@ func TestThreadMCPPerConversationToggleIsANDedWithTheSwitch(t *testing.T) {
 	if err := app.SetThreadMcpServerEnabled(thread.ID, threadMCPName, true); err != nil {
 		t.Fatalf("SetThreadMcpServerEnabled(on): %v", err)
 	}
-	servers, err = app.threadMCPConfigForThread(thread, token)
+	servers, err = app.threadMCPConfigForThread(thread, token, subThreadPlace{})
 	if err != nil {
 		t.Fatalf("threadMCPConfigForThread: %v", err)
 	}

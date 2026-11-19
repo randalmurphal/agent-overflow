@@ -59,7 +59,18 @@ only the model label may ellipsize, and only at the tight rung below minimal.
 
 Remote jobs use the shared background tray and retain their owning computer.
 Closing or navigating the composer must not redirect a completion to the newly
-focused pane.
+focused pane. The thread's loops, watches and reminders are tray rows too
+(`activityRailWakes.svelte.ts`, `WakeTrayRow.svelte`), counted in the toggle
+with the other background work.
+
+The threads a thread is waiting on, and the agent messages queued for it,
+are the rail's Agents segment (`activityRailAgents.svelte.ts`,
+`ActivityRailAgentsBody.svelte`), apart from Background: Background's Stop
+All never touches it, and its own Stop cascades through the backend
+([Agents segment](../../../../../docs/specs/standing-agents.md#agents-segment)).
+Its Past list (`activityRailAgentsPast.svelte.ts`) holds only the count
+while collapsed and its pages only while expanded; the agents controller
+owns the cues that read it again.
 
 Use the stepped working indicator. Do not add a continuously animated spinner.
 

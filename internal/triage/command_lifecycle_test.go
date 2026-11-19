@@ -128,7 +128,7 @@ func TestCommandLifecycle_StartedAfterRoundClosedIsNewTurn(t *testing.T) {
 		t.Fatalf("queued: %v", err)
 	}
 	// The queued-into round ends and the message's own round opens.
-	router.takeOpenRound("t1")
+	router.takeOpenRound("t1", "")
 	openTestRound(t, router, "t1", 1)
 
 	if err := router.Handle(commandLifecycleEvent("t1", testCommandUUID, provider.CommandStarted)); err != nil {
@@ -305,5 +305,5 @@ func openTestRound(t *testing.T, r *Router, threadID string, turnIndex int) {
 		TurnID:    "round-" + threadID + "-" + string(rune('0'+turnIndex)),
 		TurnIndex: turnIndex,
 		StartedAt: time.Now().UnixMilli(),
-	})
+	}, "")
 }

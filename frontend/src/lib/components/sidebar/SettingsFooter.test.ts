@@ -1,7 +1,8 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetSettingsForTest, updateSetting } from '../../stores/settings.svelte';
+import { loadSettings, resetSettingsForTest, updateSetting } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { getUpdateState, resetForTest as resetUpdatesForTest } from '../../stores/updates.svelte';
 import {
@@ -73,11 +74,14 @@ describe('SettingsFooter view-only indicator', () => {
 // so unlike the keep-awake toggle beside it the control carries no host gate
 // and has to render for a standalone frontend and a view-only device too.
 describe('SettingsFooter notification-sound toggle', () => {
-  beforeEach(() => {
+  // The device-tier mirror reaches a computer once its settings answer is in.
+  beforeEach(async () => {
     mode.frontend = false;
     resetBindingMocks();
     resetSettingsForTest();
     resetToLocalPage();
+    setBindingMock('GetSettings', async () => makeSettings());
+    await loadSettings();
   });
 
   afterEach(() => {

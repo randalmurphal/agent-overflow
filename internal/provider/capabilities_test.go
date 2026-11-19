@@ -14,14 +14,16 @@ func TestCapabilitiesForProvider(t *testing.T) {
 			want: Capabilities{
 				ModelCatalog:        ClaudeProbeEnrichedCatalog,
 				EnforcesRuntimeMode: true,
+				ResumeTranscript:    ClaudeProjectsTranscript,
 			},
 		},
 		{
 			name:     "claude-tui",
 			provider: string(ClaudeTUI),
 			want: Capabilities{
-				ModelCatalog:   ClaudeProbeEnrichedCatalog,
-				ImageIngestion: PathImageIngestion,
+				ModelCatalog:     ClaudeProbeEnrichedCatalog,
+				ImageIngestion:   PathImageIngestion,
+				ResumeTranscript: ClaudeProjectsTranscript,
 			},
 		},
 		{

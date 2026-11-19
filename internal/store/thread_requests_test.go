@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,17 @@ func seedThreadRequest(t *testing.T, s *Store, token, caller, kind string, creat
 	}); err != nil {
 		t.Fatalf("insert request %s: %v", token, err)
 	}
+}
+
+// rawThreadRequest reads a row whatever it is, lineage-only included,
+// which the ledger reads skip.
+func rawThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
+	t.Helper()
+	row, err := scanThreadRequest(s.db.QueryRow(`SELECT `+threadRequestColumns+` FROM thread_requests WHERE token = ?`, token))
+	if err != nil {
+		t.Fatalf("read thread request %s: %v", token, err)
+	}
+	return row
 }
 
 // seedSettledThreadRequest is a request that has already settled with an
@@ -47,6 +59,94 @@ func mustGetThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
 		t.Fatalf("get request %s: found=%v err=%v", token, found, err)
 	}
 	return row
+}
+
+// The settlement records the answering thread as a standing agent, an agent
+// with no role line apart from an ordinary thread; a late reply records the
+// agent it was written under beside the answer's, which it leaves; a
+// settlement with no agent records none. A receipt records it the same way.
+func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	settle := func(token string, agent *ThreadAnswerAgent) ThreadRequest {
+		t.Helper()
+		seedThreadRequest(t, s, token, "t-caller", ThreadRequestSend, 100)
+		settled, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), ThreadRequestSettlement{
+			State: ThreadRequestFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 200, Agent: agent,
+		})
+		if err != nil || !settled {
+			t.Fatalf("settle %s: settled=%v err=%v", token, settled, err)
+		}
+		return mustGetThreadRequest(t, s, token)
+	}
+	seedThreadRequest(t, s, "tok-open", "t-caller", ThreadRequestSend, 100)
+	if row := mustGetThreadRequest(t, s, "tok-open"); row.AnswerAgent != nil {
+		t.Errorf("open row agent = %+v, want no agent recorded", row.AnswerAgent)
+	}
+	if row := settle("tok-agent", &ThreadAnswerAgent{Role: "Reviewer"}); row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer" {
+		t.Errorf("agent with a role = %+v", row.AnswerAgent)
+	}
+	if row := settle("tok-roleless", &ThreadAnswerAgent{}); row.AnswerAgent == nil || row.AnswerAgent.Role != "" {
+		t.Errorf("agent with no role line = %+v, want an agent with an empty role", row.AnswerAgent)
+	}
+	if row := settle("tok-ordinary", nil); row.AnswerAgent != nil {
+		t.Errorf("ordinary thread = %+v, want no agent", row.AnswerAgent)
+	}
+
+	if stored, err := s.StoreThreadRequestLateReply("tok-agent", []byte("more"), 300, &ThreadAnswerAgent{Role: "Second role"}, false); err != nil || !stored {
+		t.Fatalf("late reply: stored=%v err=%v", stored, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-agent"); row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer" ||
+		row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Second role" {
+		t.Errorf("agents after the late reply = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
+	}
+	if stored, err := s.StoreThreadRequestLateReply("tok-roleless", []byte("more"), 300, nil, false); err != nil || !stored {
+		t.Fatalf("late reply: stored=%v err=%v", stored, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-roleless"); row.AnswerAgent == nil || row.AnswerAgent.Role != "" || row.LateReplyAgent != nil {
+		t.Errorf("agents after a late reply from an ordinary thread = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
+	}
+
+	receipt := func(token string) ThreadRequestReceipt {
+		t.Helper()
+		row, found, err := s.GetThreadRequestReceipt(token)
+		if err != nil || !found {
+			t.Fatalf("receipt %s: found=%v err=%v", token, found, err)
+		}
+		return row
+	}
+	for token, agent := range map[string]*ThreadAnswerAgent{"rcpt-agent": {Role: "Reviewer"}, "rcpt-roleless": {}, "rcpt-ordinary": nil} {
+		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+			Token: token, OwnerDeviceID: "device-1", Kind: ThreadRequestSend, TargetThreadID: "t-caller", CreatedAt: 100, UpdatedAt: 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if row := receipt(token); row.AnswerAgent != nil {
+			t.Errorf("open receipt %s records agent %+v", token, row.AnswerAgent)
+		}
+		if result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, Agent: agent,
+		}, ThreadRequestFinished); err != nil || !result.Settled {
+			t.Fatalf("settle receipt %s: settled=%v err=%v", token, result.Settled, err)
+		}
+		got := receipt(token).AnswerAgent
+		if (got == nil) != (agent == nil) || (got != nil && got.Role != agent.Role) {
+			t.Errorf("receipt %s agent = %+v, want %+v", token, got, agent)
+		}
+	}
+	if stored, err := s.StoreThreadReceiptLateReply("rcpt-agent", []byte("more"), 0, &ThreadAnswerAgent{Role: "Second role"}); err != nil || !stored {
+		t.Fatalf("receipt late reply: stored=%v err=%v", stored, err)
+	}
+	if got := receipt("rcpt-agent"); got.AnswerAgent == nil || got.AnswerAgent.Role != "Reviewer" ||
+		got.LateReplyAgent == nil || got.LateReplyAgent.Role != "Second role" {
+		t.Errorf("receipt agents after the late reply = answer %+v late reply %+v", got.AnswerAgent, got.LateReplyAgent)
+	}
+	if stored, err := s.StoreThreadReceiptLateReply("rcpt-roleless", []byte("more"), 0, nil); err != nil || !stored {
+		t.Fatalf("receipt late reply: stored=%v err=%v", stored, err)
+	}
+	if got := receipt("rcpt-roleless"); got.AnswerAgent == nil || got.LateReplyAgent != nil {
+		t.Errorf("receipt agents after an ordinary thread's late reply = answer %+v late reply %+v", got.AnswerAgent, got.LateReplyAgent)
+	}
 }
 
 // Every state change on a request is conditional on the state it expects to
@@ -140,7 +240,7 @@ func TestThreadRequestLateReplyIsANewRevision(t *testing.T) {
 		t.Fatalf("settle: %v", err)
 	}
 
-	stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("second thoughts"), 300, false)
+	stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("second thoughts"), 300, nil, false)
 	if err != nil || !stored {
 		t.Fatalf("store late reply: stored=%v err=%v", stored, err)
 	}
@@ -152,7 +252,7 @@ func TestThreadRequestLateReplyIsANewRevision(t *testing.T) {
 		t.Errorf("late reply overwrote the answer: %q", row.Answer)
 	}
 
-	stored, err = s.StoreThreadRequestLateReply("tok-late", []byte("third"), 400, false)
+	stored, err = s.StoreThreadRequestLateReply("tok-late", []byte("third"), 400, nil, false)
 	if err != nil {
 		t.Fatalf("second late reply: %v", err)
 	}
@@ -174,7 +274,7 @@ func TestThreadRequestLateReplyIsANewRevision(t *testing.T) {
 
 	// A request that never settled has nothing to reply late to.
 	seedThreadRequest(t, s, "tok-open", "t-caller", ThreadRequestAsk, 100)
-	stored, err = s.StoreThreadRequestLateReply("tok-open", []byte("early"), 500, false)
+	stored, err = s.StoreThreadRequestLateReply("tok-open", []byte("early"), 500, nil, false)
 	if err != nil {
 		t.Fatalf("late reply on an open request: %v", err)
 	}
@@ -273,7 +373,7 @@ func TestThreadRequestDueQueries(t *testing.T) {
 		t.Fatalf("due reminders = %+v", due)
 	}
 
-	polls, err := s.DueThreadRequestPolls(1000, 10)
+	polls, err := s.DueThreadRequestPolls(1000, 10, nil)
 	if err != nil {
 		t.Fatalf("due polls: %v", err)
 	}
@@ -283,7 +383,7 @@ func TestThreadRequestDueQueries(t *testing.T) {
 	if err := s.RescheduleThreadRequest("tok-remote", 4000, 3, "backend unreachable"); err != nil {
 		t.Fatalf("reschedule: %v", err)
 	}
-	polls, err = s.DueThreadRequestPolls(1000, 10)
+	polls, err = s.DueThreadRequestPolls(1000, 10, nil)
 	if err != nil {
 		t.Fatalf("due polls after reschedule: %v", err)
 	}
@@ -303,6 +403,39 @@ func TestThreadRequestDueQueries(t *testing.T) {
 	deleted, err = s.DeleteThreadRequest("tok-later")
 	if err != nil || deleted {
 		t.Fatalf("repeat delete: deleted=%v err=%v", deleted, err)
+	}
+}
+
+// A remote request's admission deadline is written with the row and moved by
+// each attempt before it is sent, never earlier: an earlier attempt's
+// handler may still be running. The attempt keeps the poller away until its
+// own deadline.
+func TestThreadRequestDispatchKeepsTheLatestAdmissionDeadline(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-remote", CallerThreadID: "t-caller", Kind: ThreadRequestSpawn,
+		TargetComputerID: "backend-2", State: ThreadRequestUnconfirmed, NextCheck: 5000, AdmitUntil: 5000,
+	}); err != nil {
+		t.Fatalf("insert remote request: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 5000 {
+		t.Fatalf("inserted deadline = %d, want 5000", got.AdmitUntil)
+	}
+	if err := s.DispatchThreadRequest("tok-remote", 9000); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 9000 || got.NextCheck != 9000 {
+		t.Fatalf("after a later attempt: deadline %d next check %d, want both 9000", got.AdmitUntil, got.NextCheck)
+	}
+	if err := s.DispatchThreadRequest("tok-remote", 7000); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-remote"); got.AdmitUntil != 9000 || got.NextCheck != 7000 {
+		t.Fatalf("after an attempt with an earlier window: deadline %d next check %d, want 9000 and 7000", got.AdmitUntil, got.NextCheck)
+	}
+	if err := s.DispatchThreadRequest("tok-missing", 9000); err == nil {
+		t.Fatal("dispatching a request that does not exist succeeded")
 	}
 }
 
@@ -356,7 +489,7 @@ func TestDisarmingACallerCoversARequestAwaitingALateReply(t *testing.T) {
 			t.Fatalf("deliver %s: %v", token, err)
 		}
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-pending", []byte("all green"), 900, true); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-pending", []byte("all green"), 900, nil, true); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 
@@ -387,9 +520,9 @@ func TestThreadRequestReceiptSurvivesTheThreadItRanIn(t *testing.T) {
 			t.Fatalf("accept %s: %v", token, err)
 		}
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-answered", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	if _, err := s.SettleLocalThreadRequest("tok-answered", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("the answer"), AnswerKind: ThreadAnswerFinal,
-	}); err != nil {
+	}, ThreadRequestFinished); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 
@@ -446,19 +579,38 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 		t.Errorf("retry overwrote the acceptance: %+v", again)
 	}
 
-	running, err := s.MarkThreadReceiptRunning("tok-r", "item-1", "turn-1")
-	if err != nil || !running {
-		t.Fatalf("mark running: running=%v err=%v", running, err)
+	dispatched, err := s.MarkThreadReceiptDispatched("tok-r", "item-1")
+	if err != nil || !dispatched {
+		t.Fatalf("mark dispatched: dispatched=%v err=%v", dispatched, err)
 	}
-	running, err = s.MarkThreadReceiptRunning("tok-r", "item-2", "turn-2")
+	if row, _, _ := s.GetThreadRequestReceipt("tok-r"); row.State != ThreadReceiptRunning || row.TurnID != "" || row.MessageItemID != "item-1" {
+		t.Fatalf("a dispatched receipt is running with no turn: %+v", row)
+	}
+	if again, err := s.MarkThreadReceiptDispatched("tok-r", "item-2"); err != nil || again {
+		t.Fatalf("a second dispatch mark applied: %v %v", again, err)
+	}
+	if _, err := s.BindThreadReceiptTurn("tok-r", "item-1", "", true); err == nil {
+		t.Error("a receipt cannot be bound to no turn")
+	}
+	bound, err := s.BindThreadReceiptTurn("tok-r", "item-1", "turn-1", true)
+	if err != nil || !bound {
+		t.Fatalf("bind turn: bound=%v err=%v", bound, err)
+	}
+	bound, err = s.BindThreadReceiptTurn("tok-r", "item-2", "turn-2", false)
 	if err != nil {
-		t.Fatalf("repeat mark running: %v", err)
+		t.Fatalf("repeat bind: %v", err)
 	}
-	if running {
-		t.Error("a running receipt must not be re-bound to another turn")
+	if bound {
+		t.Error("a bound receipt must not be re-bound to another turn")
 	}
-	if _, err := s.MarkThreadReceiptRunning("tok-r", "item-3", ""); err == nil {
-		t.Error("a receipt cannot run without a turn")
+	if row, _, _ := s.GetThreadRequestReceipt("tok-r"); row.TurnID != "turn-1" || !row.OwnTurn {
+		t.Errorf("receipt = %+v, want the first delivery's turn, its own", row)
+	}
+	if again, err := s.MarkThreadReceiptDispatched("tok-r", "item-3"); err != nil || again {
+		t.Fatalf("a dispatch mark after the delivery applied: %v %v", again, err)
+	}
+	if row, _, _ := s.GetThreadRequestReceipt("tok-r"); row.TurnID != "turn-1" || row.MessageItemID != "item-1" {
+		t.Fatalf("receipt = %+v, want the first delivery's binding", row)
 	}
 
 	open, err := s.ListOpenThreadRequestReceipts()
@@ -469,11 +621,11 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 		t.Fatalf("open receipts = %+v", open)
 	}
 
-	settled, err := s.SettleThreadRequestReceipt("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+	result, err := s.SettleLocalThreadRequest("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 500,
-	})
-	if err != nil || !settled {
-		t.Fatalf("settle receipt: settled=%v err=%v", settled, err)
+	}, ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle receipt: settled=%v err=%v", result.Settled, err)
 	}
 	row, found, err := s.GetThreadRequestReceipt("tok-r")
 	if err != nil || !found {
@@ -498,61 +650,95 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 	}
 }
 
-// An open receipt takes the turn that answers its message, before or after
-// it is marked running, and the running mark keeps a turn recorded first. A
-// settled receipt keeps the turn that answered it.
-func TestSetThreadReceiptAnswerTurnAppliesToOpenReceipts(t *testing.T) {
+// A delivery can land before the dispatch mark: it binds an accepted
+// receipt directly, the late mark changes nothing, and a settled receipt is
+// never bound.
+func TestADeliveryBindsAReceiptAheadOfItsDispatchMark(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-target")
-	mustCreateThread(t, s, "t-other")
 	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
-		Token: "tok-r", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
+		Token: "tok-early", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
 		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
 	}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	set := func(when, threadID, turnID string, want bool) {
-		t.Helper()
-		changed, err := s.SetThreadReceiptAnswerTurn("tok-r", threadID, turnID)
-		if err != nil {
-			t.Fatalf("%s: %v", when, err)
-		}
-		if changed != want {
-			t.Fatalf("%s: changed = %v, want %v", when, changed, want)
-		}
+	if bound, err := s.BindThreadReceiptTurn("tok-early", "item-e", "turn-e", false); err != nil || !bound {
+		t.Fatalf("bind an accepted receipt: %v %v", bound, err)
 	}
-	wantTurn := func(when, want string) {
-		t.Helper()
-		row, found, err := s.GetThreadRequestReceipt("tok-r")
-		if err != nil || !found {
-			t.Fatalf("%s: found=%v err=%v", when, found, err)
-		}
-		if row.TurnID != want {
-			t.Fatalf("%s: turn = %q, want %q", when, row.TurnID, want)
-		}
+	if again, err := s.MarkThreadReceiptDispatched("tok-early", "item-e"); err != nil || again {
+		t.Fatalf("a dispatch mark after the delivery applied: %v %v", again, err)
 	}
+	if row, _, _ := s.GetThreadRequestReceipt("tok-early"); row.State != ThreadReceiptRunning || row.TurnID != "turn-e" || row.OwnTurn {
+		t.Fatalf("receipt = %+v, want it running on the delivered turn", row)
+	}
+	if _, err := s.SettleLocalThreadRequest("tok-early", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+		State: ThreadReceiptCancelled, Answer: []byte("x"), AnswerKind: ThreadAnswerError,
+	}, ThreadRequestCancelled); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if bound, err := s.BindThreadReceiptTurn("tok-early", "item-e", "turn-later", true); err != nil || bound {
+		t.Fatalf("a settled receipt was bound: %v %v", bound, err)
+	}
+}
 
-	set("another thread's receipt", "t-other", "turn-9", false)
-	wantTurn("another thread's receipt", "")
-	set("accepted", "t-target", "turn-2", true)
-	wantTurn("accepted", "turn-2")
-	if running, err := s.MarkThreadReceiptRunning("tok-r", "item-1", "turn-1"); err != nil || !running {
-		t.Fatalf("mark running: running=%v err=%v", running, err)
+// A rebind moves a running receipt only from the turn it is bound to, and only
+// while that turn holds no rows; a completion on the empty turn does not pin
+// it. A settled receipt is never moved.
+func TestARebindMovesOnlyFromAnEmptyBoundTurn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-target")
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-a", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
+		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
 	}
-	wantTurn("marked running after its answer turn was recorded", "turn-2")
-	set("already there", "t-target", "turn-2", false)
-	set("running", "t-target", "turn-3", true)
-	wantTurn("running", "turn-3")
-	if _, err := s.SetThreadReceiptAnswerTurn("tok-r", "t-target", ""); err == nil {
-		t.Error("a receipt cannot be answered by no turn")
+	if bound, err := s.BindThreadReceiptTurn("tok-a", "item-a", "t-target#1", true); err != nil || !bound {
+		t.Fatalf("bind: %v %v", bound, err)
 	}
-	if settled, err := s.SettleThreadRequestReceipt("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
-		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 500,
-	}); err != nil || !settled {
-		t.Fatalf("settle: settled=%v err=%v", settled, err)
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: "t-target", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
 	}
-	set("settled", "t-target", "turn-4", false)
-	wantTurn("settled", "turn-3")
+	if _, err := s.UpsertItem(Item{
+		ID: "item-a", ThreadID: "t-target", TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "check the changelog", CreatedAt: 200, UpdatedAt: 200,
+	}, nil); err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	rebind := func(from string) bool {
+		t.Helper()
+		moved, err := s.RebindThreadReceiptTurn("tok-a", "item-b", "t-target", 1, from, "t-target#2", true)
+		if err != nil {
+			t.Fatalf("rebind: %v", err)
+		}
+		return moved
+	}
+	if rebind("t-target#1") {
+		t.Fatal("moved from a turn that still holds a row")
+	}
+	if err := s.DeleteThreadItem("t-target", "item-a"); err != nil {
+		t.Fatalf("DeleteThreadItem: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-1", 300, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	if rebind("t-target#0") {
+		t.Fatal("moved from a turn it is not bound to")
+	}
+	if !rebind("t-target#1") {
+		t.Fatal("not moved from its empty, completed turn")
+	}
+	if row, _, _ := s.GetThreadRequestReceipt("tok-a"); row.TurnID != "t-target#2" || row.MessageItemID != "item-b" || !row.OwnTurn {
+		t.Fatalf("receipt = %+v, want it on turn 2 under the survivor's row", row)
+	}
+	if _, err := s.SettleLocalThreadRequest("tok-a", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("x"), AnswerKind: ThreadAnswerFinal,
+	}, ThreadRequestFinished); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if moved, err := s.RebindThreadReceiptTurn("tok-a", "item-c", "t-target", 2, "t-target#2", "t-target#3", true); err != nil || moved {
+		t.Fatalf("a settled receipt was moved: %v %v", moved, err)
+	}
 }
 
 // An answer nobody collected is dropped once its hold runs out; a collected
@@ -570,10 +756,10 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 		}
 	}
 	for _, token := range []string{"tok-collected", "tok-uncollected"} {
-		if _, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		if _, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
 			State: ThreadReceiptFinished, Answer: []byte("answer"), AnswerKind: ThreadAnswerFinal,
 			SettledAt: 1000, ExpiresAt: 2000,
-		}); err != nil {
+		}, ThreadRequestFinished); err != nil {
 			t.Fatalf("settle %s: %v", token, err)
 		}
 	}
@@ -589,6 +775,8 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 		t.Error("acknowledging a revision already collected must report no change")
 	}
 
+	var changed []string
+	s.OnThreadRequestChanged(func(change ThreadRequestChange) { changed = append(changed, change.Token) })
 	dropped, err := s.ExpireThreadRequestAnswers(1999)
 	if err != nil {
 		t.Fatalf("early expiry sweep: %v", err)
@@ -603,6 +791,9 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 	}
 	if dropped != 1 {
 		t.Fatalf("dropped = %d, want only the uncollected answer", dropped)
+	}
+	if len(changed) != 1 || changed[0] != "tok-uncollected" {
+		t.Fatalf("owner was told of expired receipts %v", changed)
 	}
 	expired, _, err := s.GetThreadRequestReceipt("tok-uncollected")
 	if err != nil {
@@ -628,7 +819,7 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 
 	// A late reply inside the hold is a new uncollected revision with its
 	// own hold.
-	stored, err := s.StoreThreadReceiptLateReply("tok-collected", []byte("more"), 1900)
+	stored, err := s.StoreThreadReceiptLateReply("tok-collected", []byte("more"), 1900, nil)
 	if err != nil || !stored {
 		t.Fatalf("store receipt late reply: stored=%v err=%v", stored, err)
 	}
@@ -653,13 +844,13 @@ func TestStoreThreadReceiptLateReplyRefusesPastTheHold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-stale", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	if _, err := s.SettleLocalThreadRequest("tok-stale", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptFinished, AnswerKind: ThreadAnswerNote, SettledAt: 1000, ExpiresAt: 2000,
-	}); err != nil {
+	}, ThreadRequestFinished); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	for _, at := range []int64{2000, 2001} {
-		stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("too late"), at)
+		stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("too late"), at, nil)
 		if err != nil {
 			t.Fatalf("late reply at %d: %v", at, err)
 		}
@@ -667,7 +858,7 @@ func TestStoreThreadReceiptLateReplyRefusesPastTheHold(t *testing.T) {
 			t.Fatalf("a late reply at %d was stored past the hold ending at 2000", at)
 		}
 	}
-	stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("in time"), 1999)
+	stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("in time"), 1999, nil)
 	if err != nil || !stored {
 		t.Fatalf("late reply inside the hold: stored=%v err=%v", stored, err)
 	}
@@ -709,6 +900,48 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	// Old and still open: nothing else can settle or cancel it once it is
 	// gone, so it waits for its own settlement.
 	seedThreadRequest(t, s, "tok-open-old", "t-caller", ThreadRequestSend, 100)
+	// Old, settled, and the record of which thread spawned t-child: its
+	// lineage lives as long as that thread does, its answer does not. A
+	// spawn whose thread is gone, or one made on another computer, is an
+	// ordinary settled row.
+	mustCreateThread(t, s, "t-child")
+	for token, target := range map[string][2]string{
+		"tok-spawn-lineage": {"", "t-child"}, "tok-spawn-gone": {"", "t-deleted"}, "tok-spawn-remote": {"laptop", "t-child"},
+	} {
+		seedThreadRequest(t, s, token, "t-caller", ThreadRequestSpawn, 100)
+		if _, err := s.SetThreadRequestTarget(token, target[0], target[1], "", ""); err != nil {
+			t.Fatalf("target %s: %v", token, err)
+		}
+		settle(token, 200)
+	}
+	// The lineage row also owes a wake it never handed over, and holds a
+	// late reply.
+	if _, err := s.SetThreadRequestNotify("tok-spawn-lineage", true); err != nil {
+		t.Fatal(err)
+	}
+	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("one more thing"), 300, &ThreadAnswerAgent{Role: "Reviewer"}, false); err != nil || !stored {
+		t.Fatalf("late reply: stored=%v err=%v", stored, err)
+	}
+	owesWake := func() bool {
+		t.Helper()
+		wakes, err := s.UndeliveredThreadRequestWakes(1<<62, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range wakes {
+			if row.Token == "tok-spawn-lineage" {
+				return true
+			}
+		}
+		return false
+	}
+	if !owesWake() {
+		t.Fatal("the lineage row owes no wake before the sweep")
+	}
+	// And the Agents columns a remote answer writes.
+	if _, err := s.db.Exec(`UPDATE thread_requests SET nested_open = 1, target_provider = 'codex' WHERE token = ?`, "tok-spawn-lineage"); err != nil {
+		t.Fatal(err)
+	}
 	// A reminder armed past the floor. No ceiling: next week is a valid
 	// reminder, and so is next month.
 	if err := s.InsertThreadRequest(ThreadRequest{
@@ -729,28 +962,95 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		}
 	}
 	for token, at := range map[string]int64{"tok-receipt-settled-old": 200, "tok-receipt-settled-recent": 5000} {
-		applied, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
 			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
-		})
-		if err != nil || !applied {
-			t.Fatalf("settle receipt %s: applied=%v err=%v", token, applied, err)
+		}, ThreadRequestFinished)
+		if err != nil || !result.Settled {
+			t.Fatalf("settle receipt %s: applied=%v err=%v", token, result.Settled, err)
 		}
 	}
 
-	swept, err := s.DeleteThreadRequestsBefore(1000)
+	swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000))
 	if err != nil {
 		t.Fatalf("retention sweep: %v", err)
 	}
-	if swept != 2 {
-		t.Fatalf("swept = %d, want one settled row from each table", swept)
+	if swept != 5 {
+		t.Errorf("swept = %d, want three settled requests and one receipt deleted and one lineage row cleared", swept)
 	}
 	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later"} {
 		if _, found, err := s.GetThreadRequest(token); err != nil || !found {
 			t.Errorf("%s was swept: found=%v err=%v", token, found, err)
 		}
 	}
-	if _, found, err := s.GetThreadRequest("tok-settled-old"); err != nil || found {
-		t.Errorf("a request settled before the floor survived: found=%v err=%v", found, err)
+	for _, token := range []string{"tok-settled-old", "tok-spawn-gone", "tok-spawn-remote"} {
+		if _, found, err := s.GetThreadRequest(token); err != nil || found {
+			t.Errorf("%s, settled before the floor, survived: found=%v err=%v", token, found, err)
+		}
+	}
+	// The lineage row keeps what names the spawn and nothing it answered,
+	// and the ledger no longer knows its token.
+	if _, found, err := s.GetThreadRequest("tok-spawn-lineage"); err != nil || found {
+		t.Errorf("the ledger still reads the lineage row: found=%v err=%v", found, err)
+	}
+	if rows, err := s.GetThreadRequests([]string{"tok-spawn-lineage", "tok-open-old"}); err != nil || len(rows) != 1 || rows[0].Token != "tok-open-old" {
+		t.Errorf("GetThreadRequests with the lineage token = %+v, %v; want tok-open-old alone", rows, err)
+	}
+	if rows, err := s.ListThreadRequestsByCaller("t-caller", 50, 0); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, row := range rows {
+			if row.Token == "tok-spawn-lineage" {
+				t.Errorf("the caller's listing still shows the lineage row: %+v", row)
+			}
+		}
+	}
+	lineage := rawThreadRequest(t, s, "tok-spawn-lineage")
+	if !lineage.LineageOnly {
+		t.Errorf("the kept spawn row is not marked lineage-only: %+v", lineage)
+	}
+	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify ||
+		lineage.AnswerAgent != nil || lineage.LateReplyAgent != nil || lineage.NestedOpen || lineage.TargetProvider != "" {
+		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v agent %+v; want its payload cleared",
+			lineage.Answer, lineage.AnswerKind, lineage.LateReply, lineage.LateReplyAt, lineage.Notify, lineage.AnswerAgent)
+	}
+	var agentRole string
+	if err := s.db.QueryRow(`SELECT answer_agent_role FROM thread_requests WHERE token = ?`, "tok-spawn-lineage").Scan(&agentRole); err != nil || agentRole != "" {
+		t.Errorf("lineage row kept its answer agent role %q (%v)", agentRole, err)
+	}
+	if lineage.CallerThreadID != "t-caller" || lineage.Kind != ThreadRequestSpawn || lineage.TargetThreadID != "t-child" ||
+		lineage.State != ThreadRequestFinished || lineage.SettledAt != 200 || lineage.CreatedAt != 100 {
+		t.Errorf("lineage row past the floor lost its lineage: %+v", lineage)
+	}
+	if owesWake() {
+		t.Error("the cleared lineage row still owes a wake")
+	}
+	if child, err := s.GetThread("t-child"); err != nil || child.SpawnedByThreadID != "t-caller" {
+		t.Errorf("t-child after the sweep = spawnedBy %q, %v; want t-caller", child.SpawnedByThreadID, err)
+	}
+	if ids, err := s.ListSpawnedThreadIDs("t-caller"); err != nil || !slices.Equal(ids, []string{"t-child"}) {
+		t.Errorf("threads spawned by t-caller after the sweep = %v, %v; want t-child", ids, err)
+	}
+	// A second sweep finds nothing left to take.
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 0 {
+		t.Errorf("second sweep: swept=%d err=%v", swept, err)
+	}
+	// Nothing writes an answer or a wake back onto the lineage row.
+	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("much later"), 2000, nil, true); err != nil || stored {
+		t.Errorf("late reply on the lineage row: stored=%v err=%v", stored, err)
+	}
+	if armed, err := s.SetThreadRequestNotify("tok-spawn-lineage", true); err != nil || armed {
+		t.Errorf("arm the lineage row's wake: armed=%v err=%v", armed, err)
+	}
+	if row := rawThreadRequest(t, s, "tok-spawn-lineage"); row.Notify || len(row.LateReply) != 0 {
+		t.Errorf("lineage row after the writers = notify %v late reply %q; want neither", row.Notify, row.LateReply)
+	}
+	// Once the spawned thread is gone the lineage row is one more old
+	// settled request.
+	if err := s.DeleteThread("t-child"); err != nil {
+		t.Fatal(err)
+	}
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 1 {
+		t.Errorf("sweep after the child was deleted: swept=%d err=%v", swept, err)
 	}
 	for _, token := range []string{"tok-receipt-settled-recent", "tok-receipt-open-old"} {
 		if _, found, err := s.GetThreadRequestReceipt(token); err != nil || !found {
@@ -759,6 +1059,109 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	}
 	if _, found, err := s.GetThreadRequestReceipt("tok-receipt-settled-old"); err != nil || found {
 		t.Errorf("a receipt settled before the floor survived: found=%v err=%v", found, err)
+	}
+}
+
+// spawnWithReceipt makes a local spawn from caller to target with its
+// receipt, settled at at with an answer, as a spawn on this computer is.
+func spawnWithReceipt(t *testing.T, s *Store, token, caller, target string, at int64) {
+	t.Helper()
+	seedAgentRequest(t, s, token, caller, ThreadRequestSpawn, target, false, at-1)
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "local", Kind: ThreadRequestSpawn,
+		SourceThreadID: caller, TargetThreadID: target, CreatedAt: at - 1, UpdatedAt: at - 1}); err != nil {
+		t.Fatalf("accept %s: %v", token, err)
+	}
+	result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
+	}, ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle %s: %+v %v", token, result, err)
+	}
+}
+
+// A spawn's receipt settled before the floor whose thread exists is kept as
+// its lineage: the owner, source and target it names stay, its answers go,
+// its token is unknown and no writer touches it, and it still says which
+// source thread spawned the thread. Another kind's receipt, or a spawn's
+// whose thread is gone, is deleted. A sweep with only lineage left finds
+// nothing due, and the lineage goes once its thread does.
+func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-child")
+	mustCreateThread(t, s, "t-other")
+	for token, receipt := range map[string]ThreadRequestReceipt{
+		"rc-spawn":      {Kind: ThreadRequestSpawn, TargetThreadID: "t-child"},
+		"rc-send":       {Kind: ThreadRequestSend, TargetThreadID: "t-other"},
+		"rc-spawn-gone": {Kind: ThreadRequestSpawn},
+	} {
+		receipt.Token, receipt.OwnerDeviceID, receipt.SourceThreadID = token, "device-1", "t-source"
+		receipt.CreatedAt, receipt.UpdatedAt = 100, 100
+		if _, _, err := s.AcceptThreadRequestReceipt(receipt); err != nil {
+			t.Fatalf("accept %s: %v", token, err)
+		}
+		result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 200,
+			Agent: &ThreadAnswerAgent{Role: "Reviewer"},
+		}, ThreadRequestFinished)
+		if err != nil || !result.Settled {
+			t.Fatalf("settle %s: %+v %v", token, result, err)
+		}
+	}
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 3 {
+		t.Fatalf("sweep = %d, %v; want one lineage kept and two receipts deleted", swept, err)
+	}
+	var lineage, agent int
+	var answer, late []byte
+	var owner, source, target, role string
+	if err := s.db.QueryRow(`SELECT lineage_only, answer, late_reply, answer_agent, answer_agent_role, owner_device_id, source_thread_id, target_thread_id
+		FROM thread_request_receipts WHERE token = 'rc-spawn'`).Scan(&lineage, &answer, &late, &agent, &role, &owner, &source, &target); err != nil {
+		t.Fatalf("read the lineage: %v", err)
+	}
+	if lineage != 1 || answer != nil || late != nil || agent != 0 || role != "" || owner != "device-1" || source != "t-source" || target != "t-child" {
+		t.Fatalf("lineage %d answer %q late %q agent %d %q owner %q source %q target %q; want the names kept and the answers gone",
+			lineage, answer, late, agent, role, owner, source, target)
+	}
+	var left int
+	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 1 {
+		t.Fatalf("%d receipts left, %v; want the lineage alone", left, err)
+	}
+	if _, found, err := s.GetThreadRequestReceipt("rc-spawn"); err != nil || found {
+		t.Fatalf("the lineage's token reads found %v, %v; want unknown", found, err)
+	}
+	if receipts, err := s.ListThreadRequestReceiptsForThread("t-child"); err != nil || len(receipts) != 0 {
+		t.Fatalf("the thread's receipts %+v, %v; want the lineage left out", receipts, err)
+	}
+	if acked, err := s.AckThreadRequestReceipt("rc-spawn", 99, 300); err != nil || acked {
+		t.Fatalf("ack of the lineage = %v, %v; want refused", acked, err)
+	}
+	if stored, err := s.StoreThreadReceiptLateReply("rc-spawn", []byte("later"), 300, nil); err != nil || stored {
+		t.Fatalf("late reply on the lineage = %v, %v; want refused", stored, err)
+	}
+	for _, c := range []struct {
+		owner, source string
+		want          bool
+	}{{"device-1", "t-source", true}, {"device-2", "t-source", false}, {"device-1", "t-else", false}} {
+		if got, err := s.ThreadSpawnedForSource("t-child", c.owner, c.source); err != nil || got != c.want {
+			t.Fatalf("spawned for %s/%s = %v, %v; want %v", c.owner, c.source, got, err, c.want)
+		}
+	}
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 0 {
+		t.Fatalf("second sweep = %d, %v; want nothing", swept, err)
+	}
+	// The app detaches a thread's settled receipts before it deletes or
+	// moves the thread: the lineage is left naming no thread.
+	if _, err := s.DetachThreadReceiptsFromThread("t-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteThread("t-child"); err != nil {
+		t.Fatal(err)
+	}
+	if swept, _, err := s.DeleteThreadRequestsBefore(1000, everySpawnRests(t, s, 1000)); err != nil || swept != 1 {
+		t.Fatalf("sweep once the thread is gone = %d, %v; want the lineage deleted", swept, err)
+	}
+	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d receipts left once the thread is gone, %v; want none", left, err)
 	}
 }
 
@@ -895,11 +1298,11 @@ func TestThreadReceiptTargetIsNamedAfterAcceptance(t *testing.T) {
 	if len(open) != 2 {
 		t.Fatalf("open receipts = %+v, want both untargeted rows", open)
 	}
-	settled, err := s.SettleThreadRequestReceipt("tok-ask", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	result, err := s.SettleLocalThreadRequest("tok-ask", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptInterrupted, AnswerKind: ThreadAnswerNote, SettledAt: 200,
-	})
-	if err != nil || !settled {
-		t.Fatalf("settle untargeted receipt: settled=%v err=%v", settled, err)
+	}, ThreadRequestInterrupted)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle untargeted receipt: settled=%v err=%v", result.Settled, err)
 	}
 
 	// An untargeted receipt belongs to no thread's list.
@@ -911,21 +1314,23 @@ func TestThreadReceiptTargetIsNamedAfterAcceptance(t *testing.T) {
 		t.Fatalf("receipts for an unnamed target = %+v", listed)
 	}
 
-	named, err := s.SetThreadReceiptTarget("tok-spawn", "t-spawned")
-	if err != nil || !named {
-		t.Fatalf("set target: named=%v err=%v", named, err)
+	// The never-sent thread a paired computer's spawn names is real from
+	// the naming (threadRealClause), so the write lists it.
+	named, listing, err := s.SetThreadReceiptTarget("tok-spawn", "t-spawned", false)
+	if err != nil || !named || listing != ListingListed {
+		t.Fatalf("set target: named=%v listing=%v err=%v, want named and listed", named, listing, err)
 	}
-	named, err = s.SetThreadReceiptTarget("tok-spawn", "t-other")
+	named, listing, err = s.SetThreadReceiptTarget("tok-spawn", "t-other", false)
 	if err != nil {
 		t.Fatalf("second set target: %v", err)
 	}
-	if named {
-		t.Error("a receipt that already names its thread must not be repointed")
+	if named || listing != ListingUnchanged {
+		t.Errorf("a receipt that already names its thread must not be repointed: named=%v listing=%v", named, listing)
 	}
-	if _, err := s.SetThreadReceiptTarget("tok-spawn", ""); err == nil {
+	if _, _, err := s.SetThreadReceiptTarget("tok-spawn", "", false); err == nil {
 		t.Error("an empty thread id must be refused")
 	}
-	named, err = s.SetThreadReceiptTarget("tok-unknown", "t-spawned")
+	named, _, err = s.SetThreadReceiptTarget("tok-unknown", "t-spawned", false)
 	if err != nil || named {
 		t.Fatalf("unknown token: named=%v err=%v", named, err)
 	}
@@ -964,7 +1369,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	mustCreateThread(t, s, "t-caller")
 	seedThreadRequest(t, s, "tok-target", "t-caller", ThreadRequestAsk, 100)
 
-	set, err := s.SetThreadRequestTarget("tok-target", "", "t-scratch-fork", "")
+	set, err := s.SetThreadRequestTarget("tok-target", "", "t-scratch-fork", "", "")
 	if err != nil || !set {
 		t.Fatalf("set target: set=%v err=%v", set, err)
 	}
@@ -978,7 +1383,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	if _, err := s.AdvanceThreadRequestState("tok-target", ThreadRequestUnconfirmed, ThreadRequestRunning); err != nil {
 		t.Fatalf("advance state: %v", err)
 	}
-	set, err = s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes")
+	set, err = s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes", "codex")
 	if err != nil || !set {
 		t.Fatalf("repoint target: set=%v err=%v", set, err)
 	}
@@ -988,11 +1393,18 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	}
 	// The answering thread is on another computer, so its name has no local
 	// row to read after a restart. The dispatch records it here instead.
-	if row.TargetThreadTitle != "Release notes" {
-		t.Fatalf("target title = %q", row.TargetThreadTitle)
+	if row.TargetThreadTitle != "Release notes" || row.TargetProvider != "codex" {
+		t.Fatalf("target title %q provider %q", row.TargetThreadTitle, row.TargetProvider)
+	}
+	// The provider alone changing is a change.
+	if set, err := s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes", "claude"); err != nil || !set {
+		t.Fatalf("provider change: set=%v err=%v", set, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-target"); row.TargetProvider != "claude" {
+		t.Fatalf("target provider = %q, want claude", row.TargetProvider)
 	}
 	// It is now a remote request, so the poller must see it.
-	polls, err := s.DueThreadRequestPolls(nowMillis(), 10)
+	polls, err := s.DueThreadRequestPolls(nowMillis(), 10, nil)
 	if err != nil {
 		t.Fatalf("due polls: %v", err)
 	}
@@ -1000,7 +1412,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 		t.Fatalf("due polls = %+v", polls)
 	}
 
-	set, err = s.SetThreadRequestTarget("tok-unknown", "backend-2", "t-moved", "")
+	set, err = s.SetThreadRequestTarget("tok-unknown", "backend-2", "t-moved", "", "")
 	if err != nil || set {
 		t.Fatalf("unknown token: set=%v err=%v", set, err)
 	}
@@ -1049,7 +1461,7 @@ func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 	if err := s.QueueThreadWake("tok-wake", nil, true, late); err == nil {
 		t.Fatal("a late wake was queued before there was a late reply")
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-wake", []byte("on reflection"), 940, false); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-wake", []byte("on reflection"), 940, nil, false); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	late = item
@@ -1062,9 +1474,134 @@ func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 	}
 }
 
-// restoreQueueToDraft writes a draft that takes the queue rows ids, whose
-// messages carry sendIDs, as every app restore to the composer does.
-func restoreQueueToDraft(t *testing.T, s *Store, threadID string, ids, sendIDs []string) error {
+// WithdrawThreadWake is QueueThreadWake undone for an archive: the queue row,
+// its delivery mark and the request's notify go in one transaction, so a
+// retry never sees the answer owed and armed. A wake clears only its own
+// answer's mark and route, the late reply's or the first answer's, and a
+// row already gone changes nothing.
+func TestWithdrawThreadWakeOwesTheAnswerAgainDisarmed(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedSettledThreadRequest(t, s, "tok-back", "t-caller", ThreadRequestSend, 100, "the answer")
+	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	if err := s.QueueThreadWake("tok-back", nil, false, FlushQueueItem{
+		ID: "queue:back", ThreadID: "t-caller", SendID: "thread-wake:tok-back", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-back", false, "queue:back", WithdrawQueued); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	row := mustGetThreadRequest(t, s, "tok-back")
+	if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("withdrawn: delivered %q at %d, notify %v; want undelivered and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
+	if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 0 {
+		t.Fatalf("the withdrawn wake left %+v (err %v)", rows, err)
+	}
+
+	// The late reply's wake: the first answer was delivered inline.
+	if _, err := s.MarkThreadRequestDelivered("tok-back", ThreadWakeInline, 920, false); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered: %v", err)
+	}
+	if stored, err := s.StoreThreadRequestLateReply("tok-back", []byte("on reflection"), 940, nil, false); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	if err := s.QueueThreadWake("tok-back", nil, true, FlushQueueItem{
+		ID: "queue:back-late", ThreadID: "t-caller", SendID: "thread-wake-late:tok-back", Message: "on reflection", EnqueuedAt: 950,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake(late): %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-back", true, "queue:back-late", WithdrawQueued); err != nil {
+		t.Fatalf("WithdrawThreadWake(late): %v", err)
+	}
+	row = mustGetThreadRequest(t, s, "tok-back")
+	if row.LateDeliveredAt != 0 || row.LateDeliveredHow != "" || row.Notify || row.DeliveredAt != 920 || row.DeliveredHow != ThreadWakeInline {
+		t.Fatalf("late withdrawn: late delivery %q at %d, notify %v, first delivery %q at %d; want the late wake owed and disarmed, the first delivery kept",
+			row.LateDeliveredHow, row.LateDeliveredAt, row.Notify, row.DeliveredHow, row.DeliveredAt)
+	}
+
+	// Gone already (dispatched or withdrawn): nothing changes.
+	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-back", false, "queue:absent", WithdrawQueued); err != nil {
+		t.Fatalf("WithdrawThreadWake(absent): %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-back"); !row.Notify || row.DeliveredAt != 920 {
+		t.Fatalf("an absent row changed the request: notify %v, delivered at %d", row.Notify, row.DeliveredAt)
+	}
+
+	// The first answer's wake, withdrawn after the late reply was read
+	// inline: the late reply's delivery stands.
+	seedSettledThreadRequest(t, s, "tok-first", "t-caller", ThreadRequestSend, 100, "the answer")
+	if _, err := s.SetThreadRequestNotify("tok-first", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	if err := s.QueueThreadWake("tok-first", nil, false, FlushQueueItem{
+		ID: "queue:first", ThreadID: "t-caller", SendID: "thread-wake:tok-first", Message: "the answer", EnqueuedAt: 960,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if stored, err := s.StoreThreadRequestLateReply("tok-first", []byte("on reflection"), 970, nil, false); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	if _, err := s.MarkThreadRequestDelivered("tok-first", ThreadWakeInline, 980, true); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered(late): %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-first", false, "queue:first", WithdrawQueued); err != nil {
+		t.Fatalf("WithdrawThreadWake(first): %v", err)
+	}
+	row = mustGetThreadRequest(t, s, "tok-first")
+	if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.LateDeliveredAt != 980 || row.LateDeliveredHow != ThreadWakeInline {
+		t.Fatalf("first withdrawn: first delivery %q at %d, late delivery %q at %d; want the first owed, the late delivery kept",
+			row.DeliveredHow, row.DeliveredAt, row.LateDeliveredHow, row.LateDeliveredAt)
+	}
+}
+
+// A wake the provider was handed and never confirmed has no queue row left,
+// and goes back all the same while its request still reads queued: owed and
+// disarmed. A request delivered some other way is left alone.
+func TestWithdrawThreadWakeReturnsAnUnconfirmedWakeWithNoRow(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedOwedThreadWake(t, s, "tok-sent", "t-caller", ThreadRequestSend, 100, "the answer")
+	if err := s.QueueThreadWake("tok-sent", nil, false, FlushQueueItem{
+		ID: "queue:sent", ThreadID: "t-caller", SendID: "thread-wake:tok-sent", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	// The dispatch retired the row at the provider write.
+	if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue:sent"}); err != nil {
+		t.Fatalf("DeleteDispatchedFlushQueueItems: %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-sent", false, "queue:sent", WithdrawUnconfirmed); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-sent"); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("unconfirmed: delivered %q at %d, notify %v; want undelivered and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
+
+	seedSettledThreadRequest(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
+	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 920, false); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered: %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-inline", false, "", WithdrawUnconfirmed); err != nil {
+		t.Fatalf("WithdrawThreadWake(inline): %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-inline"); row.DeliveredAt != 920 || row.DeliveredHow != ThreadWakeInline {
+		t.Fatalf("an inline delivery was taken back: delivered %q at %d", row.DeliveredHow, row.DeliveredAt)
+	}
+}
+
+// restoreQueueToDraft writes a draft that takes the queue rows ids, as every
+// app restore to the composer does.
+func restoreQueueToDraft(t *testing.T, s *Store, threadID string, ids []string) error {
 	t.Helper()
 	expected, _, err := s.GetThreadDraft(threadID)
 	if err != nil {
@@ -1072,69 +1609,28 @@ func restoreQueueToDraft(t *testing.T, s *Store, threadID string, ids, sendIDs [
 	}
 	merged := expected
 	merged.ThreadID, merged.Content, merged.UpdatedAt = threadID, "restored", 1000
-	_, err = s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged, QueueItemIDs: ids, SendIDs: sendIDs})
+	_, err = s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged, QueueItemIDs: ids})
 	return err
 }
 
-// A wake restored into the composer still delivered its answer to the
-// thread, so its request keeps the delivery and reads as a draft, in the
-// write that restores it. A send id that names no queued wake changes
-// nothing.
-func TestRestoringAWakeToTheDraftMarksItsRequestDraft(t *testing.T) {
+// A restore to the composer takes the person's messages and no request's
+// wake: a wake never enters the composer, so a restore leaves every wake's
+// row queued and its request delivered as queued, first answer and late
+// reply alike. A restore that fails writes nothing at all.
+func TestRestoringTheQueueToTheDraftLeavesWakesQueued(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
-	seedOwedThreadWake(t, s, "tok-draft", "t-caller", ThreadRequestSend, 100, "the answer")
-	seedOwedThreadWake(t, s, "tok-owed", "t-caller", ThreadRequestSend, 100, "the answer")
-	seedOwedThreadWake(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
-	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 800, false); err != nil {
-		t.Fatalf("MarkThreadRequestDelivered: %v", err)
-	}
-	if err := s.QueueThreadWake("tok-draft", nil, false, FlushQueueItem{
-		ID: "queue:draft", ThreadID: "t-caller", SendID: "thread-wake:tok-draft", Message: "the answer", EnqueuedAt: 900,
+	seedOwedThreadWake(t, s, "tok-first", "t-caller", ThreadRequestSend, 100, "the answer")
+	if err := s.QueueThreadWake("tok-first", nil, false, FlushQueueItem{
+		ID: "queue:first", ThreadID: "t-caller", SendID: "thread-wake:tok-first", Message: "the answer", EnqueuedAt: 900,
 	}); err != nil {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
-	sends := []string{"thread-wake:tok-draft", "thread-wake:tok-owed", "thread-wake:tok-inline", "thread-wake:", "send-1"}
-
-	// A restore that fails writes neither the draft nor the mark.
-	if _, err := s.db.Exec(`CREATE TRIGGER refuse_queue_removal BEFORE DELETE ON flush_queue_items
-		BEGIN SELECT RAISE(ABORT, 'injected removal failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:draft"}, sends); err == nil {
-		t.Fatal("the restore succeeded past the injected failure")
-	}
-	if got := mustGetThreadRequest(t, s, "tok-draft").DeliveredHow; got != ThreadWakeQueued {
-		t.Fatalf("delivered %q after a failed restore, want queued", got)
-	}
-	if _, err := s.db.Exec(`DROP TRIGGER refuse_queue_removal`); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:draft"}, sends); err != nil {
-		t.Fatalf("RestoreFlushQueueToDraft: %v", err)
-	}
-	if row := mustGetThreadRequest(t, s, "tok-draft"); row.DeliveredHow != ThreadWakeDraft || row.DeliveredAt != 900 {
-		t.Fatalf("restored wake = %q at %d, want draft at the queued time", row.DeliveredHow, row.DeliveredAt)
-	}
-	if row := mustGetThreadRequest(t, s, "tok-owed"); row.DeliveredAt != 0 || row.DeliveredHow != "" {
-		t.Fatalf("an undelivered request was marked: %q at %d", row.DeliveredHow, row.DeliveredAt)
-	}
-	if got := mustGetThreadRequest(t, s, "tok-inline").DeliveredHow; got != ThreadWakeInline {
-		t.Fatalf("an inline delivery was rewritten as %q", got)
-	}
-}
-
-// A late reply's wake is its own delivery; restoring it marks the request
-// draft without touching anything that rode with the first answer.
-func TestRestoringALateWakeToTheDraftMarksItsRequestDraft(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t-caller")
 	seedOwedThreadWake(t, s, "tok-late", "t-caller", ThreadRequestSend, 100, "the answer")
 	if _, err := s.MarkThreadRequestDelivered("tok-late", ThreadWakeInline, 800, false); err != nil {
 		t.Fatalf("MarkThreadRequestDelivered: %v", err)
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("on reflection"), 940, false); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("on reflection"), 940, nil, false); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	if err := s.QueueThreadWake("tok-late", nil, true, FlushQueueItem{
@@ -1142,15 +1638,64 @@ func TestRestoringALateWakeToTheDraftMarksItsRequestDraft(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("QueueThreadWake(late): %v", err)
 	}
-	if got := mustGetThreadRequest(t, s, "tok-late").DeliveredHow; got != ThreadWakeQueued {
-		t.Fatalf("late wake queued as %q", got)
+	if err := s.InsertFlushQueueItem(FlushQueueItem{
+		ID: "queue:person", ThreadID: "t-caller", SendID: "send-1", Message: "my own words", EnqueuedAt: 960,
+	}); err != nil {
+		t.Fatalf("InsertFlushQueueItem: %v", err)
 	}
-	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:late"}, []string{"thread-wake-late:tok-late"}); err != nil {
+	queued := func() []string {
+		t.Helper()
+		rows, err := s.ListFlushQueueItems("t-caller")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		return ids
+	}
+	wakesQueued := func(when string) {
+		t.Helper()
+		if row := mustGetThreadRequest(t, s, "tok-first"); row.DeliveredHow != ThreadWakeQueued || row.DeliveredAt != 900 {
+			t.Fatalf("%s: first wake = %q at %d, want queued at 900", when, row.DeliveredHow, row.DeliveredAt)
+		}
+		if row := mustGetThreadRequest(t, s, "tok-late"); row.LateDeliveredHow != ThreadWakeQueued || row.LateDeliveredAt != 950 ||
+			row.DeliveredHow != ThreadWakeInline {
+			t.Fatalf("%s: late wake = %q at %d, first %q; want the late reply queued at 950 and the first answer inline",
+				when, row.LateDeliveredHow, row.LateDeliveredAt, row.DeliveredHow)
+		}
+	}
+
+	// A restore that fails writes neither the draft nor the queue removal.
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_queue_removal BEFORE DELETE ON flush_queue_items
+		BEGIN SELECT RAISE(ABORT, 'injected removal failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:person"}); err == nil {
+		t.Fatal("the restore succeeded past the injected failure")
+	}
+	if draft, _, err := s.GetThreadDraft("t-caller"); err != nil || draft.Content != "" {
+		t.Fatalf("draft after a failed restore = %q (err %v), want none", draft.Content, err)
+	}
+	if got, want := queued(), []string{"queue:first", "queue:late", "queue:person"}; !slices.Equal(got, want) {
+		t.Fatalf("queue after a failed restore = %q, want %q", got, want)
+	}
+	wakesQueued("after a failed restore")
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_queue_removal`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:person"}); err != nil {
 		t.Fatalf("RestoreFlushQueueToDraft: %v", err)
 	}
-	if row := mustGetThreadRequest(t, s, "tok-late"); row.DeliveredHow != ThreadWakeDraft || row.LateDeliveredAt != 950 {
-		t.Fatalf("restored late wake = %q at %d, want draft at the queued time", row.DeliveredHow, row.LateDeliveredAt)
+	if draft, _, err := s.GetThreadDraft("t-caller"); err != nil || draft.Content != "restored" {
+		t.Fatalf("draft = %q (err %v), want the restored text", draft.Content, err)
 	}
+	if got, want := queued(), []string{"queue:first", "queue:late"}; !slices.Equal(got, want) {
+		t.Fatalf("queue after the restore = %q, want the wakes' rows %q", got, want)
+	}
+	wakesQueued("after the restore")
 }
 
 // A retry pass reads a row as owed and books its attempt later; a delivery
@@ -1185,7 +1730,7 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
 
-	schedule, err := s.NextThreadRequestWork()
+	schedule, err := s.NextThreadRequestWork(nil)
 	if err != nil {
 		t.Fatalf("NextThreadRequestWork: %v", err)
 	}
@@ -1221,7 +1766,7 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 		t.Fatalf("schedule wake: booked=%v err=%v", booked, err)
 	}
 
-	schedule, err = s.NextThreadRequestWork()
+	schedule, err = s.NextThreadRequestWork(nil)
 	if err != nil {
 		t.Fatalf("NextThreadRequestWork: %v", err)
 	}
@@ -1236,7 +1781,248 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 	if _, err := s.RetireThreadRequestPoll("tok-poll"); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
-	if schedule, err = s.NextThreadRequestWork(); err != nil || schedule.Poll.Set {
+	if schedule, err = s.NextThreadRequestWork(nil); err != nil || schedule.Poll.Set {
 		t.Fatalf("after retirement poll = %+v err=%v, want nothing to poll", schedule.Poll, err)
+	}
+}
+
+// A queued answer is delivered in two phases: the queue write marks it, and
+// only the provider's echo confirms it. Until then it is listed for the
+// boot sweep and an unconfirmed give-back takes it back; once confirmed,
+// neither does. An inline delivery is confirmed by its mark, so a late
+// reply queued after one lists only the late slot, and a give-back clears
+// the confirmation with the mark, so a requeue starts unconfirmed.
+func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	unconfirmed := func() []string {
+		t.Helper()
+		rows, err := s.UnconfirmedThreadWakes()
+		if err != nil {
+			t.Fatalf("UnconfirmedThreadWakes: %v", err)
+		}
+		var got []string
+		for _, row := range rows {
+			if row.DeliveredAt != 0 && row.ConfirmedAt == 0 {
+				got = append(got, row.Token)
+			}
+			if row.LateDeliveredAt != 0 && row.LateConfirmedAt == 0 {
+				got = append(got, row.Token+":late")
+			}
+		}
+		return got
+	}
+	queue := func(token string, late bool, id string) {
+		t.Helper()
+		if err := s.QueueThreadWake(token, nil, late, FlushQueueItem{
+			ID: id, ThreadID: "t-caller", SendID: id, Message: "the answer", EnqueuedAt: 900,
+		}); err != nil {
+			t.Fatalf("QueueThreadWake %s: %v", id, err)
+		}
+		if _, err := s.DeleteDispatchedFlushQueueItems([]string{id}); err != nil {
+			t.Fatalf("DeleteDispatchedFlushQueueItems %s: %v", id, err)
+		}
+	}
+
+	seedOwedThreadWake(t, s, "tok-queued", "t-caller", ThreadRequestSend, 100, "the answer")
+	seedOwedThreadWake(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
+	queue("tok-queued", false, "queue:queued")
+	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 920, false); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered: %v", err)
+	}
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok-queued"}) {
+		t.Fatalf("unconfirmed after the queue write = %q, want [tok-queued]", got)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-inline"); row.ConfirmedAt != 920 {
+		t.Fatalf("inline delivery confirmed at %d, want 920", row.ConfirmedAt)
+	}
+
+	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, "", 950); err != nil || !confirmed {
+		t.Fatalf("ConfirmThreadWake = %v, %v; want true", confirmed, err)
+	}
+	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, "", 960); err != nil || confirmed {
+		t.Fatalf("second ConfirmThreadWake = %v, %v; want false", confirmed, err)
+	}
+	if got := unconfirmed(); len(got) != 0 {
+		t.Fatalf("unconfirmed after the echo = %q, want none", got)
+	}
+	if _, err := s.WithdrawThreadWake("tok-queued", false, "queue:queued", WithdrawUnconfirmed); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-queued"); row.DeliveredAt == 0 || row.ConfirmedAt != 950 {
+		t.Fatalf("a confirmed answer was given back: delivered at %d, confirmed at %d", row.DeliveredAt, row.ConfirmedAt)
+	}
+
+	// A late reply after an inline answer: only the late slot is owed a
+	// confirmation.
+	if _, err := s.StoreThreadRequestLateReply("tok-inline", []byte("more"), 1000, nil, false); err != nil {
+		t.Fatalf("StoreThreadRequestLateReply: %v", err)
+	}
+	queue("tok-inline", true, "queue:late")
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok-inline:late"}) {
+		t.Fatalf("unconfirmed after the late queue write = %q, want [tok-inline:late]", got)
+	}
+	if _, err := s.WithdrawThreadWake("tok-inline", true, "queue:late", WithdrawUnconfirmed); err != nil {
+		t.Fatalf("WithdrawThreadWake(late): %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-inline"); row.LateDeliveredAt != 0 || row.DeliveredAt != 920 || row.ConfirmedAt != 920 {
+		t.Fatalf("late give-back: late delivered %d, delivered %d confirmed %d", row.LateDeliveredAt, row.DeliveredAt, row.ConfirmedAt)
+	}
+	if got := unconfirmed(); len(got) != 0 {
+		t.Fatalf("unconfirmed after the late give-back = %q, want none", got)
+	}
+
+	// Given back and queued again, an answer is unconfirmed again.
+	seedOwedThreadWake(t, s, "tok-again", "t-caller", ThreadRequestSend, 100, "the answer")
+	if err := s.QueueThreadWake("tok-again", nil, false, FlushQueueItem{
+		ID: "queue:again", ThreadID: "t-caller", SendID: "queue:again", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if _, err := s.WithdrawThreadWake("tok-again", false, "queue:again", WithdrawQueued); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	// The give-back disarmed it; a later wait or thread_status re-arms it.
+	if _, err := s.SetThreadRequestNotify("tok-again", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	queue("tok-again", false, "queue:again2")
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok-again"}) {
+		t.Fatalf("unconfirmed after a requeue = %q, want [tok-again]", got)
+	}
+}
+
+// A lineage-only row keeps the delivery marks the retention sweep left
+// (clearLineagePayloadSQL). One queued and never confirmed, answer and
+// late reply both, is not listed at boot, not given back with or without
+// its queue row, and not confirmed: a cleared delivered_at would read as a
+// wake still owed.
+func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedSettledThreadRequest(t, s, "tok", "t-caller", ThreadRequestSpawn, 100, "the answer")
+	if stored, err := s.StoreThreadRequestLateReply("tok", []byte("one more thing"), 300, nil, false); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	for _, late := range []bool{false, true} {
+		if marked, err := s.MarkThreadRequestDelivered("tok", ThreadWakeQueued, 900, late); err != nil || !marked {
+			t.Fatalf("MarkThreadRequestDelivered(late=%v): marked=%v err=%v", late, marked, err)
+		}
+	}
+	unconfirmed := func() []string {
+		t.Helper()
+		rows, err := s.UnconfirmedThreadWakes()
+		if err != nil {
+			t.Fatalf("UnconfirmedThreadWakes: %v", err)
+		}
+		var tokens []string
+		for _, row := range rows {
+			tokens = append(tokens, row.Token)
+		}
+		return tokens
+	}
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok"}) {
+		t.Fatalf("unconfirmed before the sweep = %q, want [tok]", got)
+	}
+	if _, err := s.db.Exec(clearLineagePayloadSQL+` AND token = ?`, "tok"); err != nil {
+		t.Fatalf("mark the row lineage-only: %v", err)
+	}
+	if err := insertFlushQueueItem(s.db, FlushQueueItem{
+		ID: "queue:tok", ThreadID: "t-caller", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("insert queue row: %v", err)
+	}
+	before := rawThreadRequest(t, s, "tok")
+
+	if got := unconfirmed(); len(got) != 0 {
+		t.Errorf("unconfirmed at boot = %q, want the lineage-only row left out", got)
+	}
+	for _, late := range []bool{false, true} {
+		if _, err := s.WithdrawThreadWake("tok", late, "", WithdrawUnconfirmed); err != nil {
+			t.Fatalf("WithdrawThreadWake(late=%v, unconfirmed): %v", late, err)
+		}
+		if confirmed, err := s.ConfirmThreadWake("tok", late, "", 1000); err != nil || confirmed {
+			t.Errorf("ConfirmThreadWake(late=%v) on the lineage-only row: confirmed=%v err=%v", late, confirmed, err)
+		}
+	}
+	if _, err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
+		t.Fatalf("WithdrawThreadWake with its row: %v", err)
+	}
+	after := rawThreadRequest(t, s, "tok")
+	if after.DeliveredAt != before.DeliveredAt || after.DeliveredHow != ThreadWakeQueued || after.LateDeliveredAt != before.LateDeliveredAt ||
+		after.ConfirmedAt != 0 || after.LateConfirmedAt != 0 || after.Notify || !after.LineageOnly {
+		t.Errorf("the lineage-only row changed:\n got %+v\nwant %+v", after, before)
+	}
+	if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 0 {
+		t.Errorf("queue rows after the withdraw = %+v, %v; want the row taken out", rows, err)
+	}
+}
+
+// A queue row can outlive its message's echo: the process died between the
+// provider write and the settlement that deletes the row, or that delete
+// failed. Withdrawing the row takes it out of the queue and leaves the
+// confirmed delivery standing, armed, for the carrier and the request that
+// rode with it, and for a late reply; with the row gone, an unconfirmed
+// withdrawal changes nothing either.
+func TestWithdrawThreadWakeNeverTakesBackAConfirmedWake(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedOwedThreadWake(t, s, "tok", "t-caller", ThreadRequestSend, 100, "the answer")
+	seedOwedThreadWake(t, s, "tok-rider", "t-caller", ThreadRequestSend, 100, "another answer")
+	if err := s.QueueThreadWake("tok", []string{"tok-rider"}, false, FlushQueueItem{
+		ID: "queue:tok", ThreadID: "t-caller", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if _, err := s.ConfirmThreadWake("tok", false, "row-echo", 950); err != nil {
+		t.Fatalf("ConfirmThreadWake: %v", err)
+	}
+	for _, scope := range []WakeWithdrawal{WithdrawQueued, WithdrawUnconfirmed} {
+		returned, err := s.WithdrawThreadWake("tok", false, "queue:tok", scope)
+		if err != nil || len(returned) != 0 {
+			t.Fatalf("WithdrawThreadWake(%d) = %q, %v; want nothing given back", scope, returned, err)
+		}
+	}
+	wakeItems := func(token string) (first, late string) {
+		t.Helper()
+		if err := s.db.QueryRow(`SELECT wake_item_id, late_wake_item_id FROM thread_requests WHERE token = ?`, token).Scan(&first, &late); err != nil {
+			t.Fatal(err)
+		}
+		return first, late
+	}
+	for _, token := range []string{"tok", "tok-rider"} {
+		row := mustGetThreadRequest(t, s, token)
+		if item, _ := wakeItems(token); row.DeliveredAt != 900 || row.DeliveredHow != ThreadWakeQueued ||
+			row.ConfirmedAt != 950 || item != "row-echo" || !row.Notify {
+			t.Fatalf("%s: a confirmed wake was given back: delivered %q at %d, confirmed at %d by %q, notify %v",
+				token, row.DeliveredHow, row.DeliveredAt, row.ConfirmedAt, item, row.Notify)
+		}
+	}
+	if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 0 {
+		t.Fatalf("queue rows after the withdraw = %+v, %v; want the row taken out", rows, err)
+	}
+
+	if stored, err := s.StoreThreadRequestLateReply("tok", []byte("on reflection"), 960, nil, true); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	if err := s.QueueThreadWake("tok", nil, true, FlushQueueItem{
+		ID: "queue:tok-late", ThreadID: "t-caller", SendID: "thread-wake-late:tok", Message: "on reflection", EnqueuedAt: 970,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake(late): %v", err)
+	}
+	if _, err := s.ConfirmThreadWake("tok", true, "row-late-echo", 980); err != nil {
+		t.Fatalf("ConfirmThreadWake(late): %v", err)
+	}
+	if returned, err := s.WithdrawThreadWake("tok", true, "queue:tok-late", WithdrawQueued); err != nil || len(returned) != 0 {
+		t.Fatalf("WithdrawThreadWake(late) = %q, %v; want nothing given back", returned, err)
+	}
+	row := mustGetThreadRequest(t, s, "tok")
+	if _, item := wakeItems("tok"); row.LateDeliveredAt != 970 || row.LateDeliveredHow != ThreadWakeQueued ||
+		row.LateConfirmedAt != 980 || item != "row-late-echo" || !row.Notify || row.ConfirmedAt != 950 {
+		t.Fatalf("a confirmed late reply was given back: delivered %q at %d, confirmed at %d by %q, notify %v, first confirmed at %d",
+			row.LateDeliveredHow, row.LateDeliveredAt, row.LateConfirmedAt, item, row.Notify, row.ConfirmedAt)
+	}
+	if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 0 {
+		t.Fatalf("queue rows after the late withdraw = %+v, %v; want the row taken out", rows, err)
 	}
 }

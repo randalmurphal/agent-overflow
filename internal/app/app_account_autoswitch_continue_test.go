@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/accountswitch"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
@@ -77,7 +78,7 @@ func appOriginRows(t *testing.T, app *App, threadID string) []string {
 			continue
 		}
 		var meta usermessage.Meta
-		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.Origin == usermessage.OriginApp {
+		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.Origin == agentmeta.OriginApp {
 			out = append(out, item.Summary)
 		}
 	}

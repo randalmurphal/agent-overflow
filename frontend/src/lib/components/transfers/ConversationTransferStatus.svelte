@@ -9,7 +9,7 @@
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import type { BackendKey } from '../../transport/backendKey';
   import { hasScope } from '../../transport/scopes';
-  import { userFacingError } from '../../utils/userFacingError';
+  import { asSentence, userFacingError } from '../../utils/userFacingError';
 
   let { backend, row, showTitle = true }: { backend: BackendKey; row: ConversationTransfer; showTitle?: boolean } = $props();
   let busy = $state(false);
@@ -19,6 +19,7 @@
   let peer = $derived(getAttachedBackends().find((entry) => entry.backendId === row.peerBackendId));
   let name = $derived(peer ? backendDisplayName(peer) : 'another computer');
   let recipientError = $derived(row.direction === 'outgoing' && peer ? computerTransfers(peer.id).rows.find((value) => value.id === row.id)?.error : undefined);
+  let rowError = $derived(recipientError || row.error || '');
   let enabled = $derived(!busy && backendReachable(backend) && hasScope('threads:operate', backend));
   let canCancel = $derived(!terminal(row) && !row.cancelRequested && (row.direction === 'outgoing' ? row.phase !== 'committed' : row.phase === 'preparing'));
   let status = $derived(row.phase === 'complete' ? (row.kind === 'copy' ? 'Copied' : 'Moved') : row.phase === 'canceled' ? 'Canceled' : row.cancelRequested ? 'Canceling' : row.needsDestination ? 'Finish setup' : row.phase === 'committed' ? 'Finishing on destination' : row.phase === 'prepared' ? 'Ready on destination' : 'Preparing and transferring');
@@ -38,7 +39,7 @@
   {#if showTitle}<p class="truncate text-xs text-fg" title={thread?.title}>{thread?.title || target?.title || `Conversation ${row.threadId.slice(0, 8)}`}</p>{/if}
   <p role="status" class="text-xs text-fg-muted">{status}{row.phase !== 'canceled' ? ` ${row.direction === 'incoming' ? 'from' : 'to'} ${name}` : ''}</p>
   {#if !terminal(row) && !row.needsDestination}<p class="text-xs text-fg-muted">You can close this app. The computers will continue when connected.</p>{/if}
-  {#if (recipientError || row?.error) && !terminal(row)}<p class="text-xs text-warning break-words">{recipientError || row?.error}</p>{/if}
+  {#if rowError && !terminal(row)}<p class="text-xs text-warning break-words" data-testid="conversation-transfer-row-error">{asSentence(rowError)}</p>{/if}
   {#if error}<p role="alert" class="text-xs text-error break-words">{error}</p>{/if}
   <div class="flex flex-wrap gap-2">
     {#if row.needsDestination}

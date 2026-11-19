@@ -1,6 +1,11 @@
 package threadtools
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"agent-overflow/internal/agenthome"
+)
 
 // The nine tools that change something: spawn, send, ask, reply, status,
 // cancel, update, group and remind.
@@ -16,11 +21,11 @@ func spawnSchema(shape Shape) map[string]any {
 		"title": map[string]any{
 			"type":        "string",
 			"maxLength":   MaxTitleRunes,
-			"description": "Optional title for the sidebar. Omitted, the app titles the thread itself from its first turn.",
+			"description": "Optional title, shown wherever the thread is listed. Omitted, the app titles the thread itself from its first turn.",
 		},
 		"from_thread": map[string]any{
 			"type":        "string",
-			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is a normal visible thread. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted. A fork runs in its source's workspace, so from_thread cannot be combined with workspace_path, worktree, base or base_local.",
+			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is your worker like any spawn, placed by placement and group, never by its source's group. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted. A fork runs in its source's workspace, so from_thread cannot be combined with workspace_path, worktree, base or base_local.",
 		},
 		"project_id": map[string]any{
 			"type":        "string",
@@ -45,8 +50,9 @@ func spawnSchema(shape Shape) map[string]any {
 		"group": map[string]any{
 			"type":        "string",
 			"maxLength":   MaxTitleRunes,
-			"description": "Sidebar group to put the new thread in, by name inside the thread's own project, created when it does not exist. The same name in another project is a different group. Put your own thread there with thread_update to keep a sweep of threads together.",
+			"description": "Sidebar group to put the new thread in, by name inside the thread's own project, created when it does not exist. The same name in another project is a different group. Put your own thread there with thread_update to keep a sweep of threads together. Implies placement grouped.",
 		},
+		"placement": placementProperty("Whether the user sees the new thread in the sidebar. owned, the default: it is your worker, with no sidebar row; the user reaches it from your thread. standalone gives it a plain row in its own project, and grouped, which group implies, a row in that group. Give it a row when the thread is for the user to read or continue themselves. On another computer it applies there."),
 		"provider": map[string]any{
 			"type":        "string",
 			"description": spawnDefaultText("Provider for the new thread", defaults.Provider) + " A provider given without a model uses that provider's default model. A provider the target computer does not offer is refused with the list it does; thread_options lists them. With from_thread it must be the source thread's provider, which a fork resumes.",
@@ -70,13 +76,46 @@ func spawnSchema(shape Shape) map[string]any {
 			"description": spawnDefaultText("Permission level of the new thread, a separate axis from mode", defaults.RuntimeMode) + " Keep the inherited one unless the task needs another. " + runtimeModeSentence() + ".",
 		},
 	}
+	properties["profile"] = map[string]any{
+		"type":        "string",
+		"description": profileDescription(shape.Spawn.Profiles),
+	}
+	properties["instructions"] = map[string]any{
+		"type":        "string",
+		"maxLength":   MaxSpawnInstructionsBytes,
+		"description": fmt.Sprintf("Text appended to the new thread's system prompt for its whole life, after everything the app and the user already put there, for a one-off role such as a reviewer told what to look for. A profile's own instructions come first. At most %d bytes with the profile's. The task itself goes in prompt.", MaxSpawnInstructionsBytes),
+	}
+	if !shape.AssistantsOff {
+		properties["home_files"] = homeFilesProperty("prompt")
+	}
 	waitProperties(properties, 0, "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
-	description := "Open a new visible sidebar thread, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them, and joins a sidebar group when group names one. The new thread is an ordinary thread with no special marking: the user sees it in the sidebar and can take it over. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should be visible and outlive your turn; use your own subagents for pieces of your current task."
+	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
 	if shape.Paired() {
 		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
 	}
 	return tool("thread_spawn", description, properties, "prompt")
+}
+
+// profileDescription states the profiles this computer can run beside the
+// parameter, so a spawn by profile needs no discovery call for the name.
+func profileDescription(names []string) string {
+	text := "Agent profile to spawn as, by name: the provider, model, effort, runtime mode and instructions the user set up for one kind of work. provider, model, effort and runtime_mode passed beside it override that part of it. thread_options lists each profile's use-for line and what it runs on each computer."
+	if len(names) > 0 {
+		text += " This computer runs: " + strings.Join(names, ", ") + "."
+	}
+	return text
+}
+
+// homeFilesProperty is home_files on thread_spawn and thread_send.
+func homeFilesProperty(field string) map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"items":       map[string]any{"type": "string", "minLength": 1},
+		"minItems":    1,
+		"maxItems":    agenthome.MaxHomeFiles,
+		"description": fmt.Sprintf("Only for a standing agent: files in your agent home, by path relative to it (for example memory/release-checks.md), prepended to %s under their names so the receiver has them without you pasting them. At most %d files and %d KiB together. Refused for a thread that is not a standing agent, and for a path that is absolute, leaves your home or is not a file there.", field, agenthome.MaxHomeFiles, agenthome.HomeFilesCap>>10),
+	}
 }
 
 // spawnDefaultText states the live default beside the parameter, so the
@@ -92,6 +131,9 @@ func sendSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"thread_id": map[string]any{"type": "string", "description": "The thread to continue. Full id, or an unambiguous prefix of at least 6 characters. You cannot send to your own thread; use thread_remind to wake yourself."},
 		"message":   map[string]any{"type": "string", "minLength": 1, "description": "Exactly what the user would have typed there. The receiving agent sees it as a user message with a footer naming this thread and the token, so write it to be read without your context."},
+	}
+	if !shape.AssistantsOff {
+		properties["home_files"] = homeFilesProperty("message")
 	}
 	waitProperties(properties, 0, "that thread to answer")
 	computerIDProperty(shape, properties, "the thread")
@@ -115,10 +157,22 @@ func askSchema(shape Shape) map[string]any {
 
 func replySchema() map[string]any {
 	properties := map[string]any{
-		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering. It resolves to one pending request on this computer; a token from anywhere else is refused."},
-		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained."},
+		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering, or from a worker's question or approval that woke you. It resolves to one pending request on this computer; a token from anywhere else is refused."},
+		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained. For a worker's question with one part this is the answer it receives; for a worker's approval it is your reason, kept with your decision."},
+		"decision": map[string]any{
+			"type":        "string",
+			"enum":        []string{DecisionAllow, DecisionDeny},
+			"description": "Only for a worker's approval: allow runs what it asked to run, deny refuses it.",
+		},
+		"answers": map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string", "minLength": 1},
+			"minItems":    1,
+			"maxItems":    MaxReplyAnswers,
+			"description": "Only for a worker's question with several parts: one answer per part, in the order the wake lists them. text is then not sent to the worker.",
+		},
 	}
-	description := "Answer the agent in another thread that sent you a message. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now."
+	description := "Answer the agent in another thread that sent you a message, or a worker of yours that is waiting on your answer to its question or approval. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, once nothing you started is still running when it spawned you, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now. A worker's prompt is answered in the worker at once; if the user answered it there first, the reply is refused."
 	return tool("thread_reply", description, properties, "token", "text")
 }
 
@@ -143,7 +197,7 @@ func statusSchema() map[string]any {
 			"minimum":     0,
 			"maximum":     MaxWaitSeconds,
 			"default":     0,
-			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests, or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", MaxWaitSeconds),
+			"description": fmt.Sprintf("Wait up to this long, returning as soon as ANY listed request settles, any listed thread rests (nothing it started still running), or any target becomes blocked on a person, with the request still open. Zero reads the current state and returns. Maximum %d.", MaxWaitSeconds),
 		},
 		"after_revision": map[string]any{
 			"type":        "integer",
@@ -160,17 +214,18 @@ func statusSchema() map[string]any {
 		"to_file": map[string]any{"type": "boolean", "default": false, "description": "Write a single request's whole answer to a file and return its path instead of inline text. Requires exactly one token."},
 		"cursor":  map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_status result, passed back unchanged to continue a long answer or a listing."},
 	}
-	description := "Re-attach to the requests this thread made, or watch any thread. With tokens it returns each request's state (unconfirmed, accepted, running, blocked, replied, finished, errored, cancelled, interrupted, expired or refused), the target, the answer kind (reply, final, error or note) and the answer. With thread_ids it returns those threads' live states, so you can wait for a thread the user is running without having sent it anything. With neither it lists this thread's requests, open ones first then newest first, which is how you recover your tokens after losing context. An answer collected here IS the delivery, so no message is queued for it; a message already queued still lands and the reply says so. The answer stays available for the request's lifetime even after the thread that wrote it is gone."
+	description := "Re-attach to the requests this thread made, or watch any thread. With tokens it returns each request's state (unconfirmed, accepted, running, blocked, replied, finished, errored, cancelled, interrupted, expired or refused), the target, the answer kind (reply, final, error or note) and the answer. With thread_ids it returns those threads' live states, so you can wait for a thread the user is running without having sent it anything; a thread on a computer that did not answer reads unavailable, with that computer under errors; a thread that could not be read carries its own error, and one deleted or moved away ends the wait; a reference whose lookup a computer did not answer reads unresolved. With neither it lists this thread's requests, open ones first then newest first, which is how you recover your tokens after losing context, and this thread's loops and watches with their next fire, last outcome and missed count. An answer collected here IS the delivery, so no message is queued for it; a message already queued still lands and the reply says so. The answer stays available for the request's lifetime even after the thread that wrote it is gone."
 	return tool("thread_status", description, properties)
 }
 
 func cancelSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"token":     map[string]any{"type": "string", "description": "Cancel this request of yours: a message still queued is removed from the queue, a turn that request's message started is interrupted, a reminder is dropped. A turn the user or another request started is never interrupted through a token."},
-		"thread_id": map[string]any{"type": "string", "description": "Interrupt this thread's running turn. Allowed only for a thread you spawned, sent to or asked; any other thread is refused."},
+		"thread_id": map[string]any{"type": "string", "description": "Stop this thread. A thread you spawned is stopped whole: its session ends; its queued messages, loops, watches, reminders and requests are cancelled; the workflow runs that report to it are paused; and the threads it spawned are stopped the same way. It is not archived, and a later message starts it again. A thread you only sent to or asked has its running turn interrupted. Any other thread is refused."},
+		"label":     map[string]any{"type": "string", "description": "Stop this thread's loop or watch with this label: it will not fire or run again, and a long-running watch's process is stopped."},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Stop work you started. Pass exactly one of token or thread_id. This interrupts, it never reverts: nothing a thread already did is undone. A cancelled request settles cancelled and its answer, if any, is what it had at the time."
+	description := "Stop work you started. Pass exactly one of token, thread_id or label. This interrupts, it never reverts: nothing a thread already did is undone. A cancelled request settles cancelled and its answer, if any, is what it had at the time."
 	return tool("thread_cancel", description, properties)
 }
 
@@ -192,10 +247,11 @@ func updateSchema(shape Shape) map[string]any {
 		},
 		"group": map[string]any{
 			"type":        []string{"string", "null"},
-			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Joining or leaving a group unpins the thread; a pin in the same call applies after the move.",
+			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups, leaving the thread standalone. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Joining or leaving a group unpins the thread; a pin in the same call applies after the move. Implies placement grouped.",
 		},
+		"placement": placementProperty("Whether the user sees a thread in the sidebar: standalone as a plain row in its own project or grouped (with group, unless it is in a group already) gives it a row, and owned takes it out, back to the thread that spawned it. owned is refused for a thread no thread spawned as its worker, on this computer or another, and for an assistant's own thread. Changing it unpins the thread."),
 	}
-	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, or group them, many at once. Set at least one of title, archived, pin or group. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. Do this when the user asks, or for threads you spawned once you are done with them."
+	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, group them, or place them, many at once. Set at least one of title, archived, pin, group or placement. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. An archive also archives the thread's workers; one it could not archive is named in workers_not_archived on the thread's row, still open."
 	if shape.Paired() {
 		description += " Threads on other computers are grouped by computer and applied there; one unreachable computer fails only its own ids."
 	}
@@ -230,4 +286,13 @@ func pairedSuffix(shape Shape, text string) string {
 		return text
 	}
 	return ""
+}
+
+// placementProperty is placement on thread_spawn and thread_update.
+func placementProperty(description string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"enum":        []string{PlacementOwned, PlacementGrouped, PlacementStandalone},
+		"description": description + " Placement is organization only: the spawn record, thread_send, thread_show and the answer arriving as a message are the same in every placement.",
+	}
 }

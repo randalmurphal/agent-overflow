@@ -324,7 +324,7 @@ func TestDeleteThreadReleasesItsBrowserPagesAndToolToggles(t *testing.T) {
 		name   string
 		delete func(*App, string) error
 	}{
-		{"delete thread", (*App).DeleteThread},
+		{"delete thread", (*App).deleteThread},
 		{"delete empty draft", func(app *App, threadID string) error {
 			deleted, err := app.DeleteEmptyDraftThread(threadID)
 			if err == nil && !deleted {
@@ -410,7 +410,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 	}()
 	<-held.entered
 	deleted := make(chan error, 1)
-	go func() { deleted <- app.DeleteThread(thread.ID) }()
+	go func() { deleted <- app.deleteThread(thread.ID) }()
 	select {
 	case err := <-deleted:
 		t.Fatalf("delete returned (%v) while a browser tools call it must outlast was running", err)
@@ -433,7 +433,7 @@ func TestDeleteThreadWaitsForARunningBrowserToolCall(t *testing.T) {
 func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 	t.Parallel()
 	deletes := map[string]func(app *App, threadID string) error{
-		"thread": func(app *App, threadID string) error { return app.DeleteThread(threadID) },
+		"thread": func(app *App, threadID string) error { return app.deleteThread(threadID) },
 		"draft": func(app *App, threadID string) error {
 			deleted, err := app.DeleteEmptyDraftThread(threadID)
 			if err == nil && !deleted {
@@ -551,7 +551,7 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := &deleteOnFirstErr{Context: context.Background(), onErr: func() {
-				if err := app.DeleteThread(thread.ID); err != nil {
+				if err := app.deleteThread(thread.ID); err != nil {
 					t.Errorf("delete: %v", err)
 				}
 			}}
@@ -585,7 +585,7 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			} else {
 				thread := makeWorkspaceThread(t, app, "thread-companion-late")
 				threadID = thread.ID
-				if err := app.DeleteThread(threadID); err != nil {
+				if err := app.deleteThread(threadID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -683,6 +683,38 @@ func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
 	}
 }
 
+// A Stop that brings a spawned thread to rest leaves its browser pages open,
+// for the person to look at what it had open.
+func TestAStopKeepsTheStoppedThreadsBrowserPages(t *testing.T) {
+	t.Parallel()
+	app, manager := newBrowserTestApp(t)
+	caller, _ := browserTestThread(t, app, "thread-browser-spawner")
+	worker, access := browserTestThread(t, app, "thread-browser-worker")
+	if _, err := manager.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "spawn-browser-worker", CallerThreadID: caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: worker.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.sessionManager().put(worker.ID, session{
+		Provider: string(provider.Codex), Token: "worker", Liveness: newSessionLiveness(time.Now()),
+	})
+
+	stop, err := app.StopThreadAgentRow(t.Context(), caller.ID, "spawn-browser-worker")
+	if err != nil || len(stop.Failures) != 0 {
+		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
+	}
+	if _, live := app.sessionManager().get(worker.ID); live {
+		t.Fatal("the stopped worker still has a session")
+	}
+	if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+		t.Fatalf("pages of the stopped worker = %#v, want its one page left open", pages)
+	}
+}
+
 // Archiving a thread closes its browser pages, live and suspended, through
 // both doors that archive; a session kept because a turn started after the
 // request keeps its pages too.
@@ -693,7 +725,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 		name    string
 		archive func(*App, string) error
 	}{
-		{"archive binding", (*App).ArchiveThread},
+		{"archive binding", archiveThread},
 		{"thread_update", func(app *App, threadID string) error {
 			_, err := app.applyThreadOrganizePatch(context.Background(), threadID, threadapp.OrganizePatch{Archived: &archived})
 			return err
@@ -734,7 +766,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 		app.sessionManager().put(thread.ID, session{
 			Provider: string(provider.Codex), Token: "tok", Liveness: newSessionLiveness(time.Now()),
 		})
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {

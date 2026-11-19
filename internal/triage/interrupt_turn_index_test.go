@@ -257,7 +257,7 @@ func TestSampleInterrupt_LiveRevertReusedIndexIsCut(t *testing.T) {
 func TestSampleInterrupt_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), -1)
+	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), -1, "")
 	if got := router.OpenTurnIndex("t1"); got != 1 {
 		t.Fatalf("precondition: OpenTurnIndex = %d, want the echo-opened turn 1", got)
 	}
@@ -481,7 +481,7 @@ func TestSampleInterrupt_DeadActiveRowAfterFailedSettleIsNotCut(t *testing.T) {
 		t.Fatal(execErr)
 	}
 	router.CleanupThread("t1")
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	if active, ok, err := st.GetActiveTurn("t1"); err != nil || !ok || active.TurnIndex != 1 {
 		t.Fatalf("precondition: GetActiveTurn = %+v, %v, %v; want the unsettled turn 1", active, ok, err)
 	}

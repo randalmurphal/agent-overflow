@@ -122,6 +122,18 @@ func TestValidateGoldenErrorsNameOffendingElement(t *testing.T) {
 		{"predicate operator", func(r *ResolvedWorkflow) {
 			r.Workflow.Phases[2].Gate.Routes[0].When.Exists = "review.ok"
 		}, validBindings(), "predicate.operator", "phase \"review\" route 0 predicate"},
+		{"predicate empty in", func(r *ResolvedWorkflow) {
+			r.Workflow.Phases[2].Gate.Routes[0].When = &Predicate{In: &Membership{Ref: "review.ok"}}
+		}, validBindings(), "predicate.in", "phase \"review\" route 0 predicate"},
+		{"predicate malformed child of any", func(r *ResolvedWorkflow) {
+			r.Workflow.Phases[2].Gate.Routes[0].When = &Predicate{Any: []Predicate{
+				{Exists: "review.ok"},
+				{Exists: "review.ok", Eq: &Comparison{Ref: "review.ok", Value: true}},
+			}}
+		}, validBindings(), "predicate.operator", "phase \"review\" route 0 predicate"},
+		{"predicate malformed child of not", func(r *ResolvedWorkflow) {
+			r.Workflow.Phases[2].Gate.Routes[0].When = &Predicate{Not: &Predicate{}}
+		}, validBindings(), "predicate.operator", "phase \"review\" route 0 predicate"},
 		{"human approve", func(r *ResolvedWorkflow) {
 			r.Workflow.Phases[2].Gate.Routes[0] = Route{Human: &HumanRoute{Reject: &LoopTarget{Loop: "implement", Max: LiteralBound(1)}}}
 		}, validBindings(), "gate.human", "phase \"review\" route 0"},

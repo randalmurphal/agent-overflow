@@ -48,7 +48,7 @@ func TestCodexHandshakeAndScenarioTurn(t *testing.T) {
 	// No historyMode in the params: upstream's default is legacy, and the
 	// echo is what tells the app the thread it just got is NOT revertible.
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
-	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-42","historyMode":"legacy"}}}` {
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-42","historyMode":"legacy"},"approvalsReviewer":"user"}}` {
 		t.Fatalf("thread/start response = %q", got)
 	}
 
@@ -140,7 +140,7 @@ func TestCodexThreadResumeEchoesRequestedID(t *testing.T) {
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	p.expectLineContaining(`"id":1`, testTimeout)
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/resume","params":{"threadId":"resumed-7"}}`)
-	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"resumed-7","historyMode":"legacy"}}}` {
+	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"resumed-7","historyMode":"legacy"},"approvalsReviewer":"user"}}` {
 		t.Fatalf("thread/resume response = %q", got)
 	}
 
@@ -150,6 +150,51 @@ func TestCodexThreadResumeEchoesRequestedID(t *testing.T) {
 	started := p.expectLineContaining(`"method":"turn/started"`, testTimeout)
 	if !strings.Contains(started, `"threadId":"resumed-7"`) {
 		t.Fatalf("turn/started after resume = %q", started)
+	}
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
+// TestCodexEchoesTheApprovalsReviewer holds the mock to upstream's
+// non-Option response field: AO fails a session whose start or resume does
+// not echo the reviewer it asked for (verifyApprovalsReviewerEcho), so a
+// silent mock could never start a Codex thread in the auto runtime mode.
+func TestCodexEchoesTheApprovalsReviewer(t *testing.T) {
+	env := writeScenarioFile(t, codexScenario(), "")
+	p := startMock(t, []string{"app-server"}, env, t.TempDir())
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	p.expectLineContaining(`"id":1`, testTimeout)
+
+	reviewer := func(line string) string {
+		t.Helper()
+		var resp struct {
+			Result struct {
+				ApprovalsReviewer *string `json:"approvalsReviewer"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(line), &resp); err != nil || resp.Result.ApprovalsReviewer == nil {
+			t.Fatalf("response carries no approvalsReviewer (err %v): %q", err, line)
+		}
+		return *resp.Result.ApprovalsReviewer
+	}
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"approvalsReviewer":"auto_review"}}`)
+	if got := reviewer(p.expectLineContaining(`"id":2`, testTimeout)); got != "auto_review" {
+		t.Fatalf("thread/start asking for auto_review echoed %q", got)
+	}
+	// A resume of the loaded thread that names no reviewer keeps it.
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"thread/resume","params":{"threadId":"th-42"}}`)
+	if got := reviewer(p.expectLineContaining(`"id":3`, testTimeout)); got != "auto_review" {
+		t.Fatalf("resume of the loaded thread echoed %q, want its auto_review", got)
+	}
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"thread/resume","params":{"threadId":"th-42","approvalsReviewer":"user"}}`)
+	if got := reviewer(p.expectLineContaining(`"id":4`, testTimeout)); got != "user" {
+		t.Fatalf("resume asking for user echoed %q", got)
+	}
+	// A new thread that names none runs the config default.
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"thread/start","params":{"approvalsReviewer":"auto_review"}}`)
+	p.expectLineContaining(`"id":5`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":6,"method":"thread/start","params":{}}`)
+	if got := reviewer(p.expectLineContaining(`"id":6`, testTimeout)); got != "user" {
+		t.Fatalf("thread/start naming no reviewer echoed %q, want user", got)
 	}
 	p.closeStdinAndExpectExit(0, testTimeout)
 }

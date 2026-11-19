@@ -1,12 +1,41 @@
 import type { ProviderID } from './providers';
 import type { ReasoningEffort } from './settings';
 
+// Wire shapes re-exported so feature code does not import from the
+// generated bindings tree: what a delete removes with a thread
+// (GetDeleteDependents), whether Claude's and Codex's own memory is on
+// (GetNativeMemoryStatus, one ProviderMemory each), and what an archive or
+// a delete left undone (ArchiveThread, DeleteThread, DeleteProject).
+export type {
+  ArchiveThreadResult,
+  DeleteDependents,
+  DeleteThreadResult,
+  NativeMemoryStatus,
+  ProviderMemory,
+  WorkerFailure,
+} from '../../../bindings/agent-overflow/internal/app/models';
+
 export type RuntimeMode =
   | "read-only"
   | "approval-required"
   | "auto-accept-edits"
   | "auto"
   | "full-access";
+
+/** Where the sidebar shows a thread (`Thread.placement`). */
+export type ThreadPlacement = 'owned' | 'grouped' | 'standalone';
+
+/** The kinds of attention an agent can flag (store.AttentionDecision and the rest). */
+export type AttentionKind = 'decision' | 'review' | 'problem';
+
+/** The flag a thread's agent raised for the user (`Thread.attention`). */
+export interface ThreadAttention {
+  kind: AttentionKind;
+  /** The one-line reason the agent gave. */
+  reason: string;
+  /** Unix-ms when it was raised. */
+  at: number;
+}
 
 export interface Thread {
   /** Monotonic move ownership; absent on older hosts means zero. */
@@ -29,7 +58,7 @@ export interface Thread {
   branch?: string;
   /**
    * Canonical mode column.
-   * "chat" | "plan" | "discussion" | "terminal" plus the
+   * "chat" | "plan" | "terminal" plus the
    * workflow-owned modes and "scratch", which listing surfaces exclude by
    * mode. Optional in the TS layer so older fixtures omit it cleanly; new UI
    * code defaults to "chat" when missing. A "terminal" thread is a
@@ -42,7 +71,6 @@ export interface Thread {
   mode?:
     | "chat"
     | "plan"
-    | "discussion"
     | "terminal"
     | "scratch"
     | "workflow"
@@ -67,8 +95,6 @@ export interface Thread {
   // thread stubs from external callers don't have to set it. Consumers
   // that branch on the value MUST fall back to "full-access" when absent.
   runtimeMode?: RuntimeMode;
-  discussionId?: string;
-  parentThreadId?: string;
   forkedFromThreadId?: string;
   lastTokenUsage?: string;
   model: string;
@@ -81,6 +107,42 @@ export interface Thread {
    */
   latestTurnCompletedAt?: number;
   archived: boolean;
+  /** The assistant whose current thread this is; absent for any other thread. */
+  agentId?: string;
+  /** The assistant a handoff superseded this thread for; absent otherwise. */
+  pastAgentId?: string;
+  /** Unix ms when that handoff superseded it. */
+  agentSupersededAt?: number | null;
+  /**
+   * The assistant this thread is a helper of: one it spawned without a
+   * project, which lives under it outside every project
+   * (docs/specs/standing-agents.md ruling 38).
+   */
+  helperOfAgentId?: string;
+  /** On an assistant's current thread: it serves every project. */
+  agentAllProjects?: boolean;
+  /** On an assistant's current thread: the projects it serves, unless all. */
+  agentProjectIds?: string[];
+  /** The local thread whose thread_spawn made this one; absent when the user started it. */
+  spawnedByThreadId?: string;
+  /**
+   * The paired computer whose thread spawned this one as its worker, while
+   * that spawn's link stands; absent otherwise.
+   */
+  spawnedByComputerId?: string;
+  /**
+   * Where the sidebar shows the row (docs/specs/standing-agents.md ruling
+   * 36): nowhere while it is owned by the thread that spawned it, in
+   * `groupId`'s group, or as a plain row of its project. A row from a
+   * backend older than placement has none, and lists as standalone or
+   * grouped by its `groupId`.
+   */
+  placement?: ThreadPlacement | '';
+  /**
+   * The hidden copy an agent's thread_ask runs in: it takes no message
+   * from a person and cannot be kept, and it is deleted once it answers.
+   */
+  askCopy?: boolean;
   /**
    * Unix-ms timestamp of when the user last viewed the thread. New rows
    * start with a creation-time baseline; undefined means "never tracked"
@@ -89,6 +151,12 @@ export interface Thread {
    * persists 0.
    */
   lastReadAt?: number;
+  /**
+   * The attention flag the thread's agent raised (thread_attention), or
+   * absent. Pending while lastReadAt is before its `at`, as an unread
+   * completion is, so a read of the thread clears it.
+   */
+  attention?: ThreadAttention | null;
   /**
    * Unix-ms timestamp of when the user pinned the thread. Undefined /
    * null means unpinned. Pinned threads sort into front/back blocks above
@@ -150,9 +218,7 @@ export interface Thread {
   /**
    * FK into thread_groups. Set means the thread renders inside that named
    * sidebar group instead of at the project's top level. A grouped thread
-   * pins inside its group; entering or leaving a group clears the pin. Only
-   * a top-level node's value is read by the sidebar tree — a discussion
-   * child follows its root.
+   * pins inside its group; entering or leaving a group clears the pin.
    */
   groupId?: string;
 }

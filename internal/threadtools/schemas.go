@@ -12,10 +12,15 @@ import (
 // every result carries its own recovery hint in the result itself.
 //
 // Both shapes are built from the same code: shape.Paired() decides whether
-// the computer parameters exist at all. No tool is pairing-only, so no
-// tool ever appears or disappears; only the computer parameters do.
+// the computer parameters exist at all. No tool is pairing-only, so
+// pairing never adds or removes a tool; only the computer parameters
+// change. A shape removes thread_spawn for a session at the sub-thread
+// limit (SpawnShape.CanSpawn), and thread_watch and thread_new_assistant,
+// the assistants' own tools, while assistants are turned off.
 
-// ToolNames is the thirteen tools, in the order Tools returns them.
+// ToolNames is the seventeen tools, in the order Tools returns them; a
+// session at the sub-thread limit is listed all but thread_spawn, and one
+// with assistants off all but the last two.
 var ToolNames = []string{
 	"thread_search",
 	"thread_show",
@@ -30,16 +35,25 @@ var ToolNames = []string{
 	"thread_update",
 	"thread_group",
 	"thread_remind",
+	"thread_attention",
+	"thread_loop",
+	"thread_watch",
+	"thread_new_assistant",
 }
 
-// Tools returns the schemas for one shape.
+// Tools returns the schemas for one shape. A session at the sub-thread
+// limit has no thread_spawn at all.
 func (s *Server) Tools(shape Shape) []map[string]any {
-	return []map[string]any{
+	tools := []map[string]any{
 		searchSchema(shape),
 		showSchema(shape),
 		itemSchema(shape),
 		optionsSchema(shape),
-		spawnSchema(shape),
+	}
+	if shape.Spawn.CanSpawn() {
+		tools = append(tools, spawnSchema(shape))
+	}
+	tools = append(tools,
 		sendSchema(shape),
 		askSchema(shape),
 		replySchema(),
@@ -48,7 +62,13 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		updateSchema(shape),
 		groupSchema(shape),
 		remindSchema(),
+		attentionSchema(),
+		loopSchema(s.wakeFloor),
+	)
+	if shape.AssistantsOff {
+		return tools
 	}
+	return append(tools, watchSchema(s.wakeFloor), newAssistantSchema())
 }
 
 func tool(name, description string, properties map[string]any, required ...string) map[string]any {
@@ -90,7 +110,7 @@ func waitProperties(properties map[string]any, defaultWait int, what string) {
 	properties["notify"] = map[string]any{
 		"type":        "boolean",
 		"default":     false,
-		"description": "Deliver the outcome as a message in this thread if this call did not carry it, including the other thread's last message when it ends its turn without replying. A thread_reply is delivered whether or not this is set. Any positive wait that ends unsettled turns this on by itself; set it with wait_seconds 0 for fire-and-forget work whose outcome you still want.",
+		"description": "Deliver the outcome as a message in this thread if this call did not carry it, including the other thread's last message when it ends without replying: a thread you spawned ends once nothing it started is still running. A thread_reply is delivered whether or not this is set. Any positive wait that ends unsettled turns this on by itself; set it with wait_seconds 0 for fire-and-forget work whose outcome you still want.",
 	}
 }
 
@@ -118,6 +138,7 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"archived":      map[string]any{"type": "boolean", "description": "true lists only archived threads, false only unarchived ones. Omitted, a query searches both and a listing shows unarchived threads only, as the sidebar does."},
 		"spawned_by_me": map[string]any{"type": "boolean", "description": "Only threads this thread spawned, forks included. A thread it merely sent to or asked is not listed; thread_status lists those requests."},
+		"agents":        map[string]any{"type": "boolean", "description": "Only assistants' current threads. Each row's assistant gives the assistant's id, its name (suffixed -<computer> where two computers in the result have an assistant of that name) and its role line, and the row carries its current thread and computer."},
 		"group":         map[string]any{"type": "string", "description": "Only threads filed in this sidebar group, by its name (case-insensitive, every project's group of that name) or its id. A computer with no such group refuses the search rather than answering with no threads."},
 		"since":         map[string]any{"type": "string", "description": "RFC 3339 timestamp with an offset. Only threads active since then."},
 		"limit": map[string]any{
@@ -128,7 +149,12 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_search result, passed back unchanged to continue past limit. Omit to start over."},
 	}
-	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
+	assistant := "assistant on an assistant's current thread (its id, name and role line), "
+	if shape.AssistantsOff {
+		delete(properties, "agents")
+		assistant = ""
+	}
+	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), " + assistant + "self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
 	if shape.Paired() {
 		properties["computers"] = map[string]any{
 			"type":        "array",

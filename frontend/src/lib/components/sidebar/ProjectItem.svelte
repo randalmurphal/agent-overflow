@@ -28,6 +28,7 @@
   } from '../../stores/sidebar.svelte';
   import {
     getEffectiveThreadStatus,
+    getThreadWaitingOn,
   } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -36,6 +37,7 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Plus from '@lucide/svelte/icons/plus';
+  import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
@@ -138,6 +140,7 @@
     const tree = buildSidebarThreadTree({
       threads,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
+      waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
     });
     return rollupDisplayStatus(tree);
@@ -146,8 +149,8 @@
   // When collapsed, find the active-thread row (if any) so we render
   // it inline beneath the project row. We do a flat `find` rather than
   // walking the tree because we render the row at indent=1 regardless
-  // of where it sits in the discussion hierarchy — keeps the inline
-  // pin from looking like a "floating indented row".
+  // of whether it sits in a group — keeps the inline pin from looking
+  // like a "floating indented row".
   let activeWhenCollapsed = $derived.by<Thread | null>(() => {
     if (expanded) return null;
     const activeId = pane?.threadId;
@@ -511,7 +514,7 @@
       project, so expanding the project does not move the row.
     -->
     <div class="flex flex-col gap-px ml-4 border-l border-border-subtle/60" data-testid="project-item-active-pin">
-      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} pinnable={!activeWhenCollapsed.parentThreadId} />
+      <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} />
     </div>
   {/if}
 
@@ -529,6 +532,7 @@
   {project}
   labelText={formatPathLabel(label)}
   onNewThread={() => onNewThread?.(project.project.id, { openInNewPane: false })}
+  onNewAssistant={() => openNewAssistantDialog({ projectId: project.project.id, targetPane: pane })}
   onNewTerminal={() => onNewTerminal?.(project.project.id)}
   anchor={headerEl}
   open={contextMenuOpen}

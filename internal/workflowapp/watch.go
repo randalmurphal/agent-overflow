@@ -11,7 +11,12 @@ import (
 	"agent-overflow/internal/workflowwatch"
 )
 
-const maxWorkflowWatchHold = 25 * time.Second
+// MaxWatchHold bounds one blocked watch. A longer tool wait is a series of
+// watches, each ending early when the caller's context does. It sits under
+// transport.DefaultMethodBudget on purpose: the client must be the one still
+// waiting when the server answers, never the other way round, or every quiet
+// minute would look like a dead backend.
+const MaxWatchHold = 25 * time.Second
 
 // WatchRun long-polls the injected transition ring while reading current state
 // and persisted causes from SQLite.
@@ -62,8 +67,8 @@ func (s *Service) WatchRun(ctx context.Context, input WatchInput) (WatchResult, 
 }
 
 func workflowWatchHold(requested int64) time.Duration {
-	if requested <= 0 || time.Duration(requested)*time.Millisecond > maxWorkflowWatchHold {
-		return maxWorkflowWatchHold
+	if requested <= 0 || time.Duration(requested)*time.Millisecond > MaxWatchHold {
+		return MaxWatchHold
 	}
 	return time.Duration(requested) * time.Millisecond
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -113,7 +114,7 @@ func TestProviderSmokeClaudeCrossDrainMergeFold(t *testing.T) {
 	}
 
 	survivor := waitProviderSmokeFold(t, ctx, app, collector, thread.ID, rowA.ID, rowB.ID)
-	if want := textA + usermessage.JoinSeparator + textB; survivor.Summary != want {
+	if want := textA + agentmeta.JoinSeparator + textB; survivor.Summary != want {
 		t.Fatalf("survivor summary = %q, want %q", survivor.Summary, want)
 	}
 	meta, err := usermessage.FromItem(survivor)

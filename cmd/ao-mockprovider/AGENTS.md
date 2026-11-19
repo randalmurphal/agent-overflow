@@ -44,6 +44,13 @@ control channel aligned with verified provider behavior.
   kill frames the CLI writes for them. A scenario announces a task the way
   the CLI does (level set, `task_started`, the async ack) and never scripts
   the kill an interrupt causes.
+- The Codex adapter follows the unified-exec terminals the process announced
+  off the frames it wrote (`codex_terminals.go`) and answers
+  `thread/backgroundTerminals/list`, `terminate` and `clean` with the
+  captured responses and kill frames. A scenario announces a terminal with its
+  `item/started` and never scripts the kill. `clean` writes its kill frames in
+  the order the terminals started; upstream drains a hash map, so the real
+  order is unspecified.
 - Scope completion and buffered advances to a turn. An advance must never cross
   into the next turn; interruption discards remaining steps and advances.
 - Claude emits `system/init` and replay user echo once per received user turn.
@@ -68,6 +75,19 @@ control channel aligned with verified provider behavior.
   depends on that ID.
 - Answer Codex `thread/inject_items` for the loaded thread only, and report
   its message items as `injected_items` before the answer.
+- Run the SessionStart hooks of Claude's `--settings` and of Codex's
+  `config.hooks` where each CLI runs them (`session_start_hooks.go`): Claude
+  before a process's first init, with source `startup`, `resume` or `fork`
+  from its launch flags, and before a scenario's `compact_boundary`; Codex
+  at the turn start after `thread/start` or `thread/resume` and right after
+  a scenario's compaction, and only hooks whose trust hash matches. Run
+  their UserPromptSubmit hooks for each prompt: Claude after init for each
+  user envelope, a held one included; Codex at each turn start after the
+  SessionStart hooks, and for each steer. Report each run as
+  `session_start_context`, a prompt's with source `prompt`, before the
+  frames of its outcome (`hook_response`, `hook/completed`), and run none
+  under the scenario's `sessionStartHooksOff`. A scenario writes the turn
+  start and the compaction and never scripts the hook frames.
 - Unknown JSON-RPC methods return `-32601`. Implement real minimal responses for
   methods used during ordinary startup; optional unsupported methods stay
   unsupported so fallback paths remain exercised.
@@ -80,7 +100,10 @@ control channel aligned with verified provider behavior.
   and reported as `mcp_result`, never as a scenario failure. `mcpList`
   runs the same session's `tools/list` and reports `mcp_tools`, writing
   no wire frame: a CLI reads a tool list at handshake, off the
-  transcript.
+  transcript. A call without `toolUseId` is numbered per process
+  (`mcp-<turn>-<seq>`), so a test that calls tools from two processes of
+  one thread gives the later calls their own `toolUseId`; otherwise a
+  repeated id overwrites the earlier call's timeline row.
 - A `capture` step binds a `${VAR}` from a regex over already-spellable
   text, for the rest of the process, so a scenario can name a value the
   app minted after the scenario was installed. A pattern that matches

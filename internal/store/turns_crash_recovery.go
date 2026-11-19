@@ -23,8 +23,12 @@ type CrashedTurn struct {
 // leftover, because every in-app session death already settles its row
 // via triage's synthesized truncated turn-complete.
 //
-// The settle mirrors what that synthesized turn-complete writes:
-// completed_at=now, stop_reason='interrupted'. The item flip mirrors
+// The settle writes what that synthesized turn-complete would have,
+// stop_reason='interrupted', with completed_at at the last activity the
+// turn recorded (crashedTurnEndSQL), not now: the time the app was down
+// is no part of the turn, so neither the thread's runtime (turn_ms, added
+// through tallyTurnSpanTx as every turn end is) nor the sidebar's order,
+// which reads completed_at, takes it. The item flip mirrors
 // triage's flipTurnItemsErrored: summarise rewrites each flipped
 // row's summary (callers pass the idempotent " — interrupted" suffix
 // convention) and backgrounded tool_call launches are exempt
@@ -69,7 +73,7 @@ func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]C
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT thread_id, turn_index FROM turns
+		`SELECT thread_id, turn_index, turn_id FROM turns
 		  WHERE completed_at IS NULL
 		  ORDER BY thread_id, turn_index`,
 	)
@@ -77,13 +81,16 @@ func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]C
 		return nil, fmt.Errorf("store: crashed-turn select: %w", err)
 	}
 	var crashed []CrashedTurn
+	var turnIDs []string
 	for rows.Next() {
 		var c CrashedTurn
-		if err := rows.Scan(&c.ThreadID, &c.TurnIndex); err != nil {
+		var turnID string
+		if err := rows.Scan(&c.ThreadID, &c.TurnIndex, &turnID); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("store: crashed-turn scan: %w", err)
 		}
 		crashed = append(crashed, c)
+		turnIDs = append(turnIDs, turnID)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -98,15 +105,15 @@ func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]C
 		return nil, nil
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE turns
-		    SET completed_at = ?, stop_reason = 'interrupted'
-		  WHERE completed_at IS NULL`,
-		now,
-	); err != nil {
-		return nil, fmt.Errorf("store: crashed-turn settle: %w", err)
+	for i, c := range crashed {
+		if err := tallyTurnSpanTx(tx, turnIDs[i], func() error {
+			_, err := tx.Exec(`UPDATE turns SET completed_at = `+crashedTurnEndSQL+`, stop_reason = 'interrupted'
+				  WHERE turn_id = ?2 AND completed_at IS NULL`, now, turnIDs[i])
+			return err
+		}); err != nil {
+			return nil, fmt.Errorf("store: crashed-turn settle %s/%d: %w", c.ThreadID, c.TurnIndex, err)
+		}
 	}
-
 	for _, c := range crashed {
 		if err := s.flipCrashedTurnItemsTx(tx, c, summarise, now); err != nil {
 			return nil, err
@@ -118,6 +125,13 @@ func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]C
 	}
 	return crashed, nil
 }
+
+// crashedTurnEndSQL is when a crashed turn ended, in an UPDATE of its
+// turns row with now as ?1: the last time one of its items was written,
+// before the sweep flips them, no earlier than its start and no later
+// than now.
+const crashedTurnEndSQL = `MIN(?1, MAX(started_at, COALESCE((SELECT MAX(MAX(i.created_at, i.updated_at)) FROM items i
+	  WHERE i.thread_id = turns.thread_id AND i.turn_index = turns.turn_index), 0)))`
 
 // flipCrashedTurnItemsTx flips one crashed turn's streaming/running
 // items to errored inside the recovery transaction: no live process can

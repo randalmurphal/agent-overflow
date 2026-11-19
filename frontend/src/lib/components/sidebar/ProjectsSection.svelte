@@ -1,9 +1,13 @@
 <script lang="ts">
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
-  // Section header + project list. Owns the "Add project" modal open state
-  // and the sort-direction toggle. Search-driven filtering happens here so
-  // the list only sees projects that match the current query (with their
-  // matching threads).
+  // The sidebar's two sections, Assistants above Projects, in one scroll
+  // area: the Projects header and list here, the Assistants section
+  // (AssistantsSection) fed from the same bucketing, absent while no
+  // computer this window shows has assistants on, and without the rows of
+  // a computer that has them off (hiddenAssistantThread). Owns the "Add project"
+  // modal open state and the sort-direction toggle. Search-driven
+  // filtering happens here so each section only sees what matches the
+  // current query.
 
   import { onDestroy } from 'svelte';
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
@@ -20,7 +24,9 @@
     expandProject,
     collapseProject,
     isProjectExpanded,
+    isSidebarSectionShown,
     getProjectSortMode,
+    setSidebarSectionExpanded,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
@@ -40,24 +46,26 @@
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
-  import { sidebarBackendVisible, sidebarDeviceFilterActive } from '../../stores/sidebarDevices.svelte';
+  import { sidebarBackendVisible, sidebarDeviceFilterActive, sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
   import { projectBackend } from '../../transport/entityIndex';
   import {
     backendDisplayName,
     getAttachedBackends,
     hasMultipleBackends,
-    threadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { catalogLoadState } from '../../stores/catalogLoad.svelte';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
-  import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
+  import { bucketSidebarThreads } from './sidebarBuckets';
   import type {
     ProjectNewThreadHandler,
     ProjectNewTerminalHandler,
   } from './projectNewThread';
   import ProjectSortMenu from './ProjectSortMenu.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
+  import AssistantsSection from './AssistantsSection.svelte';
+  import { anyAssistantsOn, hiddenAssistantThread } from '../../stores/assistants.svelte';
+  import SidebarSectionToggle from './SidebarSectionToggle.svelte';
 
   interface Props {
     pane: ThreadPane | null;
@@ -77,74 +85,42 @@
 
   // Threads and groups bucketed by sidebar ENTRY (a repo checked out on
   // two attached machines is one entry, and both machines' rows sit under
-  // it), both filtered by the search query in ONE pass because the two
-  // filters are coupled: a group whose NAME matches shows all of its
-  // members, including the ones the thread filter would have dropped, so
-  // the thread bucket cannot be computed without knowing which group
-  // names matched.
-  //
-  // Project-less threads (no projectId) have no sidebar surface and are
-  // skipped. A group that neither matches by name nor holds a surviving
-  // member is dropped, so search never leaves an empty container behind.
+  // it), filtered by the search query, with the assistants' rows apart
+  // (bucketSidebarThreads).
   //
   // Both maps are re-minted per derivation, and the ROWS inside them are
   // stable references. A bucket whose rows did not change keeps its array,
   // so a thread change rebuilds only its own project's tree; the identity
-  // cutoffs downstream (visibleProjects here, sameSidebarVisibleNodes in
-  // ProjectThreadList) keep a streaming beat off the DOM.
+  // cutoffs downstream (visibleProjects here, sameSidebarVisibleRows in
+  // SidebarTreeList) keep a streaming beat off the DOM. The assistants'
+  // rows keep their array the same way, so a project thread's change does
+  // not rebuild the Assistants section's tree.
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
+  let previousAssistantLists: ReadonlyMap<'assistants', Thread[]> = new Map();
   let searchBuckets = $derived.by(() => {
-    const groups = getThreadGroups();
     const filterDevices = sidebarDeviceFilterActive();
-    const nameMatchedGroupIds = new Set<string>();
-    if (query) {
-      for (const group of groups) {
-        if (threadGroupMatchesQuery(group, query)) nameMatchedGroupIds.add(group.id);
-      }
-    }
-
-    const threadsByProject = new Map<string, Thread[]>();
-    const populatedGroupIds = new Set<string>();
-    for (const t of getThreads()) {
-      if (t.archived || (filterDevices && !sidebarBackendVisible(threadMachine(t.id, t.projectId)))) continue;
-      const key = t.projectId ? entryIdFor(t.projectId) : '';
-      if (!key) continue;
-      const groupId = t.groupId ?? '';
-      // A name-matched group brings its whole membership back. The
-      // empty-query call is the "is this row eligible at all" test — it
-      // still excludes workflow-owned modes.
-      const matches = threadMatchesQuery(t, query)
-        || (groupId !== '' && nameMatchedGroupIds.has(groupId) && threadMatchesQuery(t, ''));
-      if (!matches) continue;
-      if (groupId !== '') populatedGroupIds.add(groupId);
-      const bucket = threadsByProject.get(key);
-      if (bucket) bucket.push(t);
-      else threadsByProject.set(key, [t]);
-    }
-
-    const groupsByProject = new Map<string, ThreadGroup[]>();
-    for (const group of groups) {
-      if (!group.projectId) continue;
-      if (filterDevices && !populatedGroupIds.has(group.id)) continue;
-      if (query && !nameMatchedGroupIds.has(group.id) && !populatedGroupIds.has(group.id)) {
-        continue;
-      }
-      // Keyed by ENTRY, like the thread buckets: ProjectList looks both
-      // up under the entry's representative id, so a member project's
-      // groups have to land there or they vanish from a merged entry.
-      const key = entryIdFor(group.projectId);
-      const bucket = groupsByProject.get(key);
-      if (bucket) bucket.push(group);
-      else groupsByProject.set(key, [group]);
-    }
-    previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, threadsByProject);
-    previousGroupBuckets = reuseUnchangedBuckets(previousGroupBuckets, groupsByProject);
-    return { threadsByProject, groupsByProject };
+    const buckets = bucketSidebarThreads({
+      threads: getThreads(),
+      groups: getThreadGroups(),
+      query,
+      entryOf: entryIdFor,
+      threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread),
+      filterDevices,
+    });
+    previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, buckets.threadsByProject);
+    previousGroupBuckets = reuseUnchangedBuckets(previousGroupBuckets, buckets.groupsByProject);
+    previousAssistantLists = reuseUnchangedBuckets(previousAssistantLists, new Map([['assistants', buckets.assistants] as const]));
+    return {
+      ...buckets,
+      assistants: previousAssistantLists.get('assistants') ?? buckets.assistants,
+    };
   });
 
   let threadsByProject = $derived(searchBuckets.threadsByProject);
   let groupsByProject = $derived(searchBuckets.groupsByProject);
+  let assistants = $derived(searchBuckets.assistants);
+  let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
   // Visible computers whose threads or projects have not loaded, each with
   // a status row. While any remains, what the list shows is incomplete, so
@@ -339,6 +315,9 @@
   // component and writing to $state in an orphaned reactivity scope.
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
   function flashProject(id: string): void {
+    // The added or duplicate project is brought into view: a folded
+    // Projects section unfolds, and so does its row.
+    setSidebarSectionExpanded('projects', true);
     expandProject(id);
     flashProjectId = id;
     if (flashTimer) clearTimeout(flashTimer);
@@ -354,69 +333,78 @@
   });
 </script>
 
-<section
-  class="flex flex-col min-h-0 flex-1"
-  aria-label="Projects"
-  data-testid="sidebar-projects-section"
->
-  <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
-    <h2 class="flex-1 min-w-0"><SidebarDeviceFilter /></h2>
-    <ProjectSortMenu />
-    <IconButton
-      label="Import Sessions"
-      title={importUngranted ? 'Not granted to this device' : undefined}
-      size="sm"
-      disabled={importUngranted}
-      onClick={() => openSessionImport()}
-    >
-      {#snippet children()}
-        <span data-testid="sidebar-import-sessions-icon" class="flex items-center">
-          <Icon icon={History} size={13} strokeWidth={2} class="opacity-80" />
-        </span>
-      {/snippet}
-    </IconButton>
-    <IconButton
-      label="Add Project"
-      size="sm"
-      onClick={handleAddClick}
-    >
-      {#snippet children()}
-        <span data-testid="sidebar-add-project-icon" class="flex items-center">
-          <Icon icon={Plus} size={14} strokeWidth={2.2} class="opacity-80" />
-        </span>
-      {/snippet}
-    </IconButton>
-  </header>
-
-  <!--
-    ProjectList itself doesn't scroll (it dropped its own overflow); this
-    wrapper owns the scroll.
-  -->
-  <div
-    class="flex-1 min-h-0 overflow-y-auto"
-    data-flashing-project={flashProjectId}
+<!--
+  One scroll area for both sections: the Assistants section above, then
+  the Projects header and list. ProjectList itself doesn't scroll.
+-->
+<div class="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-sections">
+  {#if anyAssistantsOn()}
+    <AssistantsSection
+      {assistants}
+      {pane}
+      searching={query !== ''}
+    />
+  {/if}
+  <section
+    class="flex flex-col"
+    aria-label="Projects"
+    data-testid="sidebar-projects-section"
   >
-    {#if pendingCatalogs.length > 0}
-      <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
-        {#each pendingCatalogs as pending (pending.backend)}
-          <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
-        {/each}
+    <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
+      <SidebarSectionToggle section="projects" label="Projects" shown={projectsShown} />
+      <h2 class="flex-1 min-w-0"><SidebarDeviceFilter /></h2>
+      <ProjectSortMenu />
+      <IconButton
+        label="Import Sessions"
+        title={importUngranted ? 'Not granted to this device' : undefined}
+        size="sm"
+        disabled={importUngranted}
+        onClick={() => openSessionImport()}
+      >
+        {#snippet children()}
+          <span data-testid="sidebar-import-sessions-icon" class="flex items-center">
+            <Icon icon={History} size={13} strokeWidth={2} class="opacity-80" />
+          </span>
+        {/snippet}
+      </IconButton>
+      <IconButton
+        label="Add Project"
+        size="sm"
+        onClick={handleAddClick}
+      >
+        {#snippet children()}
+          <span data-testid="sidebar-add-project-icon" class="flex items-center">
+            <Icon icon={Plus} size={14} strokeWidth={2.2} class="opacity-80" />
+          </span>
+        {/snippet}
+      </IconButton>
+    </header>
+
+    {#if projectsShown}
+      <div data-flashing-project={flashProjectId}>
+        {#if pendingCatalogs.length > 0}
+          <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
+            {#each pendingCatalogs as pending (pending.backend)}
+              <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
+            {/each}
+          </div>
+        {/if}
+        {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
+          <ProjectList
+            projects={visibleProjects}
+            emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
+            {threadsByProject}
+            {groupsByProject}
+            {pane}
+            onNewThread={handleNewThread}
+            onNewTerminal={handleNewTerminal}
+            onReorder={handleReorder}
+          />
+        {/if}
       </div>
     {/if}
-    {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
-      <ProjectList
-        projects={visibleProjects}
-        emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
-        {threadsByProject}
-        {groupsByProject}
-        {pane}
-        onNewThread={handleNewThread}
-        onNewTerminal={handleNewTerminal}
-        onReorder={handleReorder}
-      />
-    {/if}
-  </div>
-</section>
+  </section>
+</div>
 
 <AddProjectModal
   open={addProjectOpen}

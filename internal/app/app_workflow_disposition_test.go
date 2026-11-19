@@ -553,7 +553,7 @@ func newDiscardFixture(t *testing.T, itemID string) *discardFixture {
 	// flow's contract, not incidental.
 	app.testEmitHook = bus.emit
 	// startWorkflowEngineForTest, not a bare initWorkflowEngine: engine startup
-	// also arms the §11 scheduler, and only this helper stops it again.
+	// also arms the self-resume timers, and only this helper closes the engine.
 	startWorkflowEngineForTest(t, app, t.TempDir())
 	repo := initMainGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)

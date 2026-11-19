@@ -63,6 +63,10 @@ type RunView struct {
 	Phases              []PhaseAttempt
 	Budget              *Budget
 	PendingGuidance     int
+	// WatchCursor is the watch ring head RunStatus read before the run: a
+	// transition of the run after it came after this view, so a rest the
+	// view shows is named by it as a watch names one (ReturnedRest).
+	WatchCursor int64
 }
 
 type RunOutputs struct {

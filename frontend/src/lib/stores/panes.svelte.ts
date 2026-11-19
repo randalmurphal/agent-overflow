@@ -280,6 +280,19 @@ export function getFocusedPaneOrNull(): ThreadPane | null {
   return threadPaneId ? panes.get(threadPaneId) ?? null : null;
 }
 
+/** Why an open that awaited something is refused: its pane moved on. */
+export const PANE_MOVED_ON = 'The pane moved on before the thread opened.';
+
+/**
+ * A check, made now, that `pane` is still registered and still shows the
+ * thread it shows now. An open that awaits a read before it places the
+ * thread asks it after, so the thread lands only where the click was made.
+ */
+export function paneUnchanged(pane: ThreadPane): () => boolean {
+  const threadId = pane.thread?.id ?? null;
+  return () => panes.get(pane.paneId) === pane && (pane.thread?.id ?? null) === threadId;
+}
+
 /** `getFocusedPaneOrNull()`'s pane id, without requiring the pane object. */
 export function getFocusedThreadPaneId(): string | null {
   return resolveThreadPaneId(focusedPaneId);
@@ -689,7 +702,7 @@ async function replaceThreadInPane(
   if (!requested) {
     throw new Error(`Target pane "${targetPane}" is not registered.`);
   }
-  const target = threadHostPane(requested);
+  const target = mountOptions.inPlace ? requested : threadHostPane(requested);
   reportDuplicateMount(thread.id, target.paneId);
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
@@ -786,6 +799,12 @@ export interface MountThreadOptions {
    * look at.
    */
   background?: boolean;
+  /**
+   * Mount into the target pane even when it is a companion already holding
+   * a thread, which otherwise sends the open to its source pane
+   * (`threadHostPane`). The agent thread companion's swap to another row.
+   */
+  inPlace?: boolean;
 }
 
 /**
@@ -840,6 +859,26 @@ export async function openThreadFromNavigation(
   targetPane?: string | ThreadPane | null,
 ): Promise<ThreadPane> {
   return mountThreadInPane(thread, targetPane, 'preview');
+}
+
+/**
+ * Move every pane showing an assistant's superseded thread to its current
+ * thread: a handoff from this client or another, or the app's own after the
+ * provider cleaned up the session (docs/specs/standing-agents.md, "Next
+ * thread"). A pane closes instead when the current thread is already shown,
+ * since a thread is in one pane at a time. Focus stays where it is.
+ */
+export function moveAssistantPanes(oldThreadId: string, current: Thread): void {
+  for (const pane of panesShowingThread(oldThreadId)) {
+    if (findPaneShowingThread(current.id)) {
+      destroyPane(pane.paneId);
+      continue;
+    }
+    void replaceThreadInPane(current, pane, getPaneActivation(pane.paneId), { background: true, inPlace: true }).catch((err: unknown) => {
+      console.error('Failed to move a pane to the assistant\'s new thread:', err);
+      pane.setGeneralError('This assistant moved to a new thread, which could not be opened here.', err);
+    });
+  }
 }
 
 export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {
@@ -915,8 +954,8 @@ export function moveFocusedPane(direction: -1 | 1): void {
  *
  * Use anywhere a binding response or local mutation produces a fresh
  * Thread that should be visible everywhere — model change, agent-mode
- * toggle, plan-comments-sent, branch switch, env change, discussion
- * start, worktree remove, etc.
+ * toggle, plan-comments-sent, branch switch, env change, worktree
+ * remove, etc.
  *
  * Replaces the dual-write `pane.replaceThread(t); replaceThread(t);`
  * pattern that was scattered across ~13 call sites. Forgetting one

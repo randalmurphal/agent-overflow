@@ -9,10 +9,11 @@ import (
 
 // restoreQueuedDraft returns undelivered messages to the composer: parts
 // merged ahead of what it holds, and everything else restore names (the
-// queue rows to delete, the rows to take back, the send ids whose wakes now
-// read as delivered to the draft) in one store transaction. A failure
-// changes nothing. Every path that returns a queued or in-flight message to
-// the composer goes through here; restore's Expected and Merged are set here.
+// queue rows to delete, the rows to take back) in one store transaction. A
+// failure changes nothing. Every path that returns a queued or in-flight
+// message to the composer goes through here; restore's Expected and Merged
+// are set here. Parts are the person's text only: what the app wrote never
+// enters the composer (agentPartsNotTakenIn).
 func (a *App) restoreQueuedDraft(threadID string, parts []composerdraft.Part, restore store.QueueDraftRestore) error {
 	current, _, err := a.store.GetThreadDraft(threadID)
 	if err != nil {

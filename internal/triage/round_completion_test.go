@@ -3,6 +3,7 @@ package triage
 import (
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -111,10 +112,8 @@ func TestUnreadableTurnCompleteStillEndsItsRound(t *testing.T) {
 	}
 }
 
-// A round the dying session opens after cleanup synthesized its truncated
-// complete is ended by the cleanup too, without counting as activity: no
-// turns row settles for it.
-func TestCleanupEndsARoundOpenedAfterItsSynthesizedComplete(t *testing.T) {
+// A frame delivered during cleanup cannot reopen the turn just settled.
+func TestCleanupRefusesAFrameAfterItsSynthesizedComplete(t *testing.T) {
 	st := storetest.Clone(t)
 	createTestThread(t, st, "t1")
 	emissions := &emissionLog{}
@@ -125,8 +124,7 @@ func TestCleanupEndsARoundOpenedAfterItsSynthesizedComplete(t *testing.T) {
 	)
 	router = NewRouter(st, func(channel eventchan.Channel, data any) {
 		emissions.add(emitted{channel.String(), data})
-		// The synthesized complete is the first completion; a frame the
-		// session delivered before its stopped flag opens a new round.
+		// Deliver the dying session’s next frame from the completion callback.
 		if channel == eventchan.ProviderTurnCompleted {
 			reopenOnce.Do(func() {
 				reopenErr = router.Handle(provider.ProviderEvent{Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now()})
@@ -144,13 +142,47 @@ func TestCleanupEndsARoundOpenedAfterItsSynthesizedComplete(t *testing.T) {
 		t.Fatal(reopenErr)
 	}
 	open, completed := roundEnds(t, emissions.snapshot())
-	if len(completed) != 2 {
-		t.Fatalf("completions = %d, want the synthesized one and the stranded round's", len(completed))
+	if len(completed) != 1 {
+		t.Fatalf("completions = %d, want one settled turn", len(completed))
 	}
 	if len(open) != 0 {
 		t.Fatalf("rounds left open after cleanup: %v", open)
 	}
-	if completed[1].CountsAsActivity {
-		t.Fatal("stranded round's completion counts as activity")
+	if turn, active, err := st.GetActiveTurn("t1"); err != nil || active {
+		t.Fatalf("stopped worker has active turn %v (%v, %v)", turn.TurnID, active, err)
 	}
+}
+
+func TestCleanupWaitsForAnAdmittedTurnOpening(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := NewRouter(nil, nil)
+		evt := provider.ProviderEvent{ThreadID: "worker"}
+		started, published := r.beginTurnStart(evt)
+		started()
+		done := make(chan bool, 1)
+		go func() { done <- r.closeTurnAdmission(evt.ThreadID, nil) }()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("cleanup proceeded before the admitted turn was published")
+		default:
+		}
+		if later, finish := r.beginTurnStart(evt); later != nil {
+			later()
+			finish()
+			t.Error("a second turn opened during cleanup")
+		}
+		published()
+		if !<-done {
+			t.Fatal("cleanup abandoned the same session")
+		}
+		r.MarkThreadActive(evt.ThreadID, "replacement")
+		evt.SessionToken = "replacement"
+		next, finish := r.beginTurnStart(evt)
+		if next == nil {
+			t.Fatal("replacement remained closed to new turns")
+		}
+		next()
+		finish()
+	})
 }

@@ -23,7 +23,7 @@ the provider process owns turn state.
 
 - `session_ref` on `threads` records the provider-side session file path
   (`~/.claude/...` or `~/.codex/...`). This is what resume feeds back in.
-- Fork creates a new thread row; `parent_thread_id` records the lineage.
+- Fork creates a new thread row; `forked_from_thread_id` records the lineage.
   Codex has a native `thread/fork` method. It reads the source out of the
   thread store but loads the CHILD into the app-server that answered, with
   the child's writer lock, until that process exits. A fork cut on the
@@ -95,6 +95,11 @@ provider stdout → Go parses → emits approval-request event (with request_id)
 ```
 
 Both providers use the same frontend shape (`ApprovalRequest` with `kind`).
+Triage stamps each prompt with an opaque `occurrence`, on the live event and
+on the pending snapshot a pane hydrates from, because a provider can ask again
+under a request id it used before. The answer echoes it, so it reaches only the
+prompt the screen showed; an answer without one, from an older client, answers
+the prompt open under the request id.
 Provider-specific adaptation (`CanUseTool` vs Codex sandbox/approval policies)
 stays inside the provider package.
 

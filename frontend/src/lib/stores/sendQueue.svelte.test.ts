@@ -14,10 +14,12 @@ import {
   getQueueForThread,
   hasQueueItems,
   markItemsFlushed,
+  personPendingMessages,
   removeRestoredQueueItems,
   replaceFlushedForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
+  settleFlushed,
   type QueueItem,
 } from './sendQueue.svelte';
 
@@ -63,6 +65,31 @@ describe('sendQueue store', () => {
       expect(getQueueForThread('t1')).toHaveLength(1);
       expect(getQueueForThread('t2')).toHaveLength(1);
     });
+  });
+
+  it('recalls only the person\'s pending messages, sent ones first', () => {
+    markItemsFlushed('t1', [
+      { queueItemId: 'q:mine', userItemId: 'u:mine', message: 'mine, sent' },
+      { queueItemId: 'q:wake', userItemId: 'u:wake', message: 'a wake', agentMessage: true },
+    ]);
+    replaceQueueForThread('t1', [
+      makeItem({ threadId: 't1', message: 'a request', id: 'q:req' }),
+      makeItem({ threadId: 't1', message: 'mine, queued', id: 'q:q' }),
+    ].map((item, index) => (index === 0 ? { ...item, agentMessage: true } : item)));
+    expect(personPendingMessages('t1')).toEqual(['mine, sent', 'mine, queued']);
+    expect(personPendingMessages(null)).toEqual([]);
+  });
+
+  it('settles a flushed agent message with the person\'s, keeping it out of the person\'s messages', () => {
+    const mark = (sequence: number) => ({ backend: 'home', launchId: 'launch-1', sequence });
+    markItemsFlushed('t1', [{ queueItemId: 'q:wake', userItemId: 'u:wake', message: 'a wake', agentMessage: true }], mark(1));
+    markItemsFlushed('t1', [{ queueItemId: 'q:mine', userItemId: 'u:mine', message: 'mine' }], mark(2));
+    expect(getFlushedForThread('t1')[0]).toMatchObject({ agentMessage: true, flushMark: mark(1) });
+    expect(personPendingMessages('t1')).toEqual(['mine']);
+    settleFlushed('t1', mark(1), false);
+    expect(getFlushedForThread('t1').map((entry) => entry.userItemId)).toEqual(['u:mine']);
+    settleFlushed('t1', mark(2), false);
+    expect(getFlushedForThread('t1')).toEqual([]);
   });
 
   describe('Zone 2 (flushed)', () => {
@@ -446,6 +473,12 @@ describe('pending submission visibility', () => {
     markQueuedItemConsumed(makeChatItem({ id: 'user:flush:1', threadId: 't1', kind: 'user_text', summary: 'accepted', meta: JSON.stringify({ sendId: options.sendId }) }));
     expect(getQueueForThread('t1')).toEqual([]);
     expect(getFlushedForThread('t1')).toHaveLength(1);
+  });
+
+  it('an echo that consumes an agent\'s queued message keeps it an agent\'s', () => {
+    replaceQueueForThread('t1', [{ ...makeItem({ threadId: 't1', message: 'a wake' }), sendId: 'thread-wake:k', agentMessage: true }]);
+    markQueuedItemConsumed(makeChatItem({ id: 'user:wake', threadId: 't1', kind: 'user_text', summary: 'a wake', meta: JSON.stringify({ sendId: 'thread-wake:k' }) }));
+    expect(getFlushedForThread('t1').map((item) => [item.userItemId, item.agentMessage])).toEqual([['user:wake', true]]);
   });
 
   it('a joined Claude echo acknowledges every member before delayed admission replies', async () => {

@@ -139,7 +139,7 @@ Authoritative method list from
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
 | `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
-| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart and UserPromptSubmit hooks (`source` `sessionFlags`), which render none. `run.eventName` and `run.status` are camelCase (`HookEventName`, `HookRunStatus`: `running`, `completed`, `failed`, `blocked`, `stopped`). `preModelRequest` and `postModelRequest` (0.164) fire around every model request, so they get no row on `hook/started` and a row on `hook/completed` only when the status is not `completed`. Codex does not write hook runs to the rollout. See §SessionStart hooks. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
@@ -1201,10 +1201,13 @@ in the config requirements (`config_requirements.rs`) can forbid
 start running a reviewer the client did not ask for.
 
 **Resume is asymmetric, and it matters.** Resuming an already-loaded
-thread **ignores every override in the request**.
+thread that a connection still subscribes to, or that is not idle,
+**ignores every override in the request**.
 `collect_resume_override_mismatches` collects the divergences and
 `tracing::warn!`s them server-side, then rejoins the live config
-unchanged (`thread_processor.rs`). A cold resume applies them normally.
+unchanged (`thread_processor.rs`). A cold resume applies them normally;
+a loaded idle thread with no subscriber is shut down and cold-resumed by
+the same request ([Thread unload and cold resume](#thread-unload-and-cold-resume-verified-01621)).
 So a bare `thread/resume {threadId}` against a loaded thread cannot
 disturb the reviewer, while the same call against an evicted thread
 would reset every unspecified axis to the config default. AO's mid-life
@@ -1292,6 +1295,79 @@ parameter entirely when it has nothing to append or when the read failed; a
 failed read is reported to the thread as a non-fatal error.
 
 Verified against `rust-v0.153.4`.
+
+### Thread unload and cold resume (verified 0.162.1)
+
+Spike 2026-10-16, codex-cli 0.162.1, `gpt-6-luna`, one connection.
+Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
+
+- `thread/unsubscribe {threadId}` answers `{status}`: `unsubscribed`,
+  `notSubscribed`, or `notLoaded` once the thread is gone. It removes only
+  this connection's subscription; the thread stays in `thread/loaded/list`.
+- A loaded thread with no subscriber and not active unloads after
+  `thread_unload_delay_secs` (config; measured 60.0 s at the default and
+  3.0 s at `3`; with `-c thread_unload_delay_secs=0` on the spawn,
+  `thread/closed` followed the unsubscribe response within 15 ms, in
+  [the per-thread channels fixture](#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)).
+  The clock starts at the later
+  of the last unsubscribe and the last activity. The app-server then writes
+  `thread/closed {threadId}`, drops it from `thread/loaded/list` and kills
+  its MCP children. The notification reaches the unsubscribed connection.
+- `thread/resume` on a loaded, idle, unsubscribed thread with any override
+  present (`config`, `developerInstructions`, `baseInstructions`, or a
+  changed `model`, `sandbox`, `approvalPolicy`, ...) shuts it down and
+  cold-resumes it in the same request, with no wait: two
+  `thread/status/changed {notLoaded}`, the new MCP round, then `idle`.
+  A subscribed or active thread keeps its live config instead.
+- A cold resume applies the `config` bag: the old MCP servers are killed
+  and the new ones start, and tool toggles (`features.view_image`) take
+  effect in both directions. Axes the request omits fall back to config
+  defaults (a resume naming no `sandbox` came back `read-only`), except
+  the model, which is restored from the rollout unless the request names
+  one. A `config` bag carrying `model_reasoning_effort` counts as naming
+  one (`has_model_resume_override`), so such a resume without `model`
+  came back on the default model.
+- `developerInstructions` on a cold resume does not reach the model until
+  a compaction; see
+  [Developer instructions on a resumed or forked thread](#developer-instructions-on-a-resumed-or-forked-thread-verified-01621).
+- The model's own account of its tools is unreliable after a resume: it
+  answered "missing" in the same turn that produced an `imageView` item.
+  Read the tool item, not the reply.
+
+### Per-thread shell environment and MCP processes (verified 0.162.1)
+
+Same spike. Several threads on one app-server:
+
+- `config.shell_environment_policy.set` on `thread/start`, as a nested
+  table or as the dotted key `shell_environment_policy.set.NAME`, reaches
+  the shell commands of that thread only; three concurrent threads each saw
+  their own value. The values were not written anywhere under
+  `CODEX_HOME` (rollouts and SQLite files grepped).
+- A stdio server in a thread's `config.mcp_servers` is one child process
+  of the native app-server per loaded thread, spawned at `thread/start`.
+  Two threads with an identical name and command run two processes; the
+  thread's unload kills its process.
+- `mcpServerStatus/list` spawns its own connections
+  ([`mcpServerStatus/list`](#mcpserverstatuslist)), so it is not a count of
+  running servers.
+
+### Developer instructions across a restart and per-thread channels (verified 0.162.1)
+
+Spike 2026-10-16, codex-cli 0.162.1, `gpt-5.6-luna` (`gpt-6-luna` is
+refused for a ChatGPT account: "not supported when using Codex with a
+ChatGPT account"). Fixture:
+`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`.
+Each step asked for a reply ending in the token the current instructions
+name.
+
+- What a restart, `thread/inject_items`, `turn/start` `additionalContext`
+  and a compaction do to a thread's developer instructions is in
+  [Developer instructions on a resumed or forked thread](#developer-instructions-on-a-resumed-or-forked-thread-verified-01621).
+- A second thread started on the same process with its own token D replied
+  with D; the first thread kept its own token on its next turn.
+- Keeping client developer messages across compaction is the
+  `retain_client_developer_messages` feature, under development and off by
+  default (`features/src/lib.rs`).
 
 ### Developer instructions on a resumed or forked thread (verified 0.162.1)
 
@@ -1489,7 +1565,7 @@ the running thread.
 ## Background terminals
 
 `#[experimental]`: all three require `capabilities.experimentalApi`.
-Available since codex 0.140.0; verified on 0.146.0.
+Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 
 ```json
 {"method": "thread/backgroundTerminals/list",
@@ -1515,6 +1591,50 @@ Available since codex 0.140.0; verified on 0.146.0.
 - `terminated: false` means no running process matched (already exited,
   or belongs to another thread). It is a state answer, not an error.
 - `list` paginates: pass a non-null `nextCursor` back as `cursor`.
+
+### What a kill writes (verified 0.159.1)
+
+Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
+`docs/references/fixtures/codex/`, one run each:
+
+| Fixture | Case |
+|---|---|
+| `background_terminal_terminate_after_turn_20261015.ndjson` | terminate after the PTY's turn completed; a repeat and an unknown id |
+| `background_terminal_terminate_mid_turn_20261015.ndjson` | terminate while the PTY's turn runs a foreground command |
+| `background_terminals_clean_20261015.ndjson` | `clean` with two PTYs running, then again with none |
+| `background_terminals_survive_interrupt_20261015.ndjson` | `turn/interrupt` with two PTYs running, then `clean` |
+| `background_terminal_terminate_refused_20261015.ndjson` | `terminate` with no `processId`, then with a non-numeric one |
+
+- `terminate` answers `{"terminated":true}`, then the exit watcher writes
+  one `item/completed` for the killed command, about 10 ms later: the
+  `commandExecution` item as `item/started` carried it, with
+  `status:"failed"`, `exitCode:-1` and `durationMs` from its start, under
+  the `turnId` it started in, plus `completedAtMs`. Nothing else follows:
+  no `thread/status/changed`, no turn frame.
+- After the PTY's turn completed, that `item/completed` names the ended
+  turn and arrives with no turn open. During the turn it lands
+  mid-turn and the turn goes on: the model is not told, and the turn ends
+  normally.
+- A process id that matches no running terminal answers
+  `{"terminated":false}` and writes nothing, including a repeat terminate
+  of a killed one. A missing `processId` is `-32600 "Invalid request:
+  missing field `processId`"`; a non-numeric one is `-32600 "invalid
+  background terminal process id: invalid digit found in string"`
+  (`background_terminal_terminate_refused_20261015.ndjson`).
+- `clean` answers `{}`, then writes that `item/completed` for every
+  running PTY. Upstream drains a hash map (`terminate_all_processes`), so
+  their order is unspecified. With nothing running it answers `{}` and
+  writes nothing.
+- `turn/interrupt` kills no PTY: the turn completes `interrupted` and both
+  PTYs keep running, the foreground command still running at the
+  interrupt included; `list` shows it and a later `clean` kills it under
+  the interrupted turn's id.
+- `list` rows carry the command as the model wrote it; the item's
+  `command` is the shell-wrapped form (`/usr/bin/zsh -lc "..."`).
+
+AO reads the `item/completed` as the PTY's completion, which removes its
+live tray row (`observeCodexUnifiedExecComplete`). The mock writes the same
+frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`).
 
 ---
 
@@ -1706,6 +1826,307 @@ cursor until its terminal boundary arrives, so refresh never persists a launch
 that a later independent batch cannot settle.
 
 ---
+
+## SessionStart hooks (verified 0.169.0)
+
+Spikes 2026-10-18, codex-cli 0.157.1 against a mock Responses server, and
+2026-11-18, codex-cli 0.169.0 against the model (the context limit
+below); source read at `rust-v0.143.0`, `rust-v0.153.4` and
+`rust-v0.162.1`, which agree on everything below unless a bullet names a
+tag. Agent Overflow
+uses a SessionStart and a UserPromptSubmit hook to deliver a session's
+memory ([memory](../specs/memory.md#delivery)); the mechanism is
+`internal/provider/codex/session_start_hooks.go`.
+
+### Registration in the thread config
+
+`thread/start` and `thread/resume` take hooks in their `config` map,
+which Codex reads as the thread's session-flags config layer:
+
+```json
+{"config": {"hooks": {
+  "SessionStart": [{"matcher": "startup|compact|clear",
+                    "hooks": [{"type": "command", "command": "...", "timeout": 60}]}],
+  "state": {"/<session-flags>/config.toml:session_start:0:0":
+              {"trusted_hash": "sha256:..."}}}}}
+```
+
+- Sources: `startup`, `resume`, `clear`, `compact`. A matcher that is
+  empty or `*` takes every source; one of only letters, digits, `_` and
+  `|` is a list of exact names; anything else is a regular expression
+  found anywhere in the source (`hooks/src/engine/matcher.rs`).
+- `timeout` is in seconds: 600 when absent, at least 1.
+- The command runs in the thread's cwd, with the hook input JSON on
+  stdin (`session_id`, `cwd`, `hook_event_name`, `source`, ...),
+  through the thread's local shell (`build_hooks_config`,
+  `core/src/session/mod.rs`): the user's shell when it is zsh, bash or
+  sh, otherwise zsh then bash on macOS and bash then zsh on Linux, then
+  `/bin/sh` (`default_user_shell`, `shell-command/src/shell_detect.rs`).
+  It runs as `<shell> -c <command>`, not as a login shell; PowerShell
+  takes `-NoProfile -Command` and cmd `/c` (`Shell::derive_exec_args`,
+  `core/src/shell.rs`). A thread without exactly one local environment
+  runs `$SHELL -lc <command>` instead (`/bin/sh` when `SHELL` is unset,
+  `%COMSPEC% /C` on Windows; `hooks/src/engine/command_runner.rs`). Exit 0 delivers stdout as context:
+  `hookSpecificOutput.additionalContext` of a JSON object, or the
+  trimmed text when stdout is not JSON. A non-zero exit fails the run
+  ("hook exited with code N"), and so does a JSON object that is not
+  SessionStart output ("hook returned invalid session start JSON
+  output").
+- A context over 2,500 tokens, counted at 4 bytes a token so over
+  10,000 bytes, is written to `hook_outputs/` and replaced by its head
+  and tail with `Full hook output saved to: <path>`
+  (`hooks/src/output_spill.rs`). When the file cannot be written, the
+  context is cut to the same head and tail with no path. From
+  `rust-v0.145.0` a SessionStart or UserPromptSubmit command handler's
+  `additionalContextLimit` (tokens) sets the threshold, `0` turning the
+  spill off, and is part of the handler's trust identity
+  (`hooks/src/engine/discovery.rs`, `hooks/src/output_spill.rs` at that
+  tag); `rust-v0.144.0` and `rust-v0.143.0` have the fixed limit and no
+  key. The limit applies to each handler's output on
+  its own. On 0.169.0, two handlers in one group, one printing 39,087
+  bytes with a marker in its middle and one at its end: with
+  `additionalContextLimit` 0 on each, the model quoted both markers and
+  the end of the other output; with the default it quoted the end
+  markers and not the middle one. `hook/completed` carried the whole text
+  in its `context` entry either way.
+- A group's handlers run at once, and their contexts reach the model in
+  configured order, whatever order they finish in
+  (`hooks/src/engine/dispatcher.rs`).
+- The `hooks` feature (stable, on by default) turns all hooks off when a
+  user sets `features.hooks = false`.
+
+### Trust
+
+Codex runs a hook from a non-managed layer only when
+`hooks.state[<key>].trusted_hash` equals the hook's current hash. An
+untrusted hook does not run: no `hook/started`, and nothing reaches the
+model. `hooks/list` reports each hook's `key`, `trustStatus` and
+`currentHash`.
+
+- Key: `<key source>:<event>:<group index>:<handler index>`. The
+  session-flags layer's key source is `/<session-flags>/config.toml`, so
+  the first handler of the first SessionStart group is
+  `/<session-flags>/config.toml:session_start:0:0`.
+- Hash: `sha256:` and the lowercase hex SHA-256 of the canonical JSON of
+  the handler's normalized identity, object keys sorted, no white space,
+  strings escaped as serde_json escapes them (`"`, `\` and the control
+  characters below U+0020 only; `<`, `>`, `&`, U+2028, U+2029 and
+  non-ASCII as they are):
+
+  ```json
+  {"event_name":"session_start","hooks":[{"async":false,"command":"<command>","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}
+  ```
+
+  (`hook_hash` in `hooks/src/engine/discovery.rs`, `version_for_toml` in
+  `config/src/fingerprint.rs`). The spike matched `hooks/list`
+  `currentHash` to this computation for a command holding quotes, a
+  backslash, `<>&`, non-ASCII, U+2028, an emoji, a tab and control
+  characters.
+
+  An `additionalContextLimit` other than the default 2,500 is part of the
+  identity, its key sorted first:
+
+  ```json
+  {"event_name":"session_start","hooks":[{"additionalContextLimit":0,"async":false,"command":"<command>","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}
+  ```
+
+  On 0.169.0 handlers under the hash of this identity ran, as handlers
+  without the key ran under the hash of the identity above.
+
+A hash in the thread's own config trusts exactly that command, matcher
+and timeout in that layer. Hooks of the user's or a project's config
+keep their own trust state.
+
+A UserPromptSubmit group takes no matcher: Codex ignores one
+(`matcher_pattern_for_event`), and the identity leaves the key out, as
+TOML has no null (`/<session-flags>/config.toml:user_prompt_submit:0:0`):
+
+```json
+{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"<command>","timeout":60,"type":"command"}]}
+```
+
+On codex-cli 0.157.1 a thread config holding such a group and the
+hash of this identity ran the hook on `turn/start`: `hook/started` and
+`hook/completed` with `eventName` `userPromptSubmit`, `source`
+`sessionFlags` and run id
+`user-prompt-submit:0:/<session-flags>/config.toml`, the input naming the
+thread as `session_id` and the turn as `turn_id`, and the output's
+`additionalContext` reported as a `context` entry. The same group under
+another hash did not run: no `hook/started`. `hooks/list` for the
+thread's cwd lists none of the thread config's hooks.
+
+### When the hooks run
+
+- A start, a cold resume, a compaction or a clear queues the hooks
+  whose matcher takes its source. Codex runs queued hooks before the
+  first model request of the next regular turn, and right after a
+  compaction inside a turn (`run_pending_session_start_hooks`,
+  `core/src/session/turn.rs`).
+- The queue lives only in the loaded thread's memory
+  (`pending_session_start_sources`, `core/src/state/session.rs`). A cold
+  load queues its own source alone (`resume` for a resumed history), so
+  a start or a compaction whose hooks had not run when the thread was
+  unloaded never runs them.
+- `thread/compact/start` is a turn of its own that runs no hooks; the
+  next turn runs the `compact` ones. A review (`review/start`) runs as a
+  sub-conversation and runs none either.
+- A warm `thread/resume`, of a thread still loaded in the process, runs
+  none. A resume that carries `config` reloads a loaded thread cold when
+  it is idle and no other connection subscribes to it
+  (`resume_running_thread`,
+  `app-server/src/request_processors/thread_processor.rs`). A spawned
+  subagent's thread runs no SessionStart hooks.
+- Each run reports `hook/started` and then `hook/completed`, each with
+  a `run` (`HookRunSummary`): `id` (`session-start:<order>:<key source>`),
+  `eventName` `sessionStart`, `handlerType` `command`, `executionMode`
+  `sync`, `scope` `thread`, `sourcePath`, `source` (`sessionFlags` for
+  the thread config, `user` for the user's `config.toml`, ...),
+  `displayOrder`, `status` (`running`, then `completed` or `failed`),
+  `statusMessage`, `startedAt`, `completedAt`, `durationMs` and
+  `entries` (`{kind, text}`; `context` carries the delivered text,
+  `error` a failure).
+- The context reaches the model as a `developer` message after the
+  thread's other initial context, and is written to the rollout as a
+  `response_item`.
+
+### UserPromptSubmit
+
+Source read at `rust-v0.143.0` and `rust-v0.162.1`; AO's minimum Codex,
+0.143.0, has it.
+
+- Each user input a turn takes runs the hooks before it is recorded: the
+  turn's own prompt, after the SessionStart hooks the turn runs, and each
+  input steered into a running turn (`inspect_pending_input`,
+  `core/src/hook_runtime.rs`). Another agent's message and a tool result
+  run none.
+- The input is `session_id` (the thread id), `turn_id`, `transcript_path`,
+  `cwd`, `hook_event_name` `UserPromptSubmit`, `model`, `permission_mode`
+  and `prompt`; a thread a turn spawned adds `agent_id` and `agent_type`.
+- The output is read as SessionStart's: exit 0 with
+  `hookSpecificOutput.additionalContext` (or plain text) is context for
+  the model beside the prompt; exit 2, or `decision` `block`, stops the
+  prompt. Each run reports `hook/started` and `hook/completed` with
+  `eventName` `userPromptSubmit` and `scope` `turn`.
+
+### Copies across resumes and compactions
+
+Spike, one thread, a matcher that takes every source:
+
+- Each cold resume added another developer message with that run's
+  output after the previous turn. After three cold resumes the request
+  carried four copies (startup and three resumes). They persist in the
+  rollout, so every later resume keeps them.
+- A warm resume added none.
+- A compaction dropped every earlier copy: the next request carried
+  exactly one, the `compact` run's, after the summary and the rebuilt
+  initial context.
+- With `startup|compact` a cold resume ran nothing, and the request
+  carried the startup copy alone.
+
+A matcher without `resume` keeps one copy per compaction window, holding
+the text as it was at the last start or compaction.
+
+### What Agent Overflow does
+
+- Registers its memory hook, timeout 60, on `thread/start` and
+  `thread/resume`, so a resumed thread that compacts runs it too: a
+  SessionStart group of its own with the matcher `startup|compact|clear`,
+  or `startup|compact|clear|resume|fork` for a rehydrate below, holding
+  one handler per part of the delivery, and a UserPromptSubmit group with
+  each part's prompt command, each handler under its trust hash
+  (`sessionStartHookConfig`). On a Codex whose app-server reports 0.145.0
+  or later each handler carries `additionalContextLimit` 0, and its hash
+  covers it; an older or unknown version gets handlers without the key. The
+  command quotes its words in POSIX single quotes, which sh, bash and zsh
+  read verbatim. A fish user's hooks run under zsh or bash; only the
+  `$SHELL -lc` fallback can reach fish, which reads the quotes the same
+  unless a path holds a backslash. Agent Overflow runs Codex on Unix
+  only, on Windows inside WSL, so the command never reaches PowerShell
+  or `cmd.exe`. A shell startup file that prints to stdout for every
+  command (zsh's `.zshenv`, or a login profile under the fallback) puts
+  its text ahead of the hook's output, which then no longer opens with
+  its heading and is reported as not delivered.
+- Root `hook/started` and `hook/completed` of either event with `source`
+  `sessionFlags` render no row. A `completed` SessionStart run's
+  `context` entry counts as the delivery of the part whose heading it
+  opens with; a start or compaction is delivered once every part is. A failed UserPromptSubmit run is a non-fatal error row.
+- The prompt command exits 0 with no output when nothing changed, and
+  never exits 2, so it cannot block a prompt. A subagent's run, whose
+  input names `agent_id`, delivers nothing.
+- A fresh `thread/start`, a rehydrate that registers the hook for
+  `resume`, and a compaction (the `contextCompaction` item, or the
+  deprecated `thread/compacted`) expect a delivery. A start arms the
+  expectation before it sends the request: the read loop is live, and a
+  turn the app-server starts as it answers (a queued message, a running
+  turn) can run the hook before the answer is read. The delivery is
+  checked when the turn that ran the hook, or else the next regular
+  turn, completes with status `completed`; an interrupted or failed turn
+  leaves it to the turn after (`observeSessionStartHooks`). A turn that
+  ends with the delivery still pending forgets the thread's records of
+  what its sessions were shown, since the hook runs only at a later turn
+  and a stop before then loses it; a delivery that does not arrive
+  forgets them too.
+- An in-place `thread/rollback` cuts the turn that ran the hook with
+  the rest. The app forgets the records before the cut and again once it
+  lands, and the session ends the open expectation without a warning
+  (`restoreCodexSessionAfterCut`): the next prompt delivers the whole
+  memory.
+- A rehydrate registers the hook for `resume` while the open
+  expectation still waits for it, since the unload dropped what Codex had
+  queued.
+
+## Memories and writable roots (verified 0.162.1)
+
+Source read at `rust-v0.162.1`; the feature key, the creation-time
+memory mode and the turn sandbox policy are the same at `rust-v0.153.4`
+and `rust-v0.157.1`, the installed release. No spike. Agent Overflow
+relies on these for its Codex memory setting and its writable memory
+folders ([memory](../specs/memory.md#settings)).
+
+### Memories config
+
+The `config` map of `thread/start`, `thread/resume` and `thread/fork`
+is applied as `-c` overrides would be, dotted keys included
+(`load_with_cli_overrides`, `app-server/src/config_manager.rs`), above
+the user's `config.toml`. A feature the map sets is not changed by the
+app-server's runtime feature enablement (`protected_feature_keys`).
+
+- `features.memories` (`Feature::MemoryTool`, stable, off by default;
+  `features/src/lib.rs`) gates the memory extension's context and tools
+  (`ext/memories/src/extension.rs`), the memories folder as a readable
+  root (`core/src/config/mod.rs`), and the startup pipeline that writes
+  memories from earlier threads for a root session
+  (`start_memories_startup_task`, `memories/write/src/start.rs`).
+- `memories.generate_memories` (default `true`; `config/src/types.rs`)
+  sets the memory mode of a thread Codex creates: a new, cleared or
+  forked thread is stored with `memory_mode` `disabled` when it is
+  `false` (`core/src/session/session.rs`, `rollout/src/recorder.rs`).
+  A resume passes the mode in its parameters, but the local thread store
+  keeps the stored mode of the existing thread
+  (`thread-store/src/local/live_writer.rs`,
+  `thread_metadata_sync.rs`). `thread/memoryMode/set`, experimental and
+  present since `rust-v0.143.0`, changes a stored mode:
+  `{"threadId": "...", "mode": "disabled"}` answers `{}`
+  (`ThreadMemoryModeSetParams`, `v2/thread.rs`). Agent Overflow sends it
+  after a resume when its setting turns Codex's own memory off for
+  the thread.
+- The pipeline reads only other threads whose stored mode is `enabled`
+  (`state/src/runtime/memories.rs`), so a `disabled` thread is never
+  mined, whichever session runs it.
+
+### Writable roots on `turn/start`
+
+`turn/start` takes `sandboxPolicy`, which overrides the thread's policy
+for that turn and the turns after it (`TurnStartParams`,
+`app-server-protocol/src/protocol/v2/turn.rs`). Its `workspaceWrite`
+form carries `writableRoots`, absolute paths
+(`v2/permissions.rs`). Each becomes a write entry beside the workspace
+roots and the temporary directories, with an existing `.git`, `.agents`,
+`.codex` or `.aws` in it kept read-only
+(`FileSystemSandboxPolicy::workspace_write`, `protocol/src/permissions.rs`).
+A patch under a writable root is checked as one under the workspace is
+(`is_write_patch_constrained_to_writable_paths`, `core/src/safety.rs`).
+The `readOnly` and `dangerFullAccess` forms take no roots.
 
 ## Manual compaction: `thread/compact/start`
 

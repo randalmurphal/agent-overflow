@@ -319,7 +319,6 @@ func TestRetireToHolderClassifiesEveryThreadReference(t *testing.T) {
 		// retireToHolderTx clears the links to the thread as the delete's
 		// ON DELETE SET NULL would.
 		"threads.forked_from_thread_id": true,
-		"threads.parent_thread_id":      true,
 	}
 	for _, table := range holderKeptTables {
 		classified[table+".thread_id"] = true
@@ -352,7 +351,6 @@ func TestRetiredThreadLosesWhatItsDeleteRemoves(t *testing.T) {
 	}
 	mustPointerFork(t, s, "S", "F", ForkCut{})
 	mustPointerFork(t, s, "F", "child", ForkCut{})
-	mustExec(t, s.db, `UPDATE threads SET parent_thread_id = 'S' WHERE id = 'child'`)
 	if err := s.DeleteThread("S"); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +366,7 @@ func TestRetiredThreadLosesWhatItsDeleteRemoves(t *testing.T) {
 	var items, owners, links int
 	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM items WHERE thread_id = 'S'),
 		(SELECT count(*) FROM attachment_owners WHERE thread_id = 'S'),
-		(SELECT count(*) FROM threads WHERE parent_thread_id = 'S' OR forked_from_thread_id = 'S')`).Scan(&items, &owners, &links); err != nil {
+		(SELECT count(*) FROM threads WHERE forked_from_thread_id = 'S')`).Scan(&items, &owners, &links); err != nil {
 		t.Fatal(err)
 	}
 	if items == 0 || owners != 1 || links != 0 {

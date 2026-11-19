@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
@@ -73,6 +75,20 @@ func (h *harnessHost) Store() *store.Store { return h.app.store }
 func (h *harnessHost) PushSent() []harnessrpc.PushMessage { return h.app.harnessPushMessages() }
 
 func (h *harnessHost) ForgetPushSent() { h.app.harnessPushForget() }
+
+func (h *harnessHost) UpdateWorkReason() (string, error) { return h.app.updateWorkReason() }
+
+func (h *harnessHost) StallProviderEvents(threadID string) error {
+	return h.app.providerEvents.stall(threadID)
+}
+
+func (h *harnessHost) ReleaseProviderEvents(threadID string) error {
+	return h.app.providerEvents.releaseStall(threadID)
+}
+
+func (h *harnessHost) PendingProviderEvents(threadID string) int {
+	return h.app.providerEvents.pending(threadID)
+}
 
 func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeUsageFake }
 
@@ -238,8 +254,48 @@ func (h *harnessHost) CreateThread(options harnessrpc.ThreadOptions) (store.Thre
 	}, false)
 }
 
+// ArchiveThread archives a seeded thread; a seed whose archive left any
+// part undone fails.
 func (h *harnessHost) ArchiveThread(threadID string) error {
-	return h.app.ArchiveThread(threadID)
+	result, err := h.app.ArchiveThread(threadID)
+	if err != nil {
+		return err
+	}
+	if len(result.WorkersNotArchived) > 0 || result.CleanupError != "" {
+		return fmt.Errorf("archive %s left work undone: %+v", threadID, result)
+	}
+	return nil
+}
+
+func (h *harnessHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
+	thread, err := h.app.store.GetThread(threadID)
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	// A name another assistant holds is refused before the thread moves.
+	if err := h.app.store.CheckAssistantName(thread.Title); err != nil {
+		return store.StandingAgent{}, err
+	}
+	// New Assistant creates its thread in the home. The harness moves an
+	// existing thread there, out of its project, group and worktree, so a
+	// mock scenario for its sessions is keyed on the home, and the
+	// assistant serves the project the thread came from.
+	var projects assistantProjects
+	if thread.ProjectID != "" {
+		projects.ids = []string{thread.ProjectID}
+	}
+	_, agent, err := h.app.recordNewAssistant(func(home string) (store.Thread, error) {
+		if err := h.app.store.PlaceThreadInHome(thread.ID, home); err != nil {
+			return store.Thread{}, err
+		}
+		return h.app.store.GetThread(thread.ID)
+	}, func(moved store.Thread) {
+		log.Printf("harness: thread %s stays in the home %s of an assistant that was not recorded", moved.ID, moved.WorkspacePath)
+	}, projects, "")
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	return agent, nil
 }
 
 func (h *harnessHost) BroadcastThreadRow(threadID string) {
@@ -250,9 +306,33 @@ func (h *harnessHost) StopSession(threadID string) error {
 	return h.app.StopSession(threadID)
 }
 
+func (h *harnessHost) AwaitSessionEndWork() []string {
+	h.app.threadRequestSettling.Wait()
+	h.app.agentNoticeWork.wg.Wait()
+	live := make([]string, 0)
+	for threadID := range h.app.sessionManager().snapshot() {
+		live = append(live, threadID)
+	}
+	sort.Strings(live)
+	return live
+}
+
 func (h *harnessHost) DeleteProject(projectID string) error {
 	_, err := h.app.DeleteProject(projectID)
 	return err
+}
+
+// DeleteThread deletes a seeded thread; a seed whose delete left a worker
+// standing fails.
+func (h *harnessHost) DeleteThread(threadID string) error {
+	result, err := h.app.DeleteThread(threadID)
+	if err != nil {
+		return err
+	}
+	if len(result.WorkersNotDeleted) > 0 {
+		return fmt.Errorf("delete %s left workers standing: %+v", threadID, result.WorkersNotDeleted)
+	}
+	return nil
 }
 
 func (h *harnessHost) RecoverCrashedTurns() error {

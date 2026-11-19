@@ -64,17 +64,21 @@ func (a *App) startThreadTransfers() error {
 	if err != nil {
 		return err
 	}
-	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, transferErrorText, func(row store.ThreadTransfer) {
-		a.emit(eventchan.ThreadTransfer, row)
-		if err := a.announceTransferredDraft(row); err != nil {
-			log.Printf("app: announce transferred draft: %v", err)
-		}
-	}, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) }, a.transferPendingRetry)
+	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, transferErrorText,
+		a.threadTransferChanged, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) }, a.transferPendingRetry)
 	if err != nil {
 		return err
 	}
 	a.transfers.live.Store(&appTransferService{ctx: a.lifeCtx(), jobs: jobs, destination: destination})
 	return nil
+}
+
+// threadTransferChanged tells clients a transfer row moved.
+func (a *App) threadTransferChanged(row store.ThreadTransfer) {
+	a.emit(eventchan.ThreadTransfer, row)
+	if err := a.announceTransferredDraft(row); err != nil {
+		log.Printf("app: announce transferred draft: %v", err)
+	}
 }
 
 func (a *App) checkTransferIdle(thread store.Thread) error {
@@ -90,12 +94,14 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 			return errors.New("This conversation has history but no saved provider session. Restore its provider session before transferring it.")
 		}
 	}
-	if transferManagedMode(thread.Mode) || thread.DiscussionID != "" || thread.ParentThreadID != "" {
-		return errors.New("This conversation belongs to a discussion or workflow. Transfer an independent conversation.")
+	if transferManagedMode(thread.Mode) {
+		return errors.New("this conversation belongs to a workflow. Transfer an independent conversation")
 	}
 	// Moving the conversation ends whatever runs for it here, so every
-	// kind of running work refuses.
-	work, err := a.runningWorkIn(workScope{threads: []string{thread.ID}})
+	// kind of running work refuses but an assistant's watch: the assistant
+	// stays on this computer with its watches (errAssistantStays refuses its
+	// move), and its copy carries none of them.
+	work, err := a.runningWorkIn(workScope{threads: []string{thread.ID}}, workAgentWatch)
 	if err != nil {
 		return err
 	}
@@ -112,14 +118,25 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 		case workTerminal:
 			return errors.New("Close this conversation's terminals before transferring it. Running programs stay on their current computer.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		case workRemoteWatch:
+			// An archived conversation's are finished jobs archive kept, and
+			// nothing delivers them until it is unarchived.
+			if thread.Archived {
+				if unfinished, err := a.store.HasUnfinishedRemoteWatches(thread.ID); err != nil {
+					return err
+				} else if !unfinished {
+					return errors.New(quotedThreadTitle(thread) + " is archived and holds a finished remote job; unarchive it to receive the result first.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+				}
+			}
 			return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		default:
 			return fmt.Errorf("This conversation cannot be transferred while %s.", work.kind) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 	}
 	if a.triage != nil {
-		if at, ok := a.triage.PendingWakeupAt(thread.ID); ok && time.Now().Before(at.Add(wakeupReapGrace)) {
-			return errors.New("Cancel the scheduled wakeup before transferring this conversation.")
+		// Recurring jobs do not block: the transfer ends the session and
+		// its jobs either way (ListThreadRecurringJobs names them).
+		if at, ok := a.triage.PendingScheduledWorkAt(thread.ID); ok && time.Now().Before(at.Add(a.wakeupReapGrace())) {
+			return errors.New("cancel the scheduled wakeup or one-time scheduled jobs before transferring this conversation")
 		}
 	}
 	if open, err := a.store.HasOpenThreadRequests(thread.ID); err != nil {
@@ -275,4 +292,12 @@ func (r admittedTransferRunner) Run(ctx context.Context, id string) (store.Threa
 	}
 	defer release()
 	return r.runner.Run(ctx, id)
+}
+
+// quotedThreadTitle names a conversation in a refusal.
+func quotedThreadTitle(thread store.Thread) string {
+	if thread.Title == "" {
+		return "This conversation"
+	}
+	return `"` + thread.Title + `"`
 }

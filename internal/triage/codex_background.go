@@ -194,6 +194,12 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 
 	emitChanged := false
 	r.mu.Lock()
+	// A retired session's frame tracks nothing for the replacement's tray;
+	// true drops it like any pending-only start.
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		r.mu.Unlock()
+		return true
+	}
 	state := r.codexBackgroundForThread(evt.ThreadID)
 	now := eventTimestampMillis(evt)
 
@@ -315,7 +321,7 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 		}
 		r.mu.Unlock()
 		if shouldStamp {
-			return r.stampCodexItemBackgrounded(evt.ThreadID, itemID)
+			return r.stampCodexItemBackgrounded(evt.ThreadID, itemID, evt.SessionToken)
 		}
 	}
 

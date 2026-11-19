@@ -5,7 +5,7 @@
 // never persisted: it is '' whenever that find is closed or its pane gone.
 
 import { getProjectLabelText, getProjects } from './projects.svelte';
-import { getWorkflowAutomations, getWorkflowCatalog, getWorkflowRuns } from './workflowRuns.svelte';
+import { getWorkflowCatalog, getWorkflowRuns } from './workflowRuns.svelte';
 import { workflowHomeGroups, workflowHomeRowCount, type WorkflowHomeGroup } from './workflowData';
 import { getWorkflowProjectFilter } from './workflowsOverlay.svelte';
 import { findNeedle } from '../utils/findMatch';
@@ -24,7 +24,6 @@ class WorkflowsHomeList {
         projectNames: this.projectNames,
         projectFilter: getWorkflowProjectFilter(),
         definitionsOf: (projectId) => getWorkflowCatalog(projectId)?.workflows ?? [],
-        automationsOf: (projectId) => getWorkflowAutomations(projectId),
       },
       this.needle,
     ));

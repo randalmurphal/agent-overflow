@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // The predicate uses all persisted fields, not expanded provider text or a
@@ -155,7 +156,7 @@ func TestQueueDispatchPreservesDraftWrittenAfterAdmission(t *testing.T) {
 	}
 	sess := installSteerTestSession(t, app, thread, "ok")
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "test", Codex: sess})
-	app.triage.SetFlushDispatcher(app.dispatchFlush)
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) { dispatchThroughWorker(app, threadID, items) })
 	app.triage.FlushQueuedItems(thread.ID)
 	state, err := app.GetThreadLiveState(thread.ID)
 	if err != nil || len(state.FlushedItems) != 1 {

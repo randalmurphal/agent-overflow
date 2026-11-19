@@ -54,7 +54,7 @@ func TestOwnAdmissionRecoveryCannotRestoreLaterRemoval(t *testing.T) {
 		t.Fatal(e)
 	}
 	m.Removed = true
-	if _, _, e = s.MergeOwnDevices([]owndevices.Member{m}, 2200, ""); e != nil {
+	if _, _, _, e = s.MergeOwnDevices([]owndevices.Member{m}, 2200, ""); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = s.db.Exec(`DELETE FROM own_device_sessions WHERE session_id=?`, link.SessionID); e != nil {
@@ -77,7 +77,7 @@ func TestOwnMembershipAndSessionRevocationAreAtomic(t *testing.T) {
 	if _, e = s.db.Exec(`CREATE TRIGGER refuse_own_revocation BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT,'disk failure'); END`); e != nil {
 		t.Fatal(e)
 	}
-	if _, _, e = s.MergeOwnDevices([]owndevices.Member{m}, 2200, ""); e == nil {
+	if _, _, _, e = s.MergeOwnDevices([]owndevices.Member{m}, 2200, ""); e == nil {
 		t.Fatal("revocation failure was ignored")
 	}
 	if held, e := s.OwnDeviceForSession(link.SessionID); e != nil || held.Removed {
@@ -86,7 +86,7 @@ func TestOwnMembershipAndSessionRevocationAreAtomic(t *testing.T) {
 	if _, e = s.db.Exec(`DROP TRIGGER refuse_own_revocation`); e != nil {
 		t.Fatal(e)
 	}
-	if _, ids, e := s.MergeOwnDevices([]owndevices.Member{m}, 2200, ""); e != nil || len(ids) != 1 {
+	if _, ids, _, e := s.MergeOwnDevices([]owndevices.Member{m}, 2200, ""); e != nil || len(ids) != 1 {
 		t.Fatal(ids, e)
 	}
 	if _, e = s.OwnDeviceForSession(link.SessionID); !errors.Is(e, sql.ErrNoRows) {

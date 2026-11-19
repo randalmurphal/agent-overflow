@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -175,7 +176,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the endpoint the invocation records and, for a request the fake cannot
 // map, the reason it is unhandled.
 func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byte) (*call, string, string) {
-	c := &call{http: &httpCall{host: strings.ToLower(r.Host), body: body}, flags: map[string][]string{"method": {r.Method}}}
+	c := &call{http: &httpCall{host: strings.ToLower(r.Host), body: body, contentType: r.Header.Get("Content-Type")}, flags: map[string][]string{"method": {r.Method}}}
 	if addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
 		c.http.base = "http://" + addr.String()
 	}
@@ -248,7 +249,8 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 // field out does not declare: a handler that ignored one would answer a
 // different request than the one sent. An empty body is allowed when
 // optional (a route whose body is all optional parameters), and decodes
-// as nothing.
+// as nothing. GitLab reads a body as JSON only when its Content-Type says
+// so, so a GitLab body sent with another media type is refused.
 func decodeRESTBody(c *call, out any, optional bool) error {
 	body := bytes.TrimSpace(c.http.body)
 	if len(body) == 0 {
@@ -256,6 +258,11 @@ func decodeRESTBody(c *call, out any, optional bool) error {
 			return nil
 		}
 		return errors.New("the request has no JSON body")
+	}
+	if c.cli == "glab" && c.http.contentType != "" {
+		if mediaType, _, err := mime.ParseMediaType(c.http.contentType); err != nil || mediaType != "application/json" {
+			return fmt.Errorf("the request body's Content-Type is %q, not application/json", c.http.contentType)
+		}
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -49,6 +50,53 @@ type ApprovalRequest struct {
 	// PermissionUpdate objects; the shape is provider-specific so it flows
 	// through the pipeline as opaque JSON for the frontend to interpret.
 	PermissionSuggestions json.RawMessage `json:"permissionSuggestions,omitempty"`
+	// RoutedTo is set when the prompt goes to the thread that
+	// spawned this thread instead of to the user. Triage stamps it; a
+	// provider never does.
+	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
+	// Occurrence names this one prompt. A request id does not: a session
+	// can ask again under an id it resolved, and a replacement session
+	// under its predecessor's. A client answering the prompt sends it back
+	// (ApprovalResponse.Occurrence). SessionToken is the host session that
+	// asked, the only one an answer may be written to. Triage stamps both;
+	// the session token never leaves the process.
+	Occurrence   PromptOccurrence `json:"occurrence,omitempty"`
+	SessionToken string           `json:"-"`
+}
+
+// PromptOccurrence names one prompt (ApprovalRequest.Occurrence). It is
+// opaque to a client, which only echoes it, and travels as a decimal string
+// so no JSON number limit applies.
+type PromptOccurrence uint64
+
+// MarshalText writes the occurrence as its decimal string.
+func (o PromptOccurrence) MarshalText() ([]byte, error) {
+	return strconv.AppendUint(nil, uint64(o), 10), nil
+}
+
+// UnmarshalText reads a decimal string; empty is zero, no prompt named.
+func (o *PromptOccurrence) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*o = 0
+		return nil
+	}
+	value, err := strconv.ParseUint(string(text), 10, 64)
+	if err != nil {
+		return fmt.Errorf("prompt occurrence %q: %w", text, err)
+	}
+	*o = PromptOccurrence(value)
+	return nil
+}
+
+// PromptRoute names the spawner a worker's prompt was delivered to.
+// The prompt stays open in the worker, where the user can still answer it.
+// ComputerID and ComputerName name the paired computer that holds the
+// spawner, empty for a spawner on this computer.
+type PromptRoute struct {
+	ThreadID     string `json:"threadId"`
+	Title        string `json:"title"`
+	ComputerID   string `json:"computerId,omitempty"`
+	ComputerName string `json:"computerName,omitempty"`
 }
 
 // ApprovalEvent is the frontend-facing channel payload for approval overlay
@@ -82,6 +130,10 @@ type ApprovalEvent struct {
 	// independently, and suppressing on the device id would put the losing
 	// tab's error on the other one.
 	ConnectionID string `json:"connectionId,omitempty"`
+	// Occurrence names the prompt a resolve settled
+	// (ApprovalRequest.Occurrence); zero when triage held no prompt for it
+	// and the resolution named none.
+	Occurrence PromptOccurrence `json:"-"`
 }
 
 // UserInputRequest is sent when a provider needs structured user input.
@@ -104,6 +156,11 @@ type UserInputRequest struct {
 	ToolName        string              `json:"toolName"`
 	Title           string              `json:"title"`
 	Questions       []UserInputQuestion `json:"questions"`
+	// RoutedTo is ApprovalRequest.RoutedTo's twin.
+	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
+	// Occurrence and SessionToken are ApprovalRequest's twins.
+	Occurrence   PromptOccurrence `json:"occurrence,omitempty"`
+	SessionToken string           `json:"-"`
 }
 
 // UserInputEvent is the frontend-facing channel payload for structured
@@ -123,6 +180,8 @@ type UserInputEvent struct {
 	// reason and with the same rules: set only for action="fail", naming
 	// the page load whose submit failed.
 	ConnectionID string `json:"connectionId,omitempty"`
+	// Occurrence is ApprovalEvent.Occurrence's twin.
+	Occurrence PromptOccurrence `json:"-"`
 }
 
 // PendingInteractiveRequests is the app-runtime snapshot of still-open
@@ -161,7 +220,13 @@ type ElicitationResolution struct {
 // ApprovalResponse is sent back to the provider.
 type ApprovalResponse struct {
 	RequestID string `json:"requestId"`
-	Decision  string `json:"decision"` // Codex-native: "accept", "acceptForSession", "decline", "cancel"
+	// Occurrence is the prompt this answers (ApprovalRequest.Occurrence),
+	// echoed from the prompt the client showed. An answer naming a prompt
+	// that is no longer open is refused, whatever was asked since under
+	// the same request id. Zero, from a client that predates it, answers
+	// the prompt open under the request id.
+	Occurrence PromptOccurrence `json:"occurrence,omitempty"`
+	Decision   string           `json:"decision"` // Codex-native: "accept", "acceptForSession", "decline", "cancel"
 	// DecisionValue carries a provider-native structured decision. It is
 	// mutually exclusive with Decision and currently used by Codex policy
 	// amendment choices.
@@ -182,9 +247,11 @@ type ApprovalResponse struct {
 // UserInputResponse is sent back to the provider for a structured user-input
 // request.
 type UserInputResponse struct {
-	RequestID string                     `json:"requestId"`
-	Decision  string                     `json:"decision"` // accept; empty is treated as accept
-	Answers   map[string]UserInputAnswer `json:"answers,omitempty"`
+	RequestID string `json:"requestId"`
+	// Occurrence is ApprovalResponse.Occurrence's twin.
+	Occurrence PromptOccurrence           `json:"occurrence,omitempty"`
+	Decision   string                     `json:"decision"` // accept; empty is treated as accept
+	Answers    map[string]UserInputAnswer `json:"answers,omitempty"`
 }
 
 // ErrStaleInteractiveRequest marks provider errors for approval/user-input

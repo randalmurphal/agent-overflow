@@ -184,24 +184,6 @@ func TestPromptStaleRevisionsAndDismissal(t *testing.T) {
 	}
 }
 
-// A feature-owned prompt outranks the override at every start, so an
-// override change cannot make that session stale.
-func TestPromptChangeLeavesAFeatureOwnedSessionUnflagged(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	claude := string(provider.Claude)
-	id, _ := seedPromptOverrideThread(t, app, "thread-stale-feature", claude, "claude-opus-5")
-	app.setThreadSystemPrompt(id, "deliberation prompt")
-	registerPromptStaleSession(t, app, id, claude, "token-1")
-	take := recordProviderStatuses(app)
-
-	setPromptOverrides(t, app, "claudePromptOverrides", testPromptEntry{Enabled: true, Models: []string{"claude-opus-5"}, Prompt: "override"})
-	if events := take(); len(events) != 0 {
-		t.Fatalf("an override change flagged a feature-owned session: %+v", events)
-	}
-	expectLivePromptStale(t, app, id, false, 0)
-}
-
 // The flag is a claim about the session that earned it. Once another
 // session holds the thread, hydration answers nothing before any trigger
 // runs, and the next recompute withdraws the flag the new session does not

@@ -31,11 +31,13 @@ type codexAdapter struct {
 	responses map[string]string // method → full response template
 
 	mu          sync.Mutex
-	waiters     map[int64]chan bool // approval rpc id → decision
+	waiters     map[int64]chan approvalAnswer // approval rpc id → decision
 	approvalSeq atomic.Int64
 	// forkSeq numbers `thread/fork` answers so two forks of the same
 	// mock thread never claim the same id.
 	forkSeq atomic.Int64
+	// configReported is set once this process posted its session config.
+	configReported atomic.Bool
 	// queue backs the provider-owned user-message queue (`thread/queue/*`,
 	// codex >= 0.148) that `list` and `delete` answer over. Guarded by mu.
 	// Nothing fills it — `add` is a tripwire. See codex_queue.go.
@@ -48,6 +50,13 @@ type codexAdapter struct {
 	// steerSeq numbers the `userMessage` echo each `turn/steer` produces, so
 	// several steers inside one turn never share an item id.
 	steerSeq atomic.Int64
+	// endedTurn is the id of the turn whose turn/completed was last
+	// written. Guarded by the writer's lock (noteTurnEnd).
+	endedTurn string
+	// terminals follows the background terminals this process announced,
+	// for the background terminal RPCs. Guarded by the writer's lock
+	// (codex_terminals.go).
+	terminals codexTerminalLedger
 	// historyMode is the thread's persisted history contract
 	// ("legacy" / "paginated"), decided at thread/start and merely echoed
 	// on thread/resume. It gates `thread/revert`. See codex_revert.go.
@@ -56,6 +65,10 @@ type codexAdapter struct {
 	// thread, so turns it never ran are history rather than nonsense.
 	// See codex_revert.go#anchorIsCuttable.
 	resumedThread bool
+	// approvalsReviewer is the thread's reviewer ("user" / "auto_review"),
+	// which thread/start and thread/resume answer with as upstream's
+	// non-Option response field does. Guarded by mu.
+	approvalsReviewer string
 	// loadedThread records that this connection started or resumed a
 	// thread at all. A connection that did neither is threadless: its
 	// `thread/fork` reads the source out of the store, where every anchor
@@ -69,6 +82,21 @@ type codexAdapter struct {
 	// calls. Guarded by mu; never reported or logged (the session_config
 	// report carries names only).
 	mcpServers map[string]json.RawMessage
+
+	// keepHistory records each turn/start input in the thread store
+	// (scenario.CodexOptions.KeepHistory, codex_revert.go).
+	keepHistory bool
+
+	// sessionStart holds the trusted SessionStart hooks of the thread's
+	// config, and pendingSessionStart the source a thread/start, a
+	// thread/resume or a compaction queued them to run for at the next
+	// opportunity (codex_session_start.go). Guarded by mu.
+	sessionStart        []sessionStartHook
+	pendingSessionStart string
+	// promptHooks are the trusted UserPromptSubmit hooks of the same
+	// config, run for each turn's input and each drained steer. Guarded by
+	// mu.
+	promptHooks []sessionStartHook
 
 	// login is the account sign-in this connection is serving, if any. It
 	// carries its own lock rather than sharing mu: its completion arrives on
@@ -117,9 +145,10 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		// ${HISTORY_MODE} is bound by respond(), not by a scenario: the
 		// thread's history contract is decided by the thread/start params
 		// (codex_revert.go), and it is what makes `thread/revert` available
-		// or refused.
-		"thread/start":   `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"}}}`,
-		"thread/resume":  `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"}}}`,
+		// or refused. ${APPROVALS_REVIEWER} is bound the same way, from the
+		// reviewer the start or resume asked for (noteApprovalsReviewer).
+		"thread/start":   `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"},"approvalsReviewer":"${APPROVALS_REVIEWER}"}}`,
+		"thread/resume":  `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"},"approvalsReviewer":"${APPROVALS_REVIEWER}"}}`,
 		"turn/start":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"turn":{"id":"${TURN_ID}"}}}`,
 		"turn/interrupt": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}`,
 		"model/list":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":` + mockCodexModelList + `}`,
@@ -133,10 +162,12 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		e:         e,
 		w:         w,
 		responses: responses,
-		waiters:   make(map[int64]chan bool),
+		waiters:   make(map[int64]chan approvalAnswer),
 		forkTurns: make(map[string][]string),
 	}
+	a.keepHistory = opts != nil && opts.KeepHistory
 	a.approvalSeq.Store(codexApprovalIDBase)
+	w.onLine(a.noteFrame)
 	return a
 }
 
@@ -184,19 +215,13 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// params rather than argv, so this is the earliest observable point.
 		// Reported before the response so a test that waits on the config
 		// cannot see the session make progress first.
-		a.e.rep.report(control.Report{
-			Kind: control.ReportSessionConfig,
-			SessionConfig: &control.SessionConfig{
-				Sandbox:               readParamString(params, "sandbox"),
-				ApprovalPolicy:        readParamString(params, "approvalPolicy"),
-				MCPServers:            codexMCPServerNames(params),
-				DeveloperInstructions: readParamString(params, "developerInstructions"),
-			},
-		})
+		a.reportSessionConfig(params, false)
 		a.noteMCPServers(params)
 		// The history contract is settled here and nowhere else — a resume
 		// can only report what the thread already is.
 		a.noteThreadStart(params)
+		a.noteApprovalsReviewer(params, false)
+		a.noteSessionStartHooks(params, "startup")
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "thread/resume":
@@ -215,6 +240,14 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			a.e.setThreadID(tid)
 		}
 		a.noteThreadResume(a.e.currentVars()["THREAD_ID"])
+		// A process that only resumes reports what the resume asked for;
+		// one that started a thread first keeps that start's report.
+		if !a.configReported.Load() {
+			a.reportSessionConfig(params, true)
+		}
+		a.reportResumedHistory(a.e.currentVars()["THREAD_ID"])
+		a.noteApprovalsReviewer(params, true)
+		a.noteSessionStartHooks(params, "resume")
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "turn/start":
@@ -242,29 +275,51 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			Kind: control.ReportUserInput, Turn: n,
 			Input: input, SessionRef: vars["THREAD_ID"],
 		})
+		if a.keepHistory {
+			recordHistoryInput(vars["THREAD_ID"], input)
+		}
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
 	case "turn/steer":
+		// Upstream refuses a steer once the turn it would join has ended
+		// (SteerInputError::NoActiveTurn, -32600), and the app answers that
+		// race by opening a fresh turn. The turn has ended once its
+		// turn/completed is on the wire, so the check and the lines it leads
+		// to are written under the writer's lock: an accepted steer's echo
+		// always precedes its turn's completion.
+		turn, vars, live := a.e.currentTurn(), a.e.currentVars(), a.e.turnLive()
+		expected := readParamString(params, "expectedTurnId")
+		accepted := false
+		a.w.locked(func(write func(string)) {
+			if !live || expected == a.endedTurn {
+				write(rpcErrorLine(id, -32600, "no active turn to steer"))
+				return
+			}
+			write(a.responseLine(id, method, vars))
+			if a.refuses(method) {
+				// A scenario whose template answers the steer with an error
+				// (a review or a compaction turn: activeTurnNotSteerable)
+				// refuses it: the input reaches no turn, so nothing reports
+				// or echoes it.
+				return
+			}
+			write(steeredUserMessageLine(params, vars, a.steerSeq.Add(1)))
+			accepted = true
+		})
+		if !accepted {
+			return
+		}
 		// A steer is user text reaching the provider mid-turn. It reports on
 		// the same surface as a turn/start's input — a test asserting what the
 		// provider received must not have to know which path the app took —
 		// and carries the already-running turn's number, because a steer
 		// starts no scenario turn of its own. The response template stays the
 		// generic empty result the default branch would have produced.
-		turn, vars := a.e.currentTurn(), a.e.currentVars()
-		if a.refuses(method) {
-			// A scenario whose template answers the steer with an error (a
-			// review or a compaction turn: activeTurnNotSteerable) refuses
-			// it: the input reaches no turn, so nothing reports or echoes it.
-			a.respond(id, method, vars)
-			return
-		}
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
-		a.respond(id, method, vars)
-		a.emitSteeredUserMessage(params, vars)
+		a.runPromptHooks(vars, codexInputText(params))
 	case "thread/inject_items":
 		a.injectItems(id, params)
 	case "thread/fork":
@@ -293,13 +348,16 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		if a.handleReadRequest(id, method, params) {
 			return
 		}
+		if a.handleTerminalRequest(id, method, params) {
+			return
+		}
 		// -32601, not `{"result":{}}`. An empty success is a LIE that no
 		// real app-server tells, and it defeated the app's own fallback
 		// machinery: codex.IsMethodUnsupported keys on this code, so under
 		// the old default it could never fire and every optional surface
-		// (thread compaction, review, config writes, MCP OAuth, terminal
-		// termination) reported success against a server that had done
-		// nothing. The honest answer exercises those fallback branches.
+		// (thread compaction, review, config writes, MCP OAuth) reported
+		// success against a server that had done nothing. The honest answer
+		// exercises those fallback branches.
 		log.Printf("codex: request method %q is not implemented by this mock; answering -32601", method)
 		a.writeRPCError(id, -32601, fmt.Sprintf("Method not found: %s", method))
 	}
@@ -313,10 +371,11 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 //
 // What is deliberately NOT here stays -32601: the optional and newer
 // surfaces (thread/compact/start, review/start, config/batchWrite,
-// config/mcpServer/reload, mcpServer/oauth/login, the background
-// terminal terminate/clean pair). "This build does not have it" is a
-// real thing for an app-server to say, and those are exactly the
-// branches worth exercising in a harness.
+// config/mcpServer/reload, mcpServer/oauth/login). "This build does not
+// have it" is a real thing for an app-server to say, and those are exactly
+// the branches worth exercising in a harness. The background terminal
+// list/terminate/clean set answers from the terminals this process
+// announced, in the captured shapes (codex_terminals.go).
 //
 // Returns false when the method is not one of them.
 func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, params json.RawMessage) bool {
@@ -381,7 +440,7 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 		// thread, and claiming them for the root thread would make every
 		// harness thread look like someone's subagent.
 		result = `{"thread":{"id":"${THREAD_ID}","status":{"type":"idle","activeFlags":[]}}}`
-	case "thread/settings/update":
+	case "thread/settings/update", "thread/memoryMode/set":
 		// Upstream answers a bare result; the app only checks for an error.
 		result = `{}`
 	case "skills/list":
@@ -397,9 +456,10 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 		result = `{"config":{}}`
 	case "mcpServerStatus/list":
 		result = `{"data":[],"nextCursor":null}`
-	case "thread/backgroundTerminals/list":
-		// The mock spawns no PTYs, so nothing is running. A null cursor
-		// terminates the app's paging walk on the first page.
+	case "thread/list":
+		// A resumed session lists its descendants (collab_discovery.go).
+		// The mock spawns no collab children of its own, so the list is
+		// empty, and a null cursor ends the walk on the first page.
 		result = `{"data":[],"nextCursor":null}`
 	default:
 		return false
@@ -499,11 +559,39 @@ func (a *codexAdapter) writeRPCResult(id json.RawMessage, result string) {
 }
 
 func (a *codexAdapter) writeRPCError(id json.RawMessage, code int, message string) {
-	a.w.writeLine(mustJSON(map[string]any{
+	a.w.writeLine(rpcErrorLine(id, code, message), 0, 0)
+}
+
+func rpcErrorLine(id json.RawMessage, code int, message string) string {
+	return mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error":   map[string]any{"code": code, "message": message},
-	}), 0, 0)
+	})
+}
+
+// noteFrame is the writer's observer, so it runs under the write lock in
+// wire order.
+func (a *codexAdapter) noteFrame(line string) {
+	a.noteTurnEnd(line)
+	a.terminals.observe(line)
+}
+
+// noteTurnEnd records the turn whose turn/completed was last written.
+func (a *codexAdapter) noteTurnEnd(line string) {
+	if !strings.Contains(line, `"method":"turn/completed"`) {
+		return
+	}
+	var frame struct {
+		Params struct {
+			Turn struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		} `json:"params"`
+	}
+	if json.Unmarshal([]byte(line), &frame) == nil {
+		a.endedTurn = frame.Params.Turn.ID
+	}
 }
 
 func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
@@ -520,6 +608,11 @@ func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
 }
 
 func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.Vars) {
+	a.w.writeLine(a.responseLine(id, method, vars), 0, 0)
+}
+
+// responseLine is the response respond writes.
+func (a *codexAdapter) responseLine(id json.RawMessage, method string, vars scenario.Vars) string {
 	tmpl, ok := a.responses[method]
 	if !ok {
 		tmpl = `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}`
@@ -530,7 +623,34 @@ func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.
 	}
 	sub["REQUEST_ID"] = string(id)
 	sub["HISTORY_MODE"] = a.currentHistoryMode()
-	a.w.writeLine(sub.Substitute(tmpl), 0, 0)
+	sub["APPROVALS_REVIEWER"] = a.currentApprovalsReviewer()
+	return sub.Substitute(tmpl)
+}
+
+// noteApprovalsReviewer takes the reviewer a thread/start or thread/resume
+// asks for. An omitted one is the config default, "user", except on a
+// resume of the thread this connection already loaded, which keeps its
+// reviewer (docs/references/codex-wire.md, approvalsReviewer).
+func (a *codexAdapter) noteApprovalsReviewer(params json.RawMessage, resume bool) {
+	requested := readParamString(params, "approvalsReviewer")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case requested != "":
+		a.approvalsReviewer = requested
+	case !resume || !a.loadedThread:
+		a.approvalsReviewer = ""
+	}
+}
+
+// currentApprovalsReviewer is the reviewer the thread runs with.
+func (a *codexAdapter) currentApprovalsReviewer() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.approvalsReviewer == "" {
+		return "user"
+	}
+	return a.approvalsReviewer
 }
 
 // refuses reports whether the scenario's response template for method is a
@@ -565,28 +685,33 @@ func (a *codexAdapter) handleResponse(id json.RawMessage, result, errRaw json.Ra
 		log.Printf("codex: response for unknown id %d (ignored)", rpcID)
 		return
 	}
-	ch <- codexDecisionAllows(result, errRaw)
+	ch <- approvalAnswer{allow: codexDecisionAllows(result, errRaw), response: string(result)}
 }
 
 // codexDecisionAllows interprets the app's approval answer. The normal
 // shape is {"decision":"accept"|"acceptForSession"|"decline"|"cancel"}
 // (internal/provider/codex/approval.go); permission grants use
-// {scope, permissions}; MCP elicitation uses {action}; drains arrive
+// {scope, permissions}; MCP elicitation uses {action}; a requestUserInput
+// answer is {answers}, an allow when it answers anything; drains arrive
 // as a JSON-RPC error with data.reason "turnTransition" — a deny.
 func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 	if len(errRaw) > 0 && string(errRaw) != "null" {
 		return false
 	}
 	var body struct {
-		Decision string `json:"decision"`
-		Action   string `json:"action"`
-		Scope    string `json:"scope"`
+		Decision string          `json:"decision"`
+		Action   string          `json:"action"`
+		Scope    string          `json:"scope"`
+		Answers  json.RawMessage `json:"answers"`
 	}
 	if len(result) > 0 {
 		_ = json.Unmarshal(result, &body)
 	}
 	switch {
 	case strings.HasPrefix(body.Decision, "accept"):
+		return true
+	case len(body.Answers) > 0 && string(body.Answers) != "null" && string(body.Answers) != "{}":
+		// A requestUserInput answer: the question was answered.
 		return true
 	case body.Decision != "":
 		return false
@@ -601,9 +726,9 @@ func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 // sendApproval emits a command-approval server request (Codex approvals
 // are requests FROM the server carrying a JSON-RPC id; the app answers
 // with a response we correlate by that id).
-func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
+func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan approvalAnswer, func(bool), error) {
 	rpcID := a.approvalSeq.Add(1)
-	ch := make(chan bool, 1)
+	ch := make(chan approvalAnswer, 1)
 	a.mu.Lock()
 	a.waiters[rpcID] = ch
 	a.mu.Unlock()
@@ -626,6 +751,25 @@ func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.V
 			"itemId":   fmt.Sprintf("approval-%d", rpcID),
 			"command":  approvalCommandString(step, vars),
 		},
+	}
+	// AskUserQuestion is Claude's question tool; on Codex the same step asks
+	// through requestUserInput with the step's questions, so one scenario
+	// raises a question on either provider.
+	if step.ToolName == "AskUserQuestion" {
+		var input struct {
+			Questions json.RawMessage `json:"questions"`
+		}
+		if err := json.Unmarshal([]byte(vars.Substitute(string(step.Input))), &input); err != nil || len(input.Questions) == 0 {
+			cancel(false)
+			return nil, nil, fmt.Errorf("AskUserQuestion step needs input.questions: %v", err)
+		}
+		msg["method"] = "item/tool/requestUserInput"
+		msg["params"] = map[string]any{
+			"threadId":  vars["THREAD_ID"],
+			"turnId":    vars["TURN_ID"],
+			"itemId":    fmt.Sprintf("question-%d", rpcID),
+			"questions": input.Questions,
+		}
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -655,8 +799,8 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 	return step.ToolName
 }
 
-// emitSteeredUserMessage writes the `userMessage` item a real app-server emits
-// when a steer lands in the running turn.
+// steeredUserMessageLine is the `userMessage` item a real app-server emits
+// when a steer lands in the running turn; seq numbers its item id.
 //
 // The ADAPTER owns this one, not a scenario step, for the same reason the
 // queue's dispatched echo used to be adapter-owned: the text and the
@@ -669,17 +813,17 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 // The item id counts steers rather than reusing the turn's, because several
 // steers can land in one turn and two items sharing an id is a shape no
 // app-server produces.
-func (a *codexAdapter) emitSteeredUserMessage(params json.RawMessage, vars scenario.Vars) {
+func steeredUserMessageLine(params json.RawMessage, vars scenario.Vars, seq int64) string {
 	item := map[string]any{
 		"type":    "userMessage",
-		"id":      fmt.Sprintf("umsg-steer-%d", a.steerSeq.Add(1)),
+		"id":      fmt.Sprintf("umsg-steer-%d", seq),
 		"status":  "completed",
 		"content": []any{map[string]any{"type": "text", "text": codexInputText(params)}},
 	}
 	if clientID := readParamString(params, "clientUserMessageId"); clientID != "" {
 		item["clientId"] = clientID
 	}
-	a.w.writeLine(mustJSON(map[string]any{
+	return mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "item/completed",
 		"params": map[string]any{
@@ -687,7 +831,7 @@ func (a *codexAdapter) emitSteeredUserMessage(params json.RawMessage, vars scena
 			"turnId":   vars["TURN_ID"],
 			"item":     item,
 		},
-	}), 0, 0)
+	})
 }
 
 // codexInputText joins the text of a turn/start or turn/steer `input` vec in
@@ -738,6 +882,23 @@ func readParamRaw(params json.RawMessage, key string) json.RawMessage {
 		return nil
 	}
 	return m[key]
+}
+
+// reportSessionConfig posts the configuration a thread/start or
+// thread/resume asked for. Reported before the response so a test that waits
+// on the config cannot see the session make progress first.
+func (a *codexAdapter) reportSessionConfig(params json.RawMessage, resumed bool) {
+	a.configReported.Store(true)
+	a.e.rep.report(control.Report{
+		Kind: control.ReportSessionConfig,
+		SessionConfig: &control.SessionConfig{
+			Sandbox:               readParamString(params, "sandbox"),
+			ApprovalPolicy:        readParamString(params, "approvalPolicy"),
+			MCPServers:            codexMCPServerNames(params),
+			DeveloperInstructions: readParamString(params, "developerInstructions"),
+			Resumed:               resumed,
+		},
+	})
 }
 
 func codexMCPServerNames(params json.RawMessage) []string {

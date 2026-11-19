@@ -283,15 +283,12 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 		if i > 0 {
 			a.retentionPause()
 		}
-		unlock := a.threadLocks().Lock(id)
-		delErr := a.deleteThreadTreePacedLocked(id, a.retentionPause)
-		unlock()
+		delErr := a.deleteThreadPaced(id, a.retentionPause)
 		if delErr != nil {
 			// errors.Is(delErr, sql.ErrNoRows) is normal (the user
-			// raced us and deleted the thread first), but
-			// deleteThreadTreeLocked already swallows ErrNoRows at its
-			// own boundary, so any error here is genuinely worth
-			// logging.
+			// raced us and deleted the thread first), but the delete
+			// already swallows ErrNoRows at its own boundary, so any
+			// error here is genuinely worth logging.
 			log.Printf("app: retention sweep: delete thread %s: %v", id, delErr)
 			failed++
 			continue
@@ -301,10 +298,14 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	return deleted, failed
 }
 
-// deleteThreadTreePacedLocked is deleteThreadTreeLocked with the store's
-// item-chunk pause wired to the sweep's yield.
-func (a *App) deleteThreadTreePacedLocked(threadID string, pause store.ChunkPause) error {
-	ports := a.threadDeletePorts(nil)
-	ports.ChunkPause = pause
-	return a.threadApplication().DeleteTree(threadID, false, ports)
+// deleteThreadPaced is the retention sweep's delete of a stale thread, with
+// what lives under it, the store's item-chunk pause wired to the caller's
+// yield. It cleans up a moved thread's cache as well
+// (deleteRequest.cleanup). A thread whose delete committed already, a
+// person's interrupted delete, is finished with it. A worker that could not
+// be deleted is logged.
+func (a *App) deleteThreadPaced(threadID string, pause store.ChunkPause) error {
+	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{threadID}, cleanup: true, pause: pause})
+	outcome.logFailures("delete thread " + threadID)
+	return err
 }

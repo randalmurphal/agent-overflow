@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -62,6 +63,36 @@ func TestCreateThreadGroupTrimsAndRefusesBlankNames(t *testing.T) {
 	}
 }
 
+// Callers naming one new group at once all get that group, and exactly one
+// of them reports making it.
+func TestConcurrentEnsureThreadGroupMakesOneGroup(t *testing.T) {
+	s := newTestStore(t)
+	const callers = 16
+	groups := make([]ThreadGroup, callers)
+	made := make([]bool, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() { groups[i], made[i], errs[i] = s.EnsureThreadGroup(defaultTestProjectID, "Release sweep") })
+	}
+	wg.Wait()
+	creators := 0
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if groups[i].ID != groups[0].ID {
+			t.Fatalf("caller %d got group %s, caller 0 got %s", i, groups[i].ID, groups[0].ID)
+		}
+		if made[i] {
+			creators++
+		}
+	}
+	if creators != 1 {
+		t.Fatalf("%d callers report making the group, want 1", creators)
+	}
+}
+
 // TestSetThreadGroupStripsThePin: a thread starts unpinned in a group it
 // joins, from the top level or from another group. A row already in the
 // destination does not change group and keeps its pin.
@@ -78,13 +109,13 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set thread group: %v", err)
 	}
-	if len(moved) != 1 || moved[0].ID != "t-pinned" {
+	if len(moved) != 1 || moved[0].Thread.ID != "t-pinned" {
 		t.Fatalf("returned rows = %+v, want the moved thread", moved)
 	}
-	if moved[0].GroupID != group.ID {
-		t.Errorf("groupId = %q, want %q", moved[0].GroupID, group.ID)
+	if moved[0].Thread.GroupID != group.ID {
+		t.Errorf("groupId = %q, want %q", moved[0].Thread.GroupID, group.ID)
 	}
-	if moved[0].PinnedAt != nil || moved[0].PinGroup != nil {
+	if moved[0].Thread.PinnedAt != nil || moved[0].Thread.PinGroup != nil {
 		t.Errorf("joining a group left a pin behind: %+v", moved[0])
 	}
 
@@ -99,7 +130,7 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repeat move into the same group: %v", err)
 	}
-	if same[0].PinnedAt == nil || same[0].PinGroup == nil || *same[0].PinGroup != PinGroupBack {
+	if same[0].Thread.PinnedAt == nil || same[0].Thread.PinGroup == nil || *same[0].Thread.PinGroup != PinGroupBack {
 		t.Errorf("a move into the group the row is already in dropped its pin: %+v", same[0])
 	}
 
@@ -108,10 +139,10 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("move between groups: %v", err)
 	}
-	if across[0].GroupID != other.ID {
-		t.Errorf("groupId = %q, want %q", across[0].GroupID, other.ID)
+	if across[0].Thread.GroupID != other.ID {
+		t.Errorf("groupId = %q, want %q", across[0].Thread.GroupID, other.ID)
 	}
-	if across[0].PinnedAt != nil || across[0].PinGroup != nil {
+	if across[0].Thread.PinnedAt != nil || across[0].Thread.PinGroup != nil {
 		t.Errorf("moving between groups left a pin behind: %+v", across[0])
 	}
 }
@@ -152,50 +183,6 @@ func TestGroupedThreadPinsLikeAnyThread(t *testing.T) {
 	}
 	if _, _, err := s.PinThread("no-such-thread"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("PinThread on a missing row: error = %v, want sql.ErrNoRows", err)
-	}
-}
-
-// TestSetThreadGroupCarriesDiscussionChildren pins the parent_thread_id
-// disjunct: a discussion tree moves as a unit, and the caller learns the
-// child ids from the rows it gets back.
-func TestSetThreadGroupCarriesDiscussionChildren(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t-root")
-	child := makeThread("t-child", "claude")
-	child.ParentThreadID = "t-root"
-	if err := s.CreateThread(child); err != nil {
-		t.Fatalf("create child thread: %v", err)
-	}
-	group := mustCreateGroup(t, s, defaultTestProjectID, "Group")
-
-	moved, err := s.SetThreadGroup([]string{"t-root"}, group.ID)
-	if err != nil {
-		t.Fatalf("set thread group: %v", err)
-	}
-	if len(moved) != 2 {
-		t.Fatalf("moved %d rows, want the root and its child: %+v", len(moved), moved)
-	}
-	for _, thread := range moved {
-		if thread.GroupID != group.ID {
-			t.Errorf("thread %s groupId = %q, want %q", thread.ID, thread.GroupID, group.ID)
-		}
-	}
-	if got := threadGroupID(t, s, "t-child"); got != group.ID {
-		t.Errorf("child groupId = %q, want %q", got, group.ID)
-	}
-
-	// "" is ungroup, and it carries the children back out the same way.
-	out, err := s.SetThreadGroup([]string{"t-root"}, "")
-	if err != nil {
-		t.Fatalf("ungroup: %v", err)
-	}
-	if len(out) != 2 {
-		t.Fatalf("ungroup moved %d rows, want 2", len(out))
-	}
-	for _, thread := range out {
-		if thread.GroupID != "" {
-			t.Errorf("thread %s still grouped as %q", thread.ID, thread.GroupID)
-		}
 	}
 }
 
@@ -240,47 +227,6 @@ func TestSetThreadGroupRefusesCrossProjectAndRollsBack(t *testing.T) {
 	}
 }
 
-// TestSetThreadGroupRefusesAChildNamedAsRoot: a discussion child travels
-// with its root and is never grouped on its own, in either direction.
-// Naming it BESIDE its root is fine — the root's disjunct carries it and
-// the read-back dedupes.
-func TestSetThreadGroupRefusesAChildNamedAsRoot(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t-root")
-	child := makeThread("t-child", "claude")
-	child.ParentThreadID = "t-root"
-	if err := s.CreateThread(child); err != nil {
-		t.Fatalf("create child thread: %v", err)
-	}
-	group := mustCreateGroup(t, s, defaultTestProjectID, "Group")
-
-	_, err := s.SetThreadGroup([]string{"t-child"}, group.ID)
-	if !errors.Is(err, ErrThreadNotRoot) {
-		t.Fatalf("grouping a child alone: error = %v, want ErrThreadNotRoot", err)
-	}
-	if got := threadGroupID(t, s, "t-child"); got != "" {
-		t.Errorf("the refused move left t-child grouped as %q", got)
-	}
-
-	moved, err := s.SetThreadGroup([]string{"t-child", "t-root"}, group.ID)
-	if err != nil {
-		t.Fatalf("root and child named together: %v", err)
-	}
-	if len(moved) != 2 {
-		t.Fatalf("moved %d rows, want the root and its child once each: %+v", len(moved), moved)
-	}
-	for _, thread := range moved {
-		if thread.GroupID != group.ID {
-			t.Errorf("thread %s groupId = %q, want %q", thread.ID, thread.GroupID, group.ID)
-		}
-	}
-
-	_, err = s.SetThreadGroup([]string{"t-child"}, "")
-	if !errors.Is(err, ErrThreadNotRoot) {
-		t.Fatalf("ungrouping a child alone: error = %v, want ErrThreadNotRoot", err)
-	}
-}
-
 // TestUngroupKeepsThePinsOfUngroupedRows: a bulk "Remove from Group" names
 // every selected row, grouped or not. A row leaving a group loses its pin;
 // a pinned top-level row in that selection never left one and keeps it.
@@ -302,10 +248,11 @@ func TestUngroupKeepsThePinsOfUngroupedRows(t *testing.T) {
 		t.Fatalf("move grouped thread to the back burner: %v", err)
 	}
 
-	out, err := s.SetThreadGroup([]string{"t-pinned", "t-grouped"}, "")
+	moves, err := s.SetThreadGroup([]string{"t-pinned", "t-grouped"}, "")
 	if err != nil {
 		t.Fatalf("ungroup: %v", err)
 	}
+	out := ThreadMoveRows(moves)
 	if len(out) != 2 {
 		t.Fatalf("ungroup returned %d rows, want 2", len(out))
 	}

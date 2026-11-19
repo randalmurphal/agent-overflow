@@ -1158,3 +1158,33 @@ func TestBackgroundGitFetchRoundTripAndSparseDefault(t *testing.T) {
 		t.Fatalf("settings file = %s, want backgroundGitFetch omitted when back at the default", string(data))
 	}
 }
+
+// Assistants stay on for every install that never chose: a file without the
+// key reads on, and off survives a reload. Before AttachTierStore the user
+// tier is file-backed, as it is here.
+func TestAssistantsEnabledDefaultsOnAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"claudeEnabled":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(dir)
+	if !svc.Get().AssistantsEnabled {
+		t.Fatal("AssistantsEnabled = false for a file without the key, want true")
+	}
+	if tier, _ := TierForKey("assistantsEnabled"); tier != TierUser {
+		t.Fatalf("assistantsEnabled tier = %q, want user", tier)
+	}
+	if _, err := svc.Update(map[string]any{"assistantsEnabled": false}); err != nil {
+		t.Fatalf("Update(assistantsEnabled=false) error = %v", err)
+	}
+	if NewService(dir).Get().AssistantsEnabled {
+		t.Fatal("reloaded AssistantsEnabled = true after turning it off, want false")
+	}
+	if _, err := svc.Update(map[string]any{"assistantsEnabled": true}); err != nil {
+		t.Fatalf("Update(assistantsEnabled=true) error = %v", err)
+	}
+	if !NewService(dir).Get().AssistantsEnabled {
+		t.Fatal("reloaded AssistantsEnabled = false after turning it back on, want true")
+	}
+}

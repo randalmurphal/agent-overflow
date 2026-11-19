@@ -37,12 +37,18 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 
 // startTurn opens the logical turn resolve names. Every turn opens here:
 // an AO send's (handleTurnStart) and one the provider started
-// (openProviderStartedTurn).
+// (openProviderStartedTurn). What the turn took in is not decided here:
+// its deliveries name it (SendDelivery). A retired session's frame opens
+// nothing.
 func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, error)) error {
+	started, published := r.beginTurnStart(evt)
+	if started == nil {
+		return nil
+	}
+	defer published()
 	// An interrupt sampled from here until the open turn is set waits
 	// for it (SampleInterrupt): the row written below is already the
 	// active turn GetActiveTurn-gated callers stop.
-	started := r.beginTurnStart(evt.ThreadID)
 	defer started()
 	turnIndex, err := resolve()
 	if err != nil {
@@ -53,7 +59,7 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	// its own (the CLI's one result settles only the newest turn), so it
 	// settles here, as a mid-loop echo's predecessor does.
 	if open, ok := r.openTurnIndex(evt.ThreadID); ok && open != turnIndex {
-		r.settleQueuedEchoPredecessor(evt.ThreadID, open, startedAt, r.predecessorStopReason(evt.ThreadID, open, -1))
+		r.settleQueuedEchoPredecessor(evt.ThreadID, open, startedAt, r.predecessorStopReason(evt.ThreadID, open, -1), evt.SessionToken)
 	}
 
 	// The turns row is reconciled BEFORE any router state is seeded on
@@ -82,8 +88,12 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
-	openErr := r.setOpenTurn(evt.ThreadID, turnIndex)
+	opened, openErr := r.setOpenTurn(evt.ThreadID, turnIndex, evt.SessionToken)
 	started()
+	if !opened {
+		return openErr
+	}
+	r.releaseDeliveriesAtTurnStart(evt.ThreadID, turnIndex, evt.SessionToken)
 	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
@@ -97,7 +107,9 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	}
-	r.setOpenRoundSnapshot(snapshot)
+	if !r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
+		return openErr
+	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 	return openErr
 }
@@ -370,10 +382,15 @@ func isTurnIndexCollisionError(err error) bool {
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
+	// A retired session's in-flight complete must not take the replacement's
+	// round, settle or fold into its turn, or flush its queue.
+	if r.frameRetired(evt.ThreadID, evt.SessionToken) {
+		return nil
+	}
 	flushQueueAtBoundary := true
 	defer func() {
 		if flushQueueAtBoundary {
-			r.maybeFlushQueueAtBoundary(evt.ThreadID)
+			r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		}
 	}()
 	// The turn's writes are done once settlement below returns; push the
@@ -435,14 +452,20 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// A failed turn-index or payload read still ends the round it took:
 	// the event carries the round's own index, and nothing else would
 	// ever tell a client the round is over.
-	round, hasRound := r.takeOpenRound(evt.ThreadID)
+	//
+	// quiet is set below when the turn is one nobody needs to read
+	// (turnIsQuiet), and the event says so.
+	quiet := false
+	round, hasRound := r.takeOpenRound(evt.ThreadID, evt.SessionToken)
 	if hasRound {
 		emitIndex := turnIndex
 		if err != nil {
 			emitIndex = round.TurnIndex
 		}
 		defer func() {
-			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta))
+			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta)
+			event.Quiet = quiet
+			r.emit(eventchan.ProviderTurnCompleted, event)
 		}()
 	}
 
@@ -457,7 +480,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// provider:item_event upsert it emits is the surface the frontend
 	// already clears its optimistic pending-send "Working" state on.
 	//
-	// The isTurnSettled guard — checked against the event's NATURAL turn
+	// The settled-turn guard — checked against the event's NATURAL turn
 	// (currentTurnIndex fallback) — keeps the legitimate late-fold case
 	// flowing past this branch: a trailing result{is_error} after a soft
 	// close settled the turn must reach persistLateTurnPayload below, not
@@ -467,12 +490,16 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// start; deferred flush items are not in SQLite yet, so LastTurnIndex
 	// would point one turn early). The entry is NOT consumed —
 	// CleanupThread or its confirmation owns the pop.
-	if err == nil && meta.Error != "" && !hasRound && !r.isTurnSettled(evt.ThreadID, turnIndex) {
-		if _, open := r.openTurnIndex(evt.ThreadID); !open {
-			attributedTurn := turnIndex
-			if pending, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
-				attributedTurn = pending.TurnIndex
-			}
+	//
+	// A retired session's result is no orphan of the replacement's, whose
+	// empty ledger only makes it look like one, and writes nothing
+	// (claimOrphanError).
+	if err == nil && meta.Error != "" && !hasRound {
+		switch attributedTurn, claim := r.claimOrphanError(evt.ThreadID, turnIndex, evt.SessionToken); claim {
+		case orphanErrorRetired:
+			flushQueueAtBoundary = false
+			return nil
+		case orphanErrorClaimed:
 			// A session that just reported a hard failure cannot serve
 			// queued sends — leave the flush queue for the next session.
 			flushQueueAtBoundary = false
@@ -503,9 +530,15 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		// here, subsequent invocations for the same (thread, turn) skip
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
-		var claimed bool
-		claimed, heldStop, stopOwed = r.claimTurnSettlement(evt.ThreadID, turnIndex, cut, softClose)
-		if !claimed {
+		var claim settlementClaim
+		claim, heldStop, stopOwed = r.claimTurnSettlement(evt.ThreadID, turnIndex, evt.SessionToken, cut, softClose)
+		if claim == settlementRetired {
+			// The session was replaced while this result was handled:
+			// the turn it resolved to is the replacement's.
+			flushQueueAtBoundary = false
+			return nil
+		}
+		if claim == settlementTaken {
 			// Late-fold path: a second activity-counting complete for an
 			// already-settled logical turn (handleError's synthetic
 			// complete, then the real result). persistLateTurnPayload folds
@@ -528,7 +561,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			//
 			// A soft close kept a Stop held for this turn; its result
 			// resolves it here.
-			lateStop, lateStopOwed := r.settleWaitingStop(evt.ThreadID, turnIndex, cut, softClose)
+			lateStop, lateStopOwed := r.settleWaitingStop(evt.ThreadID, turnIndex, evt.SessionToken, cut, softClose)
 			lateStatus := settledTurnStatus(meta)
 			agentScopes, lateErr := r.agentOwnedOpenScopes(evt.ThreadID)
 			if lateStopOwed {
@@ -545,7 +578,16 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			if hasRound {
 				roundCompletedAt = now
 			}
-			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt))
+			foldErr := r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt)
+			lateErr = errors.Join(lateErr, foldErr)
+			// A later round of a quiet turn is as quiet: a read thread
+			// stays read past the completion it advanced to. A turn whose
+			// earlier round failed stays the user's.
+			if foldErr == nil && roundCompletedAt != 0 && r.turnIsQuiet(evt.ThreadID, turnIndex, meta) &&
+				!r.turnFailed(evt.ThreadID, turnIndex) {
+				quiet = true
+				r.keepThreadReadPast(evt.ThreadID, r.persistedTurnID(evt, turnIndex), roundCompletedAt)
+			}
 			r.FlushUsageEmitThrottle(evt.ThreadID)
 			r.noteTurnSettled(evt.ThreadID, turnIndex, evt)
 			return lateErr
@@ -646,11 +688,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// complete finds how it was stopped.
 	var stopErr error
 	if stopOwed {
-		if _, err := r.persistTurnError(evt.ThreadID, turnIndex, heldStop.summary, now); err != nil {
+		if _, err := r.writeStopRow(evt.ThreadID, turnIndex, heldStop.summary, now); err != nil {
 			stopErr = fmt.Errorf("write held stop of %s/%d: %w", evt.ThreadID, turnIndex, err)
 		}
 	}
-	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr), scopeErr, stopErr)
+	quiet = err == nil && persistErr == nil && r.turnIsQuiet(evt.ThreadID, turnIndex, meta)
+	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr, quiet), scopeErr, stopErr)
 
 	r.clearOpenTurn(evt.ThreadID, agentScopes)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
@@ -670,6 +713,9 @@ func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.Pr
 	_, soft := evt.TurnComplete.(*provider.SoftRoundCloseMeta)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, evt.SessionToken) {
+		return
+	}
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return
@@ -692,7 +738,7 @@ func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.Pr
 func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(evt.ThreadID)
-	if st == nil || !st.softClosedTurnSet || st.openTurnSet {
+	if st == nil || !st.softClosedTurnSet || st.openTurnSet || r.frameRefusalLocked(evt) != "" {
 		r.mu.Unlock()
 		return false, nil
 	}
@@ -700,6 +746,8 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	st.softClosedTurnSet = false
 	st.openTurn, st.openTurnSet = turnIndex, true
 	delete(st.settledTurns, turnIndex)
+	opening := r.markTurnOpeningLocked(evt.ThreadID, st)
+	defer opening()
 	r.mu.Unlock()
 
 	err := r.store.ReopenTurn(r.persistedTurnID(evt, turnIndex))
@@ -708,7 +756,7 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	} else {
 		// After the row is open again: a reader told this turn answers a
 		// send must not find the completion the soft close wrote.
-		r.reportBoundarySends(evt.ThreadID, turnIndex)
+		r.releaseDeliveriesAtTurnStart(evt.ThreadID, turnIndex, evt.SessionToken)
 	}
 	r.openTurnSpan(evt, turnIndex)
 	snapshot := ActiveTurnSnapshot{
@@ -717,8 +765,9 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 		TurnIndex: turnIndex,
 		StartedAt: eventTimestampMillis(evt),
 	}
-	r.setOpenRoundSnapshot(snapshot)
-	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
+	if r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
+		r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
+	}
 	return true, err
 }
 
@@ -840,8 +889,9 @@ func (r *Router) persistedTurnID(evt provider.ProviderEvent, turnIndex int) stri
 // Store.MarkThreadActivity. Nested/internal turns only update turn state,
 // so subagent completions do not reorder the sidebar. Synthesized
 // session-died / abort flavors flow through this same path when they
-// belong to the top-level turn.
-func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) error {
+// belong to the top-level turn. A quiet turn (turnIsQuiet) bumps nothing
+// and keeps a read thread read past its completion.
+func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error, quiet bool) error {
 	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, persistErr)
 
 	usageJSON := ""
@@ -859,11 +909,17 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 			log.Printf("triage: turn %s/%d settled without a stop reason before its send %s was echoed", evt.ThreadID, turnIndex, head.AOItemID)
 		}
 	}
+	settled := true
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
+		settled = false
 		r.providerWriteFailed(evt.ThreadID, "update turn "+fields.logicalTurnID, err)
 	}
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
-	if turnCountsAsThreadActivity(evt) {
+	if quiet {
+		if settled {
+			r.keepThreadReadPast(evt.ThreadID, fields.logicalTurnID, now)
+		}
+	} else if turnCountsAsThreadActivity(evt) {
 		r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
 	}
 	return usageErr
@@ -871,6 +927,53 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 
 func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
 	return strings.TrimSpace(evt.ParentToolUseID) == ""
+}
+
+// turnIsQuiet reports whether the top-level turn turnIndex of threadID,
+// ending with meta, is one nobody needs to read: the classifier names it
+// (SetQuietTurnClassifier) and it ended cleanly, with no error and no
+// interrupt. A turn that failed is the user's to see whoever started it.
+// The classifier reads what the turn took in from its deliveries
+// (SetSendDeliveredHook), which are reported before its end.
+func (r *Router) turnIsQuiet(threadID string, turnIndex int, meta turnCompleteMeta) bool {
+	if meta.Error != "" || turnCompleteIsTruncated(meta) || canonicalStopReason(meta) == "error" {
+		return false
+	}
+	r.quietTurnMu.Lock()
+	classify := r.quietTurn
+	r.quietTurnMu.Unlock()
+	return classify != nil && classify(threadID, turnIndex)
+}
+
+// turnFailed reports whether threadID's turn turnIndex is recorded as
+// failed, as an earlier round of it leaves it. A failed read answers that it
+// failed, the direction that leaves the turn the user's, and is logged.
+func (r *Router) turnFailed(threadID string, turnIndex int) bool {
+	if r.store == nil {
+		return false
+	}
+	turn, found, err := r.store.GetTurnByThreadIndex(threadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: read turn %s/%d: %v", threadID, turnIndex, err)
+		return true
+	}
+	return found && turn.StopReason == "error"
+}
+
+// keepThreadReadPast keeps threadID read past at, the completion of its
+// quiet turn turnID, when it was read up to the turn
+// (store.KeepThreadReadPast), and announces the row it moved. A failed
+// write leaves the thread owed a read, which is the safe direction, and is
+// logged.
+func (r *Router) keepThreadReadPast(threadID, turnID string, at int64) {
+	if r.store == nil {
+		return
+	}
+	if moved, err := r.store.KeepThreadReadPast(threadID, turnID, at); err != nil {
+		log.Printf("triage: keep %s read past its quiet turn %s: %v", threadID, turnID, err)
+	} else if moved {
+		r.emitThreadRow(threadID)
+	}
 }
 
 // buildRoundCompletedEvent builds the frontend-facing
@@ -1147,15 +1250,18 @@ func (r *Router) SampleInterrupt(threadID string) InterruptSample {
 	}
 }
 
-// beginTurnStart marks threadID as starting a turn and returns the
-// function that ends the mark, releasing SampleInterrupt waiters.
-// Ending is idempotent: handleTurnStart ends it once the open turn is
-// set and again, as a no-op, when it returns.
-func (r *Router) beginTurnStart(threadID string) func() {
-	starting := make(chan struct{})
+// beginTurnStart admits the start for both interrupt and cleanup. The caller
+// releases interrupt waiters when the turn is set and cleanup when its round is published.
+func (r *Router) beginTurnStart(evt provider.ProviderEvent) (started, published func()) {
 	r.mu.Lock()
-	r.state(threadID).turnStarting = starting
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if r.frameRefusalLocked(evt) != "" {
+		return nil, nil
+	}
+	threadID := evt.ThreadID
+	st := r.state(threadID)
+	starting := make(chan struct{})
+	st.turnStarting = starting
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -1165,6 +1271,40 @@ func (r *Router) beginTurnStart(threadID string) func() {
 			}
 			r.mu.Unlock()
 			close(starting)
+		})
+	}, r.markTurnOpeningLocked(threadID, st)
+}
+
+// SetTurnOpeningObserver wires the callback told that threadID marked a
+// turn opening (markTurnOpeningLocked), before the turn's row is written.
+// It runs under r.mu, so it must not block or call back into the router.
+func (r *Router) SetTurnOpeningObserver(fn func(threadID string)) {
+	r.mu.Lock()
+	r.turnOpening = fn
+	r.mu.Unlock()
+}
+
+// markTurnOpeningLocked marks st, threadID's state, as opening a turn,
+// under r.mu, and returns the function that ends the mark, which takes
+// r.mu. Every turn open marks itself before it writes its turn row, until
+// its round is published or it opened nothing: a start (startTurn), a
+// soft-closed turn's continuation and a queued message's echo. The mark
+// is told to the turn-opening observer under the same lock.
+func (r *Router) markTurnOpeningLocked(threadID string, st *threadState) func() {
+	st.turnOpenings++
+	if r.turnOpening != nil {
+		r.turnOpening(threadID)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			st.turnOpenings--
+			if st.turnOpenings == 0 && st.openingsDone != nil {
+				close(st.openingsDone)
+				st.openingsDone = nil
+			}
+			r.mu.Unlock()
 		})
 	}
 }
@@ -1211,9 +1351,13 @@ func (r *Router) AnyInFlightTurnOrRound() bool {
 // once another turn starts, and is forgotten with its count; an agent's
 // streams are the agent's and stay. A failed ownership read forgets them
 // too, as before agents outlived turns, and is returned.
-func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
+func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string) (bool, error) {
 	agentScopes, scopeErr := r.agentOwnedOpenScopes(threadID)
 	r.mu.Lock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		r.mu.Unlock()
+		return false, nil
+	}
 	st := r.state(threadID)
 	st.openTurn = turnIndex
 	st.openTurnSet = true
@@ -1227,8 +1371,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 	// the second complete takes the late-fold path.
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
-	r.reportBoundarySends(threadID, turnIndex)
-	return scopeErr
+	return true, scopeErr
 }
 
 // openQueuedEchoTurn establishes logical turn `turnIndex` when a queued
@@ -1282,8 +1425,12 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 // drained the next message. The settlement claim blocks the eventual
 // wire result from correcting the reason later, so it must be right
 // here.
-func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int) {
+func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int, sessionToken string) {
 	r.mu.Lock()
+	if r.frameRefusalLocked(provider.ProviderEvent{ThreadID: threadID, SessionToken: sessionToken}) != "" {
+		r.mu.Unlock()
+		return
+	}
 	st := r.state(threadID)
 	open, hasOpen := st.openTurn, st.openTurnSet
 	if hasOpen && open == turnIndex {
@@ -1305,6 +1452,10 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	st.softClosedTurnSet = false
 	st.seedStreamIndexes(turnIndex)
 	delete(st.settledTurns, turnIndex)
+	// Its predecessor's round is settled below before this turn's is
+	// published.
+	opening := r.markTurnOpeningLocked(threadID, st)
+	defer opening()
 	// The thread-level mark list covers the entry the per-entry stamp
 	// structurally cannot: one POPPED from the FIFO just before
 	// MarkFlushSendsInterrupted ran, whose echo is settling here with
@@ -1317,7 +1468,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	r.mu.Unlock()
 
 	if hasOpen {
-		r.settleQueuedEchoPredecessor(threadID, open, startedAt, r.predecessorStopReason(threadID, open, interruptedTurnIndex))
+		r.settleQueuedEchoPredecessor(threadID, open, startedAt, r.predecessorStopReason(threadID, open, interruptedTurnIndex), sessionToken)
 	}
 
 	// Same deterministic id shape resolveTurnID synthesizes for Claude
@@ -1343,7 +1494,9 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		log.Printf("triage: queued echo turn %s/%d was placed at %d — open-turn state still names %d",
 			threadID, turnIndex, placedIndex, turnIndex)
 	}
-	r.reportBoundarySends(threadID, turnIndex)
+	// A `started` that arrived with no logical turn open (a mid-loop drain
+	// after a re-round) is waiting for this turn: no init will open it.
+	r.releaseDeliveriesAtTurnStart(threadID, turnIndex, sessionToken)
 	r.openTurnSpan(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 
 	// Re-mint the wire round under the new logical turn. The frontend
@@ -1357,7 +1510,9 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	}
-	r.setOpenRoundSnapshot(snapshot)
+	if !r.setOpenRoundSnapshot(snapshot, sessionToken) {
+		return
+	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 
@@ -1396,9 +1551,9 @@ func (r *Router) predecessorStopReason(threadID string, open, interruptedTurnInd
 // round close may have beaten us) and routes any later wire result for
 // this index into persistLateTurnPayload instead of the orphan-error
 // path.
-func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason string) {
-	claimed, heldStop, stopOwed := r.claimTurnSettlement(threadID, turnIndex, stopReason == "interrupted", false)
-	if !claimed {
+func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason, sessionToken string) {
+	claim, heldStop, stopOwed := r.claimTurnSettlement(threadID, turnIndex, sessionToken, stopReason == "interrupted", false)
+	if claim != settlementClaimed {
 		return
 	}
 	var persistErr error
@@ -1427,7 +1582,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		persistErr = errors.Join(persistErr, err)
 	}
 	if stopOwed {
-		if _, err := r.persistTurnError(threadID, turnIndex, heldStop.summary, completedAt); err != nil {
+		if _, err := r.writeStopRow(threadID, turnIndex, heldStop.summary, completedAt); err != nil {
 			log.Printf("triage: write held stop of queued-echo predecessor %s/%d: %v", threadID, turnIndex, err)
 			persistErr = errors.Join(persistErr, err)
 		}
@@ -1442,25 +1597,81 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 	}, persistErr))
 }
 
+// settlementClaim is the outcome of claimTurnSettlement.
+type settlementClaim uint8
+
+const (
+	// settlementClaimed: the caller is the turn's first settler.
+	settlementClaimed settlementClaim = iota
+	// settlementTaken: the turn has settled; a later result folds its late
+	// payload only.
+	settlementTaken
+	// settlementRetired: the frame's session was replaced. The turn it
+	// resolved to is the replacement's, so it settles and folds nothing.
+	settlementRetired
+)
+
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
-// settlement for (threadID, turnIndex). It returns true only for the first
-// claimant; later callers should take the duplicate/late-payload path.
-// cut and soft are how the settlement ends: in the same step it resolves a
-// Stop held for the turn (settleWaitingStopLocked), returned with owed set
-// when the settlement writes its stop row.
-func (r *Router) claimTurnSettlement(threadID string, turnIndex int, cut, soft bool) (claimed bool, stop waitingStop, owed bool) {
+// settlement for (threadID, turnIndex). A retired session's frame claims
+// nothing (settlementRetired); a turn already settled is settlementTaken,
+// whose caller takes the duplicate/late-payload path; otherwise the caller
+// is the first settler. cut and soft are how the settlement ends: in the
+// step that claims it, it resolves a Stop held for the turn
+// (settleWaitingStopLocked), returned with owed set when the settlement
+// writes its stop row. Only a claimed settlement resolves a Stop.
+func (r *Router) claimTurnSettlement(threadID string, turnIndex int, sessionToken string, cut, soft bool) (claim settlementClaim, stop waitingStop, owed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return settlementRetired, waitingStop{}, false
+	}
 	st := r.state(threadID)
 	if st.settledTurns[turnIndex] {
-		return false, waitingStop{}, false
+		return settlementTaken, waitingStop{}, false
 	}
 	if st.settledTurns == nil {
 		st.settledTurns = make(map[int]bool)
 	}
 	st.settledTurns[turnIndex] = true
 	stop, owed = st.settleWaitingStopLocked(turnIndex, cut, soft)
-	return true, stop, owed
+	return settlementClaimed, stop, owed
+}
+
+// orphanErrorClaim is the outcome of claimOrphanError.
+type orphanErrorClaim uint8
+
+const (
+	// orphanErrorNone: a turn is open or settled, and the result is its.
+	orphanErrorNone orphanErrorClaim = iota
+	// orphanErrorClaimed: the result is an orphan error of this session.
+	orphanErrorClaimed
+	// orphanErrorRetired: the frame's session was replaced; nothing on
+	// the thread is its own.
+	orphanErrorRetired
+)
+
+// claimOrphanError reports whether an error result with no round is an
+// orphan (no open turn, and turnIndex not settled) of the session that
+// sent it, and the turn its error item is attributed to: the pending send
+// still to open a turn when there is one, otherwise turnIndex. It reads
+// the retirement and the ledger under one r.mu, so a replacement's commit,
+// which resets the ledger, cannot make a retired session's result look
+// like an orphan of the replacement's.
+func (r *Router) claimOrphanError(threadID string, turnIndex int, sessionToken string) (int, orphanErrorClaim) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return 0, orphanErrorRetired
+	}
+	if st := r.threadStateIfPresent(threadID); st != nil && (st.openTurnSet || st.settledTurns[turnIndex]) {
+		return 0, orphanErrorNone
+	}
+	for _, entry := range r.pendingSendsLocked(threadID) {
+		if entry.canOpenTurn() {
+			return entry.TurnIndex, orphanErrorClaimed
+		}
+	}
+	return turnIndex, orphanErrorClaimed
 }
 
 // isTurnSettled reports whether logical-turn settlement has already run
@@ -1489,15 +1700,19 @@ func (r *Router) isTurnSettled(threadID string, turnIndex int) bool {
 // if currentTurnIndex failed in the prior handleTurnComplete and the
 // round-end emit was skipped) cannot survive into the next round.
 // CleanupThread also sweeps this map.
-func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
+func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot, sessionToken string) bool {
 	if snapshot.ThreadID == "" || snapshot.TurnID == "" {
-		return
+		return false
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(snapshot.ThreadID, sessionToken) {
+		return false
+	}
 	st := r.state(snapshot.ThreadID)
 	st.currentRound = snapshot
 	st.currentRoundOpen = true
-	r.mu.Unlock()
+	return true
 }
 
 // takeOpenRound returns the active round snapshot for threadID and
@@ -1509,9 +1724,12 @@ func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
 // the real complete finds it empty and skips, so the frontend sees
 // exactly one `provider:turn_completed` per round even when handleError
 // synthesizes ahead of the wire's own turn-complete.
-func (r *Router) takeOpenRound(threadID string) (ActiveTurnSnapshot, bool) {
+func (r *Router) takeOpenRound(threadID, sessionToken string) (ActiveTurnSnapshot, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return ActiveTurnSnapshot{}, false
+	}
 	st := r.threadStateIfPresent(threadID)
 	if st == nil || !st.currentRoundOpen {
 		return ActiveTurnSnapshot{}, false
@@ -1797,7 +2015,9 @@ const StoppedByUser = "Stopped by user"
 // the stop until that turn settles (stop_waiting_send.go): the provider
 // may abort the turn, run it to a normal end, or retire the send unrun,
 // and only the first is a stopped turn. A Stop of the open turn writes at
-// once and withdraws a stop held for it. The flip is idempotent against
+// once and withdraws a stop held for it. A turn carries one stop row: a
+// later Stop of a turn whose row is written flips its rows and writes no
+// second one (writeStopRow). The flip is idempotent against
 // the echo path's own
 // interrupted-predecessor flip (R10-4): rows it already moved out of
 // streaming/running are skipped. tok fences the whole call against
@@ -1806,8 +2026,8 @@ const StoppedByUser = "Stopped by user"
 //
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
-// when no turn could be resolved, the stop is held for its turn, or the
-// session was replaced.
+// when no turn could be resolved, the stop is held for its turn, the
+// turn's stop row was already written, or the session was replaced.
 func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok FlushStampToken, summary string) (string, error) {
 	if summary == "" {
 		return "", fmt.Errorf("triage: mark interrupt of %s: no stop summary", threadID)
@@ -1846,13 +2066,14 @@ func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok Flus
 }
 
 // writeTurnStop flips the turn's unsettled rows to errored with the
-// " — stopped" suffix and writes its stop row reading summary.
+// " — stopped" suffix and writes its stop row reading summary, unless the
+// turn has one (writeStopRow).
 func (r *Router) writeTurnStop(threadID string, turnIndex int, summary string) (string, error) {
 	now := time.Now().UnixMilli()
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err
 	}
-	return r.persistTurnError(threadID, turnIndex, summary, now)
+	return r.writeStopRow(threadID, turnIndex, summary, now)
 }
 
 // Wait blocks until every in-flight Handle call has returned and every
@@ -1965,6 +2186,22 @@ func (r *Router) CleanupThread(threadID string) {
 	r.cleanupThread(threadID, nil)
 }
 
+// EndReplacedSessionTurn ends, as truncated, the turn a session being
+// replaced left open, as CleanupThread does for a stop. A start that replaces
+// a live session keeps the thread's state live apart from its process's
+// (processBound), but the process that ran this turn is closed and its
+// replacement never continues it: left open, the replacement's first output
+// would land in it and complete it. The caller has closed that session and
+// drained its frames.
+func (r *Router) EndReplacedSessionTurn(threadID string) {
+	if !r.HasInFlightTurnOrRound(threadID) {
+		return
+	}
+	if err := r.synthesizeTruncatedTurnComplete(threadID, time.Now().UnixMilli()); err != nil {
+		r.providerWriteFailed(threadID, "synthesize turn-complete for replaced session on thread "+threadID, err)
+	}
+}
+
 // CleanupThreadIfEpoch is CleanupThread for asynchronous teardowns that
 // can lose a race against a replacement session start. The caller
 // captures ThreadEpoch BEFORE unregistering the dead session; if
@@ -1988,11 +2225,37 @@ func (r *Router) CleanupThreadIfEpoch(threadID string, epoch uint64) bool {
 	return r.cleanupThread(threadID, &epoch)
 }
 
+// closeTurnAdmission fences new wire frames before cleanup settles the last
+// turn. A turn already writing its row must publish its round first.
+func (r *Router) closeTurnAdmission(threadID string, requireEpoch *uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identity(threadID)
+	if requireEpoch != nil && identity.epoch != *requireEpoch {
+		return false
+	}
+	epoch := identity.epoch
+	identity.closing = true
+	if st := r.threadStateIfPresent(threadID); st != nil && st.turnOpenings != 0 {
+		if st.openingsDone == nil {
+			st.openingsDone = make(chan struct{})
+		}
+		done := st.openingsDone
+		r.mu.Unlock()
+		<-done
+		r.mu.Lock()
+	}
+	return identity.epoch == epoch
+}
+
 // cleanupThread is the shared body behind CleanupThread (requireEpoch
 // nil: unconditional) and CleanupThreadIfEpoch (requireEpoch set: the
 // locked sweep aborts when the thread's epoch no longer matches).
 // Returns false only on an epoch-abort.
 func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
+	if !r.closeTurnAdmission(threadID, requireEpoch) {
+		return false
+	}
 	cleanupAt := time.Now().UnixMilli()
 	if r.HasInFlightTurnOrRound(threadID) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
@@ -2031,6 +2294,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// Set the stopped flag BEFORE dropping other state so Handle observes
 	// a consistent snapshot: any concurrent Handle call either sees a live
 	// thread with full state, or a stopped thread with no state.
+	identity.closing = false
 	identity.stopped = true
 	var orphanSpan trace.Span
 	// Invalidate a span start that is still outside the lock doing thread
@@ -2071,11 +2335,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		hasStrandedRound       bool
 	)
 	if st != nil {
-		// The truncated complete synthesized above closed the round that
-		// was open then. A round opened since, by a frame the dying
-		// session delivered before the stopped flag was set, would
-		// otherwise vanish with the state and leave every client showing
-		// it running.
+		// If settlement failed before announcing the round's end, release its clients.
 		strandedRound, hasStrandedRound = st.currentRound, st.currentRoundOpen
 		// The cards are store handles: closed below, once r.mu is
 		// released, or by the write still holding one.
@@ -2151,100 +2411,127 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	return true
 }
 
-// isThreadStopped returns true when CleanupThread has been called for
-// threadID and the host has not since re-activated it via
-// MarkThreadActive.
-func (r *Router) isThreadStopped(threadID string) bool {
+// frameRefusal is Handle's gate: it names why evt is refused, or returns
+// "" when evt is admitted. See frameRefusalLocked.
+func (r *Router) frameRefusal(evt provider.ProviderEvent) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.frameRefusalLocked(evt)
+}
+
+// frameRefusalLocked refuses every event for a thread CleanupThread
+// stopped and not since re-activated, and a provider frame whose session
+// token is not the one MarkThreadActive last committed the thread to: a
+// frame of a session a replacement has already claimed. Host-originated
+// events carry no token and are refused only while the thread is stopped.
+// Caller holds r.mu.
+func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
+	if id := r.identityIfPresent(evt.ThreadID); id != nil && (id.closing || id.stopped) {
+		return "stopped thread"
+	}
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		return "retired session"
+	}
+	return ""
+}
+
+// frameRetiredLocked reports whether the session that produced a frame
+// (its token) no longer owns the thread: a replacement committed the
+// thread to another session, or a stop marked it stopped. Host-originated
+// writes carry no token and are never retired. Every writer of
+// process-bound state, and of a turn, round, stream or prompt, asks it under the r.mu it writes under, so a frame
+// that passed Handle's gate before a replacement committed cannot write
+// that state for the replacement. Caller holds r.mu.
+func (r *Router) frameRetiredLocked(threadID, sessionToken string) bool {
+	if sessionToken == "" {
+		return false
+	}
+	id := r.identityIfPresent(threadID)
+	return id == nil || id.stopped || id.sessionToken != sessionToken
+}
+
+// frameRetired is frameRetiredLocked for a caller that does not hold r.mu.
+func (r *Router) frameRetired(threadID, sessionToken string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.frameRetiredLocked(threadID, sessionToken)
+}
+
+// SessionCurrent reports whether sessionToken is the session
+// MarkThreadActive last committed threadID to. The host asks it before
+// acting on a provider frame itself, with the same answer Handle's gate
+// gives that frame's token.
+func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
+	if r == nil || sessionToken == "" {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := r.identityIfPresent(threadID)
-	return id != nil && id.stopped
+	return id != nil && id.sessionToken == sessionToken
 }
 
-// MarkThreadActive clears the stopped flag so a replacement session's
-// events persist again. The host calls this from the session-start
-// path BEFORE spawning the new subprocess — it must not wait for a
-// wire signal, because a session that dies during startup (e.g. Claude
+// MarkThreadActive commits the thread to the session sessionToken names:
+// it clears the stopped flag and makes that session's frames the only
+// ones Handle admits. The host calls this from the session-start path
+// BEFORE spawning the new subprocess. It must not wait for a wire
+// signal, because a session that dies during startup (e.g. Claude
 // rejecting --resume-session-at pre-init) emits its only diagnostics
-// before anything init-like, and those must route. Clearing pre-spawn
-// is safe: the prior subprocess's read loop is fully drained before a
-// start proceeds (provider Close blocks on read-loop exit), so no
-// stale frame can slip through the freshly-cleared gate. No wire event
-// may clear this flag — see the threadIdentity.stopped field comment.
+// before anything init-like, and those must route. No stale frame passes
+// the gate after this call: every provider frame carries the token of
+// the session that produced it, and a frame of any earlier session no
+// longer matches, even when the host's drain of the prior session gave
+// up at its stall bound and left that session's frames queued. A frame
+// already being handled when this call lands is refused by every writer
+// of process-bound state (processBound). No wire event may clear
+// the stopped flag: see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
-// The context-repair restart deliberately skips CleanupThread, so
+// A start that replaces a live session (the session-config restart
+// reconcileSessionConfig schedules) deliberately skips CleanupThread, so
 // settledTurns can still hold entries from the prior subprocess; a
 // replacement session reuses turn indexes, and a stale "settled" marker
 // would misroute its first error result into persistLateTurnPayload
 // (folding into a finished turn's row) instead of the orphan error-item
 // branch the user actually needs to see. Clearing here is safe for the
-// soft-close late-fold path — the fold's trailing result rides the SAME
-// session's read loop, which is fully drained before any restart
-// reaches this call.
+// soft-close late-fold path: the fold's trailing result rides the SAME
+// session's read loop, whose frames the gate refuses once this call
+// names another session.
 //
 // Each call bumps the thread's reactivation epoch (see ThreadEpoch),
 // which lets asynchronous teardowns detect that a replacement session
 // claimed the thread mid-teardown and abort their cleanup.
-func (r *Router) MarkThreadActive(threadID string) {
+func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	identity := r.identity(threadID)
 	r.mu.Lock()
+	identity.closing = false
 	identity.stopped = false
+	identity.sessionToken = sessionToken
 	identity.epoch++
-	// This is NOT the cleanup sweep — the repair-restart path reaches
-	// here WITHOUT a CleanupThread, so the thread's state entry can be
-	// fully live and must survive. Only the fields whose meaning is
-	// bound to the process that just died are cleared, each for its own
-	// reason. Anything not listed here deliberately carries over.
-	var hadEffectiveModel bool
-	var effectiveModelRevision uint64
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		// A stale settlement marker would misroute a replacement
-		// session's first error result into persistLateTurnPayload
-		// (see the doc comment above).
-		st.settledTurns = nil
-		st.softClosedTurnSet = false
+	// This is NOT the cleanup sweep: a start that replaces a live session
+	// reaches here without CleanupThread, so the thread's state entry can be fully
+	// live and must survive. Only the state bound to the process that
+	// just died is replaced (processBound).
+	st := r.threadStateIfPresent(threadID)
+	hadEffectiveModel := st != nil && st.effectiveModelSet
+	if st != nil {
+		st.processBound = processBound{}
 		// A Stop held for a turn of the previous process names an index
-		// the replacement reuses.
-		st.waitingStopSet, st.lastSettledSet = false, false
-		// The previous session consumed these and started no turn for
-		// them; a turn of this session does not answer them.
-		st.boundarySends = nil
-		hadEffectiveModel = st.effectiveModelSet
-		st.effectiveModel, st.effectiveModelSet = "", false
-		// A pending harness wakeup is in-process state of the PREVIOUS
-		// CLI process; the replacement session this call commits to
-		// never inherits the timer. Without it a stale future fire time
-		// would shield the fresh session from the idle reaper for up to
-		// the wakeup clamp (60 min).
-		st.pendingWakeupAt, st.pendingWakeupSet = 0, false
-		// The ticks belong to the provider PROCESS: a dead process will
-		// never deliver the terminal that would consume them.
-		st.subagentProgress = nil
-		// A death announced for the previous process says nothing about
-		// this one's.
-		st.announcedDeath = ""
-		// A replacement process is never mid-compaction; a stale window
-		// would pin a "Compacting" label onto the fresh session.
-		st.compactingSince, st.compactingSinceSet = 0, false
-		// Same reasoning for the command-lifecycle correlation: the acks
-		// it waits on can only come from the process that just died.
-		st.commandLifecycle = nil
-		// The directory is the dead process's. Its replacement launches
-		// from the thread row's workspace, wherever the last one moved to.
-		st.workspacePath, st.workspacePathSet = "", false
+		// the replacement reuses. It is host state, so the reset above
+		// leaves it.
+		st.waitingStop, st.waitingStopSet = waitingStop{}, false
 	}
+	// An in-flight echo cannot survive the session whose read loop carries
+	// it, and a replacement after revert reuses turn indexes, so a
+	// lingering mark would settle a reused-index predecessor
+	// "interrupted". Entries are keyed by router-unique seqs, so a stale
+	// restore's removal against the fresh list finds nothing.
+	identity.interruptMarks = nil
+	identity.stopRow = stopRowClaim{}
+	var effectiveModelRevision uint64
 	if hadEffectiveModel {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
-	// Interrupt marks are session-scoped: an in-flight echo cannot
-	// survive the session whose read loop carries it, and a replacement
-	// session after revert REUSES turn indexes — a lingering mark would
-	// settle a reused-index predecessor "interrupted" with no new
-	// interrupt (round-11, CT11-2). Deletion is safe here (unlike the
-	// epoch maps): mark entries are keyed by router-unique seqs, so a
-	// stale restore's removal against the fresh list finds nothing.
-	identity.interruptMarks = nil
 	r.mu.Unlock()
 	if hadEffectiveModel {
 		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})

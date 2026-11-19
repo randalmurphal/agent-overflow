@@ -3,6 +3,7 @@ package app
 import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -233,6 +235,77 @@ func TestConversationRollbackCodexForksThroughTempSessionWhenStopped(t *testing.
 	}
 	if updated.SessionRef != "forked-provider-thread" {
 		t.Fatalf("SessionRef = %q, want forked-provider-thread", updated.SessionRef)
+	}
+}
+
+// The cold cut resumes the source and forks it in a throwaway app-server,
+// and both load a thread of this app's: both state Codex's own memory as a
+// start of the thread decides it, so the cut child follows the setting as
+// a session's thread does.
+func TestConversationRollbackCodexColdCutStatesTheMemorySetting(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		when      string
+		assistant bool
+		off       bool
+	}{
+		{"always", settings.OwnMemoryOffAlways, false, true},
+		{"an ordinary thread by default", settings.OwnMemoryOffWhereAgentOverflowMemory, false, false},
+		{"an assistant by default", settings.OwnMemoryOffWhereAgentOverflowMemory, true, true},
+		{"an assistant, never", settings.OwnMemoryOffNever, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			thread := createAppTestThread(t, app, "codex-cold-memory", "codex", t.TempDir())
+			thread.SessionRef = "provider-cold-memory"
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("update thread: %v", err)
+			}
+			if tc.assistant {
+				testAssistant(t, app, thread.ID)
+			}
+			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+			insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+			insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+			insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+			seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+			dir := t.TempDir()
+			forkLog, resumeLog := filepath.Join(dir, "fork.jsonl"), filepath.Join(dir, "resume.jsonl")
+			modeLog := filepath.Join(dir, "memory-mode.jsonl")
+			binary := writeCodexForkAtBinary(t, codexForkMock{
+				resumedThreadID:   "provider-cold-memory",
+				forkedThreadID:    "forked-cold-memory",
+				requestLogPath:    forkLog,
+				resumeLogPath:     resumeLog,
+				memoryModeLogPath: modeLog,
+			})
+			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary, "codexOwnMemoryOff": tc.when}); err != nil {
+				t.Fatalf("update settings: %v", err)
+			}
+			if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+				t.Fatalf("revert: %v", err)
+			}
+			resume, err := os.ReadFile(resumeLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for what, request := range map[string]string{"thread/resume": string(resume), "thread/fork": readCodexForkRequest(t, forkLog)} {
+				if off := strings.Contains(request, `"features.memories":false`) && strings.Contains(request, `"memories.generate_memories":false`); off != tc.off {
+					t.Errorf("%s turns Codex's memory off = %v, want %v: %s", what, off, tc.off, request)
+				}
+			}
+			// The resumed thread keeps the mode it was stored with, so only
+			// the stored-mode update excludes it.
+			mode, err := os.ReadFile(modeLog)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if stored := strings.Contains(string(mode), `"threadId":"provider-cold-memory"`) && strings.Contains(string(mode), `"mode":"disabled"`); stored != tc.off {
+				t.Errorf("stores the resumed thread's memory mode as disabled = %v, want %v: %q", stored, tc.off, mode)
+			}
+		})
 	}
 }
 
@@ -493,6 +566,19 @@ type codexForkMock struct {
 	// activeTurnID makes the resumed fake session announce an active turn and
 	// settle it as interrupted while handling thread/revert.
 	activeTurnID string
+	// sessionStartContext, set with activeTurnID, is the context a
+	// SessionStart hook run delivers in the active turn.
+	sessionStartContext string
+	// activeTurnRevertStatus replaces "interrupted" as the status the
+	// active turn settles with while handling thread/revert.
+	activeTurnRevertStatus string
+	// revertRecordPath is a file the mock writes while it handles
+	// thread/revert, as a prompt's memory hook that ran during the cut
+	// writes its record.
+	revertRecordPath string
+	// nextTurnID makes `turn/start` answer with this turn, then start and
+	// complete it.
+	nextTurnID string
 	// revertErrorMessage makes `thread/revert` answer invalid_request
 	// with this message instead of succeeding.
 	revertErrorMessage string
@@ -502,6 +588,8 @@ type codexForkMock struct {
 	// turnsTail is the turn `thread/turns/list` reports as the thread's
 	// newest before any fork sets one.
 	turnsTail string
+	// memoryModeLogPath captures every `thread/memoryMode/set` request.
+	memoryModeLogPath string
 }
 
 func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
@@ -513,6 +601,10 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 	logRevertRequest := ":"
 	if mock.revertLogPath != "" {
 		logRevertRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, mock.revertLogPath)
+	}
+	if mock.revertRecordPath != "" {
+		logRevertRequest += fmt.Sprintf(`
+        /bin/mkdir -p '%s' && /bin/echo '{}' > '%s'`, filepath.Dir(mock.revertRecordPath), mock.revertRecordPath)
 	}
 	logResumeRequest := ":"
 	if mock.resumeLogPath != "" {
@@ -547,15 +639,44 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 		resumeTurnStarted = fmt.Sprintf(
 			`printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"%s","turn":{"id":"%s","status":"inProgress"}}}\n'`,
 			mock.resumedThreadID, mock.activeTurnID)
+		if mock.sessionStartContext != "" {
+			run := `{"id":"session_start:0:0","eventName":"sessionStart","handlerType":"command","executionMode":"sync","scope":"thread","sourcePath":"/<session-flags>/config.toml","source":"sessionFlags","displayOrder":0,"startedAt":1,"status":"%s","entries":%s}`
+			resumeTurnStarted += fmt.Sprintf(`
+		printf '{"jsonrpc":"2.0","method":"hook/started","params":{"threadId":"%s","turnId":"%s","run":`+run+`}}\n'
+		printf '{"jsonrpc":"2.0","method":"hook/completed","params":{"threadId":"%s","turnId":"%s","run":`+run+`}}\n'`,
+				mock.resumedThreadID, mock.activeTurnID, "running", "[]",
+				mock.resumedThreadID, mock.activeTurnID, "completed", `[{"kind":"context","text":"`+mock.sessionStartContext+`"}]`)
+		}
+		status := cmp.Or(mock.activeTurnRevertStatus, "interrupted")
 		revertTurnCompleted = fmt.Sprintf(
-			`printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted"}}}\n'`,
-			mock.resumedThreadID, mock.activeTurnID)
+			`printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"%s"}}}\n'`,
+			mock.resumedThreadID, mock.activeTurnID, status)
 		revertReply = revertTurnCompleted + "\n        " + revertReply
 	}
 	if mock.revertErrorMessage != "" {
 		revertReply = fmt.Sprintf(
 			`printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32600,"message":"%s"}}\n' "$id"`,
 			mock.revertErrorMessage)
+	}
+	memoryModeReply := `printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"`
+	if mock.memoryModeLogPath != "" {
+		memoryModeReply = fmt.Sprintf(`/bin/echo "$line" >> '%s'
+        `, mock.memoryModeLogPath) + memoryModeReply
+	}
+	memoryModeClause := fmt.Sprintf(`    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/memoryMode/set"'; then
+        %s
+        continue
+    fi
+`, memoryModeReply)
+	turnStartClause := ""
+	if mock.nextTurnID != "" {
+		turnStartClause = fmt.Sprintf(`    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"%[2]s","status":"inProgress"}}}\n' "$id"
+        printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"%[1]s","turn":{"id":"%[2]s","status":"inProgress"}}}\n'
+        printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%[1]s","turn":{"id":"%[2]s","status":"completed"}}}\n'
+        continue
+    fi
+`, mock.resumedThreadID, mock.nextTurnID)
 	}
 	injectClauses := ""
 	if mock.injectLogPath != "" {
@@ -621,7 +742,7 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, mock.turnsTail, injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, turnStartClause+injectClauses+memoryModeClause, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 
@@ -700,10 +821,15 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
 		t.Fatal(err)
 	}
+	app.configDir = t.TempDir()
+	seedMemoryRecords(t, app, thread.ID)
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
+	// It can drop memory a turn delivered too, so the next prompt delivers
+	// it whole.
+	requireMemoryRecordsForgotten(t, app, thread.ID, "an in-place revert")
 	// The cut can drop a developer-instructions message injected at an
 	// earlier resume, so the thread's next start must send the text again.
 	if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert"); err != nil || ok {

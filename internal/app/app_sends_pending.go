@@ -62,13 +62,17 @@ type appSendsPendingState struct {
 	pending   map[string]struct{}
 }
 
-// markSendsPendingDirty records that threadID's answer may have changed
-// and starts the worker when none is running. Never blocks on anything
-// but the leaf lock.
+// markSendsPendingDirty records that threadID's answer, and whether it has
+// a session (publishSessionLive), may have changed and starts the worker
+// when none is running. Never blocks on anything
+// but leaf locks.
 func (a *App) markSendsPendingDirty(threadID string) {
 	if threadID == "" {
 		return
 	}
+	// A decision on rest under way learns of the queue's change here, at
+	// the change, not when the worker reads it (app_thread_rest_assess.go).
+	a.noteThreadRestChange(threadID)
 	s := &a.sendsPending
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,6 +109,10 @@ func (a *App) runSendsPendingWorker() {
 		s.mu.Unlock()
 		for _, threadID := range batch {
 			a.publishSendsPending(threadID)
+			a.publishSessionLive(threadID)
+			// A queue that filled or emptied may move a worker into or out
+			// of rest (app_thread_agent_live.go).
+			a.noteWorkerLiveness(threadID)
 		}
 	}
 }
@@ -113,8 +121,14 @@ func (a *App) runSendsPendingWorker() {
 // triage's queue and claim, the dispatcher's batches, and the pending sends
 // awaiting their echo. Dispatch bookkeeping is held across the triage read,
 // as in queueSnapshotForThread, so a message moving between the two is
-// seen on one side. The caller holds flushDispatch.mu.
+// seen on one side. A message counts only while the thread has a session
+// live or starting: one queued with no process waits for the next start,
+// and nothing is working on it (the session registry reports each change,
+// sessionManager.changed). The caller holds flushDispatch.mu.
 func (a *App) readSendsPendingLocked(threadID string) bool {
+	if !a.sessionManager().liveOrStarting(threadID) {
+		return false
+	}
 	if len(a.pendingFlushDispatchItemsLocked(threadID)) > 0 {
 		return true
 	}

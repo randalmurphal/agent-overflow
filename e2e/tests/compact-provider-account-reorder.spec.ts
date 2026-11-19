@@ -49,9 +49,12 @@ test('a touch drag on a grip reorders the saved accounts', async ({ page }) => {
     });
     const scrollBefore = await scroller();
 
+    const held = (await section.getByTestId(`provider-account-${secondId}`).boundingBox())!;
     const x = from.x + from.width / 2;
     const fromY = from.y + from.height / 2;
-    const toY = over.y + over.height / 4;
+    // The held card takes the target's place once its middle passes the
+    // target's; the grip sits at the card's top, so aim the middle, not it.
+    const toY = fromY - (held.y + held.height / 2 - (over.y + over.height / 2)) - over.height / 4;
     const cdp = await page.context().newCDPSession(page);
     try {
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: fromY }] });

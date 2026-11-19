@@ -124,7 +124,7 @@ func TestPendingInteractiveRequestsCleanupThreadClearsOrder(t *testing.T) {
 			Header:   "Scope",
 			Question: "Choose a scope",
 		}},
-	})
+	}, "")
 
 	router.CleanupThread("thread-1")
 
@@ -385,7 +385,7 @@ func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
 		Questions: []provider.UserInputQuestion{{
 			ID: "q", Header: "Q", Question: "?",
 		}},
-	})
+	}, "")
 	r.RegisterQueueItem("thread-1", QueuedFlushItem{
 		ID: "queue:x", Message: "msg",
 	})

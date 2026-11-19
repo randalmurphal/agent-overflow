@@ -1,4 +1,7 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
+import { applyThreadWakesGap } from './eventsThreadWakes';
+import { refreshProviderMemory } from './providerMemory.svelte';
+import { applyThreadAgentRowsGap } from './eventsThreadAgentRows';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
@@ -28,7 +31,6 @@ import { applyQueueStateChanged } from './eventsQueue';
 import { getQueueRevisionForThread } from './sendQueue.svelte';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
-import { readDiscussionChannel } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
@@ -109,8 +111,7 @@ function applyWorkflowGap(channel: string, origin?: EventOrigin): void {
       return;
     case 'workflow:definitions-changed':
       // The event handler IS the resync: it re-reads every loaded project's
-      // definitions, automations and costs, which is exactly what a dropped
-      // frame cost us.
+      // definitions and costs, which is exactly what a dropped frame cost us.
       applyWorkflowDefinitionsChanged();
       return;
     case 'workflow:error':
@@ -184,6 +185,15 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     case 'provider:async_questions_changed':
       refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
       return;
+    case 'thread:wakes_changed':
+      // A lost frame could have named any thread's row, so every tray on
+      // that computer reads its list again; nothing else renders it.
+      applyThreadWakesGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    case 'thread:agent_rows_changed':
+      // The same for the Agents rows: any pane's list may have missed it.
+      applyThreadAgentRowsGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'provider:background_task_output':
       // A dropped append leaves an open tail stale until the command
       // prints again; the re-watch reads the whole tail back.
@@ -209,6 +219,9 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Working through minutes of silence, a missed close leaves it
       // saying Compacting after the turn moved on. The flag is read from
       // the registry by panes and rows alike, so no pane refresh is owed.
+    case 'provider:session_live':
+      // A missed frame leaves End Session offered for a session that
+      // ended, or withheld from one that started.
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:sends_pending': {
@@ -450,7 +463,10 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // changed KEYS and the handler ignores them, because settings converge
       // by re-reading the whole (redacted) projection anyway. One read of an
       // in-memory value recovers every tier at once.
-      for (const computer of getAttachedBackends()) void resyncSettings(computer.id);
+      for (const computer of getAttachedBackends()) {
+        void resyncSettings(computer.id);
+        refreshProviderMemory(computer.id);
+      }
       return;
     }
     case 'agent-computers:changed':
@@ -530,33 +546,6 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // spinner; release every raised flag instead (re-clicking a run that
       // is still live just joins its backend claim).
       releaseThreadTitleGenerationPending();
-      return;
-    }
-    case 'discussion:message':
-    case 'discussion:state': {
-      // A discussion channel's state is owned by the channel, not by any
-      // one pane — so like the usage case above, fetch once per channelId
-      // and apply the identical result to every pane hanging off that
-      // channel's parent thread (split view of the same discussion),
-      // rather than one GetChannelState + GetChannelMessages round trip
-      // per pane. Full resync (afterSeq -1): a gap means we don't trust
-      // any pane's incremental cursor.
-      const seenChannelIds = new Set<string>();
-      for (const pane of ingestPanes()) {
-        const channelId = pane.thread?.discussionId;
-        if (!channelId || seenChannelIds.has(channelId)) continue;
-        seenChannelIds.add(channelId);
-        const refresh = readDiscussionChannel(channelId, -1, ({ state, messages }) => {
-          for (const p of ingestPanes()) {
-            if (p.thread?.discussionId !== channelId) continue;
-            p.applyChannelState(state);
-            p.applyChannelMessages(messages);
-          }
-        }).catch((err: unknown) => {
-          console.warn(`events: refresh discussion channel ${channelId} after transport gap: ${err}`);
-        });
-        if (pane.threadId) holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), refresh);
-      }
       return;
     }
     default:

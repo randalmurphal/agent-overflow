@@ -135,7 +135,7 @@ const (
 	// MEMBERSHIP RULE: the channel must be UNKEYED — one global state, not
 	// per-thread / per-workspace / per-server payloads multiplexed onto one
 	// channel. Keyed channels (git:status, provider:usage,
-	// discussion:state, mcp:status) must NOT go here: capacity 1 would
+	// mcp:status) must NOT go here: capacity 1 would
 	// evict other keys' latest frames and turn their reconnect replay into
 	// silent data loss.
 	RetentionLatestOnly
@@ -263,44 +263,6 @@ var channelPolicies = []ChannelPolicy{
 			"another device is the entire feature, so a LAN or tailnet " +
 			"session that holds preview:open is exactly the intended " +
 			"receiver.",
-	},
-	{
-		Channel:   eventchan.DiscussionDefinitionsChanged,
-		Audience:  AudienceAny,
-		Retention: RetentionLatestOnly,
-		Scope:     ScopeThreadsRead,
-		Why: "Retention: payload-less refetch signal, the same matched set " +
-			"as workflow:definitions-changed and theme:changed — see " +
-			"spinner:changed for the full reasoning. Unkeyed (one " +
-			"definitions catalog, one global answer), so it satisfies the " +
-			"latest-only membership rule. Scope by the rule: ListDiscussions " +
-			"/ ListDiscussionsForThread / GetDiscussion are the reads that " +
-			"answer the same data and all three are threads:read, so the " +
-			"nudge reaches exactly the sessions the listing already answers. " +
-			"Audience any because the composer's Discussions menu and the " +
-			"settings editor render on a phone too, and an editor showing a " +
-			"definition another device deleted offers a start that fails.",
-	},
-	{
-		Channel:   eventchan.DiscussionMessage,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Scope:     ScopeThreadsRead,
-		Why: "Deliberately remote-visible. A session granted threads:read can " +
-			"already call GetChannelMessages, so pushing the same data " +
-			"discloses nothing a poll could not already read — it just saves " +
-			"the round-trip. PostChannelMessage sits a tier up in " +
-			"threads:operate, because dispatching a turn prompt is session " +
-			"control, not a read.",
-	},
-	{
-		Channel:   eventchan.DiscussionState,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Scope:     ScopeThreadsRead,
-		Why: "Deliberately remote-visible, same reasoning as " +
-			"discussion:message: GetChannelState is not LocalOnly. Keyed by " +
-			"channel id, so it must never become latest-only.",
 	},
 	{
 		Channel:   eventchan.DraftUpdated,
@@ -860,10 +822,8 @@ var channelPolicies = []ChannelPolicy{
 			"still reads this channel is pane-lifetime or watched-thread " +
 			"scoped: the send-queue flush confirm, the proposedPlans warm " +
 			"cache (a warm-path optimization — both plan surfaces RPC-load " +
-			"on mount), the activity rail's background controller, and " +
-			"discussionLiveTail's participant child threads, which have no " +
-			"pane but ARE contributed to the watched set by their routing " +
-			"table. The one deliberate degradation is eventsItemStream's " +
+			"on mount), and the activity rail's background controller. " +
+			"The one deliberate degradation is eventsItemStream's " +
 			"eviction branch: an unwatched thread stops having its warm " +
 			"cache and replica window evicted mid-stream, and instead " +
 			"validates on read — the next open stamps the window and " +
@@ -920,6 +880,16 @@ var channelPolicies = []ChannelPolicy{
 			"running between rounds. No message text, so the sidebar audience of " +
 			"provider:turn_started; the queue frames that carry the text " +
 			"stay threads:operate. Keyed per thread: never latest-only.",
+	},
+	{
+		Channel:   eventchan.ProviderSessionLive,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId, live} only: whether a thread has a provider session " +
+			"live or starting, which decides whether End Session has anything " +
+			"to end. No content, so the sidebar audience of provider:sends_pending. " +
+			"Keyed per thread: never latest-only.",
 	},
 	{
 		Channel:   eventchan.ProviderQueueStateChanged,
@@ -1174,7 +1144,7 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
 		Scope:     ScopeSettingsRead,
-		Why: "The whole starred model / discussion list, byte-identical to " +
+		Why: "The whole starred model list, byte-identical to " +
 			"what ListChatBarFavorites answers and what SetChatBarFavorite " +
 			"already returned to the client that wrote it. Scope " +
 			"settings:read because that read is settings:read: the list is " +
@@ -1457,6 +1427,38 @@ var channelPolicies = []ChannelPolicy{
 			"latest-only.",
 	},
 	{
+		Channel:   eventchan.ThreadWakesChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId,id,row?,removed?}: one loop, watch or reminder " +
+			"changed (registered, fired, ran, recorded an outcome, went " +
+			"undelivered, recovered at boot, cancelled, demoted, archived), " +
+			"with the row as it stands. Scope threads:read because " +
+			"ListThreadWakes, the pull half, carries it. NOT EntityFiltered: " +
+			"one fire emits 2 to 4 frames and a loop can fire more than once " +
+			"a minute, and the standing agent's sidebar row reads its schedule " +
+			"for threads no pane shows. Never latest-only: the frames of " +
+			"different rows each carry state the others do not.",
+	},
+	{
+		Channel:   eventchan.ThreadAgentRowsChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId,id?}: one spawn, send or ask a thread made of " +
+			"another thread changed (written, settled, re-targeted, waited " +
+			"on, delivered) or its target's turn, prompt, title or latest " +
+			"activity changed; no id is every request of the thread. The " +
+			"frame names the row and carries none of it: a reader reads " +
+			"the row (GetThreadAgentRows) or the list. Scope threads:read " +
+			"because ListThreadAgentRows, the pull half, carries it. NOT " +
+			"EntityFiltered: a pane lists the rows of threads its own " +
+			"thread spawned, which no pane may be watching. Never " +
+			"latest-only: the frames of different requests each carry " +
+			"state the others do not.",
+	},
+	{
 		Channel:   eventchan.ThreadUnsavedRows,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -1518,8 +1520,8 @@ var channelPolicies = []ChannelPolicy{
 		Why: "Full frames embed the whole store.Thread — absolute project/" +
 			"workspace/worktree paths and session refs — but ListThreads is " +
 			"deliberately wire-safe, so a remote peer can poll identical " +
-			"rows: the push discloses nothing a poll could not (same " +
-			"reasoning as discussion:message). If thread reads ever go " +
+			"rows: the push discloses nothing a poll could not. If thread " +
+			"reads ever go " +
 			"LocalOnly, this row must flip with them. Patch frames merge " +
 			"field-by-field, so every frame matters: never latest-only.",
 	},

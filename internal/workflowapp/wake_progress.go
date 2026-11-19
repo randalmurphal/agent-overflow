@@ -70,17 +70,17 @@ func (s *Service) surfaceWorkflowGateNotify(event engine.NotifyEvent) {
 	}
 	input.Outputs, input.OutputOverflow = s.workflowGateOutputs(item, event)
 	message := wake.ComposeProgress(input)
-	if len(message) > maxWakeMessageBytes {
+	if size := len(message.String()); size > maxWakeMessageBytes {
 		s.deps.Logf("workflow progress wake %s: composed %d bytes; maximum is %d",
-			root.ID, len(message), maxWakeMessageBytes)
+			root.ID, size, maxWakeMessageBytes)
 		return
 	}
 	s.deliverWorkflowWake(root, composedWake{signature: wake.ProgressSignature(input), message: message})
 }
 
 // workflowGateOutputs digests the envelope the gate decided on. It is what
-// makes the message worth sending — "wave 12 finished" with its verdict beats a
-// heartbeat — and it reuses `run inspect`'s bounding so the same outputs read
+// makes the message worth sending ("wave 12 finished" with its verdict beats a
+// heartbeat), and it reuses `run_inspect`'s bounding so the same outputs read
 // the same way wherever a reader meets them.
 //
 // An attempt whose record cannot be read still sends the message: the fact that

@@ -97,7 +97,8 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	// Checked BEFORE the pop rather than inside it because provenance is a
 	// property of the ECHO; the registry has no way to see it.
 	_, isPeerEcho := meta.crossSessionPeer()
-	foreignEcho := isPeerEcho || meta.text("origin") == externalQueueOrigin
+	origin := meta.text("origin")
+	foreignEcho := isPeerEcho || origin == externalQueueOrigin || origin == scheduledTurnOrigin
 
 	if eventParentID(evt) == "" && !foreignEcho {
 		handled, err := func() (bool, error) {
@@ -154,7 +155,16 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// "Injected provider context".
 		return r.persistPeerSessionMessage(evt, providerItemID, peer)
 	}
-	if meta.text("origin") == externalQueueOrigin {
+	if origin == scheduledTurnOrigin {
+		// The prompt of a turn the provider started from its own schedule
+		// (a Claude cron job's fire or ScheduleWakeup wake). The model
+		// stored it when it scheduled the turn; nobody typed it now.
+		if err := r.openScheduledTurn(evt); err != nil {
+			return err
+		}
+		return r.persistExternalOriginMessage(evt, providerItemID, "scheduled", scheduledTurnOrigin, nil)
+	}
+	if origin == externalQueueOrigin {
 		// The user echo of a turn another Codex process queued onto this
 		// thread (`codex queue --thread`). AO never sent it, so no
 		// pending-send entry matches, but the session stamped its origin
@@ -198,7 +208,8 @@ func (r *Router) confirmRecordedSend(evt provider.ProviderEvent, meta userTextMe
 // confirmConsumedSend records the provider's consumption of a popped send:
 // its row lands or is stamped, a queue-boundary merge folds, and a failed
 // write puts the entry back for a retry. Every confirmation source (echo,
-// transcript record, lifecycle backstop) runs this one transaction.
+// transcript record, lifecycle backstop) runs this one transaction; a merge
+// fold consumes the members it absorbs (settleFoldedMergeState).
 //
 // Caller holds the thread's flush anchor lock, so the popped snapshot's
 // AnchoredAtInterrupt / WasDeferred state is truthful: the interrupt paths
@@ -215,6 +226,8 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	// self-heal can stamp them — the confirmation won't necessarily be
 	// re-delivered (round-6, R6-1).
 	pending.stashEchoIdentity(providerItemID, parentUUID)
+	// The provider has the message whatever the row writes below do.
+	r.reportSendsConsumed(evt.ThreadID, []pendingSend{pending})
 	// Decided BEFORE the handlers run, off the entry just popped: a merge
 	// is read from what the popped send expected against what the
 	// confirmation actually carries. Acting on it waits until the
@@ -230,15 +243,15 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	if handleErr == nil && len(merged) > 0 {
 		// The provider merged earlier dispatched messages into this
 		// one, so AO's rows become the one row the transcript holds.
-		handleErr = r.foldMergedFlushRows(evt.ThreadID, &pending, merged)
+		handleErr = r.foldMergedFlushRows(evt.ThreadID, evt.SessionToken, &pending, merged)
 	}
+	// After the writes, so an echo that opened the send's own turn has
+	// opened it, and before a failed write puts the entry back, so the
+	// retry does not report it again.
+	r.reportSendsDelivered(evt.ThreadID, evt.SessionToken, []*pendingSend{&pending})
 	if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
 	}
-	// After the handlers: a consumption that opens the send's own turn has
-	// opened it, and a fold has widened the survivor's row. Reported even
-	// when a write failed, because the provider has the message either way.
-	r.reportSendConsumed(evt.ThreadID, &pending)
 	if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		// This confirmation IS the consumption boundary even though the
 		// write failed: record the message anchor now so fork /
@@ -261,7 +274,43 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 		// provably contains it (round-5, R5-3).
 		r.reinsertPendingSendHead(evt.ThreadID, pending)
 	}
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
+		st.retireResolvedFlushDigests()
+	}
+	r.mu.Unlock()
 	return handleErr
+}
+
+// reportSendsConsumed tells the app layer (flushSendConsumed) that the
+// provider consumed these sends, by the rows and send ids they carry. A send
+// whose ids cannot be read leaves its owners unconfirmed, so the next boot
+// gives its message back; that is logged with the send it concerns. Caller
+// holds the thread's flush anchor lock and not r.mu.
+func (r *Router) reportSendsConsumed(threadID string, sends []pendingSend) {
+	consumed := make([]ConsumedSend, 0, len(sends))
+	for _, send := range sends {
+		sendIDs, err := send.sendIDs()
+		if err != nil {
+			log.Printf("triage: consumed send %s/%s (queue %s) leaves its owners unconfirmed: %v", threadID, send.AOItemID, send.QueueItemID, err)
+			continue
+		}
+		if len(sendIDs) > 0 {
+			consumed = append(consumed, ConsumedSend{ItemID: send.AOItemID, SendIDs: sendIDs})
+		}
+	}
+	r.reportConsumed(threadID, consumed)
+}
+
+// reportConsumed hands consumed sends to flushSendConsumed.
+func (r *Router) reportConsumed(threadID string, sends []ConsumedSend) {
+	r.mu.Lock()
+	consumed := r.flushSendConsumed
+	r.mu.Unlock()
+	if consumed == nil || len(sends) == 0 {
+		return
+	}
+	consumed(threadID, sends)
 }
 
 func (r *Router) persistDeferredUserText(pending *pendingSend, evt provider.ProviderEvent) error {
@@ -280,7 +329,7 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, evt provider.Prov
 	r.captureUserConfirmation(item.ThreadID, pending, eventTimestampMillis(evt))
 	persisted, err := r.commitUserConfirmation(item.ThreadID, pending, eventTimestampMillis(evt))
 	// Consumption advances provider attribution even when the cache write fails.
-	r.openQueuedEchoTurn(item.ThreadID, item.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
+	r.openQueuedEchoTurn(item.ThreadID, item.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	if err != nil {
 		return err
 	}
@@ -500,6 +549,30 @@ const userEchoClientIDMetaKey = "client_id"
 // `TestPeerMessageOriginMatchesTheProviderConstant`.
 const crossSessionMessageOrigin = "peer-session"
 
+// openScheduledTurn opens the turn a scheduled prompt starts when nothing
+// has opened it yet. A ScheduleWakeup wake sends `system/init` first, which
+// opens the turn (handleInit); a cron job's fire sends none, so its prompt
+// is the first frame of its turn and would otherwise join the turn before
+// it. A send waiting for a turn takes the fire into its own, as an init
+// would (docs/architecture/turn-lifecycle.md §Turns the provider starts).
+func (r *Router) openScheduledTurn(evt provider.ProviderEvent) error {
+	if _, open := r.openTurnIndex(evt.ThreadID); open {
+		return nil
+	}
+	unlock := r.LockTurnAllocation(evt.ThreadID)
+	defer unlock()
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.handleTurnStart(evt)
+	}
+	return r.openProviderStartedTurn(evt)
+}
+
+// scheduledTurnOrigin mirrors `claude.ScheduledTurnOrigin`: the user row
+// of a turn the provider started from its own schedule. Duplicated for the
+// same reason as crossSessionMessageOrigin and pinned by
+// `TestScheduledTurnOriginMatchesTheProviderConstant`.
+const scheduledTurnOrigin = "scheduled"
+
 // attachProviderItemIDToUserRow merges `provider_item_id` onto the
 // existing AO-persisted user row's meta and re-emits the upsert. The
 // row's Summary stays untouched: AO already trimmed/cleaned content on
@@ -572,7 +645,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	// own, so its consumption opens it, exactly as a deferred row's does.
 	// A no-op when its turn is open.
 	if pending.Shape == sendShapeDirect && !pending.OpenedTurn {
-		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
+		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	}
 	if !pending.Confirmation.Placement && !pending.Confirmation.Promoted {
 		merged, err := usermessage.MergeProviderIDs(existing.Meta, providerItemID, pending.EchoParentUUID)
@@ -591,7 +664,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		}
 	}
 	if pending.WasDeferred {
-		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
+		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	}
 	persisted, err := r.commitUserConfirmation(threadID, pending, eventTimestampMillis(evt))
 	if err != nil {

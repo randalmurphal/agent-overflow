@@ -3,7 +3,6 @@
   //   1. project chip · state word · sweep counter when parked
   //   2. the run title
   //   3. hint — `workflow · wave 3 · implement · parked 7h · $3.10`, plus
-  //      `spawned by <automation> · <trigger>` on an automation run and
   //      `→ <thread>` on a bound one.
   //
   // R1: the state word carries the only colour on this block, and only for
@@ -14,7 +13,6 @@
   import { workflowRunSignal } from '../../utils/workflowRunSignal';
   import { runMapPosition } from '../../utils/workflowRunMap';
   import { attachWorkflowRunMap, peekWorkflowRunMap } from '../../stores/workflowRunMap.svelte';
-  import { getWorkflowAutomations } from '../../stores/workflowRuns.svelte';
   import { getProject } from '../../stores/projects.svelte';
   import { openWorkflowThreadById } from '../../stores/workflowThreads';
   import { getThreadById } from '../../stores/threads.svelte';
@@ -55,12 +53,6 @@
   // resolves and a bound workflow thread falls back to the neutral word.
   let boundThreadTitle = $derived(boundThreadId ? (getThreadById(boundThreadId)?.title || 'thread') : '');
 
-  let automation = $derived(
-    item.source === 'automation' && item.sourceRef
-      ? getWorkflowAutomations(item.projectId).find((entry) => entry.id === item.sourceRef)
-      : undefined,
-  );
-
   // Where the run actually IS (RUN-MAP §11.4). `phase N/M` is a frozen SQL
   // ordinal joined by started_at with an alphabetical tiebreak, so a retried or
   // looped run reads a lower phase than it is on, and a campaign root reads its
@@ -93,7 +85,6 @@
       ? workflowAge(item.startedAt || item.createdAt)
       : `parked ${workflowAge(item.endedAt || item.startedAt || item.createdAt)}`,
     formatWorkflowCost(costUsd),
-    automation ? `spawned by ${automation.name}${automation.triggerSummary ? ` · ${automation.triggerSummary}` : ''}` : '',
   ]));
 </script>
 

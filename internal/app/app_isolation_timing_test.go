@@ -35,8 +35,8 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	computer := uuid.NewString()
 
 	open := f.seedRemoteRequest(t, computer)
-	if delay := f.scheduleDelay(t, open); delay <= 0 || delay > poll+200*time.Millisecond {
-		t.Fatalf("open request rescheduled in %s, want about %s", delay, poll)
+	if delay := f.scheduleDelay(t, open); !delay.is(poll) {
+		t.Fatalf("open request rescheduled in %s, want %s", delay, poll)
 	}
 	_, _, end := f.app.beginWait(context.Background(), threadRequestWait{}, []string{open})
 	if delay := f.app.threadPollDelay(open); delay != poll {
@@ -47,8 +47,8 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	settled := f.seedRemoteRequest(t, computer)
 	now := time.Now()
 	f.settleRemote(t, settled, now, now.Add(threadLateReplyWindow))
-	if delay := f.scheduleDelay(t, settled); delay <= poll || delay > 2*poll+200*time.Millisecond {
-		t.Fatalf("settled request rescheduled in %s, want about %s", delay, 2*poll)
+	if delay := f.scheduleDelay(t, settled); !delay.is(2 * poll) {
+		t.Fatalf("settled request rescheduled in %s, want %s", delay, 2*poll)
 	}
 
 	if err := f.app.startThreadTransfers(); err != nil {
@@ -57,5 +57,24 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	t.Cleanup(f.app.transfers.close)
 	if got := f.app.transfers.live.Load().jobs.PendingRetry(); got != retry {
 		t.Fatalf("transfer pending retry = %s, want %s", got, retry)
+	}
+}
+
+// TestIsolationReachesThePromptLeaseAndTheOlderOwnerOpsPeer: a harness boot's
+// shortened prompt lease is the lease a routed prompt is held for, and its
+// older-peer switch is what the owner operation door reads.
+func TestIsolationReachesThePromptLeaseAndTheOlderOwnerOpsPeer(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	if f.app.promptLease() != workerPromptLease || f.app.ownerOpsOmitted {
+		t.Fatalf("an unconfigured app has lease %s and owner ops omitted %v", f.app.promptLease(), f.app.ownerOpsOmitted)
+	}
+	const lease = 7 * time.Second
+	ConfigureIsolation(f.app, IsolationConfig{WorkerPromptLease: lease, OmitOwnerOps: true})
+	if got := f.app.promptLease(); got != lease {
+		t.Fatalf("prompt lease = %s, want %s", got, lease)
+	}
+	if !f.app.ownerOpsOmitted {
+		t.Fatal("the older owner operations peer was not configured")
 	}
 }

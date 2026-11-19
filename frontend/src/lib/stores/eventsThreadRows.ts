@@ -8,9 +8,12 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
+import { refreshAgentWakes } from './threadWakes.svelte';
+import { forgetThreadWorkerSummary, refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
+import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, loadThreads, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, unlistThread } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
@@ -116,8 +119,13 @@ export function syncThreadRow(updated: Thread): Thread {
 }
 
 export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
-  const cachedThread = getThreadById(evt.threadId)
-    ?? ingestPaneShowingThread(evt.threadId)?.thread;
+  const known = getThreadById(evt.threadId);
+  // A row sent with the completion already in it (a quiet tick's) has
+  // nothing to add.
+  if (known && (known.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY) >= evt.completedAt) {
+    return;
+  }
+  const cachedThread = known ?? ingestPaneShowingThread(evt.threadId)?.thread;
   if (!cachedThread) {
     return;
   }
@@ -218,11 +226,28 @@ export function reconcileThreadRows(rows: Thread[]): void {
   const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
   replaceAllThreads(merged);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
+  // A pane or hidden companion that recorded a thread as an assistant's
+  // current thread, while the list as stored (one current thread per
+  // assistant) names another, missed the handoff frame that would have
+  // moved it (lost, or sent while this client was away) and moves as that
+  // frame would have. Its own record decides, not the list's row, which the
+  // successor's listed frame already marks past. One opened on a past
+  // thread recorded it as past and stays.
+  const currentByAgent = new Map(getThreads().flatMap((thread) => (thread.agentId ? [[thread.agentId, thread] as const] : [])));
+  const successorOf = (shown: Thread): Thread | undefined => {
+    const current = shown.agentId ? currentByAgent.get(shown.agentId) : undefined;
+    return current && current.id !== shown.id ? current : undefined;
+  };
+  const handedOff = new Map<string, Thread>();
   for (const pane of ingestPanes()) {
     if (!pane.threadId || !pane.thread) continue;
+    const successor = successorOf(pane.thread);
+    if (successor) handedOff.set(pane.threadId, successor);
     const row = mergedById.get(pane.threadId);
     if (row) pane.replaceThread(row);
   }
+  followAssistantHandOffsInStash(successorOf);
+  for (const [oldThreadId, successor] of handedOff) moveAssistantPanes(oldThreadId, successor);
 }
 
 let sidebarRefreshQueued = false;
@@ -239,6 +264,8 @@ export function refreshSidebarProjections(): void {
     void refreshProjects();
     // Groups have no local row merge, so the ordinary list load recovers them.
     void refreshThreadGroups();
+    void refreshAgentWakes();
+    void refreshThreadWorkerSummaries();
   });
 }
 
@@ -374,6 +401,12 @@ export interface ThreadUpdateEvent {
   model?: string;
   sessionRef?: string;
   /**
+   * On the frame of an assistant's old thread: its successor. The frame is
+   * `unlisted`, or `full` when the old thread was unarchived since the
+   * handoff; either way what showed the old thread moves to the successor.
+   */
+  handOffTo?: string;
+  /**
    * A sidebar-activity bump from an activity-counting user_text persist,
    * and nothing else — turn completions and approval requests announce
    * themselves on their own channels. Deliberately NOT merged into the row:
@@ -405,6 +438,7 @@ export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
  */
 export function applyThreadDeleted(id: string): void {
   removeThread(id);
+  forgetThreadWorkerSummary(id);
   if (!deferEmptyDraftDeletion(id, () => followDeletedThread(id))) followDeletedThread(id);
 }
 
@@ -459,8 +493,12 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       const id = evt.thread?.id ?? evt.id;
       if (!id) return;
       if (evt.thread) syncThreadRow(evt.thread);
+      // Archiving a past thread is not a handoff and closes its panes.
+      const successor = handOffSuccessor(evt);
+      if (successor) followAssistantHandOffInStash(id, successor);
       removeThread(id);
-      closePanesShowingThread(id);
+      if (successor) moveAssistantPanes(id, successor);
+      else closePanesShowingThread(id);
       return;
     }
     case 'emptied': {
@@ -489,9 +527,24 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       // 'full': the row's current state. Says nothing about membership,
       // so a row this client does not have is not invented here — the
       // authoritative ListThreads resync owns that.
-      if (evt.thread?.id) syncThreadRow(evt.thread);
+      if (!evt.thread?.id) return;
+      syncThreadRow(evt.thread);
+      // A handoff whose old thread was unarchived before it was announced:
+      // the row stays listed, and what showed it still moves.
+      const successor = handOffSuccessor(evt);
+      if (successor) {
+        followAssistantHandOffInStash(evt.thread.id, successor);
+        moveAssistantPanes(evt.thread.id, successor);
+      }
     }
   }
+}
+
+// A handoff lists the assistant's new thread first and names it on the old
+// thread's frame: the panes and hidden companions that showed the old one
+// move to it.
+function handOffSuccessor(evt: ThreadUpdateEvent): Thread | undefined {
+  return evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
 }
 
 function noteThreadFrame(evt: ThreadUpdateEvent): void {

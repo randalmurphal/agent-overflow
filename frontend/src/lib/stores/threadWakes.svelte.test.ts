@@ -1,0 +1,550 @@
+import { flushSync } from 'svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { answerAsV0019 } from '../../test/helpers/olderComputer';
+import {
+  ensureAgentWakes,
+  forgetAgentWakes,
+  getAgentWakeRows,
+  getThreadWakeListing,
+  refreshAgentWakes,
+  resetThreadWakesForTest,
+  retainThreadWakes,
+  threadWakesRetentionForTest,
+} from './threadWakes.svelte';
+import { applyThreadWakesChanged, applyThreadWakesGap } from './eventsThreadWakes';
+import { replaceAllThreads } from './threads.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { detachBackend, takePinnedBackend } from '../transport/backends';
+import { noteThread } from '../transport/entityIndex';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import type { Thread } from '../types/models';
+import type { ThreadWakeRow, ThreadWakes } from './bindings';
+
+function row(id: string, overrides: Partial<ThreadWakeRow> = {}): ThreadWakeRow {
+  return { id, kind: 'loop', label: id, state: 'armed', ...overrides } as ThreadWakeRow;
+}
+
+function thread(id: string, overrides: Partial<Thread> = {}): Thread {
+  return {
+    id, title: id, provider: 'claude', model: 'test', projectId: 'project-1',
+    projectPath: '/tmp/ws', workspacePath: '/tmp/ws', createdAt: 0, updatedAt: 0, archived: false, ...overrides,
+  };
+}
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+}
+
+describe('thread wakes store', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetStagedBackends();
+    resetThreadWakesForTest();
+    replaceAllThreads([thread('agent', { agentId: 'agent' }), thread('plain')]);
+  });
+
+  it('files a row under the computer that answered it, so a later outage there keeps it', async () => {
+    stageBackend({ id: 'gpu' });
+    let gpuDown = false;
+    // The gpu agent is not in the thread list yet: its wake read landed
+    // before the catalog did.
+    setBindingMock('ListStandingAgentWakes', async () => {
+      if (takePinnedBackend() !== 'gpu') return [{ threadId: 'agent', rows: [row('l1')] }];
+      if (gpuDown) throw new Error('offline');
+      return [{ threadId: 'gpu-agent', rows: [row('g1')] }];
+    });
+    await refreshAgentWakes();
+    expect(getAgentWakeRows('gpu-agent').map((r) => r.id)).toEqual(['g1']);
+    gpuDown = true;
+    await refreshAgentWakes();
+    expect(getAgentWakeRows('gpu-agent').map((r) => r.id)).toEqual(['g1']);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+  });
+
+  it('replays a frame over a slow computer\'s late answer, however late it lands', async () => {
+    vi.useFakeTimers();
+    try {
+      stageBackend({ id: 'gpu' });
+      let gpuAnswer: (rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void = () => {};
+      setBindingMock('ListStandingAgentWakes', () => {
+        if (takePinnedBackend() !== 'gpu') return Promise.resolve([{ threadId: 'agent', rows: [row('l1')] }]);
+        return new Promise((resolve) => { gpuAnswer = resolve; });
+      });
+      const done = refreshAgentWakes();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+      // Well past the startup read budget, the loop is cancelled.
+      await vi.advanceTimersByTimeAsync(10_000);
+      applyThreadWakesChanged({ threadId: 'gpu-agent', id: 'g1', row: row('g1', { state: 'running' }) }, 'gpu');
+      applyThreadWakesChanged({ threadId: 'gpu-agent', id: 'g1', removed: true }, 'gpu');
+      // The computer's answer predates the cancel.
+      gpuAnswer([{ threadId: 'gpu-agent', rows: [row('g1'), row('g2')] }]);
+      await done;
+      expect(getAgentWakeRows('gpu-agent').map((r) => r.id)).toEqual(['g2']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replays over a computer's bulk answer only the frames that computer sent", async () => {
+    stageBackend({ id: 'gpu' });
+    let gpuAnswer: (rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void = () => {};
+    let homeRows: { threadId: string; rows: ThreadWakeRow[] }[] = [{ threadId: 'agent', rows: [] }];
+    setBindingMock('ListStandingAgentWakes', () => {
+      if (takePinnedBackend() !== 'gpu') return Promise.resolve(homeRows);
+      return new Promise((resolve) => { gpuAnswer = resolve; });
+    });
+    const done = refreshAgentWakes();
+    await flush();
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+    // The loop's cancel is lost; this computer's read after the gap settles it.
+    homeRows = [];
+    await refreshAgentWakes(HOME_BACKEND);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+
+    gpuAnswer([]);
+    await done;
+    expect(getAgentWakeRows('agent')).toEqual([]);
+  });
+
+  it('lets only the newest bulk read of a computer decide', async () => {
+    const answers: ((rows: { threadId: string; rows: ThreadWakeRow[] }[]) => void)[] = [];
+    setBindingMock('ListStandingAgentWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    const older = refreshAgentWakes();
+    const newer = refreshAgentWakes();
+    await flush();
+    answers[1]([{ threadId: 'agent', rows: [row('new')] }]);
+    await newer;
+    answers[0]([{ threadId: 'agent', rows: [row('old')] }]);
+    await older;
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['new']);
+  });
+
+  it('loads every agent\'s live loops and watches, dropping reminders', async () => {
+    setBindingMock('ListStandingAgentWakes', async () => [
+      { threadId: 'agent', rows: [row('l1'), row('r1', { kind: 'reminder' }), row('w1', { kind: 'watch' })] },
+    ]);
+    await refreshAgentWakes();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1', 'w1']);
+    expect(getAgentWakeRows('plain')).toEqual([]);
+  });
+
+  // v0.0.19 has no wakes: its computer and threads read as having none,
+  // and nothing is logged.
+  it('reads no wakes and logs nothing on a computer without them', async () => {
+    const logged = vi.spyOn(console, 'error');
+    answerAsV0019();
+    await refreshAgentWakes();
+    ensureAgentWakes('agent');
+    await flush();
+    expect(getBindingMock('ListStandingAgentWakes')).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('ListThreadWakes')).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    expect(logged).not.toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it('reads one row on demand, once, and leaves a known row alone', async () => {
+    const list = setBindingMock('ListThreadWakes', async () => ({ rows: [row('l1')], moreReminders: false }));
+    ensureAgentWakes('agent');
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers a thread read with no rows, and reads it again only once forgotten', async () => {
+    const list = setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    // Demoted and promoted again: the rows are read afresh.
+    forgetAgentWakes('agent');
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards a read that lands after the thread was forgotten', async () => {
+    let answer: (wakes: { rows: ThreadWakeRow[]; moreReminders: boolean }) => void = () => {};
+    setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answer = resolve; }));
+    ensureAgentWakes('agent');
+    await flush();
+    forgetAgentWakes('agent');
+    answer({ rows: [row('l1')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent')).toEqual([]);
+  });
+
+  it('applies a changed row, drops a removed one, and re-reads an unreadable one', async () => {
+    setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('l1')] }]);
+    await refreshAgentWakes();
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent')[0]?.state).toBe('running');
+    applyThreadWakesChanged({ threadId: 'agent', id: 'w1', row: row('w1', { kind: 'watch' }) }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1', 'w1']);
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1', removed: true }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['w1']);
+
+    const list = setBindingMock('ListThreadWakes', async () => ({ rows: [row('w2', { kind: 'watch' })], moreReminders: false }));
+    applyThreadWakesChanged({ threadId: 'agent', id: 'w1' }, HOME_BACKEND);
+    await flush();
+    expect(list).toHaveBeenCalledWith('agent');
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['w2']);
+  });
+
+  it('ignores reminders and rows of threads that are not standing agents', () => {
+    applyThreadWakesChanged({ threadId: 'agent', id: 'r1', row: row('r1', { kind: 'reminder' }) }, HOME_BACKEND);
+    applyThreadWakesChanged({ threadId: 'plain', id: 'l1', row: row('l1') }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    expect(getAgentWakeRows('plain')).toEqual([]);
+    // A thread promoted since boot gets its first row from the frame.
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1', row: row('l1') }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+  });
+
+  it("does not let a thread's read that was out before a gap land over the gap's newer answer", async () => {
+    const answers: Array<(wakes: { rows: ThreadWakeRow[]; moreReminders: boolean }) => void> = [];
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('new')] }]);
+    ensureAgentWakes('agent');
+    await flush();
+    // A frame was lost: the computer is read again, and answers first.
+    applyThreadWakesGap(HOME_BACKEND);
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['new']);
+    answers[0]({ rows: [row('old')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['new']);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again for a thread the gap's answer did not list while its read was out", async () => {
+    const answers: Array<(wakes: { rows: ThreadWakeRow[]; moreReminders: boolean }) => void> = [];
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    setBindingMock('ListStandingAgentWakes', async () => []);
+    ensureAgentWakes('agent');
+    await flush();
+    applyThreadWakesGap(HOME_BACKEND);
+    await flush();
+    // The first read may predate the gap; only the one asked after it lands.
+    expect(list).toHaveBeenCalledTimes(2);
+    answers[0]({ rows: [row('old')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    answers[1]({ rows: [row('fresh')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['fresh']);
+  });
+
+  it('re-reads every computer on a gap', async () => {
+    const list = setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('l9')] }]);
+    applyThreadWakesGap(HOME_BACKEND);
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l9']);
+  });
+
+  it('drops the row when the last loop is cancelled, and the reset clears everything', async () => {
+    setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('l1')] }]);
+    await refreshAgentWakes();
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1', removed: true }, HOME_BACKEND);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    expect(getAgentWakeRows('agent')).toBe(getAgentWakeRows('plain'));
+  });
+
+  it('reruns only the rows of the thread a frame names', async () => {
+    const busy = Array.from({ length: 200 }, (_, i) => `busy-${i}`);
+    const idle = Array.from({ length: 100 }, (_, i) => `idle-${i}`);
+    replaceAllThreads([...busy, ...idle].map((id) => thread(id, { agentId: id })));
+    setBindingMock('ListStandingAgentWakes', async () => busy.map((threadId) => ({ threadId, rows: [row(`l-${threadId}`)] })));
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+    await refreshAgentWakes();
+    // Idle agents are absent from the bulk read; each row reads its own.
+    for (const id of idle) ensureAgentWakes(id);
+    await flush();
+
+    // One effect per mounted agent row, as AgentStateLine derives its line.
+    const runs = new Map<string, number>();
+    const unmount = $effect.root(() => {
+      for (const id of [...busy, ...idle]) {
+        $effect(() => {
+          runs.set(id, (runs.get(id) ?? 0) + 1);
+          getAgentWakeRows(id);
+        });
+      }
+    });
+    flushSync();
+    const reran = (frame: () => void) => {
+      const before = new Map(runs);
+      frame();
+      flushSync();
+      return [...runs].filter(([id, n]) => n !== before.get(id)).map(([id]) => id);
+    };
+
+    // A changed row, an idle agent's first loop, and a busy agent's last.
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-7', id: 'l-busy-7', row: row('l-busy-7', { state: 'running' }) }, HOME_BACKEND))).toEqual(['busy-7']);
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'idle-3', id: 'l1', row: row('l1') }, HOME_BACKEND))).toEqual(['idle-3']);
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-8', id: 'l-busy-8', removed: true }, HOME_BACKEND))).toEqual(['busy-8']);
+    // A reminder is not the sidebar's: no row reruns.
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-9', id: 'r1', row: row('r1', { kind: 'reminder' }) }, HOME_BACKEND))).toEqual([]);
+    // A resync that finds what the store holds reruns nothing.
+    setBindingMock('ListStandingAgentWakes', async () => [
+      ...busy.filter((id) => id !== 'busy-8').map((threadId) => ({ threadId, rows: [row(`l-${threadId}`, threadId === 'busy-7' ? { state: 'running' } : {})] })),
+      { threadId: 'idle-3', rows: [row('l1')] },
+    ]);
+    const before = new Map(runs);
+    await refreshAgentWakes();
+    flushSync();
+    expect([...runs].filter(([id, n]) => n !== before.get(id))).toEqual([]);
+    unmount();
+  });
+
+  it('keeps an agent\'s rows while it reads an unreadable row again', async () => {
+    setBindingMock('ListThreadWakes', async () => ({ rows: [row('l1')], moreReminders: 0 }));
+    ensureAgentWakes('agent');
+    await flush();
+    let answer: (wakes: ThreadWakes) => void = () => {};
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answer = resolve; }));
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1' }, HOME_BACKEND);
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+    answer({ rows: [row('l2')], moreReminders: 0 });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+  });
+
+  it('reads an agent again for an unreadable row that lands while its own read is out', async () => {
+    replaceAllThreads([thread('agent', { agentId: 'agent' })]);
+    const answers: Array<(wakes: ThreadWakes) => void> = [];
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    ensureAgentWakes('agent');
+    await flush();
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1' }, HOME_BACKEND);
+    answers[0]({ rows: [row('l1')], moreReminders: 0 });
+    await flush();
+    // The frame may postdate the answer: the agent is read again.
+    expect(list).toHaveBeenCalledTimes(2);
+    answers[1]({ rows: [row('l2')], moreReminders: 0 });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+    // Still known: a later unreadable row reads it again too.
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l2' }, HOME_BACKEND);
+    await flush();
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  describe('a retained listing', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function reminder(id: string, nextAt: number): ThreadWakeRow {
+      return row(id, { kind: 'reminder', nextAt });
+    }
+
+    async function retain(threadId: string, wakes: ThreadWakes) {
+      vi.useFakeTimers();
+      const read = setBindingMock('ListThreadWakes', async () => wakes);
+      const release = retainThreadWakes(threadId);
+      await vi.advanceTimersByTimeAsync(0);
+      return { read, release };
+    }
+
+    it('settles a reminder at the bound from the frame while it holds every reminder', async () => {
+      const listed = Array.from({ length: 64 }, (_, i) => reminder(`r${String(i).padStart(2, '0')}`, 1000 + i));
+      const { read, release } = await retain('plain', { rows: listed, moreReminders: 0 });
+      applyThreadWakesChanged({ threadId: 'plain', id: 'early', row: reminder('early', 1) }, HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(1);
+      const listing = getThreadWakeListing('plain')!;
+      expect(listing.reminders.map((r) => r.id)).toEqual(['early', ...listed.slice(0, 63).map((r) => r.id)]);
+      expect(listing.moreReminders).toBe(1);
+
+      // One unlisted reminder exists now: removing a listed one brings it in,
+      // which only the backend knows.
+      applyThreadWakesChanged({ threadId: 'plain', id: 'early', removed: true }, HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(2);
+      release();
+    });
+
+    it('applies a frame that lands while its read is out over the answer', async () => {
+      vi.useFakeTimers();
+      let answer: (wakes: ThreadWakes) => void = () => {};
+      setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answer = resolve; }));
+      const release = retainThreadWakes('plain');
+      await vi.advanceTimersByTimeAsync(0);
+      applyThreadWakesChanged({ threadId: 'plain', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+      applyThreadWakesChanged({ threadId: 'plain', id: 'r1', removed: true }, HOME_BACKEND);
+      // The answer was read before both writes.
+      answer({ rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      const listing = getThreadWakeListing('plain')!;
+      expect(listing.loops.map((r) => [r.id, r.state])).toEqual([['l1', 'running']]);
+      expect(listing.reminders).toEqual([]);
+      release();
+    });
+
+    /** A tray's reads, each answered or failed when the test says. */
+    function heldListings() {
+      const reads: Array<{ answer: (wakes: ThreadWakes) => void; fail: (err: Error) => void }> = [];
+      const list = setBindingMock('ListThreadWakes', () => new Promise<ThreadWakes>((answer, fail) => { reads.push({ answer, fail }); }));
+      return { list, reads };
+    }
+
+    for (const [how, readComputer] of [
+      ['a lost frame', () => applyThreadWakesGap(HOME_BACKEND)],
+      ['a resync', () => void refreshAgentWakes()],
+    ] as const) {
+      it(`keeps the loops of ${how}'s bulk answer over a tray's read that was out before it, and the read's reminders`, async () => {
+        vi.useFakeTimers();
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        noteThread('agent', HOME_BACKEND);
+        const { list, reads } = heldListings();
+        setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('l1', { state: 'done' })] }]);
+        const release = retainThreadWakes('agent');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(list).toHaveBeenCalledTimes(1);
+        // A frame lands while the tray's read is out; the next change of
+        // the row is lost, and the computer is read again.
+        applyThreadWakesChanged({ threadId: 'agent', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+        readComputer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(getAgentWakeRows('agent').map((r) => [r.id, r.state])).toEqual([['l1', 'done']]);
+
+        // The tray's read answers with what it read before the bulk read.
+        reads[0]!.answer({ rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+        await vi.advanceTimersByTimeAsync(0);
+        let listing = getThreadWakeListing('agent')!;
+        expect(listing.loops.map((r) => [r.id, r.state])).toEqual([['l1', 'done']]);
+        expect(listing.reminders.map((r) => r.id)).toEqual(['r1']);
+
+        // The tray is read again after the bulk answer, and that read fails.
+        await vi.advanceTimersByTimeAsync(500);
+        expect(list).toHaveBeenCalledTimes(2);
+        reads[1]!.fail(new Error('database is locked'));
+        await vi.advanceTimersByTimeAsync(0);
+        listing = getThreadWakeListing('agent')!;
+        expect(listing.loops.map((r) => [r.id, r.state])).toEqual([['l1', 'done']]);
+        expect(listing.reminders.map((r) => r.id)).toEqual(['r1']);
+        expect(getAgentWakeRows('agent').map((r) => [r.id, r.state])).toEqual([['l1', 'done']]);
+        expect(threadWakesRetentionForTest()).toEqual({ outstanding: 0, loopsAt: 0, remindersAt: 0, trayReads: 0 });
+        release();
+      });
+    }
+
+    it("keeps a tray's answer over the sidebar's read of the thread that started before it, frames included", async () => {
+      vi.useFakeTimers();
+      noteThread('agent', HOME_BACKEND);
+      const { list, reads } = heldListings();
+      ensureAgentWakes('agent');
+      await vi.advanceTimersByTimeAsync(0);
+      // Frames land while the sidebar's read is out, before the tray opens;
+      // the tray's read answers after a later change to the same rows.
+      applyThreadWakesChanged({ threadId: 'agent', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+      applyThreadWakesChanged({ threadId: 'agent', id: 'r1', row: reminder('r1', 5) }, HOME_BACKEND);
+      const release = retainThreadWakes('agent');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(list).toHaveBeenCalledTimes(2);
+      reads[1]!.answer({ rows: [row('l1', { state: 'done' }), reminder('r1', 9)], moreReminders: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      reads[0]!.answer({ rows: [row('l1'), reminder('r0', 1)], moreReminders: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      const listing = getThreadWakeListing('agent')!;
+      expect(listing.loops.map((r) => [r.id, r.state])).toEqual([['l1', 'done']]);
+      expect(listing.reminders.map((r) => [r.id, r.nextAt])).toEqual([['r1', 9]]);
+      expect(threadWakesRetentionForTest()).toEqual({ outstanding: 0, loopsAt: 0, remindersAt: 0, trayReads: 0 });
+      release();
+    });
+
+    it("lands a tray's read that started after the bulk read over the bulk's older answer", async () => {
+      vi.useFakeTimers();
+      noteThread('agent', HOME_BACKEND);
+      let bulkAnswer: (rows: unknown) => void = () => {};
+      setBindingMock('ListStandingAgentWakes', () => new Promise((resolve) => { bulkAnswer = resolve; }));
+      const bulk = refreshAgentWakes();
+      await vi.advanceTimersByTimeAsync(0);
+      const { reads } = heldListings();
+      const release = retainThreadWakes('agent');
+      await vi.advanceTimersByTimeAsync(0);
+      reads[0]!.answer({ rows: [row('l2'), reminder('r1', 5)], moreReminders: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      bulkAnswer([{ threadId: 'agent', rows: [row('l1')] }]);
+      await bulk;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getThreadWakeListing('agent')!.loops.map((r) => r.id)).toEqual(['l2']);
+      expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+      release();
+    });
+
+    it('reruns no reader of a listing a read finds unchanged', async () => {
+      noteThread('plain', HOME_BACKEND);
+      setBindingMock('ListStandingAgentWakes', async () => []);
+      const wakes = { rows: [row('l1'), reminder('r1', 5), reminder('r2', 6)], moreReminders: 3 };
+      const { read, release } = await retain('plain', wakes);
+      let runs = 0;
+      const unmount = $effect.root(() => {
+        $effect(() => {
+          runs += 1;
+          getThreadWakeListing('plain');
+        });
+      });
+      flushSync();
+      // An unreadable row and a lost frame both read the same listing again.
+      applyThreadWakesChanged({ threadId: 'plain', id: 'l1' }, HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      applyThreadWakesGap(HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      flushSync();
+      expect(read.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(runs).toBe(1);
+      unmount();
+      release();
+    });
+
+    it('drops a read queued for a thread of a computer that detaches', async () => {
+      stageBackend({ id: 'gpu' });
+      noteThread('remote', 'gpu', 2);
+      const { read, release } = await retain('remote', { rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(getThreadWakeListing('remote')?.loops.map((r) => r.id)).toEqual(['l1']);
+      // An unreadable row queues a read for the scheduler's delay.
+      applyThreadWakesChanged({ threadId: 'remote', id: 'l1' }, 'gpu');
+      detachBackend('gpu');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(getThreadWakeListing('remote')).toBeNull();
+      expect(getAgentWakeRows('remote')).toEqual([]);
+      release();
+    });
+
+    it('lets go of a thread the sidebar does not show, and of an agent\'s reminders alone', async () => {
+      const plain = await retain('plain', { rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+      expect(getAgentWakeRows('plain').map((r) => r.id)).toEqual(['l1']);
+      plain.release();
+      plain.release();
+      expect(getThreadWakeListing('plain')).toBeNull();
+      expect(getAgentWakeRows('plain')).toEqual([]);
+
+      ensureAgentWakes('agent');
+      const agent = await retain('agent', { rows: [row('l2'), reminder('r2', 5)], moreReminders: 0 });
+      agent.release();
+      expect(getThreadWakeListing('agent')).toBeNull();
+      expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+      // A frame for a thread no surface shows is not kept.
+      applyThreadWakesChanged({ threadId: 'plain', id: 'l3', row: row('l3') }, HOME_BACKEND);
+      expect(getAgentWakeRows('plain')).toEqual([]);
+    });
+  });
+});

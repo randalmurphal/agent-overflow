@@ -147,7 +147,7 @@ func TestRequeuedUnconfirmedMessageIsDurableAgain(t *testing.T) {
 		Message:     "sent once, never confirmed",
 		Payload:     []byte(`{"sendId":"send-taken-back"}`),
 		EnqueuedAt:  42,
-	}})
+	}}, queueRestoredReasonSessionDied)
 
 	rows := durableQueueRows(t, app, thread.ID)
 	if len(rows) != 1 || rows[0].ID != "queue:taken-back" || rows[0].SendID != "send-taken-back" || rows[0].Message != "sent once, never confirmed" {
@@ -157,7 +157,7 @@ func TestRequeuedUnconfirmedMessageIsDurableAgain(t *testing.T) {
 	if len(queued) != 1 {
 		t.Fatalf("queued = %+v, want the message queued once", queued)
 	}
-	app.settleFlushGroup(thread.ID, queued)
+	app.settleFlushGroup(thread.ID, queued, "")
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("durable rows after its dispatch settled = %+v, want none", rows)
 	}

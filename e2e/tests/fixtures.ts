@@ -11,6 +11,7 @@ interface WorkerFixtures {
 
 interface TestFixtures {
   harness: HarnessApp;
+  harnessFailureDiagnostics: { app?: HarnessApp };
   /**
    * Every uncaught error thrown by a page in a browser context the test
    * created, the `page` fixture's included, stack first.
@@ -63,9 +64,27 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     },
     { scope: 'worker' },
   ],
+  // A test that fails while it holds the worker backend, including in the
+  // reset below, leaves the backend's diagnostics beside its trace
+  // (HarnessApp.writeDiagnostics). Auto fixtures set up first and tear down
+  // last, so this sees failures from every other fixture's teardown too.
+  // It depends on nothing, so a test that never asks for `harness` boots no
+  // worker backend for it.
+  harnessFailureDiagnostics: [
+    async ({}, use, testInfo) => {
+      const holder: { app?: HarnessApp } = {};
+      await use(holder);
+      const failed = testInfo.status !== 'skipped' && testInfo.status !== testInfo.expectedStatus;
+      if (!holder.app || !failed) return;
+      if (process.env.AO_E2E_KEEP_FAILED_ROOT === '1') holder.app.keepDataRoot();
+      await holder.app.writeDiagnostics(testInfo.outputDir);
+    },
+    { auto: true, box: true },
+  ],
   // The worker backend outlives the test, so its stderr tail is attached
   // here when the test failed, including a reset that failed.
-  harness: async ({ harnessWorker }, use, testInfo) => {
+  harness: async ({ harnessWorker, harnessFailureDiagnostics }, use, testInfo) => {
+    harnessFailureDiagnostics.app = harnessWorker;
     try {
       await harnessWorker.awaitNoPages();
       await harnessWorker.reset();

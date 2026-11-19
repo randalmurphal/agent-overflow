@@ -43,6 +43,8 @@ type capturedEventBus struct {
 	mu  sync.Mutex
 	ch  chan capturedEvent
 	all []capturedEvent
+	// tap, when set, sees each router emission as a.emit's taps would.
+	tap func(eventchan.Channel, any)
 }
 
 func newCapturedEventBus() *capturedEventBus {
@@ -65,6 +67,12 @@ func (b *capturedEventBus) emit(name string, data any) {
 // a.emit's wire spelling (a string) while the router emits eventchan
 // constants.
 func (b *capturedEventBus) emitChannel(name eventchan.Channel, data any) {
+	b.mu.Lock()
+	tap := b.tap
+	b.mu.Unlock()
+	if tap != nil {
+		tap(name, data)
+	}
 	b.emit(name.String(), data)
 }
 
@@ -285,8 +293,13 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 	// defaults. See isolateE2EProviderSpawns.
 	isolateE2EProviderSpawns(t, app)
 
-	// Ensure any sessions that remain open at test end are torn down.
+	// Ensure any sessions that remain open at test end are torn down, in
+	// Shutdown's order: joinBackgroundWorkAtCleanup, registered after
+	// this and so run before it, has refused new request work; session
+	// starts are refused before the close, and any settlement still in
+	// flight finishes before the store closes.
 	t.Cleanup(func() {
+		app.stopAgentNoticeWork()
 		sessions := make([]session, 0, len(app.sessionManager().runtime.Snapshot()))
 		for _, s := range app.sessionManager().runtime.Snapshot() {
 			sessions = append(sessions, s)
@@ -297,11 +310,49 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 				_ = ps.Close()
 			}
 		}
+		if err := app.providerEvents.drainAll(); err != nil {
+			t.Errorf("drain provider events: %v", err)
+		}
+		app.threadRequestSettling.Wait()
 	})
 
 	joinBackgroundWorkAtCleanup(t, app)
 
 	return app, bus
+}
+
+// The fixture's teardown joins the notice work and request settlements a
+// test leaves running, as Shutdown does, so none of them uses the store
+// after it closes or writes into a temporary directory being removed.
+func TestE2EFixtureTeardownJoinsBackgroundWork(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		start func(app *App, work func()) bool
+	}{
+		{"notice work", func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
+		{"request settlement", func(app *App, work func()) bool { app.goThreadRequestSettling(work); return true }},
+	} {
+		var (
+			done    bool
+			readErr error
+		)
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := setupE2EApp(t)
+			// The work outlasts the test body, so it is still running when
+			// the teardown begins.
+			if !tc.start(app, func() {
+				time.Sleep(200 * time.Millisecond)
+				_, readErr = app.store.ListProjects()
+				done = true
+			}) {
+				t.Fatal("the work was refused before the test ended")
+			}
+		})
+		if !done || readErr != nil {
+			t.Errorf("%s: the teardown did not wait for it (finished %v, store read %v)", tc.name, done, readErr)
+		}
+	}
 }
 
 // joinBackgroundWorkAtCleanup ends the App's session-starting background
@@ -951,7 +1002,7 @@ done
 	waitForIdleTurn()
 	seedClaudeBackgroundTaskRow(t, app, thread.ID, "toolu_affected_gate", "task-affected-gate", time.Now().UnixMilli())
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID:      "queue:after-orphan",
 		Message: "queued after orphaned advisor",
 		Payload: json.RawMessage(`{}`),

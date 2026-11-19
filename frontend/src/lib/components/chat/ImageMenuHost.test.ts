@@ -127,7 +127,7 @@ describe('<ImageMenuHost>', () => {
     vi.mocked(saveMenuImage).mockReset().mockResolvedValue(undefined);
     vi.mocked(canSaveMenuImage).mockReset().mockReturnValue(true);
     vi.mocked(saveMenuImageLabel).mockReset().mockReturnValue('Save Image');
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const t of Array.from(getToasts())) removeToast(t.id);
   });
 
   afterEach(() => {

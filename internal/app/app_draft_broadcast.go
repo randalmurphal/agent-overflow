@@ -114,6 +114,19 @@ func (a *App) writeMovedThreadDraft(who transport.ClientIdentity, source, destin
 	return nil
 }
 
+// writeHandedOffThreadDraft writes an assistant's next thread's draft and
+// clears its previous thread's in one transaction (store.HandOffThreadDraft),
+// and announces both with the listing change each made.
+func (a *App) writeHandedOffThreadDraft(sourceThreadID string, expected *store.ThreadDraft, destination store.ThreadDraft) error {
+	move, err := a.store.HandOffThreadDraft(sourceThreadID, expected, destination)
+	if err != nil {
+		return err
+	}
+	a.announceDraftWrite(transport.ClientIdentity{}, destination.ThreadID, destination.UpdatedAt, move.Destination)
+	a.announceDraftWrite(transport.ClientIdentity{}, sourceThreadID, destination.UpdatedAt, move.Source)
+	return nil
+}
+
 // announceDraftWrite announces a draft write that moved the row: its
 // listing change (announceListing), then its `draft:updated` frame.
 // Draft content is one of the things that lists a never-sent thread

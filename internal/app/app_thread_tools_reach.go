@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -28,7 +27,7 @@ import (
 // threadPeerCallWait bounds one forwarded call: the destination method's
 // declared budget and the answer margin (transport.ClientWait), so the
 // destination's answer, a timeout of its own included, arrives first. A
-// forwarded wait sits inside ThreadToolQuery's budget
+// forwarded wait sits inside ThreadToolWatch's budget
 // (threadtools.MaxForwardedWaitSeconds), and a spawn may fork and cut a
 // worktree inside ThreadToolCall's.
 func threadPeerCallWait(method string) time.Duration { return transport.ClientWait(method) }
@@ -75,12 +74,16 @@ func (t threadToolsApp) Peer(ctx context.Context, computerID string) (threadtool
 			"This computer could not read its pairings. Check Remote access on it and try again.", err)
 	}
 	if !paired {
-		return nil, errorsx.Public(threadtools.CodeUnreachable,
-			fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
+		return nil, threadComputerNotPaired(computerID)
 	}
 	source, _ := threadtools.CallerFrom(ctx)
 	computer := threadtools.Computer{ID: row.ID, Name: attachedComputerName(row)}
 	return threadPeerClient{app: t.app, computer: computer, source: source}, nil
+}
+
+func threadComputerNotPaired(computerID string) error {
+	return errorsx.Public(threadtools.CodeUnreachable,
+		fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
 }
 
 // pairing reads one pairing by the backend id that computer calls itself
@@ -127,6 +130,17 @@ func (p threadPeerClient) Query(ctx context.Context, name string, args json.RawM
 
 func (p threadPeerClient) Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	return p.forward(ctx, "ThreadToolCall", name, args)
+}
+
+// Watch forwards a thread_status wait through the caller-bound
+// ThreadToolWatch, so the wait there ends when this call does. A computer
+// on v0.0.19 does not serve it and runs the wait through ThreadToolQuery.
+func (p threadPeerClient) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	raw, err := p.forward(ctx, "ThreadToolWatch", "thread_status", args)
+	if older := (*rpcclient.Error)(nil); errors.As(err, &older) && older.Code == transport.ErrCodeMethodNotFound {
+		return p.Query(ctx, "thread_status", args)
+	}
+	return raw, err
 }
 
 func (p threadPeerClient) forward(ctx context.Context, method, name string, args json.RawMessage) (json.RawMessage, error) {
@@ -198,29 +212,6 @@ func threadErrorDetails(action string, err error) (code, message string, uncerta
 	return remoteErrorDetails(action, err)
 }
 
-// threadRequestNeverSent reports whether a dispatch failure happened
-// before the destination could see the request. These are the refusals
-// attachedbackends raises while addressing the call, loading the pairing or
-// opening the RPC, so a first attempt that ends this way settles the source
-// row `refused` (classifyThreadPeerFailure) instead of leaving it
-// unconfirmed for a poller that would only collect the same answer.
-//
-// threadtools.CodeUnreachable is deliberately NOT in the set, close as it
-// reads: it is also what this computer raises for a destination that DID
-// answer, without a usable result (threadPeerClient.forward,
-// callThreadPeerRequest). Those requests may be running on the other
-// computer, and settling one refused would tell the caller nothing happened
-// while the work continues.
-func threadRequestNeverSent(code string) bool {
-	switch code {
-	case attachedbackends.CodeThreadUnsupported, attachedbackends.CodeThreadUnreachable,
-		"remote_not_paired", "remote_pairing_pending", "remote_pairing_unavailable",
-		"remote_pairing_expired":
-		return true
-	}
-	return false
-}
-
 // threadPairingEnded reports the refusals that mean this pairing will not
 // answer again until the user reconnects it. An open request against such
 // a computer is settled rather than retried forever.
@@ -232,169 +223,11 @@ func threadPairingEnded(code string) bool {
 	return false
 }
 
-// startRemoteRequest is the source half of a spawn, send or ask on another
-// computer.
-//
-// The row is written `unconfirmed` first, so a reply lost on the way back
-// leaves a token the poller can ask about rather than work nobody records.
-// The destination owns everything the row cannot say: which thread ran, and
-// what it answered.
-func (t threadToolsApp) startRemoteRequest(
-	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest,
-	computerID, tool string, call any, waitSeconds int,
-) (threadtools.RequestAck, error) {
-	origin, err := t.localOrigin(caller)
-	if err != nil {
-		return threadtools.RequestAck{}, err
+// threadPeerAgent is what a forwarded request says of a standing agent
+// sender.
+func threadPeerAgent(agent *threadtools.SenderAgent) *ThreadPeerAgent {
+	if agent == nil {
+		return nil
 	}
-	peer, err := t.Peer(ctx, computerID)
-	if err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	args, err := json.Marshal(call)
-	if err != nil {
-		return threadtools.RequestAck{}, fmt.Errorf("thread tools: encode %s for %s: %w", tool, computerID, err)
-	}
-	latest, _, err := t.app.store.LatestHumanUserText(caller.ThreadID)
-	if err != nil {
-		return threadtools.RequestAck{}, err
-	}
-
-	row.Token = newThreadRequestToken()
-	row.CallerThreadID = caller.ThreadID
-	row.TargetComputerID = computerID
-	row.State = store.ThreadRequestUnconfirmed
-	// The poll is the recovery path for a reply that never arrives, and it
-	// must not run while this call is still being attempted: a destination
-	// that has not been asked yet answers `unknown`, which for an
-	// unconfirmed row means refused. The fence covers the whole attempt
-	// sequence and is cut to the normal delay the moment the call returns,
-	// which is what makes "no retry is in flight" durable.
-	row.NextCheck = time.Now().Add(threadRequestAdmissionFence).UnixMilli()
-	if err := t.app.store.InsertThreadRequest(row); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	reply, failure, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
-		Tool:        tool,
-		Args:        args,
-		Token:       row.Token,
-		Source:      caller,
-		UserMessage: latest,
-		Inherit:     origin.inherit,
-	})
-	issue := ""
-	if err != nil {
-		_, issue, _ = threadErrorDetails(tool, err)
-	}
-	t.app.rescheduleThreadRequest(row, t.app.threadPollNormal(), issue)
-	switch failure {
-	case threadPeerRefused:
-		// The error this returns is the delivery, as it is for a request
-		// this computer refused itself (failRequest), and the record keeps
-		// the same text: it names the computer that refused.
-		_, refusal, _ := errorsx.PublicDetails(err)
-		t.refuseRequest(row.Token, refusal)
-		return threadtools.RequestAck{}, err
-	case threadPeerUnsettled:
-		// The row stays `unconfirmed` for the poller, which reads the
-		// destination's own record of the token.
-		return threadtools.RequestAck{}, err
-	case threadPeerUncertain:
-		// Every attempt ended without an answer, so the destination may be
-		// running this request. The model is given the token and told to
-		// check it rather than an error it would answer by starting the
-		// same work again; the poller reconciles the row either way.
-		return t.ackRequest(ctx, caller, row.Token, waitSeconds)
-	}
-	if err := t.app.collectThreadPeerReply(row.Token, computerID, reply); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
-}
-
-// threadPeerAdmissionAttempts is how many times one request-minting call is
-// sent before the source stops waiting to hear whether it was accepted.
-// Every attempt carries the same token, so a destination that already
-// accepted answers with the acceptance it holds instead of starting a
-// second piece of work.
-const threadPeerAdmissionAttempts = 3
-
-// threadRequestAdmissionFence keeps a freshly written source row out of the
-// poller for as long as the attempts can take, plus the normal poll delay.
-var threadRequestAdmissionFence = threadPeerCallWait("ThreadToolCall")*threadPeerAdmissionAttempts + threadPollNormalDelay
-
-// threadPeerFailure is what a request-minting call that did not return an
-// acceptance established about the request.
-type threadPeerFailure int
-
-const (
-	// threadPeerAccepted: the call returned the destination's receipt.
-	threadPeerAccepted threadPeerFailure = iota
-	// threadPeerRefused: nothing runs under the token. The destination was
-	// asked once and answered with a refusal of its own, or the call could
-	// not reach it at all. The caller's error is the whole answer.
-	threadPeerRefused
-	// threadPeerUnsettled: the call failed with a known error, but the
-	// destination may hold the request: an earlier attempt's reply was
-	// lost, or it answered without a usable result. Its own record decides.
-	threadPeerUnsettled
-	// threadPeerUncertain: every attempt ended without an answer.
-	threadPeerUncertain
-)
-
-// callThreadPeerRequest forwards one request-minting call and returns the
-// receipt the destination reports.
-//
-// A failure that leaves the acceptance unknown is retried with the same
-// token, because what was lost is the reply and not the work. A refusal
-// settles the request only when it answers the first attempt: after a lost
-// reply the destination may have accepted the request already, and a refusal
-// of the retry (a switch turned off in between, a pairing that ended) says
-// nothing about the work the first attempt started.
-func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, threadPeerFailure, error) {
-	for attempt := 1; ; attempt++ {
-		rpc, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolCall"))
-		var reply ThreadPeerReply
-		err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
-		cancel()
-		if err != nil {
-			failure, retry := classifyThreadPeerFailure(call.Tool, attempt, err)
-			if retry {
-				continue
-			}
-			return ThreadPeerRequest{}, failure, a.threadOperationError(call.Tool, computer.ID, "", err)
-		}
-		if reply.Request == nil {
-			return ThreadPeerRequest{}, threadPeerUnsettled, errorsx.Public(threadtools.CodeUnreachable,
-				fmt.Sprintf("%s accepted %s without reporting the request.", threadtools.NameOfComputer(computer), call.Tool), nil)
-		}
-		return *reply.Request, threadPeerAccepted, nil
-	}
-}
-
-// classifyThreadPeerFailure decides what the attempt-th failure of one
-// request-minting call established, and whether to send the token again.
-func classifyThreadPeerFailure(tool string, attempt int, err error) (failure threadPeerFailure, retry bool) {
-	code, _, uncertain := threadErrorDetails(tool, err)
-	neverSent := threadRequestNeverSent(code)
-	switch {
-	case uncertain && !neverSent && attempt < threadPeerAdmissionAttempts:
-		return threadPeerUncertain, true
-	case attempt == 1 && (neverSent || threadPeerWroteRefusal(err)):
-		return threadPeerRefused, false
-	case uncertain && !neverSent:
-		return threadPeerUncertain, false
-	}
-	return threadPeerUnsettled, false
-}
-
-// threadPeerWroteRefusal reports whether a failed call carries an answer the
-// destination itself gave: its transport refused the pairing's credentials
-// or scope, or its handler returned a thread tools refusal, which it does
-// only for a request it did not start (a validation refusal before
-// acceptance, or failRequest after it). A destination error this computer
-// cannot read is uncertain and is retried before this is asked.
-func threadPeerWroteRefusal(err error) bool {
-	var remote *rpcclient.Error
-	return errors.As(err, &remote)
+	return &ThreadPeerAgent{Role: agent.Role}
 }

@@ -118,9 +118,8 @@
   // Two wrinkles beyond the obvious `focus(0)` call:
   //
   // 1. The children snippet might hydrate synchronously OR async. The
-  //    cold-cache ProviderModelsSubmenu and DiscussionsSubmenu both
-  //    mount with a loading placeholder first and swap to the real
-  //    items after a binding round-trip. A one-shot queueMicrotask
+  //    cold-cache ProviderModelsSubmenu mounts with a loading placeholder
+  //    first and swaps to the real items after a binding round-trip. A one-shot queueMicrotask
   //    would see 0 items and bail — leaving no item at tabindex=0
   //    and breaking keyboard navigation. We watch `containerEl` with
   //    a MutationObserver so the first batch of real items picks up

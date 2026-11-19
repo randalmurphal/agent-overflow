@@ -194,18 +194,9 @@ text editor. `internal/settings/promptfiles.go` owns the mechanism.
 
 Composition point: `app_session_prompt_override.go
 applySettingsOwnedAxes`, called by the spawn path right after
-`buildSessionOptions`. Precedence:
-
-1. Feature-owned prompts win: if `designCfg.Prompt` or
-   `threadSystemPrompt` (discussions) is non-empty, `buildSessionOptions`
-   has already written it into `opts.SystemPrompt` and the override is
-   **skipped**. Those features already run fully-custom prompts.
-   `featureOwnedSystemPrompt` is the one definition of that rule, and
-   after `buildSessionOptions` a non-empty `opts.SystemPrompt` means
-   exactly "a feature owns this", so nothing downstream re-derives it.
-2. Otherwise the matching enabled override is rendered and becomes
-   `opts.SystemPrompt`. Workflow-engine unit sessions are plain
-   sessions and deliberately DO get the override.
+`buildSessionOptions`. The matching enabled override is rendered and
+becomes `opts.SystemPrompt`; no other source sets it. Workflow-engine unit
+sessions are plain sessions and deliberately DO get the override.
 
 `applySettingsOwnedAxes` takes ONE `settings.Get()` snapshot and returns
 a `promptOverrideResolution` (the matched entry plus whether it applied),
@@ -368,7 +359,6 @@ axes:
 | `DisableTodoReminders` | **Pinned**, same reason (an env var, fixed at spawn). |
 | `ClaudeMaxCommandTimeoutHours` | **Pinned**, same reason. |
 | `SystemPrompt`, settings override, every provider | **Pinned; per-thread `prompt_stale` banner.** A prompt change never applies to a running session (decision 2026-10-14): no `set_model.system_prompt` swap, no deferred restart. Nothing is matched or rendered on the reconcile path. It applies at the thread's next session start; until then the thread shows the banner described below. |
-| `SystemPrompt`, feature-owned | **Untouched.** A non-empty `opts.SystemPrompt` after `buildSessionOptions` means a discussion owns it; it converges by deferred restart, since `claude.PlanLiveUpdate` carries no prompt and any prompt diff falls through to its spawn-only comparison. |
 | `ClaudeThinking`, headless Claude on CLI ≥ 2.1.214 | **Converges live** for every explicit value. `claude.PlanLiveUpdate` carries it as `LiveUpdate.Thinking` and `ApplyLiveUpdate` sends one `set_max_thinking_tokens` control request (`max_thinking_tokens` for a budget, `thinking_display` for the display axis). Returning to Claude's own choice is a **deferred restart**: `max_thinking_tokens: null` is accepted and does nothing, so only a respawn without the flag resets it. Below the version floor, or with the version unknown, the change is a deferred restart. |
 | `ClaudeThinking`, Codex / claude-tui | **Never resolved at all.** `ClaudeThinkingForProvider` answers the zero value for anything but headless `claude`, on BOTH paths. claude-tui drives the same binary but has no control-request channel, so an axis it could never apply must not diff either. |
 
@@ -392,8 +382,7 @@ these axes so the pairing cannot be forgotten:
 `app_prompt_stale.go` owns it, beside the stale-binary banner
 (`app_provider_binary_watch.go`).
 
-- **Stale.** A live session not running a feature-owned prompt is stale
-  when the stored override text its next start would use
+- **Stale.** A live session is stale when the stored override text its next start would use
   (`promptoverride.Match` on today's settings for the thread's provider
   and model; an entry whose file is blank or has a `Problem` is no
   override) differs from `launch.SystemPromptOverrideSource`. Decided on
@@ -450,6 +439,12 @@ app-managed server adds one.
   `applySettingsOwnedAxes` / `reconcileSettingsOwnedAxes` pair: a
   settings change never queues a restart and lands at the session's next
   start or resume.
+- **Spawn instructions.** A thread a spawn gave instructions
+  (`threads.spawn_instructions`) appends them last on every provider:
+  after the guide and a standing agent's block, and on Codex after the
+  server guides (`sessionPromptsFor`). They ride the same channels,
+  whatever `AgentGuideEnabled` says
+  ([agent-thread-tools.md §Spawn instructions](agent-thread-tools.md#spawn-instructions)).
 
 ### Delivery
 

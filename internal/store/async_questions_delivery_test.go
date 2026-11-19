@@ -19,7 +19,7 @@ func TestAsyncAnswerEchoRequiresIdentityAndSettlesOnMetaUpdate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+			if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "other-queue", ThreadID: "other", SendID: "send", Message: "unrelated"}); err != nil {
@@ -33,7 +33,7 @@ func TestAsyncAnswerEchoRequiresIdentityAndSettlesOnMetaUpdate(t *testing.T) {
 			if err != nil || rows[0].State != "submitted" {
 				t.Fatalf("unconfirmed echo marked delivered: %+v %v", rows, err)
 			}
-			if err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
+			if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
 				t.Fatal(err)
 			}
 			if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 1 {
@@ -71,7 +71,7 @@ func TestConcurrentAsyncAnswersHaveOneWinner(t *testing.T) {
 		}
 		go func() {
 			<-start
-			results <- s.QueueAsyncAnswers(FlushQueueItem{ID: sendID, ThreadID: "q", SendID: sendID, Message: body}, answers)
+			results <- s.QueueAsyncAnswers(FlushQueueItem{ID: sendID, ThreadID: "q", SendID: sendID, Message: body}, answers, nil)
 		}()
 	}
 	close(start)

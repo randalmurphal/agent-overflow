@@ -63,7 +63,9 @@ type Manager struct {
 	lanDiscoveryOff bool
 
 	// changed is the one observer of set mutations (SetChanged).
-	changed func(SetChange)
+	changed     func(SetChange)
+	reached     atomic.Pointer[func(string)]
+	invalidated atomic.Pointer[func(string, error)]
 	// labelGetter reads this installation's current name; label is the static
 	// fallback for embedders. Platform describes this process, not a pairing.
 	labelGetter func() (string, error)
@@ -73,8 +75,14 @@ type Manager struct {
 	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
 	activationProbe time.Duration
 
+	// The profile lock serializes replacement. Release mu before waiting on a
+	// carrier fence. A fenced observation consumes already-resolved manager data.
 	mu       sync.Mutex
 	carriers map[string]*carrier
+	// verdicts holds, per computer whose last pairing it ended with its
+	// verdict (endSession), the name that pairing gave it, until a pairing
+	// replaces it or the end of its work takes it (TakeVerdict).
+	verdicts map[string]string
 	profiles *keyedlock.Registry
 	// closed refuses new carriers once Close has begun, and renewals joins
 	// the renewal goroutine each carrier runs.
@@ -89,6 +97,15 @@ type Manager struct {
 // ErrClosed answers a carrier asked for after Close.
 var ErrClosed = errors.New("attachedbackends: manager is closed")
 
+// Why a carrier left the manager: the verdict every connection it opened
+// is closed with (carrier.leave), and what a call on one reads instead of
+// a lost connection (pairingRefusal).
+var (
+	errPairingForgotten = fmt.Errorf("attachedbackends: the pairing was forgotten: %w", deviceclient.ErrNoSession)
+	errPairingEnded     = fmt.Errorf("attachedbackends: the paired computer ended the pairing: %w", deviceclient.ErrSessionEnded)
+	errPairingReplaced  = errors.New("attachedbackends: the pairing was replaced")
+)
+
 // New builds a manager over one device profile directory. The directory
 // need not exist yet — it is created by the first pairing.
 func New(dir, label, platform string) (*Manager, error) {
@@ -96,7 +113,7 @@ func New(dir, label, platform string) (*Manager, error) {
 		return nil, errors.New("attachedbackends: a device profile directory is required")
 	}
 	life, endLife := context.WithCancel(context.Background())
-	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
+	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, verdicts: map[string]string{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -123,9 +140,10 @@ func (m *Manager) Attached() []transport.AttachedProfile {
 
 // Carrier implements transport.AttachedBackends. Nil is an ordinary
 // answer: a page whose manifest is a moment stale asks for a backend that
-// has just been removed.
-func (m *Manager) Carrier(id string) transport.BackendCarrier {
-	held, err := m.carrier(id)
+// has just been removed, or a request that ended while the profile was
+// being changed.
+func (m *Manager) Carrier(ctx context.Context, id string) transport.BackendCarrier {
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return nil
 	}
@@ -135,23 +153,28 @@ func (m *Manager) Carrier(id string) transport.BackendCarrier {
 }
 
 // carrier resolves the live hop for one profile, building it on first use.
-func (m *Manager) carrier(id string) (*carrier, error) {
-	unlock := m.profiles.Lock(id)
+// It waits for a change to the profile in progress (a pairing or an
+// introduction, which can hold it for minutes) only as long as ctx lasts.
+func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
+	unlock, err := m.profiles.LockCtx(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return nil, ErrClosed
 	}
-	if held, ok := m.carriers[id]; ok {
-		if !held.client.Retired() {
-			return held, nil
-		}
-		// A retired owner never authorizes again: the far side ended its
-		// session, or another process re-paired over its profile. Either
-		// way the file on disk is the current answer, so it is read again
-		// rather than cached as a client that answers 503 until restart.
-		delete(m.carriers, id)
+	held := m.carriers[id]
+	if held != nil && !held.client.Retired() {
+		m.mu.Unlock()
+		return held, nil
+	}
+	delete(m.carriers, id)
+	m.mu.Unlock()
+	if held != nil {
+		held.leave(errPairingReplaced)
 	}
 	session, err := deviceclient.LoadSession(m.dir, id)
 	if err != nil {
@@ -165,8 +188,16 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, ErrClosed
+	}
 	m.wire(built, id)
 	m.carriers[id] = built
+	// A profile saved again since a verdict is a pairing that replaced the
+	// one it ended.
+	delete(m.verdicts, id)
 	return built, nil
 }
 
@@ -174,6 +205,16 @@ func (m *Manager) carrier(id string) (*carrier, error) {
 // its session renewal, which reports through those hooks. Caller holds m.mu
 // and has checked m.closed, so Close cannot miss the renewal.
 func (m *Manager) wire(built *carrier, id string) {
+	built.peers.invalidated = func(err error) {
+		if notify := m.invalidated.Load(); notify != nil {
+			(*notify)(id, err)
+		}
+	}
+	built.onContact = func() {
+		if f := m.reached.Load(); f != nil {
+			(*f)(id)
+		}
+	}
 	built.labelGetter, built.platform = m.localLabel, m.platform
 	built.nameSyncChanged = func() { m.notifyChanged(SetChange{Action: SetDeviceNameSync, ID: id}) }
 	built.onEnded = func() { m.endSession(id, built) }
@@ -196,7 +237,7 @@ func (m *Manager) Close() {
 	}
 	m.mu.Unlock()
 	for _, c := range held {
-		c.leave()
+		c.leave(ErrClosed)
 	}
 	m.renewals.Wait()
 	for _, c := range held {
@@ -210,20 +251,34 @@ func (m *Manager) Close() {
 // people watching it. The carrier leaves so nothing keeps answering for a
 // session that is gone, its agent opt-in goes the way a removal takes it,
 // and the observer retires the row. A carrier a newer pairing has already
-// replaced is not the cached one, and nothing here touches it.
+// replaced is not the cached one, and nothing here touches it. The verdict
+// is kept, with the name the pairing gave the computer, for TakeVerdict.
 func (m *Manager) endSession(id string, held *carrier) {
 	m.mu.Lock()
 	current := m.carriers[id] == held
 	if current {
 		delete(m.carriers, id)
+		m.verdicts[id] = strings.Join(strings.Fields(displayName(held.client.Session())), " ")
 	}
 	m.mu.Unlock()
 	if !current {
 		return
 	}
-	held.leave()
+	held.leave(errPairingEnded)
 	_ = m.writeAgentAccess(id, false)
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
+}
+
+// TakeVerdict reports whether the last pairing this installation held with
+// computer id ended by that computer's verdict and no pairing has been
+// saved since. It reports that once per verdict, with the name that pairing
+// gave the computer.
+func (m *Manager) TakeVerdict(id string) (name string, ended bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name, ended = m.verdicts[id]
+	delete(m.verdicts, id)
+	return name, ended
 }
 
 // Attached is one attached machine as the desktop's own admin surface
@@ -395,12 +450,13 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 // grant this primitive never touches, so own-device re-enrollment preserves it.
 func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
 	m.mu.Lock()
-	if old := m.carriers[link.BackendID]; old != nil {
-		old.leave()
-		old.client.Retire()
-	}
+	old := m.carriers[link.BackendID]
 	delete(m.carriers, link.BackendID)
 	m.mu.Unlock()
+	if old != nil {
+		old.leave(errPairingReplaced)
+		old.client.Retire()
+	}
 	label, err := m.localLabel()
 	if err != nil {
 		return Attachment{}, err
@@ -421,6 +477,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 		m.wire(built, link.BackendID)
 		m.carriers[link.BackendID] = built
 	}
+	delete(m.verdicts, link.BackendID)
 	m.mu.Unlock()
 	return Attachment{
 		ID:                 link.BackendID,
@@ -434,7 +491,7 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 // refuses it, or lets the window close. Its caller is a goroutine, not an
 // RPC.
 func (m *Manager) Await(ctx context.Context, id string) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -461,7 +518,8 @@ func (m *Manager) Remove(id string) error {
 		return err
 	}
 	if err := m.forgetLocked(id); err != nil {
-		return err
+		// The pairing stays, so neither does its exclusion.
+		return errors.Join(err, m.excludeOwnDevice(id, false))
 	}
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
 	return nil
@@ -474,8 +532,13 @@ func (m *Manager) Remove(id string) error {
 // rather than during it: m.mu is not held across the OS lock, and the
 // caller's profile lock is what keeps a second owner from being built from
 // the file in the meantime. A removal that failed retires the old owner
-// all the same, so the retry that rebuilds a carrier never has two.
+// all the same, so the retry that rebuilds a carrier never has two, and
+// gives back the agent opt-in it took, since the pairing stays.
 func (m *Manager) forgetLocked(id string) error {
+	access, err := m.AgentAccess()
+	if err != nil {
+		return err
+	}
 	if err := m.writeAgentAccess(id, false); err != nil {
 		return err
 	}
@@ -484,14 +547,17 @@ func (m *Manager) forgetLocked(id string) error {
 	delete(m.carriers, id)
 	m.mu.Unlock()
 	if held == nil {
-		return deviceclient.ForgetSession(m.dir, id)
+		err = deviceclient.ForgetSession(m.dir, id)
+	} else {
+		held.leave(errPairingForgotten)
+		if err = held.client.Forget(); err != nil {
+			held.client.Retire()
+		}
 	}
-	held.leave()
-	if err := held.client.Forget(); err != nil {
-		held.client.Retire()
-		return err
+	if err != nil && access[id] {
+		return errors.Join(err, m.writeAgentAccess(id, true))
 	}
-	return nil
+	return err
 }
 
 // Rename sets the owner's own label for one machine, or clears it when
@@ -502,7 +568,7 @@ func (m *Manager) forgetLocked(id string) error {
 // comes due — and a rename that raced one would either lose the nickname
 // or roll the credential back.
 func (m *Manager) Rename(id, nickname string) error {
-	held, err := m.carrier(id)
+	held, err := m.carrier(m.life, id)
 	if err != nil {
 		return err
 	}
@@ -516,7 +582,7 @@ func (m *Manager) Rename(id, nickname string) error {
 // RepairAddress adds a verified replacement address to an
 // existing pairing. The live client owns the profile write and route change.
 func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (string, error) {
-	held, err := m.carrier(id)
+	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -532,6 +598,7 @@ type carrier struct {
 	nameSyncChanged func()
 	// onEnded is the manager's verdict path (endSession), fired once per
 	// carrier by ended below.
+	onContact     func()
 	onEnded       func()
 	nameErrorMu   sync.Mutex
 	nameSyncError string
@@ -540,7 +607,8 @@ type carrier struct {
 	proxy         *backendproxy.Carrier
 	// stopRenewal ends keepRenewed when this carrier leaves the manager.
 	stopRenewal context.CancelFunc
-	// peers holds the connections agent calls left open (callPeer).
+	// peers is every connection this carrier opened that is still open
+	// (openRPC), so none outlives the pairing it was opened under.
 	peers peerConns
 
 	// lastReachedMs is when this machine last answered, Unix
@@ -593,13 +661,37 @@ func (c *carrier) keepRenewed(id string, wg *sync.WaitGroup) {
 }
 
 // leave stops what a carrier runs on its own once the manager drops it:
-// its session renewal and its idle agent connections.
-func (c *carrier) leave() {
+// its session renewal and every connection it opened, idle or in use. A
+// call on one fails with verdict, the reason the carrier left.
+func (c *carrier) leave(verdict error) {
 	c.stopRenewal()
-	c.peers.close()
+	c.peers.close(verdict)
 }
 
-func (c *carrier) reached() { c.lastReachedMs.Store(time.Now().UnixMilli()) }
+func (c *carrier) reached() {
+	c.lastReachedMs.Store(time.Now().UnixMilli())
+	if c.onContact != nil {
+		c.onContact()
+	}
+}
+
+// SetPeerInvalidationObserver receives carrier and launch changes outside the connection lock.
+func (m *Manager) SetPeerInvalidationObserver(f func(string, error)) {
+	if f == nil {
+		m.invalidated.Store(nil)
+		return
+	}
+	m.invalidated.Store(&f)
+}
+
+// SetContactObserver receives successful contact on any carrier.
+func (m *Manager) SetContactObserver(f func(string)) {
+	if f == nil {
+		m.reached.Store(nil)
+		return
+	}
+	m.reached.Store(&f)
+}
 
 // ended reports a typed verdict that this pairing is finished and hands it
 // to the manager. deviceclient retires the owner on every such verdict; an

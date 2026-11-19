@@ -1,5 +1,5 @@
 // The Windows launcher's side of an update, driven the way the launcher
-// drives it: a from-nothing sandbox every backend process runs in, the
+// drives it: a sandbox every backend process runs in, the
 // update commands (__update-snapshot, __update-trial-run, __update-restore,
 // __update-discard) run as wsllauncher.UpdateCommandRunner runs them, and
 // the gated headless boot (--refuse-pending-migrations) probed as the
@@ -11,13 +11,12 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
-import { spawnContained } from '../src/harness-process.js';
 import { launchStep, processDiagnostics } from '../src/harness-launch-step.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
+import { productBinary, spawnProduct } from '../src/product-process.js';
 
 /** The backend under test: bin/agent-overflow from `make harness-build`, or AO_HARNESS_BIN. */
-export const backendBinary = process.env.AO_HARNESS_BIN
-  ?? path.join(path.resolve(import.meta.dirname, '..', '..'), 'bin', 'agent-overflow');
+const backendBinary = productBinary('agent-overflow');
 
 const UPDATE_PREFIX = '__AO_UPDATE__:';
 const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
@@ -29,8 +28,8 @@ export interface Sandbox {
   dataRoot: string;
   /** `<dataRoot>/agent-overflow/agent-overflow.db`. */
   dbPath: string;
-  /** The from-nothing environment every backend process runs with. */
-  env: NodeJS.ProcessEnv;
+  /** What every backend process's launch environment is given on top (src/harness-env.ts). */
+  env: Record<string, string>;
   /** Where the fake provider and forge CLIs record their calls. */
   calls: string;
 }
@@ -38,8 +37,9 @@ export interface Sandbox {
 /**
  * buildSandbox fills an existing, empty `root` with a data root, a home
  * and fake claude, codex, gh and glab CLIs that record their calls. The
- * environment is built from nothing, so no provider home override, WSL
- * interop variable or user PATH entry reaches a backend. The login-shell
+ * environment replaces the launch environment's home, shell, temp and PATH
+ * (src/harness-env.ts), so no provider home override, WSL interop variable
+ * or user PATH entry reaches a backend. The login-shell
  * PATH probe runs a stand-in shell that skips login files, where a system
  * profile could put a real provider CLI ahead of the fakes.
  */
@@ -71,7 +71,7 @@ export async function buildSandbox(root: string): Promise<Sandbox> {
     ].join('\n'));
     await chmod(script, 0o755);
   }
-  const env: NodeJS.ProcessEnv = {
+  const env: Record<string, string> = {
     HOME: home,
     USERPROFILE: home,
     XDG_CONFIG_HOME: home,
@@ -84,7 +84,7 @@ export async function buildSandbox(root: string): Promise<Sandbox> {
     LANG: 'C.UTF-8',
     TMPDIR: path.join(root, 'tmp'),
   };
-  await mkdir(env.TMPDIR!, { recursive: true });
+  await mkdir(env.TMPDIR, { recursive: true });
   return { root, dataRoot, dbPath: path.join(dataRoot, 'agent-overflow', 'agent-overflow.db'), env, calls };
 }
 
@@ -146,7 +146,7 @@ export async function runUpdateCommand(
   args: string[],
   timeoutMs: number,
 ): Promise<{ events: UpdateEvent[]; stderr: string }> {
-  const child = spawnContained(backendBinary, [...args, '--data-dir', sb.dataRoot], {
+  const child = spawnProduct(backendBinary, [...args, '--data-dir', sb.dataRoot], {
     env: sb.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES,
@@ -216,7 +216,7 @@ export interface HeadlessBackend {
  * `bootstrapTimeoutMs`.
  */
 export async function startHeadless(sb: Sandbox, bootstrapTimeoutMs: number): Promise<HeadlessBackend> {
-  const child = spawnContained(backendBinary, ['--print-url-fd', '0', '--data-dir', sb.dataRoot, '--listen', '127.0.0.1:0',
+  const child = spawnProduct(backendBinary, ['--print-url-fd', '0', '--data-dir', sb.dataRoot, '--listen', '127.0.0.1:0',
     '--refuse-pending-migrations'], {
     env: sb.env,
     stdio: ['ignore', 'pipe', 'pipe'],

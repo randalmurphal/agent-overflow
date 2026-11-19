@@ -4,18 +4,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 func threadToolsOS() string { return runtime.GOOS }
@@ -264,6 +269,11 @@ func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Ite
 		TurnID:   strconv.Itoa(row.TurnIndex),
 		Name:     row.ToolName,
 	}
+	if kind == "user_text" {
+		if from, ok := agentMessageSender(row); ok {
+			item.Role, item.From = "agent", from
+		}
+	}
 	toolRow := kind == "tool_call" || kind == "diff"
 	if toolRow {
 		item.Label = row.Summary
@@ -294,6 +304,66 @@ func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Ite
 	item.Text = text
 	item.Clipped = int64(len(text)) < size
 	return item, nil
+}
+
+// agentMessageSender names who wrote a user row that is not the person's:
+// an agent thread, a wake, or another Claude session. ok is false for the
+// person's own rows, a row whose meta does not decode included: calling an
+// unreadable row the person's is what every other reader does with it.
+func agentMessageSender(row store.Item) (from string, ok bool) {
+	meta, err := usermessage.FromItem(row)
+	if err != nil {
+		return "", false
+	}
+	if meta.Origin == claude.PeerTurnOrigin && !meta.ExpandComposerCommands {
+		var peer struct {
+			Name string `json:"cross_session_from_name"`
+		}
+		if json.Unmarshal([]byte(row.Meta), &peer) == nil && peer.Name != "" {
+			return fmt.Sprintf("Claude session %q", peer.Name), true
+		}
+		return "another Claude session", true
+	}
+	if !agentmeta.IsAgentMessage(meta.Agent()) {
+		return "", false
+	}
+	// The row's first agent message, as every reader takes it
+	// (agentmeta.Describe): what it says it is, not what its text reads as.
+	described := agentmeta.Describe(row.Summary, meta.Agent())
+	first := slices.IndexFunc(described, agentmeta.Described.IsAgent)
+	if first < 0 {
+		return "another agent", true
+	}
+	message := described[first]
+	if origin := message.Thread; message.Origin == agentmeta.OriginAgentThread {
+		facts := message.Facts
+		switch {
+		case facts.Outcome == threadtools.WakeReminder:
+			return "a reminder this thread set", true
+		case len(facts.Threads) > 1:
+			names := make([]string, 0, len(facts.Threads))
+			for _, thread := range facts.Threads {
+				names = append(names, threadNaming(thread.Title, thread.ThreadID, thread.ComputerName))
+			}
+			return fmt.Sprintf("%d threads: %s", len(names), strings.Join(names, ", ")), true
+		case origin == nil:
+			return "another agent", true
+		}
+		return threadNaming(origin.Title, origin.ThreadID, origin.ComputerName), true
+	}
+	if wake := message.Wake; wake != nil {
+		return wake.TranscriptName(), true
+	}
+	return "another agent", true
+}
+
+// threadNaming names a thread as a status line does: `"title" (id[, on
+// computer])`.
+func threadNaming(title, threadID, computer string) string {
+	if computer != "" {
+		threadID += ", on " + computer
+	}
+	return fmt.Sprintf("%q (%s)", title, threadID)
 }
 
 // threadToolsItemKind maps a store row onto the transcript vocabulary and
@@ -468,10 +538,15 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 		removeThreadExportTemp(temp)
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: publish export file: %w", err)
 	}
+	sum := hex.EncodeToString(digest.Sum(nil))
 	if exportID != "" {
-		return threadtools.ExportFile{ExportID: exportID, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+		if err := t.app.recordPeerExport(exportID, path, sum); err != nil {
+			removeThreadExportTemp(path)
+			return threadtools.ExportFile{}, err
+		}
+		return threadtools.ExportFile{ExportID: exportID, Size: size, SHA256: sum}, nil
 	}
-	return threadtools.ExportFile{Path: path, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+	return threadtools.ExportFile{Path: path, Size: size, SHA256: sum}, nil
 }
 
 // removeThreadExportTemp drops the half-written render. Nothing else will:

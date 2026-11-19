@@ -14,6 +14,7 @@
   import Circle from '@lucide/svelte/icons/circle';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
+  import { activityRailRevealClasses } from './activityRailClasses';
 
   interface Props {
     liveTodo: LiveTodo;
@@ -28,7 +29,7 @@
     pending: 1,
     completed: 2,
   };
-  const revealButtonClass = 'ml-[18px] mt-0.5 inline-flex rounded px-1 py-0.5 text-[0.6875rem] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
+  const revealButtonClass = `ml-[18px] ${activityRailRevealClasses}`;
 
   type SortedEntry = { step: TodoStep; originalIndex: number };
 

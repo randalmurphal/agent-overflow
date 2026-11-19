@@ -278,7 +278,6 @@ func TestWorkflowReadsAndPauseSplitOnScope(t *testing.T) {
 		"WorkflowGetItem",
 		"WorkflowListItemCosts",
 		"WorkflowListDefinitions",
-		"WorkflowGetJobNotes",
 		"WorkflowGetEngineState",
 	} {
 		if frameErr := AuthorizeSessionMethod(readOnly, name, CallerProof{}); frameErr != nil {

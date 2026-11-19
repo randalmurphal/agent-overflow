@@ -5,10 +5,10 @@ import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping
 import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
 
-// The estimate for a row the kind table cannot price. Only activity runs
-// qualify: every other node kind has one typical height, a run has two — its
-// header alone, or that header over a capped clip — and the engine places
-// unmeasured rows with whichever it is in right now.
+// The estimate for a row the kind table cannot price. Activity runs qualify:
+// a run has two typical heights (its header alone, or that header over a
+// capped clip) and the engine places unmeasured rows with whichever it is in
+// right now. So does an agent's message, a user_text in a tool row's shape.
 
 /** The collapsed-run floor (header plus row spacing). Always present, so it is a term in both shapes. */
 const HEADER_PX = 30;
@@ -45,6 +45,12 @@ function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
 }
 
 describe('timelineRowStructuralSizeFor', () => {
+  it('prices an agent message as a tool row and leaves the person\'s to the kind table', () => {
+    const agent = makeItem({ id: 'a', kind: 'user_text', meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't' } }) });
+    expect(timelineRowStructuralSizeFor({ kind: 'leaf', item: agent })).toBe(20);
+    expect(timelineRowStructuralSizeFor({ kind: 'leaf', item: makeItem({ id: 'u', kind: 'user_text' }) })).toBeUndefined();
+  });
+
   it('prices the same run differently in its two shapes', () => {
     const children = Array.from({ length: 10 }, (_, i) => leaf(`i${i}`));
     const closed = timelineRowStructuralSizeFor(run({ children, collapsed: true }));

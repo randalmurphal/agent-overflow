@@ -11,9 +11,16 @@ import {
   updateThreadModel,
   replaceThread,
   touchThreadActivity,
+  clearThreadGroupMembership,
+  dropThreadsForDetachedBackend,
 } from './threads.svelte';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import {
+  ensureAgentWakes,
+  getAgentWakeRows,
+  resetThreadWakesForTest,
+} from './threadWakes.svelte';
 import * as replicaSession from '../replica/session';
 import { observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -37,6 +44,22 @@ function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('threads store', () => {
+  // A group delete leaves its members standalone on the backend; the
+  // client's rows say the same, so a spawned member keeps its row as a
+  // plain one.
+  it('leaves the members of a deleted group standalone', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread('member', { groupId: 'g1', placement: 'grouped', pinnedAt: 5 }),
+      makeThread('other', { groupId: 'g2', placement: 'grouped' }),
+    ]);
+    await refreshThreads();
+    clearThreadGroupMembership('g1');
+    expect(getThreads().map((t) => [t.id, t.groupId, t.placement, t.pinnedAt])).toEqual([
+      ['member', undefined, 'standalone', undefined],
+      ['other', 'g2', 'grouped', undefined],
+    ]);
+  });
+
   describe('refreshThreads()', () => {
     it('replaces the store with the RPC result', async () => {
       const loaded = [makeThread('t1'), makeThread('t2')];
@@ -271,5 +294,80 @@ describe('threads store', () => {
       prependThread(makeThread('a', { updatedAt: 200 }));
       expect(getThreadLiveActivityAt(getThreads()[0])).toBe(200);
     });
+  });
+});
+
+// A thread that stops being an assistant's current thread in the list takes
+// its own state with it, whichever way it left.
+describe('standing agent state on removal', () => {
+  const agent = (promoted: boolean) => makeThread('agent', promoted ? { agentId: 'agent', placement: 'standalone' } : {});
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  }
+
+  async function primeAgentState(): Promise<void> {
+    resetThreadWakesForTest();
+    setBindingMock('ListThreadWakes', async () => ({
+      rows: [{ id: 'l1', kind: 'loop', label: 'beat', state: 'armed' }], moreReminders: false,
+    }));
+    prependThread(agent(true));
+    ensureAgentWakes('agent');
+    await settle();
+    expect(getAgentWakeRows('agent').length).toBe(1);
+  }
+
+  function expectCleared(): void {
+    expect(getAgentWakeRows('agent')).toEqual([]);
+  }
+
+  it('is cleared when the agent is archived (removed from the list)', async () => {
+    await primeAgentState();
+    removeThread('agent');
+    expectCleared();
+  });
+
+  it('is cleared when the agent is deleted (a list without it)', async () => {
+    await primeAgentState();
+    setBindingMock('ListThreads', async () => [makeThread('other')]);
+    await refreshThreads();
+    expectCleared();
+  });
+
+  it("drops the old thread's state across a handoff", async () => {
+    await primeAgentState();
+    prependThread(makeThread('agent-next', { agentId: 'agent' }));
+    replaceThread(makeThread('agent', { pastAgentId: 'agent', archived: true }));
+    removeThread('agent');
+    expectCleared();
+  });
+
+  it('holds one current thread per assistant while a handoff lists the new thread before the old one leaves', async () => {
+    await primeAgentState();
+    prependThread(makeThread('agent-next', { agentId: 'agent', createdAt: 5 }));
+    const current = getThreads().filter((t) => t.agentId === 'agent');
+    expect(current.map((t) => t.id)).toEqual(['agent-next']);
+    // The old thread keeps its placement, as the handoff does.
+    expect(getThreads().find((t) => t.id === 'agent')).toMatchObject({ agentId: undefined, pastAgentId: 'agent', placement: 'standalone' });
+    // Two new rows of one assistant in one write: the newest is current.
+    setBindingMock('ListThreads', async () => [
+      makeThread('a', { agentId: 'other', createdAt: 1 }),
+      makeThread('b', { agentId: 'other', createdAt: 2 }),
+    ]);
+    await refreshThreads();
+    expect(getThreads().filter((t) => t.agentId === 'other').map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('is cleared when the row comes back without the mark', async () => {
+    await primeAgentState();
+    replaceThread(agent(false));
+    expectCleared();
+  });
+
+  it("keeps the assistant's state when its computer detaches", async () => {
+    await primeAgentState();
+    dropThreadsForDetachedBackend(['agent']);
+    expect(getThreads().some((t) => t.id === 'agent')).toBe(false);
+    expect(getAgentWakeRows('agent').length).toBe(1);
   });
 });

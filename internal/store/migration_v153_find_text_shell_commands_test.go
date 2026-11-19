@@ -41,7 +41,7 @@ func TestFindTextShellCommandsMigrationRefillsShellRows(t *testing.T) {
 		WHERE instr(meta, '"attachments"') > 0 AND kind = 'user_text' AND instr(meta, '"shell"') > 0`)
 	assertPlanUses(t, db, "idx_import_history_items_attachment_refs", `EXPLAIN QUERY PLAN SELECT rowid FROM import_history_items
 		WHERE instr(meta, '"attachments"') > 0 AND kind = 'user_text' AND instr(meta, '"shell"') > 0`)
-	migrateFrom(t, db, findTextShellCommandsMigrationVersion-1)
+	migrateFromThrough(t, db, findTextShellCommandsMigrationVersion-1, findTextShellCommandsMigrationVersion)
 
 	for _, table := range []string{"items", "import_history_items"} {
 		rows, err := db.Query(`SELECT id, kind, summary, meta, tool_name, find_text FROM ` + table)

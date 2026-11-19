@@ -141,15 +141,26 @@ export const GetThreadDefaults = dispatch('GetThreadDefaults');
 // the import. Keep the mock complete against everything bindings.ts imports.
 export const StartTerminal = dispatch('StartTerminal');
 export const DeleteThread = dispatch('DeleteThread');
+export const DeleteThreads = dispatch('DeleteThreads');
 export const ForkThread = dispatch('ForkThread');
 export const ForkSideChat = dispatch('ForkSideChat');
 export const PromoteScratchThread = dispatch('PromoteScratchThread');
+export const GetStandingAgent = dispatch('GetStandingAgent');
+export const GetDeleteDependents = dispatch('GetDeleteDependents');
+export const CreateAssistant = dispatch('CreateAssistant');
+export const SetAssistantProjects = dispatch('SetAssistantProjects');
+export const StartNextAssistantThread = dispatch('StartNextAssistantThread');
+export const ListAssistantPastThreads = dispatch('ListAssistantPastThreads');
+export const ListThreadWorkerSummaries = dispatch('ListThreadWorkerSummaries');
+export const GetThreadWorkerSummary = dispatch('GetThreadWorkerSummary');
+export const SendExternalThreadMessage = dispatch('SendExternalThreadMessage');
 export const BeginThreadTransfer = dispatch('BeginThreadTransfer');
 export const CreateThreadTransferOffer = dispatch('CreateThreadTransferOffer');
 export const BindThreadTransferDestination = dispatch('BindThreadTransferDestination');
 export const GetThreadTransfers = dispatch('GetThreadTransfers');
 export const GetThreadTransferStatus = dispatch('GetThreadTransferStatus');
 export const GetThreadTransferIntent = dispatch('GetThreadTransferIntent');
+export const ListThreadRecurringJobs = dispatch('ListThreadRecurringJobs');
 export const GetThreadTransferDestinationProject = dispatch('GetThreadTransferDestinationProject');
 export const RetryThreadTransfer = dispatch('RetryThreadTransfer');
 export const CancelThreadTransfer = dispatch('CancelThreadTransfer');
@@ -157,6 +168,7 @@ export const DiscardUnpreparedThreadTransfer = dispatch('DiscardUnpreparedThread
 export const GetThread = dispatch('GetThread');
 export const ListThreads = dispatch('ListThreads');
 export const MarkThreadRead = dispatch('MarkThreadRead');
+export const MarkThreadsRead = dispatch('MarkThreadsRead');
 export const MarkThreadUnread = dispatch('MarkThreadUnread');
 export const PinThread = dispatch('PinThread');
 export const SetThreadPinGroup = dispatch('SetThreadPinGroup');
@@ -166,6 +178,7 @@ export const CreateThreadGroup = dispatch('CreateThreadGroup');
 export const RenameThreadGroup = dispatch('RenameThreadGroup');
 export const DeleteThreadGroup = dispatch('DeleteThreadGroup');
 export const SetThreadGroup = dispatch('SetThreadGroup');
+export const SetThreadPlacement = dispatch('SetThreadPlacement');
 export const RenameThread = dispatch('RenameThread');
 export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
 export const SwitchThread = dispatch('SwitchThread');
@@ -329,9 +342,7 @@ export const WorkflowAnswerQuestion = dispatch('WorkflowAnswerQuestion');
 export const WorkflowBindThread = dispatch('WorkflowBindThread');
 export const WorkflowCancelItem = dispatch('WorkflowCancelItem');
 export const WorkflowCompleteTakeover = dispatch('WorkflowCompleteTakeover');
-export const WorkflowCreateAutomation = dispatch('WorkflowCreateAutomation');
 export const WorkflowCreateItemPR = dispatch('WorkflowCreateItemPR');
-export const WorkflowDeleteAutomation = dispatch('WorkflowDeleteAutomation');
 export const WorkflowDiscussPR = dispatch('WorkflowDiscussPR');
 export const WorkflowDiscardItem = dispatch('WorkflowDiscardItem');
 export const WorkflowDiscardPreview = dispatch('WorkflowDiscardPreview');
@@ -339,9 +350,7 @@ export const WorkflowDropUnit = dispatch('WorkflowDropUnit');
 export const WorkflowFetchPRReviewComments = dispatch('WorkflowFetchPRReviewComments');
 export const WorkflowGetEngineState = dispatch('WorkflowGetEngineState');
 export const WorkflowGetItem = dispatch('WorkflowGetItem');
-export const WorkflowGetJobNotes = dispatch('WorkflowGetJobNotes');
 export const WorkflowGetRunMap = dispatch('WorkflowGetRunMap');
-export const WorkflowListAutomations = dispatch('WorkflowListAutomations');
 export const WorkflowListDefinitions = dispatch('WorkflowListDefinitions');
 export const WorkflowListItemCosts = dispatch('WorkflowListItemCosts');
 export const WorkflowListItems = dispatch('WorkflowListItems');
@@ -350,19 +359,16 @@ export const WorkflowMergeItem = dispatch('WorkflowMergeItem');
 export const WorkflowRerunItem = dispatch('WorkflowRerunItem');
 export const WorkflowSendPRReviewCommentsToThread = dispatch('WorkflowSendPRReviewCommentsToThread');
 export const WorkflowPauseItem = dispatch('WorkflowPauseItem');
+export const WorkflowPauseItemAndEndSessions = dispatch('WorkflowPauseItemAndEndSessions');
 export const WorkflowRequestSoftStop = dispatch('WorkflowRequestSoftStop');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
 export const WorkflowRetryFailedUnits = dispatch('WorkflowRetryFailedUnits');
 export const WorkflowRetryUnit = dispatch('WorkflowRetryUnit');
-export const WorkflowRunAutomationNow = dispatch('WorkflowRunAutomationNow');
-export const WorkflowSetAutomationEnabled = dispatch('WorkflowSetAutomationEnabled');
 export const WorkflowSetGlobalPause = dispatch('WorkflowSetGlobalPause');
-export const WorkflowSetJobNotes = dispatch('WorkflowSetJobNotes');
 export const WorkflowStartRun = dispatch('WorkflowStartRun');
 export const WorkflowTakeOverUnit = dispatch('WorkflowTakeOverUnit');
 export const WorkflowUnbindThread = dispatch('WorkflowUnbindThread');
-export const WorkflowUpdateAutomation = dispatch('WorkflowUpdateAutomation');
 
 // Per-provider/model context window + auto-compact thresholds.
 // GetContextSettings hydrates the form; the two updates persist either
@@ -460,6 +466,9 @@ export const RemoteCommandLogArtifact = dispatch('RemoteCommandLogArtifact');
 export const ThreadToolCall = dispatch('ThreadToolCall');
 export const ThreadToolExportChunk = dispatch('ThreadToolExportChunk');
 export const ThreadToolQuery = dispatch('ThreadToolQuery');
+export const ThreadOwnerChanges = dispatch('ThreadOwnerChanges');
+export const ThreadOwnerRecovery = dispatch('ThreadOwnerRecovery');
+export const ThreadToolWatch = dispatch('ThreadToolWatch');
 export const ThreadToolRequestStatus = dispatch('ThreadToolRequestStatus');
 export const ThreadToolResolve = dispatch('ThreadToolResolve');
 export const AgentRemoteComputers = dispatch('AgentRemoteComputers');
@@ -531,6 +540,8 @@ export class NetworkSettings {
 
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');
+export const CheckAgentProfiles = dispatch('CheckAgentProfiles');
+export const GetNativeMemoryStatus = dispatch('GetNativeMemoryStatus');
 // Composer command-menu sources + the two Codex thread commands the menu
 // drives. All four are re-exported from stores/bindings.ts, so the mock has to
 // carry them or the browser project's strict ESM loader fails the import.
@@ -606,19 +617,6 @@ export class WorktreeStatus {
     this.terminals = s.terminals ?? 0;
   }
 }
-
-export const ListDiscussions = dispatch('ListDiscussions');
-export const ListDiscussionsForThread = dispatch('ListDiscussionsForThread');
-export const GetDiscussion = dispatch('GetDiscussion');
-export const CreateDiscussion = dispatch('CreateDiscussion');
-export const UpdateDiscussion = dispatch('UpdateDiscussion');
-export const DeleteDiscussion = dispatch('DeleteDiscussion');
-export const StartDiscussion = dispatch('StartDiscussion');
-export const StartDiscussionByID = dispatch('StartDiscussionByID');
-export const GetChannelMessages = dispatch('GetChannelMessages');
-export const GetChannelState = dispatch('GetChannelState');
-export const PostChannelMessage = dispatch('PostChannelMessage');
-export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
 
 
 // Composer enhancements
@@ -841,6 +839,18 @@ export const UnsubscribePipeline = dispatch('UnsubscribePipeline');
 export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
 export const RunningBackgroundAgents = dispatch('RunningBackgroundAgents');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
+export const ListThreadWakes = dispatch('ListThreadWakes');
+export const ListStandingAgentWakes = dispatch('ListStandingAgentWakes');
+export const GetThreadWakeDetail = dispatch('GetThreadWakeDetail');
+export const WakeThreadWakeNow = dispatch('WakeThreadWakeNow');
+export const CancelThreadWake = dispatch('CancelThreadWake');
+export const ListThreadAgentRows = dispatch('ListThreadAgentRows');
+export const ListThreadPastAgentRows = dispatch('ListThreadPastAgentRows');
+export const GetThreadAgentRows = dispatch('GetThreadAgentRows');
+export const GetThreadRequestStates = dispatch('GetThreadRequestStates');
+export const StopThreadAgentRow = dispatch('StopThreadAgentRow');
+export const StopThreadAgentRows = dispatch('StopThreadAgentRows');
+export const StopThreadAgentIncoming = dispatch('StopThreadAgentIncoming');
 export const CancelThreadRemoteCommand = dispatch('CancelThreadRemoteCommand');
 export const ReadThreadRemoteLog = dispatch('ReadThreadRemoteLog');
 export const GetWorkspaceActivity = dispatch('GetWorkspaceActivity');
@@ -911,20 +921,6 @@ export const ProviderTerminalReplay = dispatch('ProviderTerminalReplay');
 export const ProviderTerminalResize = dispatch('ProviderTerminalResize');
 export const ProviderTerminalSetControl = dispatch('ProviderTerminalSetControl');
 export const NotificationActivated = dispatch('NotificationActivated');
-export const WorkflowAgentGetNotes = dispatch('WorkflowAgentGetNotes');
-export const WorkflowAgentListRuns = dispatch('WorkflowAgentListRuns');
-export const WorkflowAgentRunOutput = dispatch('WorkflowAgentRunOutput');
-export const WorkflowAgentRunStatus = dispatch('WorkflowAgentRunStatus');
-export const WorkflowAgentSchedule = dispatch('WorkflowAgentSchedule');
-export const WorkflowAgentSetNotes = dispatch('WorkflowAgentSetNotes');
-export const WorkflowAgentStartRun = dispatch('WorkflowAgentStartRun');
-export const WorkflowAgentAddMemory = dispatch('WorkflowAgentAddMemory');
-export const WorkflowAgentAmendSeeds = dispatch('WorkflowAgentAmendSeeds');
-export const WorkflowAgentGuideRun = dispatch('WorkflowAgentGuideRun');
-export const WorkflowAgentInspectRun = dispatch('WorkflowAgentInspectRun');
-export const WorkflowAgentListMemory = dispatch('WorkflowAgentListMemory');
-export const WorkflowAgentRunNarrative = dispatch('WorkflowAgentRunNarrative');
-export const WorkflowAgentWatchRun = dispatch('WorkflowAgentWatchRun');
 export const WorkflowScheduleResume = dispatch('WorkflowScheduleResume');
 export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
 export const ListRunningBackgroundWork = dispatch('ListRunningBackgroundWork');

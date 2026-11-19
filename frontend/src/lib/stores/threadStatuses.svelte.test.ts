@@ -9,6 +9,7 @@ import {
   finishThreadLiveStateHydration,
   getActiveTurn,
   getThreadStatus,
+  getThreadWaitingOn,
   hasPendingSend,
   isThreadLiveStateHydrating,
   isThreadLiveStateHydrationCurrent,
@@ -171,6 +172,15 @@ describe('threadStatuses store', () => {
 
     projectTurnCompleted('thread-1', 'turn-1');
     expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('names the spawner a routed prompt waits on, with its computer when it is on a paired one', () => {
+    projectApprovalRequest('thread-1', 'req-1', undefined, { threadId: 'lead', title: 'Lead' });
+    expect(getThreadWaitingOn('thread-1')).toBe('Lead');
+    projectUserInputRequest('thread-2', 'req-2', { threadId: 'lead', title: 'Lead', computerId: 'studio-uuid', computerName: 'Studio' });
+    expect(getThreadWaitingOn('thread-2')).toBe('Lead on Studio');
+    projectApprovalRequest('thread-3', 'req-3', undefined, { threadId: 'lead', title: '', computerId: 'studio-uuid', computerName: 'Studio' });
+    expect(getThreadWaitingOn('thread-3')).toBe('its agent on Studio');
   });
 
   it('holds error until the reader answers or a new turn starts', () => {

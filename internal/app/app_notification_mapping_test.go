@@ -635,6 +635,46 @@ func TestAWorkflowThreadIsSilentUntilTheScreenOptsIn(t *testing.T) {
 	}
 }
 
+// TestAnOwnedWorkersRestAnswersItsOwner: a worker its spawner owns ends its
+// turn, finished or failed, without a notification, whatever the
+// hidden-thread opt-in says, because its answer goes to its owner; a prompt
+// it raises for the user still notifies. Given a sidebar row, its
+// completion notifies again.
+func TestAnOwnedWorkersRestAnswersItsOwner(t *testing.T) {
+	t.Parallel()
+	app, recorder := newNotificationMappingApp(t)
+	spawner := testThread("thread-spawner")
+	if err := app.store.CreateThread(spawner); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "tok-worker", CallerThreadID: spawner.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: mappingThreadID, State: store.ThreadRequestRunning, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.SetThreadPlacement([]string{mappingThreadID}, store.PlacementOwned); err != nil {
+		t.Fatal(err)
+	}
+	for _, opted := range []bool{false, true} {
+		hiddenThreads(t, app, opted)
+		if sends := settled(t, app, recorder, turnCompleted(app, false), turnCompleted(app, true)); len(sends) != 0 {
+			t.Fatalf("opt-in %v: an owned worker's rest notified: %#v", opted, sends)
+		}
+	}
+	sends := settled(t, app, recorder, approvalRequested(app))
+	if len(sends) != 1 || sends[0].Kind != notify.KindApprovalNeeded {
+		t.Fatalf("sends = %#v, want the worker's approval to reach the user", sends)
+	}
+	if _, err := app.store.SetThreadPlacement([]string{mappingThreadID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	sends = settled(t, app, recorder, turnCompleted(app, false))
+	if len(sends) != 2 || sends[1].Kind != notify.KindTurnComplete {
+		t.Fatalf("sends = %#v, want the placed worker's completion", sends)
+	}
+}
+
 // TestAHiddenThreadsRetractionIsNeverGated: the rest notification a screen
 // opted into hearing is withdrawn when the thread resumes, even if the
 // opt-in was flipped off in between.

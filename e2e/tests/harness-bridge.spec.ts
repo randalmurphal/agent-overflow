@@ -9,14 +9,10 @@
 // browser, that the DOM the SPA really renders yields the item ids the
 // backend seeded, that geometry is non-degenerate under a real layout
 // engine, and that rAF actually turns in a headless page.
-import { execFile } from "node:child_process";
-import * as path from "node:path";
-import { promisify } from "node:util";
 import type { Page } from "@playwright/test";
 import type { HarnessApp } from "../src/harness.js";
+import { execProduct, productBinary } from "../src/product-process.js";
 import { test, expect, type SeedResult } from "./fixtures.js";
-
-const run = promisify(execFile);
 
 interface SnapshotRow {
   itemId: string;
@@ -412,12 +408,6 @@ test("a query with no page attached times out, and its late reply is dropped", a
 // which is drawn field by field from the decoded structs. A rename turns
 // the ids blank, the rects into 0x0@0, and the viewport column into a
 // dash, and every assertion below fails at once.
-function harnessBinary(): string {
-  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-  const backend =
-    process.env.AO_HARNESS_BIN ?? path.join(repoRoot, "bin", "agent-overflow");
-  return path.join(path.dirname(backend), "ao-harness");
-}
 
 interface RenderedRow {
   rowIndex: number;
@@ -497,8 +487,8 @@ test("the ao-harness CLI decodes the bridge snapshot, field for field", async ({
   );
   expect(bridgePane, "the seeded thread must be mounted").toBeDefined();
 
-  const { stdout } = await run(
-    harnessBinary(),
+  const { stdout } = await execProduct(
+    productBinary("ao-harness"),
     ["--instance", harness.bootstrap.dataRoot, "ui", "snapshot"],
     { timeout: 60_000 },
   );

@@ -153,7 +153,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	// with no counters is left untouched, so the only cost of not
 	// special-casing the tool type is a comparison.
 	if meta.Usage != (provider.SubagentProgressMeta{}) {
-		if err := r.persistSubagentFinalProgress(launch, meta.Usage); err != nil {
+		if err := r.persistSubagentFinalProgress(launch, meta.Usage, evt.SessionToken); err != nil {
 			// Never fatal to the notification: the counters are a card
 			// decoration and the stop's sibling is the user-visible signal.
 			r.providerWriteFailed(evt.ThreadID, "persist final subagent progress for "+launch.ID, err)

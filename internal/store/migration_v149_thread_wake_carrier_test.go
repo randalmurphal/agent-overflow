@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 )
@@ -31,10 +32,28 @@ func TestThreadWakeCarrierMigrationDefaultsToTheRowsOwnMessage(t *testing.T) {
 	if carrier != "" {
 		t.Fatalf("delivered_with = %q on a row from before the column, want empty", carrier)
 	}
+	// The rider writes, as the latest schema runs them: the confirmation
+	// and the give-back of a carrier's first wake.
+	for name, rider := range map[string]struct {
+		statement string
+		args      []any
+	}{
+		"confirm":   {threadWakeConfirmSQL(false, true), []any{"tok-old", int64(2), "row", int64(3)}},
+		"give back": {threadWakeGiveBackSQL(false, true), []any{"tok-old", int64(2), ThreadWakeQueued}},
+	} {
+		plan := explainWakeCarrierPlan(t, db, rider.statement, rider.args...)
+		if want := "idx_thread_requests_delivered_with"; !strings.Contains(plan, want) {
+			t.Errorf("rider %s plan = %q, want %s", name, plan, want)
+		}
+	}
+}
+
+func explainWakeCarrierPlan(t *testing.T, db *sql.DB, statement string, args ...any) string {
+	t.Helper()
 	var plan string
-	rows, err := db.Query(`EXPLAIN QUERY PLAN `+threadWakeRidersToDraftSQL, ThreadWakeDraft, 2, "tok-old", ThreadWakeQueued)
+	rows, err := db.Query(`EXPLAIN QUERY PLAN `+statement, args...)
 	if err != nil {
-		t.Fatalf("explain the rider lookup: %v", err)
+		t.Fatalf("explain %q: %v", statement, err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -52,7 +71,5 @@ func TestThreadWakeCarrierMigrationDefaultsToTheRowsOwnMessage(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read plan: %v", err)
 	}
-	if want := "idx_thread_requests_delivered_with"; !strings.Contains(plan, want) {
-		t.Fatalf("rider lookup plan = %q, want %s", plan, want)
-	}
+	return plan
 }

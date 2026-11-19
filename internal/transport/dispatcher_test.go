@@ -321,6 +321,39 @@ func TestDispatcher_Invoke_MethodReturnsError(t *testing.T) {
 	}
 }
 
+// A harness boot standing in for an older computer answers a method as
+// that release did: its successful answer reshaped, the method's own error
+// on failure, a reshape that fails as an internal error, and every other
+// method as it is.
+func TestDispatcher_Invoke_ReshapeRewritesASuccess(t *testing.T) {
+	d, _ := newTestDispatcher(t, RegisterOptions{
+		Package:  "main",
+		TypeName: "App",
+		Reshape: map[string]func(json.RawMessage) (json.RawMessage, error){
+			"Maybe": func(answer json.RawMessage) (json.RawMessage, error) {
+				return json.RawMessage(`{"was":` + string(answer) + `}`), nil
+			},
+			"Add": func(json.RawMessage) (json.RawMessage, error) { return nil, errors.New("cannot reshape") },
+		},
+	})
+	maybe, _ := resolveLoopback(d, 0, "Maybe")
+	result, fe := d.Invoke(context.Background(), maybe, []json.RawMessage{json.RawMessage(`true`)})
+	if fe != nil || string(result) != `{"was":"ok"}` {
+		t.Fatalf("reshaped success = %s, %v; want the reshaped answer", result, fe)
+	}
+	if _, fe := d.Invoke(context.Background(), maybe, []json.RawMessage{json.RawMessage(`false`)}); fe == nil || fe.Message != "intentionally unhappy" {
+		t.Fatalf("reshaped failure = %v, want the method's error", fe)
+	}
+	add, _ := resolveLoopback(d, 0, "Add")
+	if _, fe := d.Invoke(context.Background(), add, []json.RawMessage{json.RawMessage(`1`), json.RawMessage(`2`)}); fe == nil || fe.Code != ErrCodeInternal {
+		t.Fatalf("failed reshape = %v, want an internal error", fe)
+	}
+	greet, _ := resolveLoopback(d, 0, "Greet")
+	if result, fe := d.Invoke(context.Background(), greet, []json.RawMessage{json.RawMessage(`"you"`)}); fe != nil || string(result) != `"hello, you"` {
+		t.Fatalf("other method = %s, %v; want its result", result, fe)
+	}
+}
+
 func TestDispatcher_Invoke_MethodNoErrorReturn(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	m, _ := resolveLoopback(d, 0, "Save")

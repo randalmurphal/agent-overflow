@@ -548,7 +548,18 @@ func TestWorkItemOriginThreadBinding(t *testing.T) {
 	if err := s.CreateWorkItem(root); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
+	if change, err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
+		t.Fatal(err)
+	} else if change != (WorkItemOriginChange{ItemID: root.ID, Current: "thread-1"}) {
+		t.Fatalf("bind reported %+v; want from none to thread-1", change)
+	}
+	// A rebind reports the thread it left with the one it binds.
+	if change, err := s.UpdateWorkItemOriginThread(root.ID, "thread-9"); err != nil {
+		t.Fatal(err)
+	} else if change != (WorkItemOriginChange{ItemID: root.ID, Previous: "thread-1", Current: "thread-9"}) {
+		t.Fatalf("rebind reported %+v; want from thread-1 to thread-9", change)
+	}
+	if _, err := s.UpdateWorkItemOriginThread(root.ID, "thread-1"); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := s.GetWorkItem(root.ID)
@@ -590,15 +601,17 @@ func TestWorkItemOriginThreadBinding(t *testing.T) {
 	}
 
 	// Unbinding is the same call with an empty id.
-	if err := s.UpdateWorkItemOriginThread(root.ID, ""); err != nil {
+	if change, err := s.UpdateWorkItemOriginThread(root.ID, ""); err != nil {
 		t.Fatal(err)
+	} else if change != (WorkItemOriginChange{ItemID: root.ID, Previous: "thread-1"}) || len(change.Threads()) != 1 {
+		t.Fatalf("unbind reported %+v; want from thread-1 to none", change)
 	}
 	if stored, err := s.GetWorkItem(root.ID); err != nil {
 		t.Fatal(err)
 	} else if stored.OriginThreadID != "" {
 		t.Fatalf("origin thread after unbind = %q, want empty", stored.OriginThreadID)
 	}
-	if err := s.UpdateWorkItemOriginThread("missing", "thread-1"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.UpdateWorkItemOriginThread("missing", "thread-1"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing origin thread update error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -661,15 +674,15 @@ func TestCreateWorkItemRefusesBindingOnCalledRun(t *testing.T) {
 	if err := s.CreateWorkItem(child); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateWorkItemOriginThread(child.ID, "thread-1"); err == nil {
+	if _, err := s.UpdateWorkItemOriginThread(child.ID, "thread-1"); err == nil {
 		t.Fatal("store accepted binding a thread to a called run")
 	}
 }
 
 // TestDeleteProjectWorkflowRecords: work_items carries no foreign key to
 // projects, so the only way a project's runs go away is this explicit call.
-// It must take the whole record with it — phases, units, effects, automations
-// and their cursors — and touch nothing another project owns.
+// It must take the whole record with it — phases, units and effects — and
+// touch nothing another project owns.
 func TestDeleteProjectWorkflowRecords(t *testing.T) {
 	s := newTestStore(t)
 	for _, item := range []WorkItem{
@@ -697,22 +710,6 @@ func TestDeleteProjectWorkflowRecords(t *testing.T) {
 			t.Fatalf("record effect for %s: %v", item.ID, err)
 		}
 	}
-	for _, automation := range []Automation{
-		{ID: "auto-a", ProjectID: "project-a", WorkflowID: "build", WorkflowScope: "project",
-			Name: "A", Enabled: true, Trigger: json.RawMessage(`{"cron":"0 2 * * *"}`), CreatedAt: 1, UpdatedAt: 1},
-		{ID: "auto-b", ProjectID: "project-b", WorkflowID: "build", WorkflowScope: "project",
-			Name: "B", Enabled: true, Trigger: json.RawMessage(`{"cron":"0 3 * * *"}`), CreatedAt: 1, UpdatedAt: 1},
-	} {
-		if err := s.CreateAutomation(automation); err != nil {
-			t.Fatalf("create automation %s: %v", automation.ID, err)
-		}
-		if err := s.SetAutomationCursor(AutomationCursor{
-			AutomationID: automation.ID, SourceKey: "item-done", Cursor: "1", UpdatedAt: 1,
-		}); err != nil {
-			t.Fatalf("set cursor for %s: %v", automation.ID, err)
-		}
-	}
-
 	if err := s.DeleteProjectWorkflowRecords(""); err == nil {
 		t.Fatal("empty project id: want error")
 	}
@@ -752,19 +749,6 @@ func TestDeleteProjectWorkflowRecords(t *testing.T) {
 		if found != (probe.want == 1) {
 			t.Fatalf("effect for %s found = %v", probe.itemID, found)
 		}
-	}
-	if list, err := s.ListAutomations("project-a"); err != nil || len(list) != 0 {
-		t.Fatalf("project-a automations = %#v, %v", list, err)
-	}
-	if list, err := s.ListAutomations("project-b"); err != nil || len(list) != 1 {
-		t.Fatalf("project-b automations = %#v, %v", list, err)
-	}
-	// The cursor rides its automation's ON DELETE CASCADE.
-	if _, err := s.GetAutomationCursor("auto-a", "item-done"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("cursor for deleted automation: err = %v, want sql.ErrNoRows", err)
-	}
-	if _, err := s.GetAutomationCursor("auto-b", "item-done"); err != nil {
-		t.Fatalf("surviving cursor: %v", err)
 	}
 }
 

@@ -2,6 +2,9 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"maps"
+	"slices"
 	"testing"
 )
 
@@ -24,7 +27,7 @@ func TestAsyncQuestionsSubmissionLifecycle(t *testing.T) {
 		t.Fatalf("message=%q already=%v err=%v", body, already, err)
 	}
 	queue := FlushQueueItem{ID: "queue-1", ThreadID: "q", SendID: "send-1", Message: body, Payload: json.RawMessage(`{}`), EnqueuedAt: 3}
-	if err := s.QueueAsyncAnswers(queue, answers); err != nil {
+	if err := s.QueueAsyncAnswers(queue, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RecordAsyncQuestions(item); err != nil {
@@ -40,7 +43,7 @@ func TestAsyncQuestionsSubmissionLifecycle(t *testing.T) {
 	other := queue
 	other.ID = "queue-2"
 	other.SendID = "send-2"
-	if err := s.QueueAsyncAnswers(other, answers); err == nil {
+	if err := s.QueueAsyncAnswers(other, answers, nil); err == nil {
 		t.Fatal("second client duplicated answer")
 	}
 	if err := s.InsertItem(Item{ID: "user-answer", ThreadID: "q", ItemIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"send-1","provider_item_id":"native-answer"}`, CreatedAt: 4, UpdatedAt: 4}); err != nil {
@@ -72,7 +75,7 @@ func TestAsyncQuestionsQueueFailureIsAtomic(t *testing.T) {
 		{{ItemID: item.ID, Index: 0, Answer: "One"}, {ItemID: item.ID, Index: 9, Answer: "bad"}},
 		{{ItemID: item.ID, Index: 0, Answer: "One"}, {ItemID: item.ID, Index: 0, Answer: "Two"}},
 	} {
-		if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send"}, answers); err == nil {
+		if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send"}, answers, nil); err == nil {
 			t.Fatal("invalid batch accepted")
 		}
 		rows, err := s.ListAsyncQuestions("q", "")
@@ -88,7 +91,7 @@ func TestAsyncQuestionsQueueFailureIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "occupied", ThreadID: "q", SendID: "send", Message: body}, answers); err == nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "occupied", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err == nil {
 		t.Fatal("queue insert should conflict")
 	}
 	rows, err := s.ListAsyncQuestions("q", "")
@@ -150,7 +153,7 @@ func TestAsyncQuestionsSurviveReopenAndQueueDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -169,7 +172,7 @@ func TestAsyncQuestionsSurviveReopenAndQueueDrop(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[0].State != "submitted" || rows[1].State != "unanswered" {
 		t.Fatalf("restart=%+v %v", rows, err)
 	}
-	if err := s.DeleteFlushQueueItemsForThread("q"); err != nil {
+	if err := s.DeleteFlushQueueItemsForThread("q", ""); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = s.ListAsyncQuestions("q", "")
@@ -187,7 +190,7 @@ func TestRestoredAsyncAnswerSettlesAtomicallyWithQueueRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	expected, _, err := s.GetThreadDraft("q")
@@ -222,5 +225,219 @@ func TestRestoredAsyncAnswerSettlesAtomicallyWithQueueRemoval(t *testing.T) {
 	queued, err := s.ListFlushQueueItems("q")
 	if err != nil || len(queued) != 0 {
 		t.Fatalf("retained restored queue: %+v %v", queued, err)
+	}
+}
+
+// The boot lists the threads with a question still unanswered, on the
+// pending index, and a rest dismisses only those questions.
+func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"open", "answered", "other"} {
+		mustCreateThread(t, s, id)
+		questionFixture(t, s, id, "question:call")
+	}
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}, {ItemID: "question:call", Index: 1, Answer: "Friday"}}
+	body, _, err := s.AsyncAnswerMessage("answered", "send", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "answered", SendID: "send", Message: body, Payload: json.RawMessage(`{}`), EnqueuedAt: 3}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"open", "other"}) {
+		t.Fatalf("threads with unanswered questions = %q, %v", ids, err)
+	}
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+threadsWithUnansweredAsyncQuestionsSQL)
+	if n, err := s.DismissUnansweredAsyncQuestions("open"); err != nil || n != 2 {
+		t.Fatalf("dismissed %d, %v; want both of its questions", n, err)
+	}
+	if n, err := s.DismissUnansweredAsyncQuestions("answered"); err != nil || n != 0 {
+		t.Fatalf("dismissed %d answered questions, %v", n, err)
+	}
+	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(ids, []string{"other"}) {
+		t.Fatalf("threads with unanswered questions after the dismissal = %q, %v", ids, err)
+	}
+}
+
+// A thread's unanswered questions are read only while this computer holds
+// the thread unarchived: an archived thread, one being deleted and one
+// moved away read none, and an unarchived one reads them again.
+func TestUnansweredAsyncQuestionsAreReadOnlyForAThreadHeldHere(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"archived", "deleting", "moved"} {
+		mustCreateThread(t, s, id)
+		questionFixture(t, s, id, "question:call")
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET archived=1 WHERE id='archived'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET deleting=1 WHERE id='deleting'`); err != nil {
+		t.Fatal(err)
+	}
+	seedCompletedOutgoingMove(t, s, "moved")
+	for _, id := range []string{"archived", "deleting", "moved"} {
+		if groups, err := s.UnansweredAsyncQuestions(id); err != nil || len(groups) != 0 {
+			t.Fatalf("the questions of %s = %+v, %v; want none", id, groups, err)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET archived=0 WHERE id='archived'`); err != nil {
+		t.Fatal(err)
+	}
+	if groups, err := s.UnansweredAsyncQuestions("archived"); err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 {
+		t.Fatalf("the unarchived thread's questions = %+v, %v; want both", groups, err)
+	}
+}
+
+// An app-written answer the provider did not take in goes back whole: its
+// queue row goes and its questions are unanswered, in one transaction,
+// which reports the revision it left each item at, inside the transaction
+// and as its result. One the provider took in, or returned before, reopens
+// nothing.
+func TestAReturnedAsyncAnswerReopensItsQuestions(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "q")
+	questionFixture(t, s, "q", "question:call")
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}, {ItemID: "question:call", Index: 1, Answer: "Friday"}}
+	body, _, err := s.AsyncAnswerMessage("q", "agent-answer:t", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	var during map[string]int64
+	duringSeen := -1
+	reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t", func(revisions map[string]int64) {
+		during = revisions
+		// A reader outside the transaction does not see the return yet.
+		if groups, err := s.UnansweredAsyncQuestions("q"); err == nil {
+			duringSeen = len(groups)
+		}
+	})
+	if err != nil || len(reopened) != 1 || !maps.Equal(reopened, during) {
+		t.Fatalf("return = %v (inside it %v), %v; want its one item reopened", reopened, during, err)
+	}
+	if duringSeen != 0 {
+		t.Fatalf("a reader inside the return read %d unanswered items, want none before it committed", duringSeen)
+	}
+	if groups, err := s.UnansweredAsyncQuestions("q"); err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 || groups[0].Revision != reopened["question:call"] {
+		t.Fatalf("after the return = %+v, %v; want both questions unanswered at revision %d", groups, err, reopened["question:call"])
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
+		t.Fatalf("the returned answer is still queued: %+v, %v", queued, err)
+	}
+	if again, err := s.ReturnAsyncAnswer("q", "agent-answer:t", func(map[string]int64) { t.Error("a second return reported a reopening") }); err != nil || len(again) != 0 {
+		t.Fatalf("a second return = %v, %v; want nothing reopened", again, err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue-2", ThreadID: "q", SendID: "agent-answer:u", Message: body}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertItem(Item{ID: "echo", ThreadID: "q", ItemIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"agent-answer:u","provider_item_id":"native"}`, CreatedAt: 4, UpdatedAt: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if delivered, err := s.ReturnAsyncAnswer("q", "agent-answer:u", nil); err != nil || len(delivered) != 0 {
+		t.Fatalf("returning a delivered answer = %v, %v; want nothing reopened", delivered, err)
+	}
+}
+
+// The provider's echo of an app-written answer confirms it whether or not
+// the echo's row lands: its questions read delivered by the echo's row,
+// its recovery row goes, and a return after that reopens nothing. A second
+// confirmation, or one of an answer returned, changes nothing.
+func TestAConfirmedAsyncAnswerIsTakenIn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "q")
+	questionFixture(t, s, "q", "question:call")
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}, {ItemID: "question:call", Index: 1, Answer: "Friday"}}
+	body, _, err := s.AsyncAnswerMessage("q", "agent-answer:t", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 1 {
+		t.Fatalf("the dispatched answer's recovery row = %+v, %v; want it kept", queued, err)
+	}
+	if confirmed, err := s.ConfirmAsyncAnswer("q", "agent-answer:t", "echo"); err != nil || !confirmed {
+		t.Fatalf("confirm = %v, %v; want its questions taken in", confirmed, err)
+	}
+	rows, err := s.ListAsyncQuestions("q", "question:call")
+	if err != nil || len(rows) != 2 || rows[0].State != "delivered" || rows[1].State != "delivered" || rows[0].UserItemID != "echo" {
+		t.Fatalf("after the confirmation = %+v, %v; want both delivered by the echo's row", rows, err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
+		t.Fatalf("the confirmed answer's recovery row = %+v, %v; want it gone", queued, err)
+	}
+	if again, err := s.ConfirmAsyncAnswer("q", "agent-answer:t", "echo"); err != nil || again {
+		t.Fatalf("a second confirmation = %v, %v; want nothing changed", again, err)
+	}
+	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t", nil); err != nil || len(reopened) != 0 {
+		t.Fatalf("returning a confirmed answer = %v, %v; want nothing reopened", reopened, err)
+	}
+
+	questionFixture(t, s, "q", "question:other")
+	other := []AsyncQuestionAnswer{{ItemID: "question:other", Index: 0, Answer: "One"}, {ItemID: "question:other", Index: 1, Answer: "Monday"}}
+	body, _, err = s.AsyncAnswerMessage("q", "agent-answer:u", other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue-2", ThreadID: "q", SendID: "agent-answer:u", Message: body}, other, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReturnAsyncAnswer("q", "agent-answer:u", nil); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed, err := s.ConfirmAsyncAnswer("q", "agent-answer:u", "late"); err != nil || confirmed {
+		t.Fatalf("confirming a returned answer = %v, %v; want nothing changed", confirmed, err)
+	}
+	if rows, err := s.ListAsyncQuestions("q", "question:other"); err != nil || rows[0].State != "unanswered" {
+		t.Fatalf("the returned answer's questions = %+v, %v; want them unanswered", rows, err)
+	}
+}
+
+// An item's unanswered questions are read together with its revision, on
+// the pending index, and an answer claimed against a revision the item
+// left is refused whole, its questions and its queue row untouched.
+func TestAsyncAnswersAreClaimedAgainstTheirItemsRevision(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "q")
+	questionFixture(t, s, "q", "question:call")
+	groups, err := s.UnansweredAsyncQuestions("q")
+	if err != nil || len(groups) != 1 || groups[0].ItemID != "question:call" || len(groups[0].Questions) != 2 || groups[0].Questions[1].Title != "Deadline?" {
+		t.Fatalf("unanswered = %+v, %v", groups, err)
+	}
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+unansweredAsyncQuestionsSQL, "q")
+	asked := groups[0].Revision
+	if err := s.SetAsyncQuestionDismissed("q", "question:call", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAsyncQuestionDismissed("q", "question:call", 1, false); err != nil {
+		t.Fatal(err)
+	}
+	groups, err = s.UnansweredAsyncQuestions("q")
+	if err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 || groups[0].Revision <= asked {
+		t.Fatalf("after a dismissal and a reopen = %+v, %v; want both questions at a revision past %d", groups, err, asked)
+	}
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}}
+	body, _, err := s.AsyncAnswerMessage("q", "agent-answer:t", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}
+	if err := s.QueueAsyncAnswers(queue, answers, map[string]int64{"question:call": asked}); !errors.Is(err, ErrAsyncQuestionHandled) {
+		t.Fatalf("an answer for the old revision: %v, want ErrAsyncQuestionHandled", err)
+	}
+	if rows, err := s.ListAsyncQuestions("q", "question:call"); err != nil || rows[0].State != "unanswered" || rows[0].SendID != "" {
+		t.Fatalf("after the refusal = %+v, %v", rows, err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
+		t.Fatalf("the refused answer was queued: %+v, %v", queued, err)
+	}
+	if err := s.QueueAsyncAnswers(queue, answers, map[string]int64{"question:call": groups[0].Revision}); err != nil {
+		t.Fatalf("an answer for the current revision: %v", err)
 	}
 }

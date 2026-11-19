@@ -68,8 +68,6 @@ the active tab's while the pane's last focus or press was inside the
 terminal, or while the pane has no provider of its own. A tab's state
 goes when its terminal ends, on screen or not: the terminal store's
 `removeTab` drops its region under every pane (`dropPaneFindRegion`).
-Discussion panes have no provider
-yet, so mod+f falls through there.
 
 A pane whose body holds a list beside a detail declares find regions
 (`declarePaneFindRegions`) and keys each region's provider, bar, reads

@@ -33,18 +33,6 @@ const (
 	DevServerList Channel = "devserver:list"
 )
 
-// discussion:* — multi-agent deliberation channels, plus the definitions
-// those deliberations are built from.
-//
-// DiscussionDefinitionsChanged is a payload-less refetch nudge for the
-// persisted discussion DEFINITIONS (create / update / delete), the same
-// shape workflow:definitions-changed carries for workflow definitions.
-const (
-	DiscussionDefinitionsChanged Channel = "discussion:definitions-changed"
-	DiscussionMessage            Channel = "discussion:message"
-	DiscussionState              Channel = "discussion:state"
-)
-
 // draft:* — one frame per persisted composer-draft write, naming the thread
 // and the screen that wrote it. Carries no draft TEXT: receivers re-read
 // through GetDraft, which takes `threads:operate` for the disclosure reason
@@ -174,6 +162,7 @@ const (
 	ProviderSendsPending           Channel = "provider:sends_pending"
 	ProviderSessionAccount         Channel = "provider:session_account"
 	ProviderSessionDied            Channel = "provider:session_died"
+	ProviderSessionLive            Channel = "provider:session_live"
 	ProviderStatus                 Channel = "provider:status"
 	ProviderSubagentProgress       Channel = "provider:subagent_progress"
 	ProviderTerminalOutput         Channel = "provider:terminal_output"
@@ -324,6 +313,13 @@ const (
 	ThreadTitleGeneration    Channel = "thread:title_generation"
 	ThreadUnsavedRows        Channel = "thread:unsaved_rows"
 	ThreadUpdated            Channel = "thread:updated"
+	// ThreadWakesChanged carries one changed loop, watch or reminder: its
+	// thread, its id, and the row as it stands or that it was removed.
+	ThreadWakesChanged Channel = "thread:wakes_changed"
+	// ThreadAgentRowsChanged names one changed request a thread made of
+	// another thread: its caller and its token, or the caller alone for
+	// every request of it.
+	ThreadAgentRowsChanged Channel = "thread:agent_rows_changed"
 )
 
 // updater:* — the self-update lifecycle. Six of these are bridged from

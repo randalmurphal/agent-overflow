@@ -38,6 +38,17 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(queryByTestId('chat-header-project')).toBeNull();
   });
 
+  it('offers no branch or worktree for a thread outside every project', async () => {
+    const list = setBindingMock('GitListWorktrees', async () => []);
+    const pane = await buildPane(makeThread({ projectId: '', projectPath: '', workspacePath: '/config/agents/ops', agentId: 'ops' }));
+    const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    await tick();
+    expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
+    expect(queryByTestId('branch-picker-trigger')).toBeNull();
+    expect(queryByTestId('env-picker-trigger')).toBeNull();
+    expect(list).not.toHaveBeenCalled();
+  });
+
   it('does not mount under compact: the header facts line and the rail carry its facts', async () => {
     setCompactLayoutForTest(true);
     const pane = await buildPane(makeThread({ branch: 'feature/mobile' }));
@@ -53,7 +64,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     // Branch, then the worktree — the same order as the compact header's
     // facts line, so the two surfaces read alike. A revert or accidental
     // re-order would otherwise sail past the existence-only assertion above.
-    const pane = await buildPane(makeThread({ projectId: undefined }));
+    const pane = await buildPane(makeThread());
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
     const triggers = Array.from(
@@ -63,6 +74,24 @@ describe('<ComposerWorkspaceStrip>', () => {
       'branch-picker-trigger',
       'env-picker-trigger',
     ]);
+  });
+
+  it('offers no machine, branch or worktree picker on an ask copy', async () => {
+    // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
+    // a checkout or a move would act on the workspace it shares.
+    stageBackend();
+    noteThread('thread-1', '');
+    try {
+      const pane = await buildPane(makeThread({ askCopy: true }));
+      const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+      await tick();
+      expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
+      for (const id of ['machine-picker-trigger', 'branch-picker-trigger', 'env-picker-trigger', 'new-branch-toggle']) {
+        expect(queryByTestId(id), id).toBeNull();
+      }
+    } finally {
+      resetStagedBackends();
+    }
   });
 
   it('mounts no machine picker on a single-backend page', async () => {

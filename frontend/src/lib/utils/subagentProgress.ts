@@ -6,6 +6,7 @@
 
 import type { Item } from '../types/models';
 import type { SubagentProgress } from '../types/events';
+import { formatTokens } from './format';
 import { parseJsonObject } from './parseJsonObject';
 
 export interface ResolvedSubagentProgress {
@@ -107,4 +108,10 @@ export function resolveSubagentProgress(
 export function formatToolUses(count: number | null): string {
   if (count === null) return '';
   return `${count} ${count === 1 ? 'tool' : 'tools'}`;
+}
+
+/** "18.2k tokens"; empty when unknown. */
+export function formatAgentTokens(count: number | null): string {
+  if (count === null) return '';
+  return `${formatTokens(count)} tokens`;
 }

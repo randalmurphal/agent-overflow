@@ -226,6 +226,11 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 			isPeerMessage = true
 		}
 	}
+	if isPeerMessage {
+		// The echo's uuid is the peer turn's command uuid: this is the
+		// evidence its bracket's later frames carry (parse_command_lifecycle.go).
+		p.noteCommandOrigin(readRawString(raw["uuid"]), PeerTurnOrigin)
+	}
 
 	if !commandEcho && !isPeerMessage && !ownSend && isClaudeInjectedReplayContent(content) {
 		// Replay every `<task-notification>` in the body, not just the
@@ -510,6 +515,9 @@ type TaskNotificationFields struct {
 	// Result is a `local_agent` stop's final report, the `<result>`
 	// section after its `<summary>` bell. Commands have none.
 	Result string
+	// Event is a Monitor's `<event>`: the output line that woke the
+	// session. Only Monitor events carry one.
+	Event string
 	// Usage is a `local_agent` stop's `<usage>` counters, the same
 	// numbers the structured envelope's `usage` reports for that stop;
 	// UsageSet says the block carried any. Commands have none.
@@ -612,6 +620,7 @@ func scanTaskNotification(content string, from int) (TaskNotificationFields, int
 		OutputFile: extractXMLChild(body, "output-file"),
 		Summary:    extractXMLChild(body, "summary"),
 		Result:     extractXMLChild(body, "result"),
+		Event:      extractXMLChild(body, "event"),
 	}
 	fields.Usage, fields.UsageSet = xmlTaskUsage(body)
 	return fields, from + closeIdx + len(closeTag)

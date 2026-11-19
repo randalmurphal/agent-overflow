@@ -22,6 +22,8 @@
 // is computed from state.
 
 import { remoteAccessAvailable } from '../../transport/buildVariant';
+import { anyAssistantsOn, assistantsOn } from '../../stores/assistants.svelte';
+import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { settingsSectionAvailable, type SettingsSection } from './sections';
 
 export interface SettingsFieldDef {
@@ -37,6 +39,8 @@ export interface SettingsFieldDef {
   readonly remote?: boolean;
   /** The hint a build without remote access renders, where `hint` names a remote feature. */
   readonly localHint?: string;
+  /** The hint while assistants are turned off, where `hint` names assistants. */
+  readonly assistantsOffHint?: string;
 }
 
 /** The providers that get a settings page each. Mirrors `PROVIDER_SETTINGS_ORDER`. */
@@ -549,6 +553,45 @@ const STATIC_FIELDS = [
     keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
   },
 
+  // --- Assistants ----------------------------------------------------------
+  {
+    id: 'assistants.enabled',
+    section: 'assistants',
+    label: 'Assistants',
+    hint: "Show this computer's assistants and let them run. Off hides them in every window and pauses them; nothing is deleted.",
+    keywords: ['standing agent', 'hide', 'pause', 'sidebar', 'loops', 'watches'],
+  },
+
+  // --- Agent profiles ------------------------------------------------------
+  {
+    id: 'agent-profiles.levels',
+    section: 'agent-profiles',
+    label: 'Sub-thread levels',
+    hint: 'How many levels of sub-threads may open below a thread you talk to. A thread on the last level cannot open threads and has no subagents of its own. Applies to sessions started after a change.',
+    keywords: ['depth', 'nesting', 'workers', 'subagents', 'thread_spawn'],
+  },
+  {
+    id: 'agent-profiles.profiles',
+    section: 'agent-profiles',
+    heading: 'Profiles',
+    label: 'Profiles',
+    keywords: ['roster', 'models', 'agents', 'spawn', 'use for', 'instructions'],
+  },
+  {
+    id: 'agent-profiles.notes',
+    section: 'agent-profiles',
+    heading: 'Choosing notes',
+    label: 'Choosing notes',
+    keywords: ['council', 'effort', 'advice', 'roster'],
+  },
+  {
+    id: 'agent-profiles.restore',
+    section: 'agent-profiles',
+    label: 'Restore the starting roster',
+    hint: 'Replace the profiles and notes with the ones the app ships with. Your edits to them are lost.',
+    keywords: ['reset', 'defaults', 'roster'],
+  },
+
   // --- App guide -----------------------------------------------------------
   {
     id: 'agent-guide.enabled',
@@ -556,6 +599,30 @@ const STATIC_FIELDS = [
     label: 'Append the app guide',
     hint: 'Tell Claude and Codex what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change.',
     keywords: ['system prompt', 'append', 'guide', 'mcp'],
+  },
+
+  // --- Memory -------------------------------------------------------------
+  {
+    id: 'memory.shared',
+    section: 'memory',
+    label: 'Shared memory',
+    hint: 'Give every conversation the memory of its project and the memory of you, which it reads when it starts and may add to. Assistants always have memory.',
+    assistantsOffHint: 'Give every conversation the memory of its project and the memory of you, which it reads when it starts and may add to.',
+    keywords: ['facts', 'remember', 'project memory', 'user memory'],
+  },
+  {
+    id: 'memory.claude-own',
+    section: 'memory',
+    label: "Turn off Claude's own memory",
+    hint: 'Where it is off, sessions this app starts send autoMemoryEnabled: false. Your Claude settings files are not changed.',
+    keywords: ['auto memory', 'MEMORY.md', 'autoMemoryEnabled', 'native memory'],
+  },
+  {
+    id: 'memory.codex-own',
+    section: 'memory',
+    label: "Turn off Codex's own memory",
+    hint: 'Where it is off, threads this app starts neither use memories nor are mined for them. Your Codex config is not changed.',
+    keywords: ['memories', 'generate_memories', 'native memory'],
   },
 
   // --- Projects -----------------------------------------------------------
@@ -844,6 +911,15 @@ const STATIC_FIELDS = [
     conditional: true,
   },
   {
+    id: 'notifications.thread-attention',
+    section: 'notifications',
+    heading: 'Notifications',
+    label: 'Thread needs attention',
+    hint: 'When a turn ends with its agent asking for you: a decision, something to review or a problem. The only way a loop or watch turn notifies.',
+    keywords: ['attention', 'flag', 'decision', 'review', 'problem', 'assistant', 'loop', 'watch', 'wake'],
+    conditional: true,
+  },
+  {
     id: 'notifications.errors',
     section: 'notifications',
     heading: 'Notifications',
@@ -921,8 +997,8 @@ const STATIC_FIELDS = [
     section: 'notifications',
     heading: 'Sounds',
     label: 'Approval needed cue',
-    hint: 'Plays when the agent is blocked waiting on you.',
-    keywords: ['sound', 'cue', 'permission', 'approval', 'input', 'blocked'],
+    hint: 'Plays when the agent is blocked waiting on you, or flags a thread for you.',
+    keywords: ['sound', 'cue', 'permission', 'approval', 'input', 'blocked', 'attention', 'flag', 'review', 'decision'],
     conditional: true,
   },
   {
@@ -1034,17 +1110,31 @@ export const SETTINGS_FIELDS: readonly SettingsFieldDef[] = [
 /**
  * The index as this build presents it: without remote access, the remote
  * pages' fields and remote-only controls are absent and local wording
- * replaces remote wording.
+ * replaces remote wording. While no computer this window shows has
+ * assistants on, no hint names them.
  */
 export function settingsFields(): readonly SettingsFieldDef[] {
-  if (remoteAccessAvailable()) return SETTINGS_FIELDS;
-  return SETTINGS_FIELDS
-    .filter((f) => !f.remote && settingsSectionAvailable(f.section))
-    .map((f) => (f.localHint === undefined ? f : { ...f, hint: f.localHint }));
+  const fields = remoteAccessAvailable()
+    ? SETTINGS_FIELDS
+    : SETTINGS_FIELDS.filter((f) => !f.remote && settingsSectionAvailable(f.section));
+  const assistants = anyAssistantsOn();
+  if (remoteAccessAvailable() && assistants) return fields;
+  return fields.map((f) => {
+    const hint = fieldHint(f, assistants);
+    return hint === f.hint ? f : { ...f, hint };
+  });
 }
 
-/** The hint a field renders in this build. */
-export function settingsFieldHint(id: SettingsFieldId): string | undefined {
+/**
+ * The hint a field renders in this build, on the page of `backend`: no
+ * hint names assistants while that computer has them off.
+ */
+export function settingsFieldHint(id: SettingsFieldId, backend: BackendKey = HOME_BACKEND): string | undefined {
   const field = SETTINGS_FIELDS.find((f) => f.id === id);
-  return !remoteAccessAvailable() && field?.localHint !== undefined ? field.localHint : field?.hint;
+  return field && fieldHint(field, assistantsOn(backend));
+}
+
+function fieldHint(field: SettingsFieldDef, assistants: boolean): string | undefined {
+  if (!assistants && field.assistantsOffHint !== undefined) return field.assistantsOffHint;
+  return !remoteAccessAvailable() && field.localHint !== undefined ? field.localHint : field.hint;
 }

@@ -4,11 +4,10 @@ import {
   syncRemovedWorktreeThreads,
   TerminalsClosingNote,
   terminalsClosingNote,
-  terminalsClosingNoteForThreadDelete,
   withTerminalsNote,
 } from './worktreeRemoval.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { resetPanesForTest } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -37,40 +36,6 @@ describe('terminalsClosingNote', () => {
     expect(terminalsClosingNote(3)).toBe('3 terminals will close.');
     expect(withTerminalsNote('Delete it.', '')).toBe('Delete it.');
     expect(withTerminalsNote('Delete it.', '1 terminal will close.')).toBe('Delete it. 1 terminal will close.');
-  });
-});
-
-describe('terminalsClosingNoteForThreadDelete', () => {
-  it('counts each worktree once and skips threads without one', async () => {
-    const status = setBindingMock('GitWorktreeStatus', async (_ws: unknown, path: string) => ({
-      path,
-      terminals: path === '/wt/a' ? 2 : 1,
-    }));
-    const note = await terminalsClosingNoteForThreadDelete([
-      makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-      makeThread({ id: 't2', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-      makeThread({ id: 't3', workspacePath: '/wt/b', worktreePath: '/wt/b' }),
-      makeThread({ id: 't4', workspacePath: '/repo', worktreePath: '' }),
-    ]);
-    expect(note).toBe('3 terminals will close.');
-    expect(status).toHaveBeenCalledTimes(2);
-  });
-
-  it('reports a count it cannot read and leaves it out', async () => {
-    setBindingMock('GitWorktreeStatus', async () => {
-      throw new Error('worktree status: exit 128');
-    });
-    const note = await terminalsClosingNoteForThreadDelete([
-      makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-    ]);
-    expect(note).toBe('');
-    expect(reported).toHaveBeenCalledTimes(1);
-  });
-
-  it('asks nothing when no thread is on a worktree', async () => {
-    const note = await terminalsClosingNoteForThreadDelete([makeThread({ id: 't1', worktreePath: '' })]);
-    expect(note).toBe('');
-    expect(getBindingMock('GitWorktreeStatus')).toBeUndefined();
   });
 });
 

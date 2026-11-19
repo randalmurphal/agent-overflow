@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
 
@@ -24,6 +25,11 @@ var storeWriteFrame = regexp.MustCompile(`agent-overflow/internal/store\.\(\*Sto
 // not committed, runs op, and commits once op waits inside a store write.
 // By then op has read the row, before landSQL was visible to it, so a write
 // of the whole row it read would undo landSQL.
+//
+// The commit has to land inside the store's busy timeout, a fixed real-time
+// window, after a scan of every goroutine's stack finds op waiting, so a
+// test that uses it runs serial: beside the parallel suite the scan can
+// outlast the window and op's write fails with SQLITE_BUSY.
 func landWhileStoreWriteWaits(t *testing.T, dbPath, opFrame string, op func() error, landSQL string, args ...any) {
 	t.Helper()
 	blocker, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
@@ -86,7 +92,6 @@ func awaitStoreWriteIn(fn string, done chan error) bool {
 
 // A `/effort` the live session adopted writes the effort and nothing else.
 func TestEffortSyncKeepsAMoveThatLandedAfterItsRead(t *testing.T) {
-	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	thread := testThread("thread-effort-move")
 	thread.Provider = string(provider.Claude)
@@ -112,7 +117,6 @@ func TestEffortSyncKeepsAMoveThatLandedAfterItsRead(t *testing.T) {
 // A checkout move writes the workspace, worktree and branch and nothing
 // else; create and switch commit through the same commitThreadCheckout.
 func TestCheckoutMoveKeepsARenameThatLandedAfterItsRead(t *testing.T) {
-	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	repo := initMainGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/rename-meanwhile")
@@ -142,11 +146,41 @@ func TestCheckoutMoveKeepsARenameThatLandedAfterItsRead(t *testing.T) {
 	}
 }
 
+// An assistant handoff reads the old thread first and archives it last: the
+// archive writes that column alone, so a rename landing between keeps.
+func TestAssistantHandOffKeepsARenameThatLandedAfterItsRead(t *testing.T) {
+	app, dbPath := newTestAppWithStorePath(t)
+	project := store.Project{ID: "handoff-project", Path: t.TempDir(), Name: "Handoff", CreatedAt: 1, UpdatedAt: 1}
+	if _, err := app.store.CreateProject(project); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	// The successor's opening block starts a session.
+	installMockClaudeReplies(t, app, "ready")
+	old := testThread("thread-handoff-rename")
+	old.ProjectID = project.ID
+	old.WorkspacePath = project.Path
+	old.Provider, old.Model = string(provider.Claude), "claude-opus-4-7"
+	if err := app.store.CreateThread(old); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	testAssistant(t, app, old.ID)
+	landWhileStoreWriteWaits(t, dbPath, "nextAssistantThread", func() error {
+		_, err := app.StartNextAssistantThread(t.Context(), old.ID)
+		return err
+	}, `UPDATE threads SET title = ? WHERE id = ?`, "Renamed meanwhile", old.ID)
+	stored, err := app.store.GetThread(old.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.Title != "Renamed meanwhile" || !stored.Archived || stored.PastAgentID != old.ID {
+		t.Fatalf("old row = title %q archived %v past agent %q, want the rename kept on the archived past thread", stored.Title, stored.Archived, stored.PastAgentID)
+	}
+}
+
 // A draft save and clear read the thread's listing before they write, inside
 // one transaction; a write another connection holds is waited out, not
 // failed.
 func TestDraftWritesWaitForAWriteThatLandedAfterTheirRead(t *testing.T) {
-	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
 	thread := testThread("thread-draft-wait")
 	if err := app.store.CreateThread(thread); err != nil {

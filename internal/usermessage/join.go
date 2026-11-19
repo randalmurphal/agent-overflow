@@ -5,27 +5,12 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
-
-// JoinSeparator is the visible rule between the parts of a JOINED queued
-// message. It goes in BOTH the stored row summary and the text written to the
-// provider, so the bubble the user reads back, the text the model receives,
-// and the message a revert cuts at are one thing.
-//
-// Claude Code's own boundary-drain merge newline-joins the parts
-// (`joinPromptValues`, src/cli/print.ts). AO uses a markdown rule instead
-// because its copy is also the row a person reads, edits and reverts to, and
-// two prompts run together across a bare newline read as one paragraph.
-//
-// It lives here rather than beside either joiner because two of them exist for
-// one wire fact: the flush dispatcher joins a drain it can see coming
-// (`internal/app/app_flush_dispatch_join.go`), and triage folds one the CLI
-// made across separate drains (`internal/triage/claude_merge_fold.go`). The
-// two must produce the same row.
-const JoinSeparator = "\n\n---\n\n"
 
 // TextPart is one member's contribution to a joined message: the text to
 // concatenate and how many images its inline `[Image #N]` markers index into.
@@ -48,22 +33,178 @@ type TextPart struct {
 // while its literal `#1` stays in the text. Re-emitting each marker from the
 // part's attachment offset keeps every image where the user dropped it.
 func JoinRenumberedText(parts []TextPart) string {
+	text, _ := joinRenumbered(parts, make([][]int, len(parts)))
+	return text
+}
+
+// joinRenumbered is JoinRenumberedText that also measures, in the joined
+// text, the leaves of each part: leaves[i] are the lengths of the members
+// part i is itself joined from, separators excluded, or nil for a part of
+// one message. It returns every leaf's length in the joined text, in order.
+//
+// Renumbering changes a marker's length (#9 becomes #10), so a leaf's length
+// in the joined text is its own length plus what its markers grew by. A
+// marker never spans a separator, which holds no marker character, and the
+// walk appends a part's images that have no marker at the end of the part,
+// which is its last leaf's.
+func joinRenumbered(parts []TextPart, leaves [][]int) (string, []int) {
 	var text strings.Builder
+	var lengths []int
 	base := 0
 	for i, part := range parts {
 		if i > 0 {
-			text.WriteString(JoinSeparator)
+			text.WriteString(agentmeta.JoinSeparator)
 		}
+		bounds := leaves[i]
+		if bounds == nil {
+			bounds = []int{len(part.Text)}
+		}
+		measured := slices.Clone(bounds)
+		leaf, leafEnd := 0, bounds[0]
+		in := 0
 		for _, split := range provider.SplitContentByImageMarkers(part.Text, part.ImageCount) {
-			if split.ImageIndex >= 0 {
-				text.WriteString(provider.ImagePlaceholderLabel(base + split.ImageIndex + 1))
+			if split.ImageIndex < 0 {
+				text.WriteString(split.Text)
+				in += len(split.Text)
 				continue
 			}
-			text.WriteString(split.Text)
+			label := provider.ImagePlaceholderLabel(base + split.ImageIndex + 1)
+			text.WriteString(label)
+			own := provider.ImagePlaceholderLabel(split.ImageIndex + 1)
+			if !strings.HasPrefix(part.Text[in:], own) {
+				// An image with no marker, appended after the whole text.
+				measured[len(measured)-1] += len(label)
+				continue
+			}
+			for in >= leafEnd && leaf < len(bounds)-1 {
+				leafEnd += len(agentmeta.JoinSeparator) + bounds[leaf+1]
+				leaf++
+			}
+			measured[leaf] += len(label) - len(own)
+			in += len(own)
 		}
+		lengths = append(lengths, measured...)
 		base += part.ImageCount
 	}
-	return text.String()
+	return text.String(), lengths
+}
+
+// JoinMember is one message a joined message is made of: its row metadata,
+// with JoinedParts when it is itself a joined message, its text, and how
+// many images its markers index into.
+type JoinMember struct {
+	Meta       Meta
+	Text       string
+	ImageCount int
+}
+
+// Join makes one message of members: their texts joined with their image
+// markers renumbered (JoinRenumberedText), their metadata unioned
+// (JoinMetas), and every message it is made of, a joined member's own
+// members included, recorded with its length in the joined text and its
+// attribution (JoinedParts), so the text and the parts that describe it
+// come from one walk. A member that is itself joined and whose recorded
+// parts do not describe its text leaves the joined message's parts unknown:
+// it records none, and nothing splits it.
+func Join(members []JoinMember) (string, Meta) {
+	parts := make([]TextPart, len(members))
+	metas := make([]Meta, len(members))
+	leaves := make([][]int, len(members))
+	known := true
+	for i, member := range members {
+		parts[i] = TextPart{Text: member.Text, ImageCount: member.ImageCount}
+		metas[i] = member.Meta
+		if !member.Meta.joined() {
+			continue
+		}
+		if _, fits := agentmeta.SplitJoinedParts(member.Text, member.Meta.JoinedParts); !fits {
+			known = false
+			continue
+		}
+		for _, part := range member.Meta.JoinedParts {
+			leaves[i] = append(leaves[i], part.Bytes)
+		}
+	}
+	text, lengths := joinRenumbered(parts, leaves)
+	joined := JoinMetas(metas)
+	if !known {
+		return text, joined
+	}
+	joined.JoinedParts = make([]agentmeta.JoinedPart, 0, len(lengths))
+	for i, member := range members {
+		if leaves[i] == nil {
+			joined.JoinedParts = append(joined.JoinedParts, agentmeta.JoinedPart{
+				SendID: member.Meta.SendID, Bytes: lengths[len(joined.JoinedParts)],
+				Origin: member.Meta.Origin, OriginThread: member.Meta.OriginThread, OriginWake: member.Meta.OriginWake,
+			})
+			continue
+		}
+		for _, part := range member.Meta.JoinedParts {
+			part.Bytes = lengths[len(joined.JoinedParts)]
+			joined.JoinedParts = append(joined.JoinedParts, part)
+		}
+	}
+	return text, joined
+}
+
+// joined reports whether m is a joined message's: one that answers for
+// several sends or records the members it was joined from.
+func (m Meta) joined() bool {
+	return len(m.JoinedSendIDs) > 0 || len(m.JoinedParts) > 0
+}
+
+// SplitPersonParts cuts a joined row's text into the person's text and the
+// agents' members, by the parts recorded on its meta. ok is false when the
+// row holds an agent's member and no recorded parts describe its text and
+// name it: then nothing can tell the person's words from the agent's. A row
+// with no agent's member is the person's whole.
+func SplitPersonParts(text string, meta Meta) (person string, agents []AgentPart, ok bool) {
+	agentOrigin := meta.Origin == agentmeta.OriginAgentThread || meta.Origin == agentmeta.OriginAgentWake
+	if len(meta.JoinedParts) == 0 {
+		if agentOrigin {
+			return "", nil, false
+		}
+		return text, nil, true
+	}
+	members, fits := agentmeta.SplitJoinedParts(text, meta.JoinedParts)
+	if !fits || agentOrigin && !slices.ContainsFunc(meta.JoinedParts, agentmeta.JoinedPart.IsAgent) {
+		return "", nil, false
+	}
+	var kept []string
+	for i, part := range meta.JoinedParts {
+		if part.IsAgent() {
+			agents = append(agents, AgentPart{JoinedPart: part, Text: members[i]})
+			continue
+		}
+		kept = append(kept, members[i])
+	}
+	return strings.Join(kept, agentmeta.JoinSeparator), agents, true
+}
+
+// AgentPart is an agent's member of a joined message and its text.
+type AgentPart struct {
+	agentmeta.JoinedPart
+	Text string
+}
+
+// TrimJoinedParts is parts as they describe strings.TrimSpace(text): the
+// first and last members lose the white space the trim cuts from them. It
+// is nil when parts do not describe text, or when the trim reaches past a
+// member into a separator.
+func TrimJoinedParts(text string, parts []agentmeta.JoinedPart) []agentmeta.JoinedPart {
+	if _, ok := agentmeta.SplitJoinedParts(text, parts); !ok {
+		return nil
+	}
+	lead := len(text) - len(strings.TrimLeftFunc(text, unicode.IsSpace))
+	trail := len(text) - len(strings.TrimRightFunc(text, unicode.IsSpace))
+	trimmed := slices.Clone(parts)
+	last := len(trimmed) - 1
+	if lead == len(text) || lead > trimmed[0].Bytes || trail > trimmed[last].Bytes || last == 0 && lead+trail > trimmed[0].Bytes {
+		return nil
+	}
+	trimmed[0].Bytes -= lead
+	trimmed[last].Bytes -= trail
+	return trimmed
 }
 
 // ImageAttachmentCount reports how many of a row's persisted attachments are
@@ -112,6 +253,7 @@ func (in Input) Projection() Meta {
 		JoinedSendIDs:                in.JoinedSendIDs,
 		Origin:                       in.Origin,
 		OriginThread:                 in.OriginThread,
+		OriginWake:                   in.OriginWake,
 		TextBeforeReviewComments:     in.TextBeforeReviewComments,
 	}
 }
@@ -164,7 +306,7 @@ func JoinMetas(members []Meta) Meta {
 		// one message with one author, and a merge that mixed two senders
 		// would label the row with whichever happened to sort first.
 		if joined.Origin == "" {
-			joined.Origin, joined.OriginThread = member.Origin, member.OriginThread
+			joined.Origin, joined.OriginThread, joined.OriginWake = member.Origin, member.OriginThread, member.OriginWake
 		}
 		ids := member.JoinedSendIDs
 		if len(ids) == 0 {
@@ -219,6 +361,8 @@ func (m Meta) isZero() bool {
 		len(m.JoinedSendIDs) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
+		m.OriginWake == nil &&
+		len(m.JoinedParts) == 0 &&
 		m.TextBeforeReviewComments == nil &&
 		!m.ExpandComposerCommands
 }
@@ -244,6 +388,8 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"originWake",
+	"joinedParts",
 	"textBeforeReviewComments",
 }
 

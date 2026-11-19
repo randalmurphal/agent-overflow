@@ -326,10 +326,12 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessStoreStatus()` | The database's migration state: `schemaVersion` applied against `buildSchemaVersion`, the deferred watermark against the last deferred version, `deferredPending`, and `deferredFailure` (null when none). The release upgrade check polls it after a migrated boot until the deferred phases finish. |
 | `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, since a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
-| `HarnessReset()` | Blank slate without a reboot: pause the merged-PR worktree cleanup first (its poll and worker joined, their in-memory state dropped, resumed from nothing last, so a pass begun for one spec neither reads the forge into the next spec's invocation log nor acts on rows being deleted), set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows navigation stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows — the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), discard the event bus's retained history (a fresh loopback page replays `notification:activated` from zero, so an activation one spec sent would otherwise open, or toast the absence of, its target on the next spec's page), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations, the fake forge's fixture and invocation log, the Claude usage answers, the provider release feed's seed). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
+| `HarnessReset()` | Blank slate without a reboot: pause the merged-PR worktree cleanup first (its poll and worker joined, their in-memory state dropped, resumed from nothing last, so a pass begun for one spec neither reads the forge into the next spec's invocation log nor acts on rows being deleted), set the global workflow pause and cancel every live run through the production cancel path, stop sessions (and again any session a stop's settled request woke its caller into, until none starts), settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows navigation stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows; the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), discard the event bus's retained history (a fresh loopback page replays `notification:activated` from zero, so an activation one spec sent would otherwise open, or toast the absence of, its target on the next spec's page), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations, the fake forge's fixture and invocation log, the Claude usage answers, the provider release feed's seed). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes, described in "Scoping a scenario" below). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order, dead ones pruned by a PID probe (30s grace so a just-exited mock's terminal reports still land). Each row carries `openGate` (the `waitSignal` gate the mock is currently blocked on, empty when none) and `pendingAdvances` (advances buffered for gates that have not opened yet), the state a stuck `advance` await is diagnosed from. |
+| `HarnessUpdateWorkReason()` | What a service update or restart would wait for now (`updateWorkReason`, the production admission check), or `""` when the host is idle. Read-only: admission stays open and no update starts, so a spec can assert what holds an update on a boot with no updater. |
+| `HarnessStallProviderEvents(threadId)` / `HarnessReleaseProviderEvents(threadId)` / `HarnessPendingProviderEvents(threadId)` | Hold the thread's provider event worker the way a handler stuck on a slow write would: every event read from its provider afterwards queues unhandled until the release. A session stop's drain gives up on the held worker at its stall bound (the `drain-stall` timing entry), so a spec can run a replacement start with the stopped session's frames still queued. One stall per thread at a time. The pending count is the events queued and not handled yet, the stall included. |
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
 | `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code), `login_complete` (settle a Codex device-code sign-in; `error` empty succeeds and writes the credential, set fails with that text). |
 | `HarnessSetClaudeUsage(spec)` | Make the isolated Claude usage endpoint answer `limits` (`kind`, `group`, `percent`, optional RFC 3339 `resets_at` and scoped `model` display name, as `/api/oauth/usage` spells them) for the credential whose mock token names `email` (`claudefake`), then request a reading of the selected Claude account. Empty `limits` clears the answer. An identity with no answer is refused, as every isolated boot refuses the endpoint by default. |
@@ -562,7 +564,8 @@ per-method version gate reads; the default is above every gate, so this
 is the only way a spec exercises a gate's fails-closed branch. It does
 not reach `--version`, the account probe, one-shot text generation, or
 the Claude sign-in. Those invocations answer and exit before a scenario
-loads.
+loads. `sessionStartHooksOff` runs none of the SessionStart hooks the
+app registers, as a CLI whose user turned hooks off does.
 
 `claude.holdQueuedInput` selects how the Claude mock consumes a user
 envelope that arrives while a turn is running. The `command_lifecycle`
@@ -584,6 +587,13 @@ envelope up into its own turn at once. On, it holds the envelope:
   dispatch.
 
 See claude-wire.md §Queued-message consumption.
+
+`codex.keepHistory` records each `turn/start` input in the mock's thread
+store as it arrives, before any echo, as Codex writes a user message to
+the thread's rollout when it takes it in. A later mock process that
+resumes the thread posts one `history_resumed` report per recorded input,
+so a spec can show what a resumed agent already holds, including a
+message the app never saw confirmed.
 
 A Codex sign-in is the exception among those: its argv is a plain
 `app-server`, so it reaches the ordinary adapter and DOES register on
@@ -722,9 +732,9 @@ workspace boundary. The mock then long-polls for
 commands and posts progress reports (`registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `advance_released`, `advance_buffered`, `approval_pending`,
-`approval_decided`, `turn_interrupted`, `history_cut`, `mcp_result`,
+`approval_decided`, `turn_interrupted`, `history_cut`, `history_resumed`, `mcp_result`,
 `mcp_tools`, `fixture_error`, `session_config`, `injected_items`,
-`scenario_done`, `exiting`),
+`session_start_context`, `scenario_done`, `exiting`),
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
 instead of sleeping.
@@ -751,7 +761,12 @@ posts once per mock with the permission/sandbox configuration the app
 actually launched it with. `injected_items` carries the messages a Codex
 mock received through `thread/inject_items` (`report.injectedItems`, each
 `{role, text}`), posted before the answer; `HarnessListMocks` latches them
-on the mock's row as `injectedItems`. `scenario_done` is per TURN: every turn that
+on the mock's row as `injectedItems`. `session_start_context` reports one
+run of the SessionStart hooks the session was launched with, where its CLI
+runs them (`report.sessionStartRun`, `{source, contexts}`, the contexts of
+the hooks that delivered), posted before the frames of the run's outcome;
+`HarnessListMocks` latches the first 32 on the mock's row as
+`sessionStartRuns`. `scenario_done` is per TURN: every turn that
 runs its step list to completion reports it for its own 1-based turn
 number, repeated (`repeatLast`) turns included. Await it with the turn
 you drove, not just its first occurrence. `user_input` additionally carries `report.input` and
@@ -1388,8 +1403,9 @@ only the repeats that measured it.
 ### Health rollup
 
 `ao-harness health` is the generalized `make soak-check`: process
-liveness and uptime, new `frontend-errors.jsonl` lines, ui-trace oracle
-triggers (`timeline.margin.diverge`, `timeline.reasoning.tailJump`, not
+liveness and uptime, new `frontend-errors.jsonl` lines (an uncaught
+error is red; an app diagnostic or a ResizeObserver notice is warn),
+ui-trace oracle triggers (`timeline.margin.diverge`, `timeline.reasoning.tailJump`, not
 the continuous `timeline.row.resize` tracker), new backend stderr, the
 process tree's RSS via `procrss.SampleAll`, database size, mock liveness,
 replay state, any armed perf run, and embedded-asset freshness (a
@@ -1440,7 +1456,12 @@ so a stall fails as `harness launch: <step> did not finish in <n> s` with the
 pid's state and stderr tail; the worker fixture's timeout sits above
 `launchBudgetMs()` so that error is the one reported. The returned client also exposes
 `stop()` (graceful, preserving the data root), `crash()` (SIGKILL, also
-preserving it), and `close()` (stop plus owned-root cleanup). Restart specs can
+preserving it), and `close()` (stop plus owned-root cleanup, skipped after
+`keepDataRoot()`). Cleanup removes the owned root and its `<root>.artifacts`,
+where `ao-harness` writes a managed run's outputs. An owned root that is
+stopped or crashed but never closed is removed when the process exits. `writeDiagnostics(dir)` copies the
+backend's console, launch record and own logs for a failing test
+([Running and evidence](../../e2e/AGENTS.md#running-and-evidence)). Restart specs can
 therefore launch a second backend over the first one's durable state and prove
 cold provider recovery instead of simulating it inside one process.
 `e2e/tests/harness.spec.ts`
@@ -1449,8 +1470,7 @@ covers boot, seeded rendering, a full live mock turn, frame-by-frame
 two-phase chain, human gate approval, same-session question answering,
 watchdog stall, and cancellation; the rest of the workflow surface is split by
 concern across `workflows-rerun`, `workflows-tool`, `workflows-access`,
-`workflows-fanout`, `workflows-call`, `workflows-wake`,
-`workflows-automations`, `workflows-cli`, and
+`workflows-fanout`, `workflows-call`, `workflows-wake`, `workflows-agent-tools`, and
 `workflows-pane`, and `workflows-resume` (same-context, missing-context, and
 cold-backend-restart behavior for both providers; see `e2e/AGENTS.md` for what
 each one pins).

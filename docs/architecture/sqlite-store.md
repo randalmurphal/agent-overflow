@@ -474,7 +474,8 @@ of forks. The rule and its write paths are in
 
 ### Source deletion
 
-Deleting a thread first marks it `deleting` (`BeginThreadDelete`). From that
+Deleting a thread first marks it `deleting` (a family delete's
+`CommitDeleteClaim`, or `BeginThreadDelete` for a store-only delete). From that
 commit `owned_threads` leaves the thread out, so `CreatePointerFork` refuses it
 as a source (`ErrForkSourceDeleted`) and the set of forks that read it can only
 shrink. The paced drain (`DeleteThreadPaced`) removes the rows at or after the
@@ -634,7 +635,10 @@ operations retain the same `RETURNING id` and in-transaction readback rule.
 State with a narrower lifecycle stays out of broad projections and
 `UpdateThread`. Dedicated accessors own import provenance, live todo, group
 membership, worktree setup state, and similar columns. This prevents a stale
-whole-row value from clobbering a concurrent lifecycle transition.
+whole-row value from clobbering a concurrent lifecycle transition. Model and
+provider choices write through `UpdateThreadModelSettings`, which carries
+only the model configuration, so no production writer issues the whole-row
+`UpdateThread`; it still keeps an assistant's name and home invariants.
 
 ## Restore boundary
 

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
-	"agent-overflow/internal/usermessage"
 )
 
 // joinedMember is one queued message a joined row carries.
@@ -43,7 +43,7 @@ func seedJoinedBootResidue(t *testing.T, app *App, threadID, rowID string, membe
 			t.Fatalf("InsertFlushQueueItem(%s): %v", member.sendID, err)
 		}
 	}
-	summary := strings.Join(texts, usermessage.JoinSeparator)
+	summary := strings.Join(texts, agentmeta.JoinSeparator)
 	fields := map[string]any{"sendId": sendIDs[0], "joinedSendIds": sendIDs, "pendingFlush": true}
 	for key, value := range meta {
 		if key == renderedSummaryKey {
@@ -121,7 +121,7 @@ func TestBootRestoresAJoinedRowWholeBesideItsQueueCopies(t *testing.T) {
 			for _, member := range tc.members {
 				texts = append(texts, member.text)
 			}
-			if want := strings.Join(texts, usermessage.JoinSeparator); draft.Content != want {
+			if want := strings.Join(texts, agentmeta.JoinSeparator); draft.Content != want {
 				t.Fatalf("draft = %q, want %q", draft.Content, want)
 			}
 			requireBootLeftNothing(t, app, thread.ID, "user:1:flush:1")
@@ -162,7 +162,7 @@ func TestBootRestoresAJoinedRowsAttachmentsAndReviewComments(t *testing.T) {
 	}
 	// Member one carries an image; member two carries the review comment,
 	// and its queue copy is the one that survived.
-	text := "look at [Image #1]" + usermessage.JoinSeparator + "fix the review"
+	text := "look at [Image #1]" + agentmeta.JoinSeparator + "fix the review"
 	seedJoinedBootResidue(t, app, thread.ID, rowID, []joinedMember{
 		{"one", "look at [Image #1]", false},
 		{"two", "fix the review", true},
@@ -211,11 +211,11 @@ func TestBootRestoresAJoinedRowsAsyncAnswerMemberOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.store.QueueAsyncAnswers(store.FlushQueueItem{ID: "queue-two", ThreadID: thread.ID, SendID: "two", Message: body, EnqueuedAt: 2}, answers); err != nil {
+	if err := app.store.QueueAsyncAnswers(store.FlushQueueItem{ID: "queue-two", ThreadID: thread.ID, SendID: "two", Message: body, EnqueuedAt: 2}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The dispatch settled both members; the answer's row stays by design.
-	app.settleFlushGroup(thread.ID, []triage.QueuedFlushItem{{ID: "queue-one"}, {ID: "queue-two"}})
+	app.settleFlushGroup(thread.ID, []triage.QueuedFlushItem{{ID: "queue-one"}, {ID: "queue-two"}}, "")
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 1 {
 		t.Fatalf("queue rows after the write = %+v, want the answer's", rows)
 	}
@@ -230,7 +230,7 @@ func TestBootRestoresAJoinedRowsAsyncAnswerMemberOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThreadDraft: %v", err)
 	}
-	if want := "first message" + usermessage.JoinSeparator + body; draft.Content != strings.TrimSpace(want) {
+	if want := "first message" + agentmeta.JoinSeparator + body; draft.Content != strings.TrimSpace(want) {
 		t.Fatalf("draft = %q, want %q", draft.Content, want)
 	}
 	rows, err := app.store.ListAsyncQuestions(thread.ID, question.ID)
@@ -260,7 +260,7 @@ func TestBootDropsTheQueueCopyOfAConfirmedMessage(t *testing.T) {
 			now := time.Now().UnixMilli()
 			if _, err := app.store.AppendItem(store.Item{
 				ID: "user:1:flush:1", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed",
-				Summary: "first message" + usermessage.JoinSeparator + "second message", Meta: tc.meta, CreatedAt: now, UpdatedAt: now,
+				Summary: "first message" + agentmeta.JoinSeparator + "second message", Meta: tc.meta, CreatedAt: now, UpdatedAt: now,
 			}); err != nil {
 				t.Fatalf("AppendItem: %v", err)
 			}
@@ -287,6 +287,39 @@ func TestBootDropsTheQueueCopyOfAConfirmedMessage(t *testing.T) {
 	}
 }
 
+// A loop wake has no confirmation of its own: the row the provider confirmed
+// is its proof of delivery. A crash between the echo and the settlement
+// leaves that row beside the wake's queue copy, and the boot drops the copy
+// without recording the wake as not delivered, which would replay its fire.
+func TestBootDropsTheQueueCopyOfAConfirmedLoopWake(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "boot-confirmed-wake")
+	fire := time.Now().UnixMilli()
+	loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 3600, NextAt: fire + 3600_000})
+	sendID := agentWakeSendID(loop.ID, fire)
+	if _, err := a.store.AppendItem(store.Item{
+		ID: "user:1:wake", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "Loop \"board\" fired.", Meta: `{"sendId":"` + sendID + `","provider_item_id":"uuid-1"}`, CreatedAt: fire, UpdatedAt: fire,
+	}); err != nil {
+		t.Fatalf("AppendItem: %v", err)
+	}
+	if err := a.store.InsertFlushQueueItem(store.FlushQueueItem{ID: "queue-wake", ThreadID: thread.ID, SendID: sendID, Message: "Loop \"board\" fired.", EnqueuedAt: fire}); err != nil {
+		t.Fatalf("InsertFlushQueueItem: %v", err)
+	}
+
+	a.restoreDurableFlushQueueAtBoot()
+
+	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
+		t.Fatalf("queue rows after boot = %+v, want none", rows)
+	}
+	row, found, err := a.store.GetAgentWake(loop.ID)
+	if err != nil || !found || row.Undelivered != "" || row.NextAt != loop.NextAt {
+		t.Fatalf("the delivered wake's row = %+v (found %v, %v); want nothing recorded and its schedule kept", row, found, err)
+	}
+	requireDraft(t, a, thread.ID, "")
+}
+
 // A dispatch settles the queue rows of every message it carried in one
 // write: when that write fails, every member keeps its row for the boot,
 // never some of them.
@@ -302,12 +335,12 @@ func TestFlushGroupSettlesItsMembersQueueRowsTogether(t *testing.T) {
 	}
 
 	execOnStore(t, dbPath, `CREATE TRIGGER refuse_queue_delete BEFORE DELETE ON flush_queue_items WHEN OLD.id = 'queue-two' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`)
-	app.settleFlushGroup(thread.ID, group)
+	app.settleFlushGroup(thread.ID, group, "")
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 2 {
 		t.Fatalf("queue rows after a failed settlement = %+v, want both members'", rows)
 	}
 	execOnStore(t, dbPath, `DROP TRIGGER refuse_queue_delete`)
-	app.settleFlushGroup(thread.ID, group)
+	app.settleFlushGroup(thread.ID, group, "")
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("queue rows after settlement = %+v, want none", rows)
 	}

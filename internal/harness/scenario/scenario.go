@@ -97,6 +97,12 @@ type Scenario struct {
 	// template still wins — the template is the more specific statement.
 	ProviderVersion string `json:"providerVersion,omitempty"`
 
+	// SessionStartHooksOff runs none of the SessionStart and
+	// UserPromptSubmit hooks the app registers, as a CLI whose user turned
+	// hooks off does (Claude's `disableAllHooks`, Codex's
+	// `features.hooks = false`).
+	SessionStartHooksOff bool `json:"sessionStartHooksOff,omitempty"`
+
 	// Codex maps JSON-RPC request methods to response templates for the
 	// session-establishment handshake (initialize, thread/start,
 	// thread/resume, ...). turn/start is answered from here too, then
@@ -132,6 +138,13 @@ type CodexOptions struct {
 	// ThreadID seeds ${THREAD_ID}; defaults to "mock-codex-thread".
 	// thread/resume echoes the requested id instead.
 	ThreadID string `json:"threadId,omitempty"`
+	// KeepHistory records each turn/start input in the mock's thread store
+	// when it arrives, before any echo, as upstream writes the user message
+	// to the thread's rollout. A later process that resumes the thread
+	// reports each recorded input (control.ReportHistoryResumed): the
+	// messages the resumed agent holds, whether or not the app saw them
+	// confirmed.
+	KeepHistory bool `json:"keepHistory,omitempty"`
 }
 
 // Turn is the step list for one user turn.
@@ -334,7 +347,9 @@ type WriteFileStep struct {
 // emits the tool_use + tool_result frames; OnDeny a denial result.
 type ApprovalStep struct {
 	// ToolName/Input shape the CanUseTool request (Claude) or the
-	// command approval (Codex).
+	// command approval (Codex). ToolName AskUserQuestion with
+	// input.questions asks a question on either provider: Claude's
+	// CanUseTool for that tool, Codex's item/tool/requestUserInput.
 	ToolName string          `json:"toolName"`
 	Input    json.RawMessage `json:"input,omitempty"`
 	// ToolUseID/AgentID are the Claude-only correlation fields the real

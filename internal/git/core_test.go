@@ -370,8 +370,8 @@ func TestAttachWorktreeAttachesExistingBranch(t *testing.T) {
 	}
 
 	worktreePath := filepath.Join(t.TempDir(), "existing-wt")
-	if created, err := core.AttachWorktreeAt(repo, worktreePath, BranchRef("feature/existing")); err != nil || created {
-		t.Fatalf("AttachWorktree = created %v, %v; want the local branch used", created, err)
+	if madeTip, err := core.AttachWorktreeAt(repo, worktreePath, BranchRef("feature/existing")); err != nil || madeTip != "" {
+		t.Fatalf("AttachWorktree = tip %q, %v; want the local branch used", madeTip, err)
 	}
 
 	worktrees, err := core.ListWorktrees(repo)

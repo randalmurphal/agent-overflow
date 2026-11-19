@@ -64,7 +64,7 @@ func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, cont
 	if err := refusePRDraftSource(opts); err != nil {
 		return store.Thread{}, err
 	}
-	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -116,10 +116,16 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return store.Item{}, err
 	}
+	if err := refuseAskCopyMessage(thread, opts); err != nil {
+		return store.Item{}, err
+	}
 	if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
 		return store.Item{}, err
 	} else if found {
 		return record.item, nil
+	}
+	if _, err := a.admitPersonOperation(context.Background(), threadID); err != nil {
+		return store.Item{}, err
 	}
 	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)
@@ -234,7 +240,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// provider's own queue can never pop this entry (and this entry can never
 	// pop a direct send's id-less echo). Wire stamp and expectation derived
 	// together — see providerSendIdentity.
-	steerClientID, steerExpect := providerSendIdentity(sess, userItem.ID, "")
+	steerClientID, steerExpect := providerSendIdentity(sess, userItem.ID, userItem.Meta, "")
 	a.triage.RegisterPendingSteerSendWithExpectation(threadID, userItem.ID, turnIndex, steerExpect)
 
 	// Stamp activity before stdin write so the idle reaper can't race

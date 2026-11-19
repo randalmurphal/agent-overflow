@@ -8,9 +8,12 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { pendingAttention } from '../../utils/threadStatusPill';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 // ChatView imports its terminal surface lazily. Loaded with the file, the
 // terminal-mode test waits for the mount rather than for a first import
 // transforming the surface's component graph, which is load-dependent.
@@ -136,6 +139,9 @@ async function buildPane(
   // these on mount. Default to empty; tests that need a populated rail
   // override these before rendering.
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+  setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"
@@ -262,6 +268,80 @@ describe('<ChatView>', () => {
     } finally {
       resetToLocalPage();
     }
+  });
+
+  for (const provider of ['claude', 'codex'] as const) {
+    it(`offers an ask copy (${provider}) only what it can do: no message edit or fork, no pickers, no attach`, async () => {
+      // The copy takes no message from a person (Thread.askCopy): it is
+      // watched and stopped, never written to or configured.
+      const userItem = (thread: Thread) => makeItem({
+        id: 'user:1', threadId: thread.id, turnIndex: 1, itemIndex: 0,
+        kind: 'user_text', role: 'user', summary: 'Is the changelog current?',
+      });
+      const controls = ['composer-model-menu-trigger', 'composer-effort-trigger', 'composer-access-toggle', 'composer-mcp-trigger', 'composer-attach'];
+      const plain: Thread = { ...seedThread(), provider };
+      const shown = render(ChatView, { props: { pane: await buildPane(plain, [userItem(plain)]) } });
+      await tick();
+      expect(shown.queryByLabelText('Fork from this message')).not.toBeNull();
+      expect(shown.queryByLabelText('Edit message and resend from here')).not.toBeNull();
+      for (const id of controls) expect(shown.queryByTestId(id), id).not.toBeNull();
+      shown.unmount();
+
+      const copy: Thread = { ...seedThread(), provider, askCopy: true };
+      const view = render(ChatView, { props: { pane: await buildPane(copy, [userItem(copy)]) } });
+      await tick();
+      expect(view.queryByLabelText('Fork from this message')).toBeNull();
+      expect(view.queryByLabelText('Edit message and resend from here')).toBeNull();
+      for (const id of controls) expect(view.queryByTestId(id), id).toBeNull();
+      expect(view.container.querySelector('[data-ui-surface="chat"]')?.hasAttribute('data-shell-runnable')).toBe(false);
+      expect(view.getByTestId('composer-root').querySelector('textarea')?.disabled).toBe(true);
+    });
+  }
+
+  // A pane already showing an assistant's thread when assistants are turned
+  // off stays readable and takes nothing: the composer gives way to a line
+  // saying why, kept mounted underneath for its draft, and the messages
+  // offer no fork, edit or run. Desktop and compact; on again, it is as it was.
+  for (const compact of [false, true]) {
+    it(`shows an assistant's thread read-only while assistants are off${compact ? ' under compact' : ''}`, async () => {
+      setCompactLayoutForTest(compact);
+      try {
+        const thread: Thread = { ...seedThread(), projectId: '', agentId: 'ops', title: 'Ops' };
+        const userItem = makeItem({
+          id: 'user:1', threadId: thread.id, turnIndex: 1, itemIndex: 0,
+          kind: 'user_text', role: 'user', summary: 'Watch the deploy',
+        });
+        const view = render(ChatView, { props: { pane: await buildPane(thread, [userItem]) } });
+        await tick();
+        const composerHidden = () => view.getByTestId('composer-root').closest('.hidden') !== null;
+        expect(view.queryByTestId('assistants-off-note')).toBeNull();
+        expect(composerHidden()).toBe(false);
+
+        applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+        await tick();
+        expect(view.getByTestId('assistants-off-note').textContent?.trim()).toBe('Assistants are turned off in Settings. Turn them on to continue this thread.');
+        expect(composerHidden()).toBe(true);
+        expect(view.queryByLabelText('Fork from this message')).toBeNull();
+        expect(view.queryByLabelText('Edit message and resend from here')).toBeNull();
+        expect(view.container.querySelector('[data-ui-surface="chat"]')?.hasAttribute('data-shell-runnable')).toBe(false);
+        expect(view.getByTestId('chat-header-title')).toBeInTheDocument();
+
+        applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+        await tick();
+        expect(view.queryByTestId('assistants-off-note')).toBeNull();
+        expect(composerHidden()).toBe(false);
+      } finally {
+        setCompactLayoutForTest(false);
+      }
+    });
+  }
+
+  it('leaves an ordinary thread as it is while assistants are off', async () => {
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(ChatView, { props: { pane: await buildPane() } });
+    await tick();
+    expect(view.queryByTestId('assistants-off-note')).toBeNull();
+    expect(view.getByTestId('composer-root').closest('.hidden')).toBeNull();
   });
 
   it('forks from a user-message action through the chat-level handler', async () => {
@@ -464,6 +544,46 @@ describe('<ChatView>', () => {
       );
     });
   });
+
+  // An edit open on an assistant's message when its computer turns
+  // assistants off closes, and so does its kill confirmation: nothing is
+  // reverted or sent, and the edited text waits in the composer's draft for
+  // when they are back. Desktop and compact.
+  for (const compact of [false, true]) {
+    for (const confirming of [false, true]) {
+      it(`closes an open edit${confirming ? ' and its confirmation' : ''} keeping the text when assistants go off${compact ? ' under compact' : ''}`, async () => {
+        setCompactLayoutForTest(compact);
+        try {
+          const thread: Thread = { ...seedThread(), projectId: '', agentId: 'ops', title: 'Ops' };
+          const item = userItem('user:1', 1, 'Update one of the lines', thread.id);
+          const pane = await buildPane(thread, [item]);
+          mockDrafts(new Map([[thread.id, '']]));
+          const saved: string[] = [];
+          setBindingMock('SaveDraft', async (_threadId: string, content: string) => { saved.push(content); });
+          setBindingMock('CountRunningBackgroundTasks', async () => (confirming ? 1 : 0));
+          const resend = setBindingMock('RevertConversationAndResendMessage', async () => undefined);
+
+          const view = render(ChatView, { props: { pane } });
+          const editor = await openMessageEditor(view);
+          await typeInEditor(editor, 'Update TWO of the lines');
+          if (confirming) {
+            await fireEvent.click(view.getByTestId('user-message-edit-send'));
+            await view.findByText('Revert to this message?');
+          }
+
+          applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+          await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
+          await waitFor(() => expect(view.queryByText('Revert to this message?')).toBeNull());
+          await waitFor(() => expect(view.getAllByLabelText('Message Input')[0]).toHaveValue('Update TWO of the lines'));
+          await waitFor(() => expect(saved.at(-1)).toBe('Update TWO of the lines'));
+          expect(view.getByTestId('assistants-off-note')).toBeInTheDocument();
+          expect(resend).not.toHaveBeenCalled();
+        } finally {
+          setCompactLayoutForTest(false);
+        }
+      });
+    }
+  }
 
   it('declining the kill confirmation returns to the editor with the edit intact', async () => {
     const thread = seedThread();
@@ -700,9 +820,8 @@ describe('<ChatView>', () => {
   });
 
   it('renders TerminalView instead of the chat surface for terminal-mode threads', async () => {
-    // Terminal threads swap the WHOLE surface — same one-for-one branch as
-    // discussion mode. No chat header, composer, or timeline mounts; no
-    // provider session is started.
+    // Terminal threads swap the WHOLE surface. No chat header, composer, or
+    // timeline mounts; no provider session is started.
     setBindingMock('ListTerminals', async () => []);
     setBindingMock('OpenTerminal', async (threadID: string) => ({
       terminalID: 't1',
@@ -874,6 +993,27 @@ describe('<ChatView>', () => {
       expect(getThreads()[0]?.lastReadAt).toBe(1_000);
       expect(getThreads()[0]?.hasFailedTurn).toBe(false);
       expect(pane.thread?.hasFailedTurn).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads an attention flag raised after the last read when the thread is opened', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), lastReadAt: 500, latestTurnCompletedAt: 400, attention: { kind: 'decision' as const, reason: 'r', at: 2_000 } };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(1_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(getThreads()[0]?.lastReadAt).toBe(2_000);
+      expect(pendingAttention(getThreads()[0]!)).toBeNull();
     } finally {
       vi.useRealTimers();
     }

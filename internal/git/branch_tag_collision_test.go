@@ -120,9 +120,9 @@ func TestAttachWorktreeRefusesABranchNameThatOnlyATagHas(t *testing.T) {
 	core := NewCore()
 	for _, branch := range []string{"gone", "refs/tags/gone"} {
 		path := filepath.Join(t.TempDir(), "wt")
-		created, err := core.AttachWorktreeAt(repo, path, BranchRef(branch))
-		if err == nil || created || !strings.Contains(err.Error(), "not found") {
-			t.Errorf("AttachWorktreeAt(branch %q) = %v, %v; want a branch not found error", branch, created, err)
+		madeTip, err := core.AttachWorktreeAt(repo, path, BranchRef(branch))
+		if err == nil || madeTip != "" || !strings.Contains(err.Error(), "not found") {
+			t.Errorf("AttachWorktreeAt(branch %q) = %v, %v; want a branch not found error", branch, madeTip, err)
 		}
 		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 			t.Errorf("AttachWorktreeAt(branch %q) left %s behind (%v)", branch, path, statErr)
@@ -150,9 +150,9 @@ func TestAttachWorktreeTracksTheOneRemoteThatHasTheBranch(t *testing.T) {
 
 	core := NewCore()
 	path := filepath.Join(t.TempDir(), "wt")
-	created, err := core.AttachWorktreeAt(repo, path, BranchRef("feature/fork"))
-	if err != nil || !created {
-		t.Fatalf("AttachWorktreeAt = %v, %v; want the local branch created", created, err)
+	madeTip, err := core.AttachWorktreeAt(repo, path, BranchRef("feature/fork"))
+	if err != nil || madeTip == "" {
+		t.Fatalf("AttachWorktreeAt = %v, %v; want the local branch made", madeTip, err)
 	}
 	if ref, err := core.Head(path); err != nil || ref.Ref() != BranchRef("feature/fork") {
 		t.Errorf("worktree is on %+v (%v), want branch feature/fork", ref, err)
@@ -169,8 +169,8 @@ func TestAttachWorktreeTracksTheOneRemoteThatHasTheBranch(t *testing.T) {
 	testutil.RunGit(t, repo, "push", "-q", "mirror", "feature/both")
 	testutil.RunGit(t, repo, "branch", "-q", "-D", "feature/both")
 	both := filepath.Join(t.TempDir(), "wt")
-	if created, err := core.AttachWorktreeAt(repo, both, BranchRef("feature/both")); err == nil || created || !strings.Contains(err.Error(), "several remotes") {
-		t.Errorf("AttachWorktreeAt(branch on two remotes) = %v, %v; want a several remotes error", created, err)
+	if madeTip, err := core.AttachWorktreeAt(repo, both, BranchRef("feature/both")); err == nil || madeTip != "" || !strings.Contains(err.Error(), "several remotes") {
+		t.Errorf("AttachWorktreeAt(branch on two remotes) = %v, %v; want a several remotes error", madeTip, err)
 	}
 	if testutil.RunGitAllowError(repo, "rev-parse", "--verify", "--quiet", "refs/heads/feature/both") == nil {
 		t.Error("a refused attach left the local branch feature/both")

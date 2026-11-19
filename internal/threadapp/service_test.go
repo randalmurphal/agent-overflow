@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,10 +65,10 @@ type testWorkspace struct {
 	// base choice reached git.
 	createErr error
 	cuts      []WorktreeCut
-	// createdBranch is what each cut reports it made; removed records the
-	// cuts RemoveCutWorktree was asked to undo.
-	createdBranch bool
-	removed       []CutWorktree
+	// createdTip is the commit each cut reports it made its branch at;
+	// removed records the cuts RemoveCutWorktree was asked to undo.
+	createdTip string
+	removed    []CutWorktree
 	// origin is what ObserveOrigin reports for any path. Zero by default, so
 	// a test that says nothing about git provenance asserts the "workspace is
 	// not a repository" shape for free.
@@ -84,7 +86,7 @@ func (w *testWorkspace) CreateWorktree(_ context.Context, _ string, cut Worktree
 	if w.createErr != nil {
 		return CutWorktree{}, w.createErr
 	}
-	return CutWorktree{Path: w.createPath, Branch: w.createBranch, CreatedBranch: w.createdBranch}, nil
+	return CutWorktree{Path: w.createPath, Branch: w.createBranch, Tip: w.createdTip}, nil
 }
 
 func (w *testWorkspace) RemoveCutWorktree(_ string, cut CutWorktree) error {
@@ -259,7 +261,7 @@ func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
 func TestCreateUndoesTheCutWhenTheThreadCannotBeWritten(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
-	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdTip: "c0ffee"}
 	service.deps.Workspace = workspace
 	service.deps.WorktreeSetup = setup
 	// The fixture mints one id, so a second thread's insert collides.
@@ -271,7 +273,7 @@ func TestCreateUndoesTheCutWhenTheThreadCannotBeWritten(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create reported a thread whose row was never written")
 	}
-	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", Tip: "c0ffee"}
 	if len(workspace.removed) != 1 || workspace.removed[0] != want {
 		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
 	}
@@ -358,12 +360,12 @@ func TestModePolicyKeepsThreadTypeImmutable(t *testing.T) {
 	if err != nil || updated.Thread.Mode != "plan" {
 		t.Fatalf("UpdateMode = %+v, %v", updated, err)
 	}
-	thread.Mode = "discussion"
+	thread.Mode = "workflow"
 	if err := database.UpdateThread(thread); err != nil {
-		t.Fatalf("UpdateThread discussion: %v", err)
+		t.Fatalf("UpdateThread workflow: %v", err)
 	}
 	if _, err := service.UpdateMode(thread.ID, "chat"); err == nil {
-		t.Fatal("UpdateMode(discussion -> chat) error = nil")
+		t.Fatal("UpdateMode(workflow -> chat) error = nil")
 	}
 }
 
@@ -373,12 +375,12 @@ func TestModePolicyValidatesSetAndCreateModes(t *testing.T) {
 	if err != nil || thread.Mode != "plan" {
 		t.Fatalf("Create(plan) = %+v, %v", thread, err)
 	}
-	for _, mode := range []string{"", "nonsense", "PLAN", "design", "discussion", "workflow"} {
+	for _, mode := range []string{"", "nonsense", "PLAN", "design", "workflow"} {
 		if _, err := service.UpdateMode(thread.ID, mode); err == nil {
 			t.Errorf("UpdateMode(%q) error = nil", mode)
 		}
 	}
-	for _, mode := range []string{"design", "discussion", "DISCUSSION", "workflow", "bogus"} {
+	for _, mode := range []string{"design", "workflow", "bogus"} {
 		service.deps.NewID = func() string { return "bad-" + mode }
 		if _, err := service.Create(CreateOptions{ProjectID: "project", Mode: mode}); err == nil {
 			t.Errorf("Create(%q) error = nil", mode)
@@ -539,6 +541,133 @@ func TestDefaultsCarriesItsCallersDeadlineIntoTheStore(t *testing.T) {
 	}
 }
 
+// A thread in a home has no project and the home as its workspace; it
+// reads no branch or origin, joins no recent workspaces, and records the
+// assistant it helps. Project, group, worktree, branch and workspace
+// choices are refused beside a home, and a relative home is refused.
+func TestCreateInAHome(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	recent := &recentRecorder{}
+	service.deps.RecentWorkspaces = recent
+	service.deps.Workspace = &testWorkspace{currentBranch: "main", origin: store.ThreadOrigin{Branch: "main", HeadCommit: "0123456789abcdef0123456789abcdef01234567"}}
+	ids := []string{"assistant", "helper"}
+	made := 0
+	service.deps.NewID = func() string {
+		made++
+		if made <= len(ids) {
+			return ids[made-1]
+		}
+		return fmt.Sprintf("thread-%d", made)
+	}
+
+	thread, err := service.Create(CreateOptions{Home: " /config/agents/a1 ", Title: "Ops"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reloaded, err := database.GetThread(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ProjectID != "" || reloaded.WorkspacePath != "/config/agents/a1" || reloaded.Branch != "" || !reloaded.Origin.IsZero() || reloaded.HelperOfAgentID != "" {
+		t.Fatalf("home thread = project %q workspace %q branch %q origin %+v helperOf %q",
+			reloaded.ProjectID, reloaded.WorkspacePath, reloaded.Branch, reloaded.Origin, reloaded.HelperOfAgentID)
+	}
+	if len(recent.paths) != 0 {
+		t.Fatalf("a home joined the recent workspaces: %v", recent.paths)
+	}
+	if err := database.CreateStandingAgent(store.StandingAgent{ID: "a1", ThreadID: thread.ID, Home: "/config/agents/a1"}); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := service.Create(CreateOptions{Home: "/config/agents/a1", HelperOfAgentID: "a1"})
+	if err != nil {
+		t.Fatalf("Create helper: %v", err)
+	}
+	if reloaded, err := database.GetThread(helper.ID); err != nil || reloaded.HelperOfAgentID != "a1" {
+		t.Fatalf("helper = %+v, %v", reloaded, err)
+	}
+
+	for name, opts := range map[string]CreateOptions{
+		"project":   {Home: "/h", ProjectID: "project"},
+		"group":     {Home: "/h", GroupID: "g"},
+		"worktree":  {Home: "/h", Worktree: &WorktreeCut{}},
+		"inherited": {Home: "/h", WorktreePath: "/repo-worktrees/feature"},
+		"workspace": {Home: "/h", WorkspaceOverride: "/elsewhere"},
+		"branch":    {Home: "/h", Branch: "feature"},
+		"relative":  {Home: "agents/a1"},
+	} {
+		if _, err := service.Create(opts); err == nil {
+			t.Errorf("%s: a thread was created", name)
+		}
+	}
+	// A helper lives in its assistant's home, never in a project.
+	for name, opts := range map[string]CreateOptions{
+		"helper in a project": {ProjectID: "project", HelperOfAgentID: "a1"},
+		"helper with no home": {HelperOfAgentID: "a1"},
+	} {
+		if _, err := service.Create(opts); err == nil || !strings.Contains(err.Error(), "a helper lives in its assistant's home") {
+			t.Errorf("%s = %v, want the helper refused", name, err)
+		}
+	}
+}
+
+// An assistant's current thread is torn down only once nothing lives under
+// it: a teardown that finds a helper left refuses before touching anything,
+// keeping the assistant and its commit for the next attempt, which finishes
+// it once the helper is gone. From the commit no helper is recorded for it.
+func TestAnAssistantsDeleteDropsItOnlyOnceNothingLivesUnderIt(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	next := 0
+	service.deps.NewID = func() string { next++; return fmt.Sprintf("thread-%d", next) }
+	home := "/config/agents/ops"
+	ops, err := service.Create(CreateOptions{Home: home, Title: "ops"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateStandingAgent(store.StandingAgent{ID: "ops", ThreadID: ops.ID, Home: home}); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: "ops"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.BeginThreadDelete(ops.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	homeChecked := false
+	err = service.tearDown(ops.ID, DeletePorts{
+		AssistantHome: func(string) (func() error, error) { homeChecked = true; return nil, nil },
+	})
+	var left *store.AssistantDependentsError
+	if !errors.As(err, &left) || left.Helpers != 1 {
+		t.Fatalf("a teardown with a helper left = %v, want it refused", err)
+	}
+	if homeChecked {
+		t.Fatal("the refused teardown reached the assistant's home")
+	}
+	if _, found, err := database.GetStandingAgent(ops.ID); err != nil || !found {
+		t.Fatalf("the assistant after the refused teardown = %v %v", found, err)
+	}
+	if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{ops.ID}) {
+		t.Fatalf("pending deletes = %q %v, want the assistant committed", pending, err)
+	}
+	if _, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: "ops"}); !errors.Is(err, store.ErrHelperOfNoAssistant) {
+		t.Fatalf("a helper of a committed assistant = %v, want it refused", err)
+	}
+
+	if err := database.BeginThreadDelete(helper.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{helper.ID, ops.ID} {
+		if err := service.Destroy(id, DeletePorts{}); err != nil {
+			t.Fatalf("destroy %s: %v", id, err)
+		}
+	}
+	if _, found, err := database.GetAgent("ops"); err != nil || found {
+		t.Fatalf("the record after the delete = %v %v", found, err)
+	}
+}
+
 // The created row is read back in its insert's transaction, the last
 // step of a creation that can fail. A read that fails leaves no thread,
 // takes back the worktree the creation cut and starts no setup; a
@@ -554,7 +683,7 @@ func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	setup := &setupRecorder{store: database}
-	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdTip: "c0ffee"}
 	service := New(Deps{
 		Store: database, Models: &testModels{}, Workspace: workspace, WorktreeSetup: setup,
 		Now: func() time.Time { return time.UnixMilli(1234) }, NewID: func() string { return "thread" },
@@ -576,7 +705,7 @@ func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
 	if _, getErr := database.GetThread("thread"); !errors.Is(getErr, sql.ErrNoRows) {
 		t.Fatalf("GetThread after the failed create = %v, want no row", getErr)
 	}
-	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", Tip: "c0ffee"}
 	if len(workspace.removed) != 1 || workspace.removed[0] != want {
 		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
 	}

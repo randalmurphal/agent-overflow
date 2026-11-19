@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,6 +99,13 @@ func FrontendDefaultsSource() string {
 		}
 	}
 	b.WriteString("] as const satisfies readonly (keyof Settings)[];\n")
+	b.WriteString("\n// Keys a settings answer leaves out while empty (`omitempty`). Every other key is in\n")
+	b.WriteString("// every answer of this build, so an answer without one is from a release without it.\n")
+	b.WriteString("export const SETTINGS_KEYS_OMITTED_WHEN_EMPTY = [\n")
+	for _, key := range omittedWhenEmptyKeys() {
+		b.WriteString("  " + strconv.Quote(key) + ",\n")
+	}
+	b.WriteString("] as const;\n")
 
 	emitFrontendConstraints(&b)
 	return b.String()
@@ -170,6 +178,23 @@ func emitValue(v reflect.Value, indent string) string {
 	}
 }
 
+// omittedWhenEmptyKeys are the Settings json names tagged omitempty, sorted.
+func omittedWhenEmptyKeys() []string {
+	t := reflect.TypeFor[Settings]()
+	var keys []string
+	for i := 0; i < t.NumField(); i++ {
+		name := jsonFieldName(t.Field(i))
+		if name == "" {
+			continue
+		}
+		if _, options, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); slices.Contains(strings.Split(options, ","), "omitempty") {
+			keys = append(keys, name)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // jsonFieldName is the same tag walk knownSettingsFieldNames does.
 func jsonFieldName(f reflect.StructField) string {
 	tag := f.Tag.Get("json")
@@ -226,6 +251,8 @@ func emitFrontendConstraints(b *strings.Builder) {
 		"notifyQuietWhen": allowedNotifyQuietWhen, "projectSortMode": allowedProjectSortModes,
 		"usagePeriod":               allowedUsagePeriods,
 		"accountAutoSwitchStrategy": allowedAccountAutoSwitchStrategies,
+		"claudeOwnMemoryOff":        allowedOwnMemoryOff,
+		"codexOwnMemoryOff":         allowedOwnMemoryOff,
 	}
 	b.WriteString("\nexport const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {\n")
 	keys := make([]string, 0, len(options))
@@ -260,5 +287,6 @@ func emitFrontendConstraints(b *strings.Builder) {
 		MinClaudeMaxCommandTimeoutHours, MaxClaudeMaxCommandTimeoutHours)
 	fmt.Fprintf(b, "  accountAutoSwitchThreshold: [%d, %d],\n",
 		MinAccountAutoSwitchThreshold, MaxAccountAutoSwitchThreshold)
+	fmt.Fprintf(b, "  subThreadLevels: [%d, %d],\n", MinSubThreadLevels, MaxSubThreadLevels)
 	b.WriteString("};\n")
 }

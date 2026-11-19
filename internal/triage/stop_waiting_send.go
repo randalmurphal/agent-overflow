@@ -117,11 +117,71 @@ func (st *threadState) settleWaitingStopLocked(turnIndex int, cut, soft bool) (w
 }
 
 // settleWaitingStop is settleWaitingStopLocked for a settlement that did not
-// claim the turn itself (the late fold of a soft-closed turn's result).
-func (r *Router) settleWaitingStop(threadID string, turnIndex int, cut, soft bool) (waitingStop, bool) {
+// claim the turn itself (the late fold of a soft-closed turn's result). A
+// retired session's frame resolves nothing: lastSettled is process state, and
+// the turn index is the replacement's.
+func (r *Router) settleWaitingStop(threadID string, turnIndex int, sessionToken string, cut, soft bool) (waitingStop, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return waitingStop{}, false
+	}
 	return r.state(threadID).settleWaitingStopLocked(turnIndex, cut, soft)
+}
+
+// stopRowClaim is the newest turn whose stop row a session wrote (set), and
+// the thread epoch it was claimed in.
+type stopRowClaim struct {
+	turn  int
+	set   bool
+	epoch uint64
+}
+
+// writeStopRow writes turnIndex's stop row reading summary unless the turn
+// has one. A turn can be cut more than once before it reports its end (a
+// Stop pressed twice, a rest that interrupts the request's turn and then
+// the session's), and its stop can be resolved by MarkInterrupt or by its
+// settlement; whichever writer claims the turn first writes its row and the
+// rest write nothing. Turns of one session only move forward, so the claim
+// is a high-water mark: a turn at or before the newest stopped one gets no
+// row. A failed write gives the claim back, so a later Stop can still
+// record it. It returns "" with no error when the turn's row exists.
+func (r *Router) writeStopRow(threadID string, turnIndex int, summary string, now int64) (string, error) {
+	prev, claimed := r.claimStopRow(threadID, turnIndex)
+	if !claimed {
+		return "", nil
+	}
+	id, err := r.persistTurnError(threadID, turnIndex, summary, now)
+	if err != nil {
+		r.releaseStopRow(threadID, turnIndex, prev)
+		return "", err
+	}
+	return id, nil
+}
+
+// claimStopRow claims turnIndex's stop row, returning the claim it
+// replaced, or false when the turn or a later one has its row.
+func (r *Router) claimStopRow(threadID string, turnIndex int) (stopRowClaim, bool) {
+	id := r.identity(threadID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id.stopRow.set && id.stopRow.turn >= turnIndex {
+		return stopRowClaim{}, false
+	}
+	prev := id.stopRow
+	id.stopRow = stopRowClaim{turn: turnIndex, set: true, epoch: id.epoch}
+	return prev, true
+}
+
+// releaseStopRow restores the claim turnIndex's failed write replaced,
+// unless a session commit or another claim has replaced it since.
+func (r *Router) releaseStopRow(threadID string, turnIndex int, prev stopRowClaim) {
+	id := r.identity(threadID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id.stopRow == (stopRowClaim{turn: turnIndex, set: true, epoch: id.epoch}) {
+		id.stopRow = prev
+	}
 }
 
 // settledTurnWasCut reads from its turns row whether a turn that settled

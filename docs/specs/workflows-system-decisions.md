@@ -158,6 +158,7 @@ session; codex-cli 0.144.0 app-server). Raw runs in the session scratchpad
    the affordance). **Amends spec §6.**
 2. **Scheduler/automations (§11) ship in v1.** Cron + internal-event triggers +
    authenticated-CLI polling with cursors. Not a fast-follow.
+   **Superseded by D76.**
 3. **In-app disposition in v1: merge / PR / discard on done items.** Net-new local
    merge machinery. **Spec amendment (user call): "nothing auto-merges" becomes the
    default, not an absolute**: a project profile may opt into auto-merge-on-done
@@ -222,10 +223,6 @@ Accepted as v1 product behavior; each becomes spec text in the final fold-in:
    won't be amended mid-render for A/B).
 
 **Scope calls made by Claude (veto if wrong):**
-- **Agent-invoked inter-agent discussions (§5 tool) defer to post-v1.** Additive,
-  not structural; v1 already grew by the scheduler. Human-initiated discussion
-  flows and all other §5 tools (enqueue, report-back, schedule, query-source)
-  stay v1.
 - **Fan-out/fan-in ships v1** (multi-lens-review starter needs it);
   **sub-workflow phase shape defers to fast-follow** (nothing in v1 forecloses it).
 - Report-back/query-source bind to *profile-declared commands* (like check
@@ -287,13 +284,11 @@ Accepted as v1 product behavior; each becomes spec text in the final fold-in:
   teardown, watchdog, resource semaphores), `internal/workflow/wftools`
   (first-party toolset backend). Bare CRUD stays in `internal/store` per the
   project/store split precedent.
-- **Follows the discussion-FSM precedent:** in-memory scheduler state rebuilt from
-  SQLite at startup; a single engine goroutine owns state transitions; store
+- **In-memory scheduler state:** rebuilt from SQLite at startup; a single engine goroutine owns state transitions; store
   writes are short-lived calls (respects the single-connection DB).
 - **Refactor (committed):** a generic turn-observer registry on `App` replaces the
   bespoke per-feature `if evt.Kind == EventTurnComplete` branches in
-  `app_provider_events.go`; discussions migrate onto it; the engine and the
-  watchdog both consume it.
+  `app_provider_events.go`; the engine and the watchdog both consume it.
 - Phase threads get a new `threads.mode` value `workflow` (Rebuild migration) so
   their exclusion from normal lists is principled, not filtered by convention.
 - Transport: new bound methods annotated `//ao:scope threads:autonomy`
@@ -496,6 +491,8 @@ and read files natively; MCP calls block and trap results in-context.
   background `ao run wait` is the primary agent pattern. Workflow tooling does
   not add a separate loopback MCP server.
 
+**Superseded by D77.**
+
 ## D14. Per-workflow workspace + cleanup policy (user ruling, 2026-07-11)
 
 - **Workspace need is derived, not declared:** if no phase in the graph has
@@ -547,6 +544,7 @@ blob): visible + editable in the item/automation UI, injected as a reserved seed
 variable, and optionally rewritten by a terminal phase via a first-party
 `update-job-notes` tool (NOOP is a normal outcome). Scoped deliberately small:
 a notes file per job, not a memory subsystem (the §12 exclusion stands).
+**Superseded by D76.**
 
 ## D6 amendments (2026-07-11)
 
@@ -719,10 +717,13 @@ verdict it now is, with what the first attempt got wrong.
   `report-back` early would let a workflow declare a capability nothing can
   honour and discover it only at run time. Adding it later is additive: a
   new `Grant` constant, its `ScopedTokenMethods` rows, and the bound method's
-  row-level check. **Ratified as-is; not a gap.**
+  row-level check. **Ratified as-is; not a gap.** **Superseded in part by
+  D76:** `schedule` and `update-notes` are removed from the set.
 
 - **D25 (RESOLVED 2026-07-25). Deleting a project cleans up after itself; it
-  never deletes a branch.** The M6 sweep left this open, and the first
+  never deletes a branch.** **Superseded in part by D76:** automations, the
+  schedule refresh and the preview's automation count are gone; the
+  locked-section re-read covers run ids only. The M6 sweep left this open, and the first
   implementation went further than the ruling that followed it. See the rework
   note below. Settled shape: deleting a project removes what Agent Overflow
   owns (its threads, its runs and their phase/unit/effect rows, its
@@ -969,6 +970,8 @@ verdict it now is, with what the first attempt got wrong.
   `agent-overflow workflow list`. The verb set is exported from the
   package's own dispatch table rather than restated in `main`, because a
   hand-kept second copy is exactly how a verb becomes unreachable again.
+  **D77 moved the `workflow`, `run` and `memory` verbs to the
+  `ao-workflow-tools` MCP server; D30 stands for the remaining verbs.**
 
   **Sessions find it on PATH, under a canonical-name symlink.** Boot
   writes `<configDir>/bin/agent-overflow` pointing at `os.Executable()`
@@ -1106,8 +1109,8 @@ verdict it now is, with what the first attempt got wrong.
   explicit opt-in (`sendMessageOptions.ExpandComposerCommands`) set only
   where composer-typed text enters the app: the bound SendMessage /
   SendMessageWithOptions / SteerMessageWithOptions wire methods and the
-  flush-queue dispatch. A workflow wake, a seeded triage turn, a
-  discussion-drive prompt, and a schema-driven phase send never set it,
+  flush-queue dispatch. A workflow wake, a seeded triage turn, and a
+  schema-driven phase send never set it,
   and a future internal caller that forgets the flag gets the safe
   behaviour (byte-for-byte delivery), not an accidental expansion.
   Expanding a `/…` opener inside a prompt the app wrote would be the app
@@ -2832,3 +2835,94 @@ each pinned by an incident-replay test:
   re-stamped by a resume refresh, since the wall-clock budget measures
   against it. No UI affordance yet; the frontend passes `false`, and
   exposing it is a product decision.
+
+## One clock (user ruling, 2026-10-12)
+
+- **D76. A scheduled or triggered run is started by a standing agent whose
+  loop or watch wakes it; the workflow system keeps no clock.** Standing
+  agents ruling 13 (`docs/specs/standing-agents.md`) makes the wake
+  supervisor the app's only scheduler, so the workflow scheduler
+  (`internal/workflow/scheduler`) and the `automations` and
+  `automation_cursors` tables are removed, together with everything that
+  existed only for them: the automation bound methods
+  (`WorkflowCreateAutomation` and its siblings), the `schedule` and `notes`
+  CLI verbs, the `schedule` and `update-notes` grants and their scoped-token
+  methods, job notes, the overlay's automation rows and Run now, the
+  `poll-jira-and-start` starter, and the automation count in the
+  project-deletion preview. A run an agent starts on a wake is an ordinary
+  agent-started run (§5): it binds to the agent's thread and wakes it.
+  Overlap, conditions, cursors and continuity belong to the agent and live
+  in its home (§11).
+
+  **Supersedes** D3.2, D12, the M5 automations milestone in D10, the
+  automation surfaces in D11 and its coverage gap 2, D16's skip-if-running
+  overlap policy, the `schedule` and `update-notes` grants in D24's closed
+  set, the automation parts of D25's project deletion, and what D34 still
+  held true of automations. Predicates stay: route `when:` clauses still
+  evaluate them (§4); only the automation condition that also used them is
+  gone.
+
+  **Existing rows.** Migration v154 drops both tables and the partial index
+  `idx_work_items_automation_source_ref`, and rebuilds `work_items` so its
+  `source` CHECK admits only `manual`, `agent` and `call`, rewriting every
+  run an automation started as `source = 'manual'` with `source_ref`
+  cleared, because the reference named a row that no longer exists. Keeping `automation` as a value nothing
+  writes would leave the removed feature in the schema.
+
+## Workflows are an MCP tool (user ruling, 2026-10-13)
+
+- **D77. Agents reach workflows through the app-managed
+  `ao-workflow-tools` MCP server; the `workflow`, `run` and `memory` CLI
+  verbs are removed.** This reverses D15. The user's reasoning: the tooling
+  is app-managed, agents get one surface, and there is no separate binary
+  to keep in sync. The server runs on the shared loopback MCP transport
+  (`internal/threadmcp`) and is registered on every Claude, claude-tui and
+  Codex session in a project on a per-session capability URL, the way the
+  thread tools are; a thread with no project has none. A phase session's
+  tool list is its grants, and the server refuses a call outside them by
+  name with the grant it needs rather than narrowing it. Every call runs the
+  bound workflow methods with the session's caller scope, so row-level
+  authorization and surface-and-skip are unchanged. The contract is
+  [agent-workflow-tools.md](agent-workflow-tools.md).
+
+  **D30 stands for the remaining verbs.** `service`, `pair`, `remote`,
+  `thread` and `help` stay CLI verbs of the app binary, `serve` and
+  `supervise` stay boot entries, and the PATH symlink and `AO_ENDPOINT`,
+  `AO_TOKEN` and `AO_THREAD_ID` stay for `remote`. `AO_PROJECT`, `AO_RUN_ID`
+  and `AO_PHASE_ID` are no longer injected; nothing reads them.
+
+  **Grant-free tools.** Memory and `workflow_list`/`workflow_validate`/
+  `workflow_schema` are grant-free because a phase could already reach them
+  through the offline CLI and the memory verb, so nothing a phase can do
+  widened. Grant-free tools never widen what a phase can do, and a read-only
+  phase keeps exactly the envelope memory channel it had: `memory_add` and
+  `workflow_new` are withheld from phases whose access is not `write`. The
+  access is the one the run's frozen definition declares for the phase, or
+  for the fan-out unit the session runs, never the session's runtime mode.
+
+  **Grants take effect on read-only phases.** The author declared them and
+  validation already accepted them; that a read-only session could not
+  reach the CLI's socket was a mechanism accident, not a rule.
+
+  **Waits and wakes.** A waiting call is bounded by the thread tools' 900
+  second ceiling and reports `resting`, `running` or `backgrounded`. A wait
+  that returned the run's rest is that rest's delivery, as with the thread
+  tools: the D17 wake for that rest is suppressed, and a later rest (after a
+  resume or a rerun) wakes the thread as usual (product ruling, logged for
+  the user). Delivered means the answer was written and the run has not
+  moved since the call read it, judged by the watch ring's cursor rather than
+  by what the rest looks like, so a later rest that looks the same still
+  wakes. Otherwise a run's rest reaches a thread only through its D17
+  binding, and no tool call changes a binding, so a backgrounded result says
+  whether the run is bound to the caller's thread, unbound, bound to another
+  thread, or being watched by a phase session that receives no wakes.
+
+  **A committed action is never reported as failed.** Once `run_start` has
+  started a run, or `run_control`/`run_resolve` has acted, a failure to read
+  the run back is carried in the answer (`readError`) beside the run's id;
+  an interactive start has no surface-and-skip, so an error there would
+  start a second run on retry.
+
+  **claude-tui** hosts `ao-workflow-tools` and none of the app's other
+  servers (`docs/decisions.md`); whether it hosts the thread tools is a
+  separate decision.

@@ -6,7 +6,6 @@ import {
   applyWorkflowPhaseState,
   clearWorkflowReceipts,
   getWorkflowAttentionCount,
-  getWorkflowAutomations,
   getWorkflowCatalog,
   getWorkflowCosts,
   getWorkflowDetail,
@@ -51,13 +50,12 @@ function overlayBindings(items: WorkItem[]): void {
     baseBranch: 'main',
     workflows: [{ id: `${projectId}-flow`, scope: 'project' }],
   }));
-  setBindingMock('WorkflowListAutomations', async () => [{ id: 'auto-1', workflowId: 'p1-flow' }]);
   setBindingMock('WorkflowListItemCosts', async (projectId: string) =>
     projectId === 'p1' ? { 'run-1': 2.5, 'run-bad': 'nope' } : {});
 }
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of Array.from(getToasts())) removeToast(toast.id);
 }
 
 describe('workflowRuns store', () => {
@@ -106,7 +104,6 @@ describe('workflowRuns store', () => {
       expect(getWorkflowCatalog('p1')?.workflows[0].id).toBe('p1-flow');
       // p2 was never in the sidebar list; its run is what pulls its catalog in.
       expect(getWorkflowCatalog('p2')?.workflows[0].id).toBe('p2-flow');
-      expect(getWorkflowAutomations('p1')).toHaveLength(1);
       // A non-numeric cost is dropped rather than rendered as NaN.
       expect(getWorkflowCosts()).toEqual({ 'run-1': 2.5 });
     });

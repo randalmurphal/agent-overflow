@@ -1,7 +1,7 @@
 // sidebarTreeView: everything between a built tree and the rendered rows —
-// the flatten, the preview cut and its reveal step, the status rollup, the
-// render-content identity cutoffs, and the discussion expansion cleanup. The
-// builder's own tests are in `sidebarTree.test.ts`.
+// the flatten, the preview cut and its reveal step, the status rollup and the
+// render-content identity cutoffs. The builder's own tests are in
+// `sidebarTree.test.ts`.
 
 import { describe, expect, it } from 'vitest';
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
@@ -19,12 +19,11 @@ import {
   sameSidebarVisibleRows,
   sameThreadStatusPill,
   sidebarVisibleRowKey,
-  pruneSidebarDiscussionExpansion,
-  toggleSidebarTreeThreadExpansion,
   type SidebarGroupMoreRow,
+  type SidebarTreeVisibleNode,
 } from './sidebarTreeView';
+
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
-import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { flattenTreeNodes } from '../../test/helpers/sidebarTree';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -54,54 +53,14 @@ function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup 
 }
 
 /** Node id of either kind — thread nodes and group nodes sort in one list. */
-const nodeId = (node: SidebarTreeNode): string => sidebarTreeNodeId(node);
-const nodeIds = (nodes: readonly SidebarTreeNode[]): string[] => nodes.map(sidebarTreeNodeId);
+const nodeId = (node: SidebarTreeNode | SidebarTreeVisibleNode): string => sidebarTreeNodeId(node);
+const nodeIds = (nodes: readonly (SidebarTreeNode | SidebarTreeVisibleNode)[]): string[] => nodes.map(nodeId);
 
 function liveStatusMap(map: Record<string, ThreadLiveStatus>) {
   return (id: string): ThreadLiveStatus => map[id] ?? 'idle';
 }
 
 describe('flattenSidebarThreadTree', () => {
-  it('does not descend into collapsed nodes', () => {
-    const root = mkThread('root');
-    const child = mkThread('child', { parentThreadId: 'root' });
-    const tree = buildSidebarThreadTree({
-      threads: [root, child],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const flat = flattenTreeNodes({ nodes: tree, expandedThreadIds: new Set() });
-    expect(flat.map(nodeId)).toEqual(['root']);
-    expect(flat[0].isExpandable).toBe(true);
-    expect(flat[0].isExpanded).toBe(false);
-  });
-
-  it('emits children of expanded nodes with depth set', () => {
-    const root = mkThread('root');
-    const child = mkThread('child', { parentThreadId: 'root' });
-    const tree = buildSidebarThreadTree({
-      threads: [root, child],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const flat = flattenTreeNodes({
-      nodes: tree,
-      expandedThreadIds: new Set(['root']),
-    });
-    expect(flat.map(nodeId)).toEqual(['root', 'child']);
-    expect(flat[1].depth).toBe(1);
-    expect(flat[0].isExpanded).toBe(true);
-  });
-
-  it('marks leaf nodes as not expandable', () => {
-    const leaf = mkThread('leaf');
-    const tree = buildSidebarThreadTree({
-      threads: [leaf],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const flat = flattenTreeNodes({ nodes: tree, expandedThreadIds: new Set(['leaf']) });
-    expect(flat[0].isExpandable).toBe(false);
-    expect(flat[0].isExpanded).toBe(false);
-  });
-
   // One row per case: the threads/groups present, and the [id, startsSection]
   // pairs the flatten must produce. Sections run groups, front, back,
   // unpinned; a divider opens each one after the first that has rows.
@@ -150,7 +109,7 @@ describe('flattenSidebarThreadTree', () => {
     },
   ])('marks section dividers: $name', ({ threads, groups, want }) => {
     const tree = buildSidebarThreadTree({ threads, groups, liveStatusOf: liveStatusMap({}) });
-    const flat = flattenTreeNodes({ nodes: tree, expandedThreadIds: new Set() });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual(want);
   });
 
@@ -165,7 +124,7 @@ describe('flattenSidebarThreadTree', () => {
       groups: [mkGroup('g1')],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenTreeNodes({ nodes: tree, expandedThreadIds: new Set() });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual([
       ['g1', false],
       ['m-front', false],
@@ -173,70 +132,6 @@ describe('flattenSidebarThreadTree', () => {
       ['m-loose', false],
       ['loose', true],
     ]);
-  });
-});
-
-describe('flattenSidebarThreadTree isPinTarget', () => {
-  const tree = () => buildSidebarThreadTree({
-    threads: [
-      mkThread('top'),
-      mkThread('child', { parentThreadId: 'top' }),
-      mkThread('member', { groupId: 'g1' }),
-      mkThread('member-child', { parentThreadId: 'member' }),
-    ],
-    groups: [mkGroup('g1')],
-    liveStatusOf: liveStatusMap({}),
-  });
-
-  it('is true for top-level threads and direct group members only', () => {
-    const flat = flattenTreeNodes({
-      nodes: tree(),
-      expandedThreadIds: new Set(['top', 'member']),
-    });
-    expect(flat.map((node) => [nodeId(node), node.isPinTarget])).toEqual([
-      ['g1', false],
-      ['member', true],
-      ['member-child', false],
-      ['top', true],
-      ['child', false],
-    ]);
-  });
-
-  it.each([
-    ['member', true],
-    ['member-child', false],
-  ])('keeps the tree answer for %s previewed under a collapsed group', (active, want) => {
-    const flat = flattenTreeNodes({
-      nodes: tree(),
-      expandedThreadIds: new Set(),
-      collapsedGroupIds: new Set(['g1']),
-      activeThreadId: active,
-    });
-    const row = flat.find((node) => nodeId(node) === active);
-    // The preview row renders one level below the group whatever its tree
-    // depth, so `depth` alone would call the nested child a member.
-    expect(row?.depth).toBe(1);
-    expect(row?.isPinTarget).toBe(want);
-  });
-
-  it('is false for a discussion child previewed under its collapsed parent', () => {
-    const flat = flattenTreeNodes({
-      nodes: tree(),
-      expandedThreadIds: new Set(),
-      activeThreadId: 'child',
-    });
-    expect(flat.find((node) => nodeId(node) === 'child')?.isPinTarget).toBe(false);
-  });
-});
-
-describe('toggleSidebarTreeThreadExpansion', () => {
-  it('adds an unexpanded id', () => {
-    const next = toggleSidebarTreeThreadExpansion(new Set(['a']), 'b');
-    expect([...next].sort()).toEqual(['a', 'b']);
-  });
-  it('removes an expanded id', () => {
-    const next = toggleSidebarTreeThreadExpansion(new Set(['a', 'b']), 'a');
-    expect([...next]).toEqual(['b']);
   });
 });
 
@@ -452,53 +347,13 @@ describe('rollupDisplayStatus', () => {
     ))?.liveStatus).toBe('interrupted');
   });
 
-  it("picks a child's bubbled status when it dominates the parent's own status", () => {
-    const parent = mkThread('parent');
-    const child = mkThread('child', { parentThreadId: 'parent' });
-    const tree = buildAt([parent, child], { parent: 'idle', child: 'pending-approval' });
-    const rollup = rollupDisplayStatus(tree);
-    expect(rollup?.liveStatus).toBe('pending-approval');
-  });
-});
-
-describe('pruneSidebarDiscussionExpansion', () => {
-  const diagnostics = installDiagnosticsCapture();
-  it('removes this tree leaves and preserves other projects', () => {
-    const nodes = buildSidebarThreadTree({ threads: [mkThread('leaf')] });
-    const expandedThreadIds = new Set(['leaf', 'other-project']);
-    expect([...pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds })]).toEqual(['other-project']);
-    expect([...expandedThreadIds]).toEqual(['leaf', 'other-project']);
-  });
-
-  it('preserves expanded ancestors across repeated updates from multiple projects', () => {
-    const trees = ['a', 'b'].map(id => buildSidebarThreadTree({
-      threads: [mkThread(id), mkThread(`${id}-child`, { parentThreadId: id })],
-    }));
-    const expandedThreadIds = new Set(['a', 'b']);
-    for (let pass = 0; pass < 2; pass++) {
-      for (const nodes of trees) {
-        expect(pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds })).toBe(expandedThreadIds);
-      }
-    }
-  });
-
-  it('prunes leaves inside groups without adding collapsed ancestors', () => {
-    const nodes = buildSidebarThreadTree({
-      threads: [mkThread('parent', { groupId: 'g1' }), mkThread('child', { parentThreadId: 'parent' })],
+  it("picks a group's bubbled member status", () => {
+    const tree = buildSidebarThreadTree({
+      threads: [mkThread('member', { groupId: 'g1' })],
       groups: [mkGroup('g1')],
+      liveStatusOf: liveStatusMap({ member: 'pending-approval' }),
     });
-    expect([...pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds: new Set(['child']) })]).toEqual([]);
-  });
-
-  it('uses the built tree rather than following cyclic parent links', async () => {
-    const root = mkThread('root');
-    const nodes = buildSidebarThreadTree({ threads: [root, mkThread('child', { parentThreadId: 'root' })] });
-    root.parentThreadId = 'child';
-    const expandedThreadIds = new Set(['root']);
-    expect(pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds })).toBe(expandedThreadIds);
-    const flat = flattenTreeNodes({ nodes, expandedThreadIds: new Set(), activeThreadId: 'child' });
-    expect(nodeIds(flat)).toEqual(['root', 'child']);
-    expect(await diagnostics.messages()).toEqual([]);
+    expect(rollupDisplayStatus(tree)?.liveStatus).toBe('pending-approval');
   });
 });
 
@@ -526,7 +381,6 @@ describe('sameSidebarVisibleRows', () => {
           liveStatusOf: () => 'running',
           activityOf: () => activity,
         }),
-        expandedThreadIds: new Set<string>(),
       });
     const a = build(1000);
     const b = build(99_000);
@@ -534,20 +388,15 @@ describe('sameSidebarVisibleRows', () => {
     expect(sameSidebarVisibleRows(a, b)).toBe(true);
   });
 
-  it('is false when order, status, expansion, or membership changes', () => {
+  it('is false when order, status, or membership changes', () => {
     const t1 = mkThread('a', { updatedAt: 1000 });
     const t2 = mkThread('b', { updatedAt: 2000 });
-    const build = (
-      threads: Thread[],
-      status: ThreadLiveStatus,
-      expanded: ReadonlySet<string> = new Set<string>(),
-    ) =>
+    const build = (threads: Thread[], status: ThreadLiveStatus) =>
       flattenTreeNodes({
         nodes: buildSidebarThreadTree({
           threads,
           liveStatusOf: () => status,
         }),
-        expandedThreadIds: expanded,
       });
 
     expect(sameSidebarVisibleRows(build([t1, t2], 'idle'), build([t2, t1], 'idle'))).toBe(true);
@@ -561,7 +410,6 @@ describe('sameSidebarVisibleRows', () => {
           liveStatusOf: () => 'idle',
           activityOf: (t) => (t.id === 'a' ? order[0] : order[1]),
         }),
-        expandedThreadIds: new Set<string>(),
       });
     expect(sameSidebarVisibleRows(byActivity([1, 2]), byActivity([2, 1]))).toBe(false);
   });
@@ -582,23 +430,18 @@ describe('flattenSidebarThreadTree with groups', () => {
   it('expands a group by default — the collapsed set is the inverse', () => {
     const flat = flattenTreeNodes({
       nodes: groupTree(),
-      expandedThreadIds: new Set(),
     });
     expect(nodeIds(flat)).toEqual(['g1', 'm1', 'm2']);
-    expect(flat[0].isExpanded).toBe(true);
-    expect(flat[0].isExpandable).toBe(true);
   });
 
   it('hides members when the group id is in collapsedGroupIds', () => {
     const flat = flattenTreeNodes({
       nodes: groupTree(),
-      expandedThreadIds: new Set(),
       collapsedGroupIds: new Set(['g1']),
     });
     expect(nodeIds(flat)).toEqual(['g1']);
-    expect(flat[0].isExpanded).toBe(false);
     // The member count the collapsed row renders still rides on the node.
-    expect(flat[0].children).toHaveLength(2);
+    expect(flat[0].kind === 'group' && flat[0].children).toHaveLength(2);
   });
 
   it('sorts groups above the pin blocks with a divider between', () => {
@@ -607,7 +450,7 @@ describe('flattenSidebarThreadTree with groups', () => {
       groups: [mkGroup('gb', { updatedAt: 1 })],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenTreeNodes({ nodes: tree, expandedThreadIds: new Set() });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => [nodeId(node), node.startsSection])).toEqual([
       ['gb', false],
       ['front', true],
@@ -684,7 +527,6 @@ describe('flattenSidebarThreadTree ownerGroupId', () => {
     const tree = buildSidebarThreadTree({
       threads: [
         mkThread('member', { groupId: 'g1' }),
-        mkThread('member-child', { parentThreadId: 'member', groupId: 'g1' }),
         mkThread('loose'),
       ],
       groups: [mkGroup('g1')],
@@ -692,13 +534,11 @@ describe('flattenSidebarThreadTree ownerGroupId', () => {
     });
     const flat = flattenTreeNodes({
       nodes: tree,
-      expandedThreadIds: new Set(['member']),
     });
 
     const owners = new Map(flat.map((node) => [nodeId(node), node.ownerGroupId]));
     expect(owners.get('g1')).toBeNull();
     expect(owners.get('member')).toBe('g1');
-    expect(owners.get('member-child')).toBe('g1');
     expect(owners.get('loose')).toBeNull();
   });
 
@@ -710,7 +550,7 @@ describe('flattenSidebarThreadTree ownerGroupId', () => {
       groups: [],
       liveStatusOf: liveStatusMap({}),
     });
-    const flat = flattenTreeNodes({ nodes: tree, expandedThreadIds: new Set() });
+    const flat = flattenTreeNodes({ nodes: tree });
     expect(flat.map((node) => node.ownerGroupId)).toEqual([null]);
   });
 });
@@ -719,7 +559,6 @@ describe('sameSidebarVisibleRows with groups', () => {
   function flatten(nodes: readonly SidebarTreeNode[], collapsed?: ReadonlySet<string>) {
     return flattenTreeNodes({
       nodes,
-      expandedThreadIds: new Set<string>(),
       collapsedGroupIds: collapsed,
     });
   }
@@ -784,7 +623,6 @@ describe('flattenSidebarThreadTree group preview cut', () => {
         groups: [group],
         liveStatusOf: options.liveStatusOf ?? liveStatusMap({}),
       }),
-      expandedThreadIds: new Set(),
       collapsedGroupIds: new Set(options.collapsed ? ['g1'] : []),
       openThreadIds: options.openThreadIds ?? new Set(),
       groupVisibleLimit: (id) => (id === 'g1' ? options.limit ?? THREAD_PREVIEW_LIMIT : THREAD_PREVIEW_LIMIT),
@@ -840,9 +678,10 @@ describe('flattenSidebarThreadTree group preview cut', () => {
   });
 
   it('reveals a group through nextSidebarThreadRevealLimit like a project', () => {
-    const tree = buildSidebarThreadTree({ threads: members(31), groups: [group], liveStatusOf: liveStatusMap({}) });
+    const [groupNode] = buildSidebarThreadTree({ threads: members(31), groups: [group], liveStatusOf: liveStatusMap({}) });
+    if (groupNode.kind !== 'group') throw new Error('want the group row first');
     expect(nextSidebarThreadRevealLimit({
-      nodes: tree[0].children,
+      nodes: groupNode.children,
       openThreadIds: new Set(),
       currentLimit: THREAD_PREVIEW_LIMIT,
       revealCount: 20,

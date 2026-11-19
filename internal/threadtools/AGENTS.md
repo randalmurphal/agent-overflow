@@ -23,6 +23,13 @@ computers, schemas carry no `computer_id` or `computers` parameter and
 results carry no computer fields. Add a field or a parameter to both
 shapes, or to neither.
 
+A session's `Shape.Spawn` carries what it can start: the providers this
+computer offers, the profile names it runs, and the session's sub-thread
+level and limit. A session at the limit has no `thread_spawn` schema and
+reads no word of it; `Tools` and the guide decide that from one
+`CanSpawn`, and text a model reads names no provider or profile the shape
+leaves out.
+
 ## Forwarding
 
 `Server.Call` serves a local call; `Server.CallForwarded` serves one
@@ -30,7 +37,8 @@ another computer forwarded here. The second entry point is the fan-out
 guard: a forwarded call sees no paired computers of its own, so a
 resolution, a search or a fan-out never crosses back to the computer that
 asked. `Forwarded(ctx)` is the read side, for the App decision that turns
-on where the call came from.
+on where the call came from. `thread_loop` and `thread_watch` schedule the
+calling thread on its own computer and refuse a forwarded call.
 
 ## Rules
 

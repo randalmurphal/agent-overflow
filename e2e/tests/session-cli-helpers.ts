@@ -1,15 +1,13 @@
-import { fileURLToPath } from 'node:url';
-import { spawnContained } from '../src/harness-process.js';
+import { productBinary, spawnProduct } from '../src/product-process.js';
 import type { HarnessApp } from '../src/harness.js';
 
 /** Run AO's CLI with the credential issued to an isolated mock-provider session. */
 export async function runSessionCLI(harness: HarnessApp, threadID: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const env = await harness.rpc<Record<string, string>>('HarnessSessionEnv', threadID);
   if (!env.AO_ENDPOINT || !env.AO_TOKEN) throw new Error('The mock provider session has no scoped CLI credential');
-  const binary = process.env.AO_HARNESS_BIN ?? fileURLToPath(new URL('../../bin/agent-overflow', import.meta.url));
   return new Promise((resolve, reject) => {
-    const child = spawnContained(binary, args, {
-      env: { PATH: process.env.PATH ?? '', HOME: harness.bootstrap.dataDir, ...env },
+    const child = spawnProduct(productBinary('agent-overflow'), args, {
+      env: { HOME: harness.bootstrap.dataDir, ...env },
       stdio: ['ignore', 'pipe', 'pipe'], memoryLimitBytes: 512 * 1024 * 1024,
     });
     let stdout = '', stderr = '';
