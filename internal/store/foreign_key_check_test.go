@@ -301,6 +301,10 @@ CREATE TABLE c_case(k TEXT REFERENCES P_TEXT(K));
 CREATE TABLE c_shadow(k TEXT REFERENCES p_temp_only(k));
 CREATE TABLE "c q""uote"("we""ird" TEXT REFERENCES p_text(k));
 CREATE TABLE c_dup(a, b, FOREIGN KEY(a, b) REFERENCES p_dup(x, y));
+CREATE TABLE "pÄ"(k TEXT PRIMARY KEY);
+CREATE TABLE "pä"(k TEXT PRIMARY KEY);
+CREATE TABLE c_fold_a(k TEXT REFERENCES "pÄ"(k));
+CREATE TABLE c_fold_b(k TEXT REFERENCES "pä"(k));
 CREATE TEMP TABLE p_temp_only(k TEXT PRIMARY KEY);
 INSERT INTO p_alias VALUES (5, 'five');
 INSERT INTO p_wr VALUES ('a', 1);
@@ -309,6 +313,7 @@ INSERT INTO p_text VALUES ('05'), ('7');
 INSERT INTO p_coll VALUES ('Mixed');
 INSERT INTO p_comp VALUES ('x1', 'y1');
 INSERT INTO p_dup VALUES (1, 2);
+INSERT INTO "pÄ" VALUES ('upper');
 INSERT INTO p_temp_only VALUES ('t');
 `
 
@@ -375,6 +380,9 @@ func TestForeignKeyCheckMatchesPragmaOnAdHocKeys(t *testing.T) {
 		{"temp parent is not main's", `INSERT INTO c_shadow VALUES ('t')`, "c_shadow", violates},
 		{"quoted names", `INSERT INTO "c q""uote" VALUES ('7')`, `c q"uote`, clean},
 		{"quoted names missing", `INSERT INTO "c q""uote" VALUES ('8')`, `c q"uote`, violates},
+		// SQLite folds only ASCII letters in a name, so these are two parents.
+		{"parent names differing past ASCII", `INSERT INTO c_fold_a VALUES ('upper')`, "c_fold_a", clean},
+		{"parent names differing past ASCII missing", `INSERT INTO c_fold_b VALUES ('upper')`, "c_fold_b", violates},
 		{"repeated index column", `INSERT INTO c_dup VALUES (1, 99)`, "c_dup", clean},
 		{"repeated index column missing", `INSERT INTO c_dup VALUES (3, 3)`, "c_dup", violates},
 	}

@@ -161,7 +161,7 @@ func foreignKeyProbes(ctx context.Context, tx *sql.Tx) ([]foreignKeyProbe, error
 		if pragmaTables[decl.table] {
 			continue
 		}
-		key := strings.ToLower(decl.parent)
+		key := foldSQLiteName(decl.parent)
 		parent, ok := parents[key]
 		if !ok {
 			parent, err = readForeignKeyParent(ctx, tx, decl.parent)
@@ -246,7 +246,7 @@ func readForeignKeyParent(ctx context.Context, tx *sql.Tx, name string) (*foreig
 		`SELECT name FROM main.sqlite_schema WHERE type IN ('table', 'view') AND name = ? COLLATE NOCASE`,
 		name).Scan(&parent.name)
 	if errors.Is(err, sql.ErrNoRows) {
-		parent.unresolved = strings.HasPrefix(strings.ToLower(name), "sqlite_")
+		parent.unresolved = strings.HasPrefix(foldSQLiteName(name), "sqlite_")
 		return parent, nil
 	}
 	if err != nil {
@@ -293,7 +293,7 @@ func readForeignKeyParent(ctx context.Context, tx *sql.Tx, name string) (*foreig
 			clear(seen)
 		}
 		if column.Valid {
-			folded := strings.ToLower(column.String)
+			folded := foldSQLiteName(column.String)
 			if seen[folded] {
 				parent.repeatsColumn = true
 			}
@@ -388,7 +388,7 @@ func foreignKeyParentColumns(decl foreignKeyDecl, parent *foreignKeyParent) ([]s
 		columns := make([]string, len(decl.to))
 		seen := map[string]bool{}
 		for i, to := range decl.to {
-			folded := strings.ToLower(to.String)
+			folded := foldSQLiteName(to.String)
 			if seen[folded] {
 				return nil, nil, false
 			}
@@ -403,4 +403,17 @@ func foreignKeyParentColumns(decl foreignKeyDecl, parent *foreignKeyParent) ([]s
 // quoteSQLIdent quotes name as an SQL identifier.
 func quoteSQLIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// foldSQLiteName folds a table or column name as SQLite compares names:
+// ASCII letters only. Names that differ in the case of any other letter are
+// different tables or columns.
+func foldSQLiteName(name string) string {
+	folded := []byte(name)
+	for i, c := range folded {
+		if 'A' <= c && c <= 'Z' {
+			folded[i] = c + ('a' - 'A')
+		}
+	}
+	return string(folded)
 }
