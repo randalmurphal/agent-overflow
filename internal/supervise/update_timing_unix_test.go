@@ -48,7 +48,7 @@ func TestAServeUpdateLogsEachPhaseOnce(t *testing.T) {
 		"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
 		"record-attempt", "trial.start", "trial.boot", "settle", "discard", "prune"}
 	p.wantOnce(t, phases...)
-	p.wantNone(t, "trial.stop", "restore.remove", "restore.copy", "restore.sync", "restore.record")
+	p.wantNone(t, "trial.stop", "restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear", "restore.record")
 	if len(p.failed) != 0 || len(p.skipped) != 0 {
 		t.Fatalf("failed %v, skipped %v; want every phase run and passed", p.failed, p.skipped)
 	}
@@ -87,7 +87,7 @@ func TestAServeRollbackLogsEachPhaseOnce(t *testing.T) {
 	p.wantOnce(t, "accept", "grace", "stop-previous",
 		"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
 		"record-attempt", "trial.start", "trial.boot", "trial.stop",
-		"restore.remove", "restore.copy", "restore.sync", "settle", "discard")
+		"restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear", "settle", "discard")
 	p.wantNone(t, "prune")
 	if len(p.failed) != 1 || p.failed["trial.boot"] != 1 {
 		t.Fatalf("failed %v, want the trial's boot", p.failed)
@@ -95,7 +95,7 @@ func TestAServeRollbackLogsEachPhaseOnce(t *testing.T) {
 	p.wantSummary(t, "accept", "grace", "stop-previous",
 		"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
 		"record-attempt", "trial.start", "trial.boot(failed)", "trial.stop",
-		"restore.remove", "restore.copy", "restore.sync", "restore.record:skipped", "settle", "discard")
+		"restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.record:skipped", "restore.clear", "settle", "discard")
 	rig.wantOutcome(t, "rolled-back")
 }
 
@@ -119,7 +119,7 @@ func TestDesktopUpdateLogsEachPhaseOnce(t *testing.T) {
 		"record-attempt",
 		"trial.lock", "trial.prepare", "trial.check", "trial.start", "trial.boot", "trial.stop",
 		"settle", "discard", "publish")
-	p.wantNone(t, "restore.remove", "restore.copy", "restore.sync", "remove-staged")
+	p.wantNone(t, "restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear", "remove-staged")
 	if len(p.failed) != 0 || len(p.skipped) != 0 {
 		t.Fatalf("failed %v, skipped %v; want every phase run and passed", p.failed, p.skipped)
 	}
@@ -140,7 +140,7 @@ func TestDesktopUpdateRollbackLogsTheRestore(t *testing.T) {
 		t.Fatalf("Apply = %+v, %v", end, err)
 	}
 	p := r.phases(t)
-	p.wantOnce(t, "trial.start", "trial.boot", "restore.remove", "restore.copy", "restore.sync", "settle", "discard", "remove-staged")
+	p.wantOnce(t, "trial.start", "trial.boot", "restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear", "settle", "discard", "remove-staged")
 	p.wantNone(t, "trial.stop", "publish")
 	if p.failed["trial.boot"] != 1 {
 		t.Fatalf("failed phases = %v, want trial.boot", p.failed)
@@ -166,7 +166,7 @@ func TestDesktopRecoveryLogsTheRestoreStep(t *testing.T) {
 		t.Fatalf("Reconcile = %+v, %v", decision, err)
 	}
 	p := r.phases(t)
-	p.wantOnce(t, "restore.lock", "restore.prepare", "restore.remove", "restore.copy", "restore.sync", "settle", "discard", "remove-staged")
+	p.wantOnce(t, "restore.lock", "restore.prepare", "restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear", "settle", "discard", "remove-staged")
 	p.wantSummary(t, "restore", "settle", "discard", "remove-staged")
 }
 
@@ -248,7 +248,7 @@ func TestUpdateCommandsLogTheirPhases(t *testing.T) {
 	mu.Unlock()
 	p.wantOnce(t, "space",
 		"snapshot.lock", "snapshot.prepare", "snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync",
-		"restore.lock", "restore.prepare", "restore.remove", "restore.copy", "restore.sync",
+		"restore.lock", "restore.prepare", "restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear",
 		"discard")
 	p.wantNone(t, "snapshot.schema")
 	if p.skipped["snapshot.schema"] != 1 {

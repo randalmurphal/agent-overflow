@@ -576,6 +576,9 @@ type launcherApp struct {
 	// updateSwap times an install that took the framework's swap, from the
 	// directive to this process's end (run); nil until one does. Under mu.
 	updateSwap *supervise.SwapTiming
+	// shutdownErr is OnShutdown's failed backend teardown, which run ends
+	// updateSwap's shutdown with. Under mu.
+	shutdownErr error
 	// payloadDistro and payloadPath are the running backend's distro and
 	// Linux path, recorded by launchAndShow for an in-app update (under mu).
 	// payloadTransient is whether that launch saves its distro choice,
@@ -1459,7 +1462,11 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			l := a.launcher
 			bs := a.backendBootstrap
 			cancelNotifications := a.notificationCancel
+			swap := a.updateSwap
 			a.mu.Unlock()
+			// An install's framework swap quits through here before its
+			// Restart returns; its shutdown phase begins now.
+			swap.Quitting()
 			if flush != nil {
 				flush()
 			}
@@ -1471,7 +1478,12 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			// blocked on us.
 			a.closeBrowserHost()
 			if l != nil {
-				a.stopLaunchedBackend(l, bs)
+				if err := a.stopLaunchedBackend(l, bs); err != nil {
+					log.Printf("launcher: backend teardown: %v", err)
+					a.mu.Lock()
+					a.shutdownErr = fmt.Errorf("backend teardown: %w", err)
+					a.mu.Unlock()
+				}
 			}
 			if cancelNotifications != nil {
 				cancelNotifications()
@@ -1950,8 +1962,9 @@ func renderDiagnosticsDir(mode string) string {
 // run drives the Wails app loop. Errors are logged but don't take
 // down the launcher silently — the user sees the WebView regardless.
 func (a *launcherApp) run() {
-	if err := a.wails.Run(); err != nil {
-		log.Printf("wails run: %v", err)
+	runErr := a.wails.Run()
+	if runErr != nil {
+		log.Printf("wails run: %v", runErr)
 	}
 	// Defensive cleanup: if the user closes the window before the
 	// backend finishes booting, OnShutdown still fires, but we run
@@ -1960,16 +1973,20 @@ func (a *launcherApp) run() {
 	l := a.launcher
 	bs := a.backendBootstrap
 	a.mu.Unlock()
+	var teardownErr error
 	if l != nil {
 		if err := a.stopLaunchedBackend(l, bs); err != nil {
 			log.Printf("launcher: final backend teardown: %v", err)
+			teardownErr = fmt.Errorf("final backend teardown: %w", err)
 		}
 	}
-	// An install that took the framework's swap ends its shutdown here.
+	// An install that took the framework's swap ends its shutdown here,
+	// with what failed in it.
 	a.mu.Lock()
 	swap := a.updateSwap
+	shutdownErr := a.shutdownErr
 	a.mu.Unlock()
-	swap.End(nil)
+	swap.End(errors.Join(runErr, shutdownErr, teardownErr))
 }
 
 func logBootPhase(phase string, started time.Time) {

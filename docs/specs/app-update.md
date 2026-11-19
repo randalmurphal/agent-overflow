@@ -252,8 +252,12 @@ fields, then `failed: <reason>` if it failed, or `phase=<name> skipped:
 <why>` for one that did not run. The phases run from the old version's
 `handoff`, through the new side's wait for it to exit (`wait-previous`,
 and each command's `<step>.lock`), each command's steps (the snapshot's
-per-file copy with bytes, clone and fsync; the restore's `restore.sync`,
-then `restore.record` of the attempt it ends), the trial's `trial.start`,
+per-file copy with bytes, clone and fsync; the restore's `restore.mark`,
+the durable write of its marker, then `restore.remove`, `restore.copy`,
+`restore.sync`, `restore.record` of the attempt it ends and
+`restore.clear`, the marker's removal and the sync of the layout root; a
+restore resumed at boot logs the same phases without `restore.mark`),
+the trial's `trial.start`,
 `trial.boot` and `trial.stop` and its own `shutdown`, to `first-boot`:
 the boot that follows the update, `after=committed` for the new version
 and `after=unsuccessful` for the previous version after a rollback or
@@ -275,9 +279,13 @@ An update that takes the framework's swap instead of a trial logs in the
 old version's log, as `updater: swap to <version>`: the branch as
 `handoff` skipped with why, or with `branch=swap` when the Windows
 handoff ran and found a launcher that predates the trial; Windows'
-`verify`; the `swap` that starts the framework's helper; and this
-process's `shutdown`, ended by its exit or failed by the exit watchdog.
-The helper replaces and relaunches the app without durations. The swapped
+`verify`; the `swap`, from the framework's `Restart`, which starts its
+helper, to the app's shutdown callback; and this process's `shutdown`,
+from that callback until the app loop has returned and the transport, or
+on Windows the backend, is torn down. A teardown that fails, or an app
+loop that returns an error, fails `shutdown` and gives the summary the
+outcome `error`; the exit watchdog fails whichever phase is open. The
+helper replaces and relaunches the app without durations. The swapped
 version logs `first-boot` only if it has this logging: on Windows its WSL
 backend reads it from the install marker; a macOS or Linux relaunch has no
 record to read it from.

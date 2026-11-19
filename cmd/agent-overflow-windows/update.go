@@ -192,14 +192,13 @@ func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective)
 	verifying.End(nil)
 
 	disarm := armUpdateExitWatchdog(updateRestartExitWatchdogDelay, swap)
-	// Recorded before the restart, whose quit begins the shutdown that run
-	// ends.
+	// Recorded before the restart, whose quit runs OnShutdown, which begins
+	// the shutdown that run ends, before Restart returns.
 	a.mu.Lock()
 	a.updateSwap = swap
 	a.mu.Unlock()
-	swapping := swap.Phases().Begin("swap")
+	swap.Swapping()
 	restartErr := u.Restart(ctx)
-	swapping.End(restartErr)
 	if restartErr != nil {
 		// The helper never spawned; we stay alive on the current version, so
 		// the force-exit must not fire.
@@ -207,6 +206,7 @@ func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective)
 		a.mu.Lock()
 		a.updateSwap = nil
 		a.mu.Unlock()
+		swap.End(restartErr)
 		return fmt.Errorf("restart into staged update: %w", restartErr)
 	}
 	swap.Quitting()

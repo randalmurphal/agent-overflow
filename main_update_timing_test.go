@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -101,7 +102,7 @@ func TestUpdateCommandsLogTheirPhasesThroughMain(t *testing.T) {
 	}
 	// A trial that reports its failure is stopped, then restored.
 	wantPhasesOnce(t, run.stderr, "command", "trial.start", "trial.boot", "trial.stop", "shutdown",
-		"restore.remove", "restore.copy", "restore.sync")
+		"restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear")
 	if _, failed := phaseCounts(t, run.stderr); failed["trial.boot"] != 1 || failed["command"] != 1 || len(failed) != 2 {
 		t.Fatalf("failed %v; want the boot and the command\n%s", failed, run.stderr)
 	}
@@ -341,5 +342,46 @@ func TestWaitForUpdateHelperLogsTheWait(t *testing.T) {
 	waitForUpdateHelper(helper, 10*time.Second, logf, nil)
 	if timed, failed := phaseCounts(t, strings.Join(logged, "\n")); timed["wait-helper"] != 1 || failed["wait-helper"] != 0 {
 		t.Fatalf("logged %q; want the wait logged once", logged)
+	}
+}
+
+// A desktop's shutdown after its app loop ends a framework swap's shutdown
+// with what failed there: the transport's shutdown and the loop's error.
+// A clean one ends it swapped.
+func TestShutDownAfterRunEndsTheSwapWithItsFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		runErr   error
+		shutdown func(context.Context) error
+		failure  string
+	}{
+		{"clean", nil, func(context.Context) error { return nil }, ""},
+		{"no transport", nil, nil, ""},
+		{"the transport fails to shut down", nil, func(context.Context) error { return errors.New("drain: boom") }, "transport shutdown: drain: boom"},
+		{"the app loop fails", errors.New("wails: boom"), func(context.Context) error { return nil }, "wails: boom"},
+		{"both fail", errors.New("wails: boom"), func(context.Context) error { return errors.New("drain: boom") },
+			"wails: boom; transport shutdown: drain: boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged []string
+			logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+			swap := supervise.NewSwapTiming(logf, "2.0.0", nil)
+			swap.Quitting()
+			shutDownAfterRun(tc.runErr, "transport", tc.shutdown, swap.End)
+			text := strings.Join(logged, "\n")
+			timed, failed := phaseCounts(t, text)
+			if timed["shutdown"] != 1 || len(logged) != 2 || !strings.Contains(logged[1], " summary ") {
+				t.Fatalf("logged:\n%s\nwant the shutdown once, then the summary", text)
+			}
+			if tc.failure == "" {
+				if failed["shutdown"] != 0 || !strings.HasSuffix(logged[1], " outcome=swapped") {
+					t.Fatalf("logged:\n%s\nwant the shutdown swapped", text)
+				}
+				return
+			}
+			if !strings.HasSuffix(logged[0], " failed: "+tc.failure) || !strings.HasSuffix(logged[1], " outcome=error") {
+				t.Fatalf("logged:\n%s\nwant the shutdown failed: %s and the outcome error", text, tc.failure)
+			}
+		})
 	}
 }

@@ -603,10 +603,25 @@ func (a *Service) pendingVersion() string {
 	return a.updater.pending.Version
 }
 
+// RestartQuitting begins the shutdown of a restart to update that took the
+// framework's swap (supervise.SwapTiming), ending the swap. The host calls
+// it from its shutdown callback, which the framework's Restart reaches
+// before it returns. Without such a restart it does nothing.
+func (a *Service) RestartQuitting() {
+	if a == nil {
+		return
+	}
+	a.updater.mu.Lock()
+	swap := a.updater.swap
+	a.updater.mu.Unlock()
+	swap.Quitting()
+}
+
 // EndRestart ends the timing of a restart to update that took the
-// framework's swap (supervise.SwapTiming): its shutdown, with err when the
-// process ends with one, and its summary. A process whose restart did not
-// take the swap logs nothing. Call once the host's shutdown is done.
+// framework's swap (supervise.SwapTiming): its open phase, with err when
+// the shutdown failed or the process ends with one, and its summary. A
+// process whose restart did not take the swap logs nothing. Call once the
+// host's shutdown is done.
 func (a *Service) EndRestart(err error) {
 	if a == nil {
 		return
@@ -664,18 +679,19 @@ func (a *Service) RestartReady() error {
 // zombie that cancels it. Disarmed only when the helper spawn itself
 // fails and the app intentionally stays alive on the old version.
 //
-// swap times it: the swap's start, then the shutdown it requests, which
-// EndRestart or the watchdog ends.
+// swap times it: the swap until the host's shutdown callback
+// (RestartQuitting), then the shutdown, which EndRestart or the watchdog
+// ends. The framework's Restart quits the host before it returns, so both
+// can run before Restart returns (supervise.SwapTiming).
 func (a *Service) restartWithExitWatchdog(swap *supervise.SwapTiming, restart func(ctx context.Context) error) error {
 	disarm := a.armRestartExitWatchdog(a.restartWatchdogDelay(), swap)
-	// Recorded before the restart, whose quit can begin the shutdown that
-	// ends it.
+	// Recorded before the restart, whose quit begins and can end the
+	// shutdown.
 	a.updater.mu.Lock()
 	a.updater.swap = swap
 	a.updater.mu.Unlock()
-	swapping := swap.Phases().Begin("swap")
+	swap.Swapping()
 	err := restart(a.context())
-	swapping.End(err)
 	if err != nil {
 		disarm()
 		a.updater.mu.Lock()

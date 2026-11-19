@@ -79,7 +79,8 @@ func (p Phase) End(err error, fields ...any) (ended time.Time) {
 		fmt.Fprintf(&line, " %v=%v", fields[i], fields[i+1])
 	}
 	if err != nil {
-		fmt.Fprintf(&line, " failed: %v", err)
+		// One line per phase, also for errors.Join's newline-separated text.
+		fmt.Fprintf(&line, " failed: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 	p.log.logf("%s: %s", p.log.prefix, line.String())
 	return ended
@@ -138,10 +139,18 @@ func (l *PhaseLog) record(p Phase, err error) (took time.Duration, ended time.Ti
 
 // SwapTiming times an update that skips the trial and takes the
 // framework's swap, in the old version's process: the choice of that
-// branch (handoff), the steps before the swap, the swap's start (swap) and
-// this process's shutdown from the quit it requests (shutdown), then one
-// summary. The framework's helper replaces the executable and relaunches
-// it after this process exits, and logs no durations.
+// branch (handoff), the steps before the swap, the framework's Restart up
+// to the host's shutdown callback (swap), this process's shutdown from
+// that callback (shutdown), then one summary. The framework's helper
+// replaces the executable and relaunches it after this process exits, and
+// logs no durations.
+//
+// The framework's Restart quits the host before it returns, so the host's
+// shutdown, and the end of the app loop that calls End, can run before the
+// code that called Restart resumes. Swapping, Quitting and End therefore
+// share one lock: each transition happens once, a late one does nothing,
+// and End closes whichever phase is open before the summary, which is
+// always the last line.
 //
 // A nil *SwapTiming is valid and does nothing. Safe for concurrent use.
 type SwapTiming struct {
@@ -149,10 +158,21 @@ type SwapTiming struct {
 	now     func() time.Time
 	started time.Time
 
-	mu       sync.Mutex
-	shutdown Phase
-	ended    bool
+	mu    sync.Mutex
+	stage swapStage
+	// open is the phase in progress: swap while swapping, shutdown while
+	// quitting, otherwise none.
+	open Phase
 }
+
+type swapStage int
+
+const (
+	swapPreparing swapStage = iota
+	swapSwapping
+	swapQuitting
+	swapEnded
+)
 
 // NewSwapTiming starts timing the swap to version to. nil logf is silent;
 // nil now is time.Now.
@@ -183,35 +203,58 @@ func (s *SwapTiming) Declined(handoff Phase) {
 	s.phases.BeginAt("handoff", handoff.started).End(nil, "branch", "swap")
 }
 
-// Quitting begins shutdown: the swap's helper is running and this process
-// has asked to quit.
+// Swapping begins swap, just before the framework's Restart. It does
+// nothing once the shutdown began or the swap ended.
+func (s *SwapTiming) Swapping() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stage == swapPreparing {
+		s.stage = swapSwapping
+		s.open = s.phases.Begin("swap")
+	}
+}
+
+// Quitting ends swap and begins shutdown. The host calls it from its
+// shutdown callback, where the shutdown starts; the caller of Restart calls
+// it again once Restart returns, for a host whose callback did not run.
+// Only the first call does anything, and none after End.
 func (s *SwapTiming) Quitting() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.ended {
-		s.shutdown = s.phases.Begin("shutdown")
+	if s.stage >= swapQuitting {
+		return
 	}
+	if s.stage == swapSwapping {
+		s.open.End(nil)
+	}
+	s.stage = swapQuitting
+	s.open = s.phases.Begin("shutdown")
 }
 
-// End ends the swap once: the shutdown, when it began, with err, then the
-// summary with outcome swapped, or error when err is not nil. A swap that
-// failed before the quit passes its error, and this process keeps running.
+// End ends the swap once: the open phase, swap or shutdown, with err, then
+// the summary with outcome swapped, or error when err is not nil. A swap
+// that failed before the quit passes its error, and this process keeps
+// running.
 func (s *SwapTiming) End(err error) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.ended {
+	if s.stage == swapEnded {
 		return
 	}
-	s.ended = true
-	if s.shutdown.log != nil {
-		s.shutdown.End(err)
+	if s.stage != swapPreparing {
+		s.open.End(err)
 	}
+	s.stage = swapEnded
+	s.open = Phase{}
 	outcome := "swapped"
 	if err != nil {
 		outcome = "error"

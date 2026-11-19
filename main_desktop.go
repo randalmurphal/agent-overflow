@@ -118,13 +118,7 @@ func runClient(rawURL string) {
 
 	runErr := app.Run()
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
-	defer cancel()
-	if err := stub.Shutdown(shutCtx); err != nil {
-		log.Printf("clientmode: shutdown: %v", err)
-	}
-	// A restart that took the framework's swap ends its shutdown here.
-	updates.EndRestart(runErr)
+	shutDownAfterRun(runErr, "clientmode", stub.Shutdown, updates.EndRestart)
 	if runErr != nil {
 		fatalf("wails run (client): %v", runErr)
 	}
@@ -487,15 +481,11 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 		boot.end(errors.New("the app closed before it finished starting"))
 	}
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
-	defer cancel()
+	var shutdown func(context.Context) error
 	if srv != nil {
-		if err := srv.Shutdown(shutCtx); err != nil {
-			log.Printf("transport: shutdown: %v", err)
-		}
+		shutdown = srv.Shutdown
 	}
-	// A restart that took the framework's swap ends its shutdown here.
-	appservice.EndUpdateRestart(appService.App, runErr)
+	shutDownAfterRun(runErr, "transport", shutdown, func(err error) { appservice.EndUpdateRestart(appService.App, err) })
 	if runErr != nil {
 		fatalf("wails run: %v", runErr)
 	}

@@ -103,6 +103,25 @@ func endActiveUpdateBoot(err error) {
 	activeUpdateBoot.Load().end(err)
 }
 
+// shutDownAfterRun shuts a desktop window's transport down once its app
+// loop has returned, logging a failure as "<prefix>: shutdown: <err>", then
+// ends the shutdown of a restart that took the framework's swap
+// (appupdate.Service.EndRestart) with the loop's error and the transport's.
+// shutdown is nil when no transport started. The caller still exits on
+// runErr alone.
+func shutDownAfterRun(runErr error, prefix string, shutdown func(context.Context) error, endRestart func(error)) {
+	var shutdownErr error
+	if shutdown != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
+		if err := shutdown(ctx); err != nil {
+			log.Printf("%s: shutdown: %v", prefix, err)
+			shutdownErr = fmt.Errorf("%s shutdown: %w", prefix, err)
+		}
+		cancel()
+	}
+	endRestart(errors.Join(runErr, shutdownErr))
+}
+
 func isUpdateCommand(name string) bool {
 	switch name {
 	case supervise.UpdateSpaceCommand, supervise.UpdateSnapshotCommand, supervise.UpdateTrialRunCommand,

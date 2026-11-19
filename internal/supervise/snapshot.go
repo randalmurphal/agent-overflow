@@ -102,8 +102,9 @@ type RestoreOptions struct {
 	Progress CopyProgress
 	// CloneFile is as for SnapshotOptions.
 	CloneFile func(in *os.File, destination string) (bool, error)
-	// Phases, when set, receives the restore's phases: removing the live
-	// files, each file's copy and the sync.
+	// Phases, when set, receives the restore's phases: writing the marker,
+	// removing the live files, each file's copy, the sync, the attempt
+	// record and clearing the marker.
 	Phases *PhaseLog
 }
 
@@ -441,12 +442,24 @@ func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.T
 		UpdateID: updateID, DataDir: dataDir,
 		Reason: reason, WrittenAtMs: now.UnixMilli(),
 	}
+	marking := opts.Phases.Begin("restore.mark")
 	if err := atomicfile.WriteJSON(layout.MarkerPath(), marker); err != nil {
-		return fmt.Errorf("supervise: write restore marker: %w", err)
+		err = fmt.Errorf("supervise: write restore marker: %w", err)
+		marking.End(err)
+		return err
 	}
+	marking.End(nil)
 	if err := applyRestore(layout, dataDir, opts); err != nil {
 		return err
 	}
+	return clearRestoreMarker(layout, opts.Phases)
+}
+
+// clearRestoreMarker removes the marker of a finished restore and syncs the
+// layout root, timed as restore.clear.
+func clearRestoreMarker(layout Layout, phases *PhaseLog) (err error) {
+	clearing := phases.Begin("restore.clear")
+	defer func() { clearing.End(err) }()
 	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("supervise: clear restore marker: %w", err)
 	}
@@ -466,10 +479,7 @@ func ResumeRestore(layout Layout, opts RestoreOptions) (RestoreMarker, bool, err
 	if err := applyRestore(layout, marker.DataDir, opts); err != nil {
 		return marker, true, err
 	}
-	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return marker, true, fmt.Errorf("supervise: clear restore marker: %w", err)
-	}
-	if err := atomicfile.SyncDir(layout.Root()); err != nil {
+	if err := clearRestoreMarker(layout, opts.Phases); err != nil {
 		return marker, true, err
 	}
 	return marker, true, nil
