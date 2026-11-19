@@ -12,6 +12,7 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -73,6 +74,10 @@ func gtkDo(fn func()) bool {
 }
 
 var errGTKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
+
+// errProfileClosedBeforeView is a new page's answer when its profile was
+// disposed before its view was built (webkitNewView).
+var errProfileClosedBeforeView = errors.New("browser: workspace profile closed before the page's view was built")
 
 // webkitView is a live page's view as the page's operations reach it. The
 // page's lifetime ends (webkitPage.discard) before Close queues the view's
@@ -576,15 +581,27 @@ func webkitFreeSession(session unsafe.Pointer) {
 	gtkDo(func() { C.ao_wk_session_free(session) })
 }
 
-func webkitNewView(session unsafe.Pointer, pageID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
+// webkitNewView builds a page's view in session, on the GTK thread, once
+// live answers there that the session's profile is not disposed: the
+// profile's Dispose frees the session on the GTK thread after it marks
+// the profile disposed, so a session live finds is not freed until the
+// view holds it.
+func webkitNewView(session unsafe.Pointer, live func() bool, pageID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
+	disposed := false
 	if !gtkDo(func() {
+		if disposed = !live(); disposed {
+			return
+		}
 		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
 		view = C.ao_wk_view_new(session, C.uint64_t(pageID), cScript, cHandler)
 		C.free(unsafe.Pointer(cScript))
 		C.free(unsafe.Pointer(cHandler))
 	}) {
 		return nil, errGTKUnavailable
+	}
+	if disposed {
+		return nil, errProfileClosedBeforeView
 	}
 	if view == nil {
 		return nil, fmt.Errorf("browser: create page view")

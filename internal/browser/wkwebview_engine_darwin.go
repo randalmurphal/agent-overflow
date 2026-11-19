@@ -350,7 +350,7 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, err
 	if err != nil {
 		return nil, err
 	}
-	view, err := wkNewView(p.store, page.id, p.id, script, webkitConsoleHandler)
+	view, err := wkNewView(p.store, func() bool { return !p.isDisposed() }, page.id, p.id, script, webkitConsoleHandler)
 	if err != nil {
 		page.discard()
 		return nil, err

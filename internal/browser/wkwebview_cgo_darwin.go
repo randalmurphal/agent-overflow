@@ -13,6 +13,7 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -78,6 +79,10 @@ func wkDo(fn func()) bool {
 }
 
 var errWKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
+
+// errProfileClosedBeforeView is a new page's answer when its profile was
+// disposed before its view was built (wkNewView).
+var errProfileClosedBeforeView = errors.New("browser: workspace profile closed before the page's view was built")
 
 // wkView is a live page's view as the page's operations reach it. The page's
 // lifetime ends (wkPage.discard) before Close queues the view's release, and
@@ -648,15 +653,26 @@ func wkClearSiteData(ctx context.Context) error {
 	}
 }
 
-func wkNewView(store unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
+// wkNewView builds a page's view in store, on the main thread, once live
+// answers there that the store's profile is not disposed: the profile's
+// Dispose frees the store on the main thread after it marks the profile
+// disposed, so a store live finds is not freed until the view holds it.
+func wkNewView(store unsafe.Pointer, live func() bool, pageID, profileID uint64, userScript, consoleHandler string) (unsafe.Pointer, error) {
 	var view unsafe.Pointer
+	disposed := false
 	if !wkDo(func() {
+		if disposed = !live(); disposed {
+			return
+		}
 		cScript, cHandler := C.CString(userScript), C.CString(consoleHandler)
 		view = C.ao_wkv_view_new(store, C.uint64_t(pageID), C.uint64_t(profileID), cScript, cHandler)
 		C.free(unsafe.Pointer(cScript))
 		C.free(unsafe.Pointer(cHandler))
 	}) {
 		return nil, errWKUnavailable
+	}
+	if disposed {
+		return nil, errProfileClosedBeforeView
 	}
 	if view == nil {
 		return nil, fmt.Errorf("browser: create page view")

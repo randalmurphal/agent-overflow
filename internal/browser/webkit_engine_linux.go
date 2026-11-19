@@ -267,6 +267,10 @@ type webkitProfile struct {
 	disposed  bool
 	pages     map[*webkitPage]struct{}
 	downloads map[string]unsafe.Pointer
+
+	// beforeView, when set, runs between a new page's shell and its view's
+	// construction: a test seam.
+	beforeView func()
 }
 
 func (p *webkitProfile) Handle() string { return p.handle }
@@ -284,7 +288,10 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver,
 	if err != nil {
 		return nil, err
 	}
-	view, err := webkitNewView(p.session, page.id, script, webkitConsoleHandler)
+	if p.beforeView != nil {
+		p.beforeView()
+	}
+	view, err := webkitNewView(p.session, func() bool { return !p.isDisposed() }, page.id, script, webkitConsoleHandler)
 	if err != nil {
 		page.discard()
 		return nil, err

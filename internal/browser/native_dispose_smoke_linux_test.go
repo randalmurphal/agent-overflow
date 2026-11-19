@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -81,5 +82,61 @@ func TestNativeEngineRealDisposeDuringPageCreation(t *testing.T) {
 	profile.mu.Unlock()
 	if pages != 0 {
 		t.Fatalf("the disposed profile lists %d pages", pages)
+	}
+}
+
+// TestNativeEngineRealDisposeBeforePageView disposes a real WebKitGTK
+// profile, its session freed, after a page creation passed the profile's
+// check and before its view is built: the build, checking the profile on
+// the GTK thread, refuses rather than building a view in the freed session.
+func TestNativeEngineRealDisposeBeforePageView(t *testing.T) {
+	window := smokeWindow(t)
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-dispose-first", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	if _, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "first.html", `<!doctype html><title>first</title>`), OpenOptions{}); err != nil {
+		t.Fatalf("open a page: %v", err)
+	}
+	engine, ok := manager.engine.(*webkitEngine)
+	if !ok {
+		t.Fatalf("the engine is %T, want WebKitGTK", manager.engine)
+	}
+	created, err := engine.NewProfile(ctx, profileOptions{Jar: "native-smoke-dispose-first-jar", Ephemeral: true})
+	if err != nil {
+		t.Fatalf("new profile: %v", err)
+	}
+	profile := created.(*webkitProfile)
+	reached, proceed := make(chan struct{}), make(chan struct{})
+	profile.beforeView = func() {
+		close(reached)
+		<-proceed
+	}
+	built := make(chan error, 1)
+	go func() {
+		driver, err := profile.NewPage(ctx, pageHooks{})
+		if err == nil {
+			driver.Close()
+		}
+		built <- err
+	}()
+	<-reached
+	if err := profile.Dispose(ctx); err != nil {
+		t.Fatalf("dispose: %v", err)
+	}
+	close(proceed)
+	if err := <-built; !errors.Is(err, errProfileClosedBeforeView) {
+		t.Fatalf("the creation answered %v, want its view refused for the disposed profile", err)
 	}
 }
