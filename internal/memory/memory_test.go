@@ -402,7 +402,7 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 			t.Errorf("%s: rules name the home = %v", name, got)
 		}
 		// What keeps a fact out reaches every session that writes.
-		for _, rule := range []string{"Most sessions save nothing.", "Write a fact only after one of these happened:", "is not a fact.", "Then save it only when all of these hold:", "belongs in its docs", "Read the index before you add", "name every fact you wrote, changed or deleted"} {
+		for _, rule := range []string{"Most sessions save nothing.", "Write a fact only after one of these happened:", "is not a fact.", "Then save it only when all of these hold:", "belongs in its docs", "Read the index before you add", "name every fact you or your workers wrote, changed or deleted"} {
 			if !strings.Contains(rules, rule) {
 				t.Errorf("%s: rules lack %q", name, rule)
 			}

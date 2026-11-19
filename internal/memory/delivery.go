@@ -727,7 +727,7 @@ func writeRules(home, project bool) string {
 		"Then save it only when all of these hold: a future session would act differently, and the description says how; the user said it or you verified it in this session, and source quotes which; no file, doc or code already holds it; it stays true after this task.",
 		"A fact that a contributor to the repository would need too belongs in its docs: propose that change, and give the fact an until that names it.",
 		"Read the index before you add: update the fact on the subject, never a second one beside it. Delete a fact the moment it is shown wrong. When you rely on a fact and it holds, set confirmed to today.",
-		"When you report your work, name every fact you wrote, changed or deleted, with its file.",
+		"When you report your work, name every fact you or your workers wrote, changed or deleted, with its file, and say why for a deleted one.",
 		scopes,
 		"A user's correction is a ruling in the scope it is about, or a user preference when it holds across projects.",
 	}

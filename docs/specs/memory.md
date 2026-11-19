@@ -147,9 +147,9 @@ case, so `Type` and `type` are the same key. Frontmatter that does not open on t
 in the first 16 KiB, sets a key twice, lacks a required key, names an
 unknown type or a malformed date, or gives a `source` of neither form
 makes the fact malformed: it is left out of every index and reported to
-the scope's assistants. The source forms are what the app can check of a
-fact's evidence: a fact an agent only thought worth keeping has neither
-the user's words nor a check to name. A fact whose
+the scope's assistants. The form is all the app checks of a fact's
+evidence; whether the words or the check are real is for the write
+rules, the writer's report and the assistant's check. A fact whose
 `expires` date is before the backend's local date at delivery is left
 out and reported, so an assistant deletes it. A file whose name an
 index line cannot show (invalid UTF-8, a control or format
@@ -396,9 +396,10 @@ session that writes, naming only the scopes that session may write:
   project, the user only for how the user decides. A user's correction
   is a project `ruling` or a user `preference`. A check that caught a
   problem, or a miss that got through, becomes a project `verification`.
-- A session names every fact it wrote, changed or deleted, with its
-  file, when it reports its work, so whoever asked for the work, the
-  user or the spawner, sees each write.
+- A session names every fact it or its workers wrote, changed or
+  deleted, with its file and why for a deleted one, when it reports its
+  work, so whoever asked for the work, the user or the spawner, sees
+  each write.
 - An assistant checks a fact a worker reports and a new or changed line
   it did not write: it opens the fact and deletes it when it fails these
   rules.
