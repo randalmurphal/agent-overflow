@@ -274,15 +274,17 @@ export type BrowserHeaderButton =
 /**
  * The one answer to how the chat header's browser button renders and what
  * a press does: it renders where this page can present the thread's browser
- * (canPresentNativeBrowser), or while the thread has tabs this page could
- * show; it is pressed while the thread's pane is in this layout, and a
- * press then hides it, else shows the browser.
+ * (canPresentNativeBrowser), or while the thread's pane is in this layout,
+ * which a press then hides; otherwise a press shows the browser. A show is
+ * sent only where this layout presents the pane (showBrowserFromHeader),
+ * so under compact, or with the browser turned off while the thread still
+ * has tabs, the button is not offered rather than offered doing nothing.
  */
 export function browserHeaderButton(threadId: string): BrowserHeaderButton {
   if (!threadId) return { rendered: false };
-  const tabs = canUseNativeBrowser(threadId) && browserCompanionState(threadId) !== null;
-  if (!tabs && !canPresentNativeBrowser(threadId)) return { rendered: false };
   const intent = browserHeaderIntent(threadId);
+  if (intent.kind === 'show' && !canPresentNativeBrowser(threadId)) return { rendered: false };
+  const tabs = canUseNativeBrowser(threadId) && browserCompanionState(threadId) !== null;
   return {
     rendered: true,
     label: tabs ? 'Toggle browser pane' : 'Open browser',

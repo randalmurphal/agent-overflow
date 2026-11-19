@@ -273,12 +273,14 @@ per-platform no-op.
   run on the engine's UI thread, a crashed page answers nothing, and a
   switch suspends in one lock hold.
 - The chat header's browser button is present wherever the native browser is
-  usable for the thread, tabs or not. With no tab it opens the pane on a new
-  tab, as a mod-clicked link does on a tab at the link. Both ask one
-  question (`canPresentNativeBrowser`): the window hosts the thread's view,
-  the home backend has an engine, the browser is on, and the layout is not
-  compact. A mod-click that fails it opens the link the ordinary way, and a
-  header press that fails it sends nothing. The state channel has no
+  usable for the thread, tabs or not, and elsewhere only while the
+  thread's pane is in the layout, to hide it (`browserHeaderButton`). With
+  no tab it opens the pane on a new tab, as a mod-clicked link does on a
+  tab at the link. Both ask one question (`canPresentNativeBrowser`): the
+  window hosts the thread's view, the home backend has an engine, the
+  browser is on, and the layout is not compact. A mod-click that fails it
+  opens the link the ordinary way, and a header press that fails it by the
+  time it runs sends nothing. The state channel has no
   replay, so the client reads the state of each thread it shows once per
   connection of the home backend. The button reads pressed while
   this layout shows the thread's pane, and a press is chosen from that at

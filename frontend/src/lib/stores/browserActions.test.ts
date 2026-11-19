@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   actInPane,
   browserCompanionAct,
+  browserHeaderButton,
   browserHeaderIntent,
   closeFocusedBrowserTab,
   isBrowserPaneUnattached,
@@ -159,8 +160,8 @@ describe('the chat header browser button', () => {
     expect(browserThreadState('thread-browser')?.pages).toHaveLength(1);
   });
 
-  // The show may open a tab, and compact presents no browser pane: the
-  // button still renders for a thread with tabs, and a press sends nothing.
+  // The show may open a tab, and compact presents no browser pane: a press
+  // made as the layout turned compact sends nothing.
   it('a press under compact sends nothing', async () => {
     applyBrowserCompanionState(hidden(1) as never);
     setCompactLayoutForTest(true);
@@ -172,6 +173,31 @@ describe('the chat header browser button', () => {
     } finally {
       setCompactLayoutForTest(false);
     }
+  });
+
+  // A press there would send nothing, so the button is not offered for a
+  // thread with tabs: not under compact, and not with the browser turned
+  // off before the backend has closed the tabs. Where the pane is in the
+  // layout, the button stays to hide it.
+  it('offers no button under compact for a thread with tabs', () => {
+    applyBrowserCompanionState(hidden(1) as never);
+    expect(browserHeaderButton('thread-browser')).toMatchObject({ rendered: true, intent: { kind: 'show' } });
+    setCompactLayoutForTest(true);
+    try {
+      expect(browserHeaderButton('thread-browser')).toEqual({ rendered: false });
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  it('offers no show with the browser turned off while the thread has tabs, and still the hide', () => {
+    applyBrowserCompanionState(hidden(1) as never);
+    applySettingsSnapshot(makeSettings({ browserEnabled: false }));
+    expect(browserHeaderButton('thread-browser')).toEqual({ rendered: false });
+    applySettingsSnapshot(makeSettings({ browserEnabled: true }));
+    applyBrowserCompanionState(shown(2) as never);
+    applySettingsSnapshot(makeSettings({ browserEnabled: false }));
+    expect(browserHeaderButton('thread-browser')).toMatchObject({ rendered: true, pressed: true, intent: { kind: 'hide' } });
   });
 
   // The pane the button was in no longer shows the thread: nothing would
