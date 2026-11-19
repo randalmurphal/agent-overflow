@@ -65,10 +65,14 @@ const (
 )
 
 // CapabilityScript tells a document the window routes chords to it, as the
-// window's document number document.
+// window's document number document. It only raises the document's number:
+// runtime-ready callbacks run on goroutines of their own, so two scripts
+// can run in the opposite order to their numbers, and the document keeps
+// the newer, the one the window accepts reports for.
 func CapabilityScript(document uint64) string {
-	return "window." + CapabilityGlobal + " = " + strconv.FormatUint(document, 10) +
-		"; window.dispatchEvent(new Event('" + ReadyEvent + "'));"
+	number := strconv.FormatUint(document, 10)
+	return "if (!(window." + CapabilityGlobal + " >= " + number + ")) { window." + CapabilityGlobal + " = " + number +
+		"; window.dispatchEvent(new Event('" + ReadyEvent + "')); }"
 }
 
 // DispatchScript hands the reload chord to the SPA. A document that has no

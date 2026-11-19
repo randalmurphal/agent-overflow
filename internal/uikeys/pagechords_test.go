@@ -1,6 +1,8 @@
 package uikeys
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -124,6 +126,38 @@ func TestPageChordsAppliesOnlyTheNewestReport(t *testing.T) {
 		if !c.HandleMessage(w, garbled) || !c.Routing() || w.reloadCount != 0 {
 			t.Fatalf("%q changed the routing or reloaded", garbled)
 		}
+	}
+}
+
+// Two runtime-ready callbacks of one document number it 1 then 2, and their
+// scripts may run 2 then 1: the document keeps 2, the number the window
+// accepts reports for, and announces itself once.
+func TestCapabilityScriptsInReverseOrderLeaveTheNewestNumber(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required: the capability script runs in a document")
+	}
+	c := NewPageChords()
+	c.Bindings(Browser())
+	w := &scriptWindow{}
+	c.DocumentLoaded(w)
+	c.DocumentLoaded(w)
+	if len(w.scripts) != 2 {
+		t.Fatalf("scripts = %v", w.scripts)
+	}
+	program := "const window = { ready: 0, dispatchEvent(e) { if (e.type === '" + ReadyEvent + "') this.ready++; } };\n" +
+		w.scripts[1] + "\n" + w.scripts[0] + "\n" +
+		"process.stdout.write(window." + CapabilityGlobal + " + ' ' + window.ready);"
+	out, err := exec.Command(node, "-e", program).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "2 1" {
+		t.Fatalf("after the scripts ran newest first the document holds number and announcements %q, want \"2 1\"", got)
+	}
+	c.HandleMessage(w, RouteMessage(2, 1, true))
+	if !c.Routing() {
+		t.Fatal("a report under the document's number did not route the chord")
 	}
 }
 

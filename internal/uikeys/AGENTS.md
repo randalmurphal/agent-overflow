@@ -19,4 +19,5 @@ navigated to (`TrustedPage`), taken at navigation rather than per message,
 and calls `DocumentLoaded` on each runtime-ready event.
 Raw messages arrive on a goroutine each, so each report names its
 document's number and its own; only the current document's newest
-report counts.
+report counts. Runtime-ready callbacks run concurrently too, so the
+capability script only raises the document's number.
