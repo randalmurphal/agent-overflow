@@ -60,7 +60,8 @@ has not withdrawn the directive's focus intent (`focusDecision`,
 The SPA posts each intent's arm and withdrawal to the launcher directly, so
 a withdrawal wins over a directive still crossing WSL. Delivery is not
 application: a directive for a page the launcher's own presentation hides
-stays pending, and the page's next show applies it once (`present`).
+stays pending, and the page's next show in the directive's mount applies
+it once (`present`); an applied intent delivered again moves nothing.
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize

@@ -179,13 +179,19 @@ func TestFocusDecisionNeedsAShownPageAndTheForeground(t *testing.T) {
 type launcherFocus struct {
 	f    *FocusIntents
 	page string
+	// mount is the mount the page is presented in; "mount-1" when unset.
+	mount string
 }
 
 func (l launcherFocus) decide(view paneView, foreground bool) (focusOutcome, uint64) {
+	mount := l.mount
+	if mount == "" {
+		mount = "mount-1"
+	}
 	var intent uint64
 	outcome := focusDecision(view, foreground, func() bool {
 		var ok bool
-		_, intent, ok = l.f.Take(l.page)
+		intent, ok = l.f.Take(mount, l.page)
 		return ok
 	})
 	return outcome, intent
@@ -262,7 +268,7 @@ func TestALauncherFocusWaitsForThePagesNextShow(t *testing.T) {
 		t.Fatalf("hidden = %v, want it left alone", got)
 	}
 	// Another page's show does not take it.
-	if _, _, ok := l.f.Take("page-2"); ok {
+	if _, ok := l.f.Take("mount-1", "page-2"); ok {
 		t.Fatal("another page took the intent")
 	}
 	// The window in the background keeps it waiting too.
@@ -293,6 +299,42 @@ func TestALauncherFocusWaitsForThePagesNextShow(t *testing.T) {
 		if got, _ := l.decide(focusShown, true); got != focusNoIntent {
 			t.Errorf("%s while waiting: the next show = %v, want nothing applied", tc.name, got)
 		}
+	}
+}
+
+// An intent is taken only by the mount it was asked in presenting its page:
+// a page another mount presents first leaves the keyboard alone, and the
+// intent waits for its own mount. Of two mounts' intents for one page, each
+// mount takes its own. An intent applied stays applied: a directive
+// delivered for it again moves nothing.
+func TestALauncherFocusIsTakenByItsOwnMount(t *testing.T) {
+	f := NewFocusIntents()
+	f.Note(FocusIntentMessage{Mount: "mount-a", Intent: 1})
+	f.Deliver("mount-a", 1, "page-1")
+	inA := launcherFocus{f: f, page: "page-1", mount: "mount-a"}
+	inB := launcherFocus{f: f, page: "page-1", mount: "mount-b"}
+	if got, _ := inB.decide(focusShown, true); got != focusNoIntent {
+		t.Fatalf("another mount presenting the page = %v, want the keyboard left alone", got)
+	}
+	f.Note(FocusIntentMessage{Mount: "mount-b", Intent: 7})
+	f.Deliver("mount-b", 7, "page-1")
+	if got, intent := inB.decide(focusShown, true); got != focusMove || intent != 7 {
+		t.Fatalf("mount-b's own intent = %v (%d), want a move for 7", got, intent)
+	}
+	f.Deliver("mount-b", 7, "page-1")
+	if got, _ := inB.decide(focusShown, true); got != focusNoIntent {
+		t.Fatalf("a redelivered applied intent = %v, want nothing", got)
+	}
+	if got, intent := inA.decide(focusShown, true); got != focusMove || intent != 1 {
+		t.Fatalf("mount-a presenting the page = %v (%d), want its waiting intent", got, intent)
+	}
+	f.Note(FocusIntentMessage{Mount: "mount-b", Intent: 8})
+	f.Deliver("mount-b", 8, "page-1")
+	if _, ok := f.Take("", "page-1"); ok {
+		t.Fatal("a page with no mount took an intent")
+	}
+	if got, intent := inB.decide(focusShown, true); got != focusMove || intent != 8 {
+		t.Fatalf("mount-b's newer intent = %v (%d)", got, intent)
 	}
 }
 

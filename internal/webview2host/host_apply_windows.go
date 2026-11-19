@@ -79,17 +79,18 @@ func (h *Host) withPage(pageID string, fn func(*hostPage)) {
 }
 
 // applyPendingFocus moves keyboard focus into the page for the focus intent
-// delivered for it, while the host shows the page, the launcher window is
-// the foreground window and the intent still stands (focusDecision). A page
-// not shown or a window in the background leaves the intent pending, and the
-// page's next show applies it (present). Runs on the UI thread, so the view
-// it checks is the one on screen.
+// delivered for it in the mount it is presented in, while the host shows
+// the page, the launcher window is the foreground window and the intent
+// still stands (focusDecision). A page not shown or a window in the
+// background leaves the intent pending, and the page's next show applies it
+// (present). Runs on the UI thread, so the view and mount it checks are the
+// ones on screen.
 func (h *Host) applyPendingFocus(page *hostPage) {
-	var mount string
+	mount := page.pres.mount
 	var intent uint64
 	take := func() bool {
 		var ok bool
-		mount, intent, ok = h.config.Focus.Take(page.id)
+		intent, ok = h.config.Focus.Take(mount, page.id)
 		return ok
 	}
 	if focusDecision(page.shown, h.foreground(h.config.HostWindow()), take) != focusMove {
