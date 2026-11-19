@@ -186,8 +186,9 @@ page's `downloadMu`, ends its admission of new ones. The hosted engine's
 downloads are the launcher's numbered snapshots (`hosted_downloads.go`),
 which it applies one at a time per download, held across the Manager's
 callbacks, and only when newer than the last applied; an answer never
-creates a row, and a download is the Manager's to cancel or ask about only
-once admitted. A hosted page ends at the launcher's close, which follows
+creates a row, and a download is asked about only once admitted; a cancel
+made while its admission is in flight is kept and sent as it is admitted.
+A hosted page ends at the launcher's close, which follows
 its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot, so a
 lost report never leaves a row running; headless Chromium's arrive over

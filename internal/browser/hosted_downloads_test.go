@@ -508,9 +508,6 @@ func TestHostedEngineACompletionWaitsForItsStartsAdmission(t *testing.T) {
 	first := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 1, State: webview2host.DownloadRunning, Path: testDownloadPath})
 	waitClosed(t, entered, "the admission")
 	end := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 3, State: webview2host.DownloadCompleted, Path: testDownloadPath, Received: 100})
-	if err := engine.cancelDownload("dl-a-1"); !errors.Is(err, errDownloadEnded) {
-		t.Fatalf("a download whose admission is in flight answers a cancel with %v", err)
-	}
 	time.Sleep(50 * time.Millisecond)
 	if _, progress := recorder.take(); len(progress) != 0 {
 		t.Fatalf("progress reached the Manager before the start was admitted: %+v", progress)
@@ -526,6 +523,34 @@ func TestHostedEngineACompletionWaitsForItsStartsAdmission(t *testing.T) {
 	starts, progress := recorder.take()
 	if len(starts) != 1 || len(progress) != 1 || progress[0].State != downloadCompleted {
 		t.Fatalf("starts %+v and progress %+v, want the row started and completed", starts, progress)
+	}
+}
+
+// The Manager lists a download's row before its admission answers, so the
+// user can cancel it then: the engine takes the cancel and sends it to the
+// launcher once the admission is done, and the launcher's answer ends the
+// row. Before, the cancel answered that the download had ended, which the
+// Manager took as settled, and the file kept downloading.
+func TestHostedEngineACancelDuringAdmissionReachesTheLauncher(t *testing.T) {
+	engine, sink, recorder := newDownloadHostedEngine(t)
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	entered, release := heldAdmission(recorder)
+	first := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 1, State: webview2host.DownloadRunning, Path: testDownloadPath, Received: 10})
+	waitClosed(t, entered, "the admission")
+	if err := testProfile(t, engine).CancelDownload("dl-a-1"); err != nil {
+		t.Fatalf("a cancel of a download being admitted answers %v", err)
+	}
+	if sent := sink.drain(); len(sent) != 0 {
+		t.Fatalf("the cancel reached the launcher before the Manager had the download: %+v", sent)
+	}
+	close(release)
+	waitClosed(t, first, "the first snapshot's apply")
+	if directive := sink.next(t); !isCancelOf(directive, "page1", "dl-a-1") {
+		t.Fatalf("after the admission the engine sent %+v, want the cancel", directive)
+	}
+	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadInterrupted, Reason: "canceled", Answer: true})
+	if _, progress := recorder.take(); terminals(progress) != 1 {
+		t.Fatalf("progress %+v, want the row ended by the launcher's answer", progress)
 	}
 }
 

@@ -72,6 +72,9 @@ type hostedDownload struct {
 	// known to the Manager, to cancel or to ask about. gone is set as it
 	// leaves running (ended, refused, or its page or the engine went).
 	admitted, gone bool
+	// canceled is a cancel the Manager made while it admitted the download,
+	// its row already listed: it goes to the launcher once admitted is set.
+	canceled bool
 	// apply is held while one snapshot is applied, across the Manager's
 	// callbacks, so the download's snapshots reach the Manager one at a time.
 	apply sync.Mutex
@@ -181,7 +184,14 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 		}
 		e.mu.Lock()
 		known.admitted = true
+		canceled := known.canceled
 		e.mu.Unlock()
+		if canceled {
+			// No caller waits on this cancel any more.
+			if err := e.sendDownloadCancel(pageID, report.ID); err != nil {
+				e.logf("%v", err)
+			}
+		}
 	}
 	known.applied = report.Seq
 	progress := downloadProgress{ID: report.ID, Received: float64(report.Received), Total: float64(report.Total), State: downloadInProgress}
@@ -222,20 +232,29 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 
 // cancelDownload asks the launcher to cancel a running download; its answer
 // settles it. One the engine no longer tracks has ended, and its terminal
-// report is out.
+// report is out. The Manager lists a download's row before its admission
+// answers, so a cancel can come while it is in flight: it is kept, and sent
+// as the admission ends (downloadReport).
 func (e *hostedEngine) cancelDownload(id string) error {
 	e.mu.Lock()
 	known := e.downloads.running[id]
-	page, admitted := "", false
-	if known != nil {
-		page, admitted = known.page, known.admitted
+	if known == nil {
+		e.mu.Unlock()
+		return errDownloadEnded
+	}
+	page, admitted := known.page, known.admitted
+	if !admitted {
+		known.canceled = true
 	}
 	e.mu.Unlock()
 	if !admitted {
-		// A download whose admission is in flight is not the Manager's yet,
-		// so its cancel cannot come from there.
-		return errDownloadEnded
+		return nil
 	}
+	return e.sendDownloadCancel(page, id)
+}
+
+// sendDownloadCancel sends the launcher the cancel of download id of page.
+func (e *hostedEngine) sendDownloadCancel(page, id string) error {
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCancelDownload, PageID: page, Download: id}) {
 		return fmt.Errorf("browser: the pane host refused to cancel download %s", id)
 	}
