@@ -171,7 +171,7 @@ type Manager struct {
 	artifactBytes  *quota.Pool
 	// downloadsMu guards threadDownloads, each thread's downloads as its
 	// pane lists them (downloads_thread.go). It is taken inside m.mu and
-	// inside a page's downloadMu, and never held around either.
+	// inside a page's download log hold, and never held around either.
 	downloadsMu     sync.Mutex
 	threadDownloads map[string]*threadDownloadList
 	downloadKeys    atomic.Uint64
@@ -375,23 +375,14 @@ type managedPage struct {
 	logs        []ConsoleLog
 	clipboardMu sync.Mutex
 	clipboard   []ClipboardItem
-	downloadMu  sync.Mutex
-	// downloadsEnded is set when the page stops being the Manager's
-	// (pageLeftLocked); no download is admitted on it after. Guarded by
-	// downloadMu.
-	downloadsEnded bool
-	downloadSeq    uint64
-	// downloadSettles counts the entries that settled
-	// (DownloadInfo.settled). Guarded by downloadMu.
-	downloadSettles uint64
-	downloads       []DownloadInfo
-	downloadWait    chan struct{}
-	assetMu         sync.Mutex
-	inventories     map[string]AssetInventory
-	assetOrder      []string
-	nodeMu          sync.Mutex
-	nodeRefs        map[string]nodeReference
-	nodeOrder       []string
+	// downloads is the page's download log (downloads_log.go).
+	downloads   pageDownloadLog
+	assetMu     sync.Mutex
+	inventories map[string]AssetInventory
+	assetOrder  []string
+	nodeMu      sync.Mutex
+	nodeRefs    map[string]nodeReference
+	nodeOrder   []string
 	// find is written only by a find transition, which holds mu (find.go);
 	// findMu guards it for readers. findMu may be held around the Manager's
 	// mu, never taken inside it. ends are the find ends submitted and not
@@ -428,8 +419,8 @@ var pageIncarnations atomic.Uint64
 func newManagedPage(access Access) *managedPage {
 	p := &managedPage{
 		id: uuid.NewString(), owner: access.ThreadID, access: access,
-		createdAt:    time.Now().UnixNano(),
-		downloadWait: make(chan struct{}), inventories: make(map[string]AssetInventory),
+		createdAt:   time.Now().UnixNano(),
+		inventories: make(map[string]AssetInventory),
 		nodeRefs:    make(map[string]nodeReference),
 		incarnation: pageIncarnations.Add(1),
 	}

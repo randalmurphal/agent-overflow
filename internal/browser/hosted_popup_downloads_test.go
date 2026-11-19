@@ -40,10 +40,8 @@ func (l *popupLauncher) pageDownloads(threadID, handle string) []string {
 	if p == nil {
 		return nil
 	}
-	p.downloadMu.Lock()
-	defer p.downloadMu.Unlock()
 	var out []string
-	for _, d := range p.downloads {
+	for _, d := range p.downloads.list() {
 		out = append(out, d.State)
 	}
 	return out

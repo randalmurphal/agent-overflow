@@ -57,26 +57,15 @@ func (m *Manager) listedDownloadAllows(workspace, path string) bool {
 	var listed []os.FileInfo
 	m.downloadsMu.Lock()
 	for _, list := range m.threadDownloads {
-		for _, item := range list.items {
-			if item.State == downloadStateCompleted && item.workspace == workspace && item.path == path && item.file != nil {
-				listed = append(listed, item.file)
-			}
-		}
+		listed = append(listed, list.completedFiles(workspace, path)...)
 	}
 	m.downloadsMu.Unlock()
 	m.mu.Lock()
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.access.Workspace != workspace {
-				continue
+			if p.access.Workspace == workspace {
+				listed = append(listed, p.downloads.completedFiles(path)...)
 			}
-			p.downloadMu.Lock()
-			for _, entry := range p.downloads {
-				if entry.State == downloadStateCompleted && entry.Path == path && entry.file != nil {
-					listed = append(listed, entry.file)
-				}
-			}
-			p.downloadMu.Unlock()
 		}
 	}
 	m.mu.Unlock()

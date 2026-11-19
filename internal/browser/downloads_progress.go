@@ -28,13 +28,13 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	if p == nil {
 		return
 	}
-	p.downloadMu.Lock()
-	entry := p.downloadLocked(event.ID)
+	held := p.downloads.hold()
+	entry := held.entry(event.ID)
 	// A settled download takes no further report: AO stopped it (a quota,
 	// its size, the user, its page closing) or the engine already ended it.
 	// One being published has had its finish.
 	if entry == nil || entry.State != downloadStateRunning || entry.publishing {
-		p.downloadMu.Unlock()
+		held.release()
 		return
 	}
 	if event.CancelRefused {
@@ -43,8 +43,8 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		// later end reads as the engine's own, not the user's cancel.
 		entry.cancelRequested = false
 		entry.Error = event.Error
-		note := m.noteDownloadLocked(p, entry, "")
-		p.downloadMu.Unlock()
+		note := m.noteDownloadLocked(p, entry)
+		held.release()
 		m.publishDownloads(note)
 		return
 	}
@@ -65,9 +65,8 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		m.releaseDownloadLocked(p, entry)
-		note := m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
-		p.downloadMu.Unlock()
+		note := m.noteDownloadLocked(p, entry)
+		held.release()
 		m.publishDownloads(note)
 		if scope != nil {
 			running := event.State == downloadInProgress
@@ -84,7 +83,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		return
 	}
 	if event.State == downloadCompleted && saving == downloadsStaged {
-		m.publishFinishedDownload(p, entry, event)
+		m.publishFinishedDownload(p, held, entry, event)
 		return
 	}
 	removePartial := false
@@ -153,9 +152,8 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		// but its staged file, which goes.
 		removePartial = removePartial || saving == downloadsStaged
 	}
-	note := m.noteDownloadLocked(p, entry, "")
-	p.signalDownloadLocked()
-	p.downloadMu.Unlock()
+	note := m.noteDownloadLocked(p, entry)
+	held.release()
 	if removePartial {
 		// What the engine wrote is a partial file.
 		m.removePartialDownload(scope, event.ID)
@@ -210,9 +208,9 @@ func (m *Manager) removePartialDownload(scope *jarScope, id string) {
 // row stays running while the file moves, outside the page's lock: a page
 // that leaves meanwhile (pageLeftLocked) and a cancel
 // (CancelThreadDownload) leave it to this, its one settlement, and Close
-// waits for it (waitPublishes). The caller holds p.downloadMu, which this
-// releases.
-func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, event downloadProgress) {
+// waits for it (waitPublishes). The caller holds p's download log, which
+// this releases.
+func (m *Manager) publishFinishedDownload(p *managedPage, held *downloadLogHold, entry *DownloadInfo, event downloadProgress) {
 	source := m.stagedPath(event.ID)
 	failure := ""
 	switch {
@@ -223,9 +221,8 @@ func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, e
 	}
 	if failure != "" {
 		entry.State, entry.Error = downloadStateFailed, failure
-		note := m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
-		p.downloadMu.Unlock()
+		note := m.noteDownloadLocked(p, entry)
+		held.release()
 		m.releaseStagedDownload(event.ID)
 		m.publishDownloads(note)
 		return
@@ -233,14 +230,14 @@ func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, e
 	entry.publishing = true
 	name := entry.SuggestedName
 	m.beginPublish()
-	p.downloadMu.Unlock()
+	held.release()
 
 	path, file, err := publishDownload(source, name)
 	m.releaseStagedDownload(event.ID)
 
-	p.downloadMu.Lock()
+	held = p.downloads.hold()
 	// A running entry is never trimmed, so it is still there.
-	entry = p.downloadLocked(event.ID)
+	entry = held.entry(event.ID)
 	if entry != nil {
 		entry.publishing = false
 		if err != nil {
@@ -251,10 +248,9 @@ func (m *Manager) publishFinishedDownload(p *managedPage, entry *DownloadInfo, e
 	}
 	var note downloadNote
 	if entry != nil {
-		note = m.noteDownloadLocked(p, entry, "")
-		p.signalDownloadLocked()
+		note = m.noteDownloadLocked(p, entry)
 	}
-	p.downloadMu.Unlock()
+	held.release()
 	m.endPublish()
 	if entry != nil {
 		m.publishDownloads(note)

@@ -405,7 +405,9 @@ behave as a desktop browser's:
   More menu. While downloads run it shows how far they are in eighths, or a
   stepped spinner when no running download announced its size. It opens the
   thread's downloads, newest first (every running one, and the 20 that
-  settled last, so a download's notification always finds its row): name,
+  settled last; a download's notification finds its download by id while
+  it is one of the 256 that settled last, shown or not, until the list is
+  cleared): name,
   the page it began on, received and total bytes, and the
   failure. A running one cancels; a finished one shows in the file manager
   (the reveal hand-off of Show in folder) and, for a type every engine shows

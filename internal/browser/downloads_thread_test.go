@@ -662,12 +662,10 @@ func TestAPageLogIsBoundedOnceItsDownloadsSettle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.downloadMu.Lock()
-	defer p.downloadMu.Unlock()
-	if len(p.downloads) != maxPageDownloads {
-		t.Fatalf("the page logs %d downloads, want %d", len(p.downloads), maxPageDownloads)
+	if logged := p.downloads.list(); len(logged) != maxPageDownloads {
+		t.Fatalf("the page logs %d downloads, want %d", len(logged), maxPageDownloads)
 	}
-	if p.downloadLocked("dl-0") == nil || p.downloadLocked(fmt.Sprintf("dl-%d", total-1)) != nil {
+	if !p.downloads.has("dl-0") || p.downloads.has(fmt.Sprintf("dl-%d", total-1)) {
 		t.Fatal("the log dropped a download that settled last, or kept one that settled first")
 	}
 }
@@ -909,9 +907,7 @@ func TestADownloadStartRacingItsPageDepartureIsRefused(t *testing.T) {
 			if listed := threadDownloads(manager, access); len(listed) != 0 {
 				t.Fatalf("the thread lists %+v", listed)
 			}
-			p.downloadMu.Lock()
-			entries := len(p.downloads)
-			p.downloadMu.Unlock()
+			entries := len(p.downloads.list())
 			if entries != 0 {
 				t.Fatalf("the page that left holds %d download entries", entries)
 			}
@@ -1123,9 +1119,7 @@ func TestADownloadsAddressIsBoundedAsItStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.downloadMu.Lock()
-	logged := len(p.downloads[0].URL)
-	p.downloadMu.Unlock()
+	logged := len(p.downloads.list()[0].URL)
 	if logged > maxBrowserURLBytes {
 		t.Fatalf("the page's log keeps a %d-byte address", logged)
 	}

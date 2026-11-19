@@ -133,11 +133,9 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 		// the popup never becomes a tab and its opener's lists the download.
 		var where []string
 		for _, p := range manager.ownedPages(access.ThreadID) {
-			p.downloadMu.Lock()
-			if len(p.downloads) > 0 {
+			if len(p.downloads.list()) > 0 {
 				where = append(where, p.id)
 			}
-			p.downloadMu.Unlock()
 		}
 		if len(where) != 1 || where[0] != opener.ID {
 			t.Fatalf("the download is listed in tabs %v, want the opener's %s", where, opener.ID)
@@ -178,9 +176,7 @@ func TestHeadlessChromiumRealPopupDownloadsAndNesting(t *testing.T) {
 			if err != nil {
 				return false
 			}
-			p.downloadMu.Lock()
-			defer p.downloadMu.Unlock()
-			for _, d := range p.downloads {
+			for _, d := range p.downloads.list() {
 				if d.SuggestedName == "framed.bin" {
 					if d.State != downloadStateCompleted && d.State != downloadStateRunning {
 						t.Fatalf("the frame's download ended %s", d.State)
