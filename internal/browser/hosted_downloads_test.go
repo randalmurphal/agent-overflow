@@ -164,7 +164,11 @@ const testDownloadPath = `C:\Users\dev\Downloads\report (1).pdf`
 
 // snapshot is a download's snapshot at testDownloadPath.
 func snapshot(id, state string, received int64) webview2host.DownloadReport {
-	return webview2host.DownloadReport{ID: id, State: state, URI: "https://example.test/report.pdf", Name: "report (1).pdf", Path: testDownloadPath, Received: received, Total: 100}
+	report := webview2host.DownloadReport{ID: id, State: state, URI: "https://example.test/report.pdf", Name: "report (1).pdf", Path: testDownloadPath, Received: received, Total: 100}
+	if state == webview2host.DownloadInterrupted {
+		report.End, report.Reason = webview2host.DownloadEndCanceled, "the download was canceled"
+	}
+	return report
 }
 
 // terminals counts the terminal events among progress.
@@ -207,9 +211,9 @@ func TestHostedEngineTurnsLauncherSnapshotsIntoDownloadEvents(t *testing.T) {
 	}
 
 	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\big.bin`})
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadInterrupted, Path: `C:\Users\dev\Downloads\big.bin`, Received: 7, Reason: "the network failed"})
-	if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-2", Received: 7, State: downloadCanceled, Error: "the network failed"}) {
-		t.Fatalf("an interrupted download reports %+v, want canceled with the launcher's reason", progress)
+	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndFailed, Path: `C:\Users\dev\Downloads\big.bin`, Received: 7, Reason: "the network failed"})
+	if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-2", Received: 7, State: downloadFailed, Error: "the network failed"}) {
+		t.Fatalf("a download the network ended reports %+v, want failed with the launcher's reason", progress)
 	}
 
 	// A saved file the backend cannot reach completes naming it, with no
@@ -240,25 +244,25 @@ func TestHostedEngineAppliesSnapshotsIdempotently(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		reports   []webview2host.DownloadReport
-		wantState []string
+		wantState []downloadState
 	}{
 		{"a lost start, then progress",
 			[]webview2host.DownloadReport{snapshot("dl-a-1", webview2host.DownloadRunning, 40), snapshot("dl-a-1", webview2host.DownloadCompleted, 100)},
-			[]string{downloadInProgress, downloadCompleted}},
+			[]downloadState{downloadInProgress, downloadCompleted}},
 		{"a lost start, then the end",
 			[]webview2host.DownloadReport{snapshot("dl-a-1", webview2host.DownloadCompleted, 100)},
-			[]string{downloadCompleted}},
+			[]downloadState{downloadCompleted}},
 		// A repeat of a running snapshot is the same progress again, which
 		// sets nothing new; it never starts a second row.
 		{"a repeated snapshot",
 			[]webview2host.DownloadReport{snapshot("dl-a-1", webview2host.DownloadRunning, 0), snapshot("dl-a-1", webview2host.DownloadRunning, 0), snapshot("dl-a-1", webview2host.DownloadRunning, 40), snapshot("dl-a-1", webview2host.DownloadCompleted, 100)},
-			[]string{downloadInProgress, downloadInProgress, downloadCompleted}},
+			[]downloadState{downloadInProgress, downloadInProgress, downloadCompleted}},
 		{"a duplicate terminal",
 			[]webview2host.DownloadReport{snapshot("dl-a-1", webview2host.DownloadRunning, 0), snapshot("dl-a-1", webview2host.DownloadCompleted, 100), snapshot("dl-a-1", webview2host.DownloadCompleted, 100), snapshot("dl-a-1", webview2host.DownloadInterrupted, 100)},
-			[]string{downloadCompleted}},
+			[]downloadState{downloadCompleted}},
 		{"a late progress after the end",
-			[]webview2host.DownloadReport{snapshot("dl-a-1", webview2host.DownloadRunning, 0), {ID: "dl-a-1", State: webview2host.DownloadInterrupted, Received: 3, Reason: "the network failed"}, snapshot("dl-a-1", webview2host.DownloadRunning, 50)},
-			[]string{downloadCanceled}},
+			[]webview2host.DownloadReport{snapshot("dl-a-1", webview2host.DownloadRunning, 0), {ID: "dl-a-1", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndFailed, Received: 3, Reason: "the network failed"}, snapshot("dl-a-1", webview2host.DownloadRunning, 50)},
+			[]downloadState{downloadFailed}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine, _, recorder := newDownloadHostedEngine(t)
@@ -270,7 +274,7 @@ func TestHostedEngineAppliesSnapshotsIdempotently(t *testing.T) {
 			if len(starts) != 1 || starts[0].ID != "dl-a-1" || starts[0].SuggestedName != "report (1).pdf" {
 				t.Fatalf("starts %+v, want the one row", starts)
 			}
-			var got []string
+			var got []downloadState
 			for _, p := range progress {
 				got = append(got, p.State)
 			}
@@ -338,7 +342,7 @@ func TestHostedEngineDeliversARefusedCancel(t *testing.T) {
 	reportDownload(t, engine, "page1", refused)
 	_, progress := recorder.take()
 	want := []downloadProgress{
-		{ID: "dl-a-1", State: downloadInProgress, Error: refusal, CancelRefused: true},
+		{ID: "dl-a-1", State: downloadCancelRefused, Error: refusal},
 		{ID: "dl-a-1", Received: 30, Total: 100, State: downloadInProgress},
 	}
 	if !reflect.DeepEqual(progress, want) {
@@ -368,7 +372,7 @@ func TestHostedEngineCancelOfAnEndedOrUnknownDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	reportDownload(t, engine, "page1", unknownAnswer("dl-a-2"))
-	if _, progress := recorder.take(); len(progress) != 1 || progress[0].State != downloadCanceled || progress[0].Error != webview2host.DownloadUnknownReason {
+	if _, progress := recorder.take(); len(progress) != 1 || progress[0].State != downloadUntracked || progress[0].Error != webview2host.DownloadUnknownReason {
 		t.Fatalf("the launcher's unknown answer settled %+v", progress)
 	}
 }
@@ -613,7 +617,7 @@ func TestHostedEngineACancelDuringAdmissionReachesTheLauncher(t *testing.T) {
 	if directive := sink.next(t); !isCancelOf(directive, "page1", "dl-a-1") {
 		t.Fatalf("after the admission the engine sent %+v, want the cancel", directive)
 	}
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadInterrupted, Reason: "canceled", Answer: true})
+	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Reason: "canceled", Answer: true})
 	if _, progress := recorder.take(); terminals(progress) != 1 {
 		t.Fatalf("progress %+v, want the row ended by the launcher's answer", progress)
 	}
@@ -788,7 +792,7 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 			recorder.take()
 
 			tc.leave(engine)
-			if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-1", State: downloadCanceled, Error: tc.why, PageGone: true}) {
+			if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: tc.why}) {
 				t.Fatalf("the departure reported %+v, want the running download's end", progress)
 			}
 			if _, kept := engine.pages.state("page1"); kept {
@@ -797,7 +801,7 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 			if err := engine.cancelDownload("dl-a-1"); !errors.Is(err, errDownloadEnded) {
 				t.Fatalf("the gone page's download answers a cancel with %v, want errDownloadEnded", err)
 			}
-			reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, Reason: "the download was canceled"})
+			reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Reason: "the download was canceled"})
 			reportDownload(t, engine, "page2", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\two.bin`, Received: 5})
 			if starts, progress := recorder.take(); len(starts) != 0 || len(progress) != 1 || progress[0].ID != "dl-a-2" || progress[0].Received != 5 {
 				t.Fatalf("after the departure, starts %+v and progress %+v", starts, progress)
@@ -862,9 +866,9 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 	if err := engine.cancelDownload("dl-a-1"); !errors.Is(err, errDownloadEnded) {
 		t.Fatalf("a cancel after the page closed answers %v", err)
 	}
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, Path: `C:\Users\dev\Downloads\x.bin`, Received: 3, Reason: "the download was canceled"})
+	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Path: `C:\Users\dev\Downloads\x.bin`, Received: 3, Reason: "the download was canceled"})
 	_, progress := recorder.take()
-	if len(progress) != 2 || progress[0].Received != 3 || progress[1] != (downloadProgress{ID: "dl-a-1", State: downloadCanceled, Error: popupDiscardedReason, PageGone: true}) {
+	if len(progress) != 2 || progress[0].Received != 3 || progress[1] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: popupDiscardedReason}) {
 		t.Fatalf("progress %+v, want the one progress and the end of the close, none of the launcher's late report", progress)
 	}
 	ops := sink.ops()

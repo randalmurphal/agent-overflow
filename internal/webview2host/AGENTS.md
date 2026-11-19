@@ -149,7 +149,8 @@ settles through WebView2's report or after `downloadCancelBound`
 (`settleCancel`), where a download still running stops being followed
 and one whose state cannot be read waits another bound. Every read of a
 download's operation goes through `reconcileDownload`, and its typed
-verdict (`downloadoutcome.go`) alone makes a terminal snapshot: WebView2's
+verdict (`downloadoutcome.go`) alone makes a terminal snapshot, an
+interrupted one naming its cause (`DownloadEnd`): WebView2's
 end only from a read that found one, and the launcher's own end of a
 download only for an explicit cause (the cancel bound, an unannounced
 popup's going). The backend numbers its cancel attempts

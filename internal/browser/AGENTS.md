@@ -212,7 +212,10 @@ path only. Every change to a page's download entry goes through
 `noteDownloadLocked` and `publishDownloads` (`downloads_thread.go`), which
 keep the thread's list the pane shows and coalesce byte progress; an engine
 reports one terminal event per download, after its start, and that report
-alone settles the user's cancel. Every removal of a live page goes through
+alone settles the user's cancel. The engine that saw the end names its
+cause (`downloadState`: canceled, failed, untracked, page gone); the
+Manager lists it from that, never from whether a cancel was pending.
+Every removal of a live page goes through
 `pageLeftLocked`, which settles the page's running downloads, except one
 whose file is being published, which its publish settles, and, under the
 page's `downloadMu`, ends its admission of new ones. The hosted engine's

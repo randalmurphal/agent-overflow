@@ -11,21 +11,23 @@ import (
 // A headless profile's browser-level target events: popups, crashes and
 // closes, each reported to the Manager as it is handled (engineEvents).
 
-// subscribe connects the CDP events of the browser connected on browserCtx
-// to the seam, and answers the requests the workspace's navigation policy
-// paused on it.
+// subscribe connects the CDP events of the launched browser to the seam,
+// keeping its download tracker for its cancels, and answers the requests
+// the workspace's navigation policy paused on it.
 //
 // A page's handle IS its CDP target id here (there is no second identity to
 // re-key onto, unlike the launcher-hosted engine), so the engine's whole
 // bookkeeping is which profile owns which target. A target this engine never
 // bound is dropped rather than reported under a handle nobody owns.
-func (p *headlessProfile) subscribe(browserCtx context.Context) error {
+func (p *headlessProfile) subscribe(launched *launchedBrowser) error {
+	browserCtx := launched.ctx
 	logf := p.engine.logf
 	targets := newHeadlessTargets(p)
 	downloads := p.downloadTracker(browserCtx, targets)
 	if err := downloads.subscribe(browserCtx, logf); err != nil {
 		return err
 	}
+	launched.downloads = downloads
 	session := chromedp.FromContext(browserCtx).Browser
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
 		// A page's main frame id is its target id, so a top-level request

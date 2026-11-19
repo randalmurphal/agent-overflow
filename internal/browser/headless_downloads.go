@@ -56,6 +56,11 @@ type downloadTracker struct {
 type downloadLifecycle struct {
 	started bool
 	held    *downloadProgress
+	// canceling marks a started download Chromium took AO's cancel of
+	// (canceling). CDP names a cancel and a failure alike ("canceled"), so
+	// this is what tells them apart; a failure that beats the cancel to
+	// Chromium still reads as the cancel.
+	canceling bool
 }
 
 func newDownloadTracker(events engineEvents, cancel func(id string)) *downloadTracker {
@@ -104,7 +109,7 @@ func (t *downloadTracker) beganLocked(guid string, admitted bool) {
 	lifecycle, _ := t.downloads.take(guid)
 	if held := lifecycle.held; held != nil {
 		t.events.DownloadProgress(*held)
-		if downloadSettled(held.State) {
+		if !held.State.running() {
 			return
 		}
 	}
@@ -145,18 +150,37 @@ func (t *downloadTracker) awaitOwner(event cdpbrowser.EventDownloadWillBegin) {
 }
 
 func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
-	progress := cdpDownloadProgress(event)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	lifecycle, _ := t.downloads.get(event.GUID)
+	progress := cdpDownloadProgress(event, lifecycle.canceling)
 	if !lifecycle.started {
 		t.downloads.put(event.GUID, downloadLifecycle{held: &progress})
 		return
 	}
 	t.events.DownloadProgress(progress)
-	if downloadSettled(progress.State) {
+	if !progress.State.running() {
 		t.downloads.delete(event.GUID)
 	}
+}
+
+// canceling marks the started download guid as canceled by AO, before its
+// CDP cancel is sent, and answers the undo for a cancel Chromium refused.
+// A tracker of no connection (nil) marks nothing.
+func (t *downloadTracker) canceling(guid string) (undo func()) {
+	if t == nil {
+		return func() {}
+	}
+	mark := func(on bool) {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if lifecycle, ok := t.downloads.get(guid); ok && lifecycle.started {
+			lifecycle.canceling = on
+			t.downloads.put(guid, lifecycle)
+		}
+	}
+	mark(true)
+	return func() { mark(false) }
 }
 
 // retained reports how many downloads the tracker keeps.
@@ -166,17 +190,20 @@ func (t *downloadTracker) retained() int {
 	return t.downloads.len()
 }
 
-func downloadSettled(state string) bool {
-	return state == downloadCompleted || state == downloadCanceled
-}
-
-func cdpDownloadProgress(event cdpbrowser.EventDownloadProgress) downloadProgress {
+// cdpDownloadProgress is a CDP download event in the seam's terms: its
+// "canceled" is AO's cancel when AO sent one (canceled), and a failure
+// otherwise.
+func cdpDownloadProgress(event cdpbrowser.EventDownloadProgress, canceled bool) downloadProgress {
 	state := downloadInProgress
 	switch event.State {
+	case cdpbrowser.DownloadProgressStateInProgress:
 	case cdpbrowser.DownloadProgressStateCompleted:
 		state = downloadCompleted
 	case cdpbrowser.DownloadProgressStateCanceled:
-		state = downloadCanceled
+		state = downloadFailed
+		if canceled {
+			state = downloadCanceled
+		}
 	}
 	return downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, Total: event.TotalBytes, State: state, FilePath: event.FilePath}
 }

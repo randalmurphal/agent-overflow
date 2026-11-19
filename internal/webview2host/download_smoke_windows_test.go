@@ -78,7 +78,7 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 	canceled := time.Now()
 	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: held.id, Cancel: 1})
 	s.settle(held)
-	if held.final.State != DownloadInterrupted || held.final.Reason != downloadInterruptReason(downloadUserCanceled) {
+	if held.final.State != DownloadInterrupted || held.final.Reason != downloadInterruptReason(downloadUserCanceled) || held.final.End != DownloadEndCanceled {
 		t.Fatalf("the canceled download ended %+v", held.final)
 	}
 	// WebView2 ends a running download's cancel itself, well inside the
@@ -94,7 +94,7 @@ func TestDownloadSmokeSavesToTheDownloadsFolderWithNoDialog(t *testing.T) {
 
 	failed := s.navigateStarted("fail.bin", "/fail/fail.bin")
 	s.settle(failed)
-	if failed.final.State != DownloadInterrupted || !strings.Contains(failed.final.Reason, "network") && !strings.Contains(failed.final.Reason, "server") {
+	if failed.final.State != DownloadInterrupted || failed.final.End != DownloadEndFailed || !strings.Contains(failed.final.Reason, "network") && !strings.Contains(failed.final.Reason, "server") {
 		t.Fatalf("the dropped download ended %+v", failed.final)
 	}
 	// WebView2 retried it: each retry is a new DownloadStarting and
@@ -310,7 +310,7 @@ func cancelStalled(t *testing.T, s *downloadSmoke, b *smokeDownload, others ...s
 	s.settleAmong(b, others...)
 	took := time.Since(canceled)
 	t.Logf("the stalled download ended after %v: %+v", took, b.final)
-	if b.final.State != DownloadInterrupted || b.final.Reason != downloadCancelBoundReason || took < downloadCancelBound {
+	if b.final.State != DownloadInterrupted || b.final.Reason != downloadCancelBoundReason || b.final.End != DownloadEndUntracked || took < downloadCancelBound {
 		t.Fatalf("the stalled download ended after %v as %+v", took, b.final)
 	}
 }
@@ -365,7 +365,7 @@ func TestDownloadSmokeAStalledDownloadsCancelEndsItsResume(t *testing.T) {
 	s.host.Apply(Directive{Op: OpCancelDownload, PageID: "page-1", Download: b.id, Cancel: 1})
 	s.settleAmong(own, a.id, b.id)
 	t.Logf("b's cancel ended its resume after %v: %+v", time.Since(canceled), own.final)
-	if own.final.State != DownloadInterrupted || own.final.Reason != downloadInterruptReason(downloadUserCanceled) {
+	if own.final.State != DownloadInterrupted || own.final.Reason != downloadInterruptReason(downloadUserCanceled) || own.final.End != DownloadEndCanceled {
 		t.Fatalf("b's resume ended %+v", own.final)
 	}
 	s.settleAmong(b, a.id)
@@ -594,6 +594,9 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 			case ReportCreated:
 				target = report.detail
 			case ReportFindUnavailable:
+			case ReportCreateFailed, ReportClosed, ReportProcessFailed, ReportCleared, ReportClearFailed,
+				ReportAccelerator, ReportFocused, ReportFocusFailed, ReportDownload, ReportPopup:
+				t.Fatalf("create answered %+v", report)
 			default:
 				t.Fatalf("create answered %+v", report)
 			}

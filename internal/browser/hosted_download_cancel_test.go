@@ -42,7 +42,7 @@ func TestHostedEngineTakesARefusalFromAnySnapshot(t *testing.T) {
 	// The refusal's answer was lost; the next progress carries it.
 	reportDownload(t, engine, "page1", refusedSnapshot("dl-a-1", 1, 20))
 	reportDownload(t, engine, "page1", refusedSnapshot("dl-a-1", 1, 30))
-	refused := downloadProgress{ID: "dl-a-1", State: downloadInProgress, Error: testRefusal, CancelRefused: true}
+	refused := downloadProgress{ID: "dl-a-1", State: downloadCancelRefused, Error: testRefusal}
 	_, progress := recorder.take()
 	want := []downloadProgress{
 		refused,
@@ -81,7 +81,7 @@ func TestHostedEngineTakesARefusalFromAnySnapshot(t *testing.T) {
 	sink.drain()
 	recorder.take()
 	reportDownload(t, engine, "page1", refusedSnapshot("dl-a-2", 1, 20))
-	if _, progress := recorder.take(); len(progress) != 1 || progress[0].CancelRefused {
+	if _, progress := recorder.take(); len(progress) != 1 || progress[0].State == downloadCancelRefused {
 		t.Fatalf("an earlier cancel's refusal reached the Manager: %+v", progress)
 	}
 
@@ -137,6 +137,54 @@ func TestHostedEngineAsksAgainForACancelTheLauncherNeverNamed(t *testing.T) {
 	}
 	if asked := keepReporting(webview2host.CancelTaken(1)); len(asked) != 0 {
 		t.Fatalf("a download whose cancel was named was asked %+v", asked)
+	}
+}
+
+// A download whose cancel the user made ends as the launcher saw it end,
+// whatever was pending: canceled only for the cancel WebView2 took, failed
+// with the reason for the network's end, the launcher no longer following
+// it, or its losing the download. The row never reads a cancel into an
+// end that was not one.
+func TestADownloadRowListsTheCauseTheLauncherSaw(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		end       func(webview2host.DownloadReport) webview2host.DownloadReport
+		wantState string
+		wantError string
+	}{
+		{"the cancel taken", func(r webview2host.DownloadReport) webview2host.DownloadReport {
+			r.State, r.End, r.Reason = webview2host.DownloadInterrupted, webview2host.DownloadEndCanceled, "the download was canceled"
+			return r
+		}, downloadStateCanceled, ""},
+		{"the network before the cancel", func(r webview2host.DownloadReport) webview2host.DownloadReport {
+			r.State, r.End, r.Reason = webview2host.DownloadInterrupted, webview2host.DownloadEndFailed, "the network failed"
+			return r
+		}, downloadStateFailed, "the network failed"},
+		{"no longer followed", func(r webview2host.DownloadReport) webview2host.DownloadReport {
+			r.State, r.End, r.Reason = webview2host.DownloadInterrupted, webview2host.DownloadEndUntracked, "the browser did not end the download after its cancel, so it is no longer followed"
+			return r
+		}, downloadStateFailed, "the browser did not end the download after its cancel, so it is no longer followed"},
+		{"lost by the launcher", func(webview2host.DownloadReport) webview2host.DownloadReport {
+			return webview2host.DownloadReport{ID: "dl-1", State: webview2host.DownloadUnknown, Reason: webview2host.DownloadUnknownReason, Answer: true}
+		}, downloadStateFailed, webview2host.DownloadUnknownReason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newPopupLauncher(t)
+			access := popupTestAccess(t, "thread")
+			_, page := l.open(access)
+			reportDownload(t, l.engine, page, snapshot("dl-1", webview2host.DownloadRunning, 10))
+			l.awaitDownloads(access, downloadStateRunning)
+			row := l.manager.CompanionState(access).Downloads[0]
+			if err := l.manager.CancelThreadDownload(access, row.ID); err != nil {
+				t.Fatal(err)
+			}
+			end := snapshot("dl-1", webview2host.DownloadRunning, 20)
+			end.Cancel = webview2host.CancelTaken(1)
+			reportDownload(t, l.engine, page, tc.end(end))
+			if got := l.manager.CompanionState(access).Downloads[0]; got.State != tc.wantState || got.Error != tc.wantError {
+				t.Fatalf("the row is %s %q, want %s %q", got.State, got.Error, tc.wantState, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -203,7 +251,7 @@ func TestAManagerCancelAfterALostRefusalReachesTheLauncher(t *testing.T) {
 
 	// The second's refusal is lost too, and the download fails.
 	failed := refusedSnapshot("dl-1", 2, 30)
-	failed.State, failed.Reason = webview2host.DownloadInterrupted, "the network failed"
+	failed.State, failed.End, failed.Reason = webview2host.DownloadInterrupted, webview2host.DownloadEndFailed, "the network failed"
 	reportDownload(t, l.engine, page, failed)
 	if got := l.manager.CompanionState(access).Downloads[0]; got.State != downloadStateFailed || got.Error != "the network failed" {
 		t.Fatalf("a failure after a lost refusal lists as %+v", got)

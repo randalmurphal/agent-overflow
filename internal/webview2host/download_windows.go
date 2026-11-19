@@ -212,19 +212,19 @@ func (h *Host) resumeDownload(d *hostDownload, args *iDownloadStartingEventArgs,
 // snapshot is the running download's whole state as a report, numbered
 // after the last one taken.
 func (d *hostDownload) snapshot() DownloadReport {
-	return d.take(DownloadRunning, "")
+	return d.take(DownloadRunning, "", "")
 }
 
-// take is the download's whole state as a report in state, with reason,
-// numbered after the last one taken: snapshot's running one, or the
-// terminal one endDownload makes from an end verdict.
-func (d *hostDownload) take(state, reason string) DownloadReport {
+// take is the download's whole state as a report in state, an interrupted
+// one for end, with reason, numbered after the last one taken: snapshot's
+// running one, or the terminal one endDownload makes from an end verdict.
+func (d *hostDownload) take(state string, end DownloadEnd, reason string) DownloadReport {
 	if d.op != nil {
 		d.received, d.total = d.op.bytesReceived(), d.op.totalBytes()
 	}
 	d.snapshots++
 	return DownloadReport{
-		ID: d.id, Seq: d.snapshots, State: state, URI: d.uri.shown, Name: windowsFileName(d.path), Path: d.path,
+		ID: d.id, Seq: d.snapshots, State: state, End: end, URI: d.uri.shown, Name: windowsFileName(d.path), Path: d.path,
 		Received: d.received, Total: d.total, Reason: reason, Cancel: d.cancel,
 	}
 }
@@ -319,7 +319,7 @@ func (h *Host) endDownload(d *hostDownload, end downloadVerdict) {
 	if end.kind != verdictEnd {
 		panic("webview2host: a download ended by a verdict that keeps it")
 	}
-	terminal := d.take(end.state, end.reason)
+	terminal := d.take(end.state, end.end, end.reason)
 	h.releaseOperations(d)
 	delete(d.page.downloads, d.id)
 	d.page.ended.add(terminal)

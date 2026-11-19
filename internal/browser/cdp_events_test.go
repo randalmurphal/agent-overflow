@@ -149,7 +149,7 @@ func (r *downloadRecorder) events() engineEvents {
 		DownloadStarted: func(start downloadStart) downloadAdmission {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.state[start.ID] = downloadInProgress
+			r.state[start.ID] = downloadInProgress.String()
 			if !r.allow {
 				r.state[start.ID] = "refused"
 				return downloadRefused
@@ -162,7 +162,7 @@ func (r *downloadRecorder) events() engineEvents {
 			if state, ok := r.state[progress.ID]; !ok || state == "refused" {
 				return
 			}
-			r.state[progress.ID] = progress.State
+			r.state[progress.ID] = progress.State.String()
 			r.bytes[progress.ID] = progress.Received
 		},
 	}
@@ -206,13 +206,13 @@ func TestDownloadTrackerReportsInAnyOrder(t *testing.T) {
 	}{
 		{"a completed download", true, func(tr *downloadTracker) []eventStep {
 			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateInProgress, 10), progress(tr, cdpbrowser.DownloadProgressStateCompleted, 20)}
-		}, downloadCompleted, 20, 0, 0},
-		{"a canceled download", true, func(tr *downloadTracker) []eventStep {
+		}, downloadCompleted.String(), 20, 0, 0},
+		{"a download that stopped unasked", true, func(tr *downloadTracker) []eventStep {
 			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateInProgress, 10), progress(tr, cdpbrowser.DownloadProgressStateCanceled, 10)}
-		}, downloadCanceled, 10, 0, 0},
+		}, downloadFailed.String(), 10, 0, 0},
 		{"a download still running", true, func(tr *downloadTracker) []eventStep {
 			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateInProgress, 10), progress(tr, cdpbrowser.DownloadProgressStateInProgress, 15)}
-		}, downloadInProgress, 15, 0, 1},
+		}, downloadInProgress.String(), 15, 0, 1},
 		{"a refused download", false, func(tr *downloadTracker) []eventStep {
 			return []eventStep{progress(tr, cdpbrowser.DownloadProgressStateCompleted, 20)}
 		}, "refused", 0, 1, 0},
@@ -257,6 +257,32 @@ func TestDownloadTrackerReportsInAnyOrder(t *testing.T) {
 			}
 		})
 	}
+}
+
+// CDP names a cancel and a failure alike: a started download's "canceled"
+// is the user's cancel only once AO sent one, and a failure while a cancel
+// Chromium refused was withdrawn.
+func TestDownloadTrackerTellsTheCancelItSentFromAFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cancel  func(tr *downloadTracker, guid string)
+		wantEnd downloadState
+	}{
+		{"no cancel", func(*downloadTracker, string) {}, downloadFailed},
+		{"a cancel sent", func(tr *downloadTracker, guid string) { tr.canceling(guid) }, downloadCanceled},
+		{"a cancel refused", func(tr *downloadTracker, guid string) { tr.canceling(guid)() }, downloadFailed},
+	} {
+		recorder := newDownloadRecorder(true)
+		tr := newDownloadTracker(recorder.events(), nil)
+		tr.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "G1", FrameID: "F1", URL: "https://example.test/a.zip"})
+		tc.cancel(tr, "G1")
+		tr.progress(cdpbrowser.EventDownloadProgress{GUID: "G1", ReceivedBytes: 5, State: cdpbrowser.DownloadProgressStateCanceled})
+		if state, _ := recorder.outcome("G1"); state != tc.wantEnd.String() {
+			t.Errorf("%s: the Manager saw %s, want %s", tc.name, state, tc.wantEnd)
+		}
+	}
+	var none *downloadTracker
+	none.canceling("G1")()
 }
 
 // popupRecorder stands in for the Manager's page events. Popups and closes
@@ -763,7 +789,7 @@ func TestConsoleEntryKeepsTheLogFormat(t *testing.T) {
 // A CDP download's progress carries the size the response announced, which
 // the pane shows as how far it is.
 func TestCDPDownloadProgressCarriesItsTotal(t *testing.T) {
-	got := cdpDownloadProgress(cdpbrowser.EventDownloadProgress{GUID: "G", ReceivedBytes: 10, TotalBytes: 40, State: cdpbrowser.DownloadProgressStateInProgress})
+	got := cdpDownloadProgress(cdpbrowser.EventDownloadProgress{GUID: "G", ReceivedBytes: 10, TotalBytes: 40, State: cdpbrowser.DownloadProgressStateInProgress}, false)
 	if want := (downloadProgress{ID: "G", Received: 10, Total: 40, State: downloadInProgress}); got != want {
 		t.Fatalf("cdpDownloadProgress = %+v, want %+v", got, want)
 	}

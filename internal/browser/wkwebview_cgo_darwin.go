@@ -465,7 +465,7 @@ func (p *wkProfile) decideDownload(download wkPendingDownload, path string, stag
 		// Canceled before a byte was written; the row says why.
 		p.engine.downloadEvents.Go(func() {
 			if p.engine.events.DownloadStarted(start) == downloadAdmitted {
-				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadCanceled, Error: stageErr.Error()})
+				p.engine.events.DownloadProgress(downloadProgress{ID: handle, State: downloadFailed, Error: stageErr.Error()})
 			}
 			wkReleaseDownload(download.ptr)
 		})
@@ -492,8 +492,11 @@ func aoWKVDownloadFinished(downloadID C.uint64_t, received C.double, state C.int
 		return
 	}
 	progress := downloadProgress{ID: handle, Received: float64(received), State: downloadCompleted, FilePath: filePath, Error: reason}
-	if int(state) == 2 {
+	switch int(state) {
+	case 2:
 		progress.State = downloadCanceled
+	case 3:
+		progress.State = downloadFailed
 	}
 	// Both halves go off the main thread, after the start (downloadEvents):
 	// releasing the download dispatches BACK to the main thread, which would

@@ -22,6 +22,9 @@ type launchedBrowser struct {
 	cancel      context.CancelFunc
 	allocCancel context.CancelFunc
 	process     *chromiumProcess
+	// downloads is the tracker of the connection's downloads, set by its
+	// subscribe before the browser is adopted.
+	downloads *downloadTracker
 }
 
 // close ends the connection, then kills the browser and returns once nothing
@@ -106,7 +109,7 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 	// timeout, so the wait is ours: a Chromium that starts and never
 	// answers is an error, never a hang.
 	connected := make(chan error, 1)
-	go func() { connected <- p.connect(browserCtx) }()
+	go func() { connected <- p.connect(launched) }()
 	select {
 	case err = <-connected:
 	case <-launchCtx.Done():
@@ -120,8 +123,9 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 
 // connect dials the launched browser with this profile's event handlers,
 // pins its downloads and installs the workspace's navigation policy.
-func (p *headlessProfile) connect(browserCtx context.Context) error {
-	if err := dialCDPBrowser(browserCtx, func() error { return p.subscribe(browserCtx) }); err != nil {
+func (p *headlessProfile) connect(launched *launchedBrowser) error {
+	browserCtx := launched.ctx
+	if err := dialCDPBrowser(browserCtx, func() error { return p.subscribe(launched) }); err != nil {
 		return p.launchFailed(err)
 	}
 	// Downloads land ONLY in the AO artifact directory, never the operator's

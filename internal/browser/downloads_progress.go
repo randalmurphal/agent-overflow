@@ -14,6 +14,10 @@ import (
 // A download's progress applied to its row, and a finished download's publish.
 
 func (m *Manager) downloadProgress(event downloadProgress) {
+	if !event.State.valid() {
+		log.Printf("browser: download %s reported with no state (%v); dropped", event.ID, event.State)
+		return
+	}
 	m.parkMu.Lock()
 	parked := m.parkProgressLocked(event)
 	m.parkMu.Unlock()
@@ -37,10 +41,9 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		p.downloadMu.Unlock()
 		return
 	}
-	if event.CancelRefused {
+	if event.State == downloadCancelRefused {
 		// The engine refused the cancel after taking it: the download runs
-		// on, listed with the refusal, and the user may cancel again. A
-		// later end reads as the engine's own, not the user's cancel.
+		// on, listed with the refusal, and the user may cancel again.
 		entry.cancelRequested = false
 		entry.Error = event.Error
 		note := m.noteDownloadLocked(p, entry, "")
@@ -61,7 +64,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	// Over the cap: running, it is canceled; finished, which a popup's
 	// download listed only at its finish can be (popup_adoption.go), its
 	// file goes all the same.
-	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && event.State != downloadCanceled {
+	if saving == downloadsAsArtifacts && entry.Bytes > maxDownloadBytes && !event.State.stopped() {
 		entry.State = downloadStateCanceled
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		m.releaseDownloadLocked(p, entry)
@@ -70,7 +73,7 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 		p.downloadMu.Unlock()
 		m.publishDownloads(note)
 		if scope != nil {
-			running := event.State == downloadInProgress
+			running := event.State.running()
 			go func() {
 				if running {
 					// One parked past the cap was canceled then.
@@ -133,21 +136,23 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 			removePartial = true
 		}
 	case downloadCanceled:
-		// An engine reports the cancel AO asked for and its own failures (a
-		// dropped connection, a server error) the same way; only the first
-		// is a cancel.
-		if entry.cancelRequested || event.PageGone {
-			entry.State = downloadStateCanceled
-			if event.PageGone {
-				entry.Error = event.Error
-			}
-			removePartial = true
-		} else {
-			entry.State, entry.Error = downloadStateFailed, event.Error
-			if entry.Error == "" {
-				entry.Error = "the download stopped before it finished"
-			}
+		// The cancel the user asked for, which needs no reason.
+		entry.State = downloadStateCanceled
+		removePartial = true
+	case downloadPageGone:
+		// The cancel its page's end made, which says why.
+		entry.State, entry.Error = downloadStateCanceled, event.Error
+		removePartial = true
+	case downloadFailed, downloadUntracked:
+		// The engine's own end, or one it no longer follows, a cancel
+		// pending or not: listed failed, with the engine's reason.
+		entry.State, entry.Error = downloadStateFailed, event.Error
+		if entry.Error == "" {
+			entry.Error = "the download stopped before it finished"
 		}
+	case downloadInProgress, downloadCancelRefused:
+	}
+	if event.State.stopped() {
 		m.releaseDownloadLocked(p, entry)
 		// A staged download that stopped, canceled or failed, leaves nothing
 		// but its staged file, which goes.

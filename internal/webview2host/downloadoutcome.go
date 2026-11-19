@@ -145,11 +145,13 @@ const (
 )
 
 // downloadVerdict is what reconcileDownload does: keep the download, wait
-// another bound, or end it in state with reason, first setting its file to
-// path when one was read and canceling its operation when cancelFirst.
+// another bound, or end it in state (an interrupted one for end) with
+// reason, first setting its file to path when one was read and canceling
+// its operation when cancelFirst.
 type downloadVerdict struct {
 	kind        verdictKind
 	state       string
+	end         DownloadEnd
 	reason      string
 	path        string
 	cancelFirst bool
@@ -171,7 +173,10 @@ func (seen downloadObservation) verdict(why downloadSample) downloadVerdict {
 	case observedCompleted:
 		return downloadVerdict{kind: verdictEnd, state: DownloadCompleted, path: seen.path}
 	case observedInterrupted:
-		return downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: downloadInterruptReason(seen.reason), cancelFirst: seen.reason != downloadUserCanceled}
+		if seen.reason == downloadUserCanceled {
+			return interruptedVerdict(DownloadEndCanceled, downloadInterruptReason(seen.reason), false)
+		}
+		return interruptedVerdict(DownloadEndFailed, downloadInterruptReason(seen.reason), true)
 	case observedRunning, observedUnread:
 		switch why {
 		case sampleChange, sampleStatus:
@@ -180,13 +185,18 @@ func (seen downloadObservation) verdict(why downloadSample) downloadVerdict {
 			if seen.kind == observedUnread {
 				return downloadVerdict{kind: verdictWaitAnotherBound}
 			}
-			return downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: downloadCancelBoundReason}
+			return interruptedVerdict(DownloadEndUntracked, downloadCancelBoundReason, false)
 		case sampleRetire:
-			return downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, reason: PopupGoneReason, cancelFirst: true}
+			return interruptedVerdict(DownloadEndPageGone, PopupGoneReason, true)
 		}
 		panic(fmt.Sprintf("webview2host: a download read for an unknown cause %d", why))
 	}
 	panic(fmt.Sprintf("webview2host: a download observation of unknown kind %d", seen.kind))
+}
+
+// interruptedVerdict ends a download interrupted for end, with its text.
+func interruptedVerdict(end DownloadEnd, reason string, cancelFirst bool) downloadVerdict {
+	return downloadVerdict{kind: verdictEnd, state: DownloadInterrupted, end: end, reason: reason, cancelFirst: cancelFirst}
 }
 
 // downloadCancelBoundReason is the cause of the interrupted snapshot that

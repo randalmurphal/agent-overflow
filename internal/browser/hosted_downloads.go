@@ -28,7 +28,7 @@ import (
 // ends only a row still running. Each cancel is numbered, and every
 // snapshot after it names the last the launcher took and WebView2's
 // refusal of it, which withdraws the Manager's cancel
-// (downloadProgress.CancelRefused) on whichever snapshot first carries it;
+// (downloadCancelRefused) on whichever snapshot first carries it;
 // a status question names the last cancel sent, so the launcher makes one
 // it never got. Nothing about downloads crosses CDP. A popup is a pane page
 // too: a download it starts before the Manager lists its tab names it and
@@ -89,8 +89,9 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 	}
 	admitted := admission == hostedAdmitted
 	if report.State == webview2host.DownloadUnknown {
-		// Created by no answer, so the download is admitted.
-		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCanceled, Error: report.Reason})
+		// Created by no answer, so the download is admitted. The launcher
+		// lost it, so how it ended is unknown.
+		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadUntracked, Error: report.Reason})
 		e.pages.end(d)
 		return
 	}
@@ -102,7 +103,7 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 		// has it: the Manager's cancel stands until the refusal of the last
 		// attempt sent arrives, and hears it once.
 		d.refused = cancels
-		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadInProgress, Error: refusal, CancelRefused: true})
+		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCancelRefused, Error: refusal})
 	}
 	if !admitted {
 		name := report.Name
@@ -155,13 +156,28 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 			progress.FilePath = path
 		}
 	case webview2host.DownloadInterrupted:
-		progress.State, progress.Error = downloadCanceled, report.Reason
-		progress.PageGone = report.Reason == webview2host.PopupGoneReason
+		progress.State, progress.Error = hostedDownloadEnd(report.End), report.Reason
 	}
 	e.events.DownloadProgress(progress)
 	if report.Terminal() {
 		e.pages.end(d)
 	}
+}
+
+// hostedDownloadEnd is the state of a download the launcher ended for end,
+// which ParseDownloadReport admits only as one of these.
+func hostedDownloadEnd(end webview2host.DownloadEnd) downloadState {
+	switch end {
+	case webview2host.DownloadEndCanceled:
+		return downloadCanceled
+	case webview2host.DownloadEndFailed:
+		return downloadFailed
+	case webview2host.DownloadEndUntracked:
+		return downloadUntracked
+	case webview2host.DownloadEndPageGone:
+		return downloadPageGone
+	}
+	panic(fmt.Sprintf("browser: the pane host ended a download for %q", end))
 }
 
 // cancelDownload asks the launcher to cancel a running download; its answer
@@ -238,7 +254,7 @@ func (e *hostedEngine) retirePage(page hostedPageID, why string, closed bool) {
 	e.mu.Unlock()
 	cancelAttach()
 	for _, id := range running {
-		e.events.DownloadProgress(downloadProgress{ID: string(id), State: downloadCanceled, Error: why, PageGone: true})
+		e.events.DownloadProgress(downloadProgress{ID: string(id), State: downloadPageGone, Error: why})
 	}
 	if closed {
 		e.events.PageClosed(pageID)

@@ -273,7 +273,7 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 		}
 		newest := event
 		d.newest = &newest
-		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && event.State != downloadCanceled {
+		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && !event.State.stopped() {
 			d.capped = true
 			m.stopParked(d)
 		}
@@ -373,7 +373,7 @@ func (m *Manager) stopParked(d *parkedDownload) {
 	m.mu.Lock()
 	open := scope != nil && m.scopes[scope.jar.key] == scope
 	m.mu.Unlock()
-	running := d.newest == nil || d.newest.State == downloadInProgress
+	running := d.newest == nil || d.newest.State.running()
 	// With its profile gone, so is the browser that ran it. Off the
 	// caller's locks: a cancel may wait on the engine's UI thread.
 	go func() {
