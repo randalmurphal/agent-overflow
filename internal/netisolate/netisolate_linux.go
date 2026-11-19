@@ -15,6 +15,9 @@ import (
 	"strings"
 	"syscall"
 
+	"agent-overflow/internal/goenvfile"
+	"agent-overflow/internal/ownedtemp"
+
 	"github.com/jsimonetti/rtnetlink"
 	"golang.org/x/sys/unix"
 )
@@ -30,13 +33,6 @@ const (
 	LANPrefix = 24
 )
 
-// tempDirBytes caps the private tmpfs, so a runaway test fails with ENOSPC
-// instead of filling the host's memory. Pages are allocated as they are
-// written; the cap reserves nothing. The store package's parallel tests
-// alone hold about 1.2 GB at once on 24 cores, and that grows with the
-// core count.
-const tempDirBytes = 8 << 30
-
 const (
 	// keepTempArg tells the helper to keep the temp directory the namespace
 	// it starts in already has, rather than mount its own.
@@ -44,12 +40,15 @@ const (
 	// goWorkArg names the directory on disk the helper mounts for the go
 	// command's work directories (newGoWorkDir).
 	goWorkArg = "--go-work="
+	// diskTempArg names the directory on disk the helper mounts as the temp
+	// directory instead of a tmpfs (ramTempAffordable).
+	diskTempArg = "--disk-temp="
 )
 
-// TempDir is where the namespace mounts its private tmpfs, and what TMPDIR
-// names inside it. It is the same on every run, because the Go test cache
-// records the TMPDIR a test reads; a per-run path would make every cached
-// result miss. It is short because a Unix socket path, often under
+// TempDir is where the namespace mounts its private temp directory, and
+// what TMPDIR names inside it. It is the same on every run, RAM or disk,
+// because the Go test cache records the TMPDIR a test reads; a per-run path
+// would make every cached result miss. It is short because a Unix socket path, often under
 // t.TempDir, holds at most 107 bytes. The directory itself is an empty
 // mount point on the host; /tmp stays as it is inside the namespace.
 func TempDir() string { return "/tmp/aot-" + strconv.Itoa(os.Getuid()) }
@@ -66,20 +65,58 @@ func TempDir() string { return "/tmp/aot-" + strconv.Itoa(os.Getuid()) }
 // configures command: the rlimit fallback wraps Path and Args, and the
 // cgroup variant adds to SysProcAttr.
 //
-// The caller calls release once command has exited, whatever ended it; it
-// removes the run's Go work directory (newGoWorkDir). stderr receives what
-// the sweep of earlier runs' directories could not do.
+// The run's directories on disk (the Go work directory, and the temp
+// directory when the host cannot afford a RAM one) are locked until every
+// process of the run has exited: their lock files go to command through
+// ExtraFiles, and every descendant inherits them. Command first removes
+// those of earlier runs that are free, and says on stderr when this run's
+// temp directory is on disk and why, and what the sweep could not do.
+//
+// The command's first process gets SIGTERM when the thread that started it
+// exits, so a killed launcher ends its run. Start command from a goroutine
+// locked to its OS thread (runtime.LockOSThread) until it has been waited
+// for: Go ends a thread only when a goroutine locked to it exits.
+//
+// The caller calls release once command has exited, whatever ended it. It
+// removes the run's directories, or reports that a process of the run
+// still holds them and leaves them for a later run's sweep.
 func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err error) {
 	noop := func() error { return nil }
 	if Inside() {
 		return noop, isolate(command, helperOptions{keepTemp: true})
 	}
-	goWork, release, err := newGoWorkDir(stderr)
+	sweepRunDirs(stderr)
+	var dirs []*ownedtemp.Shared
+	release = func() error {
+		var errs []error
+		for _, dir := range dirs {
+			errs = append(errs, dir.Release())
+		}
+		return errors.Join(errs...)
+	}
+	var options helperOptions
+	goWork, err := newGoWorkDir()
 	if err != nil {
 		return noop, err
 	}
-	if err := isolate(command, helperOptions{goWork: goWork}); err != nil {
+	if goWork != nil {
+		dirs = append(dirs, goWork)
+		options.goWork = goWork.Dir
+	}
+	if ram, reason := ramTempAffordable(readMemAvailable()); !ram {
+		diskTemp, err := ownedtemp.MakeShared(diskParent(), diskTempPrefix)
+		if err != nil {
+			return noop, errors.Join(fmt.Errorf("create the temp directory on disk: %w", err), release())
+		}
+		dirs = append(dirs, diskTemp)
+		options.diskTemp = diskTemp.Dir
+		fmt.Fprintf(stderr, "netisolate: this run's temp directory is on disk (%s): %s\n", diskTemp.Dir, reason)
+	}
+	if err := isolate(command, options); err != nil {
 		return noop, errors.Join(err, release())
+	}
+	for _, dir := range dirs {
+		command.ExtraFiles = append(command.ExtraFiles, dir.Lock)
 	}
 	return release, nil
 }
@@ -88,6 +125,7 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 type helperOptions struct {
 	keepTemp bool
 	goWork   string
+	diskTemp string
 }
 
 func (o helperOptions) args() []string {
@@ -97,6 +135,9 @@ func (o helperOptions) args() []string {
 	}
 	if o.goWork != "" {
 		args = append(args, goWorkArg+o.goWork)
+	}
+	if o.diskTemp != "" {
+		args = append(args, diskTempArg+o.diskTemp)
 	}
 	return args
 }
@@ -109,6 +150,8 @@ func parseHelperOptions(args []string) (helperOptions, []string) {
 			o.keepTemp = true
 		case strings.HasPrefix(args[0], goWorkArg):
 			o.goWork = strings.TrimPrefix(args[0], goWorkArg)
+		case strings.HasPrefix(args[0], diskTempArg):
+			o.diskTemp = strings.TrimPrefix(args[0], diskTempArg)
 		default:
 			return o, args
 		}
@@ -138,6 +181,10 @@ func enterIsolatedNamespaces(command *exec.Cmd, privateTemp bool) {
 	attr.UidMappings = []syscall.SysProcIDMap{{ContainerID: os.Getuid(), HostID: os.Getuid(), Size: 1}}
 	attr.GidMappings = []syscall.SysProcIDMap{{ContainerID: os.Getgid(), HostID: os.Getgid(), Size: 1}}
 	attr.GidMappingsEnableSetgroups = false
+	// The setting survives the helper's exec of the target: neither exec
+	// gains capabilities or changes ids, which would clear it
+	// (TestIsolatedCommandGetsAPrivateRAMTempDir).
+	attr.Pdeathsig = syscall.SIGTERM
 	attr.AmbientCaps = append(attr.AmbientCaps, unix.CAP_NET_ADMIN)
 	if privateTemp {
 		attr.Cloneflags |= syscall.CLONE_NEWNS
@@ -166,8 +213,10 @@ func Check(stderr io.Writer) error {
 // RunHelper runs as the first process inside the namespaces. It brings up
 // loopback and the isolated LAN interface, mounts the private temp
 // directory and the Go work directory, drops the ambient capabilities,
-// lowers its CPU priority and replaces itself with the target. args is
-// `[--keep-temp] [--go-work=DIR] path -- argv...`, or empty for Check.
+// lowers its CPU priority and replaces itself with the target, which keeps
+// the run directories' lock files Command passed. args is
+// `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] path -- argv...`, or
+// empty for Check.
 func RunHelper(args []string, stderr io.Writer) int {
 	// Niceness belongs to a thread on Linux. The thread that lowers it must
 	// be the one that execs, so the target starts with it.
@@ -182,13 +231,13 @@ func RunHelper(args []string, stderr io.Writer) int {
 	var userGoEnv []byte
 	if options.goWork != "" {
 		var err error
-		if userGoEnv, err = readGoEnvFile(); err != nil {
+		if userGoEnv, err = goenvfile.Read(); err != nil {
 			fmt.Fprintln(stderr, "netisolate:", err)
 			return 1
 		}
 	}
 	if !options.keepTemp {
-		if err := mountPrivateTemp(TempDir(), tempDirBytes); err != nil {
+		if err := mountPrivateTemp(TempDir(), options.diskTemp, tempDirBytes); err != nil {
 			fmt.Fprintln(stderr, "netisolate: mount the private temp directory:", explainMountError(err))
 			return 1
 		}
@@ -207,7 +256,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) < 3 || args[1] != "--" {
-		fmt.Fprintln(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] path -- argv...`")
+		fmt.Fprintln(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] path -- argv...`")
 		return 2
 	}
 	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, Niceness); err != nil {
@@ -227,10 +276,11 @@ func RunHelper(args []string, stderr io.Writer) int {
 	return 1
 }
 
-// mountPrivateTemp mounts a tmpfs of at most size bytes on dir, in this
-// mount namespace only. Exec stays allowed: go test runs test binaries from
-// its temp directory.
-func mountPrivateTemp(dir string, size int64) error {
+// mountPrivateTemp mounts the run's temp directory on dir, in this mount
+// namespace only: diskDir when the run's is on disk, else a tmpfs of at
+// most size bytes. Exec stays allowed: go test runs test binaries from its
+// temp directory.
+func mountPrivateTemp(dir, diskDir string, size int64) error {
 	// Mounts made here must not reach the host's namespace. A namespace
 	// owned by a new user namespace receives the host's shared mounts as
 	// slaves already; this states it rather than relies on it.
@@ -239,6 +289,12 @@ func mountPrivateTemp(dir string, size int64) error {
 	}
 	if err := ensureMountPoint(dir); err != nil {
 		return err
+	}
+	if diskDir != "" {
+		if err := unix.Mount(diskDir, dir, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("mount %s on %s: %w", diskDir, dir, err)
+		}
+		return nil
 	}
 	options := fmt.Sprintf("size=%d,mode=0700", size)
 	if err := unix.Mount("tmpfs", dir, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, options); err != nil {

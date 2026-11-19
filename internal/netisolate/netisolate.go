@@ -2,10 +2,12 @@
 // namespaces. The network holds only loopback and a private LAN interface
 // (LANName at LANAddress) with no route off it, so a test that binds every
 // interface, dials out or probes the LAN reaches nothing beyond the
-// namespace, whatever the host's networking mode. TMPDIR names a private,
-// size-capped tmpfs (TempDir), so temp files cost no disk writes and vanish
-// with the namespace however the run ends. The command runs at the lowest
-// CPU priority (nice 19), and so does everything it starts.
+// namespace, whatever the host's networking mode. TMPDIR names a private
+// temp directory (TempDir): a size-capped tmpfs when the host has the memory
+// for one at launch, so temp files cost no disk writes and vanish with the
+// namespace however the run ends, and otherwise a per-run directory on disk.
+// The command runs at the lowest CPU priority (nice 19), and so does
+// everything it starts, and it gets SIGTERM when its launcher dies.
 //
 // An executable that isolates commands must dispatch HelperArg before
 // anything else in main (and in TestMain for tests):
@@ -29,7 +31,7 @@ const EnvNamespace = "AO_NETISOLATE_NS"
 
 // EnvHostTempDir names the variable the helper sets to the temp directory
 // the target would have had without the namespace, when it points TMPDIR
-// at the private tmpfs. A file that must outlive the run, such as a data
+// at the private temp directory. A file that must outlive the run, such as a data
 // root kept for diagnosis, goes there.
 const EnvHostTempDir = "AO_NETISOLATE_HOST_TMPDIR"
 

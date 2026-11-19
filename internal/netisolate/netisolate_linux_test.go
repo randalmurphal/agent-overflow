@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -38,6 +39,10 @@ func TestMain(m *testing.M) {
 		os.Exit(runTempProbe(os.Stdout))
 	case "nested":
 		os.Exit(runNestedTempProbe(os.Stdout))
+	case "launcher":
+		os.Exit(runLowMemoryLauncher())
+	case "linger":
+		os.Exit(runLinger(os.Stdout))
 	}
 	os.Exit(m.Run())
 }
@@ -313,6 +318,7 @@ type tempProbe struct {
 	NestedTemp   string
 	NestedSeen   bool
 	NestedStderr string
+	PdeathSig    int
 }
 
 // runTempProbe reports the temp directory the isolated command sees and
@@ -347,7 +353,18 @@ func runTempProbe(out io.Writer) int {
 		probe.GoWorkFile = file.Name()
 		file.Close()
 	}
+	probe.PdeathSig = parentDeathSignal()
 	return encodeProbe(out, probe)
+}
+
+// parentDeathSignal is this process's PR_GET_PDEATHSIG, or -1 when it
+// cannot be read.
+func parentDeathSignal() int {
+	var sig int32
+	if err := unix.Prctl(unix.PR_GET_PDEATHSIG, uintptr(unsafe.Pointer(&sig)), 0, 0, 0); err != nil {
+		return -1
+	}
+	return int(sig)
 }
 
 // runNestedTempProbe runs a temp probe through Command from inside a
@@ -445,19 +462,19 @@ func privateNamespaceWithGoWork(t *testing.T, userEnv string) (isolateCommand fu
 	}
 	t.Setenv("GOENV", userFile)
 	t.Setenv("GOTMPDIR", "")
-	goWork, release, err := newGoWorkDir(os.Stderr)
+	dir, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if goWork == "" {
+	if dir == nil {
 		t.Fatal("no Go work directory")
 	}
 	t.Cleanup(func() {
-		if err := release(); err != nil {
+		if err := dir.Release(); err != nil {
 			t.Error(err)
 		}
 	})
-	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: goWork}) }, goWork
+	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: dir.Dir}) }, dir.Dir
 }
 
 // probeBinary copies this test binary to a directory under /tmp. Under
@@ -560,6 +577,10 @@ func TestIsolatedCommandGetsAPrivateRAMTempDir(t *testing.T) {
 	// The helper mounted with CAP_SYS_ADMIN; the command holds nothing.
 	if probe.CapEff != "0000000000000000" {
 		t.Fatalf("CapEff = %s, want none after the helper mounts the temp directory", probe.CapEff)
+	}
+	// Set on the helper, and kept through its exec of the command.
+	if probe.PdeathSig != int(syscall.SIGTERM) {
+		t.Fatalf("parent-death signal = %d, want SIGTERM (%d)", probe.PdeathSig, syscall.SIGTERM)
 	}
 	if probe.MountNS == "" || probe.MountNS == ownMountNS {
 		t.Fatalf("probe mount namespace %q, want one of its own (this process: %s)", probe.MountNS, ownMountNS)
