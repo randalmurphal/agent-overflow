@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -180,10 +181,21 @@ func removeStagingDirIfDoneLocked(dir string) {
 	}
 }
 
+// stagedNamePattern matches the staged names AO gives (stageDownload), and
+// the "dl-<n>" an earlier build gave before names carried a process token.
+var stagedNamePattern = regexp.MustCompile(`^dl-(?:(?:[0-9a-f]{12}|p[0-9]+)-)?[0-9]+$`)
+
+// isStagedName reports whether path is a staged file's name or a companion
+// of one (stagedFileOf): the only names the prune removes, so a file that
+// is not AO's stays whatever its age.
+func isStagedName(path string) bool {
+	return stagedNamePattern.MatchString(filepath.Base(stagedFileOf(path)))
+}
+
 // pruneStagingLocked removes the regular files in the staging directory dir
-// older than stagedLeftoverAge that no running download of this process
-// owns, as its staged file or a companion of it. The caller holds
-// staging.mu.
+// with a staged name (isStagedName), older than stagedLeftoverAge, that no
+// running download of this process owns, as its staged file or a companion
+// of it. The caller holds staging.mu.
 func pruneStagingLocked(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -192,7 +204,7 @@ func pruneStagingLocked(dir string, now time.Time) {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
-		if staging.owned[stagedFileOf(path)] || !entry.Type().IsRegular() {
+		if staging.owned[stagedFileOf(path)] || !entry.Type().IsRegular() || !isStagedName(path) {
 			continue
 		}
 		info, err := entry.Info()

@@ -883,7 +883,8 @@ page's engine puts it: that user's Downloads folder (`downloadSaving` in
   removes its own partial file, and the other desktop engines remove
   their staged file and the emptied staging folder. A staged file left
   by a run that ended mid-download is removed when a download of a later
-  run first uses the staging folder, once it is 24 hours old; a running
+  run first uses the staging folder, once it is 24 hours old; a file
+  there without a staged name is never removed, and a running
   download's file never is. A download another app process lets stall
   for 24 hours can lose its staged file that way and fails at its
   publish. Nothing that deletes a thread, clears site data, turns the

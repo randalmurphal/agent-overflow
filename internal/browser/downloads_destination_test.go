@@ -527,6 +527,30 @@ func TestARefusedStagedDownloadLeavesNothing(t *testing.T) {
 	}
 }
 
+// The prune removes only names AO stages under, and their companions: an
+// old file of the user's or another program's in the staging folder stays.
+func TestTheStagingPruneLeavesFilesAONeverStaged(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), stagingDirName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * stagedLeftoverAge)
+	names := []string{"notes.txt", "dl-report", "dl-2", "dl-0123456789ab-7", "dl-0123456789ab-8.wkdownload", "dl-p42-3"}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stagingPrune(t, dir)
+	if got := folderNames(t, dir); !slices.Equal(got, []string{"dl-report", "notes.txt"}) {
+		t.Fatalf("after the prune the staging folder holds %q, want only the files AO never staged", got)
+	}
+}
+
 // stagingPrune runs the staging directory's prune as its first use does.
 func stagingPrune(t *testing.T, dir string) {
 	t.Helper()
