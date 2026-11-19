@@ -536,7 +536,9 @@ func TestHostedProfileAttachesOnlyItsReportedPopups(t *testing.T) {
 
 func TestHostedEngineDiscardPageClosesTheController(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.DiscardPage(t.Context(), "0123456789abcdef0123456789abcdef")
+	if err := engine.DiscardPage(t.Context(), "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
 	sink.expectOps(t, webview2host.OpClose)
 }
 

@@ -870,7 +870,9 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 			}
 			recorder.mu.Unlock()
 			if strings.HasPrefix(how, "discard") {
-				engine.DiscardPage(t.Context(), "popup")
+				if err := engine.DiscardPage(t.Context(), "popup"); err != nil {
+					t.Errorf("discard: %v", err)
+				}
 			} else {
 				engine.Report("popup", webview2host.ReportClosed, "")
 			}

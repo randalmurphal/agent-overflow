@@ -146,10 +146,11 @@ The CDP title watcher (`cdp_page.go`) starts at evaluation, depends on no
 page event, follows the title element `document.title` reads, and observes
 only the title path; never observe a document's whole subtree from it.
 
-chromedp delivers each event method on its own subscription, so handlers run in
-no fixed order across methods. State fed by several methods must settle the
-same way under any interleaving and bound what it keeps for unmatched events
-(`cdp_events.go`).
+Outside `cdporder`, chromedp delivers each event method on its own
+subscription, so handlers run in no fixed order across methods. State fed
+there by several methods, such as a connection's targets, must settle the
+same way under any interleaving and bound what it keeps for unmatched
+events (`cdp_targets.go`).
 
 All GTK/WebKit calls go through `gtkDo`; all AppKit/WKWebView calls go through
 `wkDo`. Do not call either while holding a lock reachable from a native

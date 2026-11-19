@@ -90,7 +90,10 @@ func (a *Allocator) Allocate(ctx context.Context, opts ...chromedp.BrowserOption
 	wctx, cancel := context.WithCancel(context.Background())
 	a.wg.Go(func() {
 		<-ctx.Done()
-		chromedp.Cancel(ctx)
+		// ctx has ended, so Cancel answers that end or the lost
+		// connection, never a failure of its own: the outcome is
+		// the caller's that ended ctx.
+		_ = chromedp.Cancel(ctx)
 		cancel()
 	})
 	dialCtx, dialCancel := context.WithTimeout(wctx, dialTimeout)

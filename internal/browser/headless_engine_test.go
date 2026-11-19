@@ -758,12 +758,15 @@ func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
 		if popup.Handle != "P-page" {
 			return
 		}
-		// What Manager.adoptPopup does with a popup it keeps.
-		driver, err := profile.AttachPage(context.Background(), popup.Handle, testPageHooks())
-		if err == nil {
-			driver.Close()
-		}
-		adopted <- err
+		// What Manager.popupOpened does with a popup it keeps: the report
+		// returns at once and the adoption runs on its own goroutine.
+		go func() {
+			driver, err := profile.AttachPage(context.Background(), popup.Handle, testPageHooks())
+			if err == nil {
+				driver.Close()
+			}
+			adopted <- err
+		}()
 	}
 	created := make(chan error, 1)
 	go func() {

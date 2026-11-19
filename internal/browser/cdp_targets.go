@@ -16,7 +16,7 @@ const maxKnownTargets = 4 * orderSlack
 
 // cdpTargets is one CDP connection's record of its targets, kept across
 // targetCreated, targetInfoChanged and targetDestroyed, which chromedp
-// delivers on three subscriptions in no fixed order (cdp_events.go). A
+// delivers on three subscriptions in no fixed order. A
 // target id is known (created handled, destroyed not), gone (destroyed
 // handled, whether or not created was), or has its info held (an info
 // change handled before anything answers to the target: the newest is
