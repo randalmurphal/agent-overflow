@@ -103,18 +103,28 @@ const MaxDownloadURIBytes = 2048
 // for its reports and its kept terminal snapshot, so an address of any
 // length (a data URL carries its whole file) is neither retained nor
 // encoded again on every report; and a digest of the whole address, which
-// a resume is matched by (resumedDownload).
+// a resume is matched by (resumedDownload). An address the runtime did not
+// answer is empty and matches nothing: two unread addresses are not one.
 type downloadAddress struct {
 	shown  string
 	digest [sha256.Size]byte
+	known  bool
 }
 
 func newDownloadAddress(uri string) downloadAddress {
+	if uri == "" {
+		return downloadAddress{}
+	}
 	shown := truncateUTF8(uri, MaxDownloadURIBytes)
 	if len(shown) < len(uri) {
 		shown = strings.Clone(shown)
 	}
-	return downloadAddress{shown: shown, digest: sha256.Sum256([]byte(uri))}
+	return downloadAddress{shown: shown, digest: sha256.Sum256([]byte(uri)), known: true}
+}
+
+// same reports whether two downloads are from one address, both known.
+func (a downloadAddress) same(b downloadAddress) bool {
+	return a.known && b.known && a.digest == b.digest
 }
 
 // Encode answers the report as a report detail of at most

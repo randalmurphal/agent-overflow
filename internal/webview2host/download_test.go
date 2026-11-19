@@ -29,6 +29,9 @@ func TestADownloadKeepsABoundedCopyOfItsAddress(t *testing.T) {
 	if short := newDownloadAddress("https://example.test/f"); short.shown != "https://example.test/f" {
 		t.Fatalf("a short address is kept as %q", short.shown)
 	}
+	if !addr.same(newDownloadAddress(long)) || newDownloadAddress("").same(newDownloadAddress("")) {
+		t.Fatal("an address matches itself only when it was read")
+	}
 }
 
 func TestDownloadReportRoundTrips(t *testing.T) {

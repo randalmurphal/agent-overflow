@@ -35,8 +35,8 @@ type fakeOp struct {
 	uri       string
 	canceled  int
 	// refuseStateSub fails AddStateChanged; stateErr fails GetState;
-	// refuseCancel fails Cancel.
-	refuseStateSub, stateErr, refuseCancel bool
+	// refuseCancel fails Cancel; uriErr fails get_Uri.
+	refuseStateSub, stateErr, refuseCancel, uriErr bool
 }
 
 func fakeHandlerAddRef(h *iDownloadEventHandler) {
@@ -82,6 +82,9 @@ var fakeOpVtbl = iCoreWebView2DownloadOperationVtbl{
 	}),
 	RemoveStateChanged: newComProc(fakeUnsubscribe),
 	GetURI: newComProc(func(this *fakeOp, out *uintptr) uintptr {
+		if this.uriErr {
+			return 0x80004005 // E_FAIL
+		}
 		*out = coTaskMemString(this.uri)
 		return 0
 	}),

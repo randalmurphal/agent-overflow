@@ -115,7 +115,12 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		h.config.Logf("browser host: page %s: a download has no operation: %v", page.id, err)
 		return
 	}
-	path, uri := args.resultFilePath(), newDownloadAddress(op.uri())
+	rawURI, err := op.uri()
+	if err != nil {
+		// Reported without an address, and never taken for a resume.
+		h.config.Logf("browser host: page %s: a starting download: %v", page.id, err)
+	}
+	path, uri := args.resultFilePath(), newDownloadAddress(rawURI)
 	reason, err := op.interruptReason()
 	if err != nil {
 		// Read as no resume: a download of its own, nothing running touched.
@@ -158,11 +163,12 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 // address dropped at once, or when one dropped beside a download that
 // already resumed once, whose operation (a resume's) reads its reason for
 // good, dropped or not. An operation from uri whose state cannot be read
-// makes the answer as uncertain, so it is nil too.
+// makes the answer as uncertain, so it is nil too, and a resume or a
+// download whose address the runtime did not answer matches nothing.
 func (p *hostPage) resumedDownload(uri downloadAddress) *hostDownload {
 	var dropped *hostDownload
 	for _, d := range p.downloads {
-		if d.op == nil || d.uri.digest != uri.digest {
+		if d.op == nil || !d.uri.same(uri) {
 			continue
 		}
 		state, err := d.op.state()

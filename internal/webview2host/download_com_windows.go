@@ -190,8 +190,13 @@ func (o *iCoreWebView2DownloadOperation) removeStateChanged(token eventRegistrat
 	return hresult(hr)
 }
 
-func (o *iCoreWebView2DownloadOperation) uri() string {
-	return comString(o.vtbl.GetURI, unsafe.Pointer(o))
+// uri is get_Uri, or an error when the runtime does not answer it.
+func (o *iCoreWebView2DownloadOperation) uri() (string, error) {
+	uri, err := comStringResult(o.vtbl.GetURI, unsafe.Pointer(o))
+	if err != nil {
+		return "", fmt.Errorf("read its address: %w", err)
+	}
+	return uri, nil
 }
 
 func (o *iCoreWebView2DownloadOperation) resultFilePath() string {
@@ -237,13 +242,22 @@ func (o *iCoreWebView2DownloadOperation) cancel() error {
 // comString calls a getter of an LPWSTR the callee allocated and the caller
 // frees, answering "" on failure.
 func comString(getter comProc, this unsafe.Pointer) string {
+	value, _ := comStringResult(getter, this)
+	return value
+}
+
+// comStringResult is comString with the failure: an HRESULT, or no string.
+func comStringResult(getter comProc, this unsafe.Pointer) (string, error) {
 	var value *uint16
 	hr, _, _ := getter.Call(uintptr(this), uintptr(unsafe.Pointer(&value)))
-	if hresult(hr) != nil || value == nil {
-		return ""
+	if err := hresult(hr); err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", errors.New("the runtime returned no string")
 	}
 	defer windows.CoTaskMemFree(unsafe.Pointer(value))
-	return windows.UTF16PtrToString(value)
+	return windows.UTF16PtrToString(value), nil
 }
 
 // ---------------------------------------------------------------------
