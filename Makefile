@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -85,6 +85,21 @@ WSL_VERSION ?= $(VERSION)
 
 GO_PACKAGE_ROOTS := . ./cmd/... ./internal/...
 
+# Builds and tests run at the lowest CPU priority, so they yield to the
+# developer's running app and its provider CLIs. make renices itself once
+# while it reads this file; every recipe and everything it starts inherits
+# the priority. A make whose goals launch an app for the developer to use
+# keeps normal priority; its sub-makes that only build are lowered. Where
+# renice fails the build still runs, and says so once.
+NICE_EXEMPT_GOALS := dev dev-wsl launch-wsl harness-wsl perf-wsl soak harness harness-window soak-window
+ifeq ($(filter $(NICE_EXEMPT_GOALS),$(MAKECMDGOALS))$(AO_RENICE_FAILED),)
+AO_RENICE_ERROR := $(shell renice 19 -p $$PPID 2>&1 >/dev/null || echo "exit $$?")
+ifneq ($(AO_RENICE_ERROR),)
+$(warning could not lower make to nice 19 ($(AO_RENICE_ERROR)); running at normal priority)
+export AO_RENICE_FAILED := 1
+endif
+endif
+
 # Every Go command under make builds with -trimpath. The compiler then leaves
 # the checkout's directory out of a package's build cache key, so worktrees
 # holding the same sources share cache entries. File paths in stack traces and
@@ -142,7 +157,7 @@ endif
 # The `noremote` passes compile the variant without remote access
 # (internal/buildvariant): the desktop half the noremote harness binary
 # uses, the nogui half its WSL payload ships, and its Windows launcher.
-go-build:
+go-build: gocache-trim
 	@set -e; \
 	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
@@ -159,7 +174,8 @@ go-build:
 # Every test runs inside the isolated network namespace (loopback plus a
 # private LAN, no route off it; internal/netisolate), so a test that binds
 # every interface or dials out reaches nothing beyond the namespace in any
-# WSL networking mode. `go test` itself runs under bin/ao-netns rather than
+# WSL networking mode, and its temp files land in a private RAM directory
+# that goes with the namespace. `go test` itself runs under bin/ao-netns rather than
 # through `-exec`, which would disable the test cache. go-prefetch fetches,
 # on the host network first, what every package of the module and its tests
 # import plus the module's tools, since a test may run `go tool wails3` and
@@ -179,10 +195,16 @@ GO_TEST_FLAGS ?=
 netns-tool:
 	go build -o bin/ao-netns ./cmd/ao-netns
 
+# gocache-trim caps the Go build cache (cmd/ao-gocache-trim; at most one
+# walk every few hours, off in CI). It builds and runs in the background,
+# so the target it serves does not wait for it.
+gocache-trim:
+	@[ -n "$$CI" ] || { go build -o bin/ao-gocache-trim ./cmd/ao-gocache-trim && bin/ao-gocache-trim; } &
+
 # GO_TEST_EXCLUDE is an extended regexp over import paths to leave out,
 # for CI shards that run the heavy packages on their own runners.
 GO_TEST_EXCLUDE ?=
-go-test: netns-tool
+go-test: netns-tool gocache-trim
 	@set -e; \
 	packages=$$(go list $(GO_TEST_PKGS)); \
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
@@ -264,7 +286,7 @@ frontend-lint: $(FRONTEND_DEPS)
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
 RACE_PKGS := ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
-test-race: netns-tool
+test-race: netns-tool gocache-trim
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS))
 	$(NETNS) go test -race -timeout 1800s $(RACE_PKGS)
 
