@@ -32,7 +32,7 @@ extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int met
 extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
 // The download states aoWebKitDownloadProgress maps onto the Go seam's
-// (driver.go): canceled is WebKit's cancel, which only AO's makes, and
+// (driver_events.go): canceled is WebKit's cancel, which only AO's makes, and
 // failed any other error.
 #define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1

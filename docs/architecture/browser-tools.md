@@ -926,7 +926,7 @@ AO-owned directories with file/count/byte caps.
 
 A finished download ends up where any browser on the machine that runs the
 page's engine puts it: that user's Downloads folder (`downloadSaving` in
-`internal/browser/driver.go`). There is no setting.
+`internal/browser/driver_events.go`). There is no setting.
 
 - Launcher-hosted WebView2: WebView2's default, the Windows user's
   Downloads folder, under the name WebView2 gives (`name (1).ext` on a

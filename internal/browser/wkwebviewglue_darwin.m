@@ -36,7 +36,7 @@ extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, 
 extern void aoWKVFindDone(uint64_t call_id, int found);
 
 // The download states aoWKVDownloadFinished maps onto the Go seam's
-// (driver.go): canceled is the completion of AO's cancel, and failed
+// (driver_events.go): canceled is the completion of AO's cancel, and failed
 // didFailWithError, which WebKit never sends for a cancel it was asked for.
 #define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1
