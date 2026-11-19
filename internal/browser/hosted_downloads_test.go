@@ -29,6 +29,9 @@ type hostedDownloadLog struct {
 	// admitting, when set, is called as the Manager admits a download,
 	// before it answers: the admission hook.
 	admitting func(downloadStart)
+	// progressing, when set, is called as the Manager takes a download's
+	// progress, before it is recorded.
+	progressing func(downloadProgress)
 }
 
 func (r *hostedDownloadLog) events() engineEvents {
@@ -46,6 +49,12 @@ func (r *hostedDownloadLog) events() engineEvents {
 			return !r.refuse
 		},
 		DownloadProgress: func(progress downloadProgress) {
+			r.mu.Lock()
+			hook := r.progressing
+			r.mu.Unlock()
+			if hook != nil {
+				hook(progress)
+			}
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.progress = append(r.progress, progress)
@@ -768,5 +777,56 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 	ops := sink.ops()
 	if len(ops) < 2 || ops[len(ops)-2] != webview2host.OpCancelDownload || ops[len(ops)-1] != webview2host.OpClose {
 		t.Fatalf("directives %v, want the cancel then the page's close", ops)
+	}
+}
+
+// A popup the Manager never listed takes every download it started with it,
+// whether it is discarded or its page closes: one whose first report
+// arrives while the popup's running downloads are being ended is refused
+// or ended too, never left running in its opener's tab.
+func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
+	for _, how := range []string{"discard", "close"} {
+		t.Run(how, func(t *testing.T) {
+			engine, _, recorder := newDownloadHostedEngine(t)
+			engine.events.PageClosed = func(string) {}
+			bindTestPage(t, engine, "opener", "T-opener")
+			engine.mu.Lock()
+			engine.popups["popup"] = &hostedPopup{target: "T-popup", profile: engine.pageProfile["opener"], opener: "opener"}
+			engine.pageProfile["popup"] = engine.pageProfile["opener"]
+			engine.mu.Unlock()
+			reportDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadRunning, 10))
+			var once sync.Once
+			recorder.mu.Lock()
+			recorder.progressing = func(progress downloadProgress) {
+				if progress.ID == "dl-1" && progress.State == downloadCanceled {
+					once.Do(func() { reportDownload(t, engine, "popup", snapshot("dl-2", webview2host.DownloadRunning, 10)) })
+				}
+			}
+			recorder.mu.Unlock()
+			switch how {
+			case "discard":
+				engine.DiscardPage("popup")
+			case "close":
+				engine.Report("popup", webview2host.ReportClosed, "")
+			}
+			starts, progress := recorder.take()
+			ended := map[string]bool{}
+			for _, p := range progress {
+				if p.State != downloadInProgress {
+					ended[p.ID] = true
+				}
+			}
+			for _, start := range starts {
+				if !ended[start.ID] {
+					t.Errorf("download %s started in the popup and never ended: starts %+v, progress %+v", start.ID, starts, progress)
+				}
+			}
+			engine.mu.Lock()
+			running := len(engine.downloads.running)
+			engine.mu.Unlock()
+			if running != 0 {
+				t.Errorf("the engine still runs %d downloads of the gone popup", running)
+			}
+		})
 	}
 }

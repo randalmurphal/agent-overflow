@@ -69,6 +69,9 @@ type hostedPopup struct {
 	// crashed is the reason its page crashed, and closed says it closed.
 	crashed string
 	closed  bool
+	// downloadsEnded says its going ended its downloads, so it admits no
+	// new one (joinDownloadReports).
+	downloadsEnded bool
 	// cancelAttach ends its attach while one is under way.
 	cancelAttach context.CancelFunc
 }

@@ -127,7 +127,7 @@ func (e *hostedEngine) downloadReport(pageID, detail string) {
 			return
 		}
 		_, live := e.targetByPage[pageID]
-		if _, pending := e.popups[pageID]; !live && !pending {
+		if popup := e.popups[pageID]; !live && (popup == nil || popup.downloadsEnded) {
 			// No page of the Manager's started it, or that page is leaving;
 			// the launcher cancels a closed page's downloads itself.
 			e.mu.Unlock()
@@ -315,9 +315,14 @@ func (e *hostedEngine) forgetDownloadsLocked(pageID string) {
 // Manager never listed, and its downloads still running then end as
 // canceled for why: the launcher cancels a going page's downloads and
 // reports nothing, and only a listed page's leaving settles them in the
-// Manager. Each ends in its apply section.
+// Manager. The popup admits no new download from the hold that takes its
+// running ones, so none starts after them unended. Each ends in its apply
+// section; one whose admission had not begun ends unreported.
 func (e *hostedEngine) joinDownloadReports(pageID, why string) {
 	e.mu.Lock()
+	if popup := e.popups[pageID]; popup != nil && why != "" {
+		popup.downloadsEnded = true
+	}
 	running := make(map[string]*hostedDownload)
 	for id, d := range e.downloads.running {
 		if d.page == pageID {
@@ -328,12 +333,13 @@ func (e *hostedEngine) joinDownloadReports(pageID, why string) {
 	for id, d := range running {
 		d.apply.Lock()
 		e.mu.Lock()
-		end := why != "" && d.admitted && !d.gone
+		end := why != "" && !d.gone
+		report := end && d.admitted
 		if end {
 			e.downloads.noteEnded(pageID, id)
 		}
 		e.mu.Unlock()
-		if end {
+		if report {
 			e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCanceled, Error: why, PageGone: true})
 		}
 		d.apply.Unlock()
