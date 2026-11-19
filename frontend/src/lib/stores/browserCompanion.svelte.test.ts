@@ -350,6 +350,18 @@ describe('browser companion state routing', () => {
       expect(browserPaneMountId('thread-browser')).toBeNull();
     });
 
+    // A mount id addresses every ordered action and the detach: an attach
+    // that names none is the pane's failure, never a mount to number.
+    it('takes no mount from an attach answer that names none', async () => {
+      setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: '', state: open(6) }));
+      setBindingMock('BrowserCompanionPaneDetach', async () => {});
+      const attachment = attachBrowserCompanion('thread-browser');
+      await vi.waitFor(() => expect(attachment.error).toContain('answered with no mount'));
+      expect(attachment.current).toBeNull();
+      expect(browserPaneMountId('thread-browser')).toBeNull();
+      attachment.release();
+    });
+
     it('takes the attach answer when no newer frame arrived', async () => {
       setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: open(6) }));
       setBindingMock('BrowserCompanionPaneDetach', async () => {});

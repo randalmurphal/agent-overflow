@@ -44,8 +44,14 @@ import { addErrorToast } from './toast.svelte';
 /** The backend's id of one pane mount, minted from BrowserCompanionPaneAttach's answer. */
 export type BrowserMountId = string & { readonly __brand: 'BrowserMountId' };
 
+function isMountId(id: string): id is BrowserMountId {
+  return id !== '';
+}
+
+/** The mount id of an attach's answer; the backend names every mount it makes. */
 function mintMountId(id: string): BrowserMountId {
-  return id as BrowserMountId;
+  if (!isMountId(id)) throw new Error('The browser pane attach answered with no mount.');
+  return id;
 }
 
 /** A mounted pane's attachment value: the backend's id of its mount. */
